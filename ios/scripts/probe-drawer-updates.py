@@ -26,7 +26,7 @@ def main() -> None:
         generated.write_text(source)
         executable = Path(folder) / "probe"
         subprocess.run([
-            "xcrun", "swiftc", "-parse-as-library", "-target", f"{platform.machine()}-apple-ios26.5-macabi",
+            "xcrun", "swiftc", "-parse-as-library", "-target", f"{platform.machine()}-apple-ios26.2-macabi",
             "-sdk", sdk, "-F", f"{sdk}/System/iOSSupport/System/Library/Frameworks",
             str(generated),
             *(str(components / name) for name in ["SidebarDrawerPanGesture.swift",

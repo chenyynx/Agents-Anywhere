@@ -14,6 +14,10 @@ on:
       - "ios/**"
       - ".github/workflows/ios-build.yml"
   workflow_dispatch:
+    inputs:
+      xcode:
+        description: "Xcode app name on the runner (e.g. Xcode_26.5.app)"
+        default: "Xcode_26.5.app"
 
 permissions:
   contents: write
@@ -28,12 +32,15 @@ jobs:
       - name: List available Xcodes
         run: ls /Applications | grep -i "^Xcode" || true
 
-      # Deployment target on this branch is 26.2, so an Xcode 26.2 SDK suffices.
-      # Pinned for reproducibility — macos-26's default Xcode drifts when runner
-      # images roll forward (lesson recorded in claudio's ios-build.yml).
-      - name: Pin Xcode 26.2
+      # Toolchain and deployment target are decoupled: a newer SDK builds an app
+      # whose deployment target stays 26.2. The newer compiler is required here —
+      # SE-0442 relaxed the access level of synthesized memberwise inits for
+      # structs whose private stored properties all have defaults, and
+      # TimelineHistoryPull(edge:) depends on that (Xcode 26.2 reports
+      # "argument passed to call that takes no arguments").
+      - name: Pin Xcode
         run: |
-          sudo xcode-select -s /Applications/Xcode_26.2.app
+          sudo xcode-select -s /Applications/${{ github.event.inputs.xcode || 'Xcode_26.5.app' }}
           xcodebuild -version
 
       - name: Cache SwiftPM checkouts

@@ -1,0 +1,109 @@
+name: iOS Build
+
+# Downstream-only workflow. This branch (`ios-ci`) = clean upstream mirror from
+# `main` + one patch that lowers the iOS deployment target 26.5 -> 26.2 + this
+# file. `main` carries no workflows, so syncing upstream never burns CI minutes.
+#
+# Output: an UNSIGNED .ipa that KSign re-signs on-device (same flow as
+# chenyynx/claudio). No Apple Developer account needed.
+
+on:
+  push:
+    branches: [ios-ci]
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: List available Xcodes
+        run: ls /Applications | grep -i "^Xcode" || true
+
+      # Deployment target on this branch is 26.2, so an Xcode 26.2 SDK suffices.
+      # Pinned for reproducibility — macos-26's default Xcode drifts when runner
+      # images roll forward (lesson recorded in claudio's ios-build.yml).
+      - name: Pin Xcode 26.2
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.2.app
+          xcodebuild -version
+
+      - name: Cache SwiftPM checkouts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/org.swift.swiftpm
+            ~/Library/Caches/org.swift.swiftpm
+          key: swiftpm-${{ runner.os }}-${{ hashFiles('ios/**/Package.resolved', 'ios/**/Package.swift') }}
+
+      - name: Cache DerivedData
+        uses: actions/cache@v4
+        with:
+          path: ios/Agents Anywhere/build/DerivedData
+          key: dd-${{ runner.os }}-${{ hashFiles('ios/**') }}
+          restore-keys: dd-${{ runner.os }}-
+
+      - name: Build (unsigned)
+        run: |
+          set -o pipefail
+          cd "ios/Agents Anywhere"
+          xcodebuild build \
+            -project "Agents Anywhere.xcodeproj" \
+            -scheme "Agents Anywhere" \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            ENABLE_DEBUG_DYLIB=NO \
+            SWIFT_NUM_THREADS=2 \
+            -derivedDataPath build/DerivedData \
+            2>&1 | tee "$RUNNER_TEMP/build.log" | tail -40
+
+      - name: Print compiler errors on failure
+        if: failure()
+        run: |
+          grep -E "error:|fatal error|The following build commands failed" \
+            "$RUNNER_TEMP/build.log" 2>/dev/null | sort -u | head -40 || true
+
+      - name: Package ipa
+        run: |
+          cd "ios/Agents Anywhere"
+          PRODUCTS=build/DerivedData/Build/Products/Release-iphoneos
+          ls "$PRODUCTS"
+          mkdir -p /tmp/out/Payload
+          cp -r "$PRODUCTS"/*.app /tmp/out/Payload/
+          APP=/tmp/out/Payload/*.app
+          # Prove the deployment-target patch landed in the shipped binary.
+          /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" $APP/Info.plist
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" $APP/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ github.run_number }}" $APP/Info.plist
+          (cd /tmp/out && zip -qr "$GITHUB_WORKSPACE/agents-anywhere.ipa" Payload)
+          ls -lh "$GITHUB_WORKSPACE/agents-anywhere.ipa"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agents-anywhere-unsigned-ipa
+          path: agents-anywhere.ipa
+          if-no-files-found: error
+
+      - name: Release unsigned .ipa
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA_SHORT: ${{ github.sha }}
+        run: |
+          TAG="ipa-latest"
+          NAME="AgentsAnywhere-unsigned-${SHA_SHORT:0:7}.ipa"
+          cp agents-anywhere.ipa "$NAME"
+          gh release create "$TAG" --title "Agents Anywhere unsigned iOS builds" \
+            --notes "Built from the ios-ci branch (upstream mirror + deployment target 26.2). Unsigned — re-sign on-device with KSign." || true
+          gh release upload "$TAG" "$NAME" --clobber

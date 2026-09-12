@@ -8,6 +8,11 @@ nonisolated struct TimelineHistoryPull: Equatable {
     private var origin: TimelineViewport?
     private(set) var isReady = false
 
+    /// Explicit init: the synthesized memberwise init is `private` because of
+    /// `private var origin`, which makes `TimelineHistoryPull(edge:)` invisible to
+    /// other files on toolchains predating the access-level relaxation.
+    init(edge: Edge = .latest) { self.edge = edge }
+
     mutating func begin(at viewport: TimelineViewport, promptVisible: Bool, canLoad: Bool) {
         origin = promptVisible && canLoad ? viewport : nil
         isReady = false

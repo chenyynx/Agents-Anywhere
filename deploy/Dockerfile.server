@@ -1,0 +1,10 @@
+FROM python:3.12-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 UV_PROJECT_ENVIRONMENT=/opt/venv PYTHONPATH=/app/server AGENT_SERVER_DB_BACKEND=postgres AGENT_SERVER_HOST=0.0.0.0 AGENT_SERVER_STATIC_DIR=/app/web-static
+ARG UV_INDEX_URL=
+ENV UV_INDEX_URL=${UV_INDEX_URL}
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tini git && rm -rf /var/lib/apt/lists/*
+COPY server/ /app/server/
+RUN pip install --no-cache-dir uv && cd /app/server && uv sync --no-dev
+EXPOSE 8000
+CMD ["uv", "run", "--no-sync", "python", "-m", "agent_server.main"]

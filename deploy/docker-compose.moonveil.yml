@@ -32,11 +32,9 @@ services:
   server:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
-      target: server
+      dockerfile: deploy/Dockerfile.server
       args:
-        PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
-        APT_MIRROR: https://mirrors.tuna.tsinghua.edu.cn/debian
+        UV_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
     environment:
       AGENT_SERVER_DB_URL: "postgresql+asyncpg://moonveil:${POSTGRES_PASSWORD}@postgres:5432/moonveil"
       REDIS_URL: "redis://redis:6379/0"

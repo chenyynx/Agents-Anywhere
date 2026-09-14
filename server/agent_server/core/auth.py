@@ -14,7 +14,7 @@ DEFAULT_USER_EXPIRES_IN = 60 * 60 * 24 * 7
 
 
 def _secret() -> bytes:
-    value = os.environ.get("AGENT_SERVER_SECRET", "agent-server-dev-secret")
+    value = os.environ["AGENT_SERVER_SECRET"]  # [moonveil] fail-fast: no dev default (D3 R1)
     return value.encode("utf-8")
 
 

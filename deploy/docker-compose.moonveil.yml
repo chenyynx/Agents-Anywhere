@@ -31,6 +31,7 @@ services:
       timeout: 5s
       retries: 30
   server:
+    command: ["/opt/venv/bin/python", "-m", "agent_server.main"]
     build:
       context: ..
       dockerfile: deploy/Dockerfile.server

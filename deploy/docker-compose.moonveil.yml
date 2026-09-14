@@ -8,17 +8,27 @@ services:
       POSTGRES_DB: moonveil
       POSTGRES_USER: moonveil
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
-    ports: ["127.0.0.1:55432:5432"]
-    volumes: [moonveil-pg:/var/lib/postgresql/data]
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - moonveil-pg:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U moonveil -d moonveil"]
-      interval: 2s; timeout: 5s; retries: 30
+      interval: 2s
+      timeout: 5s
+      retries: 30
   redis:
     image: redis:8-alpine
     command: [redis-server, --save, "", --appendonly, "yes", --appendfsync, everysec, --maxmemory-policy, noeviction]
-    ports: ["127.0.0.1:56379:6379"]
-    volumes: [moonveil-redis:/data]
-    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 2s, timeout: 5s, retries: 30 }
+    ports:
+      - "127.0.0.1:56379:6379"
+    volumes:
+      - moonveil-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
   server:
     build:
       context: .
@@ -33,9 +43,12 @@ services:
       AGENT_SERVER_SECRET: "${AGENT_SERVER_SECRET}"
       REGISTRATION_OPEN: "false"
     depends_on:
-      postgres: { condition: service_healthy }
-      redis: { condition: service_healthy }
-    ports: ["0.0.0.0:8811:8000"]
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "0.0.0.0:8811:8000"
 volumes:
   moonveil-pg:
   moonveil-redis:

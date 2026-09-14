@@ -1,6 +1,5 @@
-# Moonveil cloud v0 — derived from upstream docker/docker-compose.local.yml.
-# Differences: own network, AA server on host port 8811 (8765/8766 taken by
-# webdav/bridge on this box), PG/redis on loopback (no host port clash).
+# Moonveil cloud v0 — derived from upstream docker/Dockerfile (server stage only;
+# web-static stage skipped via target: server, we have no web UI).
 name: moonveil-cloud
 services:
   postgres:
@@ -9,36 +8,34 @@ services:
       POSTGRES_DB: moonveil
       POSTGRES_USER: moonveil
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
-    ports:
-      - "127.0.0.1:55432:5432"
-    volumes:
-      - moonveil-pg:/var/lib/postgresql/data
+    ports: ["127.0.0.1:55432:5432"]
+    volumes: [moonveil-pg:/var/lib/postgresql/data]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U moonveil -d moonveil"]
       interval: 2s; timeout: 5s; retries: 30
   redis:
     image: redis:8-alpine
     command: [redis-server, --save, "", --appendonly, "yes", --appendfsync, everysec, --maxmemory-policy, noeviction]
-    ports:
-      - "127.0.0.1:56379:6379"
-    volumes:
-      - moonveil-redis:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 2s; timeout: 5s; retries: 30
+    ports: ["127.0.0.1:56379:6379"]
+    volumes: [moonveil-redis:/data]
+    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 2s, timeout: 5s, retries: 30 }
   server:
     build:
-      context: ./server
+      context: .
+      dockerfile: docker/Dockerfile
+      target: server
+      args:
+        PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
+        APT_MIRROR: https://mirrors.tuna.tsinghua.edu.cn/debian
     environment:
-      DATABASE_URL: "postgresql://moonveil:${POSTGRES_PASSWORD}@postgres:5432/moonveil"
+      AGENT_SERVER_DB_URL: "postgresql+asyncpg://moonveil:${POSTGRES_PASSWORD}@postgres:5432/moonveil"
       REDIS_URL: "redis://redis:6379/0"
       AGENT_SERVER_SECRET: "${AGENT_SERVER_SECRET}"
       REGISTRATION_OPEN: "false"
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
-    ports:
-      - "0.0.0.0:8811:8765"
+    ports: ["0.0.0.0:8811:8000"]
 volumes:
   moonveil-pg:
   moonveil-redis:

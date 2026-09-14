@@ -6,6 +6,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tini git && rm -rf /var/lib/apt/lists/*
 COPY server/ /app/server/
 RUN pip install --no-cache-dir uv && cd /app/server && uv sync --no-dev
+RUN mkdir -p /app/web-static
 EXPOSE 8000
 WORKDIR /app/server
 CMD ["/opt/venv/bin/python", "-m", "agent_server.main"]

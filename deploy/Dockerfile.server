@@ -7,4 +7,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY server/ /app/server/
 RUN pip install --no-cache-dir uv && cd /app/server && uv sync --no-dev
 EXPOSE 8000
-CMD ["uv", "run", "--no-sync", "python", "-m", "agent_server.main"]
+WORKDIR /app/server
+CMD ["/opt/venv/bin/python", "-m", "agent_server.main"]

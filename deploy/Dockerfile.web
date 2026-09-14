@@ -1,0 +1,13 @@
+FROM node:22-bookworm-slim
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
+ARG YARN_REGISTRY=
+WORKDIR /app/web-next
+COPY web-next/package.json web-next/.yarnrc.yml ./
+RUN corepack enable \
+ && if [ -n "$YARN_REGISTRY" ]; then yarn config set npmRegistryServer "$YARN_REGISTRY"; fi \
+ && YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install
+COPY web-next ./
+# NEXT_OUTPUT NOT set => next.config output=undefined => server mode (SSR)
+RUN yarn build
+EXPOSE 5174
+CMD ["npx","next","start","-H","0.0.0.0","-p","5174"]

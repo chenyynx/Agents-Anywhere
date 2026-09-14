@@ -10,7 +10,19 @@ services:
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
     ports:
       - "127.0.0.1:55432:5432"
-    volumes:
+      web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+      args:
+        YARN_REGISTRY: https://registry.npmmirror.com
+    environment:
+      AGENTS_ANYWHERE_API: "${MOONVEIL_PUBLIC_API:-http://127.0.0.1:8811}"
+    depends_on:
+      - server
+    ports:
+      - "0.0.0.0:8812:5174"
+volumes:
       - moonveil-pg:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U moonveil -d moonveil"]

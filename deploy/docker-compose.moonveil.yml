@@ -32,7 +32,7 @@ services:
   server:
     build:
       context: ..
-      dockerfile: ../docker/Dockerfile
+      dockerfile: docker/Dockerfile
       target: server
       args:
         PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple

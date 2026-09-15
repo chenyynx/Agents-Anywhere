@@ -4,7 +4,13 @@ const apiTarget = process.env.AGENTS_ANYWHERE_API ?? "http://127.0.0.1:8000";
 const apiNamespace = process.env.AGENTS_ANYWHERE_API_NAMESPACE ?? "/api/v2";
 const proxyClientMaxBodySize = 100 * 1024 * 1024;
 const staticExport = process.env.NEXT_OUTPUT === "export";
-const browserApiTarget = staticExport ? "" : apiTarget;
+// P4 (moonveil fork): the browser must not inherit the server-side loopback
+// target in SSR mode. AGENTS_ANYWHERE_BROWSER_API overrides it; set it to the
+// empty string to get same-origin relative calls (what the official static
+// export gets for free). SSR rewrites keep using AGENTS_ANYWHERE_API.
+const browserApiTarget = staticExport
+  ? ""
+  : (process.env.AGENTS_ANYWHERE_BROWSER_API ?? apiTarget);
 const apiRoutePrefixes = [
   "/admin",
   "/agents",

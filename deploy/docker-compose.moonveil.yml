@@ -64,9 +64,15 @@ services:
       dockerfile: deploy/Dockerfile.web
       args:
         YARN_REGISTRY: https://registry.npmmirror.com
+        # P4: empty => the browser calls same-origin /api/v2; the edge
+        # (moonveil.pipicore.cn) routes /api/v2 -> :8811 and / -> this service.
+        AGENTS_ANYWHERE_BROWSER_API: "${MOONVEIL_BROWSER_API:-}"
     restart: unless-stopped
     environment:
-      AGENTS_ANYWHERE_API: "${MOONVEIL_PUBLIC_API:-http://127.0.0.1:8811}"
+      # SSR-side target = in-network service name. The previous default
+      # (127.0.0.1:8811) is a host-published port and does NOT exist inside this
+      # container, so every SSR-side rewrite/rewrite-proxy was silently doomed.
+      AGENTS_ANYWHERE_API: "${MOONVEIL_INTERNAL_API:-http://server:8000}"
     depends_on:
       - server
     ports:

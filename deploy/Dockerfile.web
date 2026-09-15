@@ -8,6 +8,11 @@ RUN corepack enable \
  && YARN_ENABLE_IMMUTABLE_INSTALLS=false yarn install
 COPY web-next ./
 # NEXT_OUTPUT NOT set => next.config output=undefined => server mode (SSR)
+# P4: empty default => browser calls same-origin /api/v2 (edge routes it to the
+# API service). Pass --build-arg AGENTS_ANYWHERE_BROWSER_API=https://host to pin
+# an absolute base instead.
+ARG AGENTS_ANYWHERE_BROWSER_API=
+ENV AGENTS_ANYWHERE_BROWSER_API=$AGENTS_ANYWHERE_BROWSER_API
 RUN yarn build
 EXPOSE 5174
 CMD ["npx","next","start","-H","0.0.0.0","-p","5174"]

@@ -1,10 +1,15 @@
 # Moonveil cloud v0 — full AA feature surface, nothing cut:
 #   postgres + redis + server(API, python) + web(Next SSR console).
 # web runs in SSR (NEXT_OUTPUT unset) so dynamic /share/[[...shareId]] works.
+# NOTE registration is NOT an env var: it is a DB instance setting
+#   (instance_settings_facade.is_registration_open; absent row => closed by default),
+#   flipped by the admin UI after first-admin setup. Do not add REGISTRATION_OPEN env.
+# restart: unless-stopped added 2026-09-15 — 162 reboots must not require manual up.
 name: moonveil-cloud
 services:
   postgres:
     image: postgres:17-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: moonveil
       POSTGRES_USER: moonveil
@@ -20,6 +25,7 @@ services:
       retries: 30
   redis:
     image: redis:8-alpine
+    restart: unless-stopped
     command: [redis-server, --save, "", --appendonly, "yes", --appendfsync, everysec, --maxmemory-policy, noeviction]
     ports:
       - "127.0.0.1:56379:6379"
@@ -32,6 +38,7 @@ services:
       retries: 30
   server:
     command: ["/opt/venv/bin/uvicorn", "agent_server.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    restart: unless-stopped
     build:
       context: ..
       dockerfile: deploy/Dockerfile.server
@@ -44,7 +51,6 @@ services:
       AGENT_SERVER_SECRET: "${AGENT_SERVER_SECRET}"
       AGENT_SERVER_HOST: "0.0.0.0"
       AGENT_SERVER_PORT: "8000"
-      REGISTRATION_OPEN: "false"
     depends_on:
       postgres:
         condition: service_healthy
@@ -58,6 +64,7 @@ services:
       dockerfile: deploy/Dockerfile.web
       args:
         YARN_REGISTRY: https://registry.npmmirror.com
+    restart: unless-stopped
     environment:
       AGENTS_ANYWHERE_API: "${MOONVEIL_PUBLIC_API:-http://127.0.0.1:8811}"
     depends_on:

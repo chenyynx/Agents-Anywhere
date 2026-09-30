@@ -1,30 +1,27 @@
 name: Moonveil Cloud Web Image
 
-# Builds the SSR web console image OFF the production/ dev boxes.
-# Why: `next build` needs ~2G+ RAM with no upper bound -> the 2026-09-16
-# incident OOM-killed a 7.7G box, and the 2026-09-30 revival found the HK
-# dev box (206) only has 3.9G / 1.4G free / ~12s per npm registry round trip
-# (811 deps would take ~2.7h in yarn fetch). CI has the headroom and the
-# fast network, so the image is built here and pulled on the host.
+# Builds the SSR web console image OFF the dev box, and ships it back as a
+# plain Actions artifact (tar.gz) rather than a registry image.
+#
+# Why this shape (2026-09-30):
+#  - `next build` OOM-killed a 7.7G box on 2026-09-16, and the HK dev box has
+#    only 3.9G / ~1.4G free, so the build cannot run there.
+#  - GHCR turned out to be a dead end for this host: the package is private and
+#    the registry endpoint 404s for the token we hold, while the GitHub REST
+#    API is fast and reachable. An artifact is fetched over the same API.
+#  - npm registries on this box take ~12s per request, so 811 deps would spend
+#    ~2.7h in `yarn fetch` even with a memory cage. CI has the network headroom.
+#
+# Runtime four-service stack is unchanged — nothing is cut.
 
 on:
   workflow_dispatch:
-    inputs:
-      push:
-        description: Push image to GHCR after building
-        type: boolean
-        default: true
   push:
     branches: [moonveil]
     paths:
       - web-next/**
       - deploy/Dockerfile.web
-      - deploy/docker-compose.moonveil.yml
       - .github/workflows/moonveil-web-image.yml
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/moonveil-cloud-web
 
 jobs:
   build-web:
@@ -32,50 +29,44 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
-      packages: write
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # On a push event `inputs` is empty, so `inputs.push` would be null and
-      # `!= false` would still hold -- but relying on that silently skipped the
-      # login in v1 and dropped the built image. Decide once, explicitly.
-      - name: Resolve push flag
-        id: flags
-        env:
-          PUSH_INPUT: ${{ inputs.push }}
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          if [ "$EVENT_NAME" = "push" ]; then
-            echo "push=true" >> "$GITHUB_OUTPUT"
-          elif [ "$PUSH_INPUT" = "true" ]; then
-            echo "push=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "push=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Log in to GHCR
-        if: steps.flags.outputs.push == 'true'
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build (and push) web image
+      - name: Build web image (load into local daemon)
         uses: docker/build-push-action@v6
         with:
           context: .
           file: deploy/Dockerfile.web
-          push: ${{ steps.flags.outputs.push == 'true' }}
-          load: ${{ steps.flags.outputs.push != 'true' }}
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          load: true
+          tags: moonveil-cloud-web:latest
           build-args: |
             YARN_REGISTRY=https://registry.npmmirror.com
             AGENTS_ANYWHERE_BROWSER_API=
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Export as tar.gz artifact
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          docker save moonveil-cloud-web:latest | gzip -1 > out/moonveil-cloud-web.tar.gz
+          ls -lh out/
+          # The image is ~1GB raw; a single artifact blob is capped, so verify
+          # the size is under the limit rather than failing at upload time.
+          sz=$(stat -c %s out/moonveil-cloud-web.tar.gz)
+          echo "artifact bytes: $sz"
+          if [ "$sz" -gt 2000000000 ]; then
+            echo "artifact too large for a single upload; split needed" >&2
+            exit 1
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: moonveil-cloud-web
+          path: out/moonveil-cloud-web.tar.gz
+          retention-days: 14
+          compression-level: 0

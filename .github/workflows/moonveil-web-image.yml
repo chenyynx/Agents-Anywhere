@@ -1,0 +1,64 @@
+name: Moonveil Cloud Web Image
+
+# Builds the SSR web console image OFF the production/ dev boxes.
+# Why: `next build` needs ~2G+ RAM with no upper bound -> the 2026-09-16
+# incident OOM-killed a 7.7G box, and the 2026-09-30 revival found the HK
+# dev box (206) only has 3.9G / 1.4G free / ~12s per npm registry round trip
+# (811 deps would take ~2.7h in yarn fetch). CI has the headroom and the
+# fast network, so the image is built here and pulled on the host.
+
+on:
+  workflow_dispatch:
+    inputs:
+      push:
+        description: Push image to GHCR after building
+        type: boolean
+        default: true
+  push:
+    branches: [moonveil]
+    paths:
+      - web-next/**
+      - deploy/Dockerfile.web
+      - deploy/docker-compose.moonveil.yml
+      - .github/workflows/moonveil-web-image.yml
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/moonveil-cloud-web
+
+jobs:
+  build-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: ${{ inputs.push != false }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build (and push) web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile.web
+          push: ${{ inputs.push != false }}
+          load: ${{ inputs.push == false }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          build-args: |
+            YARN_REGISTRY=https://registry.npmmirror.com
+            AGENTS_ANYWHERE_BROWSER_API=
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

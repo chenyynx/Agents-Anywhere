@@ -13,7 +13,7 @@ DEFAULT_TIMELINE_COALESCE_WINDOW_SECONDS = 0.1
 
 
 class TimelineItemNotificationCoalescer:
-    """Limit assistant text snapshots while preserving session event ordering."""
+    """Limit streaming text snapshots while preserving session event ordering."""
 
     def __init__(
         self,
@@ -35,7 +35,7 @@ class TimelineItemNotificationCoalescer:
 
         lock = self._locks.setdefault(session_id, asyncio.Lock())
         async with lock:
-            if _is_assistant_message_upsert(method, params):
+            if _is_streaming_text_upsert(method, params):
                 item = params["item"]
                 item_id = item["id"]
                 self._pending.setdefault(session_id, {})[item_id] = params
@@ -103,16 +103,18 @@ def _session_id(params: dict[str, Any]) -> str | None:
     return session_id if isinstance(session_id, str) and session_id else None
 
 
-def _is_assistant_message_upsert(
+def _is_streaming_text_upsert(
     method: str,
     params: dict[str, Any],
 ) -> bool:
     if method != TIMELINE_ITEM_UPSERT:
         return False
     item = params.get("item")
-    return bool(
-        isinstance(item, dict)
-        and isinstance(item.get("id"), str)
-        and item.get("type") == "message"
-        and item.get("role") == "assistant"
-    )
+    if not (isinstance(item, dict) and isinstance(item.get("id"), str)):
+        return False
+    if item.get("type") == "message" and item.get("role") == "assistant":
+        return True
+    if item.get("type") == "system":
+        content = item.get("content")
+        return isinstance(content, dict) and content.get("kind") == "reasoning"
+    return False

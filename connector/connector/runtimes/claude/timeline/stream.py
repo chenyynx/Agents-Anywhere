@@ -18,6 +18,8 @@ class ClaudeStreamAccumulator:
     partial_message_id: str | None = None
     partial_text_blocks: dict[int, str] = field(default_factory=dict)
     partial_revision: int = 0
+    partial_thinking_blocks: dict[int, str] = field(default_factory=dict)
+    partial_thinking_revision: int = 0
 
     def item_from_stream_event(
         self,
@@ -34,6 +36,8 @@ class ClaudeStreamAccumulator:
         if event_type == "message_start":
             self.partial_text_blocks.clear()
             self.partial_revision = 0
+            self.partial_thinking_blocks.clear()
+            self.partial_thinking_revision = 0
             payload = event.get("message")
             self.partial_message_id = (
                 _string(payload.get("id")) if isinstance(payload, Mapping) else None
@@ -50,6 +54,18 @@ class ClaudeStreamAccumulator:
         if event_type == "content_block_delta":
             index = _int(event.get("index"))
             delta = event.get("delta")
+            thinking = _thinking_text_from_stream_delta(delta)
+            if index is not None and thinking:
+                self.partial_thinking_blocks[index] = (
+                    f"{self.partial_thinking_blocks.get(index, '')}{thinking}"
+                )
+                return self._thinking_partial_item(
+                    session,
+                    turn_id,
+                    projector,
+                    index=index,
+                    status="running",
+                )
             text = _text_from_stream_block(delta)
             if index is not None and text:
                 self.partial_text_blocks[index] = (
@@ -57,6 +73,21 @@ class ClaudeStreamAccumulator:
                 )
                 return self._partial_item(session, turn_id, message, projector)
             return None
+        if event_type == "content_block_stop":
+            index = _int(event.get("index"))
+            if index is None:
+                return None
+            thinking = self.partial_thinking_blocks.pop(index, None)
+            if not thinking:
+                return None
+            return self._thinking_partial_item(
+                session,
+                turn_id,
+                projector,
+                index=index,
+                status="done",
+                text=thinking,
+            )
         if event_type == "message_delta":
             return self._partial_item(session, turn_id, message, projector)
         return None
@@ -65,6 +96,8 @@ class ClaudeStreamAccumulator:
         self.partial_message_id = None
         self.partial_text_blocks.clear()
         self.partial_revision = 0
+        self.partial_thinking_blocks.clear()
+        self.partial_thinking_revision = 0
 
     def final_item_id(
         self,
@@ -116,6 +149,38 @@ class ClaudeStreamAccumulator:
             revision=self.partial_revision,
         )
 
+    def _thinking_partial_item(
+        self,
+        session: ClaudeSession,
+        turn_id: str,
+        projector: ClaudeMessageProjector,
+        *,
+        index: int,
+        status: str,
+        text: str | None = None,
+    ) -> RuntimeTimelineItem | None:
+        message_id = self.partial_message_id
+        if message_id is None:
+            logger.warning(
+                "dropping Claude stream thinking without message_start id turn_id={}",
+                turn_id,
+            )
+            return None
+        if text is None:
+            text = self.partial_thinking_blocks.get(index, "")
+        if not text:
+            return None
+        self.partial_thinking_revision += 1
+        return projector.reasoning_item(
+            session=session,
+            turn_id=turn_id,
+            native_message_id=message_id,
+            block_index=index,
+            text=text,
+            status=status,
+            revision=self.partial_thinking_revision,
+        )
+
 
 def _stream_event(message: Any) -> Mapping[str, Any] | None:
     if not is_stream_event(message):
@@ -137,6 +202,14 @@ def _text_from_stream_block(value: Any) -> str | None:
     if block_type == "input_json_delta":
         return None
     return _string(value.get("text"))
+
+
+def _thinking_text_from_stream_delta(value: Any) -> str | None:
+    if not isinstance(value, Mapping):
+        return None
+    if _string(value.get("type")) not in {"thinking_delta", "thinking"}:
+        return None
+    return _string(value.get("thinking"))
 
 
 def _extract(value: Any, *names: str) -> Any:

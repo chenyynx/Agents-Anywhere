@@ -22,9 +22,11 @@ history or send hidden model requests to enumerate tasks.
 ## Replies, approvals and stopping
 
 - Scheduled replies get their own AA turn without an empty user message.
-- On retained connections, user prompts carry a UUID and `priority: later`.
-  Their native replay identifies the matching response even when a scheduled
-  reply starts just before the user submission. Each response has its own queue.
+- User prompts carry a UUID and `priority: later`. Their native replay
+  identifies the matching response even when a scheduled reply starts just
+  before the user submission, and the pre-assigned UUID lets the Connector
+  publish the sent user item with its final identity before the first
+  response byte. Each response has its own queue.
 - Approvals belong to the active execution. A user execution waiting behind a
   scheduled reply remains pending until its own response finishes.
 - Stopping a session handles both executions in a collision. A queued native

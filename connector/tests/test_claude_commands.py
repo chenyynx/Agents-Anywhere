@@ -27,6 +27,7 @@ from connector.runtime_protocol import (
 from connector.runtimes.claude.domain.session import ClaudeExecution, ClaudeSession
 from connector.runtimes.claude.runtime import ClaudeRuntime
 from connector.runtimes.claude.timeline.markers import (
+    ClaudeTimelineMarkers,
     claude_compact_event,
     is_claude_init_message,
     is_compaction_control_message,
@@ -650,6 +651,171 @@ def test_claude_compact_marker_id_is_scoped_to_the_native_session() -> None:
     cold = ClaudeSession(session_id="sess_cold", external_session_id=None)
     assert stable_compact_item_id(cold, "turn_1").startswith("claude_compact_")
     assert stable_compact_item_id(cold, "turn_1") != base
+
+
+def test_claude_compaction_frames_from_another_turn_flip_the_dispatched_marker() -> None:
+    """The frames belong to whoever reads them, not to whoever dispatched.
+
+    The CLI streams `status:"compacting"`, `compact_result` and the boundary
+    *after* the command turn's own result message, so the turn that reports
+    them is a different one, with a turn id of its own. Markers keyed by turn
+    left the dispatched separator running until its turn was settled as a
+    failure, next to a second separator that had completed — one compaction,
+    two lines, one of them a lie. The session owns the separator instead.
+    """
+
+    markers = _marker_tracker()
+    session = _marker_session()
+    command_turn = "turn_claude_command"
+    reader_turn = "turn_claude_scheduled_reader"
+
+    (dispatched,) = markers.open_command_marker(session=session, turn_id=command_turn)
+
+    events = [
+        event
+        for event in (claude_compact_event(m) for m in _compaction_messages())
+        if event is not None
+    ]
+    assert len(events) == 3, "the real wire sends exactly these three frames"
+    items = [
+        markers.item_for_event(session=session, turn_id=reader_turn, event=event)
+        for event in events
+    ]
+
+    # The reader turn ends first and settles a marker it never opened: that is
+    # the path that used to fail a separator whose success was already in.
+    assert markers.settle_turn(session=session, turn_id=reader_turn) == ()
+    # The dispatching turn ends afterwards, and by now it has proof.
+    assert markers.settle_turn(session=session, turn_id=command_turn) == ()
+
+    assert [item.id for item in items] == [dispatched.id] * 3
+    assert [item.content["state"] for item in items] == [
+        "started",
+        "completed",
+        "completed",
+    ]
+    assert [item.status for item in items] == ["running", "done", "done"]
+    # The separator stays the one the user's command opened.
+    assert dispatched.turn_id == command_turn
+    assert {item.turn_id for item in items} == {command_turn}
+    # The boundary's token metadata lands on the separator the reader completed.
+    assert items[1].content["compactResult"] == "success"
+    assert items[2].content["trigger"] == "manual"
+    assert items[2].content["preTokens"] == 18_000
+    assert items[2].content["postTokens"] == 900
+    assert items[2].content["cumulativeDroppedTokens"] == 17_100
+    assert items[2].content["durationMs"] == 12_000
+
+
+def test_claude_trailing_evidence_corrects_a_separator_failed_for_want_of_it() -> None:
+    """A settle that beat the CLI's verdict is undone by that verdict.
+
+    Whichever turn ends first, the frames carry the evidence the separator was
+    failed for. Correcting it in place is what keeps the one-outcome promise
+    when the dispatching turn is settled before the CLI has answered.
+    """
+
+    markers = _marker_tracker()
+    session = _marker_session()
+    command_turn = "turn_claude_command"
+
+    (opened,) = markers.open_command_marker(session=session, turn_id=command_turn)
+    (settled,) = markers.settle_turn(session=session, turn_id=command_turn)
+    assert settled.content["state"] == "failed"
+
+    corrected = markers.item_for_event(
+        session=session,
+        turn_id="turn_claude_scheduled_reader",
+        event=claude_compact_event(_boundary(uuid="sys_boundary")),
+    )
+
+    assert corrected.id == opened.id
+    assert corrected.content["state"] == "completed"
+    assert corrected.status == "done"
+    assert corrected.content["preTokens"] == 18_000
+    # The correction is spent: the next compaction opens the next separator
+    # rather than re-running this one.
+    again = markers.item_for_event(
+        session=session,
+        turn_id="turn_claude_scheduled_reader",
+        event=claude_compact_event(
+            _system(subtype="status", status="compacting", uuid="sys_again")
+        ),
+    )
+    assert again.id != opened.id
+    assert again.content["state"] == "started"
+
+
+def test_claude_a_reported_failure_is_not_corrected_by_later_evidence() -> None:
+    """The correction buys back a missing verdict, never overrides a real one."""
+
+    markers = _marker_tracker()
+    session = _marker_session()
+    command_turn = "turn_claude_command"
+
+    (opened,) = markers.open_command_marker(session=session, turn_id=command_turn)
+    reported = markers.item_for_event(
+        session=session,
+        turn_id=command_turn,
+        event=claude_compact_event(
+            _system(subtype="status", status=None, compact_result="error", uuid="sys_err")
+        ),
+    )
+    boundary = markers.item_for_event(
+        session=session,
+        turn_id="turn_claude_scheduled_reader",
+        event=claude_compact_event(_boundary(uuid="sys_boundary")),
+    )
+
+    assert reported.content["state"] == "failed"
+    assert boundary.id == opened.id
+    assert boundary.content["state"] == "failed"
+    # The boundary still contributes what it observed.
+    assert boundary.content["preTokens"] == 18_000
+    assert markers.settle_turn(session=session, turn_id=command_turn) == ()
+
+
+def test_claude_opening_a_separator_settles_the_one_left_running() -> None:
+    """A new command never queues behind a separator nobody is finishing."""
+
+    markers = _marker_tracker()
+    session = _marker_session()
+
+    (stale,) = markers.open_command_marker(session=session, turn_id="turn_claude_gone")
+    stale_item, opened = markers.open_command_marker(
+        session=session,
+        turn_id="turn_claude_next",
+    )
+
+    assert stale_item.id == stale.id
+    assert stale_item.content["state"] == "failed"
+    assert stale_item.status == "failed"
+    assert opened.id != stale.id
+    assert opened.content["state"] == "started"
+    assert opened.status == "running"
+    # Reopening from the turn that already owns a running separator republishes
+    # it instead of failing and re-opening its own line.
+    (again,) = markers.open_command_marker(session=session, turn_id="turn_claude_next")
+    assert again.id == opened.id
+    assert again.content["state"] == "started"
+
+
+def _marker_session() -> ClaudeSession:
+    return ClaudeSession(
+        session_id="sess_marker_owner",
+        external_session_id=COMPACT_SESSION,
+    )
+
+
+def _marker_tracker() -> ClaudeTimelineMarkers:
+    """A marker tracker over the projector's ordering contract."""
+
+    allocated: dict[str, int] = {}
+
+    def order_seq_for(item_id: str) -> int:
+        return allocated.setdefault(item_id, len(allocated) + 1)
+
+    return ClaudeTimelineMarkers(order_allocator=order_seq_for)
 
 
 def test_claude_automatic_compaction_marks_an_ordinary_turn() -> None:

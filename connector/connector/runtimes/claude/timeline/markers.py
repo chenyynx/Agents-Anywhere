@@ -1,11 +1,19 @@
 """Project Claude's compaction events as one tri-state timeline marker.
 
 Claude reports compaction through system messages rather than through a native
-item, so the marker identity is derived from the AA turn that observed it. One
-compaction keeps the running, completed and failed states on a single item id
-and lets the client flip the separator in place instead of stacking duplicates;
-a turn that compacts twice opens a second generation rather than reopening the
-closed one.
+item. One compaction keeps the running, completed and failed states on a single
+item id and lets the client flip the separator in place instead of stacking
+duplicates; a later compaction opens the next generation rather than reopening
+the closed one.
+
+Ownership belongs to the session, not to the turn that dispatched the command.
+The CLI streams `status:"compacting"`, `compact_result` and `compact_boundary`
+*after* the command turn's own result message, by which time that turn's message
+loop has ended and a scheduled reader turn holds the stream — with a turn id of
+its own. Keying markers by turn therefore stranded the dispatched separator and
+let the reader mint a second one. The session now holds at most one open marker:
+every turn that reads a compaction frame reports it against that marker, and
+only the turn that opened it may settle it.
 
 The SDK hands the turn loop whole message objects whose compaction fields sit in
 `.data`, so every read here looks at both levels — see `_attr`.
@@ -83,10 +91,14 @@ class _ActiveMarker:
     state: ClaudeCompactState
     native_message_id: str | None
     metadata: dict[str, Any]
+    # Whether this separator was failed for want of evidence when its own turn
+    # ended, as opposed to a verdict the CLI reported. Only the former may be
+    # corrected by trailing evidence — see `item_for_event`.
+    settled_by_turn_end: bool = False
 
 
 class ClaudeTimelineMarkers:
-    """Track the compaction markers each in-flight turn owns.
+    """Track the one compaction marker each session has open.
 
     `order_allocator` is the timeline projector's own counter. Sharing it keeps
     every item's `order_seq` unique: a separator can no longer land on a slot a
@@ -95,33 +107,65 @@ class ClaudeTimelineMarkers:
 
     def __init__(self, order_allocator: Callable[[str], int]) -> None:
         self._order_seq_for = order_allocator
-        self._markers: dict[tuple[str, str], _ActiveMarker] = {}
-        self._generations: dict[tuple[str, str], int] = {}
+        self._markers: dict[str, _ActiveMarker] = {}
+        # The last generation each session spent, so the next separator never
+        # reuses the id of one that is already closed.
+        self._generations: dict[str, int] = {}
 
     def open_command_marker(
         self,
         *,
         session: ClaudeSession,
         turn_id: str,
-    ) -> RuntimeTimelineItem:
+    ) -> tuple[RuntimeTimelineItem, ...]:
         """Open the running marker a command turn owes before dispatch.
 
         The user asked for this compaction, so the separator must exist before
-        the prompt leaves; the CLI's own events then advance or settle it.
+        the prompt leaves; whichever turn reads the CLI's events then advances
+        or settles it.
+
+        A separator this turn already opened is republished as it stands. One an
+        interrupted predecessor left running is settled first: it is the only
+        way a session holds two open markers, and the line the user is waiting
+        for must not queue behind a dead one.
         """
 
-        key = (session.session_id, turn_id)
-        marker = self._markers.get(key)
-        if marker is None:
-            marker = self._open_marker(
+        existing = self._markers.get(session.session_id)
+        if existing is not None and existing.state == "started":
+            if existing.turn_id == turn_id:
+                return (
+                    self._item(
+                        session=session,
+                        marker=existing,
+                        event=_COMPACT_DISPATCHED_EVENT,
+                    ),
+                )
+            self._fail(existing)
+            stale = self._item(
                 session=session,
-                turn_id=turn_id,
-                state="started",
+                marker=existing,
+                event=_COMPACT_SETTLED_EVENT,
             )
-        return self._item(
-            session=session,
-            marker=marker,
-            event=_COMPACT_DISPATCHED_EVENT,
+            opened = self._item(
+                session=session,
+                marker=self._open_marker(
+                    session=session,
+                    turn_id=turn_id,
+                    state="started",
+                ),
+                event=_COMPACT_DISPATCHED_EVENT,
+            )
+            return (stale, opened)
+        return (
+            self._item(
+                session=session,
+                marker=self._open_marker(
+                    session=session,
+                    turn_id=turn_id,
+                    state="started",
+                ),
+                event=_COMPACT_DISPATCHED_EVENT,
+            ),
         )
 
     def item_for_event(
@@ -131,14 +175,18 @@ class ClaudeTimelineMarkers:
         turn_id: str,
         event: ClaudeCompactEvent,
     ) -> RuntimeTimelineItem:
-        """Upsert the turn's current marker for one compaction observation."""
+        """Upsert the session's current marker for one compaction observation.
 
-        key = (session.session_id, turn_id)
-        marker = self._markers.get(key)
+        The turn that reads the frame is recorded but does not decide: the CLI
+        streams its verdict after the dispatching turn has ended, so the frames
+        usually belong to a turn that never opened anything.
+        """
+
+        marker = self._markers.get(session.session_id)
         if marker is None or (marker.state != "started" and event.state == "started"):
             # A compaction that already reported an outcome owns its separator.
-            # Another start inside the same turn is the CLI compacting again, so
-            # it opens the next generation instead of reopening a closed one.
+            # Another start is the CLI compacting again, so the session opens the
+            # next generation instead of reopening the closed one.
             marker = self._open_marker(
                 session=session,
                 turn_id=turn_id,
@@ -149,11 +197,19 @@ class ClaudeTimelineMarkers:
         else:
             marker.native_message_id = event.native_message_id or marker.native_message_id
             marker.metadata.update(event.metadata)
-            # A settled marker only absorbs later evidence. The boundary that
-            # follows `compact_result` therefore adds its metadata without
-            # reopening a finished compaction, and a failure is final.
             if marker.state == "started":
                 marker.state = event.state
+                marker.settled_by_turn_end = False
+            elif marker.settled_by_turn_end and event.state == "completed":
+                # The verdict arrived after the turn that dispatched it ended, so
+                # this separator was failed for exactly the evidence now in hand.
+                # Its own trailing evidence in this session corrects it; a failure
+                # the CLI reported itself stays final.
+                marker.state = "completed"
+                marker.settled_by_turn_end = False
+            # Anything else only adds evidence: a settled separator never slides
+            # back to running, so the boundary after `compact_result` merges its
+            # metadata into the finished compaction.
         return self._item(session=session, marker=marker, event=event.event)
 
     def settle_turn(
@@ -162,20 +218,24 @@ class ClaudeTimelineMarkers:
         session: ClaudeSession,
         turn_id: str,
     ) -> tuple[RuntimeTimelineItem, ...]:
-        """Close a turn's current marker that never produced compaction evidence.
+        """Close a compaction marker its own turn never proved complete.
 
         A turn can end without the CLI reporting a result — a native error or
         an interrupt never emits one — and a command turn that resolved without
         compacting is not a success either. Both settle as unsuccessful so the
         client never leaves a running separator behind.
+
+        Only the turn that opened the separator may settle it. A turn that merely
+        read the CLI's compaction frames is reporting on someone else's marker,
+        and ending it must not invent a failure the user never had. The settled
+        marker stays registered so the evidence that arrives late can still
+        correct it.
         """
 
-        key = (session.session_id, turn_id)
-        marker = self._markers.pop(key, None)
-        self._generations.pop(key, None)
-        if marker is None or marker.state != "started":
+        marker = self._markers.get(session.session_id)
+        if marker is None or marker.turn_id != turn_id or marker.state != "started":
             return ()
-        marker.state = "failed"
+        self._fail(marker)
         return (
             self._item(
                 session=session,
@@ -193,11 +253,9 @@ class ClaudeTimelineMarkers:
         native_message_id: str | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> _ActiveMarker:
-        key = (session.session_id, turn_id)
-        generation = self._generations.get(key, 0)
-        if key in self._markers:
-            generation += 1
-        self._generations[key] = generation
+        generation = self._generations.get(session.session_id)
+        generation = 0 if generation is None else generation + 1
+        self._generations[session.session_id] = generation
         marker = _ActiveMarker(
             item_id=stable_compact_item_id(session, turn_id, generation),
             turn_id=turn_id,
@@ -206,8 +264,13 @@ class ClaudeTimelineMarkers:
             native_message_id=native_message_id,
             metadata=dict(metadata or {}),
         )
-        self._markers[key] = marker
+        self._markers[session.session_id] = marker
         return marker
+
+    @staticmethod
+    def _fail(marker: _ActiveMarker) -> None:
+        marker.state = "failed"
+        marker.settled_by_turn_end = True
 
     def _item(
         self,
@@ -306,12 +369,13 @@ def stable_compact_item_id(
     turn_id: str,
     generation: int = 0,
 ) -> str:
-    """Name one compaction separator inside its session and turn.
+    """Name one compaction separator inside its session and opening turn.
 
-    `generation` only enters the hash from the second compaction on, so the
-    first separator of every turn keeps the id clients already stored. The scope
-    stays the native session id, so the same turn id in another session can
-    never resolve to the same row.
+    `turn_id` is the turn that opened the separator, whoever ends up reporting
+    the CLI's frames for it. `generation` only enters the hash from the second
+    compaction on, so the first separator of every turn keeps the id clients
+    already stored. The scope stays the native session id, so the same turn id
+    in another session can never resolve to the same row.
     """
 
     scope = session.external_session_id or session.session_id

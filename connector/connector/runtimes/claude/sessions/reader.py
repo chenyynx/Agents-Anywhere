@@ -280,10 +280,14 @@ class ClaudeSessionReader:
             ),
         )
         visible_messages = _without_maintenance_messages(messages)
+        # The whole chain is in scope here, same as a first sync or a rebase, so
+        # pending sends match against the latest occurrences instead of
+        # claiming uuids that older published turns already own.
         client_message_matches = await _match_history_client_messages(
             session=session,
             messages=visible_messages,
             pending_messages=self.pending_messages,
+            prefer_latest=True,
         )
         items = await asyncer.asyncify(_history_items_from_messages)(
             session,

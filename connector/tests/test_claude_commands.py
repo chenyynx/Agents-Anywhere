@@ -1,3 +1,13 @@
+"""Claude /compact behaviour, driven with the message shapes the CLI sends.
+
+The compaction fixtures here are parsed through the SDK's own `parse_message`,
+not hand-built namespaces. The SDK wraps every non-task system message in
+`SystemMessage(subtype=..., data=<the whole raw frame>)`, so `status`,
+`compact_result` and `compactMetadata` are only reachable through `.data`.
+A fixture that puts them at the top level proves nothing: it describes a
+message shape the CLI never produces.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -5,6 +15,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from claude_agent_sdk._internal.message_parser import parse_message
 
 from connector.runtime_protocol import (
     RuntimeAttachmentContent,
@@ -13,13 +24,22 @@ from connector.runtime_protocol import (
     RuntimeStatus,
     RuntimeTimelineItem,
 )
-from connector.runtimes.claude.domain.session import ClaudeExecution
+from connector.runtimes.claude.domain.session import ClaudeExecution, ClaudeSession
 from connector.runtimes.claude.runtime import ClaudeRuntime
+from connector.runtimes.claude.timeline.markers import (
+    claude_compact_event,
+    is_claude_init_message,
+    is_compaction_control_message,
+    is_local_command_echo,
+    stable_compact_item_id,
+)
 from connector.runtimes.claude.timeline.messages import (
     CLAUDE_COMPACT_SUMMARY_PREFIX,
+    is_compact_summary_text,
 )
 
 COMPACT_SESSION = "claude_compact_session"
+MODEL = "claude-opus-5"
 
 
 def test_claude_execute_command_accepts_compact() -> None:
@@ -66,7 +86,7 @@ async def _test_claude_command_turn_publishes_no_user_bubble() -> None:
     await task
 
     assert [item.role for item in host.timeline_item_upserts if item.role == "user"] == []
-    assert [item.type for item in host.timeline_item_upserts] == ["marker"] * 3
+    assert {item.type for item in host.timeline_item_upserts} == {"marker"}
     recorded = runtime._sessions["sess_bubble"].timeline_items
     assert [item_id.startswith("claude_compact_") for item_id in recorded] == [True]
 
@@ -88,29 +108,118 @@ async def _test_claude_command_turn_flips_one_marker_through_its_states() -> Non
     markers = host.timeline_item_upserts
     assert len({item.id for item in markers}) == 1
     assert markers[0].id.startswith("claude_compact_")
+    # The command turn opens the separator before dispatch, then the CLI's own
+    # `status` frame repeats it. Both land on the same item id.
     assert [item.content["state"] for item in markers] == [
+        "started",
         "started",
         "completed",
         "completed",
     ]
-    assert [item.status for item in markers] == ["running", "done", "done"]
-    assert [item.content["kind"] for item in markers] == ["compact"] * 3
+    assert [item.status for item in markers] == ["running", "running", "done", "done"]
+    assert [item.content["kind"] for item in markers] == ["compact"] * 4
     assert [item.content["label"] for item in markers] == [
+        "正在压缩上下文",
         "正在压缩上下文",
         "对话已压缩",
         "对话已压缩",
     ]
     # The boundary repeats the completed state; its metadata is what settles.
-    assert "preTokens" not in markers[1].content
-    assert markers[2].content["trigger"] == "manual"
-    assert markers[2].content["preTokens"] == 18_000
-    assert markers[2].content["postTokens"] == 900
-    assert markers[2].content["cumulativeDroppedTokens"] == 17_100
-    assert markers[2].content["durationMs"] == 12_000
-    assert markers[0].content_hash != markers[1].content_hash
+    assert "preTokens" not in markers[2].content
+    assert markers[2].content["compactResult"] == "success"
+    assert markers[3].content["trigger"] == "manual"
+    assert markers[3].content["preTokens"] == 18_000
+    assert markers[3].content["postTokens"] == 900
+    assert markers[3].content["cumulativeDroppedTokens"] == 17_100
+    assert markers[3].content["durationMs"] == 12_000
+    assert markers[0].content_hash == markers[1].content_hash, (
+        "the CLI's start frame repeats the dispatched marker without adding state"
+    )
+    assert markers[0].content_hash != markers[2].content_hash
     assert markers[0].turn_id == markers[1].turn_id
     assert markers[0].source["runtime"] == "claude"
     assert markers[0].source["sessionId"] == COMPACT_SESSION
+
+
+def test_claude_command_turn_reads_the_real_sdk_compaction_fields() -> None:
+    """The tri-state marker must survive the SDK's `.data` nesting.
+
+    Every compaction field the CLI sends lives inside `SystemMessage.data`;
+    reading only top-level attributes silently drops the start, the result and
+    the boundary's token metadata, so the marker degenerates to one state.
+    """
+
+    started = parse_message(
+        {"type": "system", "subtype": "status", "status": "compacting", "uuid": "u1"}
+    )
+    result = parse_message(
+        {
+            "type": "system",
+            "subtype": "status",
+            "status": None,
+            "compact_result": "success",
+            "uuid": "u2",
+        }
+    )
+    boundary = parse_message(
+        {
+            "type": "system",
+            "subtype": "compact_boundary",
+            "content": "Conversation compacted",
+            "uuid": "db0784f0-8567-4625-bb8c-4020043ee630",
+            "compactMetadata": {
+                "trigger": "manual",
+                "preTokens": 35134,
+                "postTokens": 1865,
+                "cumulativeDroppedTokens": 33269,
+                "durationMs": 13997,
+                "preservedSegment": {"headUuid": "h", "anchorUuid": "a", "tailUuid": "t"},
+            },
+        }
+    )
+    # The premise: the payload is nested, never promoted to an attribute.
+    for message in (started, result, boundary):
+        assert not hasattr(message, "status")
+        assert not hasattr(message, "compact_result")
+        assert not hasattr(message, "compactMetadata")
+
+    start_event = claude_compact_event(started)
+    result_event = claude_compact_event(result)
+    boundary_event = claude_compact_event(boundary)
+
+    assert start_event is not None
+    assert start_event.state == "started"
+    assert start_event.native_message_id == "u1"
+    assert result_event is not None
+    assert result_event.state == "completed"
+    assert dict(result_event.metadata) == {"compactResult": "success"}
+    assert boundary_event is not None
+    assert boundary_event.state == "completed"
+    assert boundary_event.native_message_id == "db0784f0-8567-4625-bb8c-4020043ee630"
+    assert dict(boundary_event.metadata)["preTokens"] == 35134
+    assert dict(boundary_event.metadata)["cumulativeDroppedTokens"] == 33269
+
+
+def test_claude_command_turn_settles_failed_without_any_cli_evidence() -> None:
+    """A compaction the CLI never reports must still leave a verdict."""
+
+    asyncio.run(_test_claude_command_turn_settles_failed_without_any_cli_evidence())
+
+
+async def _test_claude_command_turn_settles_failed_without_any_cli_evidence() -> None:
+    host = _RecordingHost()
+    runtime = _runtime(host=host, client=_FakeClaudeClient([_result()]))
+
+    result = await runtime.execute_command("sess_silent", "compact", COMPACT_SESSION)
+    task = runtime._sessions["sess_silent"].active_task
+    assert result.ok is True
+    assert task is not None
+    await task
+
+    markers = host.timeline_item_upserts
+    assert [item.content["state"] for item in markers] == ["started", "failed"]
+    assert [item.status for item in markers] == ["running", "failed"]
+    assert len({item.id for item in markers}) == 1
 
 
 def test_claude_command_turn_suppresses_cli_control_messages() -> None:
@@ -135,9 +244,113 @@ async def _test_claude_command_turn_suppresses_cli_control_messages() -> None:
         if isinstance(item.content.get("text"), str)
     ]
     assert texts == []
-    assert [
-        item.content["kind"] for item in host.timeline_item_upserts
-    ] == ["compact"] * 3
+    assert {item.content["kind"] for item in host.timeline_item_upserts} == {"compact"}
+
+
+def test_claude_suppression_owns_a_system_handshake_that_could_be_shown() -> None:
+    """The suppression predicate, not the generic role/text gate, owns this.
+
+    Every other CLI control frame is also invisible because it is a user
+    message or has no text. An `init` handshake that carries text would be
+    published as an ordinary system message without suppression, so it is the
+    one shape that separates the two.
+    """
+
+    asyncio.run(_test_claude_suppression_owns_a_system_handshake_that_could_be_shown())
+
+
+async def _test_claude_suppression_owns_a_system_handshake_that_could_be_shown() -> (
+    None
+):
+    host = _RecordingHost()
+    runtime = _runtime(
+        host=host,
+        client=_FakeClaudeClient(
+            [
+                # The raw CLI control frame, before the SDK wraps it in
+                # `.data`: a system-role message with text, which the turn loop
+                # would otherwise project.
+                _INIT_HANDSHAKE_WITH_TEXT,
+                _result(),
+            ]
+        ),
+    )
+
+    result = await runtime.execute_command(
+        "sess_init_text",
+        "compact",
+        COMPACT_SESSION,
+    )
+    task = runtime._sessions["sess_init_text"].active_task
+    assert result.ok is True
+    assert task is not None
+    await task
+
+    assert is_claude_init_message(_INIT_HANDSHAKE_WITH_TEXT)
+    assert is_compaction_control_message(_INIT_HANDSHAKE_WITH_TEXT)
+    assert host.timeline_item_upserts
+    assert all(item.content["kind"] == "compact" for item in host.timeline_item_upserts)
+    assert not any("session initialized" in str(item.content) for item in host.timeline_item_upserts)
+
+
+def test_claude_cli_chrome_predicates_match_the_real_parsed_frames() -> None:
+    """`is_local_command_echo` is the only guard the stdout frame has."""
+
+    stdout = parse_message(
+        {
+            "type": "user",
+            "uuid": "stdout-uuid",
+            "session_id": COMPACT_SESSION,
+            "message": {
+                "role": "user",
+                "content": "<local-command-stdout>Compacted </local-command-stdout>",
+            },
+        }
+    )
+    stderr = parse_message(
+        {
+            "type": "user",
+            "uuid": "stderr-uuid",
+            "session_id": COMPACT_SESSION,
+            "message": {
+                "role": "user",
+                "content": "<local-command-stderr>compact failed</local-command-stderr>",
+            },
+        }
+    )
+    real_user_prompt = parse_message(
+        {
+            "type": "user",
+            "uuid": "prompt-uuid",
+            "session_id": COMPACT_SESSION,
+            "message": {"role": "user", "content": "please compact this"},
+        }
+    )
+
+    assert is_local_command_echo(stdout)
+    assert is_local_command_echo(stderr)
+    assert is_compaction_control_message(stdout)
+    assert not is_local_command_echo(real_user_prompt)
+    assert not is_compaction_control_message(real_user_prompt)
+    assert is_claude_init_message(parse_message({"type": "system", "subtype": "init"}))
+
+
+def test_claude_compact_summary_guard_matches_the_captured_summary() -> None:
+    """The guard must cover the CLI's real two-sentence opening."""
+
+    captured = (
+        "This session is being continued from a previous conversation that ran "
+        "out of context. The summary below covers the earlier portion of the "
+        "conversation.\n\nSummary:\n1. Primary Request and Intent: ..."
+    )
+    assert is_compact_summary_text(captured)
+    assert CLAUDE_COMPACT_SUMMARY_PREFIX in captured
+    # A user quoting the first sentence alone is no longer mistaken for the
+    # CLI's own bookkeeping.
+    assert not is_compact_summary_text(
+        "This session is being continued from a previous conversation that ran "
+        "out of context. Please keep going."
+    )
 
 
 def test_claude_command_turn_without_success_evidence_settles_failed() -> None:
@@ -148,13 +361,8 @@ async def _test_claude_command_turn_without_success_evidence_settles_failed() ->
     host = _RecordingHost()
     client = _FakeClaudeClient(
         [
-            _system_message(subtype="status", status="compacting", uuid="sys_start"),
-            SimpleNamespace(
-                type="result",
-                session_id=COMPACT_SESSION,
-                is_error=True,
-                errors=["compaction blew up"],
-            ),
+            _system(subtype="status", status="compacting", uuid="sys_start"),
+            _result(is_error=True, errors=["compaction blew up"]),
         ]
     )
     runtime = _runtime(host=host, client=client)
@@ -166,8 +374,12 @@ async def _test_claude_command_turn_without_success_evidence_settles_failed() ->
     await task
 
     markers = host.timeline_item_upserts
-    assert [item.content["state"] for item in markers] == ["started", "failed"]
-    assert [item.status for item in markers] == ["running", "failed"]
+    assert [item.content["state"] for item in markers] == [
+        "started",
+        "started",
+        "failed",
+    ]
+    assert [item.status for item in markers] == ["running", "running", "failed"]
     assert len({item.id for item in markers}) == 1
     assert host.session_turn_ends[-1]["outcome"] == "failed"
 
@@ -178,7 +390,7 @@ def test_claude_interrupted_command_turn_settles_failed() -> None:
 
 async def _test_claude_interrupted_command_turn_settles_failed() -> None:
     host = _RecordingHost()
-    client = _GatedClaudeClient([_system_message(subtype="status", status="compacting")])
+    client = _GatedClaudeClient([_system(subtype="status", status="compacting")])
     runtime = _runtime(host=host, client=client)
 
     result = await runtime.execute_command("sess_interrupt", "compact", COMPACT_SESSION)
@@ -191,7 +403,11 @@ async def _test_claude_interrupted_command_turn_settles_failed() -> None:
     await task
 
     markers = host.timeline_item_upserts
-    assert [item.content["state"] for item in markers] == ["started", "failed"]
+    assert [item.content["state"] for item in markers] == [
+        "started",
+        "started",
+        "failed",
+    ]
     assert len({item.id for item in markers}) == 1
     assert host.session_turn_ends[-1]["outcome"] == "interrupted"
 
@@ -204,14 +420,9 @@ async def _test_claude_unsuccessful_compact_result_fails_the_marker() -> None:
     host = _RecordingHost()
     client = _FakeClaudeClient(
         [
-            _system_message(subtype="status", status="compacting", uuid="sys_start"),
-            _system_message(
-                subtype="status",
-                status=None,
-                compact_result="error",
-                uuid="sys_error",
-            ),
-            SimpleNamespace(type="result", session_id=COMPACT_SESSION, is_error=False),
+            _system(subtype="status", status="compacting", uuid="sys_start"),
+            _system(subtype="status", status=None, compact_result="error", uuid="sys_error"),
+            _result(),
         ]
     )
     runtime = _runtime(host=host, client=client)
@@ -223,8 +434,49 @@ async def _test_claude_unsuccessful_compact_result_fails_the_marker() -> None:
     await task
 
     markers = host.timeline_item_upserts
-    assert [item.content["state"] for item in markers] == ["started", "failed"]
-    assert markers[1].content["compactResult"] == "error"
+    assert [item.content["state"] for item in markers] == [
+        "started",
+        "started",
+        "failed",
+    ]
+    assert markers[2].content["compactResult"] == "error"
+
+
+def test_claude_failed_compaction_is_a_final_state() -> None:
+    """A boundary after a failure may add metadata but never clear the failure."""
+
+    asyncio.run(_test_claude_failed_compaction_is_a_final_state())
+
+
+async def _test_claude_failed_compaction_is_a_final_state() -> None:
+    host = _RecordingHost()
+    client = _FakeClaudeClient(
+        [
+            _system(subtype="status", status="compacting", uuid="sys_start"),
+            _system(subtype="status", status=None, compact_result="error", uuid="sys_error"),
+            _boundary(uuid="sys_boundary"),
+            _result(),
+        ]
+    )
+    runtime = _runtime(host=host, client=client)
+
+    result = await runtime.execute_command("sess_final", "compact", COMPACT_SESSION)
+    task = runtime._sessions["sess_final"].active_task
+    assert result.ok is True
+    assert task is not None
+    await task
+
+    markers = host.timeline_item_upserts
+    assert [item.content["state"] for item in markers] == [
+        "started",
+        "started",
+        "failed",
+        "failed",
+    ]
+    assert [item.status for item in markers] == ["running", "running", "failed", "failed"]
+    # The late boundary still contributes its evidence to the same item.
+    assert markers[3].content["trigger"] == "manual"
+    assert markers[3].content["preTokens"] == 18_000
 
 
 def test_claude_boundary_alone_completes_the_marker() -> None:
@@ -235,8 +487,8 @@ async def _test_claude_boundary_alone_completes_the_marker() -> None:
     host = _RecordingHost()
     client = _FakeClaudeClient(
         [
-            _system_message(subtype="compact_boundary", uuid="sys_boundary"),
-            SimpleNamespace(type="result", session_id=COMPACT_SESSION, is_error=False),
+            _boundary(uuid="sys_boundary"),
+            _result(),
         ]
     )
     runtime = _runtime(host=host, client=client)
@@ -248,8 +500,8 @@ async def _test_claude_boundary_alone_completes_the_marker() -> None:
     await task
 
     markers = host.timeline_item_upserts
-    assert [item.content["state"] for item in markers] == ["completed"]
-    assert markers[0].status == "done"
+    assert [item.content["state"] for item in markers] == ["started", "completed"]
+    assert markers[1].status == "done"
 
 
 def test_claude_second_compaction_gets_its_own_marker() -> None:
@@ -272,13 +524,132 @@ async def _test_claude_second_compaction_gets_its_own_marker() -> None:
     assert len({item.id for item in markers}) == 2
     assert [item.content["state"] for item in markers] == [
         "started",
+        "started",
         "completed",
         "completed",
+        "started",
         "started",
         "completed",
         "completed",
     ]
+    assert markers[0].order_seq < markers[4].order_seq
+
+
+def test_claude_second_compaction_in_one_turn_opens_a_new_marker() -> None:
+    """A second compaction in the same turn gets its own separator.
+
+    Reusing the finished one would leave the user with a single line that claims
+    the conversation was compacted twice and hides the boundary between them.
+    """
+
+    asyncio.run(_test_claude_second_compaction_in_one_turn_opens_a_new_marker())
+
+
+async def _test_claude_second_compaction_in_one_turn_opens_a_new_marker() -> None:
+    host = _RecordingHost()
+    client = _FakeClaudeClient(
+        [
+            _system(subtype="status", status="compacting", uuid="sys_start_1"),
+            _boundary(uuid="sys_boundary_1"),
+            _system(subtype="status", status="compacting", uuid="sys_start_2"),
+            _boundary(uuid="sys_boundary_2"),
+            _result(),
+        ]
+    )
+    runtime = _runtime(host=host, client=client)
+
+    result = await runtime.execute_command("sess_repeat", "compact", COMPACT_SESSION)
+    task = runtime._sessions["sess_repeat"].active_task
+    assert result.ok is True
+    assert task is not None
+    await task
+
+    markers = host.timeline_item_upserts
+    assert len({item.id for item in markers}) == 2
+    assert [item.content["state"] for item in markers] == [
+        "started",
+        "started",
+        "completed",
+        "started",
+        "completed",
+    ]
     assert markers[0].order_seq < markers[3].order_seq
+    # The finished separator must not slide back to "running" on the new start.
+    assert markers[2].status == "done"
+    assert markers[3].status == "running"
+
+
+def test_claude_mid_turn_compaction_orders_after_the_published_items() -> None:
+    """Marker and message slots come from one counter, so nothing collides."""
+
+    asyncio.run(_test_claude_mid_turn_compaction_orders_after_the_published_items())
+
+
+async def _test_claude_mid_turn_compaction_orders_after_the_published_items() -> None:
+    host = _RecordingHost()
+    client = _FakeClaudeClient(
+        [
+            _assistant("first reply", "a1"),
+            _system(subtype="status", status="compacting", uuid="sys_start"),
+            _boundary(uuid="sys_boundary"),
+            _assistant("second reply", "a2"),
+            _result(result="second reply"),
+        ]
+    )
+    runtime = _runtime(host=host, client=client)
+
+    started = await runtime.start_turn(
+        "sess_mid",
+        COMPACT_SESSION,
+        "hello",
+        client_message_id="cm1",
+    )
+    task = runtime._sessions["sess_mid"].active_task
+    assert started.ok is True
+    assert task is not None
+    await task
+
+    by_seq: dict[int, set[str]] = {}
+    for item in host.timeline_item_upserts:
+        # One item id may be upserted again as it changes state; two different
+        # items may never claim the same slot.
+        by_seq.setdefault(item.order_seq, set()).add(item.id)
+    assert not {
+        seq: ids for seq, ids in by_seq.items() if len(ids) > 1
+    }, f"order_seq collision between timeline items: {by_seq}"
+
+    marker = next(item for item in host.timeline_item_upserts if item.type == "marker")
+    assert all(
+        item.order_seq == marker.order_seq
+        for item in host.timeline_item_upserts
+        if item.id == marker.id
+    ), "the marker must keep its slot"
+    assert marker.order_seq < max(
+        item.order_seq for item in host.timeline_item_upserts if item.type != "marker"
+    ), "the separator is opened before the reply that follows it"
+
+
+def test_claude_compact_marker_id_is_scoped_to_the_native_session() -> None:
+    """The marker id follows the conversation, not the AA session row."""
+
+    first = ClaudeSession(session_id="sess_a", external_session_id="native_a")
+    other_conversation = ClaudeSession(session_id="sess_a", external_session_id="native_b")
+    # The same native conversation reached through another AA session id is
+    # still the same conversation, so it must resolve to the same row.
+    renamed = ClaudeSession(session_id="sess_b", external_session_id="native_a")
+
+    base = stable_compact_item_id(first, "turn_1")
+    assert base.startswith("claude_compact_")
+    assert stable_compact_item_id(first, "turn_1") == base
+    assert stable_compact_item_id(renamed, "turn_1") == base
+    assert stable_compact_item_id(other_conversation, "turn_1") != base
+    assert stable_compact_item_id(first, "turn_2") != base
+    # A second compaction inside one turn must not reuse the first separator.
+    assert stable_compact_item_id(first, "turn_1", 1) != base
+    # Before the native id is known, the AA session id stands in for it.
+    cold = ClaudeSession(session_id="sess_cold", external_session_id=None)
+    assert stable_compact_item_id(cold, "turn_1").startswith("claude_compact_")
+    assert stable_compact_item_id(cold, "turn_1") != base
 
 
 def test_claude_automatic_compaction_marks_an_ordinary_turn() -> None:
@@ -289,18 +660,9 @@ async def _test_claude_automatic_compaction_marks_an_ordinary_turn() -> None:
     host = _RecordingHost()
     client = _FakeClaudeClient(
         [
-            SimpleNamespace(
-                type="assistant",
-                uuid="assistant_auto",
-                session_id=COMPACT_SESSION,
-                message={
-                    "id": "msg_auto",
-                    "role": "assistant",
-                    "content": [{"type": "text", "text": "still here"}],
-                },
-            ),
-            _system_message(subtype="compact_boundary", uuid="sys_auto"),
-            SimpleNamespace(type="result", session_id=COMPACT_SESSION, is_error=False),
+            _assistant("still here", "assistant_auto"),
+            _boundary(uuid="sys_auto"),
+            _result(),
         ]
     )
     runtime = _runtime(host=host, client=client)
@@ -380,9 +742,7 @@ def test_claude_execute_command_rejects_a_busy_session() -> None:
 
 async def _test_claude_execute_command_rejects_a_busy_session() -> None:
     host = _RecordingHost()
-    client = _FakeClaudeClient(
-        [SimpleNamespace(type="result", session_id=COMPACT_SESSION, is_error=False)]
-    )
+    client = _FakeClaudeClient([_result()])
     runtime = _runtime(host=host, client=client)
 
     started = await runtime.start_turn("sess_busy", COMPACT_SESSION, "hello")
@@ -397,6 +757,28 @@ async def _test_claude_execute_command_rejects_a_busy_session() -> None:
     assert result.code == "command_unavailable"
     assert result.message == "session_waiting"
     assert client.queries == ["hello"]
+
+
+def test_claude_command_turn_reports_an_unknown_dispatch() -> None:
+    """A dispatch that raises must not invite the user to press again."""
+
+    asyncio.run(_test_claude_command_turn_reports_an_unknown_dispatch())
+
+
+async def _test_claude_command_turn_reports_an_unknown_dispatch() -> None:
+    host = _RecordingHost()
+    runtime = _runtime(host=host, client=_FakeClaudeClient())
+    runtime._turns.commands.actions = _RaisingActions()
+
+    result = await runtime.execute_command("sess_unknown", "compact", COMPACT_SESSION)
+
+    assert result.ok is False
+    assert result.code == "command_outcome_unknown"
+    assert result.result == {"executionState": "unknown", "retryable": False}
+    assert "unknown" in (result.message or "").lower()
+    # Nothing was dispatched, so nothing may be published or reported.
+    assert host.timeline_item_upserts == []
+    assert host.session_turn_ends == []
 
 
 @pytest.mark.parametrize(
@@ -503,11 +885,82 @@ async def _test_claude_command_turn_reports_a_rejected_dispatch() -> None:
 # --- fixtures -------------------------------------------------------------
 
 
-def _system_message(**fields: Any) -> SimpleNamespace:
-    return SimpleNamespace(
-        type="system",
-        session_id=COMPACT_SESSION,
+# An init handshake carrying text. Every other CLI control frame is invisible
+# for a second reason as well (a user role, or no text at all), so only this
+# shape can tell the suppression predicate apart from the generic role/text
+# gate. It is the raw control frame, before the SDK wraps it into `.data`.
+_INIT_HANDSHAKE_WITH_TEXT = {
+    "type": "system",
+    "subtype": "init",
+    "session_id": COMPACT_SESSION,
+    "message": {"role": "system", "content": "Session initialized with model opus"},
+}
+
+
+def _system(**fields: Any) -> Any:
+    """A real `SystemMessage`: every payload field lands inside `.data`."""
+
+    return parse_message({"type": "system", "session_id": COMPACT_SESSION, **fields})
+
+
+def _boundary(**fields: Any) -> Any:
+    return _system(
+        subtype="compact_boundary",
+        content="Conversation compacted",
+        level="info",
+        compactMetadata={
+            "trigger": "manual",
+            "preTokens": 18_000,
+            "postTokens": 900,
+            "cumulativeDroppedTokens": 17_100,
+            "durationMs": 12_000,
+        },
         **fields,
+    )
+
+
+def _user(text: str, uuid: str) -> Any:
+    return parse_message(
+        {
+            "type": "user",
+            "uuid": uuid,
+            "session_id": COMPACT_SESSION,
+            "message": {"role": "user", "content": text},
+        }
+    )
+
+
+def _assistant(text: str, uuid: str) -> Any:
+    return parse_message(
+        {
+            "type": "assistant",
+            "uuid": uuid,
+            "session_id": COMPACT_SESSION,
+            "message": {
+                "id": f"msg-{uuid}",
+                "role": "assistant",
+                "model": MODEL,
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": text}],
+            },
+        }
+    )
+
+
+def _result(result: str = "", is_error: bool = False, errors: list[str] | None = None) -> Any:
+    return parse_message(
+        {
+            "type": "result",
+            "subtype": "success" if not is_error else "error_during_execution",
+            "session_id": COMPACT_SESSION,
+            "is_error": is_error,
+            "errors": errors or [],
+            "num_turns": 0,
+            "duration_ms": 1,
+            "duration_api_ms": 1,
+            "total_cost_usd": 0.0,
+            "result": result,
+        }
     )
 
 
@@ -515,52 +968,16 @@ def _compaction_messages() -> list[Any]:
     """Replay the 2026-10-02 probe order for a manual `/compact`."""
 
     return [
-        _system_message(subtype="status", status="compacting", uuid="sys_start"),
-        _system_message(subtype="init", uuid="sys_init"),
-        _system_message(
-            subtype="status",
-            status=None,
-            compact_result="success",
-            uuid="sys_result",
+        _system(subtype="status", status="compacting", uuid="sys_start"),
+        _system(subtype="init", uuid="sys_init"),
+        _system(subtype="status", status=None, compact_result="success", uuid="sys_result"),
+        _boundary(uuid="sys_boundary", logical_parent_uuid="sys_result"),
+        _user(
+            f"{CLAUDE_COMPACT_SUMMARY_PREFIX}\n\nSummary:\n1. The user asked me to ...",
+            "user_summary",
         ),
-        _system_message(
-            subtype="compact_boundary",
-            uuid="sys_boundary",
-            logical_parent_uuid="sys_result",
-            compact_metadata={
-                "trigger": "manual",
-                "pre_tokens": 18_000,
-                "post_tokens": 900,
-                "cumulative_dropped_tokens": 17_100,
-                "duration_ms": 12_000,
-            },
-        ),
-        SimpleNamespace(
-            type="user",
-            uuid="user_summary",
-            session_id=COMPACT_SESSION,
-            message={
-                "role": "user",
-                "content": (
-                    f"{CLAUDE_COMPACT_SUMMARY_PREFIX} The user asked me to ..."
-                ),
-            },
-        ),
-        SimpleNamespace(
-            type="user",
-            uuid="user_stdout",
-            session_id=COMPACT_SESSION,
-            message={
-                "role": "user",
-                "content": "<local-command-stdout>Compacted </local-command-stdout>",
-            },
-        ),
-        SimpleNamespace(
-            type="result",
-            session_id=COMPACT_SESSION,
-            is_error=False,
-            result="",
-        ),
+        _user("<local-command-stdout>Compacted </local-command-stdout>", "user_stdout"),
+        _result(),
     ]
 
 
@@ -593,6 +1010,13 @@ def _runtime(
 class _FakeOptions:
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
+
+
+class _RaisingActions:
+    """Stands in for a dispatch that dies after the prompt may have been sent."""
+
+    async def start_turn(self, **kwargs: Any) -> Any:
+        raise ConnectionError("claude stream closed")
 
 
 class _FakeClaudeClient:
@@ -680,7 +1104,7 @@ class _RecordingHost(RuntimeHostClient):
         selections: dict[str, str | None] | None = None,
         external_session_id: str | None = None,
         status_reason: str | None = None,
-        error: dict[str, Any] | None = None,
+        error: dict[str, str] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
         self.session_state_updates.append(

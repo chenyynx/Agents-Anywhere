@@ -82,10 +82,15 @@ class ClaudeTurnRunner:
     client_factory: ClaudeClientFactory | None = None
     connections: dict[str, ClaudeConnection] = field(default_factory=dict, init=False)
     stopping: bool = False
-    markers: ClaudeTimelineMarkers = field(default_factory=ClaudeTimelineMarkers, init=False)
+    markers: ClaudeTimelineMarkers = field(init=False)
     scheduled_sessions: ClaudeScheduledSessions = field(init=False)
 
     def __post_init__(self) -> None:
+        # One allocator for the whole timeline: a compaction separator must
+        # never reuse an order_seq a projected message already published.
+        self.markers = ClaudeTimelineMarkers(
+            order_allocator=self.timeline.order_seq_for,
+        )
         self.scheduled_sessions = ClaudeScheduledSessions(self.host)
 
     async def stop(self) -> None:
@@ -351,6 +356,11 @@ class ClaudeTurnRunner:
         published_user_item_id: str | None = None
         stream_accumulator = ClaudeStreamAccumulator()
         try:
+            if command is not None:
+                # The user asked for this compaction: publish the running
+                # separator before the prompt leaves, so a silent CLI settles
+                # a visible marker instead of leaving the turn invisible.
+                await self.open_command_compact_marker(session, turn_id)
             if client is None:
                 connection = await self.connection_for(session, stderr)
                 maintenance = connection.background_done_task
@@ -738,6 +748,26 @@ class ClaudeTurnRunner:
                     session.session_id,
                 )
 
+    async def open_command_compact_marker(
+        self,
+        session: ClaudeSession,
+        turn_id: str,
+    ) -> None:
+        """Publish the running marker a command turn owes before dispatch."""
+
+        try:
+            await self.notifications.timeline_activity.timeline_item_upsert(
+                self.markers.open_command_marker(
+                    session=session,
+                    turn_id=turn_id,
+                )
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Claude compaction marker open failed session_id={}",
+                session.session_id,
+            )
+
     async def settle_compact_markers(
         self,
         session: ClaudeSession,
@@ -745,9 +775,11 @@ class ClaudeTurnRunner:
     ) -> None:
         """Close a compaction marker this turn never proved complete.
 
-        Compaction reports success through its own events, so a turn that ends
-        without them — failed, interrupted, or resolved without compacting —
-        must not leave the client showing a running separator.
+        A command turn opens its marker before dispatch, and compaction
+        otherwise reports success through its own events. Either way a turn
+        that ends without proof of completion — failed, interrupted, or
+        resolved without compacting — must not leave the client showing a
+        running separator.
         """
 
         try:

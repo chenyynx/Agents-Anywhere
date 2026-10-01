@@ -17,7 +17,18 @@ def list_claude_commands(
     ``/compact`` is the only command on offer: the CLI reports far more native
     commands, but AA deliberately exposes a single one so the client UI stays
     identical across runtimes. Availability is decided here rather than by the
-    runtime so the catalog always explains *why* a command is greyed out.
+    runtime so the catalog always explains *why* a command is greyed out: the
+    ``session.commands`` capability bit only says whether the session has a loaded
+    CLI conversation, and busy gating stays per command here so clients can still
+    fetch the catalog while a turn runs.
+
+    A session this process has never seen (cold connector, external id supplied by
+    the server) stays enabled on purpose (2026-10-02, R2-P2-6). Execution re-binds
+    it on demand through ``ClaudeSessionStore.ensure`` and the CLI reopens it with
+    ``--resume <external id>``, so the command works; an id the CLI no longer knows
+    fails its turn visibly rather than reporting a false success. Requiring a local
+    store entry here would grey out the legitimate "connector restarted" case and
+    make commands stricter than ``send_message`` on the very same session.
     """
 
     reason = None

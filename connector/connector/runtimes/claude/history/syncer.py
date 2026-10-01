@@ -136,21 +136,22 @@ class ClaudeHistorySyncer:
                 commit=self.session_sync_commit(pending_session_sync),
             )
 
-        if previous_cursor is None:
-            sync_messages = messages
-        else:
-            sync_messages = messages_after_cursor(messages, previous_cursor)
-        # A compaction rewrites the chain and leaves the stored uuid dangling, so
-        # the cursor rebases onto the whole transcript. Republishing every item
-        # is idempotent (stable ids + server-side merge), and matching pending
-        # client messages against the latest text keeps send order after a
-        # rebuild, exactly like the first sync of a session.
-        rebased = len(sync_messages) == len(messages)
+        # The cursor classifies the window itself. A compaction rewrites the chain
+        # and leaves the stored uuid dangling, so it rebases onto the whole
+        # transcript, and so does the first sync of a session. Republishing every
+        # item is idempotent (stable ids + server-side merge), and matching
+        # pending client messages against the latest text keeps send order after a
+        # rebuild.
+        window = messages_after_cursor(messages, previous_cursor)
+        sync_messages = window.messages
+        rebased = window.rebased
         if rebased and previous_cursor is not None:
             logger.info(
                 "Claude history cursor rebased after chain rewrite "
-                "external_session_id={} previous_uuid={} previous_count={} count={}",
+                "external_session_id={} reason={} previous_uuid={} "
+                "previous_count={} count={}",
                 external_session_id,
+                window.reason,
                 previous_cursor.last_message_uuid,
                 previous_cursor.message_count,
                 len(messages),

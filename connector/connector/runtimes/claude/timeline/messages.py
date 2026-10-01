@@ -176,6 +176,7 @@ class ClaudeMessageProjector:
         turn_id: str,
         message: Any,
         event: str,
+        reasoning_revision: int | None = None,
     ) -> tuple[RuntimeTimelineItem, ...]:
         items: list[RuntimeTimelineItem] = []
         native_message_id = message_id(message)
@@ -192,6 +193,12 @@ class ClaudeMessageProjector:
                 self._next_order_seq += 1
                 self._order_by_id[item_id] = order_seq
             content = _system_content(block)
+            revision = (
+                reasoning_revision
+                if reasoning_revision is not None
+                and block.block_type in {"thinking", "reasoning", "redacted_thinking"}
+                else 1
+            )
             items.append(
                 SystemTimelineItem(
                     id=item_id,
@@ -209,6 +216,7 @@ class ClaudeMessageProjector:
                         event=event,
                         derived_key=block.block_type,
                     ),
+                    revision=revision,
                 ).to_platform_item(session_id=session.session_id, order_seq=order_seq)
             )
         return tuple(items)

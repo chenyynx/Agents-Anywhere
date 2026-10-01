@@ -34,18 +34,32 @@ class ClaudeStreamAccumulator:
             return None
         event_type = _string(event.get("type"))
         if event_type == "message_start":
-            self.partial_text_blocks.clear()
-            self.partial_revision = 0
-            self.partial_thinking_blocks.clear()
-            self.partial_thinking_revision = 0
             payload = event.get("message")
-            self.partial_message_id = (
+            message_id = (
                 _string(payload.get("id")) if isinstance(payload, Mapping) else None
             )
+            if message_id != self.partial_message_id:
+                # A retransmitted message_start for the same message must not
+                # reset counters: streamed revisions stay monotonic per item.
+                self.partial_text_blocks.clear()
+                self.partial_revision = 0
+                self.partial_thinking_blocks.clear()
+                self.partial_thinking_revision = 0
+            self.partial_message_id = message_id
             return None
         if event_type == "content_block_start":
             index = _int(event.get("index"))
             block = event.get("content_block")
+            thinking = _thinking_text_from_stream_delta(block)
+            if index is not None and thinking:
+                self.partial_thinking_blocks[index] = thinking
+                return self._thinking_partial_item(
+                    session,
+                    turn_id,
+                    projector,
+                    index=index,
+                    status="running",
+                )
             text = _text_from_stream_block(block)
             if index is not None and text is not None:
                 self.partial_text_blocks[index] = text
@@ -115,6 +129,9 @@ class ClaudeStreamAccumulator:
         self.partial_revision += 1
         return self.partial_revision
 
+    def next_thinking_final_revision(self) -> int:
+        return self.partial_thinking_revision + 1
+
     def _partial_item(
         self,
         session: ClaudeSession,
@@ -180,6 +197,32 @@ class ClaudeStreamAccumulator:
             status=status,
             revision=self.partial_thinking_revision,
         )
+
+    def finalize_pending_thinking(
+        self,
+        session: ClaudeSession,
+        turn_id: str,
+        projector: ClaudeMessageProjector,
+    ) -> tuple[RuntimeTimelineItem, ...]:
+        """Close thinking blocks that never received a content_block_stop."""
+
+        items: list[RuntimeTimelineItem] = []
+        for index in sorted(self.partial_thinking_blocks):
+            text = self.partial_thinking_blocks[index]
+            if not text:
+                continue
+            item = self._thinking_partial_item(
+                session,
+                turn_id,
+                projector,
+                index=index,
+                status="done",
+                text=text,
+            )
+            if item is not None:
+                items.append(item)
+        self.partial_thinking_blocks.clear()
+        return tuple(items)
 
 
 def _stream_event(message: Any) -> Mapping[str, Any] | None:

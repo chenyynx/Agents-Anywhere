@@ -116,5 +116,11 @@ def _is_streaming_text_upsert(
         return True
     if item.get("type") == "system":
         content = item.get("content")
-        return isinstance(content, dict) and content.get("kind") == "reasoning"
+        source = item.get("source")
+        return bool(
+            isinstance(content, dict)
+            and content.get("kind") == "reasoning"
+            and isinstance(source, dict)
+            and source.get("runtime") == "claude"
+        )
     return False

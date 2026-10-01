@@ -116,7 +116,28 @@ async def _exercise_reasoning_window_coalescing() -> None:
     await coalescer.close()
 
 
-def _reasoning_item(revision: int, text: str) -> dict[str, Any]:
+def test_coalescer_sends_non_claude_reasoning_immediately() -> None:
+    asyncio.run(_exercise_foreign_reasoning_item())
+
+
+async def _exercise_foreign_reasoning_item() -> None:
+    sent: list[tuple[str, dict[str, Any]]] = []
+
+    async def sender(method: str, params: dict[str, Any]) -> None:
+        sent.append((method, params))
+
+    coalescer = TimelineItemNotificationCoalescer(sender, window_seconds=10)
+    await coalescer.send("timeline.itemUpsert", _reasoning_item(1, "thinking", runtime="codex"))
+
+    assert [method for method, _params in sent] == ["timeline.itemUpsert"]
+    await coalescer.close()
+
+
+def _reasoning_item(
+    revision: int,
+    text: str,
+    runtime: str = "claude",
+) -> dict[str, Any]:
     return {
         "sessionId": "sess_1",
         "item": {
@@ -125,5 +146,6 @@ def _reasoning_item(revision: int, text: str) -> dict[str, Any]:
             "role": "system",
             "revision": revision,
             "content": {"kind": "reasoning", "text": text},
+            "source": {"runtime": runtime},
         },
     }

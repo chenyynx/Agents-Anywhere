@@ -62,11 +62,24 @@ compaction result or a compaction boundary, and a boundary that follows a result
 contributes its token metadata. A turn that ends without that evidence — a
 native error, an interrupt, or a turn that resolved without compacting — settles
 the marker as failed, so the client never shows a separator that cannot finish.
-A failure is final: a boundary that arrives after one adds its metadata but
-never turns the separator back into a success. Each compaction owns one marker,
-so a second compaction in the same turn adds a new separator instead of
-reopening the finished one. Separators take their position from the same order
-counter as messages, so one never shares a slot with a reply.
+Separators take their position from the same order counter as messages, so one
+never shares a slot with a reply.
+
+A separator belongs to the session, not to the turn that dispatched the command.
+The CLI streams the compacting status, the result and the boundary *after* the
+command turn's own result message, so the turn that reports them is usually a
+later one — a scheduled reader, with a turn id of its own. Any turn that reads
+a compaction frame completes the separator the user is waiting for, and only the
+turn that opened it may settle it; a turn that merely read the frames never ends
+someone else's separator as a failure. A settle that reached the client before
+the CLI's verdict is corrected by that verdict when it arrives, since the
+evidence it was failed for is the evidence in hand. A failure the CLI reported
+itself is final: a boundary that arrives after one adds its metadata but never
+turns the separator back into a success.
+
+Each compaction owns one separator, and the session counts them rather than the
+turn, so a second compaction adds a new separator instead of reopening the
+finished one — including when it is the CLI compacting on its own mid-turn.
 
 Compaction events are mapped on the shared live path, so a compaction the CLI
 starts on its own is reported the same way. Those events reach the connector as

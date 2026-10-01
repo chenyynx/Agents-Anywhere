@@ -359,7 +359,9 @@ class ClaudeTurnRunner:
             if command is not None:
                 # The user asked for this compaction: publish the running
                 # separator before the prompt leaves, so a silent CLI settles
-                # a visible marker instead of leaving the turn invisible.
+                # a visible marker instead of leaving the turn invisible. The
+                # marker is the session's, because the CLI's verdict for it
+                # usually arrives on a later turn than this one.
                 await self.open_command_compact_marker(session, turn_id)
             if client is None:
                 connection = await self.connection_for(session, stderr)
@@ -756,12 +758,11 @@ class ClaudeTurnRunner:
         """Publish the running marker a command turn owes before dispatch."""
 
         try:
-            await self.notifications.timeline_activity.timeline_item_upsert(
-                self.markers.open_command_marker(
-                    session=session,
-                    turn_id=turn_id,
-                )
-            )
+            for item in self.markers.open_command_marker(
+                session=session,
+                turn_id=turn_id,
+            ):
+                await self.notifications.timeline_activity.timeline_item_upsert(item)
         except Exception:  # noqa: BLE001
             logger.exception(
                 "Claude compaction marker open failed session_id={}",
@@ -780,6 +781,12 @@ class ClaudeTurnRunner:
         that ends without proof of completion — failed, interrupted, or
         resolved without compacting — must not leave the client showing a
         running separator.
+
+        The marker belongs to the session but only its opening turn may settle
+        it. The CLI streams the frames that finish a compaction after that turn
+        has ended, so this runs on the scheduled reader turn too; settling there
+        would fail a separator whose success is already on the wire. Evidence
+        that arrives after a settle corrects the marker instead.
         """
 
         try:

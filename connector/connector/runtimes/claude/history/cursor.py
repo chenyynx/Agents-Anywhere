@@ -13,6 +13,33 @@ class ClaudeHistoryCursor:
     last_message_uuid: str | None
 
 
+# Reasons a sync window ends up covering the whole transcript again.
+REBASE_NO_CURSOR = "no_cursor"
+REBASE_UUID_DANGLING = "uuid_dangling"
+REBASE_CHAIN_REWRITTEN = "chain_rewritten"
+# Reasons the window is an incremental slice of the transcript.
+INCREMENTAL_UUID_ANCHORED = "uuid_anchored"
+INCREMENTAL_COUNT_ANCHORED = "count_anchored"
+
+
+@dataclass(frozen=True, slots=True)
+class ClaudeHistorySyncWindow:
+    """The part of a transcript a stored cursor has not covered yet.
+
+    `rebased` is decided here rather than inferred by the caller from the
+    length of the slice. The two happen to coincide today - every branch below
+    returns either the whole chain or a strictly shorter one - but a caller
+    should not have to re-derive the classification from a side effect of the
+    slicing: the day a branch hands back a full-length slice for some other
+    reason, an inferred flag follows it silently and flips pending message
+    matching to `prefer_latest` with nothing left to record why.
+    """
+
+    messages: tuple[Any, ...]
+    rebased: bool
+    reason: str
+
+
 def cursor_for(session_info: Any, messages: tuple[Any, ...]) -> ClaudeHistoryCursor:
     last_message_uuid = None
     if messages:
@@ -58,8 +85,8 @@ def cursor_from_state(state: Mapping[str, Any] | None) -> ClaudeHistoryCursor | 
 
 def messages_after_cursor(
     messages: tuple[Any, ...],
-    cursor: ClaudeHistoryCursor,
-) -> tuple[Any, ...]:
+    cursor: ClaudeHistoryCursor | None,
+) -> ClaudeHistorySyncWindow:
     """Return the part of the chain the cursor has not covered yet.
 
     A compaction rewrites the chain: the SDK keeps following the summary, so
@@ -74,15 +101,41 @@ def messages_after_cursor(
     `message_count` stays the fallback for transcripts that expose no uuid at
     all, and only when the chain actually grew; a shrunken list means the same
     rewrite happened and needs the same full rebase.
+
+    A missing cursor is the first sync of a session: nothing was covered yet,
+    so the window is the whole chain and it counts as a rebase, exactly like the
+    sync that follows a rewrite.
     """
+    if cursor is None:
+        return ClaudeHistorySyncWindow(
+            messages=messages,
+            rebased=True,
+            reason=REBASE_NO_CURSOR,
+        )
     if cursor.last_message_uuid:
         for index, message in enumerate(messages):
             if _attr(message, "uuid") == cursor.last_message_uuid:
-                return messages[index + 1 :]
-        return messages
+                return ClaudeHistorySyncWindow(
+                    messages=messages[index + 1 :],
+                    rebased=False,
+                    reason=INCREMENTAL_UUID_ANCHORED,
+                )
+        return ClaudeHistorySyncWindow(
+            messages=messages,
+            rebased=True,
+            reason=REBASE_UUID_DANGLING,
+        )
     if 0 < cursor.message_count < len(messages):
-        return messages[cursor.message_count :]
-    return messages
+        return ClaudeHistorySyncWindow(
+            messages=messages[cursor.message_count :],
+            rebased=False,
+            reason=INCREMENTAL_COUNT_ANCHORED,
+        )
+    return ClaudeHistorySyncWindow(
+        messages=messages,
+        rebased=True,
+        reason=REBASE_CHAIN_REWRITTEN,
+    )
 
 
 def _int_attr(item: Any, *names: str) -> int | None:

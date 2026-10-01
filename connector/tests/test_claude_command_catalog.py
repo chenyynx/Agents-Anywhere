@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import pytest
 
-from connector.runtime_protocol import CAPABILITY_SESSION_COMMANDS, RuntimeStatus
+from connector.runtime_protocol import (
+    CAPABILITY_SESSION_COMMANDS,
+    RuntimeStatus,
+    SessionState,
+)
 from connector.runtimes.claude import provider_config
 from connector.runtimes.claude.domain.capabilities import (
     ClaudeCapabilityContext,
     claude_runtime_capabilities,
     claude_session_capabilities,
+    resolve_session_binding,
 )
 from connector.runtimes.claude.domain.commands import list_claude_commands
 
@@ -117,6 +122,7 @@ def test_session_capabilities_advertise_session_commands() -> None:
                 connector_id="conn_1",
                 revision=1,
                 session_id="sess_1",
+                external_session_id="sess_ext_1",
             )
         ).capabilities
     }
@@ -131,7 +137,14 @@ def test_session_capabilities_advertise_session_commands() -> None:
     assert command_capability.unavailable_reason is None
 
 
-def test_session_commands_capability_follows_an_active_turn() -> None:
+def test_session_commands_capability_stays_available_during_a_turn() -> None:
+    """A live turn is the catalog's business, not this bit's (R1-P1-2).
+
+    Clients stop fetching the catalog when this bit flips to unavailable, so gating
+    on the active turn here made every per-command ``session_<status>`` reason
+    unreachable. Codex keeps the bit available while a turn runs.
+    """
+
     capabilities = {
         c.capability_id: c
         for c in claude_session_capabilities(
@@ -139,6 +152,7 @@ def test_session_commands_capability_follows_an_active_turn() -> None:
                 connector_id="conn_1",
                 revision=1,
                 session_id="sess_1",
+                external_session_id="sess_ext_1",
                 has_active_turn=True,
             )
         ).capabilities
@@ -146,8 +160,89 @@ def test_session_commands_capability_follows_an_active_turn() -> None:
 
     command_capability = capabilities[CAPABILITY_SESSION_COMMANDS]
     assert command_capability.supported is True
+    assert command_capability.available is True
+    assert command_capability.unavailable_reason is None
+
+
+@pytest.mark.parametrize("has_active_turn", (False, True))
+def test_session_commands_capability_reports_an_unloaded_session(
+    has_active_turn: bool,
+) -> None:
+    """No binding means unloaded, and the reason is a token clients translate."""
+
+    capabilities = {
+        c.capability_id: c
+        for c in claude_session_capabilities(
+            ClaudeCapabilityContext(
+                connector_id="conn_1",
+                revision=1,
+                session_id="sess_1",
+                has_active_turn=has_active_turn,
+            )
+        ).capabilities
+    }
+
+    command_capability = capabilities[CAPABILITY_SESSION_COMMANDS]
+    assert command_capability.supported is True
     assert command_capability.available is False
-    assert command_capability.unavailable_reason == "turn_active"
+    assert command_capability.unavailable_reason == "session_unloaded"
+
+
+def test_cold_session_with_a_known_binding_is_loaded_and_enabled() -> None:
+    """No local state, no store entry, id from the server: still runnable (R2-P2-6).
+
+    ``store.ensure`` binds on demand and the CLI reopens the conversation with
+    ``--resume``, so reporting unloaded here would grey out a command that works.
+    """
+
+    capabilities = {
+        c.capability_id: c
+        for c in claude_session_capabilities(
+            ClaudeCapabilityContext(
+                connector_id="conn_1",
+                revision=1,
+                session_id="sess_1",
+                external_session_id="sess_ext_1",
+            )
+        ).capabilities
+    }
+
+    assert capabilities[CAPABILITY_SESSION_COMMANDS].available is True
+    assert _compact("sess_ext_1").enabled is True
+
+
+def test_session_binding_prefers_the_caller_id() -> None:
+    state = _state(external_session_id="sess_ext_state")
+
+    assert (
+        resolve_session_binding("sess_ext_caller", state, "sess_ext_store")
+        == "sess_ext_caller"
+    )
+
+
+def test_session_binding_falls_back_to_state_then_store() -> None:
+    assert (
+        resolve_session_binding(None, _state("sess_ext_state"), "sess_ext_store")
+        == "sess_ext_state"
+    )
+    assert (
+        resolve_session_binding(None, _state(None), "sess_ext_store")
+        == "sess_ext_store"
+    )
+
+
+def test_session_binding_is_none_when_nothing_knows_the_session() -> None:
+    assert resolve_session_binding(None, None, None) is None
+    assert resolve_session_binding("", _state(None), None) is None
+
+
+def _state(external_session_id: str | None) -> SessionState:
+    return SessionState(
+        session_id="sess_1",
+        external_session_id=external_session_id,
+        runtime="claude",
+        status="idle",
+    )
 
 
 def test_runtime_capabilities_do_not_advertise_session_commands() -> None:

@@ -14,6 +14,7 @@ from connector.runtime_protocol import (
     CAPABILITY_SESSION_STEER,
     RuntimeCapability,
     RuntimeCapabilitySet,
+    SessionState,
 )
 from connector.runtimes.claude import provider_config
 
@@ -23,6 +24,7 @@ class ClaudeCapabilityContext:
     connector_id: str
     revision: int
     session_id: str | None = None
+    external_session_id: str | None = None
     has_active_turn: bool = False
 
 
@@ -62,11 +64,50 @@ def claude_runtime_capabilities(
     )
 
 
+def resolve_session_binding(
+    external_session_id: str | None,
+    state: SessionState | None,
+    stored_external_session_id: str | None,
+) -> str | None:
+    """The CLI conversation id a turn or command would actually act on.
+
+    The caller-supplied id wins, then the live cached state, then the store, which
+    is the same precedence ``ClaudeCommandController`` uses; the capability bit and
+    the per-command catalog therefore never disagree about a loaded session.
+
+    A session this process has never seen (cold connector, id still known to the
+    server) resolves to that id rather than to ``None``: the CLI owns the history
+    and ``--resume`` reopens it, so it is loaded for command purposes. Nothing
+    here reads a session, so an id the CLI no longer knows simply fails its turn
+    visibly instead of being reported as a silent success.
+    """
+
+    for candidate in (
+        external_session_id,
+        state.external_session_id if state is not None else None,
+        stored_external_session_id,
+    ):
+        if candidate:
+            return candidate
+    return None
+
+
+def session_loaded(context: ClaudeCapabilityContext) -> bool:
+    return context.external_session_id is not None
+
+
+def session_unloaded_reason(context: ClaudeCapabilityContext) -> str | None:
+    if session_loaded(context):
+        return None
+    return "session_unloaded"
+
+
 def claude_session_capabilities(
     context: ClaudeCapabilityContext,
 ) -> RuntimeCapabilitySet:
     session_id = context.session_id
     active = context.has_active_turn
+    loaded = session_loaded(context)
     capabilities = provider_config.claude_capabilities()
     return RuntimeCapabilitySet(
         runtime="claude",
@@ -113,12 +154,14 @@ def claude_session_capabilities(
                 session_id=session_id,
                 connector_id=context.connector_id,
                 supported=True,
-                # Commands are queued like a message turn, so a live turn is the
-                # one thing this process knows for certain it cannot accept one.
-                # Session-level gates (unloaded session, non-idle status) are
-                # reported per command by the catalog itself.
-                available=not active,
-                unavailable_reason="turn_active" if active else None,
+                # Codex-family semantics (2026-10-02, R1-P1-1): this bit answers
+                # "does the session have a loaded CLI conversation to act on",
+                # never "is it idle right now". Clients render this reason through
+                # their own word list, so it must stay a known token; busy gating
+                # belongs to the catalog, which reports `session_<status>` per
+                # command and stays reachable while a turn runs.
+                available=loaded,
+                unavailable_reason=session_unloaded_reason(context),
                 metadata={"source": "claude.runtime"},
             ),
             RuntimeCapability(

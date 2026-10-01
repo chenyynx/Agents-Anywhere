@@ -43,9 +43,13 @@ CLAUDE_INTERRUPTED_REQUEST_MARKERS = frozenset(
 CLAUDE_NO_RESPONSE_MARKER = "No response requested."
 # Claude restarts the chain from a summary after /compact or an automatic
 # compaction and persists that summary as a plain user message. `SessionMessage`
-# carries no isCompactSummary flag, so this exact CLI sentence (captured by the
-# 2026-10-02 probe) is the only marker we have.
-CLAUDE_COMPACT_SUMMARY_PREFIX = "This session is being continued from a previous conversation that ran out of context."
+# carries no isCompactSummary flag, so these exact CLI sentences (captured by
+# the 2026-10-02 probe) are the only marker we have. Both are matched: the
+# longer the guard, the narrower the chance it eats a message the user wrote.
+CLAUDE_COMPACT_SUMMARY_PREFIX = (
+    "This session is being continued from a previous conversation that ran out of "
+    "context. The summary below covers the earlier portion of the conversation."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,11 +118,7 @@ class ClaudeMessageProjector:
                 stable_key,
             )
         )
-        order_seq = self._order_by_id.get(resolved_item_id)
-        if order_seq is None:
-            order_seq = self._next_order_seq
-            self._next_order_seq += 1
-            self._order_by_id[resolved_item_id] = order_seq
+        order_seq = self.order_seq_for(resolved_item_id)
         return MessageTimelineItem(
             id=resolved_item_id,
             type="message",
@@ -144,6 +144,21 @@ class ClaudeMessageProjector:
             ),
             revision=revision,
         ).to_platform_item(session_id=session.session_id, order_seq=order_seq)
+
+    def order_seq_for(self, item_id: str) -> int:
+        """Hand out one stable order slot per item id.
+
+        This counter is the timeline's single allocator: compaction markers take
+        their slot from it too, so a separator can never reuse a number a
+        message already published and leave the two items in an arbitrary order.
+        """
+
+        order_seq = self._order_by_id.get(item_id)
+        if order_seq is None:
+            order_seq = self._next_order_seq
+            self._next_order_seq += 1
+            self._order_by_id[item_id] = order_seq
+        return order_seq
 
     def move_reserved_order(self, reserved_item_id: str, item_id: str) -> None:
         """Move a live item's reserved order to its final SDK-backed ID."""
@@ -254,11 +269,7 @@ class ClaudeMessageProjector:
             native_message_id=native_message_id,
             block=block,
         )
-        order_seq = self._order_by_id.get(item_id)
-        if order_seq is None:
-            order_seq = self._next_order_seq
-            self._next_order_seq += 1
-            self._order_by_id[item_id] = order_seq
+        order_seq = self.order_seq_for(item_id)
         return SystemTimelineItem(
             id=item_id,
             type="system",
@@ -308,11 +319,7 @@ class ClaudeMessageProjector:
         block: ClaudeToolBlock,
     ) -> RuntimeTimelineItem:
         item_id = stable_tool_item_id(session, block.tool_use_id)
-        order_seq = self._order_by_id.get(item_id)
-        if order_seq is None:
-            order_seq = self._next_order_seq
-            self._next_order_seq += 1
-            self._order_by_id[item_id] = order_seq
+        order_seq = self.order_seq_for(item_id)
 
         if block.block_type == "tool_result":
             pending = self._tool_calls.pop(item_id, None)
@@ -512,7 +519,15 @@ def message_id(message: Any) -> str | None:
         if isinstance(value, str) and value:
             return value
     value = _extract(message, "message_id", "messageId", "id", "uuid")
-    return value if isinstance(value, str) and value else None
+    if isinstance(value, str) and value:
+        return value
+    # `SystemMessage` carries only `subtype` plus the untouched payload, so a
+    # compaction boundary's uuid lives in `.data` and nowhere else.
+    data = _extract(message, "data")
+    if not isinstance(data, Mapping):
+        return None
+    nested = _extract(data, "message_id", "messageId", "id", "uuid")
+    return nested if isinstance(nested, str) and nested else None
 
 
 def is_result_message(message: Any) -> bool:

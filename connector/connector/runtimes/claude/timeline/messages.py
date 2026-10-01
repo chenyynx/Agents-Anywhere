@@ -176,6 +176,7 @@ class ClaudeMessageProjector:
         turn_id: str,
         message: Any,
         event: str,
+        reasoning_revision: int | None = None,
     ) -> tuple[RuntimeTimelineItem, ...]:
         items: list[RuntimeTimelineItem] = []
         native_message_id = message_id(message)
@@ -192,6 +193,12 @@ class ClaudeMessageProjector:
                 self._next_order_seq += 1
                 self._order_by_id[item_id] = order_seq
             content = _system_content(block)
+            revision = (
+                reasoning_revision
+                if reasoning_revision is not None
+                and block.block_type in {"thinking", "reasoning", "redacted_thinking"}
+                else 1
+            )
             items.append(
                 SystemTimelineItem(
                     id=item_id,
@@ -209,9 +216,65 @@ class ClaudeMessageProjector:
                         event=event,
                         derived_key=block.block_type,
                     ),
+                    revision=revision,
                 ).to_platform_item(session_id=session.session_id, order_seq=order_seq)
             )
         return tuple(items)
+
+    def reasoning_item(
+        self,
+        session: ClaudeSession,
+        turn_id: str,
+        *,
+        native_message_id: str,
+        block_index: int,
+        text: str,
+        status: str,
+        revision: int,
+    ) -> RuntimeTimelineItem:
+        """Project one streaming thinking block as a reasoning system item.
+
+        Shares stable_system_item_id with the finished-message projection, so
+        the live item, the turn-end item and history converge on one row.
+        """
+
+        block = ClaudeSystemBlock(
+            block_type="thinking",
+            block_index=block_index,
+            text=text,
+        )
+        item_id = stable_system_item_id(
+            session=session,
+            turn_id=turn_id,
+            native_message_id=native_message_id,
+            block=block,
+        )
+        order_seq = self._order_by_id.get(item_id)
+        if order_seq is None:
+            order_seq = self._next_order_seq
+            self._next_order_seq += 1
+            self._order_by_id[item_id] = order_seq
+        return SystemTimelineItem(
+            id=item_id,
+            type="system",
+            status=status,  # type: ignore[arg-type]
+            role="system",
+            turn_id=turn_id,
+            content=ReasoningSystemContent(
+                text=text,
+                metadata={"blockType": "thinking"},
+            ),
+            source=TimelineSource(
+                runtime="claude",
+                external_session_id=session.external_session_id,
+                turn_id=turn_id,
+                native_item_id=native_message_id,
+                native_item_type="thinking",
+                event="claude.turn.system",
+                derived_key="thinking",
+            ),
+            revision=revision,
+        ).to_platform_item(session_id=session.session_id, order_seq=order_seq)
 
     def missing_history_tool_result_items(
         self,

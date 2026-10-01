@@ -23,7 +23,7 @@ class ClaudeHistoryUserMessage:
 class ClaudeClientMessageBinding:
     session_id: str
     external_session_id: str | None
-    client_message_id: str
+    client_message_id: str | None
     platform_item_id: str
     text: str
     attachments: tuple[Mapping[str, object], ...] = ()
@@ -286,6 +286,48 @@ class ClaudePendingClientMessageRegistry:
         self.persist_external_session(external_session_id)
         return True
 
+    def record_replayed_platform_id(
+        self,
+        *,
+        session_id: str,
+        external_session_id: str,
+        native_message_id: str,
+        platform_item_id: str,
+        text: str,
+        attachments: tuple[Mapping[str, object], ...] = (),
+    ) -> bool:
+        """Record a native-to-platform bridge for a message without a client id.
+
+        The early publish fixes the platform item id before the SDK replay
+        arrives. When the message carries no client message id there is no
+        pending binding to promote, so this bridge keeps history projection
+        reusing the live item id instead of deriving a second one from the
+        replayed UUID.
+        """
+
+        self.load_external_session(external_session_id)
+        binding = ClaudeClientMessageBinding(
+            session_id=session_id,
+            external_session_id=external_session_id,
+            client_message_id=None,
+            platform_item_id=platform_item_id,
+            native_message_id=native_message_id,
+            text=text,
+            attachments=tuple(dict(attachment) for attachment in attachments),
+        )
+        self._matched = [
+            existing
+            for existing in self._matched
+            if not (
+                existing.external_session_id == external_session_id
+                and existing.native_message_id == native_message_id
+            )
+        ]
+        self._matched.append(binding)
+        self.trim_matched(external_session_id=external_session_id)
+        self.persist_external_session(external_session_id)
+        return True
+
     def record_match(
         self,
         pending: ClaudeClientMessageBinding,
@@ -483,7 +525,6 @@ def bindings_from_value(value: Any) -> tuple[ClaudeClientMessageBinding, ...]:
         text = item.get("text")
         if (
             session_id is None
-            or client_message_id is None
             or platform_item_id is None
             or not isinstance(text, str)
         ):

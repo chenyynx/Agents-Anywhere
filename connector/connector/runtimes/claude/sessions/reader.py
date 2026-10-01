@@ -47,6 +47,7 @@ from connector.runtimes.claude.sessions.sync_state import ClaudeSessionSyncState
 from connector.runtimes.claude.timeline.messages import (
     ClaudeMessageProjector,
     ClaudePendingToolCall,
+    is_compact_summary_text,
     is_synthetic_control_message,
     is_task_event_tool_name,
     message_id,
@@ -728,7 +729,13 @@ def _session_title(session: Any) -> str | None:
     # Claude SDK-created sessions may update `summary` to the latest user
     # prompt after every turn. `first_prompt` is the stable fallback title;
     # `custom_title` also contains persisted Claude Code AI titles when present.
-    return _string_attr(session, "custom_title", "first_prompt", "summary", "title")
+    # A compaction restarts the chain from a summary prompt, so skip a
+    # candidate that only carries that continuation text instead of showing it.
+    for name in ("custom_title", "first_prompt", "summary", "title"):
+        value = _string_attr(session, name)
+        if value is not None and not is_compact_summary_text(value):
+            return value
+    return None
 
 
 def _sync_marker(session: Any) -> str:

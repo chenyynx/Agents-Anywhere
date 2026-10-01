@@ -7,6 +7,7 @@ from connector.runtime_protocol import (
     CAPABILITY_CATALOG_MODEL,
     CAPABILITY_CATALOG_PERMISSION,
     CAPABILITY_RUNTIME_ATTACHMENT,
+    CAPABILITY_SESSION_COMMANDS,
     CAPABILITY_SESSION_INTERACTION_APPROVAL,
     CAPABILITY_SESSION_INTERRUPT,
     CAPABILITY_SESSION_SEND_MESSAGE,
@@ -103,6 +104,21 @@ def claude_session_capabilities(
                 connector_id=context.connector_id,
                 supported=True,
                 available=True,
+                metadata={"source": "claude.runtime"},
+            ),
+            RuntimeCapability(
+                capability_id=CAPABILITY_SESSION_COMMANDS,
+                scope="session",
+                runtime="claude",
+                session_id=session_id,
+                connector_id=context.connector_id,
+                supported=True,
+                # Commands are queued like a message turn, so a live turn is the
+                # one thing this process knows for certain it cannot accept one.
+                # Session-level gates (unloaded session, non-idle status) are
+                # reported per command by the catalog itself.
+                available=not active,
+                unavailable_reason="turn_active" if active else None,
                 metadata={"source": "claude.runtime"},
             ),
             RuntimeCapability(

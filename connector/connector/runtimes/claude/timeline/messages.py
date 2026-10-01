@@ -41,6 +41,11 @@ CLAUDE_INTERRUPTED_REQUEST_MARKERS = frozenset(
     }
 )
 CLAUDE_NO_RESPONSE_MARKER = "No response requested."
+# Claude restarts the chain from a summary after /compact or an automatic
+# compaction and persists that summary as a plain user message. `SessionMessage`
+# carries no isCompactSummary flag, so this exact CLI sentence (captured by the
+# 2026-10-02 probe) is the only marker we have.
+CLAUDE_COMPACT_SUMMARY_PREFIX = "This session is being continued from a previous conversation that ran out of context."
 
 
 @dataclass(frozen=True, slots=True)
@@ -382,6 +387,12 @@ def message_text(message: Any) -> str | None:
     return result if isinstance(result, str) and result else None
 
 
+def is_compact_summary_text(text: str | None) -> bool:
+    """Match Claude's compaction summary by its fixed CLI opening sentence."""
+
+    return bool(text) and text.strip().startswith(CLAUDE_COMPACT_SUMMARY_PREFIX)
+
+
 def is_synthetic_control_message(message: Any) -> bool:
     role = message_role(message)
     text = message_text(message)
@@ -396,6 +407,8 @@ def is_synthetic_control_message(message: Any) -> bool:
     ):
         return True
     if role == "user" and normalized in CLAUDE_INTERRUPTED_REQUEST_MARKERS:
+        return True
+    if role == "user" and is_compact_summary_text(normalized):
         return True
     return (
         role == "assistant"

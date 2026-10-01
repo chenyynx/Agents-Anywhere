@@ -10,6 +10,8 @@ from connector.runtime_protocol import (
     PreparedSessionTimelineSync,
     RuntimeAttachment,
     RuntimeCapabilitySet,
+    RuntimeCommand,
+    RuntimeCommandResult,
     RuntimeConfig,
     RuntimeIdentity,
     RuntimeModelCatalog,
@@ -325,6 +327,36 @@ class ClaudeRuntime(AgentRuntime):
             attachments=attachments,
             client_message_id=client_message_id,
             cwd=cwd,
+        )
+
+    async def list_commands(
+        self,
+        session_id: str,
+        external_session_id: str | None = None,
+        query: str | None = None,
+        limit: int = 50,
+    ) -> tuple[RuntimeCommand, ...]:
+        return self._turns.list_commands(
+            session_id=session_id,
+            external_session_id=external_session_id,
+            query=query,
+            limit=limit,
+        )
+
+    async def execute_command(
+        self,
+        session_id: str,
+        command: str,
+        external_session_id: str | None = None,
+        raw: str | None = None,
+        args: tuple[str, ...] = (),
+    ) -> RuntimeCommandResult:
+        return await self._turns.execute_command(
+            session_id=session_id,
+            command=command,
+            external_session_id=external_session_id,
+            raw=raw,
+            args=args,
         )
 
     async def update_session_selections(

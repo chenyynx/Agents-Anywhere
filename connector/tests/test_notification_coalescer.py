@@ -91,3 +91,39 @@ def _assistant_message(revision: int, text: str) -> dict[str, Any]:
             "content": {"text": text},
         },
     }
+
+
+def test_coalescer_sends_only_latest_reasoning_item_per_window() -> None:
+    asyncio.run(_exercise_reasoning_window_coalescing())
+
+
+async def _exercise_reasoning_window_coalescing() -> None:
+    sent: list[tuple[str, dict[str, Any]]] = []
+
+    async def sender(method: str, params: dict[str, Any]) -> None:
+        sent.append((method, params))
+
+    coalescer = TimelineItemNotificationCoalescer(sender, window_seconds=0.01)
+    await coalescer.send("timeline.itemUpsert", _reasoning_item(1, "thinking"))
+    await coalescer.send("timeline.itemUpsert", _reasoning_item(2, "thinking more"))
+
+    assert sent == []
+    await asyncio.sleep(0.02)
+
+    assert len(sent) == 1
+    assert sent[0][1]["item"]["revision"] == 2
+    assert sent[0][1]["item"]["content"]["text"] == "thinking more"
+    await coalescer.close()
+
+
+def _reasoning_item(revision: int, text: str) -> dict[str, Any]:
+    return {
+        "sessionId": "sess_1",
+        "item": {
+            "id": "reasoning_1",
+            "type": "system",
+            "role": "system",
+            "revision": revision,
+            "content": {"kind": "reasoning", "text": text},
+        },
+    }

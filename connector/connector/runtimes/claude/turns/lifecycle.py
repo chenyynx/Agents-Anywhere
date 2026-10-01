@@ -375,15 +375,45 @@ class ClaudeTurnRunner:
                 attachment.to_mapping() for attachment in materialized_attachments
             )
             if not scheduled:
-                reserved_user_item = self.timeline.message_item(
-                    session=session,
-                    turn_id=turn_id,
-                    role="user",
-                    text=content,
-                    event="claude.turn.user",
-                    client_message_id=client_message_id,
-                    attachments=attachment_mappings,
-                )
+                prompt_uuid = client.ensure_prompt_uuid()
+                if (
+                    client_message_id is not None
+                    or session.external_session_id is not None
+                ):
+                    # Identity is known up front: publish the user item now so
+                    # clients confirm the sent bubble without waiting for the
+                    # first response byte. The SDK replay, the transcript and
+                    # history all derive this exact item id from prompt_uuid.
+                    user_item = self.timeline.message_item(
+                        session=session,
+                        turn_id=turn_id,
+                        role="user",
+                        text=content,
+                        event="claude.turn.user",
+                        client_message_id=client_message_id,
+                        native_item_id=prompt_uuid,
+                        item_id=stable_message_item_id(session, prompt_uuid),
+                        attachments=attachment_mappings,
+                    )
+                    await self.publish_user_message(
+                        session=session,
+                        item=user_item,
+                        content=content,
+                        attachments=attachment_mappings,
+                        client_message_id=client_message_id,
+                        native_message_id=prompt_uuid,
+                    )
+                    user_message_published = True
+                else:
+                    reserved_user_item = self.timeline.message_item(
+                        session=session,
+                        turn_id=turn_id,
+                        role="user",
+                        text=content,
+                        event="claude.turn.user",
+                        client_message_id=client_message_id,
+                        attachments=attachment_mappings,
+                    )
                 await query_client(client, effective_content)
 
             emitted_final_assistant_content = False
@@ -414,6 +444,18 @@ class ClaudeTurnRunner:
                     and not synthetic_control
                 ):
                     replayed_user_message = (native_message_id, text)
+                    if (
+                        user_message_published
+                        and client.prompt_uuid is not None
+                        and native_message_id != client.prompt_uuid
+                    ):
+                        logger.warning(
+                            "Claude prompt uuid was not adopted by the SDK replay "
+                            "session_id={} prompt_uuid={} replayed_uuid={}",
+                            session.session_id,
+                            client.prompt_uuid,
+                            native_message_id,
+                        )
                     if response_external_session_confirmed:
                         user_message_published = (
                             await self.publish_replayed_user_message(
@@ -648,6 +690,12 @@ class ClaudeTurnRunner:
         """Publish the live user item once Claude confirms its native identity."""
 
         if already_published:
+            self._complete_replayed_user_binding(
+                session=session,
+                content=content,
+                client_message_id=client_message_id,
+                replayed_user_message=replayed_user_message,
+            )
             return True
         if session.external_session_id is None or replayed_user_message is None:
             return False
@@ -676,6 +724,44 @@ class ClaudeTurnRunner:
             native_message_id=native_message_id,
         )
         return True
+
+    def _complete_replayed_user_binding(
+        self,
+        *,
+        session: ClaudeSession,
+        content: str,
+        client_message_id: str | None,
+        replayed_user_message: tuple[str, str] | None,
+    ) -> None:
+        """Finish the registry binding once the SDK replay confirms identity.
+
+        The early publish registers the client message without a native UUID
+        when the session had no external id yet. This promotes it to the
+        replayed UUID, matching the end state of the echo-gated flow.
+        """
+
+        if (
+            client_message_id is None
+            or replayed_user_message is None
+            or session.external_session_id is None
+        ):
+            return
+        native_message_id, text = replayed_user_message
+        if not client_message_text_matches(text, content):
+            return
+        try:
+            self.pending_messages.bind_live_native_message(
+                session_id=session.session_id,
+                external_session_id=session.external_session_id,
+                client_message_id=client_message_id,
+                native_message_id=native_message_id,
+                text=content,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Claude user message identity binding failed session_id={}",
+                session.session_id,
+            )
 
     async def publish_fallback_user_message(
         self,

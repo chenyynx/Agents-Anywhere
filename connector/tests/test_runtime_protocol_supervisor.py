@@ -31,6 +31,39 @@ class FakeHost(RuntimeHostClient):
         return "conn_test"
 
 
+def test_storage_is_prepared_before_provider_creation_and_failure_blocks_start(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+    from connector.server.runtime_host import ConnectorRuntimeHost
+    from connector.server.sync_state import JsonSyncStateStore
+
+    async def run():
+        monkeypatch.setenv("AGENT_CONNECTOR_KV_FILE", str(tmp_path / "legacy-kv.json"))
+        host = ConnectorRuntimeHost("conn_test", AsyncMock(), AsyncMock(), JsonSyncStateStore(tmp_path / "state.json"))
+        provider = FakeProvider()
+        original = provider.create_runtime
+
+        async def create(config, bound):
+            assert (tmp_path / "conn_test" / "rti_a" / "sync-state.json").exists()
+            assert bound.runtime_kv.path == tmp_path / "conn_test" / "rti_a" / "kv.json"
+            await bound.sync_state_write("fake/history/x", {"seq": 7})
+            return await original(config, bound)
+
+        provider.create_runtime = create
+        supervisor = RuntimeSupervisor((provider,), host)
+        spec = RuntimeInstanceSpec(runtime_id="rti_a", runtime_type="fake", name="A")
+        await supervisor.start(spec, {})
+        await supervisor.stop("rti_a")
+        assert host.flush_runtime_storage()
+        state = JsonSyncStateStore(tmp_path / "conn_test" / "rti_a" / "sync-state.json")
+        assert state.get("fake", "conn_test", "fake/instances/rti_a/history/x").cursor == {"seq": 7}
+        (tmp_path / "legacy-kv.json").write_text("invalid")
+        with pytest.raises(RuntimeError):
+            await supervisor.start(RuntimeInstanceSpec(runtime_id="rti_b", runtime_type="fake", name="B"), {})
+        assert len(provider.created) == 1
+        assert supervisor.entry("rti_b").status == "error"
+    asyncio.run(run())
+
+
 class FakeRuntime(AgentRuntime):
     def __init__(self, runtime: str = "fake", fail_start: bool = False) -> None:
         self._runtime = runtime
@@ -803,16 +836,93 @@ def test_runtime_protocol_supervisor_enforces_single_policy() -> None:
         provider = FakeProvider()
         provider.policy = "single"
         supervisor = RuntimeSupervisor(providers=(provider,), host=FakeHost())
-        await supervisor.start(
-            RuntimeInstanceSpec("rti_first", "fake", "First"),
-            {},
-        )
+        first = RuntimeInstanceSpec("rti_first", "fake", "First")
+        second = RuntimeInstanceSpec("rti_second", "fake", "Second")
+        await supervisor.validate_config(first, {})
+        await supervisor.validate_config(second, {})
+        running = await supervisor.start(first, {})
+        assert await supervisor.start(first, {}) is running
 
-        with pytest.raises(RuntimeConflictError, match="at most 1"):
-            await supervisor.start(
-                RuntimeInstanceSpec("rti_second", "fake", "Second"),
-                {},
-            )
+        with pytest.raises(RuntimeConflictError, match="at most 1 running instance"):
+            await supervisor.start(second, {})
+        await supervisor.stop(first.runtime_id)
+        await supervisor.start(second, {})
+        assert supervisor.entry(first.runtime_id).config is not None
+        assert supervisor.resolve_runtime(second.runtime_id).identity.runtime_id == second.runtime_id
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("maximum", [1, 2])
+def test_runtime_start_limit_serializes_concurrent_requests(maximum: int) -> None:
+    class Provider(FakeProvider):
+        @property
+        def max_instances(self):
+            return maximum
+
+    async def run() -> None:
+        provider = Provider()
+        provider.policy = "single" if maximum == 1 else "multiple"
+        supervisor = RuntimeSupervisor((provider,), FakeHost())
+        specs = [RuntimeInstanceSpec(f"rti_{index}", "fake", f"Runtime {index}") for index in range(3)]
+        for spec in specs:
+            await supervisor.validate_config(spec, {})
+        provider.block_validation_mode = "blocked"
+        provider.validation_started = asyncio.Event()
+        provider.validation_release = asyncio.Event()
+        first = asyncio.create_task(supervisor.start(specs[0], {"mode": "blocked"}))
+        await asyncio.wait_for(provider.validation_started.wait(), timeout=1)
+        others = [asyncio.create_task(supervisor.start(spec, {})) for spec in specs[1:]]
+        # Force the other requests to contend while the first native start is
+        # in flight, so a missing startup lock can oversubscribe the provider.
+        await asyncio.sleep(0)
+        provider.validation_release.set()
+        results = await asyncio.gather(first, *others, return_exceptions=True)
+        assert sum(isinstance(result, AgentRuntime) for result in results) == maximum
+        assert sum(isinstance(result, RuntimeConflictError) for result in results) == 3 - maximum
+        assert len(provider.created) == maximum
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_failed_start_only_retains_slot_when_runtime_cleanup_fails(cleanup_fails: bool) -> None:
+    async def run() -> None:
+        provider = FakeProvider()
+        provider.policy = "single"
+        provider.fail_start = True
+        provider.fail_stop = cleanup_fails
+        supervisor = RuntimeSupervisor((provider,), FakeHost())
+        first = RuntimeInstanceSpec("rti_failed", "fake", "Failed")
+        second = RuntimeInstanceSpec("rti_next", "fake", "Next")
+        with pytest.raises(RuntimeError, match="boom"):
+            await supervisor.start(first, {})
+        provider.fail_start = False
+        if cleanup_fails:
+            with pytest.raises(RuntimeConflictError, match="running instance"):
+                await supervisor.start(second, {})
+            provider.fail_stop = False
+            await supervisor.stop(first.runtime_id)
+        await supervisor.start(second, {})
+        assert supervisor.entry(first.runtime_id).runtime is None
+        assert supervisor.entry(second.runtime_id).status == "running"
+
+    asyncio.run(run())
+
+
+def test_stopped_config_validation_does_not_reserve_running_resources() -> None:
+    async def run() -> None:
+        provider = FakeProvider()
+        provider.claim_by_mode = {"shared": "source"}
+        supervisor = RuntimeSupervisor((provider,), FakeHost())
+        first = RuntimeInstanceSpec("rti_first", "fake", "First")
+        second = RuntimeInstanceSpec("rti_second", "fake", "Second")
+        await supervisor.start(first, {"mode": "shared"})
+        await supervisor.validate_config(second, {"mode": "shared"})
+        with pytest.raises(RuntimeConflictError, match="already used"):
+            await supervisor.start(second, {"mode": "shared"})
+        await supervisor.stop(first.runtime_id)
+        await supervisor.start(second, {"mode": "shared"})
 
     asyncio.run(run())
 

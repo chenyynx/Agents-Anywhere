@@ -71,6 +71,7 @@ export class BackendState {
       connectorDir: init.connectorDir,
       resourcesPath: init.resourcesPath,
       uvBundleDir: init.uvBundleDir,
+      pythonBundleDir: init.pythonBundleDir,
       packaged: init.packaged,
       homePath: init.homePath,
       shellEnvironment: {},
@@ -256,6 +257,10 @@ export class BackendState {
 
   disconnectLocal(input: DesktopDeviceAuthInput): Promise<PublicLocalDesktopBinding> {
     return this.devices.disconnectLocal(input);
+  }
+
+  revokeLocal(input: DesktopDeviceAuthInput): Promise<PublicLocalDesktopBinding> {
+    return this.devices.revokeLocal(input);
   }
 
   updateLocalBindingName(name: DesktopDeviceNameInput["name"]): PublicLocalDesktopBinding {

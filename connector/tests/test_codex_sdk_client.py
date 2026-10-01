@@ -9,6 +9,7 @@ from types import SimpleNamespace, TracebackType
 from typing import Any, Self
 
 import pytest
+from openai_codex import InvalidRequestError
 from openai_codex.generated.v2_all import (
     AgentMessageThreadItem,
     ContextCompactedNotification,
@@ -29,7 +30,8 @@ from openai_codex.models import (
     TurnCompletedNotification,
 )
 
-from connector.runtime_protocol import RuntimeConfig
+from connector.runtime_protocol import RuntimeConfig, RuntimeConflictError
+from connector.runtimes.codex.domain.input_requests import codex_input_request
 from connector.runtimes.codex.sdk import client as codex_sdk_client
 from connector.runtimes.codex.sdk.binary import LoginShellPathResult
 from connector.runtimes.codex.sdk.client import (
@@ -53,12 +55,98 @@ def test_codex_sdk_client_delegates_runtime_protocol_methods() -> None:
     asyncio.run(_test_codex_sdk_client_delegates_runtime_protocol_methods())
 
 
+def test_codex_sdk_list_threads_recovers_after_transport_dies() -> None:
+    asyncio.run(_test_codex_sdk_list_threads_recovers_after_transport_dies())
+
+
 def test_codex_sdk_approval_does_not_block_response_reader() -> None:
     asyncio.run(_test_codex_sdk_approval_does_not_block_response_reader())
 
 
+def test_codex_sdk_secret_question_returns_error_without_hanging_reader() -> None:
+    async def run() -> None:
+        native = _DeferredServerRequestSdkClient()
+        client = CodexSdkClient(native)
+
+        async def handler(message: dict[str, Any]) -> None:
+            codex_input_request(message["params"])
+
+        await client.start(handler)
+        try:
+            native.sync.incoming.put(
+                {
+                    "id": "secret_request",
+                    "method": "item/tool/requestUserInput",
+                    "params": {
+                        "threadId": "thread_1",
+                        "questions": [
+                            {
+                                "id": "private_input",
+                                "question": "Enter a private value",
+                                "isSecret": True,
+                            }
+                        ],
+                    },
+                }
+            )
+            native.sync.incoming.put({"id": "read_request", "result": {"data": []}})
+            async with asyncio.timeout(1):
+                while not native.sync.written or not native.sync.router.responses:
+                    await asyncio.sleep(0)
+
+            assert native.sync.written == [
+                {
+                    "id": "secret_request",
+                    "error": {
+                        "code": -32603,
+                        "message": "runtime does not support request_user_input secret questions",
+                    },
+                }
+            ]
+            assert native.sync.router.responses == [
+                {"id": "read_request", "result": {"data": []}}
+            ]
+        finally:
+            await client.stop()
+
+    asyncio.run(run())
+
+
 def test_codex_sdk_lists_paginated_thread_turns_in_chronological_order() -> None:
     asyncio.run(_test_codex_sdk_lists_paginated_thread_turns_in_chronological_order())
+
+
+def test_codex_sdk_rejects_partial_history_when_cursor_repeats() -> None:
+    async def run():
+        native = _FakeLowLevelAsyncCodex()
+        async def repeating(method, params, *, response_model):
+            return response_model.model_validate({"data": [{"id": "turn"}], "nextCursor": "same"})
+        native.low_level.request = repeating
+        with pytest.raises(RuntimeError, match="repeated a cursor"):
+            await CodexSdkClient(native).list_thread_turns("thread")
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("conflict", [True, False])
+def test_codex_sdk_resume_conflict_never_sends_or_caches_thread(conflict) -> None:
+    async def run():
+        native = _FakeLowLevelAsyncCodex()
+        client = CodexSdkClient(native, sdk=_FakeLowLevelSdkModule())
+        resume = native.low_level.thread_resume
+        error = InvalidRequestError(-32600, "thread thread_existing already has an active writer" if conflict else "invalid paginated history lineage: cycle detected")
+        async def blocked(*args, **kwargs):
+            raise error
+        native.low_level.thread_resume = blocked
+        request = CodexStartTurnRequest(thread_id="thread_existing", content="hello")
+        with pytest.raises(RuntimeConflictError if conflict else InvalidRequestError):
+            await client.start_turn(request)
+        assert native.low_level.turn_start_inputs == []
+        assert "thread_existing" not in client._loaded_thread_ids
+        native.low_level.thread_resume = resume
+        await client.start_turn(request)
+        assert len(native.low_level.thread_resume_params) == 1
+        assert len(native.low_level.turn_start_inputs) == 1
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("include_turns", [False, True])
@@ -130,6 +218,45 @@ async def _test_codex_sdk_client_delegates_runtime_protocol_methods() -> None:
     ]
     assert native.responses == [("req_1", {"decision": "approve"})]
     assert result.threads == ()
+
+
+async def _test_codex_sdk_list_threads_recovers_after_transport_dies() -> None:
+    failed = _BrokenPipeThreadListSdkClient()
+    replacement = _NativeSdkClient()
+    replacements: list[_NativeSdkClient] = []
+
+    def create_replacement() -> _NativeSdkClient:
+        replacements.append(replacement)
+        return replacement
+
+    client = CodexSdkClient(
+        failed,
+        client_factory=create_replacement,
+    )
+
+    async def handler(message: dict[str, Any]) -> None:
+        replacement.handled.append(message)
+
+    await client.start(handler)
+    result = await client.list_threads(limit=1)
+    await client.stop()
+
+    assert result.threads == ()
+    assert failed.stopped is True
+    assert replacements == [replacement]
+    assert replacement.started is True
+    assert replacement.stopped is True
+    assert replacement.requests == [
+        (
+            "thread/list",
+            {
+                "limit": 1,
+                "modelProviders": [],
+                "sortDirection": "desc",
+                "sortKey": "recency_at",
+            },
+        )
+    ]
 
 
 async def _test_codex_sdk_approval_does_not_block_response_reader() -> None:
@@ -768,6 +895,23 @@ class _NativeSdkClient:
         result: Mapping[str, Any] | None = None,
     ) -> None:
         self.responses.append((request_id, dict(result or {})))
+
+
+class _BrokenPipeThreadListSdkClient(_NativeSdkClient):
+    async def thread_list(
+        self,
+        cursor: str | None = None,
+        limit: int | None = None,
+        model_providers: list[str] | None = None,
+        sort_direction: SortDirection | None = None,
+        sort_key: ThreadSortKey | None = None,
+    ) -> dict[str, Any]:
+        _ = cursor
+        _ = limit
+        _ = model_providers
+        _ = sort_direction
+        _ = sort_key
+        raise BrokenPipeError(32, "Broken pipe")
 
 
 class _DeferredServerRequestSdkClient:

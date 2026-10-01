@@ -8,7 +8,7 @@
 
 桌面客户端（Desktop）包含 Connector，用于将本机连接到服务。Linux 和无图形界面的服务器可单独运行 Connector，通过其他客户端操作。Runtime 是运行或连接具体 Agent 的组件，其状态和支持的能力决定哪些操作可用。
 
-本文适用于当前 2.0 产品线。`main` 中的新修复可能尚未包含在 2.0.0 安装包中，发布范围见 [2.0.0 发布说明](releases/2.0.0.md)。
+本文适用于当前 2.0 产品线。`main` 中的新修复可能尚未包含在 2.0.3 安装包中，发布范围见 [2.0.3 发布说明](releases/2.0.3.md)。
 
 ## 1. 选择客户端
 
@@ -17,7 +17,7 @@
 - **macOS：** 安装 Universal DMG，适用于 Apple Silicon 和 Intel。
 - **Windows：** 安装 x64 桌面客户端。
 - **Android：** 安装 APK。
-- **iOS / iPadOS：** 通过 [TestFlight](https://testflight.apple.com/join/GKGaut99) 安装测试版，以邀请页的可用状态为准。
+- **iOS / iPadOS：** 在 [App Store](https://apps.apple.com/cn/app/agents-anywhere/id6787125178) 下载安装；也可以通过 [TestFlight](https://testflight.apple.com/join/GKGaut99) 安装测试版，以邀请页的可用状态为准。
 - **Web：** 打开 [web.agents-anywhere.com](https://web.agents-anywhere.com)。
 
 在工作设备上使用桌面客户端，或按 [Connector CLI 说明](../connector/README.md#run)接入无图形界面的机器。手机、平板和 Web 用于访问已连接的工作设备。

@@ -36,10 +36,14 @@ export type DesktopConnectorState = {
   resolvedUvPath?: string
   uvMissing?: boolean
   uvPath?: string
+  /** The interpreter uv runs the Connector with; empty when uv picks or downloads one. */
+  resolvedPythonPath?: string
+  pythonPath?: string
   logChunkSizeKb?: number
   logRetainChunks?: number
   logRetentionDays?: number
   uvPypiIndexUrl?: string
+  uvPythonInstallMirror?: string
 }
 
 export type DesktopLocalBinding = {
@@ -88,10 +92,12 @@ export type DesktopConnectorSettings = Partial<Pick<
   | "silentLaunch"
   | "notificationsEnabled"
   | "uvPath"
+  | "pythonPath"
   | "logChunkSizeKb"
   | "logRetainChunks"
   | "logRetentionDays"
   | "uvPypiIndexUrl"
+  | "uvPythonInstallMirror"
 >>
 
 export type DesktopConnectorConfigPatch = Partial<Pick<

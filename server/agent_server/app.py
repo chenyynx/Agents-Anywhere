@@ -170,7 +170,7 @@ def create_app(
                                 finally:
                                     await app.state.store.close()
 
-    app = FastAPI(title="Agent Server", version="2.0.0", lifespan=lifespan)
+    app = FastAPI(title="Agent Server", version="2.0.3", lifespan=lifespan)
     app.add_exception_handler(
         ConnectorServiceError,
         error_handlers.connector_service_error_handler,
@@ -317,6 +317,11 @@ def create_app(
                 checks["redis"] = {"status": "error", "message": str(exc)}
         else:
             checks["redis"] = {"status": "not_configured"}
+        if app.state.timeline_broker.healthy:
+            checks["realtime"] = {"status": "ok"}
+        else:
+            ready = False
+            checks["realtime"] = {"status": "error", "message": "subscription unavailable"}
         return JSONResponse(
             status_code=200 if ready else 503,
             content={

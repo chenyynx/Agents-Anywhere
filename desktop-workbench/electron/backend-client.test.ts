@@ -36,6 +36,7 @@ function initFor(root: string): BackendInit {
     connectorDir: root,
     resourcesPath: root,
     uvBundleDir: path.join(root, "build", "uv"),
+    pythonBundleDir: path.join(root, "build", "python"),
     homePath: root,
     documentsPath: root,
     packaged: false,

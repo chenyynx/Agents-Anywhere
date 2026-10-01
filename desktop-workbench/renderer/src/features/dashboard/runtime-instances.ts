@@ -88,13 +88,10 @@ export function mergeRuntimeTypes(
 
 export function runtimeTypeCanCreateInstance(
   runtimeType: RuntimeTypeView,
-  runtimes: readonly DeviceRuntimeView[],
+  _runtimes: readonly DeviceRuntimeView[],
 ): boolean {
-  if (!runtimeType.present || runtimeType.schema === null) return false
-  if (reconfigurableRuntimeInstance(runtimeType, runtimes)) return true
-  const current = runtimes.filter((runtime) => runtime.runtimeType === runtimeType.runtimeType).length
-  if (runtimeType.instancePolicy === "single" && current >= 1) return false
-  return runtimeType.maxInstances === null || current < runtimeType.maxInstances
+  // Provider limits apply when starting a runtime, not when saving its config.
+  return runtimeType.present && runtimeType.schema !== null
 }
 
 export function configuredRuntimeInstances(
@@ -103,6 +100,17 @@ export function configuredRuntimeInstances(
   return runtimes
     .filter((runtime) => runtime.configured)
     .sort((left, right) => runtimeInstanceName(left).localeCompare(runtimeInstanceName(right)))
+}
+
+export function runtimeInstancesAfterDeletion(
+  runtimes: readonly DeviceRuntimeView[],
+  deletedId: string,
+  successor: DeviceRuntimeView,
+): DeviceRuntimeView[] {
+  return [
+    ...runtimes.filter((runtime) => runtime.runtimeId !== deletedId && runtime.runtimeId !== successor.runtimeId),
+    successor,
+  ]
 }
 
 export function addableRuntimeTypes(

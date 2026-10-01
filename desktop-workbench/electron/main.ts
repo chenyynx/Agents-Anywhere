@@ -38,6 +38,7 @@ import { validateTitleBarColors } from "./title-bar";
 import type { BackendInit } from "./backend/protocol";
 import { DesktopBackendClient } from "./backend-client";
 import { windowMaterialOptions } from "./window-material";
+import buildInfo from "../build-info.json";
 import config from "../config.json";
 import { proxyDesktopApi } from "./api-proxy";
 import {
@@ -399,7 +400,19 @@ function createMainWindow(showOnReady = true, route = "/"): BrowserWindow {
     if (showOnReady) showMainWindow();
   });
   window.webContents.setWindowOpenHandler(({ url }) => {
-    if (isWorkbenchUrl(url)) return { action: "allow" };
+    if (isWorkbenchUrl(url)) {
+      return {
+        action: "allow",
+        overrideBrowserWindowOptions: {
+          webPreferences: {
+            preload: path.join(__dirname, "preload.js"),
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: false,
+          },
+        },
+      };
+    }
     void shell.openExternal(url);
     return { action: "deny" };
   });
@@ -524,6 +537,19 @@ function resolveUvBundleDir(): string {
   }
   if (app.isPackaged) return path.join(process.resourcesPath, "uv");
   return path.join(app.getAppPath(), "build", "uv");
+}
+
+/**
+ * The CPython that packaging bundles, so the Connector never waits on uv
+ * downloading an interpreter. Development uses the same build output once
+ * `yarn bundle:python` has created it; until then uv picks an interpreter.
+ */
+function resolvePythonBundleDir(): string {
+  if (process.env.WORKBENCH_PYTHON_BUNDLE_DIR?.trim()) {
+    return path.resolve(process.env.WORKBENCH_PYTHON_BUNDLE_DIR.trim());
+  }
+  if (app.isPackaged) return path.join(process.resourcesPath, "python");
+  return path.join(app.getAppPath(), "build", "python");
 }
 
 function appWindowIcon(): string {
@@ -772,7 +798,7 @@ function registerIpcHandlers(): void {
     if (binding && !forceLocal) {
       // Server revoke happens first. If it fails, local credentials and binding
       // remain untouched so the user can retry instead of creating an orphan.
-      await client.request("/device/disconnect", {
+      await client.request("/device/revoke", {
         method: "POST",
         body: JSON.stringify({
           userToken: input?.userToken ?? "",
@@ -818,6 +844,7 @@ function backendInit(): BackendInit {
     connectorDir: resolveConnectorDir(),
     resourcesPath: process.resourcesPath,
     uvBundleDir: resolveUvBundleDir(),
+    pythonBundleDir: resolvePythonBundleDir(),
     homePath: app.getPath("home"),
     documentsPath: app.getPath("documents"),
     packaged: app.isPackaged,
@@ -962,6 +989,7 @@ if (hasSingleInstanceLock) {
     updates = new DesktopUpdateService({
       directory: path.join(app.getPath("userData"), "updates"),
       currentVersion: app.getVersion(),
+      serverVersion: buildInfo.serverVersion,
       downloadUrl: config.updates.downloadUrl,
       platform: process.platform,
       healthTimeoutMs: config.healthTimeoutMs,

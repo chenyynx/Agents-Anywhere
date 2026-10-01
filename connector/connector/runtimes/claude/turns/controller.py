@@ -6,6 +6,8 @@ from typing import Any
 
 from connector.runtime_protocol import (
     RuntimeAttachment,
+    RuntimeCommand,
+    RuntimeCommandResult,
     RuntimeConfig,
     RuntimeOperationResult,
     RuntimeSessionStateCache,
@@ -25,6 +27,7 @@ from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 from connector.runtimes.claude.sessions.reader import ClaudeSessionReader
 from connector.runtimes.claude.timeline.messages import ClaudeMessageProjector
 from connector.runtimes.claude.turns.actions import ClaudeTurnActionHandler
+from connector.runtimes.claude.turns.commands import ClaudeCommandController
 from connector.runtimes.claude.turns.interactions import ClaudeInteractionController
 from connector.runtimes.claude.turns.lifecycle import ClaudeTurnRunner
 from connector.runtimes.claude.turns.selections import ClaudeSelectionController
@@ -50,6 +53,7 @@ class ClaudeTurnController:
     selections: ClaudeSelectionController = field(init=False)
     runner: ClaudeTurnRunner = field(init=False)
     actions: ClaudeTurnActionHandler = field(init=False)
+    commands: ClaudeCommandController = field(init=False)
     session_start: ClaudeSessionStartHandler = field(init=False)
 
     def __post_init__(self) -> None:
@@ -88,6 +92,11 @@ class ClaudeTurnController:
         self.session_start = ClaudeSessionStartHandler(
             session_store=self.session_store,
             notifications=self.notifications,
+            actions=self.actions,
+        )
+        self.commands = ClaudeCommandController(
+            session_states=self.session_states,
+            session_store=self.session_store,
             actions=self.actions,
         )
 
@@ -142,6 +151,36 @@ class ClaudeTurnController:
         return await self.actions.interrupt_session(
             session_id=session_id,
             reason=reason,
+        )
+
+    def list_commands(
+        self,
+        session_id: str,
+        external_session_id: str | None = None,
+        query: str | None = None,
+        limit: int = 50,
+    ) -> tuple[RuntimeCommand, ...]:
+        return self.commands.catalog(
+            session_id=session_id,
+            external_session_id=external_session_id,
+            query=query,
+            limit=limit,
+        )
+
+    async def execute_command(
+        self,
+        session_id: str,
+        command: str,
+        external_session_id: str | None = None,
+        raw: str | None = None,
+        args: tuple[str, ...] = (),
+    ) -> RuntimeCommandResult:
+        return await self.commands.execute_command(
+            session_id=session_id,
+            command=command,
+            external_session_id=external_session_id,
+            raw=raw,
+            args=args,
         )
 
     async def update_session_selections(

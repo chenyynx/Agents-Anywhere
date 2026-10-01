@@ -43,6 +43,11 @@ from connector.runtimes.claude.sdk.settings import (
 from connector.runtimes.claude.sdk.stderr import ClaudeStderrBuffer
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 from connector.runtimes.claude.sessions.scheduled import ClaudeScheduledSessions
+from connector.runtimes.claude.timeline.markers import (
+    ClaudeTimelineMarkers,
+    claude_compact_event,
+    is_compaction_control_message,
+)
 from connector.runtimes.claude.timeline.messages import (
     ClaudeMessageProjector,
     is_synthetic_control_message,
@@ -77,6 +82,7 @@ class ClaudeTurnRunner:
     client_factory: ClaudeClientFactory | None = None
     connections: dict[str, ClaudeConnection] = field(default_factory=dict, init=False)
     stopping: bool = False
+    markers: ClaudeTimelineMarkers = field(default_factory=ClaudeTimelineMarkers, init=False)
     scheduled_sessions: ClaudeScheduledSessions = field(init=False)
 
     def __post_init__(self) -> None:
@@ -327,6 +333,7 @@ class ClaudeTurnRunner:
         client_message_id: str | None,
         scheduled: bool = False,
         response: ClaudeResponse | None = None,
+        command: str | None = None,
     ) -> None:
         turn_id = execution.turn_id
         stderr = ClaudeStderrBuffer(session.session_id)
@@ -337,7 +344,10 @@ class ClaudeTurnRunner:
         attachment_mappings: tuple[dict[str, object], ...] = ()
         replayed_user_message: tuple[str, str] | None = None
         response_external_session_confirmed = False
-        user_message_published = scheduled
+        # A native command is CLI chrome rather than a message the user sent:
+        # Claude never echoes it back, so no user item is reserved, published or
+        # replayed. The compaction marker is the whole surface of the turn.
+        user_message_published = scheduled or command is not None
         published_user_item_id: str | None = None
         stream_accumulator = ClaudeStreamAccumulator()
         try:
@@ -377,8 +387,8 @@ class ClaudeTurnRunner:
                 attachment.to_mapping() for attachment in materialized_attachments
             )
             if not scheduled:
-                prompt_uuid = client.ensure_prompt_uuid()
-                if (
+                prompt_uuid = client.ensure_prompt_uuid() if command is None else None
+                if command is None and (
                     client_message_id is not None
                     or session.external_session_id is not None
                 ):
@@ -419,7 +429,7 @@ class ClaudeTurnRunner:
                             "Claude early user publish failed session_id={}",
                             session.session_id,
                         )
-                else:
+                elif command is None:
                     reserved_user_item = self.timeline.message_item(
                         session=session,
                         turn_id=turn_id,
@@ -451,11 +461,18 @@ class ClaudeTurnRunner:
                 text = message_text(message)
                 native_message_id = message_id(message)
                 synthetic_control = is_synthetic_control_message(message)
+                # Compaction is reported through the same events whether the CLI
+                # compacted a `/compact` prompt or its own context window, so the
+                # mapping stays on this shared path.
+                compact_event = claude_compact_event(message)
+                suppressed_control = (
+                    synthetic_control or is_compaction_control_message(message)
+                )
                 if (
                     role == "user"
                     and text
                     and native_message_id
-                    and not synthetic_control
+                    and not suppressed_control
                 ):
                     replayed_user_message = (native_message_id, text)
                     if user_message_published:
@@ -511,7 +528,7 @@ class ClaudeTurnRunner:
                     reasoning_revision=stream_accumulator.next_thinking_final_revision(),
                 )
                 has_visible_message = (
-                    not synthetic_control
+                    not suppressed_control
                     and role in {"assistant", "system"}
                     and bool(text)
                 )
@@ -568,7 +585,15 @@ class ClaudeTurnRunner:
                     await self.notifications.timeline_activity.timeline_item_upsert(
                         item
                     )
-                if synthetic_control:
+                if compact_event is not None:
+                    await self.notifications.timeline_activity.timeline_item_upsert(
+                        self.markers.item_for_event(
+                            session=session,
+                            turn_id=turn_id,
+                            event=compact_event,
+                        )
+                    )
+                if suppressed_control:
                     continue
                 if role not in {"assistant", "system"}:
                     continue
@@ -676,6 +701,7 @@ class ClaudeTurnRunner:
                     code="claude_turn_missing_terminal_state",
                     message="Claude turn stopped without a terminal state",
                 )
+            await self.settle_compact_markers(session, turn_id)
             try:
                 await self.finish_execution(
                     session=session,
@@ -711,6 +737,28 @@ class ClaudeTurnRunner:
                     "Claude reasoning flush failed session_id={}",
                     session.session_id,
                 )
+
+    async def settle_compact_markers(
+        self,
+        session: ClaudeSession,
+        turn_id: str,
+    ) -> None:
+        """Close a compaction marker this turn never proved complete.
+
+        Compaction reports success through its own events, so a turn that ends
+        without them — failed, interrupted, or resolved without compacting —
+        must not leave the client showing a running separator.
+        """
+
+        try:
+            items = self.markers.settle_turn(session=session, turn_id=turn_id)
+            for item in items:
+                await self.notifications.timeline_activity.timeline_item_upsert(item)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Claude compaction marker settle failed session_id={}",
+                session.session_id,
+            )
 
     async def publish_replayed_user_message(
         self,

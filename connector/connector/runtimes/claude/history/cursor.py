@@ -60,11 +60,27 @@ def messages_after_cursor(
     messages: tuple[Any, ...],
     cursor: ClaudeHistoryCursor,
 ) -> tuple[Any, ...]:
+    """Return the part of the chain the cursor has not covered yet.
+
+    A compaction rewrites the chain: the SDK keeps following the summary, so
+    every earlier message - including the uuid we stored last time - stops
+    being reachable and the stored uuid matches nothing. Slicing by
+    `message_count` instead would then start past the end of a now shorter list
+    and silently swallow the whole post-compaction transcript, so a dangling
+    uuid rebases on the full chain. Re-projecting it is safe: item ids are
+    stable per native uuid and the server merges a timeline sync by id, so
+    already synced rows are rewritten in place and never dropped.
+
+    `message_count` stays the fallback for transcripts that expose no uuid at
+    all, and only when the chain actually grew; a shrunken list means the same
+    rewrite happened and needs the same full rebase.
+    """
     if cursor.last_message_uuid:
         for index, message in enumerate(messages):
             if _attr(message, "uuid") == cursor.last_message_uuid:
                 return messages[index + 1 :]
-    if cursor.message_count > 0:
+        return messages
+    if 0 < cursor.message_count < len(messages):
         return messages[cursor.message_count :]
     return messages
 

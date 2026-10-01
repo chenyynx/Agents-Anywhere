@@ -595,6 +595,12 @@ async def _test_claude_runtime_bridges_replayed_uuid_without_client_message_id()
     None
 ):
     host = _RecordingHost()
+    host.attachments["file_bridge"] = RuntimeAttachmentContent(
+        file_id="file_bridge",
+        name="note.txt",
+        media_type="text/plain",
+        content=b"bridge attachment",
+    )
     external_session_id = "claude_bridged"
     sdk = _HistorySdk(
         messages={
@@ -620,6 +626,7 @@ async def _test_claude_runtime_bridges_replayed_uuid_without_client_message_id()
         "sess_bridged",
         external_session_id,
         "hello bridge",
+        attachments=(RuntimeAttachment(file_id="file_bridge", name="note.txt"),),
     )
     task = runtime._sessions["sess_bridged"].active_task
     assert result.ok is True
@@ -629,6 +636,7 @@ async def _test_claude_runtime_bridges_replayed_uuid_without_client_message_id()
     live_users = [item for item in host.timeline_item_upserts if item.role == "user"]
     assert len(live_users) == 1
     assert live_users[0].source["itemId"] == client.prompt_uuids[0]
+    assert live_users[0].content["attachments"][0]["name"] == "note.txt"
 
     handled = await runtime.sync_session_timeline(
         "sess_bridged",
@@ -640,6 +648,7 @@ async def _test_claude_runtime_bridges_replayed_uuid_without_client_message_id()
     assert handled is True
     assert len(history_users) == 1
     assert history_users[0].id == live_users[0].id
+    assert history_users[0].content["attachments"][0]["name"] == "note.txt"
 
 
 def test_claude_runtime_flushes_truncated_thinking_blocks() -> None:

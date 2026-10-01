@@ -294,6 +294,7 @@ class ClaudePendingClientMessageRegistry:
         native_message_id: str,
         platform_item_id: str,
         text: str,
+        attachments: tuple[Mapping[str, object], ...] = (),
     ) -> bool:
         """Record a native-to-platform bridge for a message without a client id.
 
@@ -312,6 +313,7 @@ class ClaudePendingClientMessageRegistry:
             platform_item_id=platform_item_id,
             native_message_id=native_message_id,
             text=text,
+            attachments=tuple(dict(attachment) for attachment in attachments),
         )
         self._matched = [
             existing

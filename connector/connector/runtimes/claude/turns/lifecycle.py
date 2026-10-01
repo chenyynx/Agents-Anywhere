@@ -473,6 +473,7 @@ class ClaudeTurnRunner:
                         self._confirm_replayed_user_binding(
                             session=session,
                             content=content,
+                            attachments=attachment_mappings,
                             client_message_id=client_message_id,
                             replayed_user_message=replayed_user_message,
                             platform_item_id=published_user_item_id,
@@ -760,6 +761,7 @@ class ClaudeTurnRunner:
         *,
         session: ClaudeSession,
         content: str,
+        attachments: tuple[dict[str, object], ...],
         client_message_id: str | None,
         replayed_user_message: tuple[str, str] | None,
         platform_item_id: str | None,
@@ -793,6 +795,7 @@ class ClaudeTurnRunner:
                     native_message_id=native_message_id,
                     platform_item_id=platform_item_id,
                     text=content,
+                    attachments=attachments,
                 )
         except Exception:  # noqa: BLE001
             logger.exception(

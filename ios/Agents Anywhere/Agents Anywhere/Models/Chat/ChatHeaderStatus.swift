@@ -33,9 +33,9 @@ enum ChatHeaderStatus: Equatable {
         default: "info.circle"
         }
     }
-    /// The not-ready state is visual only: a thin matte light sweeps the top
-    /// bar. Never a spinner (that stays reserved for working/stopping) and
-    /// never copy (see `title`).
+    /// The not-ready state is visual only: the title and subtitle are swept
+    /// by the shared activity shimmer (StatusShimmer). Never a spinner (that
+    /// stays reserved for working/stopping) and never copy (see `title`).
     var isGlow: Bool { self == .syncing }
     var isProgress: Bool { self == .working || self == .stopping }
 }

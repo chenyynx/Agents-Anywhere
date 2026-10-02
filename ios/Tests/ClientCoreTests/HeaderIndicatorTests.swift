@@ -3,8 +3,9 @@ import Testing
 @testable import ClientCore
 
 /// Locks the header indicator contract after the "正在同步会话状态…" copy
-/// retired: the not-ready state is always the copy-free glow sweep, and every
-/// other status keeps its existing copy and indicator kind.
+/// retired: the not-ready state is always the copy-free StatusShimmer sweep
+/// (title and subtitle), and every other status keeps its existing copy and
+/// indicator kind.
 @Suite struct HeaderIndicatorTests {
     @Test func notReadyStateIsAlwaysTheCopyFreeGlowSweep() throws {
         let chat = makeChat()

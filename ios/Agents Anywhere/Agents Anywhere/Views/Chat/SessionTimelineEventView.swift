@@ -109,7 +109,7 @@ struct TimelineMarkerRow: View {
             if let expanded { AppSymbol(expanded ? "chevron.down" : "chevron.right", size: 10).frame(width: 10) }
             AppSymbol(symbol, size: 15).frame(width: 18)
             Text(title).font(.system(.subheadline, design: .monospaced)).lineLimit(1).truncationMode(.tail)
-                .modifier(TimelineMarkerShimmer(active: status.isActive && !status.isFailure))
+                .modifier(StatusShimmer(active: status.isActive && !status.isFailure))
                 .frame(maxWidth: .infinity, alignment: .leading)
             if let accessory { AppSymbol(accessory, size: 14) }
         }
@@ -138,40 +138,6 @@ private struct TimelineToolDetails: View {
             ForEach(changes) { change in TimelineFileChangeView(change: change, onFile: onFile) }
             if let output = value.output { TimelineCodePanel(label: String(localized: "Output"), code: output) }
         }.clipShape(.rect(cornerRadius: 14))
-    }
-}
-
-private struct TimelineMarkerShimmer: ViewModifier {
-    let active: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    func body(content: Content) -> some View {
-        if active && !reduceMotion { content.modifier(ActiveMarkerShimmer()) }
-        else { content }
-    }
-}
-
-/// A local compositor animation; no per-frame timeline/model publications.
-private struct ActiveMarkerShimmer: ViewModifier {
-    @State private var sweeps = false
-    func body(content: Content) -> some View {
-        content.mask {
-            GeometryReader { geometry in
-                LinearGradient(stops: [
-                    .init(color: .white.opacity(0.45), location: 0),
-                    .init(color: .white.opacity(0.45), location: 0.35),
-                    .init(color: .white, location: 0.5),
-                    .init(color: .white.opacity(0.45), location: 0.65),
-                    .init(color: .white.opacity(0.45), location: 1)
-                ], startPoint: .leading, endPoint: .trailing)
-                .frame(width: geometry.size.width * 3)
-                .offset(x: sweeps ? 0 : -geometry.size.width * 2)
-            }
-        }
-        .onAppear {
-            sweeps = false
-            withAnimation(.linear(duration: 1.6).repeatForever(autoreverses: false)) { sweeps = true }
-        }
-        .onDisappear { sweeps = false }
     }
 }
 

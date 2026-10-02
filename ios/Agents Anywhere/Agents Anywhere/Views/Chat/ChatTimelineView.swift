@@ -55,6 +55,7 @@ struct ChatTimelineView: View {
                         acknowledgeInstantOpeningIfArrived()
                     })
                     .equatable()
+                    .opacity(model.openingPositionSettled ? 1 : 0)
                     .background { ChatPageScrollEdge() }
             }
             .scrollPosition($position)
@@ -62,7 +63,7 @@ struct ChatTimelineView: View {
             .scrollIndicators(.hidden)
             .scrollBounceBehavior(.always, axes: .vertical)
             .scrollEdgeEffectStyle(.soft, for: .top)
-            .defaultScrollAnchor(.top, for: .initialOffset)
+            .defaultScrollAnchor(.bottom, for: .initialOffset)
             .defaultScrollAnchor(.top, for: .alignment)
             .defaultScrollAnchor(.top, for: .sizeChanges)
             .allowsHitTesting(model.isOpeningReady)
@@ -162,6 +163,14 @@ struct ChatTimelineView: View {
             }
             .onChange(of: model.isOpeningReady, initial: true) { _, ready in
                 if ready { scrolling.open(interactionPresented: hasInteractions) }
+                if ready, !navigationIsSuspended {
+                    // Arm the bottom target in the same update that first presents the
+                    // content, so the first laid-out frame already sits at the bottom
+                    // instead of rendering the window top for the pipeline's latency.
+                    var transaction = Transaction(animation: nil)
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) { position.scrollTo(edge: .bottom) }
+                }
             }
             .onChange(of: scrolling.navigationGeneration) { _, _ in
                 releaseScrollPosition()
@@ -170,7 +179,9 @@ struct ChatTimelineView: View {
                 guard let request = scrolling.pendingBottomRequest, !navigationIsSuspended else { return }
                 // Coalesce actual layout changes. Scrolling through the same
                 // layout cannot restart this animation on every offset callback.
-                do { try await Task.sleep(for: .milliseconds(24)) } catch { return }
+                if !scrolling.openingReturnIsPending {
+                    do { try await Task.sleep(for: .milliseconds(24)) } catch { return }
+                }
                 guard !Task.isCancelled, !navigationIsSuspended, let command = scrolling.begin(request) else { return }
                 scrollToBottom(command)
             }

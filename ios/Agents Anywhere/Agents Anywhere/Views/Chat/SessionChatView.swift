@@ -6,6 +6,8 @@ struct SessionChatView: View, Equatable {
     private var model: SessionChatModel { storage.value }
     private let sessionIdentity: V2SessionModel
     let deviceName: String?
+    let fallbackTitle: String?
+    let fallbackRuntimeName: String?
     let onMenu: () -> Void
     @State private var sheet: SessionSheet?
     @State private var expandedNoticeID: String?
@@ -26,6 +28,7 @@ struct SessionChatView: View, Equatable {
     @ScaledMetric(relativeTo: .footnote) private var takeoverPillHeight: CGFloat = 32
 
     init(session: V2SessionModel, services: V2ClientServices, deviceName: String?,
+         fallbackTitle: String? = nil, fallbackRuntimeName: String? = nil,
          onMenu: @escaping () -> Void) {
         _storage = StateObject(wrappedValue: StableViewModel {
             let chat = SessionChatModel(session: session, repository: services.sessionRepository, attachments: services.attachments,
@@ -38,6 +41,8 @@ struct SessionChatView: View, Equatable {
         })
         sessionIdentity = session
         self.deviceName = deviceName
+        self.fallbackTitle = fallbackTitle
+        self.fallbackRuntimeName = fallbackRuntimeName
         fileService = services.workspaceFiles; detailService = services.sessionDetail
         self.onMenu = onMenu
     }
@@ -48,6 +53,7 @@ struct SessionChatView: View, Equatable {
     // model changes and real size/environment changes still update this subtree.
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.sessionIdentity === rhs.sessionIdentity && lhs.deviceName == rhs.deviceName
+            && lhs.fallbackTitle == rhs.fallbackTitle && lhs.fallbackRuntimeName == rhs.fallbackRuntimeName
     }
     var body: some View {
         GeometryReader { geometry in
@@ -105,8 +111,8 @@ struct SessionChatView: View, Equatable {
                     }.padding(.top, 8)
                 }
         }
-        .modifier(ChatPageToolbar(title: session.metadata?.title ?? String(localized: "会话"),
-            subtitle: [session.metadata?.runtimeName ?? session.metadata?.runtime ?? String(localized: "Agent"),
+        .modifier(ChatPageToolbar(title: session.metadata?.title ?? fallbackTitle ?? String(localized: "会话"),
+            subtitle: [session.metadata?.runtimeName ?? session.metadata?.runtime ?? fallbackRuntimeName ?? String(localized: "Agent"),
                 deviceName ?? session.metadata?.connectorId].compactMap { $0 }.joined(separator: " · "),
             status: model.headerStatus, alignsTitleLeading: true, onMenu: onMenu))
         .toolbar {

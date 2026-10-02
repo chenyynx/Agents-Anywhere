@@ -115,8 +115,6 @@ struct ChatSidebarView: View {
             }
             .padding(.leading, safeAreaInsets.leading + Self.contentInset)
             .padding(.trailing, safeAreaInsets.trailing + Self.contentInset)
-            .environment(\.chatSidebarRowBleed, EdgeInsets(top: 0, leading: safeAreaInsets.leading + Self.contentInset,
-                                                           bottom: 0, trailing: safeAreaInsets.trailing + Self.contentInset))
             .padding(.top, 10)
             .padding(.bottom, safeAreaInsets.bottom + 82)
         }
@@ -156,11 +154,6 @@ struct ChatSidebarView: View {
         let parts = [project, device].compactMap { $0 }.filter { !$0.isEmpty }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
-}
-
-extension EnvironmentValues {
-    /// Distance from a sidebar row to the sidebar edges; selection bars bleed through it.
-    @Entry var chatSidebarRowBleed = EdgeInsets()
 }
 
 struct ChatSidebarListMenu<Filters: View>: View {
@@ -347,7 +340,6 @@ private struct ChatSidebarDeviceRow: View {
 
 struct ChatSidebarSessionRow: View {
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.chatSidebarRowBleed) private var bleed
 
     let session: ChatSidebarSession
     let isSelected: Bool
@@ -359,6 +351,10 @@ struct ChatSidebarSessionRow: View {
     let onTogglePinned: () -> Void
     let onArchive: () -> Void
     let onCopyId: () -> Void
+
+    /// Corner radius of the selection block, estimated from the reference
+    /// screenshot（按参考图估值，真机可微调）.
+    private static let selectionCornerRadius: CGFloat = 14
 
     @State private var isRenaming = false
     @State private var titleDraft = ""
@@ -384,11 +380,13 @@ struct ChatSidebarSessionRow: View {
             .padding(.trailing, 10)
             .padding(.vertical, context == nil ? 0 : 8)
             .frame(minHeight: 42)
-            // Selection is a full-width bar reaching both sidebar edges.
+            // Selection is an inset rounded block: the row already sits inside
+            // the sidebar's content inset, so filling the row frame keeps the
+            // highlight clear of both edges without any bleed.
             .background {
                 if isSelected {
-                    Rectangle().fill(AppTheme.sidebarSelectionFill(colorScheme))
-                        .padding(.leading, -bleed.leading).padding(.trailing, -bleed.trailing)
+                    RoundedRectangle(cornerRadius: Self.selectionCornerRadius, style: .continuous)
+                        .fill(AppTheme.sidebarSelectionFill(colorScheme))
                 }
             }
             .overlay(alignment: .bottom) {

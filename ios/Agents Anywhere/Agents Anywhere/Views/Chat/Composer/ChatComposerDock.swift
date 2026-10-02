@@ -53,8 +53,12 @@ struct ChatComposerDock: View {
                 showsCommands: sessionChat?.offersCommands == true, commandsActive: showsCommandMenu,
                 onCommands: { showsCommandMenu.toggle() },
                 onDraftChange: onDraftChange)
-                // K2: the glass bar itself carries the trigger-style keyboard
-                // gesture; the command panel above is a sibling and stays out.
+                .contentShape(Rectangle())
+                // K2 (round 1.1): the composer band owns vertical drags across
+                // its whole frame — including the transparent margins around
+                // the glass bar — so a swipe here can never fall through to
+                // the timeline's interactive dismissal. Inner controls, the
+                // editor and the command panel keep their own interactions.
                 .composerKeyboardGesture(draft: draft, editor: editor)
         }
         .onChange(of: sessionChat?.optionsRequest) { _, _ in showsOptions = true }

@@ -2,13 +2,16 @@ import Foundation
 import Testing
 @testable import ClientCore
 
-/// Pins the trigger-style composer keyboard gesture rules (K2): claim at 10pt
-/// with 1:1 vertical dominance; dismiss at ≥400pt/s or ≥60pt; present at
-/// ≥300pt/s or ≥24pt; cancelled gestures and drag-selects are never judged.
-/// The thresholds are deliberately spelled as literals here so any change to
-/// `ComposerKeyboardGestureThresholds` or to a branch turns these red.
+/// Pins the trigger-style composer keyboard gesture rules (K2; round 1.1
+/// judges the claim on release). A released drag must clear 10pt of net
+/// vertical dominance before any rule reads it; dismiss at ≥400pt/s or ≥60pt;
+/// present at ≥300pt/s or ≥24pt; cancelled gestures and drag-selects are never
+/// judged. The thresholds are deliberately spelled as literals here so any
+/// change to `ComposerKeyboardGestureThresholds` or to a branch turns these
+/// red.
 @Suite struct ComposerKeyboardGestureTests {
     private func context(
+        translationX: CGFloat = 0,
         translationY: CGFloat = 0,
         velocityY: CGFloat = 0,
         keyboardIsVisible: Bool = true,
@@ -17,7 +20,7 @@ import Testing
         outcome: ComposerKeyboardGesturePolicy.Outcome = .ended
     ) -> ComposerKeyboardGesturePolicy.Context {
         ComposerKeyboardGesturePolicy.Context(
-            translationY: translationY, velocityY: velocityY,
+            translationX: translationX, translationY: translationY, velocityY: velocityY,
             keyboardIsVisible: keyboardIsVisible, isComposing: isComposing,
             isSelecting: isSelecting, outcome: outcome)
     }
@@ -45,12 +48,43 @@ import Testing
         #expect(!ComposerKeyboardGesturePolicy.claims(dx: -10, dy: -10))
     }
 
+    // MARK: - Release claim: direction and distance over the whole drag
+
+    @Test func diagonalTravelNeedsVerticalDominanceOnRelease() {
+        // Vertical wins while it strictly dominates the net horizontal
+        // travel: 70pt right / 80pt down still claims (80 > 70), and the 80pt
+        // of downward travel then resigns...
+        #expect(action(context(translationX: 70, translationY: 80)) == .resign)
+        // ...but 90pt right / 80pt down is horizontally dominant: the claim
+        // fails, so even 80pt of downward travel (past the 60pt distance)
+        // cannot dismiss.
+        #expect(action(context(translationX: 90, translationY: 80)) == .none)
+        // The present direction mirrors it: 70pt right / 80pt up focuses...
+        #expect(action(context(translationX: 70, translationY: -80, keyboardIsVisible: false)) == .focus)
+        // ...while 90pt right / 80pt up never reaches the rules.
+        #expect(action(context(translationX: 90, translationY: -80, keyboardIsVisible: false)) == .none)
+    }
+
+    @Test func shortTravelCannotRideSpeedThroughTheClaimGate() {
+        // -12pt clears the 10pt claim distance, yet at rest it does nothing:
+        // well above the -24pt present distance, no velocity.
+        #expect(action(context(translationY: -12, keyboardIsVisible: false)) == .none)
+        // The same travel with a flick velocity focuses: the speed path is
+        // still judged inside the claim.
+        #expect(action(context(translationY: -12, velocityY: -350, keyboardIsVisible: false)) == .focus)
+        // Below the claim distance a fast release is not a keyboard intent:
+        // the release-claims gate owns the speed path in both directions.
+        #expect(action(context(translationY: -9, velocityY: -400, keyboardIsVisible: false)) == .none)
+        #expect(action(context(translationY: 9, velocityY: 500)) == .none)
+    }
+
     // MARK: - Keyboard visible: a downward release resigns
 
     @Test func visibleKeyboardDismissesOnAFastFlick() {
-        // 400pt/s meets the dismiss speed exactly; the 1pt of net travel is
-        // far below the 60pt distance, so only the speed rule can fire.
-        #expect(action(context(translationY: 1, velocityY: 400)) == .resign)
+        // 400pt/s meets the dismiss speed exactly; 12pt of net travel clears
+        // the 10pt claim yet stays far below the 60pt distance, so only the
+        // speed rule can fire.
+        #expect(action(context(translationY: 12, velocityY: 400)) == .resign)
         // 399pt/s misses the speed and 30pt misses the distance: both rules fail.
         #expect(action(context(translationY: 30, velocityY: 399)) == .none)
     }
@@ -73,9 +107,10 @@ import Testing
     // MARK: - Keyboard hidden: an upward release focuses
 
     @Test func hiddenKeyboardPresentsOnAFastFlick() {
-        // -300pt/s meets the present speed exactly; -1pt of travel is below
-        // the 24pt distance, so only the speed rule can fire.
-        #expect(action(context(translationY: -1, velocityY: -300, keyboardIsVisible: false)) == .focus)
+        // -300pt/s meets the present speed exactly; -12pt of travel clears the
+        // 10pt claim yet is above the -24pt distance, so only the speed rule
+        // can fire.
+        #expect(action(context(translationY: -12, velocityY: -300, keyboardIsVisible: false)) == .focus)
         // -299pt/s misses the speed and 15pt misses the distance.
         #expect(action(context(translationY: -15, velocityY: -299, keyboardIsVisible: false)) == .none)
     }

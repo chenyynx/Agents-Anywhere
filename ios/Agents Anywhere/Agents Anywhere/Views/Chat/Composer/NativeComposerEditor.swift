@@ -14,6 +14,14 @@ final class ComposerEditorController {
         synchronize()
     }
 
+    /// Focus mirror of `finishEditing`: driven straight from the keyboard
+    /// gesture, so the pop never waits on a SwiftUI re-render hop.
+    func beginEditing() {
+        guard let textView else { return }
+        textView.becomeFirstResponder()
+        synchronize()
+    }
+
     /// Check native marked text before ending editing. unmarkText() only removes
     /// the mark; it cannot select the user's intended Chinese candidate.
     func committedTextForSend() async -> String? {

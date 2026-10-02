@@ -18,13 +18,4 @@ nonisolated struct TimelineViewport: Equatable {
         self.topInset = topInset
     }
     var isMeasured: Bool { visibleHeight > 0 }
-
-    /// True when the measured scroll rests at its maximum offset — the
-    /// content's bottom edge sits at the viewport's. `visibleBottom` reaches
-    /// `contentHeight` exactly there by construction (maxOffset =
-    /// contentHeight - containerHeight + bottomInset), so the gap is the real
-    /// remaining travel; the tolerance absorbs float jitter and the
-    /// half-visible tail marker. The marker probes are not consulted: the
-    /// device probe read "at bottom" while this gap sat 213pt short.
-    var measuredAtBottom: Bool { isMeasured && contentHeight - visibleBottom <= 8 }
 }

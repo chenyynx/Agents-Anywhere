@@ -18,10 +18,6 @@ nonisolated struct TimelineScrollState: Equatable {
         /// never plays a visible top-to-bottom scroll. Every later return
         /// (sending, accepted responses, the bottom pill) keeps the spring.
         let instant: Bool
-        /// K5: the return the keyboard transition window holds and fires on
-        /// the first layout move (round 1.3) — the flag is what identifies
-        /// it. The instant opening return still wins when both flags are set.
-        let keyboardMatched: Bool
     }
 
     private(set) var phase = Phase.idle
@@ -33,35 +29,12 @@ nonisolated struct TimelineScrollState: Equatable {
     private(set) var navigationIsSuspended = false
     private(set) var hasOpened = false
     private(set) var activeCommand: BottomCommand?
-    /// K5: while the keyboard's transition window is open, its animation owns
-    /// programmatic scrolling. The tail probe flipping under the shrinking
-    /// container must not start the spring next to it (F11).
-    private(set) var keyboardTransitionActive = false
-    /// K5 (round 1.3): the matched return's scroll is issued at the first
-    /// sample whose visible height moved off the height it was begun at —
-    /// the moment the keyboard's inset reached the layout. One issue per
-    /// window; the device probe shows the model changes exactly once per
-    /// transition, so this is the one moment with full travel to animate.
-    private var keyboardReturnScrollIssued = false
-    private var keyboardReturnVisibleHeight: CGFloat?
     private var lastRequest: BottomRequest?
     private var commandID = 0
     private var awaitsUserScrollSettlement = false
     /// Set by `open()`, consumed by the first command it produces. A reader
     /// gesture before that command clears it, so later returns animate.
     private var openingReturnIsPending = false
-    /// K5 (round 1.3): the marker probes lie — the device probe read "at
-    /// bottom" from the tail flag while the measured gap sat hundreds of
-    /// points short, and the follow chain (gated on that flag) never
-    /// started. The at-bottom truth is measured directly from the last
-    /// published viewport: `visibleBottom` reaches `contentHeight` exactly
-    /// when the scroll rests at its maximum offset, so the gap is the real
-    /// remaining travel. The probes stay only as the fallback before the
-    /// first measurement.
-    var viewportIsAtBottom: Bool {
-        guard viewport.isMeasured else { return tail.isAtBottom }
-        return viewport.measuredAtBottom
-    }
 
     var userIsScrolling: Bool { [.tracking, .interacting, .decelerating].contains(phase) }
     var returningToBottom: Bool { mode == .returning }
@@ -108,13 +81,6 @@ nonisolated struct TimelineScrollState: Equatable {
         lastRequest = nil
     }
 
-    /// K5: opens or closes the keyboard transition window. Closing it is what
-    /// releases a withheld return, so the make-up lands once the keyboard has
-    /// settled.
-    mutating func setKeyboardTransitionActive(_ active: Bool) {
-        keyboardTransitionActive = active
-    }
-
     mutating func geometryChanged(_ next: TimelineViewport) { viewport = next }
 
     mutating func tailVisibilityChanged(_ region: TimelineTailVisibility.Region, visible: Bool) {
@@ -140,27 +106,17 @@ nonisolated struct TimelineScrollState: Equatable {
     mutating func settleUserScroll() {
         guard needsUserScrollSettlement, !returningToBottom else { return }
         awaitsUserScrollSettlement = false
-        mode = viewportIsAtBottom && !interactionIsPresented ? .following : .reading
+        mode = tail.isAtBottom && !interactionIsPresented ? .following : .reading
     }
 
     var pendingBottomRequest: BottomRequest? {
-        // K5: withheld while the keyboard's transition window is open; the
-        // transition-end recheck releases it.
-        guard !keyboardTransitionActive else { return nil }
-        return ungatedBottomRequest
-    }
-
-    private var ungatedBottomRequest: BottomRequest? {
         guard hasOpened, !navigationIsSuspended, viewport.isMeasured,
               returningToBottom || tail.isMeasured,
               mode != .reading, !userIsScrolling || returningToBottom,
               !interactionIsPresented || returningToBottom else { return nil }
         // A return is issued once even for short content. Subsequent layout
-        // changes only need correction when they actually move away from
-        // bottom — judged by the measured gap (round 1.3): the stale marker
-        // flag would suppress the follow while the page sat hundreds of
-        // points short, leaving it parked away from the bottom for good.
-        if viewportIsAtBottom && (mode == .following || lastRequest != nil) { return nil }
+        // changes only need correction when they actually move away from bottom.
+        if tail.isAtBottom && (mode == .following || lastRequest != nil) { return nil }
         let request = BottomRequest(generation: navigationGeneration,
             contentHeight: viewport.contentHeight.rounded(), visibleHeight: viewport.visibleHeight.rounded())
         return request == lastRequest ? nil : request
@@ -168,31 +124,8 @@ nonisolated struct TimelineScrollState: Equatable {
 
     mutating func begin(_ request: BottomRequest) -> BottomCommand? {
         guard pendingBottomRequest == request else { return nil }
-        return activate(request, keyboardMatched: false)
-    }
-
-    /// K5: the one return begun in the keyboard notification's own runloop
-    /// turn, matched to the keyboard's animation. Beginning it directly also
-    /// skips the layout-coalescing task (that delay merges layout, it does not
-    /// wait for the keyboard), and marking the request stops the tail probe's
-    /// flip inside the same transition from queuing a second animation. The
-    /// scroll itself fires via `keyboardReturnScrollDue` once the transition
-    /// actually moves the layout (round 1.3: the device probe shows exactly
-    /// one layout change per transition — the model moves in one step).
-    mutating func beginKeyboardReturn() -> BottomCommand? {
-        requestBottom()
-        // Deliberately ungated: this command is the one the transition window
-        // exists to protect, and the window may already be open around it.
-        guard let request = ungatedBottomRequest else { return nil }
-        keyboardReturnScrollIssued = false
-        keyboardReturnVisibleHeight = viewport.visibleHeight
-        return activate(request, keyboardMatched: true)
-    }
-
-    private mutating func activate(_ request: BottomRequest, keyboardMatched: Bool) -> BottomCommand {
         commandID &+= 1
-        let command = BottomCommand(id: commandID, request: request,
-            instant: openingReturnIsPending, keyboardMatched: keyboardMatched)
+        let command = BottomCommand(id: commandID, request: request, instant: openingReturnIsPending)
         openingReturnIsPending = false
         lastRequest = request
         activeCommand = command
@@ -201,45 +134,11 @@ nonisolated struct TimelineScrollState: Equatable {
 
     /// Only the latest animation can release ScrollPosition. A new gesture,
     /// approval or drawer transition invalidates an old completion immediately.
-    ///
-    /// K5 (round 1.1): the matched return's edge target must survive the whole
-    /// keyboard transition. The same turn that begins the command also bumps the
-    /// navigation generation (whose change normally releases the target), and a
-    /// zero-distance animation can report completion immediately — either would
-    /// clear the target before the keyboard has moved. While the window is open
-    /// the command is held; the window's end settles it.
     mutating func complete(_ command: BottomCommand) -> Bool {
         guard activeCommand == command else { return false }
-        if command.keyboardMatched && keyboardTransitionActive { return false }
-        return settleActiveCommand()
-    }
-
-    /// Closes the keyboard transition window and settles the matched command the
-    /// window held, if any. `true` means the caller must release the scroll edge
-    /// target now that the keyboard has finished.
-    @discardableResult mutating func endKeyboardTransition() -> Bool {
-        keyboardTransitionActive = false
-        guard let command = activeCommand, command.keyboardMatched else { return false }
-        return settleActiveCommand()
-    }
-
-    private mutating func settleActiveCommand() -> Bool {
-        guard activeCommand != nil else { return false }
         activeCommand = nil
         if returningToBottom { mode = interactionIsPresented ? .reading : .following }
         return true
-    }
-
-    /// True exactly once per matched return: at the first sample whose visible
-    /// height has moved away from the height the return was begun at — the
-    /// moment the keyboard's inset reached the layout. `nil` while unchanged,
-    /// once issued, or without a held matched command.
-    mutating func keyboardReturnScrollDue(sample: TimelineViewport) -> BottomCommand? {
-        guard let command = activeCommand, command.keyboardMatched, !keyboardReturnScrollIssued,
-              let base = keyboardReturnVisibleHeight else { return nil }
-        guard abs(sample.visibleHeight - base) > 0.5 else { return nil }
-        keyboardReturnScrollIssued = true
-        return command
     }
 
     func showsBottomButton() -> Bool {

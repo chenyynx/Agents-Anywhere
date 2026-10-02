@@ -139,8 +139,10 @@ import Testing
             visibility(&state, end: false)
             state.phaseChanged(.interacting, viewport: viewport(offset: 1000))
             state.phaseChanged(.idle, viewport: viewport(offset: 1100))
-            // Arrival can be reported after idle. Only the end marker, not
-            // the wider pill margin, may restore following after settlement.
+            // Arrival can be reported after idle. Round 1.3: arrival is
+            // measured, not probed — only a glued viewport restores following
+            // after settlement; the marker flags no longer decide.
+            state.geometryChanged(viewport(offset: arrived ? 1320 : 1100))
             visibility(&state, end: arrived, near: true)
             state.settleUserScroll()
             #expect(state.mode == expected && !state.showsBottomButton())

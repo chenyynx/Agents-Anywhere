@@ -29,7 +29,10 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
     }
     private func nextCommand(_ state: inout TimelineScrollState) throws -> TimelineScrollState.BottomCommand {
         let request = try #require(state.pendingBottomRequest)
-        return try #require(state.begin(request))
+        // The macro captures its expression immutably; take the mutating
+        // result out of the macro first (same for the assertions below).
+        let command = state.begin(request)
+        return try #require(command)
     }
     private func visibility(_ state: inout TimelineScrollState, end: Bool) {
         state.tailVisibilityChanged(.near, visible: end)
@@ -43,14 +46,16 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         state.open()
         let opening = try nextCommand(&state)
         #expect(opening.instant)
-        #expect(state.complete(opening))
+        let completed = state.complete(opening)
+        #expect(completed)
         #expect(state.mode == .following && state.pendingBottomRequest == nil)
         // Sending, accepted responses and the bottom pill all reuse the
         // animated return.
         state.requestBottom()
         let later = try nextCommand(&state)
         #expect(!later.instant)
-        #expect(state.complete(later))
+        let completedLater = state.complete(later)
+        #expect(completedLater)
         #expect(state.mode == .following)
     }
 
@@ -92,7 +97,8 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         state.open()
         let opening = try nextCommand(&state)
         #expect(opening.instant)
-        #expect(state.complete(opening) && state.mode == .following && state.pendingBottomRequest == nil)
+        let completed = state.complete(opening)
+        #expect(completed && state.mode == .following && state.pendingBottomRequest == nil)
     }
 
     @Test func readingAndExplicitReturnsKeepFollowingSemanticsAfterTheInstantOpening() throws {
@@ -102,7 +108,8 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         state.open()
         let opening = try nextCommand(&state)
         #expect(opening.instant)
-        #expect(state.complete(opening) && state.mode == .following)
+        let completed = state.complete(opening)
+        #expect(completed && state.mode == .following)
         // Manual reading still wins, and the reader can return with the pill.
         state.phaseChanged(.interacting, viewport: viewport(offset: 300))
         state.phaseChanged(.idle, viewport: viewport(offset: 300))
@@ -114,7 +121,8 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         state.phaseChanged(.animating, viewport: viewport(offset: 800))
         visibility(&state, end: true)
         state.phaseChanged(.idle, viewport: viewport(offset: 1320))
-        #expect(state.complete(returned) && state.mode == .following && !state.showsBottomButton())
+        let returnedCompleted = state.complete(returned)
+        #expect(returnedCompleted && state.mode == .following && !state.showsBottomButton())
     }
 }
 

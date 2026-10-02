@@ -14,6 +14,10 @@ nonisolated struct TimelineScrollState: Equatable {
     struct BottomCommand: Equatable {
         let id: Int
         let request: BottomRequest
+        /// The opening return lands without an animation so a cached window
+        /// never plays a visible top-to-bottom scroll. Every later return
+        /// (sending, accepted responses, the bottom pill) keeps the spring.
+        let instant: Bool
     }
 
     private(set) var phase = Phase.idle
@@ -28,6 +32,9 @@ nonisolated struct TimelineScrollState: Equatable {
     private var lastRequest: BottomRequest?
     private var commandID = 0
     private var awaitsUserScrollSettlement = false
+    /// Set by `open()`, consumed by the first command it produces. A reader
+    /// gesture before that command clears it, so later returns animate.
+    private var openingReturnIsPending = false
 
     var userIsScrolling: Bool { [.tracking, .interacting, .decelerating].contains(phase) }
     var returningToBottom: Bool { mode == .returning }
@@ -39,6 +46,7 @@ nonisolated struct TimelineScrollState: Equatable {
         guard !hasOpened else { return }
         hasOpened = true
         interactionIsPresented = interactionPresented
+        openingReturnIsPending = true
         requestBottom()
     }
 
@@ -51,6 +59,9 @@ nonisolated struct TimelineScrollState: Equatable {
     mutating func browseHistory() {
         mode = .reading
         awaitsUserScrollSettlement = false
+        // The reader took over before the opening return was issued; a later
+        // explicit return is a normal animated one.
+        openingReturnIsPending = false
         invalidateNavigation()
     }
 
@@ -114,7 +125,8 @@ nonisolated struct TimelineScrollState: Equatable {
     mutating func begin(_ request: BottomRequest) -> BottomCommand? {
         guard pendingBottomRequest == request else { return nil }
         commandID &+= 1
-        let command = BottomCommand(id: commandID, request: request)
+        let command = BottomCommand(id: commandID, request: request, instant: openingReturnIsPending)
+        openingReturnIsPending = false
         lastRequest = request
         activeCommand = command
         return command

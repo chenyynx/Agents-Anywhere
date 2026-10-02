@@ -50,7 +50,10 @@ struct ChatTimelineView: View {
                     onHistoryLayout: historyDidLayOut,
                     onPromptVisibility: { latestPromptVisible = $0 },
                     onOlderPromptVisibility: { olderPromptVisible = $0 },
-                    onTailVisibility: { region, visible in scrolling.tailVisibilityChanged(region, visible: visible) })
+                    onTailVisibility: { region, visible in
+                        scrolling.tailVisibilityChanged(region, visible: visible)
+                        acknowledgeInstantOpeningIfArrived()
+                    })
                     .equatable()
                     .background { ChatPageScrollEdge() }
             }
@@ -168,6 +171,19 @@ struct ChatTimelineView: View {
                 guard !Task.isCancelled, !navigationIsSuspended, let command = scrolling.begin(request) else { return }
                 scrollToBottom(command)
             }
+            .task(id: model.isOpeningReady) {
+                guard model.isOpeningReady else { return }
+                // The cold-load mask waits for the first return. A no-op
+                // native scroll, an interrupted command or a missed arrival
+                // callback must not hold the mask or the return forever, so
+                // settle it on a bounded fallback.
+                do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
+                guard !Task.isCancelled else { return }
+                if let command = scrolling.activeCommand, command.instant {
+                    finishScrollToBottom(command)
+                }
+                model.openingPositionDidSettle()
+            }
             .task(id: UserScrollSettlement(needed: scrolling.needsUserScrollSettlement,
                 tail: scrolling.tail, generation: scrolling.navigationGeneration)) {
                 guard scrolling.needsUserScrollSettlement else { return }
@@ -250,6 +266,19 @@ struct ChatTimelineView: View {
         latestLoadRequest = scrolling.navigationGeneration
     }
     private func scrollToBottom(_ command: TimelineScrollState.BottomCommand) {
+        if command.instant {
+            // The opening return lands without an animation (D4) so a cached
+            // window never plays a visible top-to-bottom scroll. A
+            // disablesAnimations transaction carries no completion, so the
+            // return settles when the end marker reports arrival (or on the
+            // bounded fallback) instead of releasing the edge target before
+            // the scroll can apply.
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { position.scrollTo(edge: .bottom) }
+            acknowledgeInstantOpeningIfArrived()
+            return
+        }
         withAnimation(reduceMotion ? nil : .interactiveSpring(response: 0.28, dampingFraction: 1, blendDuration: 0.12),
             completionCriteria: .removed) {
             // Let the scroll view resolve its own safe-area/inset coordinate
@@ -257,8 +286,21 @@ struct ChatTimelineView: View {
             // or as soon as a gesture/drawer/approval cancels the command.
             position.scrollTo(edge: .bottom)
         } completion: {
-            if scrolling.complete(command) { releaseScrollPosition() }
+            finishScrollToBottom(command)
         }
+    }
+    /// The opening return settles once the native end marker reports arrival
+    /// (immediately for content that already fits). Releasing before the
+    /// pending edge target applied would clear it instead of landing.
+    private func acknowledgeInstantOpeningIfArrived() {
+        guard let command = scrolling.activeCommand, command.instant, scrolling.tail.isAtBottom else { return }
+        finishScrollToBottom(command)
+    }
+    private func finishScrollToBottom(_ command: TimelineScrollState.BottomCommand) {
+        guard scrolling.complete(command) else { return }
+        releaseScrollPosition()
+        // Unblocks the cold-load mask: the window is at the bottom now (D4).
+        model.openingPositionDidSettle()
     }
     private func releaseScrollPosition() {
         guard position.edge != nil || position.point != nil else { return }

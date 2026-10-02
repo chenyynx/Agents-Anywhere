@@ -66,7 +66,7 @@ struct SessionChatView: View, Equatable {
                         }.allowsHitTesting(false)
                     }
                 }
-                .overlay { if !model.isOpeningReady { openingMask } }
+                .overlay { if model.showsOpeningMask { openingMask } }
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     VStack(spacing: 0) {
                         SessionInteractionDock(chat: model,

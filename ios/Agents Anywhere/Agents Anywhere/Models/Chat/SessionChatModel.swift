@@ -18,6 +18,19 @@ final class SessionChatModel {
     var settingsError: String?
     private(set) var isOpeningPrepared = false
     var isOpeningReady: Bool { isOpeningPrepared && timeline.hasPresentedSnapshot }
+    /// The first opening return landed (or its bounded fallback expired). The
+    /// cold-load mask waits for it so the reader never sees the top of the
+    /// window before the opening positioning lands (D4).
+    private(set) var openingPositionSettled = false
+    /// A memory-cached visit reveals its snapshot and never shows the
+    /// full-screen opening mask; the mask is reserved for true cold loads (D3).
+    let opensFromCachedSnapshot: Bool
+    /// Full-screen opening mask visibility. A cached visit never shows it; a
+    /// cold load keeps it until the page is ready and the first return settled.
+    var showsOpeningMask: Bool {
+        guard !opensFromCachedSnapshot else { return false }
+        return !isOpeningReady || !openingPositionSettled
+    }
     private(set) var openingError: String?
     private(set) var responseRevision = 0
     private(set) var commands: [V2RuntimeCommand] = []
@@ -38,6 +51,7 @@ final class SessionChatModel {
     init(session: V2SessionModel, repository: V2SessionRepository, attachments: V2AttachmentService, files: V2WorkspaceFilesService? = nil) {
         self.session = session; self.repository = repository; self.attachments = attachments
         self.files = files
+        opensFromCachedSnapshot = repository.cached(sessionId: session.id) != nil
         // Cached history can still be expensive to project. prepareOpening()
         // performs that work after the page's navigation transition settles.
     }
@@ -206,8 +220,18 @@ final class SessionChatModel {
     }
 
     func prepareOpening() async {
-        if !timeline.hasPresentedSnapshot { isOpeningPrepared = false }
+        if !timeline.hasPresentedSnapshot {
+            isOpeningPrepared = false
+            openingPositionSettled = false
+        }
         openingError = nil
+        // A memory-cached visit presents before any network read so the page is
+        // usable immediately (D3). The window is trimmed exactly like open()
+        // trims it, so the later refresh cannot remove rows the reader sees.
+        if session.isValid, let cached = repository.cached(sessionId: session.id) {
+            timeline.presentOpening(Array(cached.items.suffix(100)), pendingMessages: session.pendingMessages)
+            isOpeningPrepared = true
+        }
         do {
             // Both cold and cached visits begin with one latest page. Older
             // records are added only by the user's explicit history requests.
@@ -221,6 +245,13 @@ final class SessionChatModel {
             timeline.presentOpening(data.items, pendingMessages: session.pendingMessages)
         }
         isOpeningPrepared = true
+    }
+
+    /// The timeline reports its first opening return (or the bounded mask
+    /// fallback expires). Display-only: it never gates data or connection work.
+    func openingPositionDidSettle() {
+        guard !openingPositionSettled else { return }
+        openingPositionSettled = true
     }
 
     func setTakeover(_ enabled: Bool) async -> Bool {

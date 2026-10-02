@@ -55,31 +55,47 @@ Semantic error and availability colors remain separate from the primary color.
   probes and actual column widths have separate measurements. Real iPad resizing
   reflows immediately, and Dynamic Type/display scale/direction changes reset the
   cache. Authoritative replacements reset the enclosing layout generation.
-- Opening a session immediately displays one persistent loading indicator in
-  the detail column. History loading and timeline mounting wait for the sidebar
-  animation's completion and another 120 ms; a new selection cancels the pending
-  start. This includes previously cached sessions: the model initializer does
-  not project cached rows, and a lazy `StateObject` lifetime holder prevents
-  parent updates from constructing and discarding another chat model. Cached
-  preparation still reads the repository without requesting history again.
+- Opening a session shows one persistent loading indicator in the detail
+  column only for a true cold load, that is, when no in-memory projection
+  exists as the page is created. A memory-cached visit presents its snapshot
+  during preparation and never shows the full-screen mask. History loading and
+  timeline mounting still wait for the sidebar animation's completion and
+  another 120 ms; a new selection cancels the pending start. The model
+  initializer still does not project cached rows, and a lazy `StateObject`
+  lifetime holder prevents parent updates from constructing and discarding
+  another chat model. Cached preparation presents the latest 100-record window
+  immediately — trimmed exactly like `open()` trims it — and flips readiness
+  at presentation; the network refresh (`open`/`loadLatest`) then merges
+  through the same stage/flush path without holding readiness or the mask. It
+  still reads the repository without requesting history again.
   A sidebar gesture after loading starts does not restart the connection.
   Opening retains only the latest 100 timeline records, including cached visits.
   Older records are loaded explicitly in 100-record pages and accumulate during
   that visit. Reopening trims the window again and preserves the older-history
   flag; recovery updates cannot reinsert rows before its pagination boundary.
   Opening reveals the window when the initial projection is
-  ready, and animates to the native bottom edge. It never pages backward to
-  find a user message. Spinner dismissal and the batch presentation clock do not wait
-  for scroll/layout acknowledgements; there is no frozen opening snapshot or
-  positioning retry loop. Network failures still offer Retry.
+  ready, and its first return lands at the native bottom edge without an
+  animation; every later return (sending, accepted responses, the bottom pill)
+  keeps the animated spring. The cold-load mask is dismissed only after that
+  first return has settled or a 400 ms fallback expired, so a cold load never
+  reveals the top of the window before the opening positioning lands. It never
+  pages backward to find a user message. The batch presentation clock still
+  does not wait for scroll/layout acknowledgements; there is no frozen opening
+  snapshot or positioning retry loop. Network failures still offer Retry.
 - `TimelineScrollState` owns three navigation modes: reading, following and
   returning. Opening, sending, accepted responses and the bottom pill all request
-  the same return operation. SwiftUI resolves the bottom edge in its own inset
-  coordinate system; completion releases the target so it cannot keep pulling
-  later manual reading back down. Command IDs stop interrupted/old completions
-  from releasing a newer target. Layout changes are
+  the same return operation. The opening return is marked instant and runs in a
+  `disablesAnimations` transaction; it still goes through `begin`/`complete`/
+  release and the same drawer-suspension gate, and a reader gesture before it
+  was issued leaves later returns animated. Because releasing the position
+  clears a pending edge target, the instant return settles on the native end
+  marker reporting arrival — or on a bounded 400 ms fallback for content that
+  can never report it. SwiftUI resolves the bottom edge in
+  its own inset coordinate system; completion releases the target so it cannot
+  keep pulling later manual reading back down. Command IDs stop interrupted/old
+  completions from releasing a newer target. Layout changes are
   coalesced for 24 ms, and offset callbacks cannot reissue the same target. The
-  batched token presentation and spring scroll animation remain independent.
+  batched token presentation and the return animation remain independent.
 - Two native visibility probes overlap the existing tail spacer. The 2-point end
   marker decides arrival; the 96-point region hides the small borderless “到底部”
   pill before the reader reaches the exact end. The end marker wins if callbacks
@@ -574,7 +590,9 @@ Verified on 2026-09-06, without starting a server or simulator:
   open/close springs and interrupted pans, and reactivation after closing.
   Opening/history tests cover measured offset retention, scroll-independent
   presentation and optimistic echo handoff, realtime updates during opening,
-  pulls, cancellation and opening without fetching earlier user messages.
+  pulls, cancellation, opening without fetching earlier user messages, the
+  instant opening return and cached-snapshot presentation before the refresh
+  completes.
   Attachment/delivery tests cover sparse/reordered echoes, bounded caches, FS
   thumbnail reads, offline preview reuse and preserving a newer identical draft.
   Configuration tests exercise the real Codex schema, Gateway validation,
@@ -718,9 +736,10 @@ keyboard layout and real mobile-network behavior still need manual validation:
     narrow window, select a session, reopen the sidebar and widen again. With a
     long Markdown history, toggle the sidebar and check responsiveness, retained
     reading position and continued streaming while the detail remains visible.
-14. Open long, short and running sessions: the detail's spinner appears at once,
-    loading starts after the sidebar animation, and loaded content appears with
-    an animated return to bottom. Switch sessions rapidly during drawer motion.
+14. Open long, short and running sessions: a cold load's spinner appears at
+    once, loading starts after the sidebar animation, and the loaded content
+    lands instantly at the bottom; a previously cached session opens with no
+    spinner and no scroll animation. Switch sessions rapidly during drawer motion.
     At the bottom of a long session, slowly open/close the iPhone drawer and leave
     it open; check stable footer spacing and no repeated vertical corrections.
     Check the two gesture directions separately, especially revealing the session

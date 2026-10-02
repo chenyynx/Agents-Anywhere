@@ -98,6 +98,15 @@ import Testing
 }
 
 @Suite struct TimelineKeyboardEventTests {
+    /// NSValue geometry construction is the same platform split the production
+    /// parse documents: the iOS family spells it `cgRect:`, macOS `rect:`.
+    private func frameValue(_ rect: CGRect) -> NSValue {
+#if canImport(UIKit)
+        NSValue(cgRect: rect)
+#else
+        NSValue(rect: rect)
+#endif
+    }
     /// The payload keys are deliberately spelled as the documented raw
     /// strings: the production parse reads those same strings (ClientCore also
     /// builds for macOS, where the `UIResponder` constants do not exist), so a
@@ -109,8 +118,8 @@ import Testing
         var userInfo: [AnyHashable: Any] = [:]
         if let duration { userInfo["UIKeyboardAnimationDurationUserInfoKey"] = duration }
         if let curve { userInfo["UIKeyboardAnimationCurveUserInfoKey"] = curve }
-        if let begin { userInfo["UIKeyboardFrameBeginUserInfoKey"] = NSValue(cgRect: begin) }
-        if let end { userInfo["UIKeyboardFrameEndUserInfoKey"] = NSValue(cgRect: end) }
+        if let begin { userInfo["UIKeyboardFrameBeginUserInfoKey"] = frameValue(begin) }
+        if let end { userInfo["UIKeyboardFrameEndUserInfoKey"] = frameValue(end) }
         if let isLocal { userInfo["UIKeyboardIsLocalUserInfoKey"] = isLocal }
         return userInfo
     }

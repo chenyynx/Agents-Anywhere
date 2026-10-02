@@ -170,6 +170,12 @@ struct ChatTimelineView: View {
                 if ready { scrolling.open(interactionPresented: hasInteractions) }
             }
             .onChange(of: scrolling.navigationGeneration) { _, _ in
+                // K5 (round 1.1): a matched keyboard return sets its fresh edge
+                // target in the same turn that bumps the generation; releasing
+                // here would clear it before the keyboard moves. The transition
+                // window's end settles it instead. A user takeover clears the
+                // active command, so real navigations still release normally.
+                if keyboard.transitionActive, scrolling.activeCommand?.keyboardMatched == true { return }
                 releaseScrollPosition()
             }
             .task(id: scrolling.pendingBottomRequest) {
@@ -402,14 +408,18 @@ struct ChatTimelineView: View {
             // The end recheck only applies once the window closes.
             break
         case .requestReturn(.keyboardMatched):
+            // K5 (round 1.1): flag-first. The window opens before the return is
+            // begun so the guards that hold a matched command are already armed
+            // when this same turn sets the fresh edge target and bumps the
+            // navigation generation (round 1.1: that target must survive both).
             // One return in this same turn, matched to the keyboard's own
-            // animation. Opening the window right after keeps the tail probe's
-            // flip — and anything else layout-driven — from queueing the old
-            // spring next to it (F11).
+            // animation, and the open window keeps the tail probe's flip — and
+            // anything else layout-driven — from queueing the old spring next
+            // to it (F11).
+            scrolling.setKeyboardTransitionActive(true)
             if let command = scrolling.beginKeyboardReturn() {
                 scrollToBottom(command, keyboardMatched: event)
             }
-            scrolling.setKeyboardTransitionActive(true)
         case .suppressProgrammatic:
             // The system clamp carries the content down with the keyboard; a
             // programmatic scroll would be a second animation fighting it.
@@ -425,7 +435,10 @@ struct ChatTimelineView: View {
             publishViewportSample(sample, keyboardTransitionActive: false)
         }
         acknowledgeInstantOpeningIfArrived()
-        scrolling.setKeyboardTransitionActive(false)
+        // K5 (round 1.1): the window's end is what settles the held matched
+        // command — releasing then keeps the edge target glued for the whole
+        // keyboard animation.
+        if scrolling.endKeyboardTransition() { releaseScrollPosition() }
         let action = TimelineKeyboardFollowPolicy.action(for: .init(
             event: .transitionEnded,
             isAtBottom: scrolling.tail.isAtBottom,

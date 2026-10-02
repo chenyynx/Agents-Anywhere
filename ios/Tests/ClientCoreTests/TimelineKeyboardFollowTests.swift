@@ -320,6 +320,9 @@ import Testing
     @Test func showAtTheBottomBeginsOneMatchedCommandInTheKeyboardTurn() throws {
         var state = try openedAtBottom()
         #expect(action(.willShow, state) == .requestReturn(.keyboardMatched))
+        // Flag-first, as the view does it: the window opens before the command
+        // is begun, so the hold is armed for this same turn.
+        state.setKeyboardTransitionActive(true)
         let keyboardReturn = state.beginKeyboardReturn()
         let command = try #require(keyboardReturn)
         #expect(command.keyboardMatched && !command.instant)
@@ -332,37 +335,51 @@ import Testing
         let shrinking = viewport(offset: 1320, container: 600)
         #expect(TimelineViewportPublicationDecision.outcome(published: state.viewport, next: shrinking,
             keyboardTransitionActive: true, tailChanged: false) == .ignore)
-        state.setKeyboardTransitionActive(true)
         visibility(&state, end: false)
         #expect(state.pendingBottomRequest == nil)
-        // The matched return lands with the keyboard animation's end.
-        let landed = state.complete(command)
-        #expect(landed && state.mode == .following)
+        // K5 (round 1.1): an early completion — a zero-distance match reports
+        // one immediately — is held by the open window, not settled.
+        let heldEarly = state.complete(command)
+        #expect(!heldEarly)
+        #expect(state.activeCommand == command)
+        #expect(state.mode == .returning)
         visibility(&state, end: true)
+        // The window's end is what settles the held matched command; the
+        // caller releases the edge target then.
+        let settledAtWindowEnd = state.endKeyboardTransition()
+        #expect(settledAtWindowEnd)
+        #expect(state.activeCommand == nil)
+        #expect(state.mode == .following)
+        #expect(!state.keyboardTransitionActive)
         // Window close: the settled height lands, the bottom is reached, and
         // no make-up is owed.
         #expect(TimelineViewportPublicationDecision.outcome(published: state.viewport, next: shrinking,
             keyboardTransitionActive: false, tailChanged: false) == .publish)
         state.geometryChanged(shrinking)
-        state.setKeyboardTransitionActive(false)
         #expect(action(.transitionEnded, state) == .none)
         #expect(state.pendingBottomRequest == nil)
     }
 
     @Test func theEndRecheckLandsOneMakeUpWhenTheBottomIsStillUnreached() throws {
         var state = try openedAtBottom()
+        state.setKeyboardTransitionActive(true)
         let keyboardReturn = state.beginKeyboardReturn()
         let command = try #require(keyboardReturn)
-        state.setKeyboardTransitionActive(true)
         let shrinking = viewport(offset: 1220, container: 600)
         visibility(&state, end: false)
-        let matchedLanded = state.complete(command)
-        #expect(matchedLanded)
+        // K5 (round 1.1): the early completion is held while the window is
+        // open; the window's end settles the matched command instead.
+        let heldEarly = state.complete(command)
+        #expect(!heldEarly)
+        #expect(state.mode == .returning)
         // The probe never flipped back (a stubby remaining gap): the settled
         // sample publishes, the recheck sees the return still owed, and
         // exactly one normal make-up return follows.
         state.geometryChanged(shrinking)
-        state.setKeyboardTransitionActive(false)
+        let settledAtWindowEnd = state.endKeyboardTransition()
+        #expect(settledAtWindowEnd)
+        #expect(state.activeCommand == nil)
+        #expect(state.mode == .following)
         #expect(action(.transitionEnded, state) == .recheckAtEnd)
         state.requestBottom()
         let makeUp = try nextCommand(&state)
@@ -372,6 +389,101 @@ import Testing
         // Once landed, the same layout does not request again (dedup intact).
         state.geometryChanged(shrinking)
         #expect(state.pendingBottomRequest == nil)
+    }
+
+    @Test func aMatchedCompletionIsHeldWhileTheWindowIsOpen() throws {
+        var state = try openedAtBottom()
+        state.setKeyboardTransitionActive(true)
+        let keyboardReturn = state.beginKeyboardReturn()
+        let command = try #require(keyboardReturn)
+        // A zero-distance match can report completion in the window's own
+        // turn; the hold keeps the command (and its edge target) alive.
+        let settledEarly = state.complete(command)
+        #expect(!settledEarly)
+        #expect(state.activeCommand == command)
+        #expect(state.mode == .returning)
+    }
+
+    @Test func endingTheWindowOnlySettlesAHeldMatchedCommand() throws {
+        // Nothing active: the window closes and reports nothing to release.
+        var idle = try openedAtBottom()
+        idle.setKeyboardTransitionActive(true)
+        let idleSettled = idle.endKeyboardTransition()
+        #expect(!idleSettled)
+        #expect(!idle.keyboardTransitionActive)
+        #expect(idle.activeCommand == nil)
+
+        // A plain (non-matched) return is not the window's to settle: it stays
+        // active after the window closes and its own completion lands it.
+        var plain = try openedAtBottom()
+        visibility(&plain, end: false)
+        plain.geometryChanged(viewport(offset: 1220, height: 2200))
+        plain.requestBottom()
+        let plainCommand = try nextCommand(&plain)
+        #expect(!plainCommand.keyboardMatched)
+        plain.setKeyboardTransitionActive(true)
+        let plainEnded = plain.endKeyboardTransition()
+        #expect(!plainEnded)
+        #expect(!plain.keyboardTransitionActive)
+        #expect(plain.activeCommand == plainCommand)
+        let plainSettled = plain.complete(plainCommand)
+        #expect(plainSettled)
+        #expect(plain.mode == .following)
+    }
+
+    @Test func aPlainReturnCompletesNormallyInsideTheWindow() throws {
+        var state = try openedAtBottom()
+        visibility(&state, end: false)
+        state.geometryChanged(viewport(offset: 1220, height: 2200))
+        state.requestBottom()
+        let command = try nextCommand(&state)
+        #expect(!command.keyboardMatched)
+        // The window only holds the matched return it was opened for; a plain
+        // command settles on its own completion even while it is open.
+        state.setKeyboardTransitionActive(true)
+        let settled = state.complete(command)
+        #expect(settled)
+        #expect(state.activeCommand == nil)
+        #expect(state.mode == .following)
+    }
+
+    @Test func aMatchedReturnCompletesNormallyOnceTheWindowIsClosed() throws {
+        var state = try openedAtBottom()
+        state.setKeyboardTransitionActive(true)
+        let keyboardReturn = state.beginKeyboardReturn()
+        let command = try #require(keyboardReturn)
+        // The window closed before the animation reported: the command's own
+        // completion is no longer held.
+        state.setKeyboardTransitionActive(false)
+        let settled = state.complete(command)
+        #expect(settled)
+        #expect(state.activeCommand == nil)
+        #expect(state.mode == .following)
+    }
+
+    @Test func theWindowEndSendsAPresentedReturnToReading() throws {
+        // complete()'s established rule: an arrived return with an interaction
+        // presented goes to reading, not following. The window-end settlement
+        // keeps that rule.
+        var direct = try openedAtBottom()
+        direct.setInteractionPresented(true)
+        let directReturn = direct.beginKeyboardReturn()
+        let directCommand = try #require(directReturn)
+        let directSettled = direct.complete(directCommand)
+        #expect(directSettled)
+        #expect(direct.mode == .reading)
+
+        var held = try openedAtBottom()
+        held.setInteractionPresented(true)
+        held.setKeyboardTransitionActive(true)
+        let heldReturn = held.beginKeyboardReturn()
+        let heldCommand = try #require(heldReturn)
+        let heldEarly = held.complete(heldCommand)
+        #expect(!heldEarly)
+        #expect(held.mode == .returning)
+        let heldSettled = held.endKeyboardTransition()
+        #expect(heldSettled)
+        #expect(held.mode == .reading)
     }
 
     @Test func hideAtTheBottomSuppressesTheSpringUntilTheWindowCloses() throws {

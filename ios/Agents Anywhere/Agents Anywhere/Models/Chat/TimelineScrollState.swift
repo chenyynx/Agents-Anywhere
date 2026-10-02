@@ -174,8 +174,30 @@ nonisolated struct TimelineScrollState: Equatable {
 
     /// Only the latest animation can release ScrollPosition. A new gesture,
     /// approval or drawer transition invalidates an old completion immediately.
+    ///
+    /// K5 (round 1.1): the matched return's edge target must survive the whole
+    /// keyboard transition. The same turn that begins the command also bumps the
+    /// navigation generation (whose change normally releases the target), and a
+    /// zero-distance animation can report completion immediately — either would
+    /// clear the target before the keyboard has moved. While the window is open
+    /// the command is held; the window's end settles it.
     mutating func complete(_ command: BottomCommand) -> Bool {
         guard activeCommand == command else { return false }
+        if command.keyboardMatched && keyboardTransitionActive { return false }
+        return settleActiveCommand()
+    }
+
+    /// Closes the keyboard transition window and settles the matched command the
+    /// window held, if any. `true` means the caller must release the scroll edge
+    /// target now that the keyboard has finished.
+    @discardableResult mutating func endKeyboardTransition() -> Bool {
+        keyboardTransitionActive = false
+        guard let command = activeCommand, command.keyboardMatched else { return false }
+        return settleActiveCommand()
+    }
+
+    private mutating func settleActiveCommand() -> Bool {
+        guard activeCommand != nil else { return false }
         activeCommand = nil
         if returningToBottom { mode = interactionIsPresented ? .reading : .following }
         return true

@@ -50,6 +50,33 @@ CLAUDE_COMPACT_SUMMARY_PREFIX = (
     "This session is being continued from a previous conversation that ran out of "
     "context. The summary below covers the earlier portion of the conversation."
 )
+# CLI chrome around a native slash command typed in the CLI's own input, which
+# the wire replays as ordinary user messages (real session 84275e9e, 2026-10-02:
+# 93b03c34 stdout echo, 767c8e9a command-name echo, prefixed by a caveat). None
+# of it is conversation content: the CLI's own caveat says the command "was run
+# directly in Claude Code, not sent to you as a request, and its output goes to
+# the CLI, not to the model", the command name is the CLI dispatching its own
+# input line, and the stdout/stderr echo is that CLI-bound output coming back.
+# The tags live here, in the layer every other reader already depends on, so the
+# compaction path (`markers.is_local_command_echo`) and the synthetic-control
+# path cannot drift apart on what counts as chrome.
+#
+# Scope note: only zero-argument commands have been observed on the wire
+# (`/compact`). Suppressing stdout/stderr echoes wholesale is therefore an
+# evidence-backed guess about commands with arguments too; if such a command ever
+# emits output a user must see, that case is reassessed here rather than the
+# suppression being widened further.
+CLAUDE_CAVEAT_PREFIX = "<local-command-caveat>"
+CLAUDE_COMMAND_NAME_TAG = "<command-name>"
+CLAUDE_LOCAL_COMMAND_ECHO_TAGS = (
+    "<local-command-stdout>",
+    "<local-command-stderr>",
+)
+CLAUDE_LOCAL_COMMAND_CHROME_PREFIXES = (
+    CLAUDE_CAVEAT_PREFIX,
+    CLAUDE_COMMAND_NAME_TAG,
+    *CLAUDE_LOCAL_COMMAND_ECHO_TAGS,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,6 +421,23 @@ def message_text(message: Any) -> str | None:
     return result if isinstance(result, str) and result else None
 
 
+def is_local_command_chrome(text: str | None) -> bool:
+    """Match the CLI's own chrome around a slash command typed into the CLI.
+
+    Four shapes, all replayed as ordinary user messages on the SDK wire (real
+    session 84275e9e, 2026-10-02): the caveat wrapper the CLI writes before its
+    command echo, the `<command-name>` echo of the command line itself, and the
+    `<local-command-stdout>` / `<local-command-stderr>` echoes of output the CLI
+    keeps for itself. None is conversation content; projecting any of them
+    publishes phantom user bubbles for a command the user typed into the CLI, not
+    into the app.
+    """
+
+    if not text:
+        return False
+    return text.strip().startswith(CLAUDE_LOCAL_COMMAND_CHROME_PREFIXES)
+
+
 def is_compact_summary_text(text: str | None) -> bool:
     """Match Claude's compaction summary by its fixed CLI opening sentence."""
 
@@ -406,6 +450,13 @@ def is_synthetic_control_message(message: Any) -> bool:
     origin = _extract(message, "origin")
     if _extract(origin, "kind") == "task-notification":
         return True
+    if message.__class__.__name__ == "HookEventMessage":
+        # The CLI's own hook lifecycle narration (SessionStart:compact,
+        # PreToolUse, …). It rides the same stream as conversation messages but
+        # is chrome: no reply is owed for it, and in the ghost incident it
+        # arrived right after the command turn had already settled, minting an
+        # execution from silence that hung forever.
+        return True
     if text is None:
         return False
     normalized = text.strip()
@@ -416,6 +467,8 @@ def is_synthetic_control_message(message: Any) -> bool:
     if role == "user" and normalized in CLAUDE_INTERRUPTED_REQUEST_MARKERS:
         return True
     if role == "user" and is_compact_summary_text(normalized):
+        return True
+    if role == "user" and is_local_command_chrome(normalized):
         return True
     return (
         role == "assistant"

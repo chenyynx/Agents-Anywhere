@@ -210,9 +210,11 @@ import Testing
                          mode: TimelineScrollState.Mode = .following,
                          phase: TimelineScrollState.Phase = .idle,
                          navigationIsSuspended: Bool = false,
-                         hasPendingRequest: Bool = false) -> TimelineKeyboardFollowPolicy.Context {
+                         hasPendingRequest: Bool = false,
+                         isLocal: Bool = true) -> TimelineKeyboardFollowPolicy.Context {
         TimelineKeyboardFollowPolicy.Context(event: event, isAtBottom: isAtBottom, mode: mode,
-            phase: phase, navigationIsSuspended: navigationIsSuspended, hasPendingRequest: hasPendingRequest)
+            phase: phase, navigationIsSuspended: navigationIsSuspended, hasPendingRequest: hasPendingRequest,
+            isLocal: isLocal)
     }
     private func action(_ context: TimelineKeyboardFollowPolicy.Context) -> TimelineKeyboardFollowPolicy.Action {
         TimelineKeyboardFollowPolicy.action(for: context)
@@ -229,6 +231,14 @@ import Testing
         // mode (pinned above); a steady-following timeline takes the return
         // regardless of what the bottom probe says.
         #expect(action(context(.willShow, isAtBottom: false)) == .requestReturn(.keyboardMatched))
+    }
+
+    @Test func nonLocalKeyboardsAreIgnored() {
+        // Another app's keyboard (split view, an external scene) animates no
+        // layout of ours; no event may drive a return for it.
+        for event in [TimelineKeyboardFollowPolicy.Event.willShow, .willHide, .transitionEnded] {
+            #expect(action(context(event, hasPendingRequest: true, isLocal: false)) == .none)
+        }
     }
 
     @Test func hideAtTheBottomSuppressesProgrammaticScrolling() {
@@ -550,13 +560,24 @@ import Testing
         var glued = try openedAtBottom()
         visibility(&glued, end: false)
         #expect(glued.viewportIsAtBottom)
-        // …a measured gap overrules a probe that says yes, so the drifted
-        // page produces the return the flag used to suppress (the exact
-        // device reading: content 2000, resting 213pt short)…
-        var lied = try openedAtBottom()
-        lied.geometryChanged(viewport(offset: 1107, height: 2200))
-        #expect(!lied.viewportIsAtBottom)
-        #expect(lied.pendingBottomRequest != nil)
+        // …a measured gap overrules a probe that says yes: the exact device
+        // reading was content 2000, resting 213pt short — not at bottom…
+        var short = try openedAtBottom()
+        short.geometryChanged(viewport(offset: 1107))
+        #expect(!short.viewportIsAtBottom)
+        // …and once the content grew while the page sat parked (the device's
+        // 213→917 drift), the measured gap produces the return the flag used
+        // to suppress.
+        short.geometryChanged(viewport(offset: 1107, height: 2200))
+        #expect(!short.viewportIsAtBottom)
+        #expect(short.pendingBottomRequest != nil)
+        // The tolerance boundary: 8pt of remaining gap still rests; 8.5 does
+        // not.
+        var edge = try openedAtBottom()
+        edge.geometryChanged(viewport(offset: 1312))
+        #expect(edge.viewportIsAtBottom)
+        edge.geometryChanged(viewport(offset: 1311.5))
+        #expect(!edge.viewportIsAtBottom)
         // …and before the first measurement the probes remain the fallback.
         var unmeasured = TimelineScrollState()
         unmeasured.tailVisibilityChanged(.near, visible: true)

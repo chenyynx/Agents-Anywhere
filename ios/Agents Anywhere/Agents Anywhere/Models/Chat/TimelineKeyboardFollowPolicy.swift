@@ -14,8 +14,8 @@ nonisolated struct TimelineKeyboardFollowPolicy {
 
     enum Action: Equatable {
         case none
-        /// Begin the one keyboard return; holding it pins the page to the
-        /// bottom while the keyboard moves the container (round 1.2).
+        /// Begin the one keyboard return; it fires on the transition's first
+        /// layout move with the keyboard's own duration and curve (round 1.3).
         case requestReturn(ReturnStyle)
         /// The system clamp already carries the content down when the keyboard
         /// hides; a programmatic scroll would fight it.
@@ -37,9 +37,14 @@ nonisolated struct TimelineKeyboardFollowPolicy {
         var navigationIsSuspended: Bool
         /// An ungated return is still outstanding in the scroll state.
         var hasPendingRequest: Bool
+        /// Whether the notification belongs to this app's own keyboard. A
+        /// keyboard from another app (split view, an external scene) changes
+        /// no layout of ours and must never drive a return.
+        var isLocal = true
     }
 
     static func action(for context: Context) -> Action {
+        guard context.isLocal else { return .none }
         // The drawer owns navigation; an interrupted callback is not a fresh
         // vertical intent. A drag (any non-idle phase, the K4 path) owns the
         // keyboard's interactive dismissal itself.

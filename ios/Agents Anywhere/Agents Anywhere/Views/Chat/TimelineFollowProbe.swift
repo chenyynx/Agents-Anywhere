@@ -83,7 +83,7 @@ struct TimelineFollowProbeHUD: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("FOLLOW PROBE v1 · bcb2ac3+probe")
+            Text("FOLLOW PROBE · r1.3+probe")
                 .font(.system(size: 9, weight: .bold, design: .monospaced))
             Text(probe.live)
                 .font(.system(size: 10, weight: .semibold, design: .monospaced))

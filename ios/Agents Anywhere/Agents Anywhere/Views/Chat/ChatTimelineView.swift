@@ -419,16 +419,21 @@ struct ChatTimelineView: View {
         case .hiding: followEvent = .willHide
         case .unchanged: return
         }
+        // The published viewport lags pure offset changes (S2 withholds
+        // those), so the policy reads the raw in-flight sample and falls back
+        // to the published state only before the first measurement.
+        let measuredBottom = viewportSample.value.map(\.measuredAtBottom) ?? scrolling.viewportIsAtBottom
         let action = TimelineKeyboardFollowPolicy.action(for: .init(
             event: followEvent,
-            isAtBottom: scrolling.viewportIsAtBottom,
+            isAtBottom: measuredBottom,
             mode: scrolling.mode,
             phase: scrolling.phase,
             navigationIsSuspended: navigationIsSuspended,
-            hasPendingRequest: scrolling.pendingBottomRequest != nil))
+            hasPendingRequest: scrolling.pendingBottomRequest != nil,
+            isLocal: event.isLocal))
         followProbe.recordDecision(String(describing: action), event: event,
             mode: scrolling.mode, phase: scrolling.phase,
-            geoBottom: scrolling.viewportIsAtBottom, tailFlag: scrolling.tail.isAtBottom,
+            geoBottom: measuredBottom, tailFlag: scrolling.tail.isAtBottom,
             suspended: navigationIsSuspended)
         switch action {
         case .none, .recheckAtEnd:
@@ -469,16 +474,17 @@ struct ChatTimelineView: View {
         let probeSettled = scrolling.endKeyboardTransition()
         if probeSettled { releaseScrollPosition() }
         pendingMatchedKeyboardEvent = nil
+        let measuredBottomEnd = viewportSample.value.map(\.measuredAtBottom) ?? scrolling.viewportIsAtBottom
         let action = TimelineKeyboardFollowPolicy.action(for: .init(
             event: .transitionEnded,
-            isAtBottom: scrolling.viewportIsAtBottom,
+            isAtBottom: measuredBottomEnd,
             mode: scrolling.mode,
             phase: scrolling.phase,
             navigationIsSuspended: navigationIsSuspended,
             hasPendingRequest: scrolling.pendingBottomRequest != nil))
         let probeGap = viewportSample.value.map { $0.contentHeight - $0.visibleBottom } ?? -1
         followProbe.recordWindowEnd(settled: probeSettled, recheck: String(describing: action),
-            gap: probeGap, geoBottom: scrolling.viewportIsAtBottom, tailFlag: scrolling.tail.isAtBottom)
+            gap: probeGap, geoBottom: measuredBottomEnd, tailFlag: scrolling.tail.isAtBottom)
         if action == .recheckAtEnd {
             // One make-up return through the normal coalesced path.
             scrolling.requestBottom()

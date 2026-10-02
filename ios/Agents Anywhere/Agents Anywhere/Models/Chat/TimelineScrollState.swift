@@ -18,9 +18,9 @@ nonisolated struct TimelineScrollState: Equatable {
         /// never plays a visible top-to-bottom scroll. Every later return
         /// (sending, accepted responses, the bottom pill) keeps the spring.
         let instant: Bool
-        /// K5: the return the keyboard transition window holds and pins the
-        /// bottom for (round 1.2) — the flag is what identifies it. The
-        /// instant opening return still wins when both flags are set.
+        /// K5: the return the keyboard transition window holds and fires on
+        /// the first layout move (round 1.3) — the flag is what identifies
+        /// it. The instant opening return still wins when both flags are set.
         let keyboardMatched: Bool
     }
 
@@ -60,8 +60,7 @@ nonisolated struct TimelineScrollState: Equatable {
     /// first measurement.
     var viewportIsAtBottom: Bool {
         guard viewport.isMeasured else { return tail.isAtBottom }
-        let gap = viewport.contentHeight - viewport.visibleBottom
-        return gap <= 8
+        return viewport.measuredAtBottom
     }
 
     var userIsScrolling: Bool { [.tracking, .interacting, .decelerating].contains(phase) }

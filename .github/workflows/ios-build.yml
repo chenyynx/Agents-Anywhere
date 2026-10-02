@@ -58,6 +58,9 @@ jobs:
           grep -E "error:|recorded an issue|failed" "$RUNNER_TEMP/test.log" 2>/dev/null | sort -u | head -60 || true
 
   build:
+    # The package is only released once the unit tests pass: a red test suite
+    # must never produce an installable IPA.
+    needs: test
     runs-on: macos-26
     timeout-minutes: 90
     steps:

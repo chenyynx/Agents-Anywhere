@@ -1,0 +1,153 @@
+name: iOS Build & Test
+
+# Branch-local pipeline for the `ios-fast-sync` work (foreground catch-up,
+# instant opening, header glow). It mirrors the downstream `ios-ci` flow —
+# unsigned .ipa for on-device KSign re-signing, no Apple Developer account —
+# and adds the unit-test job (`swift test`, pp-approved 2026-10-02).
+#
+# The `ios-ci` branch stays the clean upstream mirror; nothing here touches it.
+# Artifacts are released to the dedicated `ipa-ios-fast-sync` tag so the
+# mainline `ipa-latest` release is never overwritten.
+#
+# The deployment-target patch (26.5 -> 26.2, sideload compatibility) is
+# carried on this branch itself (cherry-pick of the ios-ci patch commit).
+
+on:
+  push:
+    branches: [ios-fast-sync]
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios-build.yml"
+  workflow_dispatch:
+    inputs:
+      xcode:
+        description: "Xcode app name on the runner (e.g. Xcode_26.5.app)"
+        default: "Xcode_26.5.app"
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pin Xcode
+        run: |
+          sudo xcode-select -s /Applications/${{ github.event.inputs.xcode || 'Xcode_26.5.app' }}
+          xcodebuild -version
+
+      - name: Cache SwiftPM checkouts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/org.swift.swiftpm
+            ~/Library/Caches/org.swift.swiftpm
+          key: swiftpm-test-${{ runner.os }}-${{ hashFiles('ios/**/Package.resolved', 'ios/**/Package.swift') }}
+
+      - name: Run unit tests
+        run: |
+          set -o pipefail
+          swift test --package-path ios 2>&1 | tee "$RUNNER_TEMP/test.log" | tail -80
+
+      - name: Print test failures on failure
+        if: failure()
+        run: |
+          grep -E "error:|recorded an issue|failed" "$RUNNER_TEMP/test.log" 2>/dev/null | sort -u | head -60 || true
+
+  build:
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: List available Xcodes
+        run: ls /Applications | grep -i "^Xcode" || true
+
+      # Toolchain and deployment target are decoupled: a newer SDK builds an app
+      # whose deployment target stays 26.2 (patched on this branch, mirrors
+      # ios-ci). The newer compiler is required — SE-0442 relaxed the access
+      # level of synthesized memberwise inits for structs whose private stored
+      # properties all have defaults, and TimelineHistoryPull(edge:) depends
+      # on that (Xcode 26.2 reports "argument passed to call that takes no
+      # arguments").
+      - name: Pin Xcode
+        run: |
+          sudo xcode-select -s /Applications/${{ github.event.inputs.xcode || 'Xcode_26.5.app' }}
+          xcodebuild -version
+
+      - name: Cache SwiftPM checkouts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/org.swift.swiftpm
+            ~/Library/Caches/org.swift.swiftpm
+          key: swiftpm-${{ runner.os }}-${{ hashFiles('ios/**/Package.resolved', 'ios/**/Package.swift') }}
+
+      - name: Cache DerivedData
+        uses: actions/cache@v4
+        with:
+          path: ios/Agents Anywhere/build/DerivedData
+          key: dd-${{ runner.os }}-${{ hashFiles('ios/**') }}
+          restore-keys: dd-${{ runner.os }}-
+
+      - name: Build (unsigned)
+        run: |
+          set -o pipefail
+          cd "ios/Agents Anywhere"
+          xcodebuild build \
+            -project "Agents Anywhere.xcodeproj" \
+            -scheme "Agents Anywhere" \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            ENABLE_DEBUG_DYLIB=NO \
+            SWIFT_NUM_THREADS=2 \
+            SWIFT_COMPILATION_MODE=incremental \
+            'OTHER_SWIFT_FLAGS=-Xfrontend -disable-batch-mode' \
+            -derivedDataPath build/DerivedData \
+            2>&1 | tee "$RUNNER_TEMP/build.log" | tail -40
+
+      - name: Print compiler errors on failure
+        if: failure()
+        run: |
+          grep -E "error:|fatal error|The following build commands failed" \
+            "$RUNNER_TEMP/build.log" 2>/dev/null | sort -u | head -40 || true
+
+      - name: Package ipa
+        run: |
+          cd "ios/Agents Anywhere"
+          PRODUCTS=build/DerivedData/Build/Products/Release-iphoneos
+          ls "$PRODUCTS"
+          mkdir -p /tmp/out/Payload
+          cp -r "$PRODUCTS"/*.app /tmp/out/Payload/
+          APP=/tmp/out/Payload/*.app
+          # Prove the deployment-target patch landed in the shipped binary.
+          /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" $APP/Info.plist
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" $APP/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ github.run_number }}" $APP/Info.plist
+          (cd /tmp/out && zip -qr "$GITHUB_WORKSPACE/agents-anywhere.ipa" Payload)
+          ls -lh "$GITHUB_WORKSPACE/agents-anywhere.ipa"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agents-anywhere-ios-fast-sync-ipa
+          path: agents-anywhere.ipa
+          if-no-files-found: error
+
+      - name: Release unsigned .ipa
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA_SHORT: ${{ github.sha }}
+        run: |
+          TAG="ipa-ios-fast-sync"
+          NAME="AgentsAnywhere-fast-sync-${SHA_SHORT:0:7}.ipa"
+          cp agents-anywhere.ipa "$NAME"
+          gh release create "$TAG" --title "Agents Anywhere unsigned builds — ios-fast-sync" \
+            --notes "Built from the ios-fast-sync branch (foreground catch-up, instant opening, header glow). Unsigned — re-sign on-device with KSign." || true
+          gh release upload "$TAG" "$NAME" --clobber

@@ -14,7 +14,7 @@ name: iOS Build & Test
 
 on:
   push:
-    branches: [dev]
+    branches: [dev, ios-send-timing-probe]
     paths:
       - "ios/**"
       - ".github/workflows/ios-build.yml"
@@ -157,9 +157,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SHA_SHORT: ${{ github.sha }}
         run: |
-          TAG="ipa-dev"
+          TAG="ipa-probe"
           NAME="AgentsAnywhere-dev-${SHA_SHORT:0:7}.ipa"
           cp agents-anywhere.ipa "$NAME"
-          gh release create "$TAG" --title "Agents Anywhere unsigned builds — dev" \
-            --notes "Built from the dev branch. Unsigned — re-sign on-device with KSign." || true
+          gh release create "$TAG" --title "Agents Anywhere unsigned builds — send-timing probe" \
+            --notes "send-timing probe build (ios-send-timing-probe branch): the dev app plus the on-device send-timing panel. Send 5-10 messages (new session first message, warm session, consecutive sends), tap 复制全部 on the panel, and send the clipboard back for server-side reconciliation. Unsigned — re-sign on-device with KSign." || true
           gh release upload "$TAG" "$NAME" --clobber

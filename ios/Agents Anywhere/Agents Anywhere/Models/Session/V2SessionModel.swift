@@ -179,6 +179,8 @@ final class V2SessionModel: Identifiable {
                                       localAttachmentIDs: composer.attachments.map(\.id), attachments: composer.attachments)
         attachmentPreviews.remember(pending.attachments, clientID: pending.id)
         pendingMessages.append(pending); awaitingReplyID = pending.id
+        // Diagnostic only (ios-send-timing-probe): bind the pending to the tap.
+        SendTimingProbe.shared.markPending(sessionId: id, clientMessageId: pending.id)
         // Commit the local bubble and release the editor immediately. A failed
         // write restores this snapshot only if the user has not started a new draft.
         composer.clear(); draftAttachmentIDs = []
@@ -188,14 +190,21 @@ final class V2SessionModel: Identifiable {
             try await upload?(pending)
             guard isValid, !Task.isCancelled else { throw CancellationError() }
             attachmentPreviews.remember(pending.attachments, clientID: pending.id)
+            // Diagnostic only (ios-send-timing-probe): stamp the local-prep windows.
+            SendTimingProbe.shared.markFlushStart(sessionId: id)
             await repository.flushCache()
+            SendTimingProbe.shared.markFlushEnd(sessionId: id)
             guard isValid, !Task.isCancelled else { throw CancellationError() }
             didSubmit = true
+            SendTimingProbe.shared.markHTTPStart(sessionId: id)
             _ = try await repository.send(sessionId: id, content: content, attachmentIDs: pending.attachmentIDs, clientMessageID: pending.id)
+            SendTimingProbe.shared.markHTTPEnd(sessionId: id)
             guard isValid else { return pending }
             pending.update(.accepted)
             clearDraft(ifMatching: pending)
         } catch {
+            // Diagnostic only (ios-send-timing-probe): no-op unless the POST began.
+            SendTimingProbe.shared.markHTTPEnd(sessionId: id)
             guard isValid else { return pending }
             if awaitingReplyID == pending.id { awaitingReplyID = nil }
             let failure = V2ClientFailure(error)
@@ -244,12 +253,16 @@ final class V2SessionModel: Identifiable {
             let hasReply = user.map { user in data.items.contains { $0.orderSeq > user.orderSeq && $0.role != .user && $0.type != .turnStart } } ?? false
             if agentStarted || hasReply { awaitingReplyID = nil }
         }
+        // Diagnostic only (ios-send-timing-probe): read-only reply observation.
+        if let data { SendTimingProbe.shared.observe(sessionId: id, data: data) }
     }
 
     func confirmEcho(_ item: V2TimelineItem) {
         guard item.sessionId == id, item.type == .message, item.role == .user,
               let clientID = item.source["clientMessageId"]?.stringValue,
               let pending = pendingMessages.first(where: { $0.id == clientID }) else { return }
+        // Diagnostic only (ios-send-timing-probe): the spinner stops on this frame.
+        SendTimingProbe.shared.markEcho(clientMessageId: clientID)
         pending.update(.confirmed)
         clearDraft(ifMatching: pending)
         pendingMessages.removeAll { $0.id == clientID }

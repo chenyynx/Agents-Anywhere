@@ -93,6 +93,8 @@ struct ChatComposerDock: View {
 
     private func send() {
         guard !isSending, !isBusy, importCount == 0, canSend, !isStreaming else { return }
+        // Diagnostic only (ios-send-timing-probe): stamp the tap; no flow change.
+        SendTimingProbe.shared.markTap(sessionId: sessionChat?.session.id, preview: draft.text)
         isSending = true
         Task { @MainActor in
             defer { isSending = false }

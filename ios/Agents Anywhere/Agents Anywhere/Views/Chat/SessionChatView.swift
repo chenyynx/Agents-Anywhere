@@ -110,6 +110,8 @@ struct SessionChatView: View, Equatable {
                         }
                     }.padding(.top, 8)
                 }
+                // Diagnostic only (ios-send-timing-probe): remove with the branch.
+                .overlay(alignment: .top) { SendTimingPanel(sessionId: session.id) }
         }
         .modifier(ChatPageToolbar(title: session.metadata?.title ?? fallbackTitle ?? String(localized: "会话"),
             subtitle: [session.metadata?.runtimeName ?? session.metadata?.runtime ?? fallbackRuntimeName ?? String(localized: "Agent"),

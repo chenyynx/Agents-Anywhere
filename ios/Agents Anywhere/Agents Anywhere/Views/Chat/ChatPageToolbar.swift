@@ -81,7 +81,9 @@ private struct ChatToolbarSubtitle: View {
     }
     var body: some View {
         HStack(spacing: 4) {
-            if let status {
+            // The not-ready state has no icon slot: it is the sweep overlay
+            // below the row (no spinner, no glyph, no copy).
+            if let status, !status.isGlow {
                 Group {
                     if status.isProgress { ProgressView().controlSize(.mini) }
                     else { AppSymbol(status.symbol, size: 12) }
@@ -91,8 +93,48 @@ private struct ChatToolbarSubtitle: View {
         }
         .font(.caption).foregroundStyle(.secondary)
         .frame(height: lineHeight)
+        .overlay(alignment: .bottom) {
+            if status?.isGlow == true { HeaderGlowSweep().accessibilityHidden(true) }
+        }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel([subtitle, status?.detail].compactMap { $0 }.joined(separator: " · "))
+        .accessibilityLabel([subtitle, status?.detail].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
+    }
+}
+
+/// The header's not-ready indicator: a thin matte light sweeps across the
+/// toolbar row. Local compositor animation only — no per-frame model
+/// publications — reusing the timeline sweep's 1.6s linear language.
+/// Reduce Motion degrades to a static low line.
+private struct HeaderGlowSweep: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var sweeps = false
+
+    var body: some View {
+        GeometryReader { geometry in
+            let width = max(geometry.size.width, 1)
+            Capsule()
+                .fill(.quaternary)
+                .overlay(alignment: .leading) {
+                    if !reduceMotion {
+                        Capsule()
+                            .fill(LinearGradient(stops: [
+                                .init(color: .clear, location: 0),
+                                .init(color: .primary.opacity(0.30), location: 0.5),
+                                .init(color: .clear, location: 1)
+                            ], startPoint: .leading, endPoint: .trailing))
+                            .frame(width: width * 1.5)
+                            .offset(x: sweeps ? width : -width * 1.5)
+                    }
+                }
+                .clipShape(Capsule())
+        }
+        .frame(height: 2)
+        .onAppear {
+            guard !reduceMotion else { return }
+            sweeps = false
+            withAnimation(.linear(duration: 1.6).repeatForever(autoreverses: false)) { sweeps = true }
+        }
+        .onDisappear { sweeps = false }
     }
 }
 

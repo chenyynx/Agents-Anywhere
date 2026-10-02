@@ -9,7 +9,9 @@ enum ChatHeaderStatus: Equatable {
         switch self {
         case .networkOffline: String(localized: "网络已断开")
         case .deviceOffline: String(localized: "设备离线")
-        case .syncing: String(localized: "正在同步会话状态…")
+        // The not-ready state renders as the header glow sweep. It must never
+        // carry copy: the "正在同步会话状态…" process text is retired.
+        case .syncing: ""
         case .working: String(localized: "正在处理任务")
         case .waitingForResponse: String(localized: "等待回应")
         case .stopping: String(localized: "正在停止…")
@@ -31,7 +33,11 @@ enum ChatHeaderStatus: Equatable {
         default: "info.circle"
         }
     }
-    var isProgress: Bool { self == .syncing || self == .working || self == .stopping }
+    /// The not-ready state is visual only: a thin matte light sweeps the top
+    /// bar. Never a spinner (that stays reserved for working/stopping) and
+    /// never copy (see `title`).
+    var isGlow: Bool { self == .syncing }
+    var isProgress: Bool { self == .working || self == .stopping }
 }
 
 extension SessionChatModel {

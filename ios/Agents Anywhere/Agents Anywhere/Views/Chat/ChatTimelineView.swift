@@ -63,7 +63,12 @@ struct ChatTimelineView: View {
             .scrollIndicators(.hidden)
             .scrollBounceBehavior(.always, axes: .vertical)
             .scrollEdgeEffectStyle(.soft, for: .top)
-            .defaultScrollAnchor(.bottom, for: .initialOffset)
+            // The opening positioning is owned by the instant command path: any
+            // pre-armed target here would be applied by the scroll view when the
+            // content arrives — outside our animation-disabled transaction — and
+            // scroll visibly. The opacity gate below keeps the (top-anchored)
+            // first layout invisible until the position lands (pp 2026-10-02).
+            .defaultScrollAnchor(.top, for: .initialOffset)
             .defaultScrollAnchor(.top, for: .alignment)
             .defaultScrollAnchor(.top, for: .sizeChanges)
             .allowsHitTesting(model.isOpeningReady)
@@ -163,14 +168,6 @@ struct ChatTimelineView: View {
             }
             .onChange(of: model.isOpeningReady, initial: true) { _, ready in
                 if ready { scrolling.open(interactionPresented: hasInteractions) }
-                if ready, !navigationIsSuspended {
-                    // Arm the bottom target in the same update that first presents the
-                    // content, so the first laid-out frame already sits at the bottom
-                    // instead of rendering the window top for the pipeline's latency.
-                    var transaction = Transaction(animation: nil)
-                    transaction.disablesAnimations = true
-                    withTransaction(transaction) { position.scrollTo(edge: .bottom) }
-                }
             }
             .onChange(of: scrolling.navigationGeneration) { _, _ in
                 releaseScrollPosition()

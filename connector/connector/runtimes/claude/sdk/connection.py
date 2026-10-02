@@ -40,6 +40,7 @@ class ClaudeResponse:
     connection: ClaudeConnection
     execution: ClaudeExecution | None = None
     user_id: str | None = None
+    prompt_uuid: str | None = None
     messages: asyncio.Queue[Any] = field(default_factory=asyncio.Queue)
     released: asyncio.Event = field(default_factory=asyncio.Event)
     terminal_received: bool = False
@@ -51,14 +52,15 @@ class ClaudeResponse:
         await self.connection.connect()
 
     async def query(self, content: str) -> None:
-        if self.user_id is None:
+        prompt_uuid = self.prompt_uuid or self.user_id
+        if prompt_uuid is None:
             await query_client(self.connection.client, content)
         else:
 
             async def prompt():
                 yield {
                     "type": "user",
-                    "uuid": self.user_id,
+                    "uuid": prompt_uuid,
                     "message": {"role": "user", "content": content},
                     "parent_tool_use_id": None,
                     "priority": "later",
@@ -97,6 +99,17 @@ class ClaudeResponse:
                 self.messages.get_nowait()
         self.discard = interrupted and not self.terminal_received
         self.released.set()
+
+    def ensure_prompt_uuid(self) -> str:
+        """Return the UUID this prompt carries on the wire, pre-assigning one.
+
+        The SDK replays this exact UUID, so timeline identity is known at send
+        time instead of at the first response byte.
+        """
+
+        if self.prompt_uuid is None:
+            self.prompt_uuid = self.user_id or str(uuid4())
+        return self.prompt_uuid
 
 
 @dataclass(slots=True)

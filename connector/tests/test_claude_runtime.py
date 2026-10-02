@@ -475,6 +475,644 @@ async def _test_claude_runtime_stream_events_upsert_partial_assistant_message() 
     )
 
 
+def test_claude_runtime_publishes_user_item_before_first_response_byte() -> None:
+    asyncio.run(_test_claude_runtime_publishes_user_item_before_first_response_byte())
+
+
+async def _test_claude_runtime_publishes_user_item_before_first_response_byte() -> (
+    None
+):
+    class _GatedReplyClient(_FakeClaudeClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.release = asyncio.Event()
+
+        async def receive_response(self) -> list[Any]:
+            await self.release.wait()
+            return self.messages
+
+    host = _RecordingHost()
+    client = _GatedReplyClient()
+    runtime = _runtime(host=host, client=client)
+
+    result = await runtime.start_turn(
+        "sess_early",
+        None,
+        "hello early",
+        client_message_id="client_early",
+    )
+    task = runtime._sessions["sess_early"].active_task
+    assert result.ok is True
+    assert task is not None
+
+    # No response byte has been produced: the reply stream is still gated.
+    await _wait_until(lambda: bool(client.queries))
+    user_items = [item for item in host.timeline_item_upserts if item.role == "user"]
+    assert len(user_items) == 1
+    assert host.timeline_item_upserts[0].role == "user"
+    assert user_items[0].source["itemId"] == client.prompt_uuids[0]
+    assert user_items[0].source["clientMessageId"] == "client_early"
+
+    client.messages = [
+        SimpleNamespace(
+            type="assistant",
+            uuid="assistant_early",
+            session_id="claude_early",
+            message={
+                "id": "msg_early",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "ok"}],
+            },
+        ),
+        SimpleNamespace(type="result", session_id="claude_early"),
+    ]
+    client.release.set()
+    await task
+
+    user_items = [item for item in host.timeline_item_upserts if item.role == "user"]
+    assert len(user_items) == 1
+
+
+def test_claude_runtime_binds_replayed_uuid_when_not_adopted() -> None:
+    asyncio.run(_test_claude_runtime_binds_replayed_uuid_when_not_adopted())
+
+
+async def _test_claude_runtime_binds_replayed_uuid_when_not_adopted() -> None:
+    host = _RecordingHost()
+    external_session_id = "claude_not_adopted"
+    sdk = _HistorySdk(
+        messages={
+            external_session_id: [
+                SimpleNamespace(
+                    type="user",
+                    uuid="cli_replayed_uuid",
+                    session_id=external_session_id,
+                    message={"role": "user", "content": "hello replay"},
+                )
+            ]
+        }
+    )
+    client = _FakeClaudeClient(
+        messages=[
+            UserMessage(content="hello replay", uuid="cli_replayed_uuid"),
+            SimpleNamespace(type="result", session_id=external_session_id),
+        ]
+    )
+    runtime = _runtime(host=host, client=client, sdk=sdk)
+
+    result = await runtime.start_turn(
+        "sess_not_adopted",
+        external_session_id,
+        "hello replay",
+        client_message_id="client_not_adopted",
+    )
+    task = runtime._sessions["sess_not_adopted"].active_task
+    assert result.ok is True
+    assert task is not None
+    await task
+
+    live_users = [item for item in host.timeline_item_upserts if item.role == "user"]
+    assert len(live_users) == 1
+    assert live_users[0].source["itemId"] == client.prompt_uuids[0]
+
+    handled = await runtime.sync_session_timeline(
+        "sess_not_adopted",
+        external_session_id,
+    )
+    history_users = [
+        item for item in host.timeline_syncs[-1]["items"] if item.role == "user"
+    ]
+    assert handled is True
+    assert len(history_users) == 1
+    assert history_users[0].id == live_users[0].id
+
+
+def test_claude_runtime_bridges_replayed_uuid_without_client_message_id() -> None:
+    asyncio.run(_test_claude_runtime_bridges_replayed_uuid_without_client_message_id())
+
+
+async def _test_claude_runtime_bridges_replayed_uuid_without_client_message_id() -> (
+    None
+):
+    host = _RecordingHost()
+    host.attachments["file_bridge"] = RuntimeAttachmentContent(
+        file_id="file_bridge",
+        name="note.txt",
+        media_type="text/plain",
+        content=b"bridge attachment",
+    )
+    external_session_id = "claude_bridged"
+    sdk = _HistorySdk(
+        messages={
+            external_session_id: [
+                SimpleNamespace(
+                    type="user",
+                    uuid="cli_bridged_uuid",
+                    session_id=external_session_id,
+                    message={"role": "user", "content": "hello bridge"},
+                )
+            ]
+        }
+    )
+    client = _FakeClaudeClient(
+        messages=[
+            UserMessage(content="hello bridge", uuid="cli_bridged_uuid"),
+            SimpleNamespace(type="result", session_id=external_session_id),
+        ]
+    )
+    runtime = _runtime(host=host, client=client, sdk=sdk)
+
+    result = await runtime.start_turn(
+        "sess_bridged",
+        external_session_id,
+        "hello bridge",
+        attachments=(RuntimeAttachment(file_id="file_bridge", name="note.txt"),),
+    )
+    task = runtime._sessions["sess_bridged"].active_task
+    assert result.ok is True
+    assert task is not None
+    await task
+
+    live_users = [item for item in host.timeline_item_upserts if item.role == "user"]
+    assert len(live_users) == 1
+    assert live_users[0].source["itemId"] == client.prompt_uuids[0]
+    assert live_users[0].content["attachments"][0]["name"] == "note.txt"
+
+    handled = await runtime.sync_session_timeline(
+        "sess_bridged",
+        external_session_id,
+    )
+    history_users = [
+        item for item in host.timeline_syncs[-1]["items"] if item.role == "user"
+    ]
+    assert handled is True
+    assert len(history_users) == 1
+    assert history_users[0].id == live_users[0].id
+    assert history_users[0].content["attachments"][0]["name"] == "note.txt"
+
+
+def test_claude_runtime_flushes_truncated_thinking_blocks() -> None:
+    asyncio.run(_test_claude_runtime_flushes_truncated_thinking_blocks())
+
+
+async def _test_claude_runtime_flushes_truncated_thinking_blocks() -> None:
+    host = _RecordingHost()
+    client = _FakeClaudeClient(
+        messages=[
+            StreamEvent(
+                uuid="stream_trunc",
+                session_id="claude_trunc",
+                event={
+                    "type": "message_start",
+                    "message": {"id": "msg_trunc"},
+                },
+            ),
+            StreamEvent(
+                uuid="stream_trunc",
+                session_id="claude_trunc",
+                event={
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": "cut short"},
+                },
+            ),
+            SimpleNamespace(type="result", session_id="claude_trunc"),
+        ]
+    )
+    runtime = _runtime(host=host, client=client)
+
+    result = await runtime.start_turn(
+        "sess_trunc",
+        "claude_trunc",
+        "hi",
+        client_message_id="cmid_trunc",
+    )
+    task = runtime._sessions["sess_trunc"].active_task
+    assert result.ok is True
+    assert task is not None
+    await task
+
+    reasoning = [
+        item
+        for item in host.timeline_item_upserts
+        if item.type == "system" and item.content.get("kind") == "reasoning"
+    ]
+    assert [item.status for item in reasoning] == ["running", "done"]
+    assert len({item.id for item in reasoning}) == 1
+    assert reasoning[-1].content["text"] == "cut short"
+
+
+def test_claude_runtime_captures_thinking_seed_on_block_start() -> None:
+    asyncio.run(_test_claude_runtime_captures_thinking_seed_on_block_start())
+
+
+async def _test_claude_runtime_captures_thinking_seed_on_block_start() -> None:
+    host = _RecordingHost()
+    client = _FakeClaudeClient(
+        messages=[
+            StreamEvent(
+                uuid="stream_seed",
+                session_id="claude_seed",
+                event={
+                    "type": "message_start",
+                    "message": {"id": "msg_seed"},
+                },
+            ),
+            StreamEvent(
+                uuid="stream_seed",
+                session_id="claude_seed",
+                event={
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "thinking", "thinking": "seed"},
+                },
+            ),
+            StreamEvent(
+                uuid="stream_seed",
+                session_id="claude_seed",
+                event={
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": " more"},
+                },
+            ),
+            StreamEvent(
+                uuid="stream_seed",
+                session_id="claude_seed",
+                event={"type": "content_block_stop", "index": 0},
+            ),
+            SimpleNamespace(
+                type="assistant",
+                uuid="assistant_seed",
+                session_id="claude_seed",
+                message={
+                    "id": "msg_seed",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "seed more"},
+                        {"type": "text", "text": "end"},
+                    ],
+                },
+            ),
+            SimpleNamespace(type="result", session_id="claude_seed"),
+        ]
+    )
+    runtime = _runtime(host=host, client=client)
+
+    result = await runtime.start_turn(
+        "sess_seed",
+        "claude_seed",
+        "hi",
+        client_message_id="cmid_seed",
+    )
+    task = runtime._sessions["sess_seed"].active_task
+    assert result.ok is True
+    assert task is not None
+    await task
+
+    reasoning = [
+        item
+        for item in host.timeline_item_upserts
+        if item.type == "system" and item.content.get("kind") == "reasoning"
+    ]
+    assert [item.content["text"] for item in reasoning] == [
+        "seed",
+        "seed more",
+        "seed more",
+        "seed more",
+    ]
+    assert [item.status for item in reasoning] == [
+        "running",
+        "running",
+        "done",
+        "done",
+    ]
+    assert [item.revision for item in reasoning] == [1, 2, 3, 4]
+
+
+def test_claude_runtime_duplicate_message_start_keeps_revisions_monotonic() -> None:
+    asyncio.run(_test_claude_runtime_duplicate_message_start_keeps_revisions_monotonic())
+
+
+async def _test_claude_runtime_duplicate_message_start_keeps_revisions_monotonic() -> (
+    None
+):
+    host = _RecordingHost()
+    client = _FakeClaudeClient(
+        messages=[
+            StreamEvent(
+                uuid="stream_dup",
+                session_id="claude_dup",
+                event={
+                    "type": "message_start",
+                    "message": {"id": "msg_dup"},
+                },
+            ),
+            StreamEvent(
+                uuid="stream_dup",
+                session_id="claude_dup",
+                event={
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": "one"},
+                },
+            ),
+            StreamEvent(
+                uuid="stream_dup",
+                session_id="claude_dup",
+                event={
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": " two"},
+                },
+            ),
+            StreamEvent(
+                uuid="stream_dup",
+                session_id="claude_dup",
+                event={
+                    "type": "message_start",
+                    "message": {"id": "msg_dup"},
+                },
+            ),
+            StreamEvent(
+                uuid="stream_dup",
+                session_id="claude_dup",
+                event={
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": " three"},
+                },
+            ),
+            StreamEvent(
+                uuid="stream_dup",
+                session_id="claude_dup",
+                event={"type": "content_block_stop", "index": 0},
+            ),
+            SimpleNamespace(
+                type="assistant",
+                uuid="assistant_dup",
+                session_id="claude_dup",
+                message={
+                    "id": "msg_dup",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "one two three"},
+                        {"type": "text", "text": "end"},
+                    ],
+                },
+            ),
+            SimpleNamespace(type="result", session_id="claude_dup"),
+        ]
+    )
+    runtime = _runtime(host=host, client=client)
+
+    result = await runtime.start_turn(
+        "sess_dup",
+        "claude_dup",
+        "hi",
+        client_message_id="cmid_dup",
+    )
+    task = runtime._sessions["sess_dup"].active_task
+    assert result.ok is True
+    assert task is not None
+    await task
+
+    reasoning = [
+        item
+        for item in host.timeline_item_upserts
+        if item.type == "system" and item.content.get("kind") == "reasoning"
+    ]
+    revisions = [item.revision for item in reasoning]
+    assert revisions == sorted(revisions)
+    assert revisions == [1, 2, 3, 4, 5]
+    texts = [item.content["text"] for item in reasoning]
+    assert texts == [
+        "one",
+        "one two",
+        "one two three",
+        "one two three",
+        "one two three",
+    ]
+
+
+def test_claude_runtime_interrupt_during_early_publish_keeps_message() -> None:
+    asyncio.run(_test_claude_runtime_interrupt_during_early_publish_keeps_message())
+
+
+async def _test_claude_runtime_interrupt_during_early_publish_keeps_message() -> None:
+    class _GatedUpsertHost(_RecordingHost):
+        def __init__(self) -> None:
+            super().__init__()
+            self.blocked = asyncio.Event()
+            self.release = asyncio.Event()
+            self.blocked_once = False
+
+        async def timeline_item_upsert(self, item: RuntimeTimelineItem) -> None:
+            if item.role == "user" and not self.blocked_once:
+                self.blocked_once = True
+                self.blocked.set()
+                await self.release.wait()
+            await super().timeline_item_upsert(item)
+
+    host = _GatedUpsertHost()
+    client = _FakeClaudeClient(
+        messages=[SimpleNamespace(type="result", session_id="claude_cancel")]
+    )
+    runtime = _runtime(host=host, client=client)
+
+    result = await runtime.start_turn(
+        "sess_cancel",
+        "claude_cancel",
+        "hello cancel",
+        client_message_id="client_cancel",
+    )
+    task = runtime._sessions["sess_cancel"].active_task
+    assert result.ok is True
+    assert task is not None
+
+    await _wait_until(lambda: host.blocked.is_set())
+    task.cancel()
+    host.release.set()
+    await task
+
+    user_items = [item for item in host.timeline_item_upserts if item.role == "user"]
+    assert len(user_items) == 1
+    assert user_items[0].source["clientMessageId"] == "client_cancel"
+    assert user_items[0].content["text"] == "hello cancel"
+    assert host.session_turn_ends[-1]["outcome"] == "interrupted"
+
+
+def test_claude_runtime_early_publish_failure_falls_back_to_gated_path() -> None:
+    asyncio.run(_test_claude_runtime_early_publish_failure_falls_back_to_gated_path())
+
+
+async def _test_claude_runtime_early_publish_failure_falls_back_to_gated_path() -> (
+    None
+):
+    class _FailingOnceUpsertHost(_RecordingHost):
+        def __init__(self) -> None:
+            super().__init__()
+            self.failed_once = False
+
+        async def timeline_item_upsert(self, item: RuntimeTimelineItem) -> None:
+            if item.role == "user" and not self.failed_once:
+                self.failed_once = True
+                raise RuntimeError("timeline publish failed once")
+            await super().timeline_item_upsert(item)
+
+    host = _FailingOnceUpsertHost()
+    client = _FakeClaudeClient(
+        messages=[
+            SimpleNamespace(
+                type="assistant",
+                uuid="assistant_retry",
+                session_id="claude_retry",
+                message={
+                    "id": "msg_retry",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "ok"}],
+                },
+            ),
+            SimpleNamespace(type="result", session_id="claude_retry"),
+        ]
+    )
+    runtime = _runtime(host=host, client=client)
+
+    result = await runtime.start_turn(
+        "sess_retry",
+        "claude_retry",
+        "hello retry",
+        client_message_id="client_retry",
+    )
+    task = runtime._sessions["sess_retry"].active_task
+    assert result.ok is True
+    assert task is not None
+    await task
+
+    user_items = [item for item in host.timeline_item_upserts if item.role == "user"]
+    assert len(user_items) == 1
+    assert user_items[0].source["clientMessageId"] == "client_retry"
+    assert host.session_turn_ends[-1]["outcome"] == "completed"
+
+
+def test_claude_runtime_streams_reasoning_partial_items() -> None:
+    asyncio.run(_test_claude_runtime_streams_reasoning_partial_items())
+
+
+async def _test_claude_runtime_streams_reasoning_partial_items() -> None:
+    host = _RecordingHost()
+    client = _FakeClaudeClient(
+        messages=[
+            StreamEvent(
+                uuid="stream_reasoning",
+                session_id="claude_reasoning",
+                event={
+                    "type": "message_start",
+                    "message": {"id": "msg_reasoning_1"},
+                },
+            ),
+            StreamEvent(
+                uuid="stream_reasoning",
+                session_id="claude_reasoning",
+                event={
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "thinking", "thinking": ""},
+                },
+            ),
+            StreamEvent(
+                uuid="stream_reasoning",
+                session_id="claude_reasoning",
+                event={
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": "Let me "},
+                },
+            ),
+            StreamEvent(
+                uuid="stream_reasoning",
+                session_id="claude_reasoning",
+                event={
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": "check."},
+                },
+            ),
+            StreamEvent(
+                uuid="stream_reasoning",
+                session_id="claude_reasoning",
+                event={
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "signature_delta", "signature": "sig"},
+                },
+            ),
+            StreamEvent(
+                uuid="stream_reasoning",
+                session_id="claude_reasoning",
+                event={"type": "content_block_stop", "index": 0},
+            ),
+            SimpleNamespace(
+                type="assistant",
+                uuid="assistant_reasoning",
+                session_id="claude_reasoning",
+                message={
+                    "id": "msg_reasoning_1",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "Let me check."},
+                        {"type": "text", "text": "Done."},
+                    ],
+                },
+            ),
+            SimpleNamespace(type="result", session_id="claude_reasoning"),
+        ]
+    )
+    runtime = _runtime(host=host, client=client)
+
+    result = await runtime.start_turn(
+        "sess_reasoning",
+        "claude_reasoning",
+        "think please",
+        client_message_id="client_reasoning",
+    )
+    task = runtime._sessions["sess_reasoning"].active_task
+    assert result.ok is True
+    assert task is not None
+    await task
+
+    reasoning_items = [
+        item
+        for item in host.timeline_item_upserts
+        if item.type == "system" and item.content.get("kind") == "reasoning"
+    ]
+    assert [item.content["text"] for item in reasoning_items] == [
+        "Let me ",
+        "Let me check.",
+        "Let me check.",
+        "Let me check.",
+    ]
+    assert [item.status for item in reasoning_items] == [
+        "running",
+        "running",
+        "done",
+        "done",
+    ]
+    assert [item.role for item in reasoning_items] == [
+        "system",
+        "system",
+        "system",
+        "system",
+    ]
+    assert len({item.id for item in reasoning_items}) == 1
+    assert [item.revision for item in reasoning_items] == [1, 2, 3, 4]
+
+    assistant_items = [
+        item for item in host.timeline_item_upserts if item.role == "assistant"
+    ]
+    assert [item.content["text"] for item in assistant_items] == ["Done."]
+
+
 def test_claude_runtime_create_and_start_publishes_session_meta() -> None:
     asyncio.run(_test_claude_runtime_create_and_start_publishes_session_meta())
 
@@ -494,14 +1132,16 @@ async def _test_claude_runtime_create_and_start_publishes_session_meta() -> None
         }
     )
     client = _FakeClaudeClient(
-        messages=[
+        echo_prompt=True,
+        echo_prefix=[
             SystemMessage(
                 subtype="init",
                 data={"session_id": "claude_session_2"},
             ),
-            UserMessage(content="start", uuid="native_new_user"),
+        ],
+        echo_suffix=[
             SimpleNamespace(type="result", session_id="claude_session_2"),
-        ]
+        ],
     )
     runtime = _runtime(host=host, client=client, sdk=sdk)
 
@@ -526,16 +1166,18 @@ async def _test_claude_runtime_create_and_start_publishes_session_meta() -> None
     assert runtime._sessions["sess_new"].external_session_id == "claude_session_2"
 
     live_user = next(item for item in host.timeline_item_upserts if item.role == "user")
+    assert live_user.source["itemId"] == client.prompt_uuids[0]
+    # The SDK adopts the pre-assigned UUID, so the transcript carries it too.
+    sdk.messages["claude_session_2"][0].uuid = client.prompt_uuids[0]
     handled = await runtime.sync_session_timeline("sess_new", "claude_session_2")
     history_user = next(
         item for item in host.timeline_syncs[-1]["items"] if item.role == "user"
     )
 
     assert handled is True
-    assert live_user.source["itemId"] == "native_new_user"
     assert history_user.id == live_user.id
     assert history_user.source["clientMessageId"] == "client_new_user"
-    assert history_user.source["itemId"] == "native_new_user"
+    assert history_user.source["itemId"] == client.prompt_uuids[0]
 
 
 def test_claude_runtime_projects_result_only_reply() -> None:
@@ -2620,13 +3262,14 @@ async def _test_claude_runtime_binds_identical_live_user_messages_by_history_ord
     host = _RecordingHost()
     external_session_id = "claude_identical_messages"
     sdk = _HistorySdk(messages={external_session_id: []})
-    client = _FakeClaudeClient()
+    client = _FakeClaudeClient(
+        echo_prompt=True,
+        echo_suffix=[
+            SimpleNamespace(type="result", session_id=external_session_id),
+        ],
+    )
     runtime = _runtime(host=host, client=client, sdk=sdk)
 
-    client.messages = [
-        UserMessage(content="same content", uuid="native_same_1"),
-        SimpleNamespace(type="result", session_id=external_session_id),
-    ]
     first = await runtime.start_turn(
         "sess_identical_messages",
         external_session_id,
@@ -2638,10 +3281,6 @@ async def _test_claude_runtime_binds_identical_live_user_messages_by_history_ord
     assert first_task is not None
     await first_task
 
-    client.messages = [
-        UserMessage(content="same content", uuid="native_same_2"),
-        SimpleNamespace(type="result", session_id=external_session_id),
-    ]
     second = await runtime.start_turn(
         "sess_identical_messages",
         external_session_id,
@@ -2656,11 +3295,12 @@ async def _test_claude_runtime_binds_identical_live_user_messages_by_history_ord
     live_users = [item for item in host.timeline_item_upserts if item.role == "user"]
     assert len(live_users) == 2
     assert live_users[0].id != live_users[1].id
+    first_uuid, second_uuid = client.prompt_uuids
 
     sdk.messages[external_session_id] = [
         SimpleNamespace(
             type="user",
-            uuid="native_same_1",
+            uuid=first_uuid,
             session_id=external_session_id,
             message={"role": "user", "content": "same content"},
         ),
@@ -2677,7 +3317,7 @@ async def _test_claude_runtime_binds_identical_live_user_messages_by_history_ord
     sdk.messages[external_session_id].append(
         SimpleNamespace(
             type="user",
-            uuid="native_same_2",
+            uuid=second_uuid,
             session_id=external_session_id,
             message={"role": "user", "content": "same content"},
         )
@@ -2695,10 +3335,10 @@ async def _test_claude_runtime_binds_identical_live_user_messages_by_history_ord
     assert second_sync is True
     assert first_history_user.id == live_users[0].id
     assert first_history_user.source["clientMessageId"] == "client_same_1"
-    assert first_history_user.source["itemId"] == "native_same_1"
+    assert first_history_user.source["itemId"] == first_uuid
     assert second_history_user.id == live_users[1].id
     assert second_history_user.source["clientMessageId"] == "client_same_2"
-    assert second_history_user.source["itemId"] == "native_same_2"
+    assert second_history_user.source["itemId"] == second_uuid
 
 
 def test_claude_runtime_native_user_id_survives_binding_eviction() -> None:
@@ -2721,10 +3361,10 @@ async def _test_claude_runtime_native_user_id_survives_binding_eviction() -> Non
         }
     )
     client = _FakeClaudeClient(
-        messages=[
-            UserMessage(content="original", uuid="native_eviction_original"),
+        echo_prompt=True,
+        echo_suffix=[
             SimpleNamespace(type="result", session_id=external_session_id),
-        ]
+        ],
     )
     runtime = _runtime(host=host, client=client, sdk=sdk)
 
@@ -2739,6 +3379,7 @@ async def _test_claude_runtime_native_user_id_survives_binding_eviction() -> Non
     assert task is not None
     await task
     live_user = next(item for item in host.timeline_item_upserts if item.role == "user")
+    sdk.messages[external_session_id][0].uuid = client.prompt_uuids[0]
 
     for index in range(1001):
         client_message_id = f"client_eviction_{index}"
@@ -2769,7 +3410,7 @@ async def _test_claude_runtime_native_user_id_survives_binding_eviction() -> Non
     assert handled is True
     assert "clientMessageId" not in history_user.source
     assert history_user.id == live_user.id
-    assert history_user.source["itemId"] == "native_eviction_original"
+    assert history_user.source["itemId"] == client.prompt_uuids[0]
 
 
 def test_claude_runtime_native_ids_survive_connector_restart() -> None:
@@ -2805,33 +3446,31 @@ async def _test_claude_runtime_native_ids_survive_connector_restart() -> None:
         ),
     ]
     live_host = _RecordingHost()
-    live_runtime = _runtime(
-        host=live_host,
-        client=_FakeClaudeClient(
-            messages=[
-                UserMessage(content="restart", uuid="native_restart_user"),
-                SimpleNamespace(
-                    type="assistant",
-                    uuid="native_restart_assistant_entry",
-                    session_id=external_session_id,
-                    message={
-                        "id": "native_restart_assistant_message",
-                        "role": "assistant",
-                        "content": [
-                            {
-                                "type": "tool_use",
-                                "id": "native_restart_tool",
-                                "name": "Bash",
-                                "input": {"command": "pwd"},
-                            },
-                            {"type": "text", "text": "done"},
-                        ],
-                    },
-                ),
-                SimpleNamespace(type="result", session_id=external_session_id),
-            ]
-        ),
+    live_client = _FakeClaudeClient(
+        echo_prompt=True,
+        echo_suffix=[
+            SimpleNamespace(
+                type="assistant",
+                uuid="native_restart_assistant_entry",
+                session_id=external_session_id,
+                message={
+                    "id": "native_restart_assistant_message",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "native_restart_tool",
+                            "name": "Bash",
+                            "input": {"command": "pwd"},
+                        },
+                        {"type": "text", "text": "done"},
+                    ],
+                },
+            ),
+            SimpleNamespace(type="result", session_id=external_session_id),
+        ],
     )
+    live_runtime = _runtime(host=live_host, client=live_client)
 
     result = await live_runtime.start_turn(
         "sess_platform_created",
@@ -2846,6 +3485,8 @@ async def _test_claude_runtime_native_ids_survive_connector_restart() -> None:
     live_ids = {
         (item.type, item.role): item.id for item in live_host.timeline_item_upserts
     }
+    # The SDK adopts the pre-assigned UUID, so the transcript carries it too.
+    messages[0].uuid = live_client.prompt_uuids[0]
 
     restarted_runtime = _runtime(
         sdk=_HistorySdk(
@@ -3859,13 +4500,24 @@ class _FakeOptions:
 
 
 class _FakeClaudeClient:
-    def __init__(self, messages: list[Any] | None = None) -> None:
+    def __init__(
+        self,
+        messages: list[Any] | None = None,
+        *,
+        echo_prompt: bool = False,
+        echo_prefix: list[Any] | None = None,
+        echo_suffix: list[Any] | None = None,
+    ) -> None:
         self.messages = list(messages or [])
+        self.echo_prompt = echo_prompt
+        self.echo_prefix = list(echo_prefix or [])
+        self.echo_suffix = list(echo_suffix or [])
         self.options: Any = None
         self.connected = False
         self.disconnected = False
         self.interrupted = False
         self.queries: list[str] = []
+        self.prompt_uuids: list[str] = []
         self.settings_path: Path | None = None
         self.settings_payload: dict[str, Any] | None = None
         self.settings_mode: int | None = None
@@ -3883,7 +4535,22 @@ class _FakeClaudeClient:
     async def disconnect(self) -> None:
         self.disconnected = True
 
-    async def query(self, prompt: str) -> None:
+    async def query(self, prompt: Any) -> None:
+        if not isinstance(prompt, str):
+            # The connector pre-assigns a prompt UUID, so interactive turns
+            # arrive as a message envelope. Record the UUID and text, and
+            # optionally replay the envelope the way the SDK does.
+            first = [message async for message in prompt][0]
+            uuid = first["uuid"]
+            content = first["message"]["content"]
+            self.prompt_uuids.append(uuid)
+            if self.echo_prompt:
+                self.messages = [
+                    *self.echo_prefix,
+                    UserMessage(content=content, uuid=uuid),
+                    *self.echo_suffix,
+                ]
+            prompt = content
         self.queries.append(prompt)
 
     async def receive_response(self) -> list[Any]:
@@ -3993,6 +4660,9 @@ class _ScheduledClaudeClient(_FakeClaudeClient):
                 await self.incoming.put(
                     UserMessage(uuid=message["uuid"], content=prompt)
                 )
+        await self._complete_query(prompt)
+
+    async def _complete_query(self, prompt: str) -> None:
         await super().query(prompt)
         if prompt == "schedule":
             await self.tool_result("CronCreate", {"id": "timer_1", "recurring": False})
@@ -4142,9 +4812,19 @@ def test_claude_stop_during_maintenance_preserves_pending_tasks() -> None:
 def test_claude_scheduled_reply_racing_user_submission_keeps_turn_ownership() -> None:
     class RacingClient(_ScheduledClaudeClient):
         async def query(self, prompt):
-            if not isinstance(prompt, str):
-                await self.reply("scheduled first")
-            await super().query(prompt)
+            if isinstance(prompt, str):
+                await super().query(prompt)
+                return
+            # Every prompt arrives as an envelope now: the scheduled reply
+            # races only the human submission.
+            async for message in prompt:
+                content = message["message"]["content"]
+                if content == "hello":
+                    await self.reply("scheduled first")
+                await self.incoming.put(
+                    UserMessage(uuid=message["uuid"], content=content)
+                )
+            await self._complete_query(content)
 
     async def run():
         client = RacingClient()
@@ -4185,16 +4865,24 @@ def test_claude_stop_clears_both_executions_during_scheduled_collision(
 ) -> None:
     class RacingClient(_ScheduledClaudeClient):
         async def query(self, prompt):
-            if not isinstance(prompt, str):
-                await self.incoming.put(
-                    AssistantMessage(
-                        uuid="scheduled_partial",
-                        session_id=self.native_id,
-                        content=[{"type": "text", "text": "scheduled work"}],
+            if isinstance(prompt, str):
+                await super().query(prompt)
+                return
+            async for message in prompt:
+                content = message["message"]["content"]
+                if content == "hello":
+                    await self.incoming.put(
+                        AssistantMessage(
+                            uuid="scheduled_partial",
+                            session_id=self.native_id,
+                            content=[{"type": "text", "text": "scheduled work"}],
+                        )
                     )
+                    await asyncio.Event().wait()
+                await self.incoming.put(
+                    UserMessage(uuid=message["uuid"], content=content)
                 )
-                await asyncio.Event().wait()
-            await super().query(prompt)
+            await self._complete_query(content)
 
     async def run():
         client = RacingClient()
@@ -4239,25 +4927,32 @@ def test_claude_collision_approval_belongs_to_scheduled_execution() -> None:
         submitted = None
 
         async def query(self, prompt):
-            if not isinstance(prompt, str):
-                async for message in prompt:
-                    self.submitted = message
-                await self.incoming.put(
-                    AssistantMessage(
-                        uuid="scheduled_tool_message",
-                        session_id=self.native_id,
-                        content=[
-                            {
-                                "type": "tool_use",
-                                "id": "scheduled_tool",
-                                "name": "Bash",
-                                "input": {"command": "ls"},
-                            }
-                        ],
-                    )
-                )
+            if isinstance(prompt, str):
+                await super().query(prompt)
                 return
-            await super().query(prompt)
+            async for message in prompt:
+                content = message["message"]["content"]
+                if content == "hello":
+                    self.submitted = message
+                    await self.incoming.put(
+                        AssistantMessage(
+                            uuid="scheduled_tool_message",
+                            session_id=self.native_id,
+                            content=[
+                                {
+                                    "type": "tool_use",
+                                    "id": "scheduled_tool",
+                                    "name": "Bash",
+                                    "input": {"command": "ls"},
+                                }
+                            ],
+                        )
+                    )
+                    return
+                await self.incoming.put(
+                    UserMessage(uuid=message["uuid"], content=content)
+                )
+            await self._complete_query(content)
 
     async def run():
         client = RacingClient()
@@ -4335,17 +5030,25 @@ def test_claude_schedule_save_failure_reports_error_and_closes_transport() -> No
 def test_claude_retained_query_failure_without_user_echo_does_not_hang() -> None:
     class FailingClient(_ScheduledClaudeClient):
         async def query(self, prompt):
-            if not isinstance(prompt, str):
-                await self.incoming.put(
-                    SimpleNamespace(
-                        type="result",
-                        is_error=True,
-                        errors=["authentication failed"],
-                        session_id=self.native_id,
-                    )
-                )
+            if isinstance(prompt, str):
+                await super().query(prompt)
                 return
-            await super().query(prompt)
+            async for message in prompt:
+                content = message["message"]["content"]
+                if content == "hello":
+                    await self.incoming.put(
+                        SimpleNamespace(
+                            type="result",
+                            is_error=True,
+                            errors=["authentication failed"],
+                            session_id=self.native_id,
+                        )
+                    )
+                    return
+                await self.incoming.put(
+                    UserMessage(uuid=message["uuid"], content=content)
+                )
+            await self._complete_query(content)
 
     async def run():
         client = FailingClient()
@@ -4966,11 +5669,25 @@ def test_claude_deferred_reconciliation_does_not_save_after_ownership_changes(
 def test_claude_background_work_outlives_reply_then_allows_reclaim(terminal: str) -> None:
     class BackgroundClient(_ScheduledClaudeClient):
         async def query(self, prompt):
-            if prompt == "start background":
+            if isinstance(prompt, str):
+                if prompt == "start background":
+                    await self.incoming.put(SystemMessage(
+                        subtype="task_started", task_id="bg_1", data={"task_id": "bg_1"},
+                    ))
+                await super().query(prompt)
+                return
+            messages = [message async for message in prompt]
+            content = messages[0]["message"]["content"]
+            if content == "start background":
                 await self.incoming.put(SystemMessage(
                     subtype="task_started", task_id="bg_1", data={"task_id": "bg_1"},
                 ))
-            await super().query(prompt)
+
+            async def replay():
+                for message in messages:
+                    yield message
+
+            await super().query(replay())
 
     async def run():
         client = BackgroundClient("native_background")

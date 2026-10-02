@@ -17,7 +17,7 @@ final class TimelineFollowProbe {
     private(set) var live = "live: –"
 
     private var samples = 0
-    private var pins = 0
+    private var fires = 0
     private let log = Logger(subsystem: "agents.anywhere", category: "follow-probe")
 
     private func append(_ line: String) {
@@ -39,13 +39,13 @@ final class TimelineFollowProbe {
     /// What the parsed event and the follow policy saw for this transition.
     func recordDecision(_ action: String, event: TimelineKeyboardEvent,
                         mode: TimelineScrollState.Mode, phase: TimelineScrollState.Phase,
-                        atBottom: Bool, suspended: Bool, pinsBottom: Bool) {
-        append("decide: \(action) dir=\(String(describing: event.direction)) mode=\(String(describing: mode)) phase=\(String(describing: phase)) bottom=\(atBottom) susp=\(suspended) pin=\(pinsBottom)")
+                        geoBottom: Bool, tailFlag: Bool, suspended: Bool) {
+        append("decide: \(action) dir=\(String(describing: event.direction)) mode=\(String(describing: mode)) phase=\(String(describing: phase)) geoB=\(geoBottom) tailF=\(tailFlag) susp=\(suspended)")
     }
 
     func recordWindowOpen(duration: TimeInterval) {
         samples = 0
-        pins = 0
+        fires = 0
         append("window open dur=\(String(format: "%.2f", duration))")
     }
 
@@ -53,8 +53,8 @@ final class TimelineFollowProbe {
         append("begin return: command \(issued ? "issued" : "nil")")
     }
 
-    func recordWindowEnd(settled: Bool, recheck: String, gap: CGFloat, atBottom: Bool) {
-        append("window end: settle=\(settled) recheck=\(recheck) bottom=\(atBottom) gap=\(String(format: "%.1f", gap)) samples=\(samples) pins=\(pins)")
+    func recordWindowEnd(settled: Bool, recheck: String, gap: CGFloat, geoBottom: Bool, tailFlag: Bool) {
+        append("window end: settle=\(settled) recheck=\(recheck) geoB=\(geoBottom) tailF=\(tailFlag) gap=\(String(format: "%.1f", gap)) samples=\(samples) fires=\(fires)")
     }
 
     private var lastGap: CGFloat = 0
@@ -65,13 +65,13 @@ final class TimelineFollowProbe {
         refreshLive()
     }
 
-    func recordPin() {
-        pins += 1
+    func recordReturnFired() {
+        fires += 1
         refreshLive()
     }
 
     private func refreshLive() {
-        live = "live: gap=\(String(format: "%.1f", lastGap))pt samples=\(samples) pins=\(pins)"
+        live = "live: gap=\(String(format: "%.1f", lastGap))pt samples=\(samples) fires=\(fires)"
     }
 }
 

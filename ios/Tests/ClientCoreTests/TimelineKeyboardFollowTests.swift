@@ -222,10 +222,13 @@ import Testing
         #expect(action(context(.willShow)) == .requestReturn(.keyboardMatched))
     }
 
-    @Test func showOutOfViewLeavesThePositionAlone() {
-        // Reading in history: the keyboard covers the bottom but the reader is
-        // not there, so nothing moves.
-        #expect(action(context(.willShow, isAtBottom: false)) == .none)
+    @Test func showFollowsWheneverTheTimelineIsSteadyFollowing() {
+        // Round 1.3: bottom-ness no longer gates a show — the device probe
+        // showed the flag falsely negative while the reader watched the latest
+        // messages, so the follow never started. The user-intent gate is the
+        // mode (pinned above); a steady-following timeline takes the return
+        // regardless of what the bottom probe says.
+        #expect(action(context(.willShow, isAtBottom: false)) == .requestReturn(.keyboardMatched))
     }
 
     @Test func hideAtTheBottomSuppressesProgrammaticScrolling() {
@@ -312,7 +315,7 @@ import Testing
     private func action(_ event: TimelineKeyboardFollowPolicy.Event, _ state: TimelineScrollState,
                         isAtBottom: Bool? = nil) -> TimelineKeyboardFollowPolicy.Action {
         TimelineKeyboardFollowPolicy.action(for: .init(event: event,
-            isAtBottom: isAtBottom ?? state.tail.isAtBottom, mode: state.mode, phase: state.phase,
+            isAtBottom: isAtBottom ?? state.viewportIsAtBottom, mode: state.mode, phase: state.phase,
             navigationIsSuspended: state.navigationIsSuspended,
             hasPendingRequest: state.pendingBottomRequest != nil))
     }
@@ -332,7 +335,7 @@ import Testing
         // The frame stream while the container shrinks is withheld (S2) and
         // the tail probe's flip during the transition cannot start the spring
         // (F11) while the window is open.
-        let shrinking = viewport(offset: 1320, container: 600)
+        let shrinking = viewport(offset: 1520, container: 600)
         #expect(TimelineViewportPublicationDecision.outcome(published: state.viewport, next: shrinking,
             keyboardTransitionActive: true, tailChanged: false) == .ignore)
         visibility(&state, end: false)
@@ -461,56 +464,104 @@ import Testing
         #expect(state.mode == .following)
     }
 
-    @Test func aHeldMatchedReturnPinsTheBottomUntilTheWindowEnds() throws {
-        // K5 (round 1.2): a held matched return keeps the page glued to the
-        // bottom the keyboard keeps moving — the view pins the scroll on every
-        // geometry sample. The window-end settlement is what releases the pin.
+    @Test func theHeldMatchedReturnWaitsForTheContainerToMove() throws {
+        // K5 (round 1.3): the notification's own turn still measures the
+        // pre-keyboard container, so a scroll issued then resolves against the
+        // old layout and travels nothing. The held return fires at the first
+        // sample whose visible height moved off the begin-time baseline — the
+        // device probe shows exactly one such step per transition, carrying
+        // the full travel.
         var state = try openedAtBottom()
-        #expect(!state.keyboardReturnPinsToBottom)
         state.setKeyboardTransitionActive(true)
         let keyboardReturn = state.beginKeyboardReturn()
-        _ = try #require(keyboardReturn)
-        #expect(state.keyboardReturnPinsToBottom)
-        // An early completion (a zero-distance match reports one immediately)
-        // does not interrupt the pin: the open window holds the command.
-        let keyboardCommand = try #require(state.activeCommand)
-        let heldEarly = state.complete(keyboardCommand)
-        #expect(!heldEarly)
-        #expect(state.keyboardReturnPinsToBottom)
-        let settledAtWindowEnd = state.endKeyboardTransition()
-        #expect(settledAtWindowEnd)
-        #expect(!state.keyboardReturnPinsToBottom)
+        let command = try #require(keyboardReturn)
+        // Unchanged (600pt) and a sub-half-point wobble are rounding, not the
+        // keyboard reaching the layout.
+        #expect(state.keyboardReturnScrollDue(sample: viewport(offset: 1320)) == nil)
+        #expect(state.keyboardReturnScrollDue(sample: viewport(offset: 1320, container: 799.5)) == nil)
+        // A whole point of movement is the container answering: fire.
+        #expect(state.keyboardReturnScrollDue(sample: viewport(offset: 1320, container: 799)) == command)
     }
 
-    @Test func onlyAHeldMatchedCommandPinsTheBottom() throws {
-        // An open window alone never pins: a hide suppresses programmatic
-        // scrolling with no command held, and pinning there would fight the
-        // clamp instead of following it.
-        var windowOnly = try openedAtBottom()
-        windowOnly.setKeyboardTransitionActive(true)
-        #expect(!windowOnly.keyboardReturnPinsToBottom)
-        // A plain (spring) return carries its own animation and never pins.
-        var plain = try openedAtBottom()
-        visibility(&plain, end: false)
-        plain.geometryChanged(viewport(offset: 1220, height: 2200))
-        let nextRequest = try #require(plain.pendingBottomRequest)
-        let plainReturn = plain.begin(nextRequest)
+    @Test func theHeldMatchedReturnFiresExactlyOncePerWindow() throws {
+        var state = try openedAtBottom()
+        state.setKeyboardTransitionActive(true)
+        let keyboardReturn = state.beginKeyboardReturn()
+        let command = try #require(keyboardReturn)
+        #expect(state.keyboardReturnScrollDue(sample: viewport(offset: 1320, container: 600)) == command)
+        // Any further change in the same window cannot issue a second scroll.
+        #expect(state.keyboardReturnScrollDue(sample: viewport(offset: 1320, container: 500)) == nil)
+        #expect(state.keyboardReturnScrollDue(sample: viewport(offset: 1320, container: 700)) == nil)
+    }
+
+    @Test func onlyAHeldMatchedCommandCanBecomeDue() throws {
+        // Nothing begun: there is no command to fire.
+        var idle = try openedAtBottom()
+        #expect(idle.keyboardReturnScrollDue(sample: viewport(offset: 1320, container: 600)) == nil)
+        // A plain spring return replacing the active command refuses the due.
+        var replaced = try openedAtBottom()
+        let matchedReturn = replaced.beginKeyboardReturn()
+        _ = try #require(matchedReturn)
+        visibility(&replaced, end: false)
+        replaced.geometryChanged(viewport(offset: 1220, height: 2200))
+        let nextRequest = try #require(replaced.pendingBottomRequest)
+        let plainReturn = replaced.begin(nextRequest)
         let plainCommand = try #require(plainReturn)
         #expect(!plainCommand.keyboardMatched)
-        #expect(!plain.keyboardReturnPinsToBottom)
-        // Settled by its own completion — the pin was never on and stays off.
-        let plainSettled = plain.complete(plainCommand)
-        #expect(plainSettled)
-        #expect(!plain.keyboardReturnPinsToBottom)
-        // A matched return held by an open window pins until that window ends.
-        var matched = try openedAtBottom()
-        matched.setKeyboardTransitionActive(true)
-        let heldReturn = matched.beginKeyboardReturn()
+        #expect(replaced.activeCommand == plainCommand)
+        #expect(replaced.keyboardReturnScrollDue(
+            sample: viewport(offset: 1220, height: 2200, container: 500)) == nil)
+        // A matched command already settled by the window's end is no longer
+        // held; nothing fires for it.
+        var settled = try openedAtBottom()
+        settled.setKeyboardTransitionActive(true)
+        let heldReturn = settled.beginKeyboardReturn()
         _ = try #require(heldReturn)
-        #expect(matched.keyboardReturnPinsToBottom)
-        let settledAtWindowEnd = matched.endKeyboardTransition()
+        let settledAtWindowEnd = settled.endKeyboardTransition()
         #expect(settledAtWindowEnd)
-        #expect(!matched.keyboardReturnPinsToBottom)
+        #expect(settled.keyboardReturnScrollDue(sample: viewport(offset: 1320, container: 600)) == nil)
+    }
+
+    @Test func aReopenedWindowTakesItsBaselineFromTheLatestBegin() throws {
+        // Two returns in one keyboard cycle (a reopening transition): each
+        // begin resets the baseline, so the second window is judged against
+        // the layout it started from, not the first window's stale height.
+        var state = try openedAtBottom()
+        state.setKeyboardTransitionActive(true)
+        let firstReturn = state.beginKeyboardReturn()
+        let first = try #require(firstReturn)
+        let shrinking = viewport(offset: 1320, container: 600)
+        #expect(state.keyboardReturnScrollDue(sample: shrinking) == first)
+        state.geometryChanged(shrinking)
+        let firstEnd = state.endKeyboardTransition()
+        #expect(firstEnd)
+        state.setKeyboardTransitionActive(true)
+        let secondReturn = state.beginKeyboardReturn()
+        let second = try #require(secondReturn)
+        #expect(state.keyboardReturnScrollDue(sample: shrinking) == nil)
+        #expect(state.keyboardReturnScrollDue(sample: viewport(offset: 1320, container: 500)) == second)
+    }
+
+    @Test func theAtBottomTruthIsMeasuredNotProbed() throws {
+        // K5 (round 1.3): the device probe logged "at bottom" from the tail
+        // flag while the measured gap sat 213pt short — the follow chain,
+        // gated on that flag, never started. Glued geometry reads at bottom
+        // even against a negative probe…
+        var glued = try openedAtBottom()
+        visibility(&glued, end: false)
+        #expect(glued.viewportIsAtBottom)
+        // …a measured gap overrules a probe that says yes, so the drifted
+        // page produces the return the flag used to suppress (the exact
+        // device reading: content 2000, resting 213pt short)…
+        var lied = try openedAtBottom()
+        lied.geometryChanged(viewport(offset: 1107, height: 2200))
+        #expect(!lied.viewportIsAtBottom)
+        #expect(lied.pendingBottomRequest != nil)
+        // …and before the first measurement the probes remain the fallback.
+        var unmeasured = TimelineScrollState()
+        unmeasured.tailVisibilityChanged(.near, visible: true)
+        unmeasured.tailVisibilityChanged(.end, visible: true)
+        #expect(unmeasured.viewportIsAtBottom)
     }
 
     @Test func theWindowEndSendsAPresentedReturnToReading() throws {
@@ -544,7 +595,7 @@ import Testing
         state.setKeyboardTransitionActive(true)
         // The clamp grows the container; the withheld sample and the probe
         // flip cannot produce a command during the window.
-        let grown = viewport(offset: 1320, container: 1000)
+        let grown = viewport(offset: 1000, container: 1000)
         #expect(TimelineViewportPublicationDecision.outcome(published: state.viewport, next: grown,
             keyboardTransitionActive: true, tailChanged: false) == .ignore)
         visibility(&state, end: false)

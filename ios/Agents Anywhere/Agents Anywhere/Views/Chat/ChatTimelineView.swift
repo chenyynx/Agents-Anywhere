@@ -27,6 +27,9 @@ struct ChatTimelineView: View {
     /// never reads it, so opening or closing the keyboard re-evaluates the
     /// return pill and the dismiss layer instead of the whole timeline chain.
     @State private var keyboard = TimelineKeyboardMonitor()
+    /// K5 (round 1.3): the event whose duration/curve the held matched return
+    /// is fired with, on the first geometry sample that sees the layout move.
+    @State private var pendingMatchedKeyboardEvent: TimelineKeyboardEvent?
     /// Diagnostic only (2026-10-02, remove after the follow diagnosis): the
     /// on-screen probe recording this page's keyboard-follow chain.
     @State private var followProbe = TimelineFollowProbe()
@@ -141,14 +144,15 @@ struct ChatTimelineView: View {
                     // A landed instant return is confirmed by geometry even when
                     // the tail callback arrived before this sample did.
                     acknowledgeInstantOpeningIfArrived()
-                    // K5 (round 1.2): while a matched return is held, pin the
-                    // bottom on every sample — the keyboard shrinks the
-                    // container per frame, and only a per-frame offset update
-                    // can track it (a one-shot scroll cannot ride it).
                     followProbe.recordSample(gap: value.contentHeight - value.visibleBottom)
-                    if scrolling.keyboardReturnPinsToBottom {
-                        followProbe.recordPin()
-                        pinScrollToBottomForKeyboard()
+                    // K5 (round 1.3): the matched return fires once, at the
+                    // first sample that sees the keyboard move the layout —
+                    // the device probe shows exactly one layout change per
+                    // transition, so this carries the full travel under the
+                    // keyboard's own duration and curve.
+                    if let command = scrolling.keyboardReturnScrollDue(sample: value) {
+                        followProbe.recordReturnFired()
+                        scrollToBottom(command, keyboardMatched: pendingMatchedKeyboardEvent)
                     }
                     if !navigationIsSuspended && scrolling.phase == .interacting {
                         var latest = latestPull, older = olderPull
@@ -305,7 +309,8 @@ struct ChatTimelineView: View {
         scrolling.requestBottom()
         latestLoadRequest = scrolling.navigationGeneration
     }
-    private func scrollToBottom(_ command: TimelineScrollState.BottomCommand) {
+    private func scrollToBottom(_ command: TimelineScrollState.BottomCommand,
+                                keyboardMatched matchedEvent: TimelineKeyboardEvent? = nil) {
         if command.instant {
             // The opening return lands without an animation (D4) so a cached
             // window never plays a visible top-to-bottom scroll. A
@@ -319,7 +324,7 @@ struct ChatTimelineView: View {
             acknowledgeInstantOpeningIfArrived()
             return
         }
-        let animation = Self.returnSpring
+        let animation = matchedEvent.map(Self.keyboardMatchedAnimation) ?? Self.returnSpring
         withAnimation(reduceMotion ? nil : animation,
             completionCriteria: .removed) {
             // Let the scroll view resolve its own safe-area/inset coordinate
@@ -331,16 +336,20 @@ struct ChatTimelineView: View {
         }
     }
     private static let returnSpring = Animation.interactiveSpring(response: 0.28, dampingFraction: 1, blendDuration: 0.12)
-    /// K5 (round 1.2): an unanimated pin to the current bottom, applied on
-    /// every geometry sample while a matched return is held. The keyboard
-    /// interpolates the container per frame, so pinning per frame tracks it
-    /// exactly; the same immediate transaction the instant opening return
-    /// uses. Reaching the bottom still releases the persisted edge target at
-    /// the transition window's end (see `keyboardTransitionDidEnd`).
-    private func pinScrollToBottomForKeyboard() {
-        var transaction = Transaction(animation: nil)
-        transaction.disablesAnimations = true
-        withTransaction(transaction) { position.scrollTo(edge: .bottom) }
+    /// K5: the keyboard's own duration and curve, so the page travels with the
+    /// keyboard instead of next to it. Curve 7 is the private keyboard spring:
+    /// a critically damped spring (no bounce) approximates it without the
+    /// overshoot the return spring would add. The device probe shows the model
+    /// moves once per transition, so a single matched scroll carries it.
+    private static func keyboardMatchedAnimation(for event: TimelineKeyboardEvent) -> Animation {
+        let duration = max(event.duration, 0)
+        switch event.curve {
+        case .easeInOut: return .easeInOut(duration: duration)
+        case .easeIn: return .easeIn(duration: duration)
+        case .easeOut: return .easeOut(duration: duration)
+        case .linear: return .linear(duration: duration)
+        case .privateSpring, .unknown: return .spring(duration: duration, bounce: 0)
+        }
     }
     /// The opening return settles once the native end marker reports arrival
     /// (immediately for content that already fits). Releasing before the
@@ -412,31 +421,33 @@ struct ChatTimelineView: View {
         }
         let action = TimelineKeyboardFollowPolicy.action(for: .init(
             event: followEvent,
-            isAtBottom: scrolling.tail.isAtBottom,
+            isAtBottom: scrolling.viewportIsAtBottom,
             mode: scrolling.mode,
             phase: scrolling.phase,
             navigationIsSuspended: navigationIsSuspended,
             hasPendingRequest: scrolling.pendingBottomRequest != nil))
         followProbe.recordDecision(String(describing: action), event: event,
             mode: scrolling.mode, phase: scrolling.phase,
-            atBottom: scrolling.tail.isAtBottom, suspended: navigationIsSuspended,
-            pinsBottom: scrolling.keyboardReturnPinsToBottom)
+            geoBottom: scrolling.viewportIsAtBottom, tailFlag: scrolling.tail.isAtBottom,
+            suspended: navigationIsSuspended)
         switch action {
         case .none, .recheckAtEnd:
             // The end recheck only applies once the window closes.
             break
         case .requestReturn(.keyboardMatched):
-            // K5 (round 1.2): flag-first. The window opens before the return is
+            // K5 (round 1.3): flag-first. The window opens before the return is
             // begun so the guards that hold the matched command are already
             // armed when this same turn bumps the navigation generation. The
             // open window keeps the tail probe's flip — and anything else
             // layout-driven — from queueing the old spring next to the matched
-            // return (F11). No scroll is issued here: holding the command turns
-            // on the per-frame bottom pin, which tracks the container the
-            // keyboard is shrinking — a one-shot scroll, wherever it is timed,
-            // cannot ride a moving container.
+            // return (F11). No scroll is issued in this turn: the return fires
+            // on the first geometry sample that sees the layout move, with the
+            // keyboard's own duration and curve (the probe shows one layout
+            // change per transition — the full travel is available there).
             scrolling.setKeyboardTransitionActive(true)
-            followProbe.recordCommand(issued: scrolling.beginKeyboardReturn() != nil)
+            pendingMatchedKeyboardEvent = event
+            if scrolling.beginKeyboardReturn() == nil { pendingMatchedKeyboardEvent = nil }
+            followProbe.recordCommand(issued: pendingMatchedKeyboardEvent != nil)
         case .suppressProgrammatic:
             // The system clamp carries the content down with the keyboard; a
             // programmatic scroll would be a second animation fighting it.
@@ -457,16 +468,17 @@ struct ChatTimelineView: View {
         // keyboard animation.
         let probeSettled = scrolling.endKeyboardTransition()
         if probeSettled { releaseScrollPosition() }
+        pendingMatchedKeyboardEvent = nil
         let action = TimelineKeyboardFollowPolicy.action(for: .init(
             event: .transitionEnded,
-            isAtBottom: scrolling.tail.isAtBottom,
+            isAtBottom: scrolling.viewportIsAtBottom,
             mode: scrolling.mode,
             phase: scrolling.phase,
             navigationIsSuspended: navigationIsSuspended,
             hasPendingRequest: scrolling.pendingBottomRequest != nil))
         let probeGap = viewportSample.value.map { $0.contentHeight - $0.visibleBottom } ?? -1
         followProbe.recordWindowEnd(settled: probeSettled, recheck: String(describing: action),
-            gap: probeGap, atBottom: scrolling.tail.isAtBottom)
+            gap: probeGap, geoBottom: scrolling.viewportIsAtBottom, tailFlag: scrolling.tail.isAtBottom)
         if action == .recheckAtEnd {
             // One make-up return through the normal coalesced path.
             scrolling.requestBottom()

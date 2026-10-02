@@ -37,19 +37,32 @@ nonisolated struct TimelineScrollState: Equatable {
     /// programmatic scrolling. The tail probe flipping under the shrinking
     /// container must not start the spring next to it (F11).
     private(set) var keyboardTransitionActive = false
+    /// K5 (round 1.3): the matched return's scroll is issued at the first
+    /// sample whose visible height moved off the height it was begun at —
+    /// the moment the keyboard's inset reached the layout. One issue per
+    /// window; the device probe shows the model changes exactly once per
+    /// transition, so this is the one moment with full travel to animate.
+    private var keyboardReturnScrollIssued = false
+    private var keyboardReturnVisibleHeight: CGFloat?
     private var lastRequest: BottomRequest?
     private var commandID = 0
     private var awaitsUserScrollSettlement = false
     /// Set by `open()`, consumed by the first command it produces. A reader
     /// gesture before that command clears it, so later returns animate.
     private var openingReturnIsPending = false
-    /// K5 (round 1.2): a held matched return means the keyboard began driving
-    /// the layout while the page was glued to the bottom. The container then
-    /// changes per frame, and only a per-frame offset update can track it —
-    /// a one-shot scroll (however well timed) cannot ride a moving container,
-    /// which is why the follow never landed. While this is true the view pins
-    /// the scroll to the current bottom on every geometry sample, unanimated.
-    var keyboardReturnPinsToBottom: Bool { activeCommand?.keyboardMatched == true }
+    /// K5 (round 1.3): the marker probes lie — the device probe read "at
+    /// bottom" from the tail flag while the measured gap sat hundreds of
+    /// points short, and the follow chain (gated on that flag) never
+    /// started. The at-bottom truth is measured directly from the last
+    /// published viewport: `visibleBottom` reaches `contentHeight` exactly
+    /// when the scroll rests at its maximum offset, so the gap is the real
+    /// remaining travel. The probes stay only as the fallback before the
+    /// first measurement.
+    var viewportIsAtBottom: Bool {
+        guard viewport.isMeasured else { return tail.isAtBottom }
+        let gap = viewport.contentHeight - viewport.visibleBottom
+        return gap <= 8
+    }
 
     var userIsScrolling: Bool { [.tracking, .interacting, .decelerating].contains(phase) }
     var returningToBottom: Bool { mode == .returning }
@@ -128,7 +141,7 @@ nonisolated struct TimelineScrollState: Equatable {
     mutating func settleUserScroll() {
         guard needsUserScrollSettlement, !returningToBottom else { return }
         awaitsUserScrollSettlement = false
-        mode = tail.isAtBottom && !interactionIsPresented ? .following : .reading
+        mode = viewportIsAtBottom && !interactionIsPresented ? .following : .reading
     }
 
     var pendingBottomRequest: BottomRequest? {
@@ -144,8 +157,11 @@ nonisolated struct TimelineScrollState: Equatable {
               mode != .reading, !userIsScrolling || returningToBottom,
               !interactionIsPresented || returningToBottom else { return nil }
         // A return is issued once even for short content. Subsequent layout
-        // changes only need correction when they actually move away from bottom.
-        if tail.isAtBottom && (mode == .following || lastRequest != nil) { return nil }
+        // changes only need correction when they actually move away from
+        // bottom — judged by the measured gap (round 1.3): the stale marker
+        // flag would suppress the follow while the page sat hundreds of
+        // points short, leaving it parked away from the bottom for good.
+        if viewportIsAtBottom && (mode == .following || lastRequest != nil) { return nil }
         let request = BottomRequest(generation: navigationGeneration,
             contentHeight: viewport.contentHeight.rounded(), visibleHeight: viewport.visibleHeight.rounded())
         return request == lastRequest ? nil : request
@@ -160,15 +176,17 @@ nonisolated struct TimelineScrollState: Equatable {
     /// turn, matched to the keyboard's animation. Beginning it directly also
     /// skips the layout-coalescing task (that delay merges layout, it does not
     /// wait for the keyboard), and marking the request stops the tail probe's
-    /// flip inside the same transition from queuing a second animation. No
-    /// scroll is issued here (round 1.2): while this command is held, the view
-    /// pins the bottom on every geometry sample (`keyboardReturnPinsToBottom`),
-    /// so the content tracks the per-frame container by construction.
+    /// flip inside the same transition from queuing a second animation. The
+    /// scroll itself fires via `keyboardReturnScrollDue` once the transition
+    /// actually moves the layout (round 1.3: the device probe shows exactly
+    /// one layout change per transition — the model moves in one step).
     mutating func beginKeyboardReturn() -> BottomCommand? {
         requestBottom()
         // Deliberately ungated: this command is the one the transition window
         // exists to protect, and the window may already be open around it.
         guard let request = ungatedBottomRequest else { return nil }
+        keyboardReturnScrollIssued = false
+        keyboardReturnVisibleHeight = viewport.visibleHeight
         return activate(request, keyboardMatched: true)
     }
 
@@ -211,6 +229,18 @@ nonisolated struct TimelineScrollState: Equatable {
         activeCommand = nil
         if returningToBottom { mode = interactionIsPresented ? .reading : .following }
         return true
+    }
+
+    /// True exactly once per matched return: at the first sample whose visible
+    /// height has moved away from the height the return was begun at — the
+    /// moment the keyboard's inset reached the layout. `nil` while unchanged,
+    /// once issued, or without a held matched command.
+    mutating func keyboardReturnScrollDue(sample: TimelineViewport) -> BottomCommand? {
+        guard let command = activeCommand, command.keyboardMatched, !keyboardReturnScrollIssued,
+              let base = keyboardReturnVisibleHeight else { return nil }
+        guard abs(sample.visibleHeight - base) > 0.5 else { return nil }
+        keyboardReturnScrollIssued = true
+        return command
     }
 
     func showsBottomButton() -> Bool {

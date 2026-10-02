@@ -51,10 +51,13 @@ nonisolated struct TimelineKeyboardFollowPolicy {
         switch context.event {
         case .willShow:
             // The keyboard covers the bottom and there is no native follow on
-            // appearance; this gate is the only thing that fills it, so fill
-            // it in the keyboard's own turn — the held return pins the bottom
-            // on every frame while the container moves (round 1.2).
-            return context.isAtBottom ? .requestReturn(.keyboardMatched) : .none
+            // appearance; this gate is the only thing that fills it. The
+            // user-intent gate is the mode above: the device probe showed the
+            // at-bottom flag falsely negative while the reader watched the
+            // latest messages, so bottom-ness must not own this decision
+            // (round 1.3) — the held return follows whenever the timeline is
+            // steady-following.
+            return .requestReturn(.keyboardMatched)
         case .willHide:
             // The system clamp animates the content down with the keyboard.
             // Returning to the bottom is the reader's own clamp's job.

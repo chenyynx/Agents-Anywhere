@@ -1,9 +1,10 @@
 import Foundation
 import CoreGraphics
 
-/// One parsed keyboard notification payload (S2/K5, 2026-10-02). Foundation-only
-/// and value-typed so ClientCore tests can pin the parse — including missing
-/// fields and the zero-duration boundary — without a simulator.
+/// One parsed keyboard notification payload (S2/K5, 2026-10-02). Value-typed
+/// and free of UIKit/SwiftUI so ClientCore tests can pin the parse — including
+/// missing fields and the zero-duration boundary — without a simulator; the
+/// only platform split is the CGRect accessor on NSValue (see `frame(from:)`).
 nonisolated struct TimelineKeyboardEvent: Equatable {
     /// The notification that produced the payload. `willShow`/`willHide` state
     /// their direction outright; `willChangeFrame` carries frames that have to
@@ -85,8 +86,8 @@ nonisolated struct TimelineKeyboardEvent: Equatable {
         case .willShow: return .showing
         case .willHide: return .hiding
         case .willChangeFrame:
-            let begin = (userInfo[Key.frameBegin] as? NSValue)?.cgRectValue
-            let end = (userInfo[Key.frameEnd] as? NSValue)?.cgRectValue
+            let begin = frame(from: userInfo[Key.frameBegin])
+            let end = frame(from: userInfo[Key.frameEnd])
             guard let begin, let end else { return .unchanged }
             // A zero begin frame is reported by some systems on the first
             // presentation; the non-empty frame then names the direction.
@@ -96,5 +97,18 @@ nonisolated struct TimelineKeyboardEvent: Equatable {
             if end.origin.y < begin.origin.y { return .showing }
             return .unchanged
         }
+    }
+
+    /// CGRect extraction is the one platform split in this file: `cgRectValue`
+    /// is the iOS-family accessor and does not exist on the macOS compile
+    /// surface, while macOS exposes the same geometry through `rectValue`
+    /// (NSRect is a CGRect type alias there).
+    private static func frame(from value: Any?) -> CGRect? {
+        guard let value = value as? NSValue else { return nil }
+#if canImport(UIKit)
+        return value.cgRectValue
+#else
+        return value.rectValue
+#endif
     }
 }

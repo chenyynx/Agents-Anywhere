@@ -20,7 +20,11 @@ from connector.runtimes.claude.sdk.events import (
     is_result_message,
     terminal_event_from_message,
 )
-from connector.runtimes.claude.timeline.messages import message_id, message_role
+from connector.runtimes.claude.timeline.messages import (
+    is_synthetic_control_message,
+    message_id,
+    message_role,
+)
 from connector.runtimes.claude.timeline.stream import is_stream_event
 
 RECONCILE_DONE_MARKER = "AA_MAINTENANCE_DONE"
@@ -33,6 +37,25 @@ LEGACY_RECONCILE_PROMPT = (
 RECONCILE_PROMPT = (
     f"{LEGACY_RECONCILE_PROMPT} End with exactly {RECONCILE_DONE_MARKER}."
 )
+
+
+def _is_wire_chrome(message: Any) -> bool:
+    """Report frames that must never mint a scheduled reply from silence.
+
+    Hook lifecycle frames the CLI emits around its own SessionStart hooks, the
+    non-task system handshake, and the command echoes the CLI replays as user
+    messages are all governed rather than answered: no prompt was accepted for
+    them, so minting a turn waits forever for a result that belongs to a turn
+    which has already settled (real session 84275e9e, 2026-10-02).
+    """
+
+    if is_synthetic_control_message(message):
+        return True
+    # The SDK nests every non-task system payload inside `.data`, and all of its
+    # subtypes are handshake or compaction bookkeeping, never a conversation
+    # reply (real wire: status probing frames, hook narration, compact_result,
+    # compact_boundary, drive_turn's system blocks).
+    return message.__class__.__name__ == "SystemMessage"
 
 
 @dataclass(slots=True)
@@ -325,6 +348,15 @@ class ClaudeConnection:
                         or is_stream_event(message)
                         or terminal_event is not None
                     ):
+                        if _is_wire_chrome(message):
+                            # Chrome replayed into silence is not a scheduled
+                            # reply waking up: no prompt was accepted for it,
+                            # so minting a turn hangs forever waiting for a
+                            # result that belongs to an already-settled turn.
+                            # Buffered as preamble so a real reply that follows
+                            # still sees these context frames, in order.
+                            preamble.append(message)
+                            continue
                         await self.select_response(ClaudeResponse(self))
                     else:
                         continue

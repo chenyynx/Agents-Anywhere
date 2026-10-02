@@ -67,6 +67,11 @@ from connector.runtimes.claude.turns.attachments import (
 )
 from connector.runtimes.claude.turns.interactions import ClaudeInteractionController
 
+# The execution-lock circuit breaker (pp verdict, 2026-10-02, product-level):
+# guarding a minted-from-silence turn is invariant-shaped, not trigger-shaped,
+# so the deadline is a fixed budget any unknown wire shape falls into.
+POLLED_TURN_WATCHDOG_SECONDS = 30.0
+
 
 @dataclass(slots=True)
 class ClaudeTurnRunner:
@@ -81,6 +86,11 @@ class ClaudeTurnRunner:
     sdk_loader: SdkLoader | None = None
     client_factory: ClaudeClientFactory | None = None
     connections: dict[str, ClaudeConnection] = field(default_factory=dict, init=False)
+    # Cron* bookkeeping handed over by a transport that was retired before its
+    # replacement was built. `close()` drops the retired connection from
+    # `connections`, so without this a breaker (or any failed turn) would
+    # silently untrack a session's scheduled tasks.
+    carried_task_ids: dict[str, set[str]] = field(default_factory=dict, init=False)
     stopping: bool = False
     markers: ClaudeTimelineMarkers = field(init=False)
     scheduled_sessions: ClaudeScheduledSessions = field(init=False)
@@ -160,11 +170,134 @@ class ClaudeTurnRunner:
                         response=response,
                     )
                 )
+                self.arm_scheduled_watchdog(session, execution, response)
             except BaseException:
+                self.disarm_scheduled_watchdog(execution)
                 session.execution = session.queued_execution
                 session.queued_execution = None
                 execution.finished.set()
                 raise
+
+    def arm_scheduled_watchdog(
+        self,
+        session: ClaudeSession,
+        execution: ClaudeExecution,
+        response: ClaudeResponse,
+    ) -> None:
+        """Arm the execution-lock circuit breaker for one scheduled turn.
+
+        This is the main defense against the ghost turn (pp verdict, 2026-10-02,
+        product-level and highest priority). The trigger cannot be enumerated:
+        a scheduled turn may be minted by any wire shape the connector reader
+        has never seen before. What is invariant is what a stuck turn looks
+        like: it holds `session.execution`, it never sees a terminal event, and
+        it publishes nothing. After a silence deadline we force a failed
+        terminal, release the lock and surface a one-line WARNING. The worst
+        possible user experience is capped at one failed bubble instead of a
+        session that is permanently running with the composer disabled.
+        """
+
+        timeout = POLLED_TURN_WATCHDOG_SECONDS
+        execution.watchdog_task = asyncio.create_task(
+            self._scheduled_watchdog(session, execution, response, timeout)
+        )
+
+    def disarm_scheduled_watchdog(self, execution: ClaudeExecution) -> None:
+        task = execution.watchdog_task
+        execution.watchdog_task = None
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+
+    async def _scheduled_watchdog(
+        self,
+        session: ClaudeSession,
+        execution: ClaudeExecution,
+        response: ClaudeResponse,
+        timeout: float,
+    ) -> None:
+        try:
+            await asyncio.wait_for(execution.finished.wait(), timeout)
+            return
+        except asyncio.TimeoutError:
+            pass
+        logger.warning(
+            "Claude scheduled turn watchdog fired (no terminal within {}s), "
+            "forcing failed terminal session_id={} turn_id={}",
+            timeout,
+            session.session_id,
+            execution.turn_id,
+        )
+        if not await self.finish_execution(
+            session=session,
+            execution=execution,
+            terminal=failed_terminal_event(
+                code="claude_scheduled_turn_timeout",
+                message=(
+                    "Scheduled work did not report a result within "
+                    f"{int(timeout)} seconds"
+                ),
+                reason="scheduled_watchdog_timeout",
+            ),
+            response=response,
+        ):
+            # The turn settled by itself inside the race window; its own exit
+            # path already decided what happens to the transport.
+            return
+        await self.retire_stuck_transport(session, execution, response)
+
+    async def retire_stuck_transport(
+        self,
+        session: ClaudeSession,
+        execution: ClaudeExecution,
+        response: ClaudeResponse,
+    ) -> None:
+        """Retire everything the stuck turn left behind on its connection.
+
+        Releasing `session.execution` is only half of the circuit breaker. The
+        turn also owns the reader's `current` response, its own `drive_turn`
+        task, and the transport they share — and each one outlives the release:
+
+        * the zombie task keeps draining the reader's queue, so the next human
+          message is answered into it and lost;
+        * when a terminal finally arrives the zombie's `finish_execution`
+          returns early on the flag this watchdog just set, so
+          `response.release()` never runs and the reader parks on `released`
+          forever.
+
+        Left alone, the session looks unlocked while being permanently
+        unusable, which is worse than the ghost it replaced. So the breaker
+        finishes the job the turn could not: the response is already released
+        by `finish_execution`, the zombie task is cancelled, and the transport
+        is retired the same way any failed turn retires it — a native prompt
+        cannot be retracted one turn at a time. The next turn rebuilds the
+        connection from stored session state, which is the only recovery that
+        does not depend on guessing what the CLI thought it was doing.
+        """
+
+        connection = response.connection
+        zombie = execution.task
+        execution.task = None
+        if zombie is not None and zombie is not asyncio.current_task():
+            zombie.cancel()
+        task_ids = set(connection.task_ids)
+        if task_ids:
+            self.carried_task_ids[session.session_id] = task_ids
+            try:
+                await self.scheduled_sessions.save(session, task_ids)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "Claude scheduled task handover failed session_id={}: {}",
+                    session.session_id,
+                    exc,
+                )
+        try:
+            await connection.close()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Claude stuck transport retirement failed session_id={}: {}",
+                session.session_id,
+                exc,
+            )
 
     async def reclaim_idle_connection(
         self, session: ClaudeSession, connection: ClaudeConnection
@@ -238,6 +371,10 @@ class ClaudeTurnRunner:
                     "Claude selection change requires background work to finish"
                 )
             await existing.close()
+        # A transport retired out of band (the scheduled-turn circuit breaker)
+        # is already gone from `connections`, so its Cron* bookkeeping arrives
+        # here by handover instead of by the registry entry above.
+        carried = self.carried_task_ids.pop(session.session_id, None)
         # Scheduled reconnect bypasses the normal start/update selection path.
         # Resolve its saved CLI-only selection before constructing SDK options.
         await self.catalogs.resolve_model_selection(session.selections.get("model"))
@@ -291,7 +428,11 @@ class ClaudeTurnRunner:
             cleanup=cleanup,
             idle_timeout_seconds=self.config.values.get("idleTimeoutSeconds", 600),
             selections=dict(session.selections),
-            task_ids=set(existing.task_ids) if existing is not None else set(),
+            task_ids=(
+                set(existing.task_ids) | set(carried or ())
+                if existing is not None
+                else set(carried or ())
+            ),
         )
         self.connections[session.session_id] = connection
         return connection
@@ -968,6 +1109,7 @@ class ClaudeTurnRunner:
         """Publish one terminal state and release this exact execution."""
 
         async with execution.finalization_lock:
+            self.disarm_scheduled_watchdog(execution)
             if execution.finished.is_set():
                 return False
             async with session.execution_lock:

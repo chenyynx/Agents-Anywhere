@@ -35,6 +35,7 @@ from connector.runtime_protocol import (
 )
 from connector.runtimes.claude.domain.session import ClaudeSession
 from connector.runtimes.claude.timeline.messages import (
+    CLAUDE_LOCAL_COMMAND_ECHO_TAGS,
     message_id,
     message_role,
     message_text,
@@ -42,14 +43,10 @@ from connector.runtimes.claude.timeline.messages import (
 
 ClaudeCompactState = Literal["started", "completed", "failed"]
 
-# The CLI wraps a native slash command's own output in this tag and replays it
-# as a user message (2026-10-02 probe:
-# `<local-command-stdout>Compacted </local-command-stdout>`). It is CLI chrome,
-# never conversation content.
-CLAUDE_LOCAL_COMMAND_ECHO_TAGS = (
-    "<local-command-stdout>",
-    "<local-command-stderr>",
-)
+# `CLAUDE_LOCAL_COMMAND_ECHO_TAGS` — the tags the CLI wraps its own command
+# output in — is owned by `timeline.messages`, the layer this module already
+# imports from, so the compaction path and the synthetic-control path cannot
+# drift apart on what counts as chrome.
 CLAUDE_COMPACTING_STATUS = "compacting"
 CLAUDE_COMPACT_RESULT_FIELD = "compact_result"
 

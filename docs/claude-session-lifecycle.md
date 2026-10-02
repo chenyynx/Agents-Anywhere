@@ -34,6 +34,33 @@ After process loss, ordinary turns can resume from the native session ID;
 in-flight background work is not automatically replayed. Startup reconnects
 only sessions registered with observed scheduled jobs.
 
+## Stuck-turn circuit breaker
+
+A turn that holds the session's execution lock without ever seeing a terminal
+result is treated as a defect to be capped, not a state to be waited out. This
+is the main defense against a "ghost" turn: user environments write arbitrary
+hooks, so the shape that mints a turn nobody is waiting for cannot be
+enumerated — but the symptom always looks the same (lock held, no terminal,
+nothing published).
+
+A scheduled turn (one the Connector minted from the CLI's own output, with no
+user prompt behind it) is given a fixed 30 second budget. When it expires the
+Connector publishes a failed terminal, releases the lock, retires the CLI
+process, and rebuilds the connection on the next turn — the same retirement any
+failed turn performs, because a native prompt cannot be retracted one turn at a
+time. The scheduled job bookkeeping observed on that connection is handed over
+to its replacement, so the breaker never silently untracks a session's tasks.
+Users see one failed bubble and an error state; the composer stays usable and
+the next message is answered normally. Ordinary user turns are never armed with
+this budget — a slow model is not a stuck turn.
+
+Frames that are the CLI's own chrome rather than a reply — `SessionStart` hook
+narration, non-task system handshakes, compaction bookkeeping, and the
+`<command-name>` / `<local-command-caveat>` / `<local-command-stdout>` echoes
+the CLI replays after a slash command — are governed rather than answered: at
+reader silence they are buffered as preamble instead of minting a turn. This is
+noise reduction only; the breaker above is what guarantees the outcome.
+
 ## Pending validation
 
 This lifecycle change has local automated coverage but is **pending real

@@ -27,9 +27,14 @@ struct ChatTimelineView: View {
     /// never reads it, so opening or closing the keyboard re-evaluates the
     /// return pill and the dismiss layer instead of the whole timeline chain.
     @State private var keyboard = TimelineKeyboardMonitor()
-    /// K5 (round 1.3): the event whose duration/curve the held matched return
-    /// is fired with, on the first geometry sample that sees the layout move.
-    @State private var pendingMatchedKeyboardEvent: TimelineKeyboardEvent?
+    /// K5 (round 1.4): the base offset a translation measures from — captured
+    /// before the layout applies (so an end-clamp cannot double it), then
+    /// advanced to each translation's landing so a fast show/hide flip inside
+    /// one window returns exactly where it started — plus the last direction
+    /// translated, which keeps a duplicated notification from translating
+    /// twice while still letting a genuine flip through.
+    @State private var keyboardTranslationBase: CGFloat?
+    @State private var lastKeyboardTranslationDirection: TimelineKeyboardEvent.Direction?
     /// Diagnostic only (2026-10-02, remove after the follow diagnosis): the
     /// on-screen probe recording this page's keyboard-follow chain.
     @State private var followProbe = TimelineFollowProbe()
@@ -145,15 +150,6 @@ struct ChatTimelineView: View {
                     // the tail callback arrived before this sample did.
                     acknowledgeInstantOpeningIfArrived()
                     followProbe.recordSample(gap: value.contentHeight - value.visibleBottom)
-                    // K5 (round 1.3): the matched return fires once, at the
-                    // first sample that sees the keyboard move the layout —
-                    // the device probe shows exactly one layout change per
-                    // transition, so this carries the full travel under the
-                    // keyboard's own duration and curve.
-                    if let command = scrolling.keyboardReturnScrollDue(sample: value) {
-                        followProbe.recordReturnFired()
-                        scrollToBottom(command, keyboardMatched: pendingMatchedKeyboardEvent)
-                    }
                     if !navigationIsSuspended && scrolling.phase == .interacting {
                         var latest = latestPull, older = olderPull
                         latest.update(value); older.update(value)
@@ -276,17 +272,22 @@ struct ChatTimelineView: View {
         .onDisappear { viewportUpdates.cancel(); historyUpdates.cancel() }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { note in
             keyboard.setVisible(true)
+            let event = TimelineKeyboardEvent(source: .willShow, userInfo: note.userInfo ?? [:])
             followProbe.recordKeyboardNotification("willShow", userInfo: note.userInfo ?? [:])
-            keyboardTransitionBegan(TimelineKeyboardEvent(source: .willShow, userInfo: note.userInfo ?? [:]))
+            keyboardTransitionBegan(event)
+            followKeyboardTranslation(event, userInfo: note.userInfo ?? [:], direction: .showing)
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { note in
             keyboard.setVisible(false)
+            let event = TimelineKeyboardEvent(source: .willHide, userInfo: note.userInfo ?? [:])
             followProbe.recordKeyboardNotification("willHide", userInfo: note.userInfo ?? [:])
-            keyboardTransitionBegan(TimelineKeyboardEvent(source: .willHide, userInfo: note.userInfo ?? [:]))
+            keyboardTransitionBegan(event)
+            followKeyboardTranslation(event, userInfo: note.userInfo ?? [:], direction: .hiding)
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
             followProbe.recordKeyboardNotification("willChangeFrame", userInfo: note.userInfo ?? [:])
-            keyboardFrameWillChange(TimelineKeyboardEvent(source: .willChangeFrame, userInfo: note.userInfo ?? [:]))
+            keyboardFrameWillChange(TimelineKeyboardEvent(source: .willChangeFrame, userInfo: note.userInfo ?? [:]),
+                userInfo: note.userInfo ?? [:])
         }
     }
     private func loadOlder() {
@@ -400,63 +401,55 @@ struct ChatTimelineView: View {
     /// scheduled for every event, even a zero-duration one: the immediate
     /// close is what releases whatever an earlier window withheld.
     private func keyboardTransitionBegan(_ event: TimelineKeyboardEvent) {
+        let wasActive = keyboard.transitionActive
         let token = keyboard.beginTransition()
+        if !wasActive {
+            lastKeyboardTranslationDirection = nil
+            keyboardTranslationBase = viewportSample.value?.offsetY ?? scrolling.viewport.offsetY
+        }
         followProbe.recordWindowOpen(duration: event.duration)
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(max(event.duration, 0)))
             keyboardTransitionDidEnd(token: token)
         }
     }
-    private func keyboardFrameWillChange(_ event: TimelineKeyboardEvent) {
+    private func keyboardFrameWillChange(_ event: TimelineKeyboardEvent, userInfo: [AnyHashable: Any]) {
         keyboardTransitionBegan(event)
         // The direction is compared from the frames here, not taken from
         // willShow/willHide: a keyboard's own height change (the predictive
         // row) shows up as the same kind of transition and deserves the same
         // coordination.
-        let followEvent: TimelineKeyboardFollowPolicy.Event
-        switch event.direction {
-        case .showing: followEvent = .willShow
-        case .hiding: followEvent = .willHide
-        case .unchanged: return
-        }
-        // The published viewport lags pure offset changes (S2 withholds
-        // those), so the policy reads the raw in-flight sample and falls back
-        // to the published state only before the first measurement.
-        let measuredBottom = viewportSample.value.map(\.measuredAtBottom) ?? scrolling.viewportIsAtBottom
-        let action = TimelineKeyboardFollowPolicy.action(for: .init(
-            event: followEvent,
-            isAtBottom: measuredBottom,
-            mode: scrolling.mode,
-            phase: scrolling.phase,
-            navigationIsSuspended: navigationIsSuspended,
-            hasPendingRequest: scrolling.pendingBottomRequest != nil,
-            isLocal: event.isLocal))
-        followProbe.recordDecision(String(describing: action), event: event,
-            mode: scrolling.mode, phase: scrolling.phase,
-            geoBottom: measuredBottom, tailFlag: scrolling.tail.isAtBottom,
-            suspended: navigationIsSuspended)
-        switch action {
-        case .none, .recheckAtEnd:
-            // The end recheck only applies once the window closes.
-            break
-        case .requestReturn(.keyboardMatched):
-            // K5 (round 1.3): flag-first. The window opens before the return is
-            // begun so the guards that hold the matched command are already
-            // armed when this same turn bumps the navigation generation. The
-            // open window keeps the tail probe's flip — and anything else
-            // layout-driven — from queueing the old spring next to the matched
-            // return (F11). No scroll is issued in this turn: the return fires
-            // on the first geometry sample that sees the layout move, with the
-            // keyboard's own duration and curve (the probe shows one layout
-            // change per transition — the full travel is available there).
-            scrolling.setKeyboardTransitionActive(true)
-            pendingMatchedKeyboardEvent = event
-            if scrolling.beginKeyboardReturn() == nil { pendingMatchedKeyboardEvent = nil }
-            followProbe.recordCommand(issued: pendingMatchedKeyboardEvent != nil)
-        case .suppressProgrammatic:
-            // The system clamp carries the content down with the keyboard; a
-            // programmatic scroll would be a second animation fighting it.
-            scrolling.setKeyboardTransitionActive(true)
+        guard event.direction != .unchanged else { return }
+        // K5 (round 1.4): the window stays open for the S2 publication gates;
+        // the follow itself is the translation below. Four device rounds of
+        // gate-based commands never fired — the probe showed the mode and
+        // bottom gates refusing while the reader watched the latest messages —
+        // so the follow no longer consults any of them.
+        scrolling.setKeyboardTransitionActive(true)
+        followKeyboardTranslation(event, userInfo: userInfo, direction: event.direction)
+    }
+    /// K5 (round 1.4): the page follows the keyboard as a pure translation.
+    /// The content slides by exactly the keyboard's height on screen, with the
+    /// keyboard's own duration and curve, once per transition, measured from
+    /// the offset the transition started at (captured before the layout
+    /// applies, so no end-clamp can double it). The scroll view clamps the
+    /// ends, which is what glues the bottom case; nothing here consults modes,
+    /// markers or bottom-ness.
+    private func followKeyboardTranslation(_ event: TimelineKeyboardEvent,
+                                           userInfo: [AnyHashable: Any],
+                                           direction: TimelineKeyboardEvent.Direction) {
+        guard direction != .unchanged, event.isLocal, direction != lastKeyboardTranslationDirection,
+              !navigationIsSuspended, scrolling.phase == .idle else { return }
+        let begin = (userInfo[UIResponder.keyboardFrameBeginUserInfoKey] as? NSValue)?.cgRectValue
+        let end = (userInfo[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
+        let height = abs((begin?.minY ?? 0) - (end?.minY ?? 0))
+        guard height > 0, let base = keyboardTranslationBase else { return }
+        lastKeyboardTranslationDirection = direction
+        let target = direction == .showing ? base + height : base - height
+        keyboardTranslationBase = target
+        followProbe.recordTranslation(direction: direction, height: height, from: base, to: target)
+        withAnimation(reduceMotion ? nil : Self.keyboardMatchedAnimation(for: event)) {
+            position.scrollTo(y: target)
         }
     }
     private func keyboardTransitionDidEnd(token: Int) {
@@ -468,12 +461,12 @@ struct ChatTimelineView: View {
             publishViewportSample(sample, keyboardTransitionActive: false)
         }
         acknowledgeInstantOpeningIfArrived()
-        // K5 (round 1.1): the window's end is what settles the held matched
-        // command — releasing then keeps the edge target glued for the whole
-        // keyboard animation.
-        let probeSettled = scrolling.endKeyboardTransition()
-        if probeSettled { releaseScrollPosition() }
-        pendingMatchedKeyboardEvent = nil
+        // K5 (round 1.1/1.4): the window's end settles any held command and
+        // releases the translation's point target — but only the target this
+        // window set, so an unrelated armed target (the opening return) is
+        // left alone.
+        _ = scrolling.endKeyboardTransition()
+        if lastKeyboardTranslationDirection != nil { releaseScrollPosition() }
         let measuredBottomEnd = viewportSample.value.map(\.measuredAtBottom) ?? scrolling.viewportIsAtBottom
         let action = TimelineKeyboardFollowPolicy.action(for: .init(
             event: .transitionEnded,
@@ -483,7 +476,7 @@ struct ChatTimelineView: View {
             navigationIsSuspended: navigationIsSuspended,
             hasPendingRequest: scrolling.pendingBottomRequest != nil))
         let probeGap = viewportSample.value.map { $0.contentHeight - $0.visibleBottom } ?? -1
-        followProbe.recordWindowEnd(settled: probeSettled, recheck: String(describing: action),
+        followProbe.recordWindowEnd(settled: false, recheck: String(describing: action),
             gap: probeGap, geoBottom: measuredBottomEnd, tailFlag: scrolling.tail.isAtBottom)
         if action == .recheckAtEnd {
             // One make-up return through the normal coalesced path.

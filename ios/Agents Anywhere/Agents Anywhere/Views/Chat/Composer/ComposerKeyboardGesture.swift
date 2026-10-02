@@ -232,7 +232,9 @@ struct ComposerKeyboardPanGesture: UIGestureRecognizerRepresentable {
 /// counts as empty space per the 2026-10-02 acceptance revision, so a body tap
 /// dismisses the keyboard; links still open and long-press selection still
 /// wins, because no touch is ever cancelled and the tap fails once a drag
-/// begins.
+/// begins. Simultaneous recognition is granted explicitly (round 1.1b): the
+/// body's own recognizers otherwise arbitrate exclusively against this tap,
+/// cancelling one side and making the dismissal unreliable.
 struct TimelineKeyboardDismissGesture: UIGestureRecognizerRepresentable {
     let isEnabled: Bool
     let onDismiss: () -> Void
@@ -277,6 +279,17 @@ struct TimelineKeyboardDismissGesture: UIGestureRecognizerRepresentable {
                 current = candidate.superview
             }
             return true
+        }
+
+        func gestureRecognizer(
+            _ recognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+        ) -> Bool {
+            // Text surfaces run their own tap recognizers (selection, links).
+            // The default arbitration cancels one side, which made the
+            // dismissal flaky; this recognizer cancels no touches, so both may
+            // recognize.
+            true
         }
     }
 }

@@ -50,12 +50,21 @@ jobs:
       - name: Run unit tests
         run: |
           set -o pipefail
-          swift test --package-path ios 2>&1 | tee "$RUNNER_TEMP/test.log" | tail -80
+          swift test --package-path ios 2>&1 | tee "$RUNNER_TEMP/test.log" | tail -200
 
       - name: Print test failures on failure
         if: failure()
         run: |
-          grep -E "error:|recorded an issue|failed" "$RUNNER_TEMP/test.log" 2>/dev/null | sort -u | head -60 || true
+          grep -n -B 2 -A 8 "error:" "$RUNNER_TEMP/test.log" 2>/dev/null | head -160 || true
+          grep -n "recorded an issue" "$RUNNER_TEMP/test.log" 2>/dev/null | head -60 || true
+
+      - name: Upload test log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-log
+          path: ${{ runner.temp }}/test.log
+          if-no-files-found: ignore
 
   build:
     # The package is only released once the unit tests pass: a red test suite

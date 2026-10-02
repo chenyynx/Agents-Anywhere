@@ -27,10 +27,6 @@ struct ChatTimelineView: View {
     /// never reads it, so opening or closing the keyboard re-evaluates the
     /// return pill and the dismiss layer instead of the whole timeline chain.
     @State private var keyboard = TimelineKeyboardMonitor()
-    /// K5 (round 1.1b): the event whose duration/curve the held matched return
-    /// is fired with once the container actually moves. Kept until the
-    /// transition ends because the scroll is issued in a later frame.
-    @State private var pendingMatchedKeyboardEvent: TimelineKeyboardEvent?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.sidebarDrawerIsTransitioning) private var sidebarIsTransitioning
     @Environment(\.sidebarDrawerObscuresDetail) private var sidebarObscuresDetail
@@ -142,10 +138,12 @@ struct ChatTimelineView: View {
                     // A landed instant return is confirmed by geometry even when
                     // the tail callback arrived before this sample did.
                     acknowledgeInstantOpeningIfArrived()
-                    // K5 (round 1.1b): fire the held matched return at the first
-                    // frame the keyboard actually moves the container.
-                    if let command = scrolling.keyboardReturnScrollDue(sample: value) {
-                        scrollToBottom(command, keyboardMatched: pendingMatchedKeyboardEvent)
+                    // K5 (round 1.2): while a matched return is held, pin the
+                    // bottom on every sample — the keyboard shrinks the
+                    // container per frame, and only a per-frame offset update
+                    // can track it (a one-shot scroll cannot ride it).
+                    if scrolling.keyboardReturnPinsToBottom {
+                        pinScrollToBottomForKeyboard()
                     }
                     if !navigationIsSuspended && scrolling.phase == .interacting {
                         var latest = latestPull, older = olderPull
@@ -297,8 +295,7 @@ struct ChatTimelineView: View {
         scrolling.requestBottom()
         latestLoadRequest = scrolling.navigationGeneration
     }
-    private func scrollToBottom(_ command: TimelineScrollState.BottomCommand,
-                                keyboardMatched matchedEvent: TimelineKeyboardEvent? = nil) {
+    private func scrollToBottom(_ command: TimelineScrollState.BottomCommand) {
         if command.instant {
             // The opening return lands without an animation (D4) so a cached
             // window never plays a visible top-to-bottom scroll. A
@@ -312,7 +309,7 @@ struct ChatTimelineView: View {
             acknowledgeInstantOpeningIfArrived()
             return
         }
-        let animation = matchedEvent.map(Self.keyboardMatchedAnimation) ?? Self.returnSpring
+        let animation = Self.returnSpring
         withAnimation(reduceMotion ? nil : animation,
             completionCriteria: .removed) {
             // Let the scroll view resolve its own safe-area/inset coordinate
@@ -324,19 +321,16 @@ struct ChatTimelineView: View {
         }
     }
     private static let returnSpring = Animation.interactiveSpring(response: 0.28, dampingFraction: 1, blendDuration: 0.12)
-    /// K5: the keyboard's own duration and curve, so the page travels with the
-    /// keyboard instead of next to it. Curve 7 is the private keyboard spring:
-    /// a critically damped spring (no bounce) approximates it without the
-    /// overshoot the return spring would add.
-    private static func keyboardMatchedAnimation(for event: TimelineKeyboardEvent) -> Animation {
-        let duration = max(event.duration, 0)
-        switch event.curve {
-        case .easeInOut: return .easeInOut(duration: duration)
-        case .easeIn: return .easeIn(duration: duration)
-        case .easeOut: return .easeOut(duration: duration)
-        case .linear: return .linear(duration: duration)
-        case .privateSpring, .unknown: return .spring(duration: duration, bounce: 0)
-        }
+    /// K5 (round 1.2): an unanimated pin to the current bottom, applied on
+    /// every geometry sample while a matched return is held. The keyboard
+    /// interpolates the container per frame, so pinning per frame tracks it
+    /// exactly; the same immediate transaction the instant opening return
+    /// uses. Reaching the bottom still releases the persisted edge target at
+    /// the transition window's end (see `keyboardTransitionDidEnd`).
+    private func pinScrollToBottomForKeyboard() {
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { position.scrollTo(edge: .bottom) }
     }
     /// The opening return settles once the native end marker reports arrival
     /// (immediately for content that already fits). Releasing before the
@@ -417,25 +411,17 @@ struct ChatTimelineView: View {
             // The end recheck only applies once the window closes.
             break
         case .requestReturn(.keyboardMatched):
-            // K5 (round 1.1): flag-first. The window opens before the return is
-            // begun so the guards that hold a matched command are already armed
-            // when this same turn bumps the navigation generation (round 1.1:
-            // the fresh edge target must survive it). The open window keeps the
-            // tail probe's flip — and anything else layout-driven — from
-            // queueing the old spring next to the matched return (F11). One
-            // return per transition, matched to the keyboard's own animation.
-            //
-            // K5 (round 1.1b): the scroll itself is not issued in this turn.
-            // The keyboard's inset has not reached the layout yet, so an edge
-            // target resolved here animates against the pre-keyboard container
-            // and travels nothing. The event is held; the scroll fires on the
-            // first sample whose visible height moved (keyboardReturnScrollDue)
-            // with the keyboard's own duration and curve.
+            // K5 (round 1.2): flag-first. The window opens before the return is
+            // begun so the guards that hold the matched command are already
+            // armed when this same turn bumps the navigation generation. The
+            // open window keeps the tail probe's flip — and anything else
+            // layout-driven — from queueing the old spring next to the matched
+            // return (F11). No scroll is issued here: holding the command turns
+            // on the per-frame bottom pin, which tracks the container the
+            // keyboard is shrinking — a one-shot scroll, wherever it is timed,
+            // cannot ride a moving container.
             scrolling.setKeyboardTransitionActive(true)
-            pendingMatchedKeyboardEvent = event
-            // No command (a vanished request, a suspension in this same turn):
-            // leave no event behind for a later due.
-            if scrolling.beginKeyboardReturn() == nil { pendingMatchedKeyboardEvent = nil }
+            _ = scrolling.beginKeyboardReturn()
         case .suppressProgrammatic:
             // The system clamp carries the content down with the keyboard; a
             // programmatic scroll would be a second animation fighting it.
@@ -455,10 +441,6 @@ struct ChatTimelineView: View {
         // command — releasing then keeps the edge target glued for the whole
         // keyboard animation.
         if scrolling.endKeyboardTransition() { releaseScrollPosition() }
-        // K5 (round 1.1b): the window is closed, so a late due has no event to
-        // be fired with; drop it. If the scroll never fired, the recheck below
-        // still lands the return through the normal coalesced path.
-        pendingMatchedKeyboardEvent = nil
         let action = TimelineKeyboardFollowPolicy.action(for: .init(
             event: .transitionEnded,
             isAtBottom: scrolling.tail.isAtBottom,

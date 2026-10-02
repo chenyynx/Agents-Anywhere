@@ -14,8 +14,8 @@ nonisolated struct TimelineKeyboardFollowPolicy {
 
     enum Action: Equatable {
         case none
-        /// Return to the bottom once, matched to the keyboard's own duration
-        /// and curve so the page travels with the keyboard.
+        /// Begin the one keyboard return; holding it pins the page to the
+        /// bottom while the keyboard moves the container (round 1.2).
         case requestReturn(ReturnStyle)
         /// The system clamp already carries the content down when the keyboard
         /// hides; a programmatic scroll would fight it.
@@ -52,7 +52,8 @@ nonisolated struct TimelineKeyboardFollowPolicy {
         case .willShow:
             // The keyboard covers the bottom and there is no native follow on
             // appearance; this gate is the only thing that fills it, so fill
-            // it in the keyboard's own turn and with its own curve.
+            // it in the keyboard's own turn — the held return pins the bottom
+            // on every frame while the container moves (round 1.2).
             return context.isAtBottom ? .requestReturn(.keyboardMatched) : .none
         case .willHide:
             // The system clamp animates the content down with the keyboard.

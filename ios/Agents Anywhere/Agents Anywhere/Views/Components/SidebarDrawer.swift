@@ -478,9 +478,21 @@ private struct SidebarDrawerInteractive<
 
             isAnimating = false
             motion.move(to: target)
+
+            // Publishing `isOpen` rebuilds the page body (session list,
+            // environment flips, timeline chain) in the frame the spring
+            // lands. Defer the write one main-queue turn so the completion
+            // frame only tears down the animation, rechecking the generation
+            // there: a gesture starting in between owns the state, not this
+            // stale target.
             let targetIsOpen = target == 1
             if isOpen != targetIsOpen {
-                isOpen = targetIsOpen
+                DispatchQueue.main.async {
+                    guard generation == animationGeneration else { return }
+                    if isOpen != targetIsOpen {
+                        isOpen = targetIsOpen
+                    }
+                }
             }
         }
 
@@ -703,6 +715,12 @@ private enum SidebarDrawerCardShape {
     }
 
     func move(to next: CGFloat) {
+        // A clamped overscroll repeats the bound and a stationary finger
+        // repeats the same sample; writing either again invalidates every
+        // reader for nothing. Equal values imply equal rest states, and
+        // restingProgress already matches the last change, so both fields
+        // are correct as-is.
+        guard next != progress else { return }
         progress = next
         let resting = Self.resting(next)
         if restingProgress != resting { restingProgress = resting }
@@ -778,7 +796,11 @@ private struct SidebarDrawerCloseArea: View {
     let revealWidth: CGFloat
 
     var body: some View {
-        let region = SidebarDrawerCloseRegion(leadingEdge: revealWidth * motion.progress)
+        // The strip only accepts taps at rest (`acceptsSidebarTouches`), where
+        // the resting value equals `progress` (0 or 1). Reading it here keeps
+        // pan samples from rebuilding the hit shape every frame; the 0.5 band
+        // only exists while touches are already rejected.
+        let region = SidebarDrawerCloseRegion(leadingEdge: revealWidth * motion.restingProgress)
         region.fill(.clear)
             .contentShape(.interaction, region)
     }

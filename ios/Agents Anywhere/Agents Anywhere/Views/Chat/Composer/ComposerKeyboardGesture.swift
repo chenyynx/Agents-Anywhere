@@ -76,13 +76,19 @@ struct ComposerKeyboardPanGesture: UIGestureRecognizerRepresentable {
         /// extension, or the magnifier is actively recognizing — or the touch
         /// began on the text and a selection exists now (a long press can fire
         /// after this gesture already claimed the touch and finish before the
-        /// release is judged, leaving only the selection behind).
+        /// release is judged, leaving only the selection behind). The marked
+        /// text range must be checked explicitly: while the IME composes, the
+        /// editor's selected range covers the marked text, and the spec lets a
+        /// swipe close the keyboard mid-composition — only a selection outside
+        /// composition vetoes. An actual drag during composition is still
+        /// caught by the active-recognizer check above.
         var isTextSelectionActive: Bool {
             guard let textView else { return false }
             for recognizer in textView.gestureRecognizers ?? [] {
                 if recognizer.state == .began || recognizer.state == .changed { return true }
             }
-            if touchStartedInTextView, let textView = textView as? UITextView, textView.selectedRange.length > 0 {
+            if touchStartedInTextView, let textView = textView as? UITextView,
+               textView.markedTextRange == nil, textView.selectedRange.length > 0 {
                 return true
             }
             return false

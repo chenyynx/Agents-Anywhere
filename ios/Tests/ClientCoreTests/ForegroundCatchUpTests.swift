@@ -270,6 +270,63 @@ private func catchUpRepository(
         #expect(model.runtime.isFresh)
     }
 
+    /// `requiringRoundAfter` — a round that started before the socket
+    /// subscribed cannot stand in for the subscribe read. The subscribe path
+    /// waits for the older in-flight round quietly, then runs a round of its
+    /// own, so events the older read could not have seen are still applied.
+    /// If the subscribe path simply joined the in-flight round instead, the
+    /// third read below would never happen and `missed` would be lost.
+    @Test func subscribeReplacesAnOlderInFlightRoundInsteadOfInheritingIt() async throws {
+        let http = TestHTTPTransport()
+        let realtime = TestRealtimeAPI()
+        let repo = catchUpRepository(transport: http, realtime: realtime)
+        defer { repo.reset() }
+        repo.updateConnectivity(V2NetworkStatus(availability: .online))
+        let model = repo.session(id: "session")
+        let connection = Task { await model.connect() }
+        defer { connection.cancel() }
+        try await eventually { model.connection == .connected }
+        #expect(realtime.recoveries.count == 1, "The initial subscribe owns exactly one round")
+
+        // The catch-up round's read is held open while the socket subscribes.
+        // It predates the subscribe, so it cannot have seen `missed`; only the
+        // round the subscribe path launches afterwards returns it.
+        let catchUpGate = TestGate()
+        let freshGate = TestGate()
+        var recoverCall = 0
+        let missed = try event("timeline.item_created", seq: 12,
+                               payload: ["item": itemObject(id: "missed", order: 2, seq: 12)])
+        realtime.onRecover = {
+            recoverCall += 1
+            if recoverCall == 1 {
+                await catchUpGate.wait()
+                return V2EventRecoveryResponse(events: [], nextCursor: "seq:11",
+                                               snapshotRequired: false, serverTime: "")
+            }
+            await freshGate.wait()
+            return V2EventRecoveryResponse(events: [missed], nextCursor: "seq:12",
+                                           snapshotRequired: false, serverTime: "")
+        }
+        repo.suspend()
+        repo.resume()
+        try await eventually { realtime.recoveries.count == 2 }
+        #expect(model.connection == .connecting)
+        // Let the socket's subscribe frame reach its recovery decision (it
+        // awaits the held round) before that round is allowed to finish.
+        try await eventually { realtime.streams.count == 2 }
+        try await Task.sleep(for: .milliseconds(20))
+
+        catchUpGate.release()
+        try await eventually { realtime.recoveries.count == 3 }
+        #expect(model.connection != .connected, "Subscribe stays unconfirmed until its own round finishes")
+        #expect(model.timeline.allSatisfy { $0.id != "missed" }, "Only the fresh round may publish the missed event")
+
+        freshGate.release()
+        try await eventually { model.connection == .connected }
+        #expect(model.timeline.contains { $0.id == "missed" })
+        #expect(model.failure == nil)
+    }
+
     /// D5 — the default cache window keeps the recent working set resident.
     @Test func cacheWindowKeepsTheRecentWorkingSetResident() {
         let repo = repository(transport: TestHTTPTransport())

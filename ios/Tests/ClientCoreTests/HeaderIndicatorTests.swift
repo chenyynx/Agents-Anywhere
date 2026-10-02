@@ -51,6 +51,32 @@ import Testing
         #expect(chat.headerStatus == nil)
     }
 
+    /// The rebuilt-socket window shows the sweep; a completed rebuild must
+    /// stop it. After reconnecting → connected (facts still fresh) no glow may
+    /// remain, even while the runtime is busy.
+    @Test func aCompletedConnectionRebuildStopsTheGlow() throws {
+        let chat = makeChat()
+        defer { chat.repository.reset() }
+
+        try update(chat, status: .running, fresh: true, connection: .reconnecting)
+        #expect(chat.headerStatus == .syncing)
+        #expect(chat.headerStatus?.isGlow == true)
+        #expect(chat.headerStatus?.title == "")
+        #expect(chat.headerStatus?.detail == "")
+
+        // reconnecting → connected with fresh facts: the sweep must stop.
+        try update(chat, status: .running, fresh: true, connection: .connected)
+        #expect(chat.headerStatus == nil)
+        #expect(chat.headerStatus?.isGlow != true)
+        #expect(chat.headerStatus != .syncing)
+
+        // The stop belongs to the transition, not to a one-way latch: a later
+        // rebuild shows the sweep again.
+        try update(chat, status: .running, fresh: true, connection: .reconnecting)
+        #expect(chat.headerStatus == .syncing)
+        #expect(chat.headerStatus?.isGlow == true)
+    }
+
     @Test func anActionErrorStillSuppressesTheIndicatorThenRecovers() throws {
         let chat = makeChat()
         defer { chat.repository.reset() }

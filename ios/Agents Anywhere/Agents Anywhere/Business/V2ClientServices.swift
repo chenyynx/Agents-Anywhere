@@ -29,9 +29,12 @@ final class V2ClientServices {
     init(api: V2APIClient, accountID: String) {
         self.api = api
         scope = V2ClientScope(serverURL: api.serverURL, accountID: accountID)
+        // One policy instance feeds both the in-memory LRU and the disk
+        // archive, so the two windows cannot drift apart (D5).
+        let policy = V2SessionCachePolicy()
         let cacheDirectory = URL.applicationSupportDirectory.appendingPathComponent("AgentsAnywhere/Offline/v1")
             .appendingPathComponent(V2RestorationStore.scopeKey(scope))
-        localStore = V2LocalStore(directory: cacheDirectory)
+        localStore = V2LocalStore(directory: cacheDirectory, maximumSessions: policy.maximumSessions)
         sessionPreparation = V2SessionPreparationService(connectorAPI: api.connectors)
         account = V2AccountService(accountAPI: api.account)
         dashboard = V2DashboardService(
@@ -54,7 +57,7 @@ final class V2ClientServices {
         sessionCreation = V2SessionCreationService(sessionAPI: api.sessions)
         attachments = V2AttachmentService(attachmentAPI: api.attachments)
         interactions = V2RuntimeInteractionService(runtimeAPI: api.runtime)
-        sessionRepository = V2SessionRepository(scope: scope, detail: sessionDetail, interactions: interactions, localStore: localStore)
+        sessionRepository = V2SessionRepository(scope: scope, detail: sessionDetail, interactions: interactions, policy: policy, localStore: localStore)
         devicePairing = V2DevicePairingService(connectorAPI: api.connectors)
         agentSetup = AgentSetupCoordinator(service: devicePairing)
         deviceManagement = V2DeviceManagementService(connectorAPI: api.connectors)

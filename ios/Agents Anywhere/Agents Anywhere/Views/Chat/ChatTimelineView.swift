@@ -129,6 +129,9 @@ struct ChatTimelineView: View {
                         || previous.topInset != value.topInset {
                         scrolling.geometryChanged(value)
                     }
+                    // A landed instant return is confirmed by geometry even when
+                    // the tail callback arrived before this sample did.
+                    acknowledgeInstantOpeningIfArrived()
                     if !navigationIsSuspended && scrolling.phase == .interacting {
                         var latest = latestPull, older = olderPull
                         latest.update(value); older.update(value)
@@ -291,9 +294,16 @@ struct ChatTimelineView: View {
     }
     /// The opening return settles once the native end marker reports arrival
     /// (immediately for content that already fits). Releasing before the
-    /// pending edge target applied would clear it instead of landing.
+    /// pending edge target applied would clear it instead of landing, so the
+    /// acknowledgement also requires the current viewport to reach the end of
+    /// the current content: a tail sample left over from an earlier, shorter
+    /// layout must not release the target of a return that has not landed yet
+    /// (B3.5). At rest at the true bottom `visibleBottom` equals
+    /// `contentHeight`; the small tolerance covers the half-visible 2pt end
+    /// marker and native rounding.
     private func acknowledgeInstantOpeningIfArrived() {
-        guard let command = scrolling.activeCommand, command.instant, scrolling.tail.isAtBottom else { return }
+        guard let command = scrolling.activeCommand, command.instant, scrolling.tail.isAtBottom,
+              viewport.visibleBottom >= viewport.contentHeight - 2 else { return }
         finishScrollToBottom(command)
     }
     private func finishScrollToBottom(_ command: TimelineScrollState.BottomCommand) {

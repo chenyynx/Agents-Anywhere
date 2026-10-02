@@ -52,6 +52,11 @@ final class AppState: ObservableObject {
     private let dashboardClientId = "ios-dashboard-\(UUID().uuidString)"
     private var lastDashboardRefreshAt: Date?
     private var dashboardUpdatesTask: Task<Void, Never>?
+    /// Ownership token for `dashboardUpdatesTask`. A task may only clear its
+    /// own registration: an offline→online flip can cancel a task while its
+    /// bounded wait is still finishing, and a new task can be registered
+    /// before the old continuation runs (P1-3).
+    private var dashboardUpdatesToken: UUID?
     private var cachedServices: V2ClientServices?
     private var cachedServicesTokenProvider: MutableAuthTokenProvider?
     private var isInBackground = false
@@ -343,6 +348,8 @@ final class AppState: ObservableObject {
         guard let services = makeV2Services() else { return }
         guard services.connectivity.status.availability != .offline else { return }
 
+        let token = UUID()
+        dashboardUpdatesToken = token
         dashboardUpdatesTask = Task { [weak self] in
             guard let self else { return }
             // Path availability is a scheduling hint: hold the socket until the
@@ -350,11 +357,22 @@ final class AppState: ObservableObject {
             // the path is known to be down. A later connectivity change
             // restarts this task.
             guard await services.connectivity.waitUntilOnline() else {
-                if self.cachedServices === services { self.dashboardUpdatesTask = nil }
+                // Only the task that still owns the registration may clear it;
+                // an offline→online flip can already have replaced it.
+                if self.cachedServices === services, self.dashboardUpdatesToken == token {
+                    self.dashboardUpdatesTask = nil
+                    self.dashboardUpdatesToken = nil
+                }
                 return
             }
             await receiveDashboardUpdates(services: services)
         }
+    }
+
+    private func cancelDashboardUpdates() {
+        dashboardUpdatesTask?.cancel()
+        dashboardUpdatesTask = nil
+        dashboardUpdatesToken = nil
     }
 
     func renameSession(sessionId: V2SessionID, title: String) async -> Bool {
@@ -659,8 +677,7 @@ final class AppState: ObservableObject {
 
     /// Deletes the persisted access token before clearing all authenticated in-memory state.
     func signOutAndDeleteCredentials(showSignedOutRoute: Bool = true) throws {
-        dashboardUpdatesTask?.cancel()
-        dashboardUpdatesTask = nil
+        cancelDashboardUpdates()
         try keychain.delete(account: tokenAccount)
         authenticationEpoch = UUID(); accountSyncID = UUID()
         accountSyncTask?.cancel(); accountSyncTask = nil; isRetryingServerConnection = false
@@ -759,8 +776,7 @@ final class AppState: ObservableObject {
         if background {
             accountSyncID = UUID(); accountSyncTask?.cancel(); accountSyncTask = nil; isRetryingServerConnection = false
             if let services = cachedServices { Task { await services.flushCache() } }
-            dashboardUpdatesTask?.cancel()
-            dashboardUpdatesTask = nil
+            cancelDashboardUpdates()
             cachedServices?.sessionRepository.suspend()
         } else {
             cachedServices?.sessionRepository.resume()
@@ -783,8 +799,7 @@ final class AppState: ObservableObject {
             provider.update(token)
             return cachedServices
         }
-        dashboardUpdatesTask?.cancel()
-        dashboardUpdatesTask = nil
+        cancelDashboardUpdates()
         isDashboardLoading = false
         cachedServicesTokenProvider?.update(nil)
         cachedServices?.shutdown()
@@ -822,8 +837,7 @@ final class AppState: ObservableObject {
         services.onConnectivityChange = { [weak self, weak services] status in
             guard let self, let services, self.cachedServices === services else { return }
             if status.availability == .offline {
-                self.dashboardUpdatesTask?.cancel()
-                self.dashboardUpdatesTask = nil
+                self.cancelDashboardUpdates()
             } else {
                 self.startDashboardUpdates()
                 if self.restoreConnectionError != nil {

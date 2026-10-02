@@ -27,6 +27,10 @@ struct ChatTimelineView: View {
     /// never reads it, so opening or closing the keyboard re-evaluates the
     /// return pill and the dismiss layer instead of the whole timeline chain.
     @State private var keyboard = TimelineKeyboardMonitor()
+    /// K5 (round 1.1b): the event whose duration/curve the held matched return
+    /// is fired with once the container actually moves. Kept until the
+    /// transition ends because the scroll is issued in a later frame.
+    @State private var pendingMatchedKeyboardEvent: TimelineKeyboardEvent?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.sidebarDrawerIsTransitioning) private var sidebarIsTransitioning
     @Environment(\.sidebarDrawerObscuresDetail) private var sidebarObscuresDetail
@@ -138,6 +142,11 @@ struct ChatTimelineView: View {
                     // A landed instant return is confirmed by geometry even when
                     // the tail callback arrived before this sample did.
                     acknowledgeInstantOpeningIfArrived()
+                    // K5 (round 1.1b): fire the held matched return at the first
+                    // frame the keyboard actually moves the container.
+                    if let command = scrolling.keyboardReturnScrollDue(sample: value) {
+                        scrollToBottom(command, keyboardMatched: pendingMatchedKeyboardEvent)
+                    }
                     if !navigationIsSuspended && scrolling.phase == .interacting {
                         var latest = latestPull, older = olderPull
                         latest.update(value); older.update(value)
@@ -410,16 +419,23 @@ struct ChatTimelineView: View {
         case .requestReturn(.keyboardMatched):
             // K5 (round 1.1): flag-first. The window opens before the return is
             // begun so the guards that hold a matched command are already armed
-            // when this same turn sets the fresh edge target and bumps the
-            // navigation generation (round 1.1: that target must survive both).
-            // One return in this same turn, matched to the keyboard's own
-            // animation, and the open window keeps the tail probe's flip — and
-            // anything else layout-driven — from queueing the old spring next
-            // to it (F11).
+            // when this same turn bumps the navigation generation (round 1.1:
+            // the fresh edge target must survive it). The open window keeps the
+            // tail probe's flip — and anything else layout-driven — from
+            // queueing the old spring next to the matched return (F11). One
+            // return per transition, matched to the keyboard's own animation.
+            //
+            // K5 (round 1.1b): the scroll itself is not issued in this turn.
+            // The keyboard's inset has not reached the layout yet, so an edge
+            // target resolved here animates against the pre-keyboard container
+            // and travels nothing. The event is held; the scroll fires on the
+            // first sample whose visible height moved (keyboardReturnScrollDue)
+            // with the keyboard's own duration and curve.
             scrolling.setKeyboardTransitionActive(true)
-            if let command = scrolling.beginKeyboardReturn() {
-                scrollToBottom(command, keyboardMatched: event)
-            }
+            pendingMatchedKeyboardEvent = event
+            // No command (a vanished request, a suspension in this same turn):
+            // leave no event behind for a later due.
+            if scrolling.beginKeyboardReturn() == nil { pendingMatchedKeyboardEvent = nil }
         case .suppressProgrammatic:
             // The system clamp carries the content down with the keyboard; a
             // programmatic scroll would be a second animation fighting it.
@@ -439,6 +455,10 @@ struct ChatTimelineView: View {
         // command — releasing then keeps the edge target glued for the whole
         // keyboard animation.
         if scrolling.endKeyboardTransition() { releaseScrollPosition() }
+        // K5 (round 1.1b): the window is closed, so a late due has no event to
+        // be fired with; drop it. If the scroll never fired, the recheck below
+        // still lands the return through the normal coalesced path.
+        pendingMatchedKeyboardEvent = nil
         let action = TimelineKeyboardFollowPolicy.action(for: .init(
             event: .transitionEnded,
             isAtBottom: scrolling.tail.isAtBottom,

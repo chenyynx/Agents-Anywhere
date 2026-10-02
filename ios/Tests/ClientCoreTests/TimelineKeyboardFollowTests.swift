@@ -461,6 +461,93 @@ import Testing
         #expect(state.mode == .following)
     }
 
+    @Test func theHeldMatchedReturnWaitsForTheContainerToMove() throws {
+        // K5 (round 1.1b): the notification's own turn still measures the
+        // pre-keyboard container, so a scroll issued then resolves against the
+        // old layout and travels nothing. The held command is released at the
+        // first sample whose visible height moved off the begin-time baseline.
+        var state = try openedAtBottom()
+        state.setKeyboardTransitionActive(true)
+        // The macro captures its expression immutably; take the mutating
+        // result out first (same as `nextCommand`).
+        let keyboardReturn = state.beginKeyboardReturn()
+        let command = try #require(keyboardReturn)
+        // Unchanged (600pt) and a sub-half-point wobble are rounding, not the
+        // keyboard reaching the layout.
+        #expect(state.keyboardReturnScrollDue(sample: viewport(offset: 1320)) == nil)
+        #expect(state.keyboardReturnScrollDue(sample: viewport(offset: 1320, container: 799.5)) == nil)
+        // A whole point of movement is the container answering: fire.
+        #expect(state.keyboardReturnScrollDue(sample: viewport(offset: 1320, container: 799)) == command)
+    }
+
+    @Test func theHeldMatchedReturnFiresExactlyOncePerWindow() throws {
+        var state = try openedAtBottom()
+        state.setKeyboardTransitionActive(true)
+        let keyboardReturn = state.beginKeyboardReturn()
+        let command = try #require(keyboardReturn)
+        #expect(state.keyboardReturnScrollDue(sample: viewport(offset: 1320, container: 600)) == command)
+        // The container keeps changing under the keyboard's animation; the
+        // issue mark keeps the window at one scroll — the fired animation
+        // already carries the full travel.
+        #expect(state.keyboardReturnScrollDue(sample: viewport(offset: 1320, container: 500)) == nil)
+        #expect(state.keyboardReturnScrollDue(sample: viewport(offset: 1320, container: 700)) == nil)
+    }
+
+    @Test func onlyAHeldMatchedCommandCanBecomeDue() throws {
+        // Nothing begun: there is no command to fire.
+        var idle = try openedAtBottom()
+        #expect(idle.keyboardReturnScrollDue(sample: viewport(offset: 1320, container: 600)) == nil)
+        // A matched begin records the baseline; when a plain spring return
+        // replaces the active command (a fresh layout request), the due guard
+        // still refuses to fire it — only a matched command is the keyboard's.
+        var replaced = try openedAtBottom()
+        let matchedReturn = replaced.beginKeyboardReturn()
+        _ = try #require(matchedReturn)
+        visibility(&replaced, end: false)
+        replaced.geometryChanged(viewport(offset: 1220, height: 2200))
+        let nextRequest = try #require(replaced.pendingBottomRequest)
+        let plainReturn = replaced.begin(nextRequest)
+        let plainCommand = try #require(plainReturn)
+        #expect(!plainCommand.keyboardMatched)
+        #expect(replaced.activeCommand == plainCommand)
+        #expect(replaced.keyboardReturnScrollDue(
+            sample: viewport(offset: 1220, height: 2200, container: 500)) == nil)
+        // A matched command already settled by the window's end is no longer
+        // held; nothing fires for it.
+        var settled = try openedAtBottom()
+        settled.setKeyboardTransitionActive(true)
+        let heldReturn = settled.beginKeyboardReturn()
+        _ = try #require(heldReturn)
+        let settledAtWindowEnd = settled.endKeyboardTransition()
+        #expect(settledAtWindowEnd)
+        #expect(settled.keyboardReturnScrollDue(sample: viewport(offset: 1320, container: 600)) == nil)
+    }
+
+    @Test func aReopenedWindowTakesItsBaselineFromTheLatestBegin() throws {
+        // Two returns in one keyboard cycle (a reopening transition): each
+        // begin resets the baseline, so the second window is judged against
+        // the layout it started from, not the first window's stale height.
+        var state = try openedAtBottom()
+        state.setKeyboardTransitionActive(true)
+        let firstReturn = state.beginKeyboardReturn()
+        let first = try #require(firstReturn)
+        let shrinking = viewport(offset: 1320, container: 600)
+        #expect(state.keyboardReturnScrollDue(sample: shrinking) == first)
+        // The window ends and settles the command; the settled layout is the
+        // keyboard-up truth now.
+        state.geometryChanged(shrinking)
+        let firstEnd = state.endKeyboardTransition()
+        #expect(firstEnd)
+        // The keyboard shows again from that layout: the second return's
+        // baseline is 400 (its own begin), not 600, so a sample still
+        // measuring the settled height must not fire it.
+        state.setKeyboardTransitionActive(true)
+        let secondReturn = state.beginKeyboardReturn()
+        let second = try #require(secondReturn)
+        #expect(state.keyboardReturnScrollDue(sample: shrinking) == nil)
+        #expect(state.keyboardReturnScrollDue(sample: viewport(offset: 1320, container: 500)) == second)
+    }
+
     @Test func theWindowEndSendsAPresentedReturnToReading() throws {
         // complete()'s established rule: an arrived return with an interaction
         // presented goes to reading, not following. The window-end settlement

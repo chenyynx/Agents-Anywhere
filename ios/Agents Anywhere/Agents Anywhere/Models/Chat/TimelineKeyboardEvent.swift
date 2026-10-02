@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(UIKit)
+import UIKit
+#endif
 import CoreGraphics
 
 /// One parsed keyboard notification payload (S2/K5, 2026-10-02). Value-typed
@@ -102,7 +105,8 @@ nonisolated struct TimelineKeyboardEvent: Equatable {
     /// CGRect extraction is the one platform split in this file: `cgRectValue`
     /// is the iOS-family accessor and does not exist on the macOS compile
     /// surface, while macOS exposes the same geometry through `rectValue`
-    /// (NSRect is a CGRect type alias there).
+    /// (NSRect is a CGRect type alias there). The iOS accessor's defining
+    /// module is UIKit, hence the conditional import at the top.
     private static func frame(from value: Any?) -> CGRect? {
         guard let value = value as? NSValue else { return nil }
 #if canImport(UIKit)

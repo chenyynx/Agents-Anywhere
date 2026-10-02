@@ -1,12 +1,12 @@
 name: iOS Build & Test
 
-# Branch-local pipeline for the `ios-fast-sync` work (foreground catch-up,
-# instant opening, header glow). It mirrors the downstream `ios-ci` flow —
+# Build & test pipeline for the `dev` development line. It mirrors the
+# downstream `ios-ci` flow —
 # unsigned .ipa for on-device KSign re-signing, no Apple Developer account —
 # and adds the unit-test job (`swift test`).
 #
 # The `ios-ci` branch stays the clean upstream mirror; nothing here touches it.
-# Artifacts are released to the dedicated `ipa-ios-fast-sync` tag so the
+# Artifacts are released to the dedicated `ipa-dev` tag so the
 # mainline `ipa-latest` release is never overwritten.
 #
 # The deployment-target patch (26.5 -> 26.2, sideload compatibility) is
@@ -14,7 +14,7 @@ name: iOS Build & Test
 
 on:
   push:
-    branches: [ios-fast-sync]
+    branches: [dev]
     paths:
       - "ios/**"
       - ".github/workflows/ios-build.yml"
@@ -148,7 +148,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: agents-anywhere-ios-fast-sync-ipa
+          name: agents-anywhere-dev-ipa
           path: agents-anywhere.ipa
           if-no-files-found: error
 
@@ -157,9 +157,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SHA_SHORT: ${{ github.sha }}
         run: |
-          TAG="ipa-ios-fast-sync"
-          NAME="AgentsAnywhere-fast-sync-${SHA_SHORT:0:7}.ipa"
+          TAG="ipa-dev"
+          NAME="AgentsAnywhere-dev-${SHA_SHORT:0:7}.ipa"
           cp agents-anywhere.ipa "$NAME"
-          gh release create "$TAG" --title "Agents Anywhere unsigned builds — ios-fast-sync" \
-            --notes "Built from the ios-fast-sync branch (foreground catch-up, instant opening, header glow). Unsigned — re-sign on-device with KSign." || true
+          gh release create "$TAG" --title "Agents Anywhere unsigned builds — dev" \
+            --notes "Built from the dev branch. Unsigned — re-sign on-device with KSign." || true
           gh release upload "$TAG" "$NAME" --clobber

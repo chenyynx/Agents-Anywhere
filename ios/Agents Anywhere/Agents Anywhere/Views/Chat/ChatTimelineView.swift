@@ -1,4 +1,5 @@
 import SwiftUI
+import Observation
 #if DEBUG
 import OSLog
 #endif
@@ -22,12 +23,13 @@ struct ChatTimelineView: View {
     @State private var latestPromptVisible = false
     @State private var latestLoadRequest: Int?
     @State private var nativePhase = TimelineScrollState.Phase.idle
-    /// The return pill would sit on top of the keyboard while typing.
-    @State private var keyboardIsVisible = false
+    /// The keyboard flag lives in a leaf-observed monitor (S2): the page body
+    /// never reads it, so opening or closing the keyboard re-evaluates the
+    /// return pill and the dismiss layer instead of the whole timeline chain.
+    @State private var keyboard = TimelineKeyboardMonitor()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.sidebarDrawerIsTransitioning) private var sidebarIsTransitioning
     @Environment(\.sidebarDrawerObscuresDetail) private var sidebarObscuresDetail
-    @ScaledMetric(relativeTo: .caption) private var returnPillHeight: CGFloat = 32
 #if DEBUG
     private static let drawerLayoutLog = Logger(subsystem: "agents.anywhere", category: "drawer-layout")
 #endif
@@ -89,6 +91,7 @@ struct ChatTimelineView: View {
                 let wasInteracting = scrolling.phase == .interacting
                 viewportSample.value = current
                 scrolling.geometryChanged(current)
+                viewportSample.tailUpdatedAtPublish = scrolling.tail
                 nativePhase = mapped
                 // The drawer owns horizontal navigation. Do not interpret its
                 // interrupted scroll callbacks as a fresh vertical reading intent.
@@ -128,13 +131,10 @@ struct ChatTimelineView: View {
 #endif
                 viewportUpdates.submit(value) { value in
                     // Offset samples are needed for restoration, but do not change
-                    // the rendered page. Publish only dimensions used by following.
+                    // the rendered page. Publish only dimensions used by following,
+                    // and not even those while the keyboard animation drives them.
                     viewportSample.value = value
-                    let previous = scrolling.viewport
-                    if previous.contentHeight != value.contentHeight || previous.visibleHeight != value.visibleHeight
-                        || previous.topInset != value.topInset {
-                        scrolling.geometryChanged(value)
-                    }
+                    publishViewportSample(value, keyboardTransitionActive: keyboardDrivingLayout)
                     // A landed instant return is confirmed by geometry even when
                     // the tail callback arrived before this sample did.
                     acknowledgeInstantOpeningIfArrived()
@@ -180,7 +180,9 @@ struct ChatTimelineView: View {
                 // lets the timeline finish its first layout measurement, so the
                 // instant target resolves against the real content height
                 // instead of a half-measured one. The opening
-                // gate hides these milliseconds anyway.
+                // gate hides these milliseconds anyway. A keyboard-matched
+                // return (K5) begins in the notification's own turn and marks
+                // its request, so it never reaches this delay.
                 do { try await Task.sleep(for: .milliseconds(24)) } catch { return }
                 guard !Task.isCancelled, !navigationIsSuspended, let command = scrolling.begin(request) else { return }
                 scrollToBottom(command)
@@ -234,29 +236,30 @@ struct ChatTimelineView: View {
                 if scrolling.navigationGeneration == generation { scrolling.requestBottom() }
                 latestLoadRequest = nil
             }
-            if !keyboardIsVisible, scrolling.showsBottomButton() {
-                Button {
-                    latestPull.cancel(); olderPull.cancel()
-                    historyPosition?.cancelRestoration()
-                    scrolling.requestBottom()
-                } label: {
-                    Label(String(localized: "到底部"), appSymbol: "arrow.down").font(.caption.weight(.medium)).foregroundStyle(.primary)
-                        .padding(.horizontal, 12).frame(height: returnPillHeight)
-                        .glassEffect(.regular.interactive(), in: .capsule)
-                        .frame(minHeight: 44).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain).accessibilityIdentifier("chat.timeline.bottom")
-                .padding(.bottom, 2)
+            // The return pill would sit on top of the keyboard while typing.
+            TimelineBottomPill(keyboard: keyboard, isShown: scrolling.showsBottomButton()) {
+                latestPull.cancel(); olderPull.cancel()
+                historyPosition?.cancelRestoration()
+                scrolling.requestBottom()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // K3: with the keyboard up, a tap on empty message space closes it.
+        // Text surfaces and controls keep their own taps; the recognizer is
+        // passive and armed only while the keyboard is visible.
+        .modifier(TimelineKeyboardDismissLayer(keyboard: keyboard))
         .traceChatLayout("timeline-viewport")
         .onDisappear { viewportUpdates.cancel(); historyUpdates.cancel() }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
-            keyboardIsVisible = true
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { note in
+            keyboard.setVisible(true)
+            keyboardTransitionBegan(TimelineKeyboardEvent(source: .willShow, userInfo: note.userInfo ?? [:]))
         }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            keyboardIsVisible = false
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { note in
+            keyboard.setVisible(false)
+            keyboardTransitionBegan(TimelineKeyboardEvent(source: .willHide, userInfo: note.userInfo ?? [:]))
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
+            keyboardFrameWillChange(TimelineKeyboardEvent(source: .willChangeFrame, userInfo: note.userInfo ?? [:]))
         }
     }
     private func loadOlder() {
@@ -279,7 +282,8 @@ struct ChatTimelineView: View {
         scrolling.requestBottom()
         latestLoadRequest = scrolling.navigationGeneration
     }
-    private func scrollToBottom(_ command: TimelineScrollState.BottomCommand) {
+    private func scrollToBottom(_ command: TimelineScrollState.BottomCommand,
+                                keyboardMatched matchedEvent: TimelineKeyboardEvent? = nil) {
         if command.instant {
             // The opening return lands without an animation (D4) so a cached
             // window never plays a visible top-to-bottom scroll. A
@@ -293,7 +297,8 @@ struct ChatTimelineView: View {
             acknowledgeInstantOpeningIfArrived()
             return
         }
-        withAnimation(reduceMotion ? nil : .interactiveSpring(response: 0.28, dampingFraction: 1, blendDuration: 0.12),
+        let animation = matchedEvent.map(Self.keyboardMatchedAnimation) ?? Self.returnSpring
+        withAnimation(reduceMotion ? nil : animation,
             completionCriteria: .removed) {
             // Let the scroll view resolve its own safe-area/inset coordinate
             // system. The edge target is released when this animation finishes
@@ -301,6 +306,21 @@ struct ChatTimelineView: View {
             position.scrollTo(edge: .bottom)
         } completion: {
             finishScrollToBottom(command)
+        }
+    }
+    private static let returnSpring = Animation.interactiveSpring(response: 0.28, dampingFraction: 1, blendDuration: 0.12)
+    /// K5: the keyboard's own duration and curve, so the page travels with the
+    /// keyboard instead of next to it. Curve 7 is the private keyboard spring:
+    /// a critically damped spring (no bounce) approximates it without the
+    /// overshoot the return spring would add.
+    private static func keyboardMatchedAnimation(for event: TimelineKeyboardEvent) -> Animation {
+        let duration = max(event.duration, 0)
+        switch event.curve {
+        case .easeInOut: return .easeInOut(duration: duration)
+        case .easeIn: return .easeIn(duration: duration)
+        case .easeOut: return .easeOut(duration: duration)
+        case .linear: return .linear(duration: duration)
+        case .privateSpring, .unknown: return .spring(duration: duration, bounce: 0)
         }
     }
     /// The opening return settles once the native end marker reports arrival
@@ -328,6 +348,95 @@ struct ChatTimelineView: View {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) { position.isPositionedByUser = true }
+    }
+    /// The keyboard owns the layout while its transition window is open, and
+    /// while the keyboard is visible an active drag (the K4 interactive
+    /// dismissal) changes the container between its frame notifications too.
+    private var keyboardDrivingLayout: Bool {
+        keyboard.transitionActive || (keyboard.isVisible && scrolling.userIsScrolling)
+    }
+    /// Writes a sample into view state only when it changes a decision (S2).
+    /// Sampling stays per-frame in the non-invalidating box; publishing
+    /// re-evaluates the page body, so a keyboard transition that only
+    /// stretches the visible height must not do it per frame.
+    private func publishViewportSample(_ value: TimelineViewport, keyboardTransitionActive: Bool) {
+        let tailChanged = viewportSample.tailUpdatedAtPublish != scrolling.tail
+        let outcome = TimelineViewportPublicationDecision.outcome(published: scrolling.viewport, next: value,
+            keyboardTransitionActive: keyboardTransitionActive, tailChanged: tailChanged)
+        guard outcome == .publish else { return }
+        scrolling.geometryChanged(value)
+        viewportSample.tailUpdatedAtPublish = scrolling.tail
+    }
+    /// Every frame change restarts the transition window; the window's close
+    /// settles the withheld sample and runs the K5 end recheck. The end is
+    /// scheduled for every event, even a zero-duration one: the immediate
+    /// close is what releases whatever an earlier window withheld.
+    private func keyboardTransitionBegan(_ event: TimelineKeyboardEvent) {
+        let token = keyboard.beginTransition()
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(max(event.duration, 0)))
+            keyboardTransitionDidEnd(token: token)
+        }
+    }
+    private func keyboardFrameWillChange(_ event: TimelineKeyboardEvent) {
+        keyboardTransitionBegan(event)
+        // The direction is compared from the frames here, not taken from
+        // willShow/willHide: a keyboard's own height change (the predictive
+        // row) shows up as the same kind of transition and deserves the same
+        // coordination.
+        let followEvent: TimelineKeyboardFollowPolicy.Event
+        switch event.direction {
+        case .showing: followEvent = .willShow
+        case .hiding: followEvent = .willHide
+        case .unchanged: return
+        }
+        let action = TimelineKeyboardFollowPolicy.action(for: .init(
+            event: followEvent,
+            isAtBottom: scrolling.tail.isAtBottom,
+            mode: scrolling.mode,
+            phase: scrolling.phase,
+            navigationIsSuspended: navigationIsSuspended,
+            hasPendingRequest: scrolling.pendingBottomRequest != nil))
+        switch action {
+        case .none, .recheckAtEnd:
+            // The end recheck only applies once the window closes.
+            break
+        case .requestReturn(.keyboardMatched):
+            // One return in this same turn, matched to the keyboard's own
+            // animation. Opening the window right after keeps the tail probe's
+            // flip — and anything else layout-driven — from queueing the old
+            // spring next to it (F11).
+            if let command = scrolling.beginKeyboardReturn() {
+                scrollToBottom(command, keyboardMatched: event)
+            }
+            scrolling.setKeyboardTransitionActive(true)
+        case .suppressProgrammatic:
+            // The system clamp carries the content down with the keyboard; a
+            // programmatic scroll would be a second animation fighting it.
+            scrolling.setKeyboardTransitionActive(true)
+        }
+    }
+    private func keyboardTransitionDidEnd(token: Int) {
+        guard keyboard.finishTransition(token: token) else { return }
+        // Rule ⑤: evaluate the latest sample with the window closed, so a
+        // visible height withheld during the transition lands now and the
+        // `lastRequest` dedup cannot stay pinned to a pre-keyboard value.
+        if let sample = viewportSample.value {
+            publishViewportSample(sample, keyboardTransitionActive: false)
+        }
+        acknowledgeInstantOpeningIfArrived()
+        scrolling.setKeyboardTransitionActive(false)
+        let action = TimelineKeyboardFollowPolicy.action(for: .init(
+            event: .transitionEnded,
+            isAtBottom: scrolling.tail.isAtBottom,
+            mode: scrolling.mode,
+            phase: scrolling.phase,
+            navigationIsSuspended: navigationIsSuspended,
+            hasPendingRequest: scrolling.pendingBottomRequest != nil))
+        if action == .recheckAtEnd {
+            // One make-up return through the normal coalesced path.
+            scrolling.requestBottom()
+        }
     }
     private func historyDidLayOut(_ layout: TimelineHistoryLayout) {
         historyUpdates.submit(layout) { layout in
@@ -513,4 +622,73 @@ private extension TimelineViewport {
 /// Native offset storage deliberately does not invalidate the SwiftUI view tree.
 @MainActor private final class ChatViewportSample {
     var value: TimelineViewport?
+    /// The tail visibility that accompanied the last published sample. A flip
+    /// since then must not be dismissed by the keyboard-transition rule (④):
+    /// the bottom truth moved and the sample has to publish with it.
+    var tailUpdatedAtPublish: TimelineTailVisibility?
+}
+
+/// K5/S2 leaf: only this view observes the keyboard monitor, so a keyboard
+/// toggle re-evaluates the return pill (and the dismiss layer below) instead
+/// of the whole timeline body.
+private struct TimelineBottomPill: View {
+    let keyboard: TimelineKeyboardMonitor
+    let isShown: Bool
+    let onTap: () -> Void
+    @ScaledMetric(relativeTo: .caption) private var height: CGFloat = 32
+
+    var body: some View {
+        if isShown && !keyboard.isVisible {
+            Button(action: onTap) {
+                Label(String(localized: "到底部"), appSymbol: "arrow.down").font(.caption.weight(.medium)).foregroundStyle(.primary)
+                    .padding(.horizontal, 12).frame(height: height)
+                    .glassEffect(.regular.interactive(), in: .capsule)
+                    .frame(minHeight: 44).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).accessibilityIdentifier("chat.timeline.bottom")
+            .padding(.bottom, 2)
+        }
+    }
+}
+
+/// K3/S2 leaf: the tap-to-dismiss gesture reads the keyboard monitor here so
+/// arming and disarming it never re-evaluates the timeline body.
+private struct TimelineKeyboardDismissLayer: ViewModifier {
+    let keyboard: TimelineKeyboardMonitor
+
+    func body(content: Content) -> some View {
+        content.keyboardDismissTapGesture(isEnabled: keyboard.isVisible)
+    }
+}
+
+/// Timeline keyboard state in a leaf-observed object. The page body never
+/// reads it (S2): opening or closing the keyboard cannot re-evaluate the
+/// timeline modifier chain. `transitionActive` marks the window in which
+/// per-frame visible-height samples and programmatic returns are withheld
+/// while the keyboard animates (K5).
+@MainActor @Observable private final class TimelineKeyboardMonitor {
+    private(set) var isVisible = false
+    private(set) var transitionActive = false
+    private var transitionToken = 0
+
+    func setVisible(_ visible: Bool) {
+        isVisible = visible
+    }
+
+    /// Opens (or restarts) the window and returns the token its end schedule
+    /// must present. Superseded tokens are rejected by `finishTransition`.
+    @discardableResult
+    func beginTransition() -> Int {
+        transitionToken &+= 1
+        transitionActive = true
+        return transitionToken
+    }
+
+    /// True only for the newest transition: an end schedule superseded by a
+    /// later frame change must not close the newer window or settle early.
+    func finishTransition(token: Int) -> Bool {
+        guard token == transitionToken, transitionActive else { return false }
+        transitionActive = false
+        return true
+    }
 }

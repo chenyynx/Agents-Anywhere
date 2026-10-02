@@ -18,6 +18,10 @@ nonisolated struct TimelineScrollState: Equatable {
         /// never plays a visible top-to-bottom scroll. Every later return
         /// (sending, accepted responses, the bottom pill) keeps the spring.
         let instant: Bool
+        /// K5: the return is matched to the keyboard's own animation instead
+        /// of the spring, so the page travels with the keyboard. The instant
+        /// opening return still wins when both flags are set.
+        let keyboardMatched: Bool
     }
 
     private(set) var phase = Phase.idle
@@ -29,6 +33,10 @@ nonisolated struct TimelineScrollState: Equatable {
     private(set) var navigationIsSuspended = false
     private(set) var hasOpened = false
     private(set) var activeCommand: BottomCommand?
+    /// K5: while the keyboard's transition window is open, its animation owns
+    /// programmatic scrolling. The tail probe flipping under the shrinking
+    /// container must not start the spring next to it (F11).
+    private(set) var keyboardTransitionActive = false
     private var lastRequest: BottomRequest?
     private var commandID = 0
     private var awaitsUserScrollSettlement = false
@@ -81,6 +89,13 @@ nonisolated struct TimelineScrollState: Equatable {
         lastRequest = nil
     }
 
+    /// K5: opens or closes the keyboard transition window. Closing it is what
+    /// releases a withheld return, so the make-up lands once the keyboard has
+    /// settled.
+    mutating func setKeyboardTransitionActive(_ active: Bool) {
+        keyboardTransitionActive = active
+    }
+
     mutating func geometryChanged(_ next: TimelineViewport) { viewport = next }
 
     mutating func tailVisibilityChanged(_ region: TimelineTailVisibility.Region, visible: Bool) {
@@ -110,6 +125,13 @@ nonisolated struct TimelineScrollState: Equatable {
     }
 
     var pendingBottomRequest: BottomRequest? {
+        // K5: withheld while the keyboard's transition window is open; the
+        // transition-end recheck releases it.
+        guard !keyboardTransitionActive else { return nil }
+        return ungatedBottomRequest
+    }
+
+    private var ungatedBottomRequest: BottomRequest? {
         guard hasOpened, !navigationIsSuspended, viewport.isMeasured,
               returningToBottom || tail.isMeasured,
               mode != .reading, !userIsScrolling || returningToBottom,
@@ -124,8 +146,26 @@ nonisolated struct TimelineScrollState: Equatable {
 
     mutating func begin(_ request: BottomRequest) -> BottomCommand? {
         guard pendingBottomRequest == request else { return nil }
+        return activate(request, keyboardMatched: false)
+    }
+
+    /// K5: the one return issued in the keyboard notification's own runloop
+    /// turn, matched to the keyboard's animation. Beginning it directly also
+    /// skips the layout-coalescing task (that delay merges layout, it does not
+    /// wait for the keyboard), and marking the request stops the tail probe's
+    /// flip inside the same transition from queuing a second animation.
+    mutating func beginKeyboardReturn() -> BottomCommand? {
+        requestBottom()
+        // Deliberately ungated: this command is the one the transition window
+        // exists to protect, and the window may already be open around it.
+        guard let request = ungatedBottomRequest else { return nil }
+        return activate(request, keyboardMatched: true)
+    }
+
+    private mutating func activate(_ request: BottomRequest, keyboardMatched: Bool) -> BottomCommand {
         commandID &+= 1
-        let command = BottomCommand(id: commandID, request: request, instant: openingReturnIsPending)
+        let command = BottomCommand(id: commandID, request: request,
+            instant: openingReturnIsPending, keyboardMatched: keyboardMatched)
         openingReturnIsPending = false
         lastRequest = request
         activeCommand = command

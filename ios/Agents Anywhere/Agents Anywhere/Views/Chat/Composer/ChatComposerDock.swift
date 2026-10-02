@@ -53,6 +53,9 @@ struct ChatComposerDock: View {
                 showsCommands: sessionChat?.offersCommands == true, commandsActive: showsCommandMenu,
                 onCommands: { showsCommandMenu.toggle() },
                 onDraftChange: onDraftChange)
+                // K2: the glass bar itself carries the trigger-style keyboard
+                // gesture; the command panel above is a sibling and stays out.
+                .composerKeyboardGesture(draft: draft, editor: editor)
         }
         .onChange(of: sessionChat?.optionsRequest) { _, _ in showsOptions = true }
         .frame(maxWidth: ChatControlMetrics.maximumContentWidth)

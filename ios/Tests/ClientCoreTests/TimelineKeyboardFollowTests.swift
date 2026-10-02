@@ -1,0 +1,527 @@
+import Foundation
+import Testing
+@testable import ClientCore
+
+/// S2/K5 (2026-10-02): pins the non-invalidating publication rules, the
+/// keyboard payload parse and the keyboard-follow coordination gate, plus the
+/// command counts and order the timeline relies on. Expectations are spelled
+/// as literals so any change to a rule turns these red.
+
+@Suite struct TimelineViewportPublicationDecisionTests {
+    private func viewport(content: CGFloat = 2000, container: CGFloat = 800,
+                          top: CGFloat = 80, bottom: CGFloat = 120, offset: CGFloat = 0) -> TimelineViewport {
+        TimelineViewport(contentHeight: content, containerHeight: container,
+            topInset: top, bottomInset: bottom, offsetY: offset)
+    }
+    private func outcome(published: TimelineViewport, next: TimelineViewport,
+                         keyboardTransitionActive: Bool = false,
+                         tailChanged: Bool = false) -> TimelineViewportPublicationDecision.Outcome {
+        TimelineViewportPublicationDecision.outcome(published: published, next: next,
+            keyboardTransitionActive: keyboardTransitionActive, tailChanged: tailChanged)
+    }
+
+    @Test func offsetOnlySamplesNeverPublish() {
+        // The rendered page does not depend on the native offset; restoration
+        // reads it straight from the sample box.
+        let published = viewport(offset: 1320)
+        #expect(outcome(published: published, next: viewport(offset: 1000)) == .ignore)
+        #expect(outcome(published: published, next: viewport(offset: 1320.25)) == .ignore)
+    }
+
+    @Test func firstMeasuredSampleWasAlwaysPublished() {
+        // Opening and the instant return gate on `viewport.isMeasured`.
+        let unmeasured = TimelineViewport()
+        #expect(!unmeasured.isMeasured)
+        #expect(outcome(published: unmeasured, next: viewport()) == .publish)
+        // The case rule ① exists for: the sample already carries the content
+        // height and inset but no visible height yet, so it differs from the
+        // measured one by visible height alone. The first measurement must
+        // still publish — even inside a transition window (① wins over ④),
+        // otherwise opening waits for a second callback that may not come.
+        let emptyViewport = TimelineViewport(contentHeight: 2000, containerHeight: 80,
+            topInset: 80, bottomInset: 0, offsetY: 0)
+        #expect(!emptyViewport.isMeasured)
+        let measured = viewport()
+        #expect(measured.contentHeight == emptyViewport.contentHeight && measured.topInset == emptyViewport.topInset)
+        #expect(outcome(published: emptyViewport, next: measured) == .publish)
+        #expect(outcome(published: emptyViewport, next: measured,
+            keyboardTransitionActive: true, tailChanged: false) == .publish)
+        // A still-unmeasured sample is not a first measurement.
+        #expect(outcome(published: emptyViewport,
+            next: TimelineViewport(contentHeight: 2000, containerHeight: 40,
+                topInset: 80, bottomInset: 0, offsetY: 0)) == .ignore)
+    }
+
+    @Test func contentHeightChangePublishesDuringATransition() {
+        // Streaming growth moves the follow target; withholding it while the
+        // keyboard animates would stall following, not just the body.
+        let published = viewport()
+        #expect(outcome(published: published, next: viewport(content: 2020),
+            keyboardTransitionActive: true) == .publish)
+    }
+
+    @Test func topInsetChangePublishesDuringATransition() {
+        // The reader's reference line moved; that is not the keyboard.
+        let published = viewport()
+        #expect(outcome(published: published, next: viewport(top: 92),
+            keyboardTransitionActive: true) == .publish)
+    }
+
+    @Test func keyboardVisibleHeightOnlyChangeIsWithheldUntilTheProbeFlips() {
+        let published = viewport() // visibleHeight 600
+        // The keyboard shrinks the container (mobile drawer path) or grows the
+        // bottom inset (iPad path) frame by frame; nothing about the content
+        // changed, so publishing it per frame is the body storm rule ④ removes.
+        let keyboardSample = viewport(container: 500) // visibleHeight 300
+        #expect(outcome(published: published, next: keyboardSample,
+            keyboardTransitionActive: true) == .ignore)
+        // The end probe flipping during the same transition is the bottom
+        // truth moving: publish the sample with it.
+        #expect(outcome(published: published, next: keyboardSample,
+            keyboardTransitionActive: true, tailChanged: true) == .publish)
+        // Outside a transition the same visible-height change is a rotation or
+        // split-view resize and must publish.
+        #expect(outcome(published: published, next: keyboardSample) == .publish)
+    }
+
+    @Test func theSettledSampleReconcilesTheWithheldHeight() {
+        // Rule ⑤ is this same decision evaluated with the window closed: the
+        // withheld height lands and `lastRequest` dedup cannot stay pinned to
+        // a pre-keyboard value.
+        let published = viewport()
+        let settled = viewport(container: 500)
+        #expect(outcome(published: published, next: settled,
+            keyboardTransitionActive: true) == .ignore)
+        #expect(outcome(published: published, next: settled,
+            keyboardTransitionActive: false) == .publish)
+    }
+}
+
+@Suite struct TimelineKeyboardEventTests {
+    /// The payload keys are deliberately spelled as the documented raw
+    /// strings: the production parse reads those same strings (ClientCore also
+    /// builds for macOS, where the `UIResponder` constants do not exist), so a
+    /// typo in either place fails these assertions.
+    private func payload(duration: NSNumber? = NSNumber(value: 0.25),
+                         curve: NSNumber? = NSNumber(value: 7),
+                         begin: CGRect? = nil, end: CGRect? = nil,
+                         isLocal: NSNumber? = NSNumber(value: true)) -> [AnyHashable: Any] {
+        var userInfo: [AnyHashable: Any] = [:]
+        if let duration { userInfo["UIKeyboardAnimationDurationUserInfoKey"] = duration }
+        if let curve { userInfo["UIKeyboardAnimationCurveUserInfoKey"] = curve }
+        if let begin { userInfo["UIKeyboardFrameBeginUserInfoKey"] = NSValue(cgRect: begin) }
+        if let end { userInfo["UIKeyboardFrameEndUserInfoKey"] = NSValue(cgRect: end) }
+        if let isLocal { userInfo["UIKeyboardIsLocalUserInfoKey"] = isLocal }
+        return userInfo
+    }
+    private let onScreen = CGRect(x: 0, y: 564, width: 390, height: 336)
+    private let offScreen = CGRect(x: 0, y: 900, width: 390, height: 336)
+
+    @Test func willShowCarriesItsDirectionWithoutFrames() {
+        let event = TimelineKeyboardEvent(source: .willShow, userInfo: payload())
+        #expect(event.direction == .showing)
+        #expect(event.duration == 0.25)
+        #expect(event.curve == .privateSpring)
+        #expect(event.isLocal)
+        #expect(!event.isFinal)
+    }
+
+    @Test func willHideCarriesItsDirectionWithoutFrames() {
+        let event = TimelineKeyboardEvent(source: .willHide, userInfo: payload(duration: NSNumber(value: 0.35)))
+        #expect(event.direction == .hiding)
+        #expect(event.duration == 0.35)
+    }
+
+    @Test func frameComparisonNamesTheDirection() {
+        // Appearance: the top edge travels up from below the screen.
+        let showing = TimelineKeyboardEvent(source: .willChangeFrame,
+            userInfo: payload(begin: offScreen, end: onScreen))
+        #expect(showing.direction == .showing)
+        // Dismissal: it travels back down.
+        let hiding = TimelineKeyboardEvent(source: .willChangeFrame,
+            userInfo: payload(begin: onScreen, end: offScreen))
+        #expect(hiding.direction == .hiding)
+        // A height-only change (the predictive row, a keyboard swap) keeps the
+        // top edge: not an appearance or a dismissal.
+        let resized = TimelineKeyboardEvent(source: .willChangeFrame,
+            userInfo: payload(begin: onScreen, end: CGRect(x: 0, y: 564, width: 390, height: 300)))
+        #expect(resized.direction == .unchanged)
+    }
+
+    @Test func emptyAndMissingFramesStaySafe() {
+        // Some systems report a zero begin frame on the first presentation.
+        let firstPresentation = TimelineKeyboardEvent(source: .willChangeFrame,
+            userInfo: payload(begin: .zero, end: onScreen))
+        #expect(firstPresentation.direction == .showing)
+        let teardown = TimelineKeyboardEvent(source: .willChangeFrame,
+            userInfo: payload(begin: onScreen, end: .zero))
+        #expect(teardown.direction == .hiding)
+        #expect(TimelineKeyboardEvent(source: .willChangeFrame,
+            userInfo: payload(begin: .zero, end: .zero)).direction == .unchanged)
+        #expect(TimelineKeyboardEvent(source: .willChangeFrame, userInfo: payload()).direction == .unchanged)
+        #expect(TimelineKeyboardEvent(source: .willChangeFrame,
+            userInfo: payload(begin: onScreen)).direction == .unchanged)
+    }
+
+    @Test func missingFieldsFallBackToTheDocumentedDefaults() {
+        let event = TimelineKeyboardEvent(source: .willChangeFrame, userInfo: [:])
+        #expect(event.duration == 0)
+        #expect(event.isFinal)
+        #expect(event.curve == .easeInOut)
+        #expect(event.isLocal)
+        // A missing duration is a no-animation change: there is no transition
+        // window to coordinate with.
+        #expect(TimelineKeyboardEvent(source: .willShow,
+            userInfo: payload(duration: NSNumber(value: 0))).isFinal)
+        #expect(!TimelineKeyboardEvent(source: .willShow,
+            userInfo: payload(duration: NSNumber(value: 0.01))).isFinal)
+        #expect(!TimelineKeyboardEvent(source: .willShow,
+            userInfo: payload(isLocal: NSNumber(value: false))).isLocal)
+        // A missing curve can never be parsed as the private spring.
+        #expect(TimelineKeyboardEvent(source: .willShow,
+            userInfo: payload(curve: nil)).curve == .easeInOut)
+    }
+
+    @Test func curvesMapToTheirDocumentedRawValues() {
+        let expected: [(Int, TimelineKeyboardEvent.Curve)] = [
+            (0, .easeInOut), (1, .easeIn), (2, .easeOut), (3, .linear), (7, .privateSpring),
+        ]
+        for (raw, curve) in expected {
+            #expect(TimelineKeyboardEvent.Curve(rawValue: raw) == curve)
+            #expect(TimelineKeyboardEvent(source: .willShow,
+                userInfo: payload(curve: NSNumber(value: raw))).curve == curve)
+        }
+        #expect(TimelineKeyboardEvent.Curve(rawValue: 99) == .unknown(99))
+    }
+}
+
+@Suite struct TimelineKeyboardFollowPolicyTests {
+    private func context(_ event: TimelineKeyboardFollowPolicy.Event,
+                         isAtBottom: Bool = true,
+                         mode: TimelineScrollState.Mode = .following,
+                         phase: TimelineScrollState.Phase = .idle,
+                         navigationIsSuspended: Bool = false,
+                         hasPendingRequest: Bool = false) -> TimelineKeyboardFollowPolicy.Context {
+        TimelineKeyboardFollowPolicy.Context(event: event, isAtBottom: isAtBottom, mode: mode,
+            phase: phase, navigationIsSuspended: navigationIsSuspended, hasPendingRequest: hasPendingRequest)
+    }
+    private func action(_ context: TimelineKeyboardFollowPolicy.Context) -> TimelineKeyboardFollowPolicy.Action {
+        TimelineKeyboardFollowPolicy.action(for: context)
+    }
+
+    @Test func showAtTheBottomRequestsOneKeyboardMatchedReturn() {
+        #expect(action(context(.willShow)) == .requestReturn(.keyboardMatched))
+    }
+
+    @Test func showOutOfViewLeavesThePositionAlone() {
+        // Reading in history: the keyboard covers the bottom but the reader is
+        // not there, so nothing moves.
+        #expect(action(context(.willShow, isAtBottom: false)) == .none)
+    }
+
+    @Test func hideAtTheBottomSuppressesProgrammaticScrolling() {
+        // The system clamp carries the content down with the keyboard; any
+        // programmatic scroll would be a second animation fighting it.
+        #expect(action(context(.willHide)) == .suppressProgrammatic)
+    }
+
+    @Test func hideOutOfViewDoesNothing() {
+        #expect(action(context(.willHide, isAtBottom: false)) == .none)
+    }
+
+    @Test func draggingOwnsEveryTransition() {
+        // The K4 interactive dismissal and any other gesture-driven scroll:
+        // every non-idle phase answers .none for both directions, even with
+        // otherwise-favorable inputs.
+        for phase in [TimelineScrollState.Phase.tracking, .interacting, .decelerating, .animating] {
+            #expect(action(context(.willShow, phase: phase)) == .none)
+            #expect(action(context(.willHide, phase: phase)) == .none)
+            #expect(action(context(.transitionEnded, isAtBottom: false,
+                phase: phase, hasPendingRequest: true)) == .none)
+        }
+    }
+
+    @Test func aSuspendedDrawerIgnoresTheKeyboard() {
+        for event in [TimelineKeyboardFollowPolicy.Event.willShow, .willHide, .transitionEnded] {
+            #expect(action(context(event, isAtBottom: false,
+                navigationIsSuspended: true, hasPendingRequest: true)) == .none)
+        }
+    }
+
+    @Test func onlyASteadyFollowingTimelineFollowsTheKeyboard() {
+        // Reading — including a presented interaction card — owns the
+        // position...
+        #expect(action(context(.willShow, mode: .reading)) == .none)
+        #expect(action(context(.willHide, mode: .reading)) == .none)
+        // ...and an in-flight return needs no second opinion.
+        #expect(action(context(.willShow, mode: .returning)) == .none)
+        #expect(action(context(.willHide, mode: .returning)) == .none)
+    }
+
+    @Test func theEndRecheckOnlyFiresWhenTheReturnIsStillOwed() {
+        // The window closed with the bottom unreached and a return withheld:
+        // release it for exactly one make-up landing.
+        #expect(action(context(.transitionEnded, isAtBottom: false, hasPendingRequest: true)) == .recheckAtEnd)
+        // Already at the bottom again after the clamp: nothing to make up.
+        #expect(action(context(.transitionEnded, isAtBottom: true, hasPendingRequest: true)) == .none)
+        // Nothing owed.
+        #expect(action(context(.transitionEnded, isAtBottom: false, hasPendingRequest: false)) == .none)
+        // The reader is not at the bottom by choice.
+        #expect(action(context(.transitionEnded, isAtBottom: false,
+            mode: .reading, hasPendingRequest: false)) == .none)
+    }
+}
+
+/// End-to-end traces: the policy decision, the transition window and the
+/// scroll state's command production together, per the six scenarios the
+/// audit lists. Command counts and their issuing moment are asserted directly.
+@Suite struct TimelineKeyboardFollowCoordinationTests {
+    private func viewport(offset: CGFloat = 0, height: CGFloat = 2000, container: CGFloat = 800) -> TimelineViewport {
+        TimelineViewport(contentHeight: height, containerHeight: container, topInset: 80, bottomInset: 120, offsetY: offset)
+    }
+    private func visibility(_ state: inout TimelineScrollState, end: Bool, near: Bool? = nil) {
+        state.tailVisibilityChanged(.near, visible: near ?? end)
+        state.tailVisibilityChanged(.end, visible: end)
+    }
+    private func nextCommand(_ state: inout TimelineScrollState) throws -> TimelineScrollState.BottomCommand {
+        // The macro captures its expression immutably; take the mutating
+        // result out of the macro first (same as TimelineNavigationTests).
+        let request = try #require(state.pendingBottomRequest)
+        let command = state.begin(request)
+        return try #require(command)
+    }
+    private func openedAtBottom() throws -> TimelineScrollState {
+        var state = TimelineScrollState()
+        state.geometryChanged(viewport(offset: 1320))
+        visibility(&state, end: true)
+        state.open()
+        let command = try nextCommand(&state)
+        let completed = state.complete(command)
+        #expect(completed)
+        return state
+    }
+    private func action(_ event: TimelineKeyboardFollowPolicy.Event, _ state: TimelineScrollState,
+                        isAtBottom: Bool? = nil) -> TimelineKeyboardFollowPolicy.Action {
+        TimelineKeyboardFollowPolicy.action(for: .init(event: event,
+            isAtBottom: isAtBottom ?? state.tail.isAtBottom, mode: state.mode, phase: state.phase,
+            navigationIsSuspended: state.navigationIsSuspended,
+            hasPendingRequest: state.pendingBottomRequest != nil))
+    }
+
+    @Test func showAtTheBottomBeginsOneMatchedCommandInTheKeyboardTurn() throws {
+        var state = try openedAtBottom()
+        #expect(action(.willShow, state) == .requestReturn(.keyboardMatched))
+        let keyboardReturn = state.beginKeyboardReturn()
+        let command = try #require(keyboardReturn)
+        #expect(command.keyboardMatched && !command.instant)
+        // Beginning in the notification's own turn consumes the request, so
+        // the 24ms coalescing task has nothing to restart: one command only.
+        #expect(state.pendingBottomRequest == nil)
+        // The frame stream while the container shrinks is withheld (S2) and
+        // the tail probe's flip during the transition cannot start the spring
+        // (F11) while the window is open.
+        let shrinking = viewport(offset: 1320, container: 600)
+        #expect(TimelineViewportPublicationDecision.outcome(published: state.viewport, next: shrinking,
+            keyboardTransitionActive: true, tailChanged: false) == .ignore)
+        state.setKeyboardTransitionActive(true)
+        visibility(&state, end: false)
+        #expect(state.pendingBottomRequest == nil)
+        // The matched return lands with the keyboard animation's end.
+        let landed = state.complete(command)
+        #expect(landed && state.mode == .following)
+        visibility(&state, end: true)
+        // Window close: the settled height lands, the bottom is reached, and
+        // no make-up is owed.
+        #expect(TimelineViewportPublicationDecision.outcome(published: state.viewport, next: shrinking,
+            keyboardTransitionActive: false, tailChanged: false) == .publish)
+        state.geometryChanged(shrinking)
+        state.setKeyboardTransitionActive(false)
+        #expect(action(.transitionEnded, state) == .none)
+        #expect(state.pendingBottomRequest == nil)
+    }
+
+    @Test func theEndRecheckLandsOneMakeUpWhenTheBottomIsStillUnreached() throws {
+        var state = try openedAtBottom()
+        let keyboardReturn = state.beginKeyboardReturn()
+        let command = try #require(keyboardReturn)
+        state.setKeyboardTransitionActive(true)
+        let shrinking = viewport(offset: 1220, container: 600)
+        visibility(&state, end: false)
+        let matchedLanded = state.complete(command)
+        #expect(matchedLanded)
+        // The probe never flipped back (a stubby remaining gap): the settled
+        // sample publishes, the recheck sees the return still owed, and
+        // exactly one normal make-up return follows.
+        state.geometryChanged(shrinking)
+        state.setKeyboardTransitionActive(false)
+        #expect(action(.transitionEnded, state) == .recheckAtEnd)
+        state.requestBottom()
+        let makeUp = try nextCommand(&state)
+        #expect(!makeUp.keyboardMatched && !makeUp.instant)
+        let makeUpLanded = state.complete(makeUp)
+        #expect(makeUpLanded && state.mode == .following)
+        // Once landed, the same layout does not request again (dedup intact).
+        state.geometryChanged(shrinking)
+        #expect(state.pendingBottomRequest == nil)
+    }
+
+    @Test func hideAtTheBottomSuppressesTheSpringUntilTheWindowCloses() throws {
+        var state = try openedAtBottom()
+        #expect(action(.willHide, state) == .suppressProgrammatic)
+        state.setKeyboardTransitionActive(true)
+        // The clamp grows the container; the withheld sample and the probe
+        // flip cannot produce a command during the window.
+        let grown = viewport(offset: 1320, container: 1000)
+        #expect(TimelineViewportPublicationDecision.outcome(published: state.viewport, next: grown,
+            keyboardTransitionActive: true, tailChanged: false) == .ignore)
+        visibility(&state, end: false)
+        #expect(state.pendingBottomRequest == nil)
+        // The window closes: the settled height lands and the still-unreached
+        // bottom is made up exactly once.
+        state.geometryChanged(grown)
+        state.setKeyboardTransitionActive(false)
+        #expect(action(.transitionEnded, state) == .recheckAtEnd)
+        state.requestBottom()
+        let makeUp = try nextCommand(&state)
+        #expect(!makeUp.keyboardMatched && !makeUp.instant)
+        let makeUpLanded = state.complete(makeUp)
+        #expect(makeUpLanded && state.mode == .following)
+    }
+
+    @Test func readingIgnoresBothDirections() throws {
+        var state = try openedAtBottom()
+        state.browseHistory()
+        #expect(action(.willShow, state, isAtBottom: false) == .none)
+        #expect(action(.willHide, state, isAtBottom: false) == .none)
+        #expect(action(.transitionEnded, state, isAtBottom: false) == .none)
+        // Nothing the keyboard does can move the reader.
+        #expect(state.pendingBottomRequest == nil && !state.returningToBottom)
+    }
+
+    @Test func theOpeningInstantReturnIsNeverConsumedByAKeyboardReturn() throws {
+        var state = TimelineScrollState()
+        state.geometryChanged(viewport())
+        visibility(&state, end: false)
+        state.open()
+        // While the opening return is still pending the gate refuses to touch
+        // it (mode == .returning is not steady following).
+        #expect(action(.willShow, state, isAtBottom: true) == .none)
+        let opening = try nextCommand(&state)
+        #expect(opening.instant && !opening.keyboardMatched)
+        let openingLanded = state.complete(opening)
+        #expect(openingLanded)
+        // Every later keyboard return is an animated, matched one.
+        let laterReturn = state.beginKeyboardReturn()
+        let keyboard = try #require(laterReturn)
+        #expect(!keyboard.instant && keyboard.keyboardMatched)
+    }
+
+    @Test func aSuspendedDrawerWithholdsAndResumes() throws {
+        var state = try openedAtBottom()
+        state.setNavigationSuspended(true)
+        #expect(action(.willShow, state, isAtBottom: true) == .none)
+        #expect(action(.willHide, state, isAtBottom: true) == .none)
+        state.requestBottom()
+        #expect(state.pendingBottomRequest == nil)
+        state.setNavigationSuspended(false)
+        #expect(state.pendingBottomRequest != nil)
+    }
+
+    @Test func aDragOwnsTheInteractiveDismissal() throws {
+        var state = try openedAtBottom()
+        state.phaseChanged(.tracking, viewport: viewport(offset: 1320))
+        state.phaseChanged(.interacting, viewport: viewport(offset: 900))
+        #expect(action(.willHide, state) == .none)
+        #expect(state.mode == .reading && state.pendingBottomRequest == nil)
+    }
+
+    @Test func theHoldWithholdsOnlyWhileItIsSet() throws {
+        var state = try openedAtBottom()
+        // Away from the bottom, so only the hold can be what withholds.
+        visibility(&state, end: false)
+        state.setKeyboardTransitionActive(true)
+        state.geometryChanged(viewport(offset: 1220, height: 2200))
+        #expect(state.pendingBottomRequest == nil)
+        // Releasing the hold lets the same conditions produce their request.
+        state.setKeyboardTransitionActive(false)
+        #expect(state.pendingBottomRequest != nil)
+    }
+
+    /// The six audit combinations: following + tail visible / reading /
+    /// opening instant / drawer suspended / drag, each under show and hide.
+    /// Exactly the following-at-the-bottom branch issues a command, and only
+    /// on show.
+    @Test func showAndHideIssueCommandsOnlyInTheFollowingAtBottomBranch() throws {
+        for direction in [TimelineKeyboardFollowPolicy.Event.willShow, TimelineKeyboardFollowPolicy.Event.willHide] {
+            for scenario in TransitionScenario.allCases {
+                var state = try scenario.makeState()
+                let decision = action(direction, state)
+                #expect(decision == scenario.expectedAction(for: direction))
+                var commands = 0
+                switch decision {
+                case .requestReturn(.keyboardMatched):
+                    if state.beginKeyboardReturn() != nil { commands += 1 }
+                case .suppressProgrammatic:
+                    state.setKeyboardTransitionActive(true)
+                case .none, .recheckAtEnd:
+                    break
+                }
+                #expect(commands == scenario.expectedCommands(for: direction))
+            }
+        }
+        // The two branches that do act: the matched return on show, the
+        // suppression window on hide.
+        #expect(action(.willShow, try TransitionScenario.followingAtBottom.makeState()) == .requestReturn(.keyboardMatched))
+        #expect(action(.willHide, try TransitionScenario.followingAtBottom.makeState()) == .suppressProgrammatic)
+    }
+}
+
+private enum TransitionScenario: CaseIterable {
+    case followingAtBottom
+    case reading
+    case openingPending
+    case drawerSuspended
+    case dragging
+
+    private func viewport(offset: CGFloat = 0, height: CGFloat = 2000, container: CGFloat = 800) -> TimelineViewport {
+        TimelineViewport(contentHeight: height, containerHeight: container, topInset: 80, bottomInset: 120, offsetY: offset)
+    }
+    func makeState() throws -> TimelineScrollState {
+        switch self {
+        case .openingPending:
+            var state = TimelineScrollState()
+            state.geometryChanged(viewport(offset: 1320))
+            state.tailVisibilityChanged(.near, visible: true)
+            state.tailVisibilityChanged(.end, visible: true)
+            state.open()
+            return state
+        case .reading, .drawerSuspended, .dragging, .followingAtBottom:
+            var state = TimelineScrollState()
+            state.geometryChanged(viewport(offset: 1320))
+            state.tailVisibilityChanged(.near, visible: true)
+            state.tailVisibilityChanged(.end, visible: true)
+            state.open()
+            let request = try #require(state.pendingBottomRequest)
+            let pendingCommand = state.begin(request)
+            let command = try #require(pendingCommand)
+            let completed = state.complete(command)
+            #expect(completed)
+            switch self {
+            case .reading: state.browseHistory()
+            case .drawerSuspended: state.setNavigationSuspended(true)
+            case .dragging:
+                state.phaseChanged(.tracking, viewport: viewport(offset: 1320))
+                state.phaseChanged(.interacting, viewport: viewport(offset: 900))
+            case .followingAtBottom, .openingPending: break
+            }
+            return state
+        }
+    }
+    func expectedAction(for direction: TimelineKeyboardFollowPolicy.Event) -> TimelineKeyboardFollowPolicy.Action {
+        guard self == .followingAtBottom else { return .none }
+        return direction == .willShow ? .requestReturn(.keyboardMatched) : .suppressProgrammatic
+    }
+    func expectedCommands(for direction: TimelineKeyboardFollowPolicy.Event) -> Int {
+        expectedAction(for: direction) == .requestReturn(.keyboardMatched) ? 1 : 0
+    }
+}

@@ -35,4 +35,27 @@ final class V2ConnectivityMonitor {
     }
 
     func stop() { monitor?.cancel(); monitor = nil }
+
+    /// Waits (bounded) for a usable path before a connection is opened.
+    /// A path that is already reported offline returns false immediately.
+    /// `.unknown` is only a missing hint, so when the window expires while the
+    /// path still has not reported, the caller may try anyway: availability is
+    /// a scheduling hint, never proof that the server is reachable.
+    func waitUntilOnline(timeout: Duration = .seconds(2)) async -> Bool {
+        if status.availability != .unknown { return status.availability == .online }
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while ContinuousClock.now < deadline {
+            if Task.isCancelled { return false }
+            do { try await Task.sleep(for: Self.readinessPollInterval) }
+            catch { return false }
+            switch status.availability {
+            case .online: return true
+            case .offline: return false
+            case .unknown: continue
+            }
+        }
+        return status.availability != .offline
+    }
+
+    private static let readinessPollInterval: Duration = .milliseconds(50)
 }

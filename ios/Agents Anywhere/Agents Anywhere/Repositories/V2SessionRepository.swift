@@ -1,7 +1,11 @@
 import Foundation
 
 nonisolated struct V2SessionCachePolicy {
-    var maximumSessions = 8
+    /// Sessions resident at once, sized to the recently active working set so
+    /// returning to a session after a background or app switch is served from
+    /// cache instead of the network. The local store's per-file (64MB) and
+    /// total (128MB) budgets plus the LRU eviction below still bound disk use.
+    var maximumSessions = 20
     var maximumTimelineItems = 1000
     var catalogLifetime: TimeInterval = 30
 }
@@ -18,6 +22,9 @@ final class V2SessionRepository {
     private let policy: V2SessionCachePolicy
     private let now: () -> Date
     private let sleep: (Duration) async throws -> Void
+    /// Bounded window an attempt waits for the path monitor's first report
+    /// before opening a socket anyway (see `waitUntilConnectionReady`).
+    private let connectionReadinessWindow: Duration
     private var entries: [V2SessionID: Entry] = [:]
     private var accessCounter = 0
     private var suspended = false
@@ -30,7 +37,8 @@ final class V2SessionRepository {
         policy: V2SessionCachePolicy = V2SessionCachePolicy(),
         localStore: V2LocalStore? = nil,
         now: @escaping () -> Date = Date.init,
-        sleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+        sleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        connectionReadinessWindow: Duration = .milliseconds(1500)
     ) {
         self.scope = scope
         self.detail = detail
@@ -39,7 +47,14 @@ final class V2SessionRepository {
         self.localStore = localStore
         self.now = now
         self.sleep = sleep
+        self.connectionReadinessWindow = connectionReadinessWindow
     }
+
+    /// Bound on how long a not-ready path delays one connection attempt.
+    private static let readinessProbeInterval: Duration = .milliseconds(100)
+    /// Retry delay while the path itself is not usable, instead of the longer
+    /// transient backoff that a reachable server earns.
+    private static let notReadyRetryDelay: Duration = .milliseconds(500)
 
     var cachedSessionIDs: Set<V2SessionID> { Set(entries.keys) }
 
@@ -304,7 +319,9 @@ final class V2SessionRepository {
         emit(entry)
         // Takeover was confirmed by the write response. A failed following read
         // must not invite a duplicate toggle or claim the write was rejected.
-        do { try await reconcile(entry) }
+        // The read must also start after the write: joining a round that was
+        // already in flight could apply live facts that predate it.
+        do { try await reconcile(entry, requiringRoundAfter: entry.recoverySequence) }
         catch { if isCurrent(entry) { entry.error = V2ClientFailure(error); emit(entry) } }
     }
 
@@ -323,10 +340,11 @@ final class V2SessionRepository {
         let entry = entry(for: sessionId)
         _ = try await interactions.respond(sessionId: sessionId, noticeId: noticeId, actionId: actionId, input: input)
         try requireCurrent(entry)
-        // Response acceptance is not notice resolution; wait for authoritative live facts.
+        // Response acceptance is not notice resolution; wait for authoritative
+        // live facts, read after the write (never joining an older round).
         entry.projection?.markStale()
         emit(entry)
-        do { try await reconcile(entry) }
+        do { try await reconcile(entry, requiringRoundAfter: entry.recoverySequence) }
         catch {
             // The action already succeeded. A failed read must not turn an
             // accepted approval into a retryable write failure in the UI.
@@ -339,7 +357,7 @@ final class V2SessionRepository {
         let entry = entry(for: sessionId)
         _ = try await detail.sync(sessionId: sessionId)
         try requireCurrent(entry)
-        try await reconcile(entry)
+        try await reconcile(entry, requiringRoundAfter: entry.recoverySequence)
     }
 
     func applyMetadata(_ sessions: [V2SessionMeta]) {
@@ -368,7 +386,7 @@ final class V2SessionRepository {
 
     func resume() {
         suspended = false
-        for entry in entries.values { start(entry) }
+        for entry in entries.values { start(entry, catchUp: true) }
     }
 
     func updateConnectivity(_ status: V2NetworkStatus) {
@@ -384,7 +402,7 @@ final class V2SessionRepository {
                 entry.historyTask = nil
                 entry.connection = .offline
             } else if wasOffline {
-                start(entry)
+                start(entry, catchUp: true)
             }
             emit(entry)
         }
@@ -437,7 +455,7 @@ final class V2SessionRepository {
         return try await task.value
     }
 
-    private func start(_ entry: Entry) {
+    private func start(_ entry: Entry, catchUp: Bool = false) {
         guard isCurrent(entry), !entry.model.isLocalCreation, !suspended, network.availability != .offline,
               !entry.observers.isEmpty, entry.connectionTask == nil else { return }
         let connectionID = UUID()
@@ -450,6 +468,15 @@ final class V2SessionRepository {
             var attempt = 0
             while self.isCurrent(entry), entry.connectionID == connectionID, !Task.isCancelled {
                 do {
+                    // A path that is known to be down must not burn the first
+                    // attempt. A missing monitor report only delays the attempt
+                    // for a bounded window; request success stays the only
+                    // proof that the server is reachable.
+                    guard await self.waitUntilConnectionReady() else {
+                        do { try await self.sleep(Self.notReadyRetryDelay) }
+                        catch { return }
+                        continue
+                    }
                     entry.connection = attempt == 0 ? .connecting : .reconnecting
                     self.emit(entry)
                     _ = try await self.load(sessionId: entry.id)
@@ -457,13 +484,23 @@ final class V2SessionRepository {
                         _ = try await self.hydrate(entry)
                         entry.needsSnapshot = false
                     }
+                    if catchUp, self.beginCatchUp(entry) {
+                        // Ordering only: let the incremental recovery reads reach
+                        // the transport before the socket ticket is requested.
+                        // The round keeps running on its own.
+                        await Task.yield()
+                    }
                     let events = try await self.detail.updates(sessionId: entry.id, clientId: "ios-session-\(connectionID)")
                     for try await event in events {
                         try self.requireCurrent(entry)
                         guard entry.connectionID == connectionID else { return }
                         if event.type == "session.subscribed" {
-                            // The socket is registered before recovery, closing the snapshot/subscribe race.
-                            try await self.reconcile(entry)
+                            // The socket is registered before recovery, closing
+                            // the snapshot/subscribe race. Only a round launched
+                            // after this frame can stand in for that read; an
+                            // older in-flight round is awaited, then replaced.
+                            let sequenceAtSubscribe = entry.recoverySequence
+                            try await self.reconcile(entry, requiringRoundAfter: sequenceAtSubscribe)
                             try self.requireCurrent(entry)
                             guard entry.connectionID == connectionID else { return }
                             entry.connection = .connected
@@ -488,17 +525,41 @@ final class V2SessionRepository {
                     entry.connection = .reconnecting
                     self.emit(entry)
                     attempt += 1
-                    do { try await self.sleep(.seconds(min(1 << min(attempt - 1, 4), 15))) }
+                    // Failures while the path itself is not usable retry at a
+                    // short fixed delay instead of the long transient backoff.
+                    let delay: Duration = self.network.availability == .online
+                        ? .seconds(min(1 << min(attempt - 1, 4), 15))
+                        : Self.notReadyRetryDelay
+                    do { try await self.sleep(delay) }
                     catch { return }
                 }
             }
         }
     }
 
+    /// Bounded wait for a usable path before an attempt opens a socket. A path
+    /// that is positively offline never issues requests. When the monitor has
+    /// not reported yet (`.unknown`) the attempt is delayed only for the
+    /// window: path status is a scheduling hint, not proof of reachability.
+    private func waitUntilConnectionReady() async -> Bool {
+        if network.availability == .online { return true }
+        var remaining = connectionReadinessWindow
+        while remaining > .zero, !Task.isCancelled {
+            if network.availability == .online { return true }
+            if network.availability == .offline { return false }
+            do { try await sleep(Self.readinessProbeInterval) }
+            catch { return false }
+            remaining -= Self.readinessProbeInterval
+        }
+        return !Task.isCancelled && network.availability != .offline
+    }
+
     private func receive(_ event: V2SessionEvent, entry: Entry) async throws {
         guard event.sessionId == entry.id else { return }
         if let pending = entry.loadTask { _ = try await pending.value }
-        if let pending = entry.recoveryTask { try await pending.value }
+        // Let an in-flight recovery finish before merging this frame; a failed
+        // round has already been quieted or reported to its own caller.
+        if let pending = entry.recoveryTask { _ = await pending.value }
         if event.type == "session.refetch_required" || event.sequence > (entry.projection?.sequence ?? 0) + 1 {
             try await reconcile(entry)
         }
@@ -524,18 +585,103 @@ final class V2SessionRepository {
         }
     }
 
-    private func reconcile(_ entry: Entry) async throws {
-        if let task = entry.recoveryTask { return try await task.value }
-        let version = entry.connectionID
-        let task = Task { [self] in
-            defer { if entry.connectionID == version { entry.recoveryTask = nil } }
+    private func reconcile(_ entry: Entry, requiringRoundAfter sequence: Int? = nil) async throws {
+        if let error = await performRecovery(entry, requiringRoundAfter: sequence) { throw error }
+    }
+
+    /// Runs, or joins, the single recovery round for this entry.
+    ///
+    /// Rounds are owned by the entry's recovery epoch rather than by a socket
+    /// generation, so the socket handshake can start, or restart, while a
+    /// foreground catch-up is in flight without invalidating it. A round that
+    /// a `stop()` superseded finishes quietly and applies nothing, and a later
+    /// caller starts its own round instead of inheriting that outcome.
+    ///
+    /// `requiringRoundAfter` is the recovery sequence observed before a socket
+    /// subscribed: only a round launched after that point can prove the
+    /// snapshot/subscribe race is closed, so an older in-flight round is
+    /// awaited quietly and a fresh round runs instead.
+    private func performRecovery(_ entry: Entry, requiringRoundAfter sequence: Int? = nil) async -> Error? {
+        if let task = entry.recoveryTask {
+            let joins = sequence.map { entry.recoveryTaskSequence > $0 } ?? true
+            if joins { return await task.value }
+            _ = await task.value
+        }
+        launchRecoveryRound(entry)
+        guard let task = entry.recoveryTask else { return nil }
+        return await task.value
+    }
+
+    /// Foreground catch-up: start the recovery round before the socket
+    /// handshake, so incremental events and live facts never queue behind the
+    /// ticket and subscribe round trips. Failure stays internal; the socket's
+    /// post-subscribe recovery is the authority and is idempotent with this
+    /// round. Returns whether a round was launched.
+    @discardableResult
+    private func beginCatchUp(_ entry: Entry) -> Bool {
+        guard isCurrent(entry), !suspended, network.availability != .offline,
+              entry.projection != nil, entry.recoveryTask == nil else { return false }
+        launchRecoveryRound(entry)
+        return true
+    }
+
+    private func launchRecoveryRound(_ entry: Entry) {
+        entry.recoverySequence += 1
+        let sequence = entry.recoverySequence
+        let epoch = entry.recoveryEpoch
+        entry.recoveryTaskSequence = sequence
+        entry.recoveryTask = Task { [self] () -> Error? in
+            let outcome = await self.runRecovery(entry, epoch: epoch)
+            // Only the round that owns the slot may clear it, so a superseded
+            // round can never erase a newer round's registration.
+            if entry.recoveryEpoch == epoch, entry.recoveryTaskSequence == sequence {
+                entry.recoveryTask = nil
+            }
+            return outcome
+        }
+    }
+
+    /// One recovery round, owned by `epoch`:
+    /// - reads durable events and authoritative live facts concurrently,
+    /// - applies recovered events first so a meta update they carry lands
+    ///   before the runtimeId check inside `applyLive`,
+    /// - captures the projection barrier before either read starts, so socket
+    ///   frames received during the window are never suppressed by an older
+    ///   read.
+    ///
+    /// The round never writes `entry.error`; it reports failure to its caller.
+    /// The socket path surfaces it, the catch-up path ignores it.
+    private func runRecovery(_ entry: Entry, epoch: UUID) async -> Error? {
+        do {
+            try requireRecoveryEpoch(entry, epoch: epoch)
+            try requireNetwork()
             if entry.projection == nil { _ = try await hydrate(entry) }
-            let cursor = entry.projection!.data.cursor
+            try requireCurrent(entry)
+            try requireRecoveryEpoch(entry, epoch: epoch)
+            guard let projection = entry.projection else { throw CacheError.invalidated }
+            let cursor = projection.data.cursor
+            // Frames received before these reads must not overwrite their
+            // newer projection; capturing the barrier first keeps frames that
+            // arrive during the window.
+            let barrier = now()
+            // Live facts are only read while the connector is online; when it
+            // is offline the socket path re-reads them once it returns. The
+            // read runs concurrently with the recovery read below and is
+            // consumed after recovered events have been applied, so a meta
+            // update they carry lands before the runtimeId check in applyLive.
+            let service = detail
+            let sessionID = entry.id
+            let liveTask: Task<V2SessionLiveState, Error>? = projection.data.session.connectorStatus == .online
+                ? Task { try await service.liveState(sessionId: sessionID) }
+                : nil
+            defer { liveTask?.cancel() }
             let recovery = try await detail.recover(sessionId: entry.id, after: cursor)
             try requireCurrent(entry)
-            guard entry.connectionID == version else { throw CacheError.invalidated }
+            try requireRecoveryEpoch(entry, epoch: epoch)
             if recovery.snapshotRequired {
                 _ = try await hydrate(entry)
+                try requireCurrent(entry)
+                try requireRecoveryEpoch(entry, epoch: epoch)
             } else {
                 for event in recovery.events.sorted(by: { $0.sequence < $1.sequence }) {
                     try entry.projection?.apply(event)
@@ -546,26 +692,38 @@ final class V2SessionRepository {
             entry.projection?.markStale()
             invalidateCatalogs(entry)
             if entry.projection?.data.session.connectorStatus == .online {
-                // Frames received before this read must not overwrite its newer live projection.
-                let barrier = now()
-                do {
-                    let live = try await detail.liveState(sessionId: entry.id)
+                var liveState: V2SessionLiveState?
+                if let liveTask { liveState = try await liveTask.value }
+                if recovery.snapshotRequired || liveState == nil {
+                    // The snapshot just re-read is newer than the parallel
+                    // read, and a connector that turned online during recovery
+                    // was not read in parallel at all.
+                    liveState = try await detail.liveState(sessionId: entry.id)
+                }
+                if let liveState {
                     try requireCurrent(entry)
-                    guard entry.connectionID == version else { throw CacheError.invalidated }
-                    entry.projection?.applyLive(live)
+                    try requireRecoveryEpoch(entry, epoch: epoch)
+                    entry.projection?.applyLive(liveState)
                     entry.projectionBarrier = barrier
                     entry.error = nil
-                } catch {
-                    try requireCurrent(entry)
-                    guard entry.connectionID == version else { throw CacheError.invalidated }
-                    entry.error = V2ClientFailure(error)
-                    throw error
                 }
             }
             emit(entry)
+            return nil
+        } catch {
+            return isSuperseded(error) ? nil : error
         }
-        entry.recoveryTask = task
-        return try await task.value
+    }
+
+    private func requireRecoveryEpoch(_ entry: Entry, epoch: UUID) throws {
+        try Task.checkCancellation()
+        guard entry.recoveryEpoch == epoch else { throw CacheError.superseded }
+    }
+
+    private func isSuperseded(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let cache = error as? CacheError, cache == .superseded { return true }
+        return false
     }
 
     private func entry(for id: V2SessionID) -> Entry {
@@ -621,6 +779,10 @@ final class V2SessionRepository {
         entry.connectionID = UUID()
         entry.connectionTask?.cancel()
         entry.connectionTask = nil
+        // Recovery identity belongs to the lifecycle, not to a socket
+        // generation: rotating it here makes an in-flight round abandon its
+        // results quietly, while a later start() runs a round of its own.
+        entry.recoveryEpoch = UUID()
         entry.recoveryTask?.cancel()
         entry.recoveryTask = nil
         entry.connection = .inactive
@@ -641,7 +803,7 @@ final class V2SessionRepository {
     private func evict(protecting protected: Entry? = nil) {
         let candidates = entries.values.filter {
             $0 !== protected && $0.observers.isEmpty && $0.loadTask == nil && $0.catalogTask == nil
-                && $0.historyTask == nil && !$0.model.hasLocalWork
+                && $0.historyTask == nil && $0.recoveryTask == nil && !$0.model.hasLocalWork
         }
             .sorted { $0.lastAccess < $1.lastAccess }
         for entry in candidates where entries.count > max(1, policy.maximumSessions) {
@@ -670,7 +832,16 @@ private final class Entry {
     var loadTask: Task<V2SessionData, Error>?
     var historyTask: Task<V2SessionData, Error>?
     var catalogTask: Task<V2SessionCatalogs, Error>?
-    var recoveryTask: Task<Void, Error>?
+    /// Single-flight recovery round. It returns its outcome instead of
+    /// throwing, so joining callers can choose to surface or ignore failure.
+    var recoveryTask: Task<Error?, Never>?
+    /// Rotated only by `stop()`; rounds capture it and refuse to apply results
+    /// once it changes.
+    var recoveryEpoch = UUID()
+    /// Monotonic launch counter; the socket subscribe path requires a round
+    /// launched after the frame it is closing.
+    var recoverySequence = 0
+    var recoveryTaskSequence = 0
     var connectionTask: Task<Void, Never>?
     var catalogs: V2SessionCatalogs?
     var catalogScopes: Set<String>?
@@ -680,13 +851,15 @@ private final class Entry {
     init(id: V2SessionID, model: V2SessionModel) { self.id = id; self.model = model }
 }
 
-private enum CacheError: LocalizedError {
+private enum CacheError: LocalizedError, Equatable {
     case invalidated
+    case superseded
     case connectionClosed
 
     var errorDescription: String? {
         switch self {
         case .invalidated: String(localized: "The session request no longer belongs to the active cache.")
+        case .superseded: String(localized: "The session recovery was superseded by a newer connection lifecycle.")
         case .connectionClosed: String(localized: "The session connection closed.")
         }
     }

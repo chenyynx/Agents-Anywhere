@@ -16,6 +16,14 @@ final class V2SessionRuntimeModel {
     private(set) var state: V2RuntimeState?
     private(set) var capabilities: V2RuntimeCapabilitySnapshot?
     private(set) var notices: [V2RuntimeNotice] = []
+    /// Functional gate: authoritative live facts are current. Freshness is
+    /// proven by a live-state read — over the subscribed socket, or by the
+    /// foreground REST catch-up, which reads the same facts — so the gate does
+    /// not wait for the socket handshake and opens as soon as authoritative
+    /// facts are applied. Every staleness mark (stop, connection failure,
+    /// offline, takeover/respond writes) closes it exactly as before, and
+    /// lifecycle states that cannot carry current facts are excluded, so the
+    /// gate is only ever true while a live recovery owns the data.
     private(set) var isFresh = false
 
     func allows(_ id: V2CapabilityID) -> Bool {
@@ -23,12 +31,17 @@ final class V2SessionRuntimeModel {
         return capability.supported && capability.available && capability.allowed
     }
 
-    func update(_ data: V2SessionData?, connected: Bool) {
+    func update(_ data: V2SessionData?, connection: V2SessionConnectionState) {
         if state != data?.state { state = data?.state }
         if capabilities != data?.capabilities { capabilities = data?.capabilities }
         let notices = data?.notices ?? []
         if self.notices != notices { self.notices = notices }
-        let fresh = connected && data?.liveStateIsFresh == true
+        let carriesCurrentFacts: Bool
+        switch connection {
+        case .connected, .connecting, .reconnecting: carriesCurrentFacts = true
+        case .inactive, .offline, .failed: carriesCurrentFacts = false
+        }
+        let fresh = data?.liveStateIsFresh == true && carriesCurrentFacts
         if isFresh != fresh { isFresh = fresh }
     }
 }
@@ -213,7 +226,7 @@ final class V2SessionModel: Identifiable {
         if connection != observation.connection { connection = observation.connection }
         if self.network != network { self.network = network }
         if failure != observation.error { failure = observation.error }
-        runtime.update(data, connected: connection == .connected)
+        runtime.update(data, connection: connection)
         notices.update(runtime.notices, sessionID: id)
         if hasOlderItems != (data?.hasOlderItems ?? false) { hasOlderItems = data?.hasOlderItems ?? false }
         if hasNewerItems != (data?.hasNewerItems ?? false) { hasNewerItems = data?.hasNewerItems ?? false }
@@ -274,7 +287,7 @@ final class V2SessionModel: Identifiable {
     }
 
     func invalidate() {
-        runtime.update(nil, connected: false)
+        runtime.update(nil, connection: .inactive)
         metadata = nil; timeline = []; pendingMessages = []; awaitingReplyID = nil; draft = ""; draftAttachmentIDs = []
         composer.invalidate()
         attachmentPreviews.clear()

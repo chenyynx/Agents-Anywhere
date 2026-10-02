@@ -345,6 +345,14 @@ final class AppState: ObservableObject {
 
         dashboardUpdatesTask = Task { [weak self] in
             guard let self else { return }
+            // Path availability is a scheduling hint: hold the socket until the
+            // monitor reports (bounded), and skip the attempt entirely while
+            // the path is known to be down. A later connectivity change
+            // restarts this task.
+            guard await services.connectivity.waitUntilOnline() else {
+                if self.cachedServices === services { self.dashboardUpdatesTask = nil }
+                return
+            }
             await receiveDashboardUpdates(services: services)
         }
     }
@@ -818,7 +826,16 @@ final class AppState: ObservableObject {
                 self.dashboardUpdatesTask = nil
             } else {
                 self.startDashboardUpdates()
-                if self.restoreConnectionError != nil { self.beginAccountSynchronization(force: true) }
+                if self.restoreConnectionError != nil {
+                    // Only re-probe the account once the path is usable; the
+                    // wait is bounded and returns immediately when online.
+                    Task { [weak self, weak services] in
+                        guard let self, let services else { return }
+                        guard await services.connectivity.waitUntilOnline() else { return }
+                        guard self.cachedServices === services, self.restoreConnectionError != nil else { return }
+                        self.beginAccountSynchronization(force: true)
+                    }
+                }
             }
         }
         return services

@@ -10,6 +10,8 @@ from connector.runtime_protocol import (
     PreparedSessionTimelineSync,
     RuntimeAttachment,
     RuntimeCapabilitySet,
+    RuntimeCommand,
+    RuntimeCommandResult,
     RuntimeConfig,
     RuntimeIdentity,
     RuntimeModelCatalog,
@@ -28,6 +30,7 @@ from connector.runtimes.claude.domain.capabilities import (
     ClaudeCapabilityContext,
     claude_runtime_capabilities,
     claude_session_capabilities,
+    resolve_session_binding,
 )
 from connector.runtimes.claude.domain.pending_messages import (
     ClaudePendingClientMessageRegistry,
@@ -205,7 +208,10 @@ class ClaudeRuntime(AgentRuntime):
         """Report session capabilities from facts already known to this process.
 
         Only the cached live status decides turn-based availability; a cold history
-        read would return an idle state this set treats identically.
+        read would return an idle state this set treats identically. The session
+        binding is resolved from the id the caller already holds, the cached state
+        and the store, so ``session.commands`` reports loaded exactly when a
+        command could run.
         """
 
         state = self._session_states.get(session_id)
@@ -218,6 +224,11 @@ class ClaudeRuntime(AgentRuntime):
                 connector_id=self.host.connector_id,
                 revision=self.config.revision,
                 session_id=session_id,
+                external_session_id=self._session_binding(
+                    session_id,
+                    external_session_id,
+                    state,
+                ),
                 has_active_turn=claude_state_has_active_execution(state),
             )
         )
@@ -234,9 +245,27 @@ class ClaudeRuntime(AgentRuntime):
                     connector_id=self.host.connector_id,
                     revision=self.config.revision,
                     session_id=state.session_id,
+                    external_session_id=self._session_binding(
+                        state.session_id,
+                        None,
+                        state,
+                    ),
                     has_active_turn=claude_state_has_active_execution(state),
                 )
             )
+        )
+
+    def _session_binding(
+        self,
+        session_id: str,
+        external_session_id: str | None,
+        state: SessionState | None,
+    ) -> str | None:
+        stored = self._session_store.get(session_id)
+        return resolve_session_binding(
+            external_session_id,
+            state,
+            None if stored is None else stored.external_session_id,
         )
 
     async def list_sessions(
@@ -325,6 +354,36 @@ class ClaudeRuntime(AgentRuntime):
             attachments=attachments,
             client_message_id=client_message_id,
             cwd=cwd,
+        )
+
+    async def list_commands(
+        self,
+        session_id: str,
+        external_session_id: str | None = None,
+        query: str | None = None,
+        limit: int = 50,
+    ) -> tuple[RuntimeCommand, ...]:
+        return self._turns.list_commands(
+            session_id=session_id,
+            external_session_id=external_session_id,
+            query=query,
+            limit=limit,
+        )
+
+    async def execute_command(
+        self,
+        session_id: str,
+        command: str,
+        external_session_id: str | None = None,
+        raw: str | None = None,
+        args: tuple[str, ...] = (),
+    ) -> RuntimeCommandResult:
+        return await self._turns.execute_command(
+            session_id=session_id,
+            command=command,
+            external_session_id=external_session_id,
+            raw=raw,
+            args=args,
         )
 
     async def update_session_selections(

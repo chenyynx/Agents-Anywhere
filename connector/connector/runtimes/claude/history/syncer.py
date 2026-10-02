@@ -136,10 +136,26 @@ class ClaudeHistorySyncer:
                 commit=self.session_sync_commit(pending_session_sync),
             )
 
-        if previous_cursor is None:
-            sync_messages = messages
-        else:
-            sync_messages = messages_after_cursor(messages, previous_cursor)
+        # The cursor classifies the window itself. A compaction rewrites the chain
+        # and leaves the stored uuid dangling, so it rebases onto the whole
+        # transcript, and so does the first sync of a session. Republishing every
+        # item is idempotent (stable ids + server-side merge), and matching
+        # pending client messages against the latest text keeps send order after a
+        # rebuild.
+        window = messages_after_cursor(messages, previous_cursor)
+        sync_messages = window.messages
+        rebased = window.rebased
+        if rebased and previous_cursor is not None:
+            logger.info(
+                "Claude history cursor rebased after chain rewrite "
+                "external_session_id={} reason={} previous_uuid={} "
+                "previous_count={} count={}",
+                external_session_id,
+                window.reason,
+                previous_cursor.last_message_uuid,
+                previous_cursor.message_count,
+                len(messages),
+            )
         visible_messages = _without_maintenance_messages(messages)
         visible_ids = {id(message) for message in visible_messages}
         sync_messages = tuple(
@@ -156,7 +172,7 @@ class ClaudeHistorySyncer:
             session=session,
             messages=sync_messages,
             pending_messages=self.pending_messages,
-            prefer_latest=previous_cursor is None,
+            prefer_latest=rebased,
         )
         items = await asyncer.asyncify(_history_items_from_messages)(
             session,
@@ -175,11 +191,14 @@ class ClaudeHistorySyncer:
                 "source": "claude.history.sync",
                 "messageCount": len(messages),
                 "syncedMessageCount": len(sync_messages),
+                "rebased": rebased,
                 "sdk": _sdk_session_metadata(info),
             },
         )
 
         async def commit() -> None:
+            # `cursor` describes the chain we just read, so a rebased sync lands
+            # on the new tail and the next pass is incremental again.
             await self.cursor_store.write(external_session_id, cursor)
             if pending_session_sync is not None:
                 await self.sync_states.commit(pending_session_sync)

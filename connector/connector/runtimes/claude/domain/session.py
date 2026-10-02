@@ -13,6 +13,7 @@ class ClaudeExecution:
     turn_id: str
     started_at_monotonic: float = field(default_factory=time.monotonic)
     task: asyncio.Task[None] | None = None
+    watchdog_task: asyncio.Task[None] | None = None
     client: object | None = None
     interrupt_source: str | None = None
     interrupt_reason: str | None = None

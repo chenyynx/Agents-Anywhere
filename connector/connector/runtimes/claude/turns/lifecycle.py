@@ -43,6 +43,11 @@ from connector.runtimes.claude.sdk.settings import (
 from connector.runtimes.claude.sdk.stderr import ClaudeStderrBuffer
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 from connector.runtimes.claude.sessions.scheduled import ClaudeScheduledSessions
+from connector.runtimes.claude.timeline.markers import (
+    ClaudeTimelineMarkers,
+    claude_compact_event,
+    is_compaction_control_message,
+)
 from connector.runtimes.claude.timeline.messages import (
     ClaudeMessageProjector,
     is_synthetic_control_message,
@@ -62,6 +67,11 @@ from connector.runtimes.claude.turns.attachments import (
 )
 from connector.runtimes.claude.turns.interactions import ClaudeInteractionController
 
+# The execution-lock circuit breaker (pp verdict, 2026-10-02, product-level):
+# guarding a minted-from-silence turn is invariant-shaped, not trigger-shaped,
+# so the deadline is a fixed budget any unknown wire shape falls into.
+POLLED_TURN_WATCHDOG_SECONDS = 30.0
+
 
 @dataclass(slots=True)
 class ClaudeTurnRunner:
@@ -76,10 +86,21 @@ class ClaudeTurnRunner:
     sdk_loader: SdkLoader | None = None
     client_factory: ClaudeClientFactory | None = None
     connections: dict[str, ClaudeConnection] = field(default_factory=dict, init=False)
+    # Cron* bookkeeping handed over by a transport that was retired before its
+    # replacement was built. `close()` drops the retired connection from
+    # `connections`, so without this a breaker (or any failed turn) would
+    # silently untrack a session's scheduled tasks.
+    carried_task_ids: dict[str, set[str]] = field(default_factory=dict, init=False)
     stopping: bool = False
+    markers: ClaudeTimelineMarkers = field(init=False)
     scheduled_sessions: ClaudeScheduledSessions = field(init=False)
 
     def __post_init__(self) -> None:
+        # One allocator for the whole timeline: a compaction separator must
+        # never reuse an order_seq a projected message already published.
+        self.markers = ClaudeTimelineMarkers(
+            order_allocator=self.timeline.order_seq_for,
+        )
         self.scheduled_sessions = ClaudeScheduledSessions(self.host)
 
     async def stop(self) -> None:
@@ -149,11 +170,134 @@ class ClaudeTurnRunner:
                         response=response,
                     )
                 )
+                self.arm_scheduled_watchdog(session, execution, response)
             except BaseException:
+                self.disarm_scheduled_watchdog(execution)
                 session.execution = session.queued_execution
                 session.queued_execution = None
                 execution.finished.set()
                 raise
+
+    def arm_scheduled_watchdog(
+        self,
+        session: ClaudeSession,
+        execution: ClaudeExecution,
+        response: ClaudeResponse,
+    ) -> None:
+        """Arm the execution-lock circuit breaker for one scheduled turn.
+
+        This is the main defense against the ghost turn (pp verdict, 2026-10-02,
+        product-level and highest priority). The trigger cannot be enumerated:
+        a scheduled turn may be minted by any wire shape the connector reader
+        has never seen before. What is invariant is what a stuck turn looks
+        like: it holds `session.execution`, it never sees a terminal event, and
+        it publishes nothing. After a silence deadline we force a failed
+        terminal, release the lock and surface a one-line WARNING. The worst
+        possible user experience is capped at one failed bubble instead of a
+        session that is permanently running with the composer disabled.
+        """
+
+        timeout = POLLED_TURN_WATCHDOG_SECONDS
+        execution.watchdog_task = asyncio.create_task(
+            self._scheduled_watchdog(session, execution, response, timeout)
+        )
+
+    def disarm_scheduled_watchdog(self, execution: ClaudeExecution) -> None:
+        task = execution.watchdog_task
+        execution.watchdog_task = None
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+
+    async def _scheduled_watchdog(
+        self,
+        session: ClaudeSession,
+        execution: ClaudeExecution,
+        response: ClaudeResponse,
+        timeout: float,
+    ) -> None:
+        try:
+            await asyncio.wait_for(execution.finished.wait(), timeout)
+            return
+        except asyncio.TimeoutError:
+            pass
+        logger.warning(
+            "Claude scheduled turn watchdog fired (no terminal within {}s), "
+            "forcing failed terminal session_id={} turn_id={}",
+            timeout,
+            session.session_id,
+            execution.turn_id,
+        )
+        if not await self.finish_execution(
+            session=session,
+            execution=execution,
+            terminal=failed_terminal_event(
+                code="claude_scheduled_turn_timeout",
+                message=(
+                    "Scheduled work did not report a result within "
+                    f"{int(timeout)} seconds"
+                ),
+                reason="scheduled_watchdog_timeout",
+            ),
+            response=response,
+        ):
+            # The turn settled by itself inside the race window; its own exit
+            # path already decided what happens to the transport.
+            return
+        await self.retire_stuck_transport(session, execution, response)
+
+    async def retire_stuck_transport(
+        self,
+        session: ClaudeSession,
+        execution: ClaudeExecution,
+        response: ClaudeResponse,
+    ) -> None:
+        """Retire everything the stuck turn left behind on its connection.
+
+        Releasing `session.execution` is only half of the circuit breaker. The
+        turn also owns the reader's `current` response, its own `drive_turn`
+        task, and the transport they share — and each one outlives the release:
+
+        * the zombie task keeps draining the reader's queue, so the next human
+          message is answered into it and lost;
+        * when a terminal finally arrives the zombie's `finish_execution`
+          returns early on the flag this watchdog just set, so
+          `response.release()` never runs and the reader parks on `released`
+          forever.
+
+        Left alone, the session looks unlocked while being permanently
+        unusable, which is worse than the ghost it replaced. So the breaker
+        finishes the job the turn could not: the response is already released
+        by `finish_execution`, the zombie task is cancelled, and the transport
+        is retired the same way any failed turn retires it — a native prompt
+        cannot be retracted one turn at a time. The next turn rebuilds the
+        connection from stored session state, which is the only recovery that
+        does not depend on guessing what the CLI thought it was doing.
+        """
+
+        connection = response.connection
+        zombie = execution.task
+        execution.task = None
+        if zombie is not None and zombie is not asyncio.current_task():
+            zombie.cancel()
+        task_ids = set(connection.task_ids)
+        if task_ids:
+            self.carried_task_ids[session.session_id] = task_ids
+            try:
+                await self.scheduled_sessions.save(session, task_ids)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "Claude scheduled task handover failed session_id={}: {}",
+                    session.session_id,
+                    exc,
+                )
+        try:
+            await connection.close()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Claude stuck transport retirement failed session_id={}: {}",
+                session.session_id,
+                exc,
+            )
 
     async def reclaim_idle_connection(
         self, session: ClaudeSession, connection: ClaudeConnection
@@ -227,6 +371,10 @@ class ClaudeTurnRunner:
                     "Claude selection change requires background work to finish"
                 )
             await existing.close()
+        # A transport retired out of band (the scheduled-turn circuit breaker)
+        # is already gone from `connections`, so its Cron* bookkeeping arrives
+        # here by handover instead of by the registry entry above.
+        carried = self.carried_task_ids.pop(session.session_id, None)
         # Scheduled reconnect bypasses the normal start/update selection path.
         # Resolve its saved CLI-only selection before constructing SDK options.
         await self.catalogs.resolve_model_selection(session.selections.get("model"))
@@ -280,7 +428,11 @@ class ClaudeTurnRunner:
             cleanup=cleanup,
             idle_timeout_seconds=self.config.values.get("idleTimeoutSeconds", 600),
             selections=dict(session.selections),
-            task_ids=set(existing.task_ids) if existing is not None else set(),
+            task_ids=(
+                set(existing.task_ids) | set(carried or ())
+                if existing is not None
+                else set(carried or ())
+            ),
         )
         self.connections[session.session_id] = connection
         return connection
@@ -327,6 +479,7 @@ class ClaudeTurnRunner:
         client_message_id: str | None,
         scheduled: bool = False,
         response: ClaudeResponse | None = None,
+        command: str | None = None,
     ) -> None:
         turn_id = execution.turn_id
         stderr = ClaudeStderrBuffer(session.session_id)
@@ -337,10 +490,20 @@ class ClaudeTurnRunner:
         attachment_mappings: tuple[dict[str, object], ...] = ()
         replayed_user_message: tuple[str, str] | None = None
         response_external_session_confirmed = False
-        user_message_published = scheduled
+        # A native command is CLI chrome rather than a message the user sent:
+        # Claude never echoes it back, so no user item is reserved, published or
+        # replayed. The compaction marker is the whole surface of the turn.
+        user_message_published = scheduled or command is not None
         published_user_item_id: str | None = None
         stream_accumulator = ClaudeStreamAccumulator()
         try:
+            if command is not None:
+                # The user asked for this compaction: publish the running
+                # separator before the prompt leaves, so a silent CLI settles
+                # a visible marker instead of leaving the turn invisible. The
+                # marker is the session's, because the CLI's verdict for it
+                # usually arrives on a later turn than this one.
+                await self.open_command_compact_marker(session, turn_id)
             if client is None:
                 connection = await self.connection_for(session, stderr)
                 maintenance = connection.background_done_task
@@ -377,8 +540,8 @@ class ClaudeTurnRunner:
                 attachment.to_mapping() for attachment in materialized_attachments
             )
             if not scheduled:
-                prompt_uuid = client.ensure_prompt_uuid()
-                if (
+                prompt_uuid = client.ensure_prompt_uuid() if command is None else None
+                if command is None and (
                     client_message_id is not None
                     or session.external_session_id is not None
                 ):
@@ -419,7 +582,7 @@ class ClaudeTurnRunner:
                             "Claude early user publish failed session_id={}",
                             session.session_id,
                         )
-                else:
+                elif command is None:
                     reserved_user_item = self.timeline.message_item(
                         session=session,
                         turn_id=turn_id,
@@ -451,11 +614,18 @@ class ClaudeTurnRunner:
                 text = message_text(message)
                 native_message_id = message_id(message)
                 synthetic_control = is_synthetic_control_message(message)
+                # Compaction is reported through the same events whether the CLI
+                # compacted a `/compact` prompt or its own context window, so the
+                # mapping stays on this shared path.
+                compact_event = claude_compact_event(message)
+                suppressed_control = (
+                    synthetic_control or is_compaction_control_message(message)
+                )
                 if (
                     role == "user"
                     and text
                     and native_message_id
-                    and not synthetic_control
+                    and not suppressed_control
                 ):
                     replayed_user_message = (native_message_id, text)
                     if user_message_published:
@@ -511,7 +681,7 @@ class ClaudeTurnRunner:
                     reasoning_revision=stream_accumulator.next_thinking_final_revision(),
                 )
                 has_visible_message = (
-                    not synthetic_control
+                    not suppressed_control
                     and role in {"assistant", "system"}
                     and bool(text)
                 )
@@ -568,7 +738,15 @@ class ClaudeTurnRunner:
                     await self.notifications.timeline_activity.timeline_item_upsert(
                         item
                     )
-                if synthetic_control:
+                if compact_event is not None:
+                    await self.notifications.timeline_activity.timeline_item_upsert(
+                        self.markers.item_for_event(
+                            session=session,
+                            turn_id=turn_id,
+                            event=compact_event,
+                        )
+                    )
+                if suppressed_control:
                     continue
                 if role not in {"assistant", "system"}:
                     continue
@@ -676,6 +854,7 @@ class ClaudeTurnRunner:
                     code="claude_turn_missing_terminal_state",
                     message="Claude turn stopped without a terminal state",
                 )
+            await self.settle_compact_markers(session, turn_id)
             try:
                 await self.finish_execution(
                     session=session,
@@ -711,6 +890,55 @@ class ClaudeTurnRunner:
                     "Claude reasoning flush failed session_id={}",
                     session.session_id,
                 )
+
+    async def open_command_compact_marker(
+        self,
+        session: ClaudeSession,
+        turn_id: str,
+    ) -> None:
+        """Publish the running marker a command turn owes before dispatch."""
+
+        try:
+            for item in self.markers.open_command_marker(
+                session=session,
+                turn_id=turn_id,
+            ):
+                await self.notifications.timeline_activity.timeline_item_upsert(item)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Claude compaction marker open failed session_id={}",
+                session.session_id,
+            )
+
+    async def settle_compact_markers(
+        self,
+        session: ClaudeSession,
+        turn_id: str,
+    ) -> None:
+        """Close a compaction marker this turn never proved complete.
+
+        A command turn opens its marker before dispatch, and compaction
+        otherwise reports success through its own events. Either way a turn
+        that ends without proof of completion — failed, interrupted, or
+        resolved without compacting — must not leave the client showing a
+        running separator.
+
+        The marker belongs to the session but only its opening turn may settle
+        it. The CLI streams the frames that finish a compaction after that turn
+        has ended, so this runs on the scheduled reader turn too; settling there
+        would fail a separator whose success is already on the wire. Evidence
+        that arrives after a settle corrects the marker instead.
+        """
+
+        try:
+            items = self.markers.settle_turn(session=session, turn_id=turn_id)
+            for item in items:
+                await self.notifications.timeline_activity.timeline_item_upsert(item)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Claude compaction marker settle failed session_id={}",
+                session.session_id,
+            )
 
     async def publish_replayed_user_message(
         self,
@@ -881,6 +1109,7 @@ class ClaudeTurnRunner:
         """Publish one terminal state and release this exact execution."""
 
         async with execution.finalization_lock:
+            self.disarm_scheduled_watchdog(execution)
             if execution.finished.is_set():
                 return False
             async with session.execution_lock:

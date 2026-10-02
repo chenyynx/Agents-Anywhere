@@ -3870,6 +3870,41 @@ async def _test_claude_runtime_session_capabilities_do_not_read_history() -> Non
     assert capabilities["session.interrupt"].available is False
 
 
+def test_claude_runtime_session_commands_fall_back_to_the_store_binding() -> None:
+    asyncio.run(_test_claude_runtime_session_commands_fall_back_to_the_store_binding())
+
+
+async def _test_claude_runtime_session_commands_fall_back_to_the_store_binding() -> None:
+    runtime = _runtime()
+    runtime._session_store.ensure(
+        "sess_store_only",
+        external_session_id="ext_store_only",
+    )
+    # Precondition: the caller knows nothing and no live state exists, so the
+    # store is the only possible source of a CLI conversation id.
+    assert runtime._session_states.get("sess_store_only") is None
+
+    commands = {
+        capability.capability_id: capability
+        for capability in (
+            await runtime.get_session_capabilities("sess_store_only")
+        ).capabilities
+    }["session.commands"]
+    assert commands.available is True
+    assert commands.unavailable_reason is None
+
+    # Same runtime, a session nothing knows: the bit has to fall back to unloaded,
+    # so the assertion above cannot pass by accident.
+    unknown = {
+        capability.capability_id: capability
+        for capability in (
+            await runtime.get_session_capabilities("sess_unknown")
+        ).capabilities
+    }["session.commands"]
+    assert unknown.available is False
+    assert unknown.unavailable_reason == "session_unloaded"
+
+
 def test_claude_runtime_interrupts_active_turn() -> None:
     asyncio.run(_test_claude_runtime_interrupts_active_turn())
 

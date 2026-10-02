@@ -36,6 +36,66 @@ did not complete. An acknowledgement alone does not mark compaction complete.
 History refreshes keep the same item identity and preserve an observed running
 status when the native snapshot omits item status.
 
+## Claude
+
+AA exposes only `/compact` for Claude. It takes no arguments: the CLI compacts
+the whole conversation, so an appended remark is rejected before any prompt is
+sent. The CLI reports many more native slash commands, skills included; none of
+them reach the catalog, and every other name is rejected by the command API.
+
+The command runs through the ordinary Claude turn path — the same session lock,
+turn state machine and SDK connection an interactive reply uses — so a busy
+session is rejected rather than racing one. AA sends the native command line
+through the SDK prompt, where the CLI dispatches it as its own slash command.
+No user bubble is published: the CLI never echoes the command back, and the
+marker below is the whole visible surface of the turn.
+
+Execution returns `accepted` immediately and compaction continues
+asynchronously; the marker reports progress while the session state returns to
+`idle` when the turn ends. A dispatch the turn machinery refuses is reported as
+`completed`, and an ambiguous dispatch as `unknown`.
+
+A command turn publishes its running marker before the prompt leaves, so an
+acknowledged `/compact` always has a visible answer even if the CLI says
+nothing further. The same item id then flips to completed when the CLI reports a
+compaction result or a compaction boundary, and a boundary that follows a result
+contributes its token metadata. A turn that ends without that evidence — a
+native error, an interrupt, or a turn that resolved without compacting — settles
+the marker as failed, so the client never shows a separator that cannot finish.
+Separators take their position from the same order counter as messages, so one
+never shares a slot with a reply.
+
+A separator belongs to the session, not to the turn that dispatched the command.
+The CLI streams the compacting status, the result and the boundary *after* the
+command turn's own result message, so the turn that reports them is usually a
+later one — a scheduled reader, with a turn id of its own. Any turn that reads
+a compaction frame completes the separator the user is waiting for, and only the
+turn that opened it may settle it; a turn that merely read the frames never ends
+someone else's separator as a failure. A settle that reached the client before
+the CLI's verdict is corrected by that verdict when it arrives, since the
+evidence it was failed for is the evidence in hand. A failure the CLI reported
+itself is final: a boundary that arrives after one adds its metadata but never
+turns the separator back into a success.
+
+Each compaction owns one separator, and the session counts them rather than the
+turn, so a second compaction adds a new separator instead of reopening the
+finished one — including when it is the CLI compacting on its own mid-turn.
+
+Compaction events are mapped on the shared live path, so a compaction the CLI
+starts on its own is reported the same way. Those events reach the connector as
+SDK system messages whose whole payload sits in `.data`; the mapping reads that
+payload, so the running state, the result and the boundary's token metadata all
+survive on the real wire. The summary the CLI writes after compacting, its
+local-command output and its session handshake are CLI bookkeeping; none of them
+is projected as a message. The mapping follows the event order observed from CLI
+2.1.284 with SDK 0.2.161; a failure shape has not been observed, so any turn
+that completes without a reported result is treated as unsuccessful.
+
+The SDK only returns user and assistant messages when history is read, so a
+compaction boundary is invisible to a history refresh and the marker cannot be
+rebuilt from history. Markers therefore stay resident through the server's
+merge-style timeline sync instead of being reconstructed on reload.
+
 ## DeepSeek Harness
 
 AA exposes only `/compact` for DSH. The bridge filters the current session
@@ -85,6 +145,9 @@ From `connector/`:
 ```bash
 uv run pytest -q tests/test_codex_commands.py tests/test_codex_sdk_commands.py \
   tests/test_codex_compaction.py tests/test_codex_runtime.py \
+  tests/test_claude_commands.py tests/test_claude_compact_realwire.py \
+  tests/test_claude_command_catalog.py \
+  tests/test_claude_runtime.py \
   tests/test_dsh_commands.py tests/test_runtime_rpc_params.py
 ```
 

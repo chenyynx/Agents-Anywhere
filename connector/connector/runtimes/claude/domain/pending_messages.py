@@ -154,7 +154,21 @@ class ClaudePendingClientMessageRegistry:
         messages: tuple[ClaudeHistoryUserMessage, ...],
         prefer_latest: bool = True,
     ) -> dict[str, ClaudeClientMessageBinding]:
-        """Match history UUIDs and persist newly resolved platform bindings."""
+        """Match history UUIDs and persist newly resolved platform bindings.
+
+        `prefer_latest` is for a sync that republishes a chain the user already
+        saw - a first sync or a rebase after a compaction. Pending sends then
+        belong to the tail of that chain, so occurrences are reserved from the
+        tail and older, already published rows keep their uuids. A single
+        pending send therefore binds to the newest occurrence of its text.
+
+        Both directions walk the pending list from the end while the search
+        bounds move with the tail, so the newest send claims the newest
+        occurrence and every earlier send lands further up the chain: the
+        bindings stay in send order even when several sends share a text.
+        Walking forwards instead would hand the newest send the oldest
+        occurrence and invert the timeline.
+        """
 
         self.load_external_session(external_session_id)
         matches = {
@@ -457,6 +471,12 @@ def latest_matching_message_index(
     expected_text: str,
     upper_index: int,
 ) -> int | None:
+    """Newest occurrence of `expected_text` at or below `upper_index`.
+
+    Callers lower `upper_index` to the previously matched index so repeated
+    sends consume distinct occurrences instead of all landing on the same row.
+    """
+
     indexes = indexes_by_text.get(normalize_text(expected_text))
     if not indexes:
         return None

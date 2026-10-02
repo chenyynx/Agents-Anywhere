@@ -20,18 +20,15 @@ Examples:
 
 ```text
 runtime.config
-runtime.session.create
-runtime.session.discover
-runtime.catalog.model
-runtime.catalog.permission
-runtime.command.list
-runtime.ipc
 runtime.attachment
+catalog.model
+catalog.effort
+catalog.permission
 ```
 
 Runtime-scoped capabilities affect dashboard/setup/create behavior, runtime
 configuration UI, global runtime catalogs before a session exists, and feature
-entry points such as IPC controls.
+entry points such as attachment controls.
 
 ### Session-scoped effective capability
 
@@ -44,16 +41,26 @@ Examples:
 session.send_message
 session.steer
 session.interrupt
-session.selection.update
-session.command.execute
-session.interaction.approval.respond
-session.catalog.model
-session.catalog.permission
+session.commands
+session.interaction.approval
+catalog.model
+catalog.effort
+catalog.permission
 ```
 
 Session-scoped capability is RuntimeLive. It can change while a turn is running,
 while a command is executing, while the runtime is compacting context, or after
 the runtime notices that an active turn no longer exists.
+
+### `session.commands`
+
+`session.commands` answers one question: does the session have a loaded runtime
+conversation to run a command against? It stays available while a turn is running
+— clients stop asking for the command catalog when this bit goes unavailable, so
+busy gating lives in the catalog instead, where each command carries its own
+`disabledReason` (`session_unloaded`, `session_<status>`, ...). Those strings are
+what clients translate and fallback to verbatim, so runtimes report only tokens
+from the shared vocabulary here rather than inventing per-runtime reasons.
 
 ## Capability shape
 
@@ -222,8 +229,8 @@ their availability changes. Examples:
 ```text
 turn starts       -> session.send_message false, session.interrupt true
 turn finishes     -> session.send_message true, session.interrupt false
-compact starts    -> session.send_message false, session.command.execute false
-compact finishes  -> session.send_message true, session.command.execute true
+compact starts    -> session.send_message false, session.commands unchanged
+compact finishes  -> session.send_message true, session.commands unchanged
 no active turn    -> session.interrupt false
 takeover changes  -> allowed changes on session actions
 ```

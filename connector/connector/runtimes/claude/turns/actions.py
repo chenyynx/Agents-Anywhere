@@ -60,7 +60,15 @@ class ClaudeTurnActionHandler:
         attachments: tuple[RuntimeAttachment, ...] = (),
         client_message_id: str | None = None,
         cwd: str | None = None,
+        command: str | None = None,
     ) -> RuntimeOperationResult:
+        """Queue one turn, optionally as a native command.
+
+        A command turn reuses this state machine, its lock and its connection
+        so compaction cannot race an ordinary turn; only the user bubble is
+        withheld, because the CLI never echoes the command back.
+        """
+
         session = self.session_for(session_id, external_session_id, cwd)
         try:
             effective_selections = await self.selections.effective_selections(
@@ -100,6 +108,7 @@ class ClaudeTurnActionHandler:
                         content=content,
                         attachments=attachments,
                         client_message_id=client_message_id,
+                        command=command,
                     )
                 )
             except BaseException:

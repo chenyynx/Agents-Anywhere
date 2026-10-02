@@ -143,7 +143,7 @@ private func catchUpRepository(
             transport: http,
             realtime: realtime,
             readinessWindow: .seconds(5),
-            sleep: { try await Task.sleep(for: .milliseconds(20)) }
+            sleep: { _ in try await Task.sleep(for: .milliseconds(20)) }
         )
         defer { repo.reset() }
         #expect(repo.network.availability == .unknown)
@@ -170,7 +170,7 @@ private func catchUpRepository(
             transport: http,
             realtime: realtime,
             readinessWindow: .milliseconds(100),
-            sleep: { try await Task.sleep(for: .milliseconds(1)) }
+            sleep: { _ in try await Task.sleep(for: .milliseconds(1)) }
         )
         defer { repo.reset() }
         let model = repo.session(id: "session")

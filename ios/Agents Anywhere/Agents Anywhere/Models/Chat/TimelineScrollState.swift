@@ -34,7 +34,7 @@ nonisolated struct TimelineScrollState: Equatable {
     private var awaitsUserScrollSettlement = false
     /// Set by `open()`, consumed by the first command it produces. A reader
     /// gesture before that command clears it, so later returns animate.
-    private(set) var openingReturnIsPending = false
+    private var openingReturnIsPending = false
 
     var userIsScrolling: Bool { [.tracking, .interacting, .decelerating].contains(phase) }
     var returningToBottom: Bool { mode == .returning }

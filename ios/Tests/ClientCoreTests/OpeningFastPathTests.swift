@@ -124,24 +124,6 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         let returnedCompleted = state.complete(returned)
         #expect(returnedCompleted && state.mode == .following && !state.showsBottomButton())
     }
-
-    /// The read-only accessor used by the opening coalesce skip: `open()` arms
-    /// it and the first command it produces consumes it.
-    @Test func openingReturnIsPendingUntilTheFirstCommandConsumesIt() throws {
-        var state = TimelineScrollState()
-        state.geometryChanged(viewport())
-        visibility(&state, end: false)
-        let armedBeforeOpen = state.openingReturnIsPending
-        #expect(!armedBeforeOpen)
-        state.open()
-        let armedAfterOpen = state.openingReturnIsPending
-        #expect(armedAfterOpen)
-        let opening = try nextCommand(&state)
-        let armedAfterBegin = state.openingReturnIsPending
-        #expect(!armedAfterBegin)
-        let completed = state.complete(opening)
-        #expect(completed && opening.instant)
-    }
 }
 
 /// T1.4 — a memory-cached visit presents its snapshot before the network

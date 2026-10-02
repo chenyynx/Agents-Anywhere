@@ -67,7 +67,7 @@ struct ChatTimelineView: View {
             // pre-armed target here would be applied by the scroll view when the
             // content arrives — outside our animation-disabled transaction — and
             // scroll visibly. The opacity gate below keeps the (top-anchored)
-            // first layout invisible until the position lands (pp 2026-10-02).
+            // first layout invisible until the position lands.
             .defaultScrollAnchor(.top, for: .initialOffset)
             .defaultScrollAnchor(.top, for: .alignment)
             .defaultScrollAnchor(.top, for: .sizeChanges)
@@ -176,9 +176,12 @@ struct ChatTimelineView: View {
                 guard let request = scrolling.pendingBottomRequest, !navigationIsSuspended else { return }
                 // Coalesce actual layout changes. Scrolling through the same
                 // layout cannot restart this animation on every offset callback.
-                if !scrolling.openingReturnIsPending {
-                    do { try await Task.sleep(for: .milliseconds(24)) } catch { return }
-                }
+                // This delay is load-bearing for the opening return too: it
+                // lets the timeline finish its first layout measurement, so the
+                // instant target resolves against the real content height
+                // instead of a half-measured one. The opening
+                // gate hides these milliseconds anyway.
+                do { try await Task.sleep(for: .milliseconds(24)) } catch { return }
                 guard !Task.isCancelled, !navigationIsSuspended, let command = scrolling.begin(request) else { return }
                 scrollToBottom(command)
             }

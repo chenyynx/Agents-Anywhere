@@ -3,7 +3,7 @@ name: iOS Build & Test
 # Branch-local pipeline for the `ios-fast-sync` work (foreground catch-up,
 # instant opening, header glow). It mirrors the downstream `ios-ci` flow —
 # unsigned .ipa for on-device KSign re-signing, no Apple Developer account —
-# and adds the unit-test job (`swift test`, pp-approved 2026-10-02).
+# and adds the unit-test job (`swift test`).
 #
 # The `ios-ci` branch stays the clean upstream mirror; nothing here touches it.
 # Artifacts are released to the dedicated `ipa-ios-fast-sync` tag so the

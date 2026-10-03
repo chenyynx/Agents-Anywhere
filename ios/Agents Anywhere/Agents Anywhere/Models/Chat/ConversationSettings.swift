@@ -123,10 +123,3 @@ extension V2RuntimeCapabilitySnapshot {
         return value.supported && value.available && value.allowed
     }
 }
-
-extension JSONValue {
-    var boolValue: Bool? {
-        if case let .bool(value) = self { return value }
-        return nil
-    }
-}

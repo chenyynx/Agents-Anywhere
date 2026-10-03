@@ -284,18 +284,8 @@ enum SubAgentUsageFormat {
 // MARK: - Local JSON accessors
 
 extension JSONValue {
-    nonisolated var objectValue: [String: JSONValue]? {
-        if case let .object(value) = self { return value }
-        return nil
-    }
-
     nonisolated var intValue: Int? {
         guard case let .number(value) = self, value.rounded() == value else { return nil }
         return Int(exactly: value)
-    }
-
-    nonisolated var boolValue: Bool? {
-        if case let .bool(value) = self { return value }
-        return nil
     }
 }

@@ -56,6 +56,24 @@ nonisolated enum JSONValue: Codable, Hashable {
         }
     }
 
+    nonisolated var objectValue: [String: JSONValue]? {
+        switch self {
+        case let .object(value):
+            return value
+        default:
+            return nil
+        }
+    }
+
+    nonisolated var boolValue: Bool? {
+        switch self {
+        case let .bool(value):
+            return value
+        default:
+            return nil
+        }
+    }
+
     nonisolated var displayString: String {
         switch self {
         case let .string(value):

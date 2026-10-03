@@ -137,13 +137,6 @@ struct V2RuntimeConfigOption: Identifiable, Hashable {
     var title: String { value.displayString }
 }
 
-private extension JSONValue {
-    var objectValue: [String: JSONValue]? {
-        guard case let .object(value) = self else { return nil }
-        return value
-    }
-}
-
 private extension Dictionary where Key == String, Value == JSONValue {
     func string(for key: String) -> String? {
         guard case let .string(value) = self[key] else { return nil }

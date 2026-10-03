@@ -394,9 +394,19 @@ def _short_breaker_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     The deadline itself is the contract (pp: align it with the reconcile timeout
     magnitude); nothing below depends on the number, so shrinking it here keeps
     the whole file fast without inventing a second code path.
+
+    Two budgets now, not one (claude-watchdog-longrun-tasks.md §2 G1/G2): the
+    zero-content fast kill and the absolute ceiling for a turn that left that
+    class. The hanging frame these tests mint on is an assistant message with
+    text, but the frame that casts the turn is excluded from the content gate
+    since the B5 cast-frame fix, so these ghosts now reap on the fast kill —
+    both budgets stay compressed because the break, not the deadline, is what
+    they pin; the ceiling path itself is pinned in
+    test_claude_watchdog_longrun.py.
     """
 
     monkeypatch.setattr(lifecycle, "POLLED_TURN_WATCHDOG_SECONDS", 0.2)
+    monkeypatch.setattr(lifecycle, "CONTENTING_TURN_WATCHDOG_SECONDS", 0.4)
 
 
 def test_watchdog_forces_failed_terminal_on_stuck_scheduled_turn() -> None:

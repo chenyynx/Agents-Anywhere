@@ -272,6 +272,11 @@ class ClaudeTurnRunner:
         cannot be retracted one turn at a time. The next turn rebuilds the
         connection from stored session state, which is the only recovery that
         does not depend on guessing what the CLI thought it was doing.
+
+        The transport kill is withheld while `has_live_background_work` is
+        true — background subagents/commands exist nowhere else, and upstream
+        never replays in-flight work after process loss. The ghost response is
+        dropped instead so the reader can route again.
         """
 
         connection = response.connection
@@ -279,6 +284,27 @@ class ClaudeTurnRunner:
         execution.task = None
         if zombie is not None and zombie is not asyncio.current_task():
             zombie.cancel()
+        if connection.has_live_background_work:
+            # Do-not-retire invariant (pp verdict, 2026-10-02, product-level):
+            # the CLI process is the only place live background work exists.
+            # Upstream keeps the transport for exactly this reason
+            # (docs/claude-session-lifecycle.md: the connection is not
+            # reclaimed while a background task is active, and in-flight
+            # background work is not replayed after process loss). The breaker
+            # has already released the lock through `finish_execution`; the
+            # only action withheld here is killing the host process the
+            # running subagents/commands live in. The zombie cancel above
+            # still runs so the next human turn is not answered into it, and
+            # the ghost response is dropped so the reader can route again.
+            logger.warning(
+                "Claude stuck-turn retirement skipped: background work is live "
+                "session_id={} turn_id={} active_tasks={}",
+                session.session_id,
+                execution.turn_id,
+                len(connection.background.active_ids),
+            )
+            connection.drop_current(response)
+            return
         task_ids = set(connection.task_ids)
         if task_ids:
             self.carried_task_ids[session.session_id] = task_ids
@@ -865,7 +891,24 @@ class ClaudeTurnRunner:
             finally:
                 if connection is not None:
                     if terminal.status == "failed":
-                        await connection.close()
+                        if connection.has_live_background_work:
+                            # Do-not-retire invariant: a failed turn retires
+                            # its transport because the CLI state is no longer
+                            # trusted — but never while background work lives
+                            # in that process; killing it would destroy work
+                            # upstream cannot replay. The next turn reuses the
+                            # transport; real breakage still surfaces as its
+                            # own failed turn.
+                            logger.warning(
+                                "Claude failed-turn transport close skipped: "
+                                "background work is live session_id={} "
+                                "turn_id={} active_tasks={}",
+                                session.session_id,
+                                turn_id,
+                                len(connection.background.active_ids),
+                            )
+                        else:
+                            await connection.close()
                     else:
                         if (
                             not connection.streaming

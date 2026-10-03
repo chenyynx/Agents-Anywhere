@@ -15,6 +15,23 @@ def _value(message: Any, name: str) -> Any:
     )
 
 
+def is_background_activity(message: Any) -> bool:
+    """Report frames produced *inside* a background subagent.
+
+    When a background agent runs, its internal turn frames leak into the
+    parent session stream as ordinary user/assistant messages whose
+    ``parent_tool_use_id`` is the dispatch tool call (real wire, 2026-10-02:
+    a subagent thinking frame landed 47 ms after the dispatch reply; tool
+    results followed seconds later). Those frames must never mint a scheduled
+    reply from silence — no prompt was accepted for them, and the main agent's
+    own wake-and-report frames all carry ``parent_tool_use_id=None``, so the
+    parented ones are safe to absorb instead.
+    """
+
+    parent = _value(message, "parent_tool_use_id")
+    return isinstance(parent, str) and bool(parent)
+
+
 @dataclass(slots=True)
 class ClaudeBackgroundTasks:
     """Track native work that may outlive the reply which started it."""
@@ -24,6 +41,21 @@ class ClaudeBackgroundTasks:
     def observe(self, message: Any) -> bool:
         """Return whether this was a task lifecycle event."""
         kind = _value(message, "subtype")
+        if kind == "background_tasks_changed":
+            # The CLI's snapshot of outstanding work. Adding its ids keeps the
+            # keep-alive signal honest even if a `task_started` frame was
+            # missed; releases stay solely with terminal events, because an
+            # unconfirmed task is never assumed complete.
+            tasks = _value(message, "tasks")
+            if tasks is None:
+                data = _value(message, "data")
+                tasks = _value(data, "tasks") if data is not None else None
+            if isinstance(tasks, (list, tuple)):
+                for task in tasks:
+                    task_id = _value(task, "task_id")
+                    if isinstance(task_id, str) and task_id:
+                        self.active_ids.add(task_id)
+            return True
         if kind not in {
             "task_started",
             "task_progress",

@@ -8,7 +8,10 @@ from uuid import uuid4
 
 from connector.logging import logger
 from connector.runtimes.claude.domain.session import ClaudeExecution
-from connector.runtimes.claude.sdk.background import ClaudeBackgroundTasks
+from connector.runtimes.claude.sdk.background import (
+    ClaudeBackgroundTasks,
+    is_background_activity,
+)
 from connector.runtimes.claude.sdk.client import (
     connect_client,
     disconnect_client,
@@ -166,6 +169,23 @@ class ClaudeConnection:
         return bool(self.task_ids)
 
     @property
+    def has_live_background_work(self) -> bool:
+        """Whether this transport still hosts work that retirement would kill.
+
+        The do-not-retire invariant (2026-10-02) reads this signal at every
+        retirement decision point. A dead or closing transport cannot protect
+        anything — the process that ran the work is already gone — so
+        transport health is part of the signal, and the invariant's exceptions
+        (shutdown, genuine transport failure) fall out of it for free.
+        """
+
+        return (
+            bool(self.background.active_ids)
+            and self.failure is None
+            and not self.closing
+        )
+
+    @property
     def streaming(self) -> bool:
         return callable(getattr(self.client, "receive_messages", None))
 
@@ -211,6 +231,22 @@ class ClaudeConnection:
         if not response.maintenance:
             await self.on_activity(response)
         self.selected.set()
+
+    def drop_current(self, response: ClaudeResponse) -> bool:
+        """Abandon the reader's current response without touching the transport.
+
+        The stuck-turn breaker withholds retirement while background work is
+        live (the CLI process is the only place that work exists). The ghost's
+        consumer is gone by then, so routing must stop parking frames in its
+        dead queue — otherwise the session would look unlocked while being
+        permanently unusable, the very state the breaker exists to prevent.
+        """
+
+        if self.current is not response:
+            return False
+        self.current = None
+        self.selected.clear()
+        return True
 
     async def prepare_approval(self) -> None:
         if self.current is None:
@@ -324,6 +360,18 @@ class ClaudeConnection:
                             self.background_done_task = asyncio.create_task(
                                 self.on_background_done(self)
                             )
+                background_activity = is_background_activity(message)
+                if background_activity:
+                    # Frames parented to a tool use are activity *inside* a
+                    # background subagent leaking into the parent stream (real
+                    # wire, 2026-10-02: a subagent thinking frame landed 47 ms
+                    # after the dispatch reply; tool results seconds later).
+                    # They are work in progress: keep the reclaim timer away
+                    # while they flow, and never let them mint a reply from
+                    # silence (the mint branch below refuses them). Frames tied
+                    # to an accepted pending turn still flow, because an agent
+                    # call legitimately streams its children mid-turn.
+                    self.cancel_idle()
                 if self.current is None:
                     if task_event:
                         continue
@@ -356,6 +404,15 @@ class ClaudeConnection:
                             # Buffered as preamble so a real reply that follows
                             # still sees these context frames, in order.
                             preamble.append(message)
+                            continue
+                        if background_activity:
+                            # In-subagent activity at silence must never mint
+                            # a scheduled reply either: no prompt was accepted
+                            # for it, and the main agent's own wake-and-report
+                            # frames all carry parent_tool_use_id=None. The
+                            # minted ghost used to get the transport retired
+                            # 30 s later, killing the very subagents whose
+                            # frames it was minted from (2026-10-02).
                             continue
                         await self.select_response(ClaudeResponse(self))
                     else:

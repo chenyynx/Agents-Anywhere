@@ -48,8 +48,8 @@ from connector.runtimes.claude.timeline.messages import (
     ClaudeMessageProjector,
     ClaudePendingToolCall,
     is_compact_summary_text,
+    is_hidden_tool_name,
     is_synthetic_control_message,
-    is_task_event_tool_name,
     message_id,
     message_role,
     message_text,
@@ -326,11 +326,11 @@ def _history_items_from_messages(
     messages: tuple[Any, ...],
     client_message_matches: Mapping[str, ClaudeClientMessageBinding] | None = None,
     tool_call_lookup: Mapping[str, ClaudePendingToolCall] | None = None,
-    ignored_task_tool_use_ids: frozenset[str] | None = None,
+    hidden_tool_use_ids: frozenset[str] | None = None,
 ) -> tuple[RuntimeTimelineItem, ...]:
     projector = ClaudeMessageProjector(
         tool_call_lookup=tool_call_lookup,
-        ignored_task_tool_use_ids=ignored_task_tool_use_ids,
+        hidden_tool_use_ids=hidden_tool_use_ids,
     )
     items: list[RuntimeTimelineItem] = []
     matches = client_message_matches or {}
@@ -448,7 +448,7 @@ def _history_tool_call_context(
     messages: tuple[Any, ...],
 ) -> tuple[dict[str, ClaudePendingToolCall], frozenset[str]]:
     calls: dict[str, ClaudePendingToolCall] = {}
-    ignored_task_tool_use_ids: set[str] = set()
+    hidden_tool_use_ids: set[str] = set()
     turn_seed: str | None = None
     turn_index = 0
     for message in messages:
@@ -464,14 +464,14 @@ def _history_tool_call_context(
         for block in message_tool_blocks(message):
             if block.block_type != "tool_use":
                 continue
-            if is_task_event_tool_name(block.tool_name):
-                ignored_task_tool_use_ids.add(block.tool_use_id)
+            if is_hidden_tool_name(block.tool_name):
+                hidden_tool_use_ids.add(block.tool_use_id)
                 continue
             calls[block.tool_use_id] = ClaudePendingToolCall(
                 block=block,
                 turn_id=turn_id,
             )
-    return calls, frozenset(ignored_task_tool_use_ids)
+    return calls, frozenset(hidden_tool_use_ids)
 
 
 async def _match_history_client_messages(

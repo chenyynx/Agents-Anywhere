@@ -162,7 +162,7 @@ class ClaudeHistorySyncer:
             message for message in sync_messages if id(message) in visible_ids
         )
         session = _history_session(session_id, external_session_id, info)
-        tool_call_lookup, ignored_task_tool_use_ids = await asyncer.asyncify(
+        tool_call_lookup, hidden_tool_use_ids = await asyncer.asyncify(
             _history_tool_call_context
         )(
             session,
@@ -179,7 +179,7 @@ class ClaudeHistorySyncer:
             sync_messages,
             client_message_matches=client_message_matches,
             tool_call_lookup=tool_call_lookup,
-            ignored_task_tool_use_ids=ignored_task_tool_use_ids,
+            hidden_tool_use_ids=hidden_tool_use_ids,
         )
         snapshot = RuntimeTimelineSnapshot(
             session_id=session_id,

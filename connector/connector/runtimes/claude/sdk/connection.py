@@ -23,6 +23,7 @@ from connector.runtimes.claude.sdk.events import (
     is_result_message,
     terminal_event_from_message,
 )
+from connector.runtimes.claude.sdk.title_tool import is_title_tool_name
 from connector.runtimes.claude.timeline.messages import (
     is_synthetic_control_message,
     message_id,
@@ -299,6 +300,17 @@ class ClaudeConnection:
                     "hookEventName": "PreToolUse",
                     "permissionDecision": "allow" if allowed else "deny",
                     "permissionDecisionReason": "AA maintenance only reads the scheduled task list.",
+                }
+            }
+        if is_title_tool_name(data.get("tool_name")):
+            # Session titles are connector bookkeeping — they must never
+            # surface as an approval request in the client. Auto-allow after
+            # the maintenance gate above (reconcile turns stay locked down).
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": "Session titles are set by the connector.",
                 }
             }
         return {}

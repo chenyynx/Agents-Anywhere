@@ -36,6 +36,7 @@ def new_sdk_client(
     cli_models: Sequence[Mapping[str, Any]] = (),
     on_tool_result: Any | None = None,
     before_tool: Any | None = None,
+    title_control: Any | None = None,
 ) -> Any:
     options = build_sdk_options(
         sdk,
@@ -47,6 +48,7 @@ def new_sdk_client(
         cli_models=cli_models,
         on_tool_result=on_tool_result,
         before_tool=before_tool,
+        title_control=title_control,
     )
     if client_factory is not None:
         return client_factory(sdk, options)
@@ -69,6 +71,7 @@ def build_sdk_options(
     cli_models: Sequence[Mapping[str, Any]] = (),
     on_tool_result: Any | None = None,
     before_tool: Any | None = None,
+    title_control: Any | None = None,
 ) -> Any:
     values = dict(config_values)
     kwargs: dict[str, Any] = {
@@ -110,6 +113,18 @@ def build_sdk_options(
     hooks = _permission_hooks(sdk, on_tool_result, before_tool)
     if hooks is not None:
         kwargs["hooks"] = hooks
+    if title_control is not None:
+        # Agent-set session titles (see sdk/title_tool.py): inject the
+        # in-process change_title MCP server and extend Claude Code's own
+        # system prompt. The preset form is the SDK's supported way to extend
+        # the default prompt; callers passing no control keep options exactly
+        # as they were (the model-discovery path in catalogs/discovery.py).
+        kwargs["mcp_servers"] = {title_control.server_name: title_control.server}
+        kwargs["system_prompt"] = {
+            "type": "preset",
+            "preset": "claude_code",
+            "append": title_control.system_prompt,
+        }
     options_cls = getattr(sdk, "ClaudeAgentOptions", None) or getattr(
         sdk,
         "ClaudeCodeOptions",

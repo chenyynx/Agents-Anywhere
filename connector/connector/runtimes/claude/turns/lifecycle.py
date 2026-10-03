@@ -234,26 +234,37 @@ class ClaudeTurnRunner:
                 # Reserve the single client-visible slot atomically (R2): a
                 # watchdog firing concurrently must not double-report.
                 connection.stuck_timeout_reports += 1
-        if not await self.finish_execution(
-            session=session,
-            execution=execution,
-            terminal=failed_terminal_event(
-                code="claude_scheduled_turn_timeout",
-                message=(
-                    "Scheduled work did not report a result within "
-                    f"{int(timeout)} seconds"
-                ),
-                reason="scheduled_watchdog_timeout",
-            ),
-            response=response,
-            publish=publish,
-        ):
-            # The turn settled by itself inside the race window; its own exit
-            # path already decided what happens to the transport. Release the
-            # reserved slot so a later genuine timeout can still report.
+
+        async def release_reserved_slot() -> None:
             if publish:
                 async with connection.stuck_report_lock:
                     connection.stuck_timeout_reports -= 1
+
+        try:
+            settled = await self.finish_execution(
+                session=session,
+                execution=execution,
+                terminal=failed_terminal_event(
+                    code="claude_scheduled_turn_timeout",
+                    message=(
+                        "Scheduled work did not report a result within "
+                        f"{int(timeout)} seconds"
+                    ),
+                    reason="scheduled_watchdog_timeout",
+                ),
+                response=response,
+                publish=publish,
+            )
+        except BaseException:
+            # A publication that raised (host I/O) must not leak the reserved
+            # slot: a later genuine timeout still has to reach the ledger (R3).
+            await release_reserved_slot()
+            raise
+        if not settled:
+            # The turn settled by itself inside the race window; its own exit
+            # path already decided what happens to the transport. Release the
+            # reserved slot so a later genuine timeout can still report.
+            await release_reserved_slot()
             return
         await self.retire_stuck_transport(session, execution, response)
 

@@ -38,10 +38,12 @@ from typing import Any
 import pytest
 from claude_agent_sdk._internal.message_parser import parse_message
 
+from connector.runtimes.claude.domain.session import ClaudeExecution
 from connector.runtimes.claude.sdk.background import (
     ClaudeBackgroundTasks,
     is_background_activity,
 )
+from connector.runtimes.claude.sdk.connection import ClaudeResponse
 from connector.runtimes.claude.turns import lifecycle
 from test_claude_compact_ghost import (
     _runtime_with,
@@ -501,6 +503,179 @@ def test_repeat_stuck_turns_report_at_most_one_failure_per_connection() -> None:
             assert connection.background.active_ids
             # Repeat timeouts still drive the session state off "running".
             assert host.session_state_updates[-1]["status"] == "error"
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------
+# 7. Limiter atomicity and reservation release (R2/R3 hardening)
+# --------------------------------------------------------------------------
+
+
+class _YieldingHost(_RecordingHost):
+    """A host that actually suspends in session_turn_ended, like real I/O."""
+
+    async def session_turn_ended(self, **kwargs: Any) -> None:
+        await asyncio.sleep(0.03)
+        await super().session_turn_ended(**kwargs)
+
+
+class _FailingTurnEndHost(_RecordingHost):
+    """Host whose next session_turn_ended raises, like a transient I/O error."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_next = False
+
+    async def session_turn_ended(self, **kwargs: Any) -> None:
+        if self.fail_next:
+            self.fail_next = False
+            raise RuntimeError("host io down")
+        await super().session_turn_ended(**kwargs)
+
+
+def test_limiter_is_atomic_across_concurrent_watchdogs() -> None:
+    """R2: two watchdogs firing concurrently must publish exactly once."""
+
+    async def run() -> None:
+        client = _ScheduledClaudeClient()
+        host = _YieldingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            await runtime.start_turn("race", None, "hello")
+            session = runtime._sessions["race"]
+            await asyncio.wait_for(session.active_task, 5)
+            runner = runtime._turns.runner
+            connection = runner.connections["race"]
+            connection.background.active_ids.add("bg-live")  # keep retirement off
+
+            first = ClaudeExecution(turn_id="turn_race_a")
+            second = ClaudeExecution(turn_id="turn_race_b")
+            session.execution = second
+            session.queued_execution = first
+            first_response = ClaudeResponse(connection)
+            second_response = ClaudeResponse(connection)
+            connection.current = first_response
+
+            await asyncio.gather(
+                runner._scheduled_watchdog(session, first, first_response, 0.0),
+                runner._scheduled_watchdog(session, second, second_response, 0.0),
+            )
+
+            failed = [
+                end for end in host.session_turn_ends if end["outcome"] == "failed"
+            ]
+            assert len(failed) == 1, (
+                f"atomic limiter must publish exactly once, saw {failed}"
+            )
+            assert failed[0]["turn_id"] in {"turn_race_a", "turn_race_b"}
+            assert connection.stuck_timeout_reports == 1
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_raced_away_reservation_is_released() -> None:
+    """R2: a fire that loses its race window frees the slot for a later report."""
+
+    async def run() -> None:
+        client = _ScheduledClaudeClient()
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            await runtime.start_turn("release", None, "hello")
+            session = runtime._sessions["release"]
+            await asyncio.wait_for(session.active_task, 5)
+            runner = runtime._turns.runner
+            connection = runner.connections["release"]
+            connection.background.active_ids.add("bg-live")
+
+            raced = ClaudeExecution(turn_id="turn_raced")
+            genuine = ClaudeExecution(turn_id="turn_genuine")
+            session.execution = raced
+            raced_response = ClaudeResponse(connection)
+            connection.current = raced_response
+
+            # Hold the finalization lock so the timed-out watchdog suspends
+            # inside finish_execution; meanwhile the turn settles by itself.
+            await raced.finalization_lock.acquire()
+            task = asyncio.create_task(
+                runner._scheduled_watchdog(session, raced, raced_response, 0.0)
+            )
+            for _ in range(5):
+                await asyncio.sleep(0)
+            raced.finished.set()
+            session.execution = genuine
+            raced.finalization_lock.release()
+            await asyncio.wait_for(task, 5)
+
+            assert connection.stuck_timeout_reports == 0, "reservation leaked"
+            assert not [
+                end
+                for end in host.session_turn_ends
+                if end["turn_id"] == "turn_raced"
+            ]
+
+            # A later genuine timeout still reports.
+            genuine_response = ClaudeResponse(connection)
+            connection.current = genuine_response
+            await runner._scheduled_watchdog(session, genuine, genuine_response, 0.0)
+            reports = [
+                end
+                for end in host.session_turn_ends
+                if end["turn_id"] == "turn_genuine"
+            ]
+            assert reports and reports[-1]["outcome"] == "failed"
+            assert connection.stuck_timeout_reports == 1
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_reservation_released_when_publish_raises() -> None:
+    """R3: a host failure inside publication must not leak the reserved slot."""
+
+    async def run() -> None:
+        client = _ScheduledClaudeClient()
+        host = _FailingTurnEndHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            await runtime.start_turn("ioerr", None, "hello")
+            session = runtime._sessions["ioerr"]
+            await asyncio.wait_for(session.active_task, 5)
+            runner = runtime._turns.runner
+            connection = runner.connections["ioerr"]
+            connection.background.active_ids.add("bg-live")
+
+            first = ClaudeExecution(turn_id="turn_io_a")
+            first_response = ClaudeResponse(connection)
+            session.execution = first
+            connection.current = first_response
+            host.fail_next = True
+            with pytest.raises(RuntimeError):
+                await runner._scheduled_watchdog(
+                    session, first, first_response, 0.0
+                )
+
+            assert connection.stuck_timeout_reports == 0, "reservation leaked"
+
+            # The later genuine timeout still reaches the ledger.
+            second = ClaudeExecution(turn_id="turn_io_b")
+            second_response = ClaudeResponse(connection)
+            session.execution = second
+            connection.current = second_response
+            await runner._scheduled_watchdog(session, second, second_response, 0.0)
+            reports = [
+                end
+                for end in host.session_turn_ends
+                if end["turn_id"] == "turn_io_b"
+            ]
+            assert reports and reports[-1]["outcome"] == "failed"
+            assert connection.stuck_timeout_reports == 1
         finally:
             await runtime.stop()
 

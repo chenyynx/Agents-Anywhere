@@ -167,8 +167,10 @@ class ClaudeConnection:
     # Repeat ghosts (unknown frames minting again while background work keeps
     # the transport alive) still force-fail and release the lock, but only the
     # first one reaches the client as a failed-turn report; the session state
-    # still updates on every repeat.
+    # still updates on every repeat. The lock makes check-and-reserve atomic
+    # across concurrently firing watchdogs (R2).
     stuck_timeout_reports: int = 0
+    stuck_report_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
     def retained(self) -> bool:

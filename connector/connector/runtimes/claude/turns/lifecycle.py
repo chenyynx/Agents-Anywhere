@@ -228,7 +228,12 @@ class ClaudeTurnRunner:
             execution.turn_id,
         )
         connection = response.connection
-        publish = connection.stuck_timeout_reports == 0
+        async with connection.stuck_report_lock:
+            publish = connection.stuck_timeout_reports == 0
+            if publish:
+                # Reserve the single client-visible slot atomically (R2): a
+                # watchdog firing concurrently must not double-report.
+                connection.stuck_timeout_reports += 1
         if not await self.finish_execution(
             session=session,
             execution=execution,
@@ -244,12 +249,12 @@ class ClaudeTurnRunner:
             publish=publish,
         ):
             # The turn settled by itself inside the race window; its own exit
-            # path already decided what happens to the transport.
+            # path already decided what happens to the transport. Release the
+            # reserved slot so a later genuine timeout can still report.
+            if publish:
+                async with connection.stuck_report_lock:
+                    connection.stuck_timeout_reports -= 1
             return
-        if publish:
-            # Count only the report that actually went out, so a raced-away
-            # first fire cannot silence a later genuine one.
-            connection.stuck_timeout_reports += 1
         await self.retire_stuck_transport(session, execution, response)
 
     async def retire_stuck_transport(

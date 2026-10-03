@@ -23,6 +23,10 @@ from connector.runtimes.claude.sdk.events import (
     is_result_message,
     terminal_event_from_message,
 )
+from connector.runtimes.claude.sdk.tasks import (
+    ClaudeTaskEvent,
+    task_event_from_message,
+)
 from connector.runtimes.claude.sdk.title_tool import is_title_tool_name
 from connector.runtimes.claude.timeline.messages import (
     is_synthetic_control_message,
@@ -148,6 +152,12 @@ class ClaudeConnection:
     on_idle: Callable[[ClaudeConnection], Awaitable[None]]
     on_background_done: Callable[[ClaudeConnection], Awaitable[None]]
     cleanup: Callable[[], None]
+    # L2 subagent progress (claude-subagent-progress-tasks.md §3.4). Both are
+    # optional so a transport built without them keeps the pre-L2 behavior
+    # (task frames absorbed, parented frames dropped) — aggregation is display
+    # state and must never be a dependency of the session lifecycle.
+    on_task_event: Callable[[ClaudeTaskEvent], Awaitable[None]] | None = None
+    on_background_frame: Callable[[Any], Awaitable[None]] | None = None
     idle_timeout_seconds: float = 600.0
     task: asyncio.Task[None] | None = None
     idle_task: asyncio.Task[None] | None = None
@@ -380,6 +390,15 @@ class ClaudeConnection:
                             self.background_done_task = asyncio.create_task(
                                 self.on_background_done(self)
                             )
+                    # L2: the observe point is the only place that sees task
+                    # frames both mid-turn and at silence (in-turn they are
+                    # discarded later as unprojectable; at silence they were
+                    # absorbed outright). The fold itself only publishes the
+                    # Agent card and must not mint anything.
+                    if self.on_task_event is not None:
+                        agent_event = task_event_from_message(message)
+                        if agent_event is not None:
+                            await self.on_task_event(agent_event)
                 background_activity = is_background_activity(message)
                 if background_activity:
                     # Frames parented to a tool use are activity *inside* a
@@ -433,6 +452,17 @@ class ClaudeConnection:
                             # minted ghost used to get the transport retired
                             # 30 s later, killing the very subagents whose
                             # frames it was minted from (2026-10-02).
+                            #
+                            # L2: the same guard is the capture point — the
+                            # frame is routed to the timeline projector so the
+                            # subagent's work is visible (and folds into its
+                            # Agent card) instead of being dropped. The route
+                            # is the strict complement of the in-turn queue
+                            # below, so no frame is projected twice, and the
+                            # callback publishes items only — still no turn is
+                            # minted here.
+                            if self.on_background_frame is not None:
+                                await self.on_background_frame(message)
                             continue
                         await self.select_response(ClaudeResponse(self))
                     else:

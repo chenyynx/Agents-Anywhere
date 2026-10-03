@@ -301,7 +301,11 @@ def test_parented_frames_never_mint_a_scheduled_turn(frame: dict[str, Any]) -> N
             assert session.execution is None, "a parented frame must not mint"
             assert session.queued_execution is None
             assert len(host.session_turn_ends) == 1
-            assert len(host.timeline_item_upserts) == items_before
+            # L2 (2026-10-03): the guard still mints nothing, but the frame is
+            # now captured and projected for the SubAgent progress display, so
+            # the invariant here is "no turn", not "no row" — the row and its
+            # parentItemId are pinned in test_claude_subagent_progress.py.
+            assert len(host.timeline_item_upserts) > items_before
         finally:
             await runtime.stop()
 

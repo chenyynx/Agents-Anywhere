@@ -31,8 +31,12 @@ from connector.runtime_protocol import (
 from connector.runtimes.claude.domain.session import ClaudeSession
 from connector.runtimes.claude.sdk.title_tool import is_title_tool_name
 from connector.runtimes.claude.timeline.agent_calls import (
+    ClaudeAgentCallCard,
+    ClaudeAgentTaskOverlay,
     claude_agent_call_content,
     complete_claude_agent_call_content,
+    is_async_agent_receipt,
+    resolve_agent_card_status,
 )
 
 CLAUDE_INTERRUPTED_REQUEST_MARKERS = frozenset(
@@ -118,6 +122,11 @@ class ClaudeMessageProjector:
         self._tool_calls: dict[str, ClaudePendingToolCall] = {}
         self._tool_call_lookup = dict(tool_call_lookup or {})
         self._hidden_tool_use_ids: set[str] = set(hidden_tool_use_ids or ())
+        # L2 subagent progress: live state of every Agent call card this
+        # projector has minted, keyed by the card's stable item id. The card
+        # carries the wire-projected content and the task-event overlay
+        # separately so either writer can land first (see agent_calls.py).
+        self._agent_cards: dict[str, ClaudeAgentCallCard] = {}
 
     def message_item(
         self,
@@ -352,43 +361,114 @@ class ClaudeMessageProjector:
             if pending is None:
                 pending = self._tool_call_lookup.get(block.tool_use_id)
             call = pending.block if pending is not None else None
-            result_turn_id = pending.turn_id if pending is not None else turn_id
+            item_turn_id = pending.turn_id if pending is not None else turn_id
+            # The pending call knows the parent; an orphaned result frame can
+            # still name its own parent (subagent tool results at silence).
             parent_item_id = _parent_tool_item_id(session, call)
-            return ToolTimelineItem(
-                id=item_id,
-                type="tool",
-                status="failed" if block.is_error else "done",
-                role="tool",
-                turn_id=result_turn_id,
-                content=_tool_result_content(block, call, parent_item_id),
-                source=TimelineSource(
-                    runtime="claude",
-                    external_session_id=session.external_session_id,
-                    turn_id=result_turn_id,
-                    native_item_id=block.tool_use_id,
-                    native_item_type=block.block_type,
-                    event=f"claude.{block.block_type}",
-                ),
-            ).to_platform_item(session_id=session.session_id, order_seq=order_seq)
+            if parent_item_id is None and call is None:
+                parent_item_id = _parent_tool_item_id(session, block)
+            content = _tool_result_content(block, call, parent_item_id)
+            status = "failed" if block.is_error else "done"
+            if (
+                call is not None
+                and call.tool_name == "Agent"
+                and is_async_agent_receipt(block.tool_result_metadata)
+            ):
+                # L2: the async launch receipt is metadata, not an outcome —
+                # the card keeps running until task_updated/task_notification
+                # closes it. Foreground (sync) calls still land done here.
+                status = "running"
+        else:
+            self._tool_calls[item_id] = ClaudePendingToolCall(
+                block=block, turn_id=turn_id
+            )
+            item_turn_id = turn_id
+            content = _tool_call_content(
+                block,
+                parent_item_id=_parent_tool_item_id(session, block),
+            )
+            status = "running"
 
-        self._tool_calls[item_id] = ClaudePendingToolCall(block=block, turn_id=turn_id)
+        if isinstance(content, AgentCallToolContent):
+            status, content = self._fold_agent_card(
+                item_id, item_turn_id, status, content
+            )
+
         return ToolTimelineItem(
             id=item_id,
             type="tool",
-            status="running",
+            status=status,  # type: ignore[arg-type]
             role="tool",
-            turn_id=turn_id,
-            content=_tool_call_content(
-                block,
-                parent_item_id=_parent_tool_item_id(session, block),
-            ),
+            turn_id=item_turn_id,
+            content=content,
             source=TimelineSource(
                 runtime="claude",
                 external_session_id=session.external_session_id,
-                turn_id=turn_id,
+                turn_id=item_turn_id,
                 native_item_id=block.tool_use_id,
                 native_item_type=block.block_type,
                 event=f"claude.{block.block_type}",
+            ),
+        ).to_platform_item(session_id=session.session_id, order_seq=order_seq)
+
+    def _fold_agent_card(
+        self,
+        item_id: str,
+        turn_id: str,
+        status: str,
+        content: AgentCallToolContent,
+    ) -> tuple[str, AgentCallToolContent]:
+        """Remember one wire-projected Agent card and merge live task state.
+
+        The card's two writers — the dispatch/receipt frames projected here
+        and the task events folded by ``fold_agent_task_event`` — consume the
+        same stream through different queues, so either can land first.
+        Keeping this wire content and the event overlay apart makes every
+        publication convergent, and the resolved status keeps the most final
+        one (the terminal closure is idempotent).
+        """
+
+        card = self._agent_cards.setdefault(item_id, ClaudeAgentCallCard())
+        card.turn_id = turn_id
+        card.content = content
+        card.status = resolve_agent_card_status(card.status, status)
+        return card.status, card.overlay.apply(content)
+
+    def fold_agent_task_event(
+        self,
+        session: ClaudeSession,
+        *,
+        tool_use_id: str,
+        overlay: ClaudeAgentTaskOverlay,
+        status: str | None,
+    ) -> RuntimeTimelineItem:
+        """Fold one task event into its Agent card and return the item to publish.
+
+        The item keeps the card's stable id and order slot, so every fold
+        upserts the one card the dispatch minted, and a projection that
+        arrives later republishes the same base with this same overlay.
+        """
+
+        item_id = stable_tool_item_id(session, tool_use_id)
+        order_seq = self.order_seq_for(item_id)
+        card = self._agent_cards.setdefault(item_id, ClaudeAgentCallCard())
+        card.overlay.merge(overlay)
+        card.status = resolve_agent_card_status(card.status, status)
+        base = card.content or card.overlay.synthesized_call(tool_use_id)
+        return ToolTimelineItem(
+            id=item_id,
+            type="tool",
+            status=card.status,  # type: ignore[arg-type]
+            role="tool",
+            turn_id=card.turn_id,
+            content=card.overlay.apply(base),
+            source=TimelineSource(
+                runtime="claude",
+                external_session_id=session.external_session_id,
+                turn_id=card.turn_id,
+                native_item_id=tool_use_id,
+                native_item_type="tool_use",
+                event="claude.agent.task",
             ),
         ).to_platform_item(session_id=session.session_id, order_seq=order_seq)
 
@@ -695,6 +775,12 @@ def _tool_call_content(
         "toolUseId": block.tool_use_id,
         "toolName": tool_name,
         "input": block.tool_input,
+        # L2: a frame parented to a tool call belongs to that call's card.
+        # AgentCallToolContent already publishes this convention for nested
+        # Agent calls; ordinary tool rows minted from subagent frames now carry
+        # it too so clients can fold them into the Agent card. Main-agent rows
+        # (no parent) are untouched.
+        **({"parentItemId": parent_item_id} if parent_item_id is not None else {}),
     }
     if tool_name == "Bash":
         command = _string(tool_input.get("command") or tool_input.get("cmd")) or ""
@@ -822,6 +908,9 @@ def _tool_result_content(
             **result_metadata,
             "result": block.tool_result,
             "orphan": True,
+            # Same L2 convention as the call rows: a subagent's orphaned result
+            # still names the card it belongs to.
+            **({"parentItemId": parent_item_id} if parent_item_id is not None else {}),
         },
     )
 

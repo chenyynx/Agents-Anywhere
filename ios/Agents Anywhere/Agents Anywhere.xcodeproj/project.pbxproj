@@ -267,7 +267,7 @@
 		000000000000000111000000 /* Debug configuration for PBXNativeTarget "Agents Anywhere" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = "ios-dark";
+				ASSETCATALOG_COMPILER_APPICON_NAME = "AppIcon";
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = MacCatalyst.entitlements;
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
@@ -324,7 +324,7 @@
 		000000000000000112000000 /* Release configuration for PBXNativeTarget "Agents Anywhere" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = "ios-dark";
+				ASSETCATALOG_COMPILER_APPICON_NAME = "AppIcon";
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = MacCatalyst.entitlements;
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";

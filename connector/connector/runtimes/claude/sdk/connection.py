@@ -78,6 +78,18 @@ class ClaudeResponse:
     discard: bool = False
     maintenance: bool = False
     task_snapshot: set[str] | None = None
+    # The frame whose arrival at silence cast this response into a turn,
+    # stamped by the reader's mint branch below before `select_response`
+    # hands the response to `on_activity`. Structural, not a frame type:
+    # whichever shape carried the cast, it arrived passively — no prompt was
+    # accepted for it and the turn did nothing to earn it — so `drive_turn`
+    # must not read it as evidence that this turn did work (B1 §6: the
+    # evidence may not be the casting frame itself). `drive_turn` reads it as
+    # a POSITION marker: everything the reader flushed ahead of it (the
+    # preamble parked at silence) plus the cast frame itself is passive; only
+    # what follows counts. Human/pending turns never stamp it; they are not
+    # armed and count every frame as before.
+    cast_frame: Any = None
 
     async def connect(self) -> None:
         await self.connection.connect()
@@ -464,7 +476,14 @@ class ClaudeConnection:
                             if self.on_background_frame is not None:
                                 await self.on_background_frame(message)
                             continue
-                        await self.select_response(ClaudeResponse(self))
+                        # The mint branch: this frame is about to cast a
+                        # scheduled turn, so it is stamped as the response's
+                        # `cast_frame` before `on_activity` spawns the turn —
+                        # `drive_turn` then excludes it from the content gate
+                        # (it is passive arrival, not this turn's labour).
+                        await self.select_response(
+                            ClaudeResponse(self, cast_frame=message)
+                        )
                     else:
                         continue
                 response = self.current

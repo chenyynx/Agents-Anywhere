@@ -19,6 +19,49 @@ class ClaudeExecution:
     interrupt_reason: str | None = None
     finalization_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     finished: asyncio.Event = field(default_factory=asyncio.Event)
+    # How much of this execution actually reached the user, counted by
+    # `drive_turn` at its publish and consumption points. Both start at zero,
+    # so a turn minted out of silence that never projects anything and only
+    # ever sees chrome replay stays at (0, 0) — which is exactly the ghost
+    # signature the scheduled-turn breaker exists to reap quickly. A turn that
+    # published a timeline item, or consumed a non-chrome wire frame even when
+    # every one of those frames was dropped before publication, has left the
+    # fast kill and is bounded only by the absolute ceiling.
+    #
+    # What NEVER counts is everything the queue already held when the turn
+    # was born: the reader's preamble flush and then the frame that cast the
+    # turn itself (B5 finding, 2026-10-03: a re-cast's lone in-flight
+    # `tool_result`/StreamEvent arrived and was booked as labour, parking
+    # residue ghosts on the 600s ceiling — ten minutes of held execution lock
+    # for a turn that would never settle; a stale compact marker riding in
+    # front of it in the preamble could do the same). The exclusion is
+    # positional, never by shape (`drive_turn` compares queue position
+    # against `ClaudeResponse.cast_frame`), so no wire shape can be
+    # enumerated into or out of the gate.
+    #
+    # Deliberately NOT the final answer text: production turn jmD_zip lost 1613
+    # thinking deltas inside 30s and still published nothing, so an answer-text
+    # anchor would keep killing exactly the turns this is meant to save.
+    # Deliberately not `published_items` alone either: the dropped-frame turns
+    # have `published_items == 0` with `consumed_frames > 0`.
+    #
+    # Counting is unconditional (human turns included) because a counter that
+    # only moved on one branch would be a behaviour difference in itself; it
+    # lives on the per-turn dataclass, so nothing leaks across turns.
+    published_items: int = 0
+    consumed_frames: int = 0
+
+    @property
+    def has_turn_content(self) -> bool:
+        """Whether this execution left the zero-content ghost class.
+
+        The content gate of the scheduled-turn watchdog: labour the turn did
+        after its own cast, counted only from frames other than the casting
+        frame. Read at the fast-kill deadline only; the absolute ceiling is
+        unaffected either way.
+        """
+
+        return self.published_items > 0 or self.consumed_frames > 0
 
 
 @dataclass(slots=True)

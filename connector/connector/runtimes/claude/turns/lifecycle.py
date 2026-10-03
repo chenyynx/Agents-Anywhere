@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -32,7 +32,11 @@ from connector.runtimes.claude.sdk.client import (
     query_client,
     receive_response_messages,
 )
-from connector.runtimes.claude.sdk.connection import ClaudeConnection, ClaudeResponse
+from connector.runtimes.claude.sdk.connection import (
+    ClaudeConnection,
+    ClaudeResponse,
+    _is_wire_chrome,
+)
 from connector.runtimes.claude.sdk.events import (
     ClaudeTerminalEvent,
     failed_terminal_event,
@@ -79,7 +83,29 @@ from connector.runtimes.claude.turns.interactions import ClaudeInteractionContro
 # The execution-lock circuit breaker (pp verdict, 2026-10-02, product-level):
 # guarding a minted-from-silence turn is invariant-shaped, not trigger-shaped,
 # so the deadline is a fixed budget any unknown wire shape falls into.
+#
+# This budget governs the ZERO-CONTENT class only (claude-watchdog-longrun-
+# tasks.md §2 G1/G3). A turn that published a timeline item or consumed a
+# non-chrome wire frame is a real long-running turn — the shape a subagent
+# wake-up or a post-compaction resume takes — and the pure timer used to kill
+# it at 30.002s regardless (production 17/17 firings), which retired the
+# transport, killed the host CLI and every subagent in it, and lost the reply.
 POLLED_TURN_WATCHDOG_SECONDS = 30.0
+
+# The absolute ceiling for a turn that left the zero-content class. It exists
+# so the content gate cannot become "long turns never settle" — the red line
+# in §5 — and it is deliberately on the same magnitude as the CLI's own tool
+# timeouts (Bash 600s, 420s; `idleTimeoutSeconds=600`). The longest tool this
+# product has ever been observed running is 223.4s (AskUserQuestion), so the
+# headroom is wide; the timing is measured from the cast, not from when the
+# content showed up.
+CONTENTING_TURN_WATCHDOG_SECONDS = 600.0
+
+# G4: why the breaker fired. The two values are the whole diagnosis of a
+# watchdog log line, so they are named once and reused by the fire line, the
+# retirement-skip line and the fatal-close line.
+WATCHDOG_REASON_ZERO_CONTENT = "zero_content_fast_kill"
+WATCHDOG_REASON_CONTENT_CEILING = "containing_turn_ceiling"
 
 
 @dataclass(slots=True)
@@ -212,11 +238,28 @@ class ClaudeTurnRunner:
         terminal, release the lock and surface a one-line WARNING. The worst
         possible user experience is capped at one failed bubble instead of a
         session that is permanently running with the composer disabled.
+
+        The deadline this used to apply unconditionally is now two-stage
+        (§2 G1–G3 of claude-watchdog-longrun-tasks.md). The zero-content class
+        keeps the original budget, so the P0 above is untouched; a turn that
+        published items or consumed non-chrome frames leaves the fast kill and
+        is only bounded by an absolute ceiling. Both counts exclude everything
+        the queue held up to and including the cast frame — preamble flush +
+        cast, by position, because passive arrival is not labour — so a
+        re-cast's lone residue frame (B5: in-flight `tool_result`,
+        StreamEvent), with or without stale preamble in front of it, still
+        lands in the fast kill it had before B3a instead of buying the ghost
+        ten minutes of held lock. The exemption is on the FAST KILL only — a
+        long turn can never become "never settled".
         """
 
-        timeout = POLLED_TURN_WATCHDOG_SECONDS
         execution.watchdog_task = asyncio.create_task(
-            self._scheduled_watchdog(session, execution, response, timeout)
+            self._scheduled_watchdog(
+                session,
+                execution,
+                response,
+                POLLED_TURN_WATCHDOG_SECONDS,
+            )
         )
 
     def disarm_scheduled_watchdog(self, execution: ClaudeExecution) -> None:
@@ -225,26 +268,67 @@ class ClaudeTurnRunner:
         if task is not None and task is not asyncio.current_task():
             task.cancel()
 
+    @staticmethod
+    async def _await_watchdog_deadlines(
+        execution: ClaudeExecution,
+        timeout: float,
+        ceiling: float,
+    ) -> str | None:
+        """Wait out both deadlines; return why the breaker has to fire.
+
+        `None` means the turn settled on its own and there is nothing to do.
+
+        The two deadlines are sequential rather than concurrent, which is what
+        "absolute ceiling" means: the fast kill is measured from the cast, and
+        the ceiling is a second wait covering only the time the first one left.
+        A turn that produces content at t=1s is re-armed for the remaining
+        570s; one that produces it at t=599s still has to settle by t=600s.
+        """
+
+        try:
+            await asyncio.wait_for(execution.finished.wait(), timeout)
+            return None
+        except TimeoutError:
+            pass
+        if not execution.has_turn_content:
+            return WATCHDOG_REASON_ZERO_CONTENT
+        try:
+            await asyncio.wait_for(
+                execution.finished.wait(), max(0.0, ceiling - timeout)
+            )
+            return None
+        except TimeoutError:
+            return WATCHDOG_REASON_CONTENT_CEILING
+
     async def _scheduled_watchdog(
         self,
         session: ClaudeSession,
         execution: ClaudeExecution,
         response: ClaudeResponse,
         timeout: float,
+        ceiling: float | None = None,
     ) -> None:
-        try:
-            await asyncio.wait_for(execution.finished.wait(), timeout)
+        if ceiling is None:
+            ceiling = CONTENTING_TURN_WATCHDOG_SECONDS
+        reason = await self._await_watchdog_deadlines(execution, timeout, ceiling)
+        if reason is None:
             return
-        except asyncio.TimeoutError:
-            pass
+        connection = response.connection
+        active_tasks = len(connection.background.active_ids)
         logger.warning(
-            "Claude scheduled turn watchdog fired (no terminal within {}s), "
+            "Claude scheduled turn watchdog fired reason={} "
+            "published_items={} consumed_frames={} active_tasks={} "
+            "no terminal within {}s (absolute ceiling {}s), "
             "forcing failed terminal session_id={} turn_id={}",
-            timeout,
+            reason,
+            execution.published_items,
+            execution.consumed_frames,
+            active_tasks,
+            timeout if reason == WATCHDOG_REASON_ZERO_CONTENT else ceiling,
+            ceiling,
             session.session_id,
             execution.turn_id,
         )
-        connection = response.connection
         async with connection.stuck_report_lock:
             publish = connection.stuck_timeout_reports == 0
             if publish:
@@ -265,7 +349,8 @@ class ClaudeTurnRunner:
                     code="claude_scheduled_turn_timeout",
                     message=(
                         "Scheduled work did not report a result within "
-                        f"{int(timeout)} seconds"
+                        f"{int(timeout if reason == WATCHDOG_REASON_ZERO_CONTENT else ceiling)}"
+                        " seconds"
                     ),
                     reason="scheduled_watchdog_timeout",
                 ),
@@ -283,13 +368,22 @@ class ClaudeTurnRunner:
             # reserved slot so a later genuine timeout can still report.
             await release_reserved_slot()
             return
-        await self.retire_stuck_transport(session, execution, response)
+        await self.retire_stuck_transport(
+            session,
+            execution,
+            response,
+            reason=reason,
+            client_reported=publish,
+        )
 
     async def retire_stuck_transport(
         self,
         session: ClaudeSession,
         execution: ClaudeExecution,
         response: ClaudeResponse,
+        *,
+        reason: str | None = None,
+        client_reported: bool = True,
     ) -> None:
         """Retire everything the stuck turn left behind on its connection.
 
@@ -338,10 +432,13 @@ class ClaudeTurnRunner:
             # the ghost response is dropped so the reader can route again.
             logger.warning(
                 "Claude stuck-turn retirement skipped: background work is live "
-                "session_id={} turn_id={} active_tasks={}",
+                "session_id={} turn_id={} active_tasks={} published_items={} "
+                "consumed_frames={}",
                 session.session_id,
                 execution.turn_id,
                 len(connection.background.active_ids),
+                execution.published_items,
+                execution.consumed_frames,
             )
             connection.drop_current(response)
             return
@@ -356,6 +453,26 @@ class ClaudeTurnRunner:
                     session.session_id,
                     exc,
                 )
+        # G4: this is the only branch that kills the host CLI process, and with
+        # it every subagent running inside that process. It is logged on its own
+        # line, BEFORE the close, and deliberately outside the client-visible
+        # limiter above: the limiter only decides whether the failed turn reaches
+        # the ledger, but a process death is not a ledger event, and on 2026-10-03
+        # 13:49 exactly this branch fired on a rate-limited watchdog
+        # (`stuck_timeout_reports` already spent) and left no server-side trace
+        # of a killed process anywhere. Server WARNING, not a ledger report.
+        logger.warning(
+            "Claude stuck transport retirement is FATAL: closing the host CLI "
+            "process and every subagent in it session_id={} turn_id={} "
+            "reason={} published_items={} consumed_frames={} active_tasks=0 "
+            "client_reported={}",
+            session.session_id,
+            execution.turn_id,
+            reason,
+            execution.published_items,
+            execution.consumed_frames,
+            client_reported,
+        )
         try:
             await connection.close()
         except Exception as exc:  # noqa: BLE001
@@ -765,7 +882,7 @@ class ClaudeTurnRunner:
                 # a visible marker instead of leaving the turn invisible. The
                 # marker is the session's, because the CLI's verdict for it
                 # usually arrives on a later turn than this one.
-                await self.open_command_compact_marker(session, turn_id)
+                await self.open_command_compact_marker(session, turn_id, execution)
             if client is None:
                 connection = await self.connection_for(session, stderr)
                 maintenance = connection.background_done_task
@@ -856,8 +973,39 @@ class ClaudeTurnRunner:
                     )
                 await query_client(client, effective_content)
 
+            # The frame that cast this turn out of silence, stamped by the
+            # reader's mint branch on the response itself. It is a structural
+            # fact — "was this the frame the cast arrived on" — never a frame
+            # type, because the trigger chain is not enumerable (C3).
+            #
+            # The gate is positional, covering BOTH halves of what was already
+            # in the queue when the turn was born: the reader's preamble flush
+            # (chrome parked at silence, delivered ahead of the cast frame)
+            # and the cast frame itself. Neither is this turn's own labour —
+            # the turn neither produced them nor chose to consume them, they
+            # arrived passively. Only what comes AFTER the turn's own cast
+            # counts, which is what separates the two ghosts the content gate
+            # must tell apart: re-cast residue (one in-flight tool's
+            # `tool_result` or a StreamEvent — with or without stale preamble
+            # in front of it — then nothing ever → stays (0, 0) → 30s fast
+            # kill) from a wake that keeps working (13:49: 248.6s, 155
+            # timeline items → leaves the fast kill, bounded only by the
+            # ceiling). Human/pending turns are never stamped
+            # (`cast_frame is None`) so `cast_reached` starts True and every
+            # post-cast frame is judged by the single `_is_wire_chrome`
+            # authority, exactly as a scheduled turn's are.
+            # Silence itself still proves nothing either way — no frame-based
+            # reset exists, so a legal `sleep 75` (72.003s of zero-frame
+            # silence) is never re-armed into a short deadline.
+            cast_frame = client.cast_frame
+            cast_reached = cast_frame is None
             emitted_final_assistant_content = False
             async for message in receive_response_messages(client):
+                # Position, not shape: the same payload would count one frame
+                # later.
+                counts_as_labour = cast_reached
+                if message is cast_frame:
+                    cast_reached = True
                 external_session_id = message_session_id(message)
                 if external_session_id is not None:
                     await self._update_external_session_id(session, external_session_id)
@@ -947,6 +1095,61 @@ class ClaudeTurnRunner:
                     and role in {"assistant", "system"}
                     and bool(text)
                 )
+                # Content-gate consumption point (§2 G1).
+                #
+                # The six-way test below IS a second authority on "did this turn
+                # produce something" — the first being `drive_turn`'s own branches.
+                # That duplication is deliberate and must stay in sync; it is
+                # pinned from the outside by
+                # `test_content_gate_counts_every_shape_that_projects_something`
+                # (property over the SDK frame corpus: a shape that projects an
+                # item MUST move the counter), so a future `drive_turn` branch that
+                # projects without matching one of these six shapes turns the suite
+                # red instead of silently under-counting into a false kill.
+                #
+                # DO NOT "de-duplicate" it into
+                # `counts_as_labour and not _is_wire_chrome(message)`. That form is
+                # shorter and looks like the obvious cleanup; it is wrong. It
+                # exempts any turn that receives a single non-chrome frame after the
+                # cast, which pushes a zero-content ghost out of the 30s fast kill
+                # and into the 600s ceiling — and a held execution lock refuses
+                # user messages outright (`turns/actions.py`:
+                # `claude_turn_already_running`), so that is ten minutes of an
+                # unusable session, bought to remove a hypothetical.
+                #
+                # The gate also trusts two structural facts — the frame is this turn's
+                # labour (past the cast: everything the queue held BEFORE and AT
+                # the cast is passive, set positionally by `counts_as_labour`) and
+                # the frame is not chrome (`_is_wire_chrome`, the single authority
+                # the reader itself gates minting on).
+                #
+                # DO NOT collapse this into `counts_as_labour and not
+                # _is_wire_chrome(message)`. That form is simpler and would remove
+                # the apparent duplication with `drive_turn` below — and it is
+                # wrong: it exempts any turn that receives one non-chrome frame
+                # after the cast, which pushes a zero-content ghost from the 30s
+                # fast kill out to the 600s ceiling. A held execution lock refuses
+                # user messages outright (`turns/actions.py`: `claude_turn_already_running`),
+                # so that is ten minutes of an unusable session, bought to remove a
+                # hypothetical. The duplication is instead pinned from the outside
+                # by `test_content_gate_counts_every_shape_that_projects_something`
+                # (property over the SDK frame corpus: projects an item ⇒ counts),
+                # so a future `drive_turn` branch that projects without counting
+                # turns the suite red instead of silently under-counting into a
+                # false kill.
+                if (
+                    counts_as_labour
+                    and not _is_wire_chrome(message)
+                    and (
+                        is_stream_event(message)
+                        or stream_item is not None
+                        or terminal_message is not None
+                        or bool(tool_items)
+                        or bool(system_items)
+                        or has_visible_message
+                    )
+                ):
+                    execution.consumed_frames += 1
                 if not user_message_published and (
                     stream_item is not None
                     or terminal_message is not None
@@ -964,8 +1167,10 @@ class ClaudeTurnRunner:
                     )
                     user_message_published = True
                 if stream_item is not None:
-                    await self.notifications.timeline_activity.timeline_item_upsert(
-                        stream_item
+                    await self.publish_items(
+                        execution,
+                        (stream_item,),
+                        counted=counts_as_labour,
                     )
                 if is_stream_event(message):
                     continue
@@ -974,39 +1179,45 @@ class ClaudeTurnRunner:
                     if not emitted_final_assistant_content:
                         text = message_text(message)
                         if text:
-                            await self.notifications.timeline_activity.timeline_item_upsert(
-                                self.timeline.message_item(
-                                    session=session,
-                                    turn_id=turn_id,
-                                    role="assistant",
-                                    text=text,
-                                    event="claude.turn.result",
-                                    native_item_id=message_id(message),
-                                    item_id=stream_accumulator.final_item_id(
-                                        session,
-                                        turn_id,
+                            await self.publish_items(
+                                execution,
+                                (
+                                    self.timeline.message_item(
+                                        session=session,
+                                        turn_id=turn_id,
+                                        role="assistant",
+                                        text=text,
+                                        event="claude.turn.result",
+                                        native_item_id=message_id(message),
+                                        item_id=stream_accumulator.final_item_id(
+                                            session,
+                                            turn_id,
+                                        ),
+                                        revision=stream_accumulator.next_final_revision(),
                                     ),
-                                    revision=stream_accumulator.next_final_revision(),
-                                )
+                                ),
+                                counted=counts_as_labour,
                             )
                             emitted_final_assistant_content = True
                             stream_accumulator.reset()
                     break
-                for item in tool_items:
-                    await self.notifications.timeline_activity.timeline_item_upsert(
-                        item
-                    )
-                for item in system_items:
-                    await self.notifications.timeline_activity.timeline_item_upsert(
-                        item
-                    )
+                await self.publish_items(
+                    execution, tool_items, counted=counts_as_labour
+                )
+                await self.publish_items(
+                    execution, system_items, counted=counts_as_labour
+                )
                 if compact_event is not None:
-                    await self.notifications.timeline_activity.timeline_item_upsert(
-                        self.markers.item_for_event(
-                            session=session,
-                            turn_id=turn_id,
-                            event=compact_event,
-                        )
+                    await self.publish_items(
+                        execution,
+                        (
+                            self.markers.item_for_event(
+                                session=session,
+                                turn_id=turn_id,
+                                event=compact_event,
+                            ),
+                        ),
+                        counted=counts_as_labour,
                     )
                 if suppressed_control:
                     continue
@@ -1014,21 +1225,25 @@ class ClaudeTurnRunner:
                     continue
                 if not text:
                     continue
-                await self.notifications.timeline_activity.timeline_item_upsert(
-                    self.timeline.message_item(
-                        session=session,
-                        turn_id=turn_id,
-                        role=role,
-                        text=text,
-                        event=f"claude.turn.{role}",
-                        native_item_id=message_id(message),
-                        item_id=stream_accumulator.final_item_id(session, turn_id)
-                        if role == "assistant"
-                        else None,
-                        revision=stream_accumulator.next_final_revision()
-                        if role == "assistant"
-                        else 1,
-                    )
+                await self.publish_items(
+                    execution,
+                    (
+                        self.timeline.message_item(
+                            session=session,
+                            turn_id=turn_id,
+                            role=role,
+                            text=text,
+                            event=f"claude.turn.{role}",
+                            native_item_id=message_id(message),
+                            item_id=stream_accumulator.final_item_id(session, turn_id)
+                            if role == "assistant"
+                            else None,
+                            revision=stream_accumulator.next_final_revision()
+                            if role == "assistant"
+                            else 1,
+                        ),
+                    ),
+                    counted=counts_as_labour,
                 )
                 if role == "assistant":
                     emitted_final_assistant_content = True
@@ -1116,7 +1331,7 @@ class ClaudeTurnRunner:
                     code="claude_turn_missing_terminal_state",
                     message="Claude turn stopped without a terminal state",
                 )
-            await self.settle_compact_markers(session, turn_id)
+            await self.settle_compact_markers(session, turn_id, execution)
             try:
                 await self.finish_execution(
                     session=session,
@@ -1156,33 +1371,65 @@ class ClaudeTurnRunner:
                             connection.arm_idle()
                         await self.refresh_idle_connection(session)
             try:
-                for item in stream_accumulator.finalize_pending_thinking(
-                    session,
-                    turn_id,
-                    self.timeline,
-                ):
-                    await self.notifications.timeline_activity.timeline_item_upsert(
-                        item
-                    )
+                await self.publish_items(
+                    execution,
+                    stream_accumulator.finalize_pending_thinking(
+                        session,
+                        turn_id,
+                        self.timeline,
+                    ),
+                )
             except Exception:  # noqa: BLE001
                 logger.exception(
                     "Claude reasoning flush failed session_id={}",
                     session.session_id,
                 )
 
+    async def publish_items(
+        self,
+        execution: ClaudeExecution,
+        items: Iterable[RuntimeTimelineItem],
+        *,
+        counted: bool = True,
+    ) -> None:
+        """Upsert one turn's projected items and count them for the content gate.
+
+        Every publish point inside `drive_turn` goes through here so
+        `published_items` cannot drift from what the user actually saw. The
+        count is bookkeeping only: nothing reads it unless a scheduled watchdog
+        is armed, and no human turn is.
+
+        `counted=False` is the cast-frame gate: items projected while
+        processing the frame that cast this turn still reach the user (the
+        projection itself must not change), but they are not evidence that the
+        turn did work — that frame arrived passively. Publication outside the
+        consume loop (compact markers, the reasoning flush) is the turn's own
+        action and always counts.
+        """
+
+        for item in items:
+            await self.notifications.timeline_activity.timeline_item_upsert(item)
+            if counted:
+                execution.published_items += 1
+
     async def open_command_compact_marker(
         self,
         session: ClaudeSession,
         turn_id: str,
+        execution: ClaudeExecution | None = None,
     ) -> None:
         """Publish the running marker a command turn owes before dispatch."""
 
         try:
-            for item in self.markers.open_command_marker(
+            items = self.markers.open_command_marker(
                 session=session,
                 turn_id=turn_id,
-            ):
-                await self.notifications.timeline_activity.timeline_item_upsert(item)
+            )
+            if execution is not None:
+                await self.publish_items(execution, items)
+            else:
+                for item in items:
+                    await self.notifications.timeline_activity.timeline_item_upsert(item)
         except Exception:  # noqa: BLE001
             logger.exception(
                 "Claude compaction marker open failed session_id={}",
@@ -1193,6 +1440,7 @@ class ClaudeTurnRunner:
         self,
         session: ClaudeSession,
         turn_id: str,
+        execution: ClaudeExecution | None = None,
     ) -> None:
         """Close a compaction marker this turn never proved complete.
 
@@ -1211,8 +1459,11 @@ class ClaudeTurnRunner:
 
         try:
             items = self.markers.settle_turn(session=session, turn_id=turn_id)
-            for item in items:
-                await self.notifications.timeline_activity.timeline_item_upsert(item)
+            if execution is not None:
+                await self.publish_items(execution, items)
+            else:
+                for item in items:
+                    await self.notifications.timeline_activity.timeline_item_upsert(item)
         except Exception:  # noqa: BLE001
             logger.exception(
                 "Claude compaction marker settle failed session_id={}",

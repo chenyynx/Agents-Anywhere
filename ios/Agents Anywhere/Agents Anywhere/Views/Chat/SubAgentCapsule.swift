@@ -56,10 +56,10 @@ enum SubAgentPalette {
     }
 
     static func capsuleDot(failure: Bool) -> Color {
-        failure ? failure : running
+        failure ? Self.failure : running
     }
 
     static func capsuleTint(failure: Bool) -> Color {
-        failure ? Color.red.opacity(0.40) : Color.indigo.opacity(0.45)
+        failure ? Self.failure.opacity(0.40) : running.opacity(0.45)
     }
 }

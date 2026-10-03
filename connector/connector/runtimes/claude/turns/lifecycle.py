@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import secrets
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
+from typing import Any
 
 from connector.logging import logger
 from connector.runtime_protocol import (
     RuntimeAttachment,
     RuntimeConfig,
     RuntimeTimelineItem,
+    timeline_content_hash,
 )
 from connector.runtime_protocol.host import RuntimeHostClient
 from connector.runtimes.claude.catalogs.reader import ClaudeCatalogReader
@@ -41,9 +44,13 @@ from connector.runtimes.claude.sdk.settings import (
     remove_gateway_settings_file,
 )
 from connector.runtimes.claude.sdk.stderr import ClaudeStderrBuffer
+from connector.runtimes.claude.sdk.tasks import ClaudeTaskEvent
 from connector.runtimes.claude.sdk.title_tool import build_change_title_tool
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 from connector.runtimes.claude.sessions.scheduled import ClaudeScheduledSessions
+from connector.runtimes.claude.timeline.agent_calls import (
+    agent_task_overlay_for_event,
+)
 from connector.runtimes.claude.timeline.markers import (
     ClaudeTimelineMarkers,
     claude_compact_event,
@@ -57,6 +64,7 @@ from connector.runtimes.claude.timeline.messages import (
     message_session_id,
     message_text,
     stable_message_item_id,
+    stable_tool_item_id,
 )
 from connector.runtimes.claude.timeline.stream import (
     ClaudeStreamAccumulator,
@@ -92,6 +100,14 @@ class ClaudeTurnRunner:
     # `connections`, so without this a breaker (or any failed turn) would
     # silently untrack a session's scheduled tasks.
     carried_task_ids: dict[str, set[str]] = field(default_factory=dict, init=False)
+    # L2 subagent progress: task_started binds (session_id, task_id) to the
+    # dispatch tool_use id — the double key verified against the wire (L2 A1
+    # findings §2) — because task_updated carries no tool_use_id at all. In
+    # memory only: task frames live and die with the transport that hosts the
+    # work (findings §8.7 on the pipeline's own dedup).
+    agent_task_calls: dict[tuple[str, str], str] = field(
+        default_factory=dict, init=False
+    )
     stopping: bool = False
     markers: ClaudeTimelineMarkers = field(init=False)
     scheduled_sessions: ClaudeScheduledSessions = field(init=False)
@@ -406,6 +422,174 @@ class ClaudeTurnRunner:
                 session.session_id,
             )
 
+    async def fold_agent_task_event(
+        self,
+        session: ClaudeSession,
+        event: ClaudeTaskEvent,
+    ) -> None:
+        """Fold one CLI task event into its Agent call card (L2 progress).
+
+        Aggregation is display state: it must never break the reader that
+        routes the session's frames (the L1 lesson — nothing on this path may
+        take a transport down), so every failure is logged and swallowed.
+
+        `local_bash` tasks — including the background Bash a subagent itself
+        runs — never surface: their tool ids point *inside* a subagent and
+        there is no card to fold them into (L2 §3.4, findings §8.11).
+        """
+
+        try:
+            key = (session.session_id, event.task_id)
+            if event.kind == "started":
+                # task_type exists only on task_started (the later frames
+                # name the task, not its kind), so the local_bash filter runs
+                # here and only a local_agent task is ever bound.
+                if event.task_type != "local_agent" or event.tool_use_id is None:
+                    return
+                # The double key (findings §2): task_started.tool_use_id is
+                # the dispatch call (== the card's metadata.toolUseId) and
+                # task_id is the receipt agentId (== the card's agents-map
+                # key). Binding here is what lets task_updated — which carries
+                # no tool_use_id at all — find its card.
+                self.agent_task_calls[key] = event.tool_use_id
+            # Every non-started frame resolves through the binding alone —
+            # never through its own tool_use_id, which for a local_bash task
+            # points *inside* the subagent and would attach a Bash row to a
+            # task that has no card (findings §8.11). An unbound task (its
+            # task_started was filtered or missed) is not projected.
+            tool_use_id = self.agent_task_calls.get(key)
+            if tool_use_id is None:
+                return
+            if (
+                event.session_id is not None
+                and session.external_session_id != event.session_id
+            ):
+                # The fold can run before the turn projection has adopted the
+                # native session id (the reader and the turn consume the same
+                # stream through different queues), and the card's stable item
+                # id is scoped by that id — adopting it here too keeps the
+                # event and the dispatch on one card instead of two.
+                await self._update_external_session_id(session, event.session_id)
+            overlay, status = agent_task_overlay_for_event(event)
+            item = self.timeline.fold_agent_task_event(
+                session,
+                tool_use_id=tool_use_id,
+                overlay=overlay,
+                status=status,
+            )
+            previous = session.timeline_items.get(item.id)
+            if (
+                previous is not None
+                and previous.status == item.status
+                and dict(previous.content) == dict(item.content)
+            ):
+                # Idempotent closure (L2 §3.4): the terminal burst repeats
+                # itself — an identical card is not republished here, and the
+                # batch coalesce / server dedup / content-hash no-op behind
+                # this still catches anything that does (findings §8.7).
+                return
+            await self.notifications.timeline_activity.timeline_item_upsert(item)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Claude task event folding failed session_id={} task_id={}",
+                session.session_id,
+                event.task_id,
+            )
+
+    async def project_background_frame(
+        self,
+        session: ClaudeSession,
+        message: Any,
+    ) -> None:
+        """Project one subagent frame that reached silence into the timeline.
+
+        L1 absorbs these frames so they can never mint a scheduled reply; L2
+        captures them at the same guard so the subagent's thinking, text and
+        tool rows become visible instead of dropped. The shared projector is
+        what already owns this session's item ids and order slots, so the rows
+        converge with the in-turn projection and the history rebuild — and
+        every row is attributed to the card the frame is parented to
+        (`content.parentItemId`; messages.py tags tool rows, helper below the
+        reasoning/message rows). Nothing here mints a turn.
+        """
+
+        try:
+            native_session_id = message_session_id(message)
+            if (
+                native_session_id is not None
+                and session.external_session_id != native_session_id
+            ):
+                # Same scope-adoption rule as the task fold: captured rows
+                # must hash under the native session id the turn uses.
+                await self._update_external_session_id(session, native_session_id)
+            parent_tool_use_id = _parent_tool_use_id(message)
+            parent_item_id = (
+                stable_tool_item_id(session, parent_tool_use_id)
+                if parent_tool_use_id is not None
+                else None
+            )
+            turn_id = self._subagent_turn_id(session, parent_tool_use_id)
+            items: list[RuntimeTimelineItem] = [
+                *self.timeline.tool_items_for_message(
+                    session=session,
+                    turn_id=turn_id,
+                    message=message,
+                ),
+                *self.timeline.system_items_for_message(
+                    session=session,
+                    turn_id=turn_id,
+                    message=message,
+                    event="claude.subagent.system",
+                ),
+            ]
+            role = message_role(message)
+            text = message_text(message)
+            if (
+                role in {"assistant", "system"}
+                and text
+                and not is_synthetic_control_message(message)
+            ):
+                items.append(
+                    self.timeline.message_item(
+                        session=session,
+                        turn_id=turn_id,
+                        role=role,
+                        text=text,
+                        event=f"claude.subagent.{role}",
+                        native_item_id=message_id(message),
+                    )
+                )
+            for item in items:
+                await self.notifications.timeline_activity.timeline_item_upsert(
+                    _with_parent_card(item, parent_item_id)
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Claude subagent frame projection failed session_id={}",
+                session.session_id,
+            )
+
+    def _subagent_turn_id(
+        self,
+        session: ClaudeSession,
+        parent_tool_use_id: str | None,
+    ) -> str:
+        """Pick the turn id for a row projected from a captured subagent frame.
+
+        The frames land while the dispatch turn has already settled, so the
+        value is bookkeeping (no client sections by it): the parent card's own
+        turn is inherited when it has been projected, and the deterministic
+        fallback keeps one subagent's rows together under a stable id.
+        """
+
+        if parent_tool_use_id is None:
+            return "turn_claude_subagent_orphan"
+        parent_item_id = stable_tool_item_id(session, parent_tool_use_id)
+        parent = session.timeline_items.get(parent_item_id)
+        if parent is not None and parent.turn_id:
+            return parent.turn_id
+        return f"turn_claude_subagent_{parent_item_id}"
+
     async def connection_for(
         self,
         session: ClaudeSession,
@@ -494,6 +678,14 @@ class ClaudeTurnRunner:
             on_idle=lambda current: self.reclaim_idle_connection(session, current),
             on_background_done=lambda current: self.reconcile_after_background(
                 session, current
+            ),
+            # L2 subagent progress (claude-subagent-progress-tasks.md §3.4):
+            # both routes publish items through the projector this runtime
+            # already shares (`self.timeline`), so ids and order slots stay
+            # convergent with the live turn projection and the history rebuild.
+            on_task_event=lambda event: self.fold_agent_task_event(session, event),
+            on_background_frame=lambda message: self.project_background_frame(
+                session, message
             ),
             cleanup=cleanup,
             idle_timeout_seconds=self.config.values.get("idleTimeoutSeconds", 600),
@@ -1328,3 +1520,42 @@ class ClaudeTurnRunner:
             session,
             source="claude.session.external_id",
         )
+
+
+def _parent_tool_use_id(message: Any) -> str | None:
+    """Read the dispatch tool call a captured subagent frame is parented to."""
+
+    if isinstance(message, Mapping):
+        value = message.get("parent_tool_use_id")
+    else:
+        value = getattr(message, "parent_tool_use_id", None)
+    return value if isinstance(value, str) and value else None
+
+
+def _with_parent_card(
+    item: RuntimeTimelineItem,
+    parent_item_id: str | None,
+) -> RuntimeTimelineItem:
+    """Attach the parentItemId convention to a captured subagent row.
+
+    Tool rows already carry it from the projector (messages.py); the rows the
+    projector cannot reach — reasoning (thinking) and message (text) rows —
+    get the same free-JSON key here so the SubAgent panel can attribute them
+    (claude-subagent-progress-tasks.md §3.3). Scoped to the capture route:
+    the in-turn projection, the history rebuild, nested Agent rows and every
+    main-agent row keep their exact content.
+    """
+
+    if parent_item_id is None or item.type not in {"system", "message"}:
+        return item
+    content = {**dict(item.content), "parentItemId": parent_item_id}
+    return replace(
+        item,
+        content=content,
+        content_hash=timeline_content_hash(
+            item_type=item.type,  # type: ignore[arg-type]
+            status=item.status,  # type: ignore[arg-type]
+            role=item.role,  # type: ignore[arg-type]
+            content=content,
+        ),
+    )

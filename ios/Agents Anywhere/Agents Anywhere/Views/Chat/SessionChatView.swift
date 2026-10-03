@@ -14,8 +14,8 @@ struct SessionChatView: View, Equatable {
     private let fileService: V2WorkspaceFilesService
     private let detailService: V2SessionDetailService
     private enum SessionSheet: Identifiable {
-        case notices, details, files, preview(SessionFileReference, root: String? = nil)
-        var id: String { switch self { case .notices: "notices"; case .details: "details"; case .files: "files"; case .preview(let reference, let root): "file:\(root ?? ""):\(reference.id)" } }
+        case notices, details, files, subagents(String), preview(SessionFileReference, root: String? = nil)
+        var id: String { switch self { case .notices: "notices"; case .details: "details"; case .files: "files"; case .subagents(let cardID): "subagents:\(cardID)"; case .preview(let reference, let root): "file:\(root ?? ""):\(reference.id)" } }
     }
     @State private var previewURL: URL?
     @State private var previewDirectory: URL?
@@ -60,7 +60,8 @@ struct SessionChatView: View, Equatable {
             Group {
                 if hasStartedLoading {
                     ChatTimelineView(model: model,
-                        onAttachment: openAttachment, onFile: openFile)
+                        onAttachment: openAttachment, onFile: openFile,
+                        onSubAgent: { sheet = .subagents($0) })
                 } else {
                     Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -112,8 +113,8 @@ struct SessionChatView: View, Equatable {
                 }
         }
         .modifier(ChatPageToolbar(title: session.metadata?.title ?? fallbackTitle ?? String(localized: "会话"),
-            subtitle: [session.metadata?.runtimeName ?? session.metadata?.runtime ?? fallbackRuntimeName ?? String(localized: "Agent"),
-                deviceName ?? session.metadata?.connectorId].compactMap { $0 }.joined(separator: " · "),
+            subtitle: SessionHeaderSubtitle.text(metadata: session.metadata, deviceName: deviceName,
+                fallbackRuntimeName: fallbackRuntimeName),
             status: model.headerStatus, alignsTitleLeading: true, onMenu: onMenu))
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
@@ -156,6 +157,9 @@ struct SessionChatView: View, Equatable {
             switch destination {
             case .notices: SessionNoticesSheet(model: model, initialNoticeID: expandedNoticeID)
             case .details: SessionDetailsSheet(chat: model, service: detailService)
+            case .subagents(let cardID):
+                SubAgentPanelSheet(chat: model, deviceName: deviceName, fallbackRuntimeName: fallbackRuntimeName,
+                    initialCardID: cardID, onFile: openFile, onAttachment: openAttachment)
             case .files:
                 if let meta = session.metadata, let cwd = meta.cwd {
                     WorkspaceFilesSheet(connectorId: meta.connectorId,

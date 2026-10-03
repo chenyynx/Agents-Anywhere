@@ -6,6 +6,8 @@ struct SessionTimelineGroupView: View {
     let onAttachment: (V2AttachmentContent) -> Void
     let onFile: (String) -> Void
     var turnAction: TimelineTurnAction?
+    /// L2: opens the SubAgent panel. Nil in the panel's own child rows.
+    var onSubAgent: ((String) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -26,17 +28,24 @@ struct SessionTimelineGroupView: View {
         else {
             TimelineFold(id: "group:\(group.id)", title: group.title,
                 symbol: group.kind == .reconnect ? "wifi.slash" : agentGroup ? "person.2" : "hammer",
-                status: group.status, disclosures: chat.disclosures) {
+                status: group.status, disclosures: chat.disclosures,
+                detailsAction: groupDetailsAction) {
                 rows
             }
         }
     }
     private var agentGroup: Bool { if case .agents = group.kind { true } else { false } }
+    /// The SubAgent progress group is the card's fold in the timeline; its
+    /// header carries the same 查看详情 entry as the card row.
+    private var groupDetailsAction: (() -> Void)? {
+        guard case .agents(let parent) = group.kind, let onSubAgent else { return nil }
+        return { onSubAgent(parent) }
+    }
     private var rows: some View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(group.rows) { row in
                 SessionTimelineRow(row: row, chat: chat, onAttachment: onAttachment, cwd: chat.session.metadata?.cwd,
-                    disclosures: chat.disclosures, onFile: onFile)
+                    disclosures: chat.disclosures, onFile: onFile, onSubAgent: onSubAgent)
                 ForEach(chat.session.notices.notices.filter {
                     $0.isVisible && !$0.blocks(chat.session.id) && $0.timelineTargetID == row.id
                 }) { notice in SessionInteractionCard(item: notice, chat: chat) }
@@ -50,7 +59,17 @@ struct SessionTimelineEventView: View {
     let cwd: String?
     let disclosures: TimelineDisclosureState
     let onFile: (String) -> Void
+    /// L2: opens the SubAgent panel from an Agent card's 查看详情 entry. Nil
+    /// (the panel's own child rows) leaves the card without the entry.
+    var onSubAgent: ((String) -> Void)?
     private var entry: TimelineEntryPresentation { TimelineEntryPresentation(item: row.value, cwd: cwd) }
+    /// Only a top-level Agent call card opens the panel: a nested card is a
+    /// child row of its parent's panel (v1 renders one layer).
+    private var agentCardDetailsAction: (() -> Void)? {
+        guard let onSubAgent, SubAgentProgress.isAgentCall(row.value),
+              SubAgentProgress.parentItemID(row.value) == nil else { return nil }
+        return { onSubAgent(row.id) }
+    }
 
     var body: some View {
         let value = entry
@@ -74,7 +93,8 @@ struct SessionTimelineEventView: View {
             }.padding(.vertical, 8)
         case .tool:
             if value.hasToolDetails {
-                TimelineFold(id: row.id, title: value.title, symbol: value.symbol, status: row.value.status, disclosures: disclosures) {
+                TimelineFold(id: row.id, title: value.title, symbol: value.symbol, status: row.value.status,
+                    disclosures: disclosures, detailsAction: agentCardDetailsAction) {
                     TimelineToolDetails(row: row, cwd: cwd, onFile: onFile)
                 }
             } else { TimelineMarkerRow(title: value.title, symbol: value.symbol, status: row.value.status) }
@@ -147,14 +167,31 @@ private struct TimelineFold<Content: View>: View {
     let symbol: String
     let status: V2TimelineItemStatus
     let disclosures: TimelineDisclosureState
+    /// L2: an explicit entry beside the disclosure title (the Agent card / the
+    /// SubAgent progress group). It is a sibling button, not a tap on the
+    /// disclosure row, so the existing expand gesture is never intercepted.
+    var detailsAction: (() -> Void)?
     @ViewBuilder var content: () -> Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Button {
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { disclosures.toggle(id) }
-            } label: { TimelineMarkerRow(title: title, symbol: symbol, status: status, expanded: disclosures.isExpanded(id)) }
-            .buttonStyle(.plain).accessibilityValue(disclosures.isExpanded(id) ? String(localized: "已展开") : String(localized: "已折叠"))
+            HStack(spacing: 8) {
+                Button {
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { disclosures.toggle(id) }
+                } label: { TimelineMarkerRow(title: title, symbol: symbol, status: status, expanded: disclosures.isExpanded(id)) }
+                .buttonStyle(.plain).accessibilityValue(disclosures.isExpanded(id) ? String(localized: "已展开") : String(localized: "已折叠"))
+                if let detailsAction {
+                    Button(action: detailsAction) {
+                        Text(String(localized: "查看详情"))
+                            .font(.footnote.weight(.medium))
+                            .foregroundStyle(.tint)
+                            .frame(minHeight: 32)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("chat.subagent.details")
+                }
+            }
             if disclosures.isExpanded(id) { content().transition(.identity) }
         }
     }

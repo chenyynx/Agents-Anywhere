@@ -15,7 +15,13 @@ struct ChatTimelineGroup: Identifiable {
     var title: String {
         switch kind {
         case .single: return ""
-        case .agents: return String(localized: "\(rows.count) 次子 Agent 调用")
+        case .agents:
+            // Nested Agent calls keep the call count; a group that carries a
+            // card's progress rows (tool/thinking/text) counts its items —
+            // calling those "calls" would misstate what is folded away.
+            let calls = rows.filter { SubAgentProgress.isAgentCall($0.value) }.count
+            if calls == rows.count { return String(localized: "\(rows.count) 次 SubAgent 调用") }
+            return String(localized: "SubAgent 进展 · \(rows.count) 项")
         case .reconnect:
             let attempts = rows.compactMap { $0.structure.reconnectAttempt }
             // The full retry messages remain available in the expanded rows.

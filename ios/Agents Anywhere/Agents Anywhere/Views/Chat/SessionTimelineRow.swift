@@ -8,6 +8,9 @@ struct SessionTimelineRow: View {
     var cwd: String?
     let disclosures: TimelineDisclosureState
     let onFile: (String) -> Void
+    /// L2: opens the SubAgent panel for an Agent card. Nil (the panel's own
+    /// child rows) renders no entry.
+    var onSubAgent: ((String) -> Void)?
     @ScaledMetric(relativeTo: .body) private var lineHeight: CGFloat = 22
 
     var body: some View {
@@ -34,7 +37,7 @@ struct SessionTimelineRow: View {
                     }
                 }
             default:
-                SessionTimelineEventView(row: row, cwd: cwd, disclosures: disclosures, onFile: onFile)
+                SessionTimelineEventView(row: row, cwd: cwd, disclosures: disclosures, onFile: onFile, onSubAgent: onSubAgent)
 
             }
         }

@@ -71,6 +71,23 @@
         }
       }
     },
+    "%@ tokens": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ tokens"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ tokens"
+          }
+        }
+      }
+    },
     "%@ will be stopped and removed from the configured list. All associated sessions, message history, and attachments will be permanently deleted. You can configure the runtime again later; the local installation is kept.": {
       "comment": "Shared with Web: dashboard.device.deleteRuntimeConfigDescription. Sync with ios/scripts/web_copy.py.",
       "extractionState": "manual",
@@ -265,6 +282,64 @@
         }
       }
     },
+    "%lld 个 SubAgent": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld SubAgent"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld SubAgents"
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 个 SubAgent"
+          }
+        }
+      }
+    },
+    "%lld 个工具": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld tool"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld tools"
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 个工具"
+          }
+        }
+      }
+    },
     "%lld 个问题": {
       "extractionState": "manual",
       "localizations": {
@@ -294,7 +369,7 @@
         }
       }
     },
-    "%lld 次子 Agent 调用": {
+    "%lld 次 SubAgent 调用": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -318,7 +393,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "%lld 次子 Agent 调用"
+            "value": "%lld 次 SubAgent 调用"
           }
         }
       }
@@ -5012,6 +5087,35 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在停止…"
+          }
+        }
+      }
+    },
+    "SubAgent 进展 · %lld 项": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "SubAgent progress · %lld item"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "SubAgent progress · %lld items"
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SubAgent 进展 · %lld 项"
           }
         }
       }
@@ -10428,6 +10532,23 @@
         }
       }
     },
+    "工具调用": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tool calls"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工具调用"
+          }
+        }
+      }
+    },
     "左右滑动查看其他提示": {
       "extractionState": "manual",
       "localizations": {
@@ -11364,6 +11485,23 @@
         }
       }
     },
+    "提示词": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prompt"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "提示词"
+          }
+        }
+      }
+    },
     "搜索 %@": {
       "extractionState": "manual",
       "localizations": {
@@ -11747,6 +11885,23 @@
         }
       }
     },
+    "最终输出": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Final output"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "最终输出"
+          }
+        }
+      }
+    },
     "服务器是否已创建设备尚未确认。请先关闭此页并刷新设备列表，确认结果后再创建。": {
       "extractionState": "manual",
       "localizations": {
@@ -11829,6 +11984,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "未命名会话"
+          }
+        }
+      }
+    },
+    "未知": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unknown"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未知"
           }
         }
       }
@@ -12018,6 +12190,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "查看图片"
+          }
+        }
+      }
+    },
+    "查看详情": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View details"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查看详情"
           }
         }
       }
@@ -12665,6 +12854,23 @@
         }
       }
     },
+    "深度思考": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thinking"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "深度思考"
+          }
+        }
+      }
+    },
     "添加": {
       "extractionState": "manual",
       "localizations": {
@@ -12816,6 +13022,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "生成未完成"
+          }
+        }
+      }
+    },
+    "用时 %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Took %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用时 %@"
           }
         }
       }

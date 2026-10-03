@@ -17,8 +17,11 @@ struct TimelineRowStructure: Equatable {
         type = item.type; role = item.role; status = item.status
         startsTurn = item.startsVisibleTurn; isFileChange = item.isFileChange
         isReasoning = item.isReasoning; isStreamingText = item.isStreamingText
-        if item.type == .tool, item.raw["content"]?["kind"] == .string("agent_call"),
-           let parent = TimelineText.first(item.raw["content"]?["parentItemId"]) { groupKind = .agents(parent) }
+        // L2: every row the connector attributed to an Agent card — tool,
+        // thinking and text rows alike — folds under that card's SubAgent group
+        // instead of flowing into the main-agent tool run (the grouping used to
+        // require kind == "agent_call", which only caught nested Agent calls).
+        if let parent = SubAgentProgress.parentItemID(item) { groupKind = .agents(parent) }
         else if TimelineGrouping.reconnectMessage(item) != nil { groupKind = .reconnect }
         else if item.isReasoning || [.tool, .fileChange, .artifact].contains(item.type) { groupKind = .tools }
         else { groupKind = .single }

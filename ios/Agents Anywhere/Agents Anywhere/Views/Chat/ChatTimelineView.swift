@@ -8,6 +8,8 @@ struct ChatTimelineView: View {
     let model: SessionChatModel
     let onAttachment: (V2AttachmentContent) -> Void
     let onFile: (String) -> Void
+    /// L2: opens the SubAgent panel from a card's 查看详情 entry.
+    let onSubAgent: (String) -> Void
     @State private var historyLayout: TimelineHistoryLayout?
     @State private var historyPosition: TimelineHistoryPosition?
     @State private var hasRequestedOlder = false
@@ -44,7 +46,7 @@ struct ChatTimelineView: View {
         // deceleration recognizer. The explicit return intent survives its callbacks.
         ZStack(alignment: .bottom) {
             ScrollView {
-                ChatTimelineContent(model: model, onAttachment: onAttachment, onFile: onFile,
+                ChatTimelineContent(model: model, onAttachment: onAttachment, onFile: onFile, onSubAgent: onSubAgent,
                     latestPullReady: latestPull.isReady, isLoadingLatest: latestLoadRequest != nil,
                     olderPullReady: olderPull.isReady, isLoadingOlder: olderLoadRequest != nil,
                     keepsOlderPrompt: hasRequestedOlder, historyAnchor: historyPosition?.origin,
@@ -236,12 +238,17 @@ struct ChatTimelineView: View {
                 if scrolling.navigationGeneration == generation { scrolling.requestBottom() }
                 latestLoadRequest = nil
             }
-            // The return pill would sit on top of the keyboard while typing.
-            TimelineBottomPill(keyboard: keyboard, isShown: scrolling.showsBottomButton()) {
-                latestPull.cancel(); olderPull.cancel()
-                historyPosition?.cancelRestoration()
-                scrolling.requestBottom()
-            }
+            // The return pill would sit on top of the keyboard while typing;
+            // the SubAgent capsule stacks above it and stays visible through
+            // the keyboard (§3.2) — same layout container, no overlap.
+            TimelinePillStack(model: model, keyboard: keyboard,
+                isBottomShown: scrolling.showsBottomButton(),
+                onBottom: {
+                    latestPull.cancel(); olderPull.cancel()
+                    historyPosition?.cancelRestoration()
+                    scrolling.requestBottom()
+                },
+                onSubAgent: onSubAgent)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // K3: with the keyboard up, a tap on empty message space closes it.
@@ -357,6 +364,7 @@ struct ChatTimelineView: View {
     /// even a zero-duration one: the immediate close is what releases
     /// whatever an earlier window withheld (S2 publication gating).
     private func keyboardTransitionBegan(_ event: TimelineKeyboardEvent) {
+        keyboard.noteLayoutEvent(event)
         let token = keyboard.beginTransition()
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(max(event.duration, 0)))
@@ -436,6 +444,7 @@ private struct ChatTimelineContent: View, Equatable {
     let model: SessionChatModel
     let onAttachment: (V2AttachmentContent) -> Void
     let onFile: (String) -> Void
+    let onSubAgent: (String) -> Void
     let latestPullReady: Bool
     let isLoadingLatest: Bool
     let olderPullReady: Bool
@@ -491,7 +500,7 @@ private struct ChatTimelineContent: View, Equatable {
             }
             ForEach(groups) { group in
                 SessionTimelineGroupView(group: group, chat: model, onAttachment: onAttachment, onFile: onFile,
-                    turnAction: actions[group.id])
+                    turnAction: actions[group.id], onSubAgent: onSubAgent)
                     .id(group.id)
                     .background {
                         if group.id == anchorGroup?.id, let firstRowID = model.timeline.rows.first?.id {
@@ -570,6 +579,46 @@ private extension TimelineViewport {
     var tailUpdatedAtPublish: TimelineTailVisibility?
 }
 
+/// L2/S2 leaf: the SubAgent capsule and the return pill share one bottom stack
+/// (§3.2). Only this leaf observes the keyboard monitor — the page body never
+/// reads it. The keyboard owns the layout while its transition window is open:
+/// the stack animates its own slot change with the keyboard's event duration
+/// and curve, so the capsule rides the composer with no relative jump when the
+/// return pill's slot collapses or re-expands.
+private struct TimelinePillStack: View {
+    let model: SessionChatModel
+    let keyboard: TimelineKeyboardMonitor
+    let isBottomShown: Bool
+    let onBottom: () -> Void
+    let onSubAgent: (String) -> Void
+
+    var body: some View {
+        VStack(spacing: 8) {
+            SubAgentCapsuleSlot(model: model, onOpen: onSubAgent)
+            TimelineBottomPill(keyboard: keyboard, isShown: isBottomShown, onTap: onBottom)
+        }
+        .animation(keyboard.layoutAnimation, value: keyboard.isVisible)
+    }
+}
+
+/// The capsule's own leaf: only this view reads the presented rows, so a
+/// streamed token re-evaluates one capsule instead of the pill stack. It is
+/// empty — not hidden — without a running SubAgent, exactly like the return
+/// pill's own `if`, so no overlay occupies the composer.
+private struct SubAgentCapsuleSlot: View {
+    let model: SessionChatModel
+    let onOpen: (String) -> Void
+
+    var body: some View {
+        let state = SubAgentProgress.capsuleState(model.timeline.rows.map(\.value))
+        if state.isVisible {
+            SubAgentCapsule(state: state) {
+                if let id = state.firstRunningID { onOpen(id) }
+            }
+        }
+    }
+}
+
 /// K5/S2 leaf: only this view observes the keyboard monitor, so a keyboard
 /// toggle re-evaluates the return pill (and the dismiss layer below) instead
 /// of the whole timeline body.
@@ -611,10 +660,27 @@ private struct TimelineKeyboardDismissLayer: ViewModifier {
 @MainActor @Observable private final class TimelineKeyboardMonitor {
     private(set) var isVisible = false
     private(set) var transitionActive = false
+    /// The newest keyboard event's own duration and curve, as a SwiftUI
+    /// animation (L2 pill stack §3.2). Nil without a transition (or a
+    /// zero-duration one), which applies the change without animation.
+    private(set) var layoutAnimation: Animation?
     private var transitionToken = 0
 
     func setVisible(_ visible: Bool) {
         isVisible = visible
+    }
+
+    /// Records the system clock the pill stack's slot change animates on, so
+    /// the capsules keep riding the composer instead of jumping while the
+    /// return pill's footprint collapses or re-expands.
+    func noteLayoutEvent(_ event: TimelineKeyboardEvent) {
+        guard !event.isFinal else { layoutAnimation = nil; return }
+        switch event.curve {
+        case .easeIn: layoutAnimation = .easeIn(duration: event.duration)
+        case .easeOut: layoutAnimation = .easeOut(duration: event.duration)
+        case .linear: layoutAnimation = .linear(duration: event.duration)
+        case .easeInOut, .privateSpring, .unknown: layoutAnimation = .easeInOut(duration: event.duration)
+        }
     }
 
     /// Opens (or restarts) the window and returns the token its end schedule

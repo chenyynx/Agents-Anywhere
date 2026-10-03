@@ -35,7 +35,13 @@ enum TimelineTurnActions {
                 turnOpen = true
                 startsMidTurn = false
             }
-            let messages = group.rows.filter { $0.structure.type == .message && $0.structure.role == .assistant }
+            // L2: a SubAgent's intermediate text rows belong to its card, not
+            // to the main agent's reply — the copied turn text stays the main
+            // conversation (they can still place the footer via the group).
+            let messages = group.rows.filter {
+                $0.structure.type == .message && $0.structure.role == .assistant
+                    && SubAgentProgress.parentItemID($0.value) == nil
+            }
             let fileChanges = group.rows.filter { $0.structure.isFileChange }
             if !messages.isEmpty || !fileChanges.isEmpty { turnOpen = true }
             guard turnOpen else { continue }

@@ -3,28 +3,31 @@ import SwiftUI
 /// L2 (§3.2): the glass capsule above the composer that says a SubAgent is
 /// still running. Visibility is data-driven (a running top-level Agent card in
 /// the presented window) — never scroll or keyboard state. It is the first
-/// tinted glass in the app: indigo while running, red while the newest batch
-/// carries a failure — dispatching a new SubAgent clears older failures
-/// (`SubAgentProgress.hasLiveFailure`).
+/// tinted glass in the app: smoked dark glass with a blue bot mark while
+/// running, red glass with a red bot mark while the newest batch carries a
+/// failure — dispatching a new SubAgent clears older failures
+/// (`SubAgentProgress.hasLiveFailure`). Like the “到底部” pill, the capsule
+/// hugs its label instead of claiming a fixed maximum width.
 struct SubAgentCapsule: View {
     let state: SubAgentCapsuleState
     let onOpen: () -> Void
-    @ScaledMetric(relativeTo: .caption) private var height: CGFloat = 32
+    @ScaledMetric(relativeTo: .footnote) private var height: CGFloat = 36
+    @ScaledMetric(relativeTo: .footnote) private var markSize: CGFloat = 18
 
     var body: some View {
         Button(action: onOpen) {
             HStack(spacing: 6) {
-                Circle().fill(SubAgentPalette.capsuleDot(failure: state.hasFailure))
-                    .frame(width: 7, height: 7)
+                Image("aa-Bot").resizable().scaledToFit().frame(width: markSize, height: markSize)
+                    .foregroundStyle(SubAgentPalette.capsuleIcon(failure: state.hasFailure))
+                    .accessibilityHidden(true)
                 Text(state.title)
-                    .font(.caption.weight(.medium))
+                    .font(.footnote.weight(.medium))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 14)
             .frame(height: height)
-            .frame(maxWidth: 280)
             .glassEffect(.regular.interactive().tint(SubAgentPalette.capsuleTint(failure: state.hasFailure)), in: .capsule)
             .frame(minHeight: 44)
             .contentShape(Rectangle())
@@ -37,12 +40,14 @@ struct SubAgentCapsule: View {
     }
 }
 
-/// The SubAgent concept colors, single point: running is the new indigo, the
-/// semantic colors (green done / red failure) carry over from the rest of the
-/// app. The glass tint stays low-saturation so the colored capsule still reads
-/// as glass beside the neutral “到底部” and takeover pills.
+/// The SubAgent concept colors, single point: running is blue, the semantic
+/// colors (green done / red failure) carry over from the rest of the app. The
+/// running capsule wears near-black smoked glass — a neutral dark tint, not a
+/// hue — so the blue bot mark carries the state; failure stays red. Both
+/// tints stay low-opacity so the capsule still reads as glass beside the
+/// neutral “到底部” and takeover pills.
 enum SubAgentPalette {
-    static let running = Color.indigo
+    static let running = Color.blue
     static let failure = Color.red
     static let completed = Color.green
 
@@ -55,11 +60,11 @@ enum SubAgentPalette {
         }
     }
 
-    static func capsuleDot(failure: Bool) -> Color {
+    static func capsuleIcon(failure: Bool) -> Color {
         failure ? Self.failure : running
     }
 
     static func capsuleTint(failure: Bool) -> Color {
-        failure ? Self.failure.opacity(0.40) : running.opacity(0.45)
+        failure ? Self.failure.opacity(0.40) : Color.black.opacity(0.22)
     }
 }

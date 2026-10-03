@@ -45,7 +45,10 @@ class ClaudeBackgroundTasks:
             # The CLI's snapshot of outstanding work. Adding its ids keeps the
             # keep-alive signal honest even if a `task_started` frame was
             # missed; releases stay solely with terminal events, because an
-            # unconfirmed task is never assumed complete.
+            # unconfirmed task is never assumed complete. A snapshot dropping
+            # an id is therefore not proof of a terminal: a stale id can pin
+            # the connection until its terminal lands — accepted, and
+            # observable through the retirement-skip warnings' task count.
             tasks = _value(message, "tasks")
             if tasks is None:
                 data = _value(message, "data")

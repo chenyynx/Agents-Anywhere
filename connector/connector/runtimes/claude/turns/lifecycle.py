@@ -227,6 +227,8 @@ class ClaudeTurnRunner:
             session.session_id,
             execution.turn_id,
         )
+        connection = response.connection
+        publish = connection.stuck_timeout_reports == 0
         if not await self.finish_execution(
             session=session,
             execution=execution,
@@ -239,10 +241,15 @@ class ClaudeTurnRunner:
                 reason="scheduled_watchdog_timeout",
             ),
             response=response,
+            publish=publish,
         ):
             # The turn settled by itself inside the race window; its own exit
             # path already decided what happens to the transport.
             return
+        if publish:
+            # Count only the report that actually went out, so a raced-away
+            # first fire cannot silence a later genuine one.
+            connection.stuck_timeout_reports += 1
         await self.retire_stuck_transport(session, execution, response)
 
     async def retire_stuck_transport(
@@ -1148,8 +1155,15 @@ class ClaudeTurnRunner:
         execution: ClaudeExecution,
         terminal: ClaudeTerminalEvent,
         response: ClaudeResponse | None = None,
+        *,
+        publish: bool = True,
     ) -> bool:
-        """Publish one terminal state and release this exact execution."""
+        """Publish one terminal state and release this exact execution.
+
+        `publish=False` keeps the terminal off the client-visible turn ledger
+        while every lock/release guarantee still runs — the circuit breaker's
+        one-report-per-window limiter uses it for repeat timeouts.
+        """
 
         async with execution.finalization_lock:
             self.disarm_scheduled_watchdog(execution)
@@ -1170,7 +1184,11 @@ class ClaudeTurnRunner:
                             reason=terminal.status,
                         )
                     await self.publish_terminal_state(
-                        session, execution, terminal, update_state=not queued
+                        session,
+                        execution,
+                        terminal,
+                        update_state=not queued,
+                        publish=publish,
                     )
                 finally:
                     if response is not None:
@@ -1196,6 +1214,7 @@ class ClaudeTurnRunner:
         terminal: ClaudeTerminalEvent,
         *,
         update_state: bool = True,
+        publish: bool = True,
     ) -> None:
         reason = terminal.reason or execution.interrupt_reason
         if terminal.status == "failed":
@@ -1203,14 +1222,22 @@ class ClaudeTurnRunner:
                 "source": "claude.turn.failed",
                 **({"terminalReason": reason} if reason else {}),
             }
-            await self.host.session_turn_ended(
-                session_id=session.session_id,
-                runtime="claude",
-                external_session_id=session.external_session_id,
-                turn_id=execution.turn_id,
-                outcome="failed",
-                metadata=metadata,
-            )
+            if publish:
+                await self.host.session_turn_ended(
+                    session_id=session.session_id,
+                    runtime="claude",
+                    external_session_id=session.external_session_id,
+                    turn_id=execution.turn_id,
+                    outcome="failed",
+                    metadata=metadata,
+                )
+            else:
+                logger.warning(
+                    "Claude repeat scheduled-timeout failure kept off the "
+                    "client ledger session_id={} turn_id={}",
+                    session.session_id,
+                    execution.turn_id,
+                )
             if not update_state:
                 return
             await self.notifications.session_state.session_state_update(

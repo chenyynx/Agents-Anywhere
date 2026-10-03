@@ -163,6 +163,12 @@ class ClaudeConnection:
     selections: dict[str, str | None] = field(default_factory=dict)
     reconcile_needed: bool = False
     reconciling: bool = False
+    # Scheduled-timeout failures already published for this connection window.
+    # Repeat ghosts (unknown frames minting again while background work keeps
+    # the transport alive) still force-fail and release the lock, but only the
+    # first one reaches the client as a failed-turn report; the session state
+    # still updates on every repeat.
+    stuck_timeout_reports: int = 0
 
     @property
     def retained(self) -> bool:

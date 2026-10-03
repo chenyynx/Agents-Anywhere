@@ -21,11 +21,13 @@ Two defense layers are pinned here:
   retires a healthy transport that hosts live background work, and it drops
   the ghost response so the reader can route again.
 
-All fixture payloads are verbatim wire frames captured from the reproduction
-sessions (three independent sessions reproduced the mint; a control run
-without the breaker saw every subagent finish). They are parsed through the
+The reproduction payloads below are verbatim wire frames captured from the
+reproduction sessions (three independent sessions reproduced the mint; a
+control run without the breaker saw every subagent finish), parsed through the
 SDK's own ``parse_message``, never hand-built — the fixture lesson from the
-/compact ghost.
+/compact ghost. The wake-turn and failed-result frames are synthetic
+SDK-parsed shapes that model the CLI's own wake behaviour, and are labelled as
+such at their definitions.
 """
 
 from __future__ import annotations
@@ -109,9 +111,10 @@ WIRE_DANGER_ASSISTANT_THINKING = {
             "cache_creation_input_tokens": 0,
             "cache_read_input_tokens": 27520,
         },
+        "context_management": None,
     },
     "parent_tool_use_id": "call_00_PTnOCB9vAH4D2Vdmq6TA1784",
-    "session_id": SESSION,
+    "session_id": "7d0b9fb6-c6d0-41a1-9a19-78fd76e0b753",
     "uuid": "c46b4a41-3923-4430-9594-6227bb1e01b4",
     "timestamp": "2026-10-02T23:30:50.687Z",
     "subagent_type": "general-purpose",
@@ -169,8 +172,9 @@ WIRE_BACKGROUND_TASKS_CHANGED = {
 }
 
 # The wake turn: after a subagent completes the CLI wakes the main agent, and
-# its reply frames carry parent_tool_use_id=None (real wake shape) — these
-# must still mint a scheduled reply and surface to the client.
+# its reply frames carry parent_tool_use_id=None — these must still mint a
+# scheduled reply and surface to the client. (Synthetic SDK-parsed shapes, not
+# wire captures; the wake path produces no captureable fixture of its own.)
 WIRE_WAKE_ASSISTANT = {
     "type": "assistant",
     "message": {
@@ -451,6 +455,52 @@ def test_failed_turn_with_live_background_keeps_transport() -> None:
             assert host.session_turn_ends[-1]["outcome"] == "completed"
             assert client.queries == ["hello", "after"]
             assert len(built) == 1, "the transport must be reused, not rebuilt"
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------
+# 6. The limiter: repeat stuck turns yield one client-visible failure (D2)
+# --------------------------------------------------------------------------
+
+
+def test_repeat_stuck_turns_report_at_most_one_failure_per_connection() -> None:
+    """修前红: without the limiter every repeat ghost lands a failed turn."""
+
+    async def run() -> None:
+        client = _ScheduledClaudeClient()
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            await runtime.start_turn("cap", None, "hello")
+            session = runtime._sessions["cap"]
+            await asyncio.wait_for(session.active_task, 5)
+            await client.incoming.put(_parse(WIRE_TASK_STARTED))
+            connection = runtime._turns.runner.connections["cap"]
+            await _wait_until(lambda: bool(connection.background.active_ids))
+
+            for index in range(3):
+                unknown = {**WIRE_WAKE_ASSISTANT, "uuid": f"cap-{index}"}
+                await client.incoming.put(_parse(unknown))
+                await _wait_until(lambda: session.execution is not None)
+                # Every ghost still fails out and releases the lock...
+                await _wait_until(lambda: session.execution is None)
+                assert session.queued_execution is None
+
+            failures = [
+                end for end in host.session_turn_ends if end["outcome"] == "failed"
+            ]
+            assert len(failures) == 1, (
+                "one connection window must surface at most one visible "
+                f"failure, saw {len(failures)}"
+            )
+            # ...and the transport with its live background work never died.
+            assert client.disconnected is False
+            assert connection.background.active_ids
+            # Repeat timeouts still drive the session state off "running".
+            assert host.session_state_updates[-1]["status"] == "error"
         finally:
             await runtime.stop()
 

@@ -74,6 +74,25 @@ progress, not replies, and never mint a turn from silence (the main agent's
 own wake-and-report frames carry `parent_tool_use_id=None`). This is noise
 reduction only; the breaker above is what guarantees the outcome.
 
+## Agent-set session titles
+
+Every Claude session's system prompt extends Claude Code's own with an
+instruction to call the `change_title` tool — an in-process SDK MCP server
+(`connector/connector/runtimes/claude/sdk/title_tool.py`) modelled on
+HappyCoder's `mcp__happy__change_title` and the Claudio bridge. The tool
+handler writes the accepted title back into Claude Code itself through the
+SDK's official `rename_session` (a `custom-title` transcript entry; last
+write wins, repeated calls are safe), then publishes it immediately over
+`session.meta.upsert` (`source: claude.session.agent_title`). The periodic
+inventory sync re-reads `custom_title` afterwards — the reader's top title
+priority — so the title is durable without any connector-side state. Guards:
+empty → duplicate → 8-second throttle; the PreToolUse hook auto-allows the
+tool (it is connector bookkeeping and must never surface as a client
+approval), and user renames always win (the server rejects connector titles
+once a session's `title_source` is `user`). The tool's frames are hidden
+from the timeline alongside the Cron*/Task* plumbing tools, so no tool card
+reaches clients.
+
 ## Pending validation
 
 This lifecycle change has local automated coverage. Verified against the real

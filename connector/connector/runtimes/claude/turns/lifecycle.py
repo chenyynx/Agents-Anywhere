@@ -41,6 +41,7 @@ from connector.runtimes.claude.sdk.settings import (
     remove_gateway_settings_file,
 )
 from connector.runtimes.claude.sdk.stderr import ClaudeStderrBuffer
+from connector.runtimes.claude.sdk.title_tool import build_change_title_tool
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 from connector.runtimes.claude.sessions.scheduled import ClaudeScheduledSessions
 from connector.runtimes.claude.timeline.markers import (
@@ -451,6 +452,25 @@ class ClaudeTurnRunner:
             if self.connections.get(session.session_id) is connection:
                 self.connections.pop(session.session_id)
 
+        async def apply_agent_title(title: str) -> None:
+            # The agent named its own session. Keep the local record in sync
+            # and publish immediately; the periodic inventory sync re-reads
+            # the custom-title entry from Claude Code itself, so nothing here
+            # has to survive a connector restart.
+            self.session_store.update_meta(session, title=title)
+            await self.notifications.session_state.session_meta_upsert(
+                session,
+                source="claude.session.agent_title",
+            )
+
+        title_control = build_change_title_tool(
+            sdk,
+            session_id=session.session_id,
+            current_title=lambda: session.title,
+            external_session_id=lambda: session.external_session_id,
+            cwd=lambda: session.cwd,
+            on_applied=apply_agent_title,
+        )
         try:
             client = new_sdk_client(
                 sdk=sdk,
@@ -463,6 +483,7 @@ class ClaudeTurnRunner:
                 cli_models=self.catalogs.cli_models,
                 on_tool_result=tool_result,
                 before_tool=lambda data: connection.before_tool(data),
+                title_control=title_control,
             )
         except BaseException:
             remove_gateway_settings_file(settings_path)

@@ -29,6 +29,7 @@ from connector.runtime_protocol import (
     complete_tool_content,
 )
 from connector.runtimes.claude.domain.session import ClaudeSession
+from connector.runtimes.claude.sdk.title_tool import is_title_tool_name
 from connector.runtimes.claude.timeline.agent_calls import (
     claude_agent_call_content,
     complete_claude_agent_call_content,
@@ -110,13 +111,13 @@ class ClaudeMessageProjector:
     def __init__(
         self,
         tool_call_lookup: Mapping[str, ClaudePendingToolCall] | None = None,
-        ignored_task_tool_use_ids: frozenset[str] | None = None,
+        hidden_tool_use_ids: frozenset[str] | None = None,
     ) -> None:
         self._order_by_id: dict[str, int] = {}
         self._next_order_seq = 1
         self._tool_calls: dict[str, ClaudePendingToolCall] = {}
         self._tool_call_lookup = dict(tool_call_lookup or {})
-        self._ignored_task_tool_use_ids: set[str] = set(ignored_task_tool_use_ids or ())
+        self._hidden_tool_use_ids: set[str] = set(hidden_tool_use_ids or ())
 
     def message_item(
         self,
@@ -204,14 +205,12 @@ class ClaudeMessageProjector:
     ) -> tuple[RuntimeTimelineItem, ...]:
         items: list[RuntimeTimelineItem] = []
         for block in message_tool_blocks(message):
-            if block.block_type == "tool_use" and is_task_event_tool_name(
-                block.tool_name
-            ):
-                self._ignored_task_tool_use_ids.add(block.tool_use_id)
+            if block.block_type == "tool_use" and is_hidden_tool_name(block.tool_name):
+                self._hidden_tool_use_ids.add(block.tool_use_id)
                 continue
             if (
                 block.block_type == "tool_result"
-                and block.tool_use_id in self._ignored_task_tool_use_ids
+                and block.tool_use_id in self._hidden_tool_use_ids
             ):
                 continue
             items.append(self.tool_item(session=session, turn_id=turn_id, block=block))
@@ -958,6 +957,19 @@ def is_task_event_tool_name(tool_name: str | None) -> bool:
         and len(tool_name) > 4
         and tool_name[4].isupper()
     )
+
+
+def is_hidden_tool_name(tool_name: str | None) -> bool:
+    """Bookkeeping tools that must never surface as timeline tool cards.
+
+    Task-lifecycle plumbing (Cron*/Task*) and the agent session-title tool
+    are connector/CLI bookkeeping, not user-visible work. Filtering by name
+    at extraction time also drops the matching tool_result (via the id set),
+    in both the live projector and the history rebuild, which shares this
+    method.
+    """
+
+    return is_task_event_tool_name(tool_name) or is_title_tool_name(tool_name)
 
 
 def _extract(value: Any, *names: str) -> Any:

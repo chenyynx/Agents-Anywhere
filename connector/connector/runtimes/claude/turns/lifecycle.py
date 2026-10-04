@@ -104,8 +104,43 @@ CONTENTING_TURN_WATCHDOG_SECONDS = 600.0
 # G4: why the breaker fired. The two values are the whole diagnosis of a
 # watchdog log line, so they are named once and reused by the fire line, the
 # retirement-skip line and the fatal-close line.
+# F1: the `terminalReason` a turn carries when its `completed` was downgraded
+# because the result could not be attributed to it. It reaches the client's turn
+# ledger verbatim, so the condition is visible rather than silently rewritten.
+STALE_COMPLETION_REASON = "unowned_result_no_content"
+
 WATCHDOG_REASON_ZERO_CONTENT = "zero_content_fast_kill"
 WATCHDOG_REASON_CONTENT_CEILING = "containing_turn_ceiling"
+
+# G4's client-visible half (pp verdict, 2026-10-04, product-level —
+# .local-dev/ratelimit-fatal-retirement-notice-order.md §2 A). A killed process
+# needs its own code: `claude_scheduled_turn_timeout` reads "no result within
+# N seconds", which the user takes as "the model was slow", while the truth is
+# "the CLI process was terminated and every task running inside it ended". They
+# retry nothing and rescue nothing, because nothing in the old text says work
+# was lost.
+#
+# The disclosure is driven by the FACT that close() happened — never by the
+# ledger slot — so the watchdog limiter may be spent or not and the message
+# still reaches the user. `claude_scheduled_turn_timeout` keeps its own text and
+# its own path: a turn that timed out WITHOUT a close is a different incident.
+CLAUDE_PROCESS_RETIRED_CODE = "claude_process_retired"
+CLAUDE_PROCESS_RETIRED_SOURCE = "claude.process.retired"
+
+# Kept in the connector so a client that has not shipped the localized copy yet
+# still shows something true rather than an empty or raw-JSON error.
+PROCESS_RETIRED_MESSAGE = (
+    "The Claude process was terminated after failing to respond. This turn "
+    "produced no result and any running background tasks have ended. Please "
+    "try again."
+)
+# close() raised: the kill was attempted but never confirmed. Downgraded, not
+# silent — the turn is lost either way; only the certainty changed.
+PROCESS_RETIRED_UNCONFIRMED_MESSAGE = (
+    "The Claude process was terminated after failing to respond, but the "
+    "shutdown could not be confirmed. This turn produced no result. Please "
+    "try again."
+)
 
 
 @dataclass(slots=True)
@@ -134,6 +169,16 @@ class ClaudeTurnRunner:
     agent_task_calls: dict[tuple[str, str], str] = field(
         default_factory=dict, init=False
     )
+    # B: terminal frames the start gate refused to settle this turn on. Read by
+    # the post-deploy observation window alongside `ClaudeConnection
+    # .absorbed_terminal_frames`: the two are the same leak seen at its two
+    # entry points (the reader refusing to mint, the turn refusing to settle).
+    foreign_terminal_frames: int = field(default=0, init=False)
+    # F1/F6: turns whose `completed` was downgraded to `interrupted` because
+    # they settled on a result they could not attribute. Zero in normal
+    # operation; non-zero means the P1 ghost shape reached a live turn, which
+    # is the one number the observation window should alarm on.
+    stale_completion_downgrades: int = field(default=0, init=False)
     stopping: bool = False
     markers: ClaudeTimelineMarkers = field(init=False)
     scheduled_sessions: ClaudeScheduledSessions = field(init=False)
@@ -341,6 +386,10 @@ class ClaudeTurnRunner:
                 async with connection.stuck_report_lock:
                     connection.stuck_timeout_reports -= 1
 
+        # The budget the turn actually ran out of. Named once because three
+        # consumers depend on it agreeing: the failed terminal's text, the fire
+        # line, and the process-retirement disclosure's `stuckSeconds`.
+        stuck_budget = timeout if reason == WATCHDOG_REASON_ZERO_CONTENT else ceiling
         try:
             settled = await self.finish_execution(
                 session=session,
@@ -349,7 +398,7 @@ class ClaudeTurnRunner:
                     code="claude_scheduled_turn_timeout",
                     message=(
                         "Scheduled work did not report a result within "
-                        f"{int(timeout if reason == WATCHDOG_REASON_ZERO_CONTENT else ceiling)}"
+                        f"{int(stuck_budget)}"
                         " seconds"
                     ),
                     reason="scheduled_watchdog_timeout",
@@ -374,6 +423,7 @@ class ClaudeTurnRunner:
             response,
             reason=reason,
             client_reported=publish,
+            stuck_seconds=stuck_budget,
         )
 
     async def retire_stuck_transport(
@@ -384,6 +434,7 @@ class ClaudeTurnRunner:
         *,
         reason: str | None = None,
         client_reported: bool = True,
+        stuck_seconds: float | None = None,
     ) -> None:
         """Retire everything the stuck turn left behind on its connection.
 
@@ -461,6 +512,13 @@ class ClaudeTurnRunner:
         # 13:49 exactly this branch fired on a rate-limited watchdog
         # (`stuck_timeout_reports` already spent) and left no server-side trace
         # of a killed process anywhere. Server WARNING, not a ledger report.
+        #
+        # Snapshotted before the close so the disclosure below reports what was
+        # in the process at the moment it was killed. It is 0 on the ordinary
+        # path — the L1 gate above already returned when background work was
+        # live — and non-zero only when the transport was failing or closing,
+        # which is exactly when the user needs to be told work was cut.
+        interrupted_background_tasks = len(connection.background.active_ids)
         logger.warning(
             "Claude stuck transport retirement is FATAL: closing the host CLI "
             "process and every subagent in it session_id={} turn_id={} "
@@ -480,6 +538,78 @@ class ClaudeTurnRunner:
                 "Claude stuck transport retirement failed session_id={}: {}",
                 session.session_id,
                 exc,
+            )
+            # Not confirmed, not silent: the turn is lost either way, and a
+            # user who is told "still working" when the kill was attempted is
+            # worse off than one told the truth.
+            await self._disclose_process_retirement(
+                session,
+                stuck_seconds=stuck_seconds,
+                interrupted_background_tasks=interrupted_background_tasks,
+                confirmed=False,
+            )
+            return
+        await self._disclose_process_retirement(
+            session,
+            stuck_seconds=stuck_seconds,
+            interrupted_background_tasks=interrupted_background_tasks,
+            confirmed=True,
+        )
+
+    async def _disclose_process_retirement(
+        self,
+        session: ClaudeSession,
+        *,
+        stuck_seconds: float | None,
+        interrupted_background_tasks: int | None,
+        confirmed: bool,
+    ) -> None:
+        """Tell the user the host process died, whatever the limiters decided.
+
+        This sits outside every gate on the retirement path, and that is the
+        whole point of it. `publish` decides whether a failed TURN reaches the
+        ledger; `update_state` decides who owns the session status. Neither has
+        anything to do with "the CLI process was just killed", and on
+        2026-10-03 13:49 that gap produced a killed process whose only trace
+        was a WARNING line no user will ever read. So this disclosure is driven
+        by the close itself and therefore fires on every retirement: with the
+        ledger slot spent or not, and for a queued execution that never owned
+        the status (`update_state=False`).
+
+        It is deliberately NOT reached when the L1 gate withholds the kill —
+        `retire_stuck_transport` returns before the close, so nothing was
+        retired and nothing is disclosed. A disclosure that fires when the
+        process survived would teach users to distrust it.
+
+        Failures are logged and swallowed: by the time this runs the turn is
+        already settled and the process already dead, so a host I/O error must
+        not escalate into a second incident on top of the first.
+        """
+
+        params: dict[str, Any] = {"retirementConfirmed": confirmed}
+        if stuck_seconds is not None:
+            params["stuckSeconds"] = int(stuck_seconds)
+        if interrupted_background_tasks is not None:
+            params["interruptedBackgroundTaskCount"] = interrupted_background_tasks
+        try:
+            await self.notifications.session_state.session_state_update(
+                session,
+                "error",
+                error={
+                    "code": CLAUDE_PROCESS_RETIRED_CODE,
+                    "message": (
+                        PROCESS_RETIRED_MESSAGE
+                        if confirmed
+                        else PROCESS_RETIRED_UNCONFIRMED_MESSAGE
+                    ),
+                    "params": params,
+                },
+                metadata={"source": CLAUDE_PROCESS_RETIRED_SOURCE},
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Claude process retirement disclosure failed session_id={}",
+                session.session_id,
             )
 
     async def reclaim_idle_connection(
@@ -612,6 +742,67 @@ class ClaudeTurnRunner:
                 session.session_id,
                 event.task_id,
             )
+
+    async def publish_stopped_subagents(
+        self,
+        session: ClaudeSession,
+        task_ids: Iterable[str],
+        *,
+        reason: str | None = None,
+    ) -> int:
+        """Tell the agent card, at the stop, which subagents the stop killed.
+
+        P2-N1 (claude-stale-frame-turn-tasks.md §4/§11). The gap this closes is
+        measured, not hypothetical: on 2026-10-04 12:18 the agent kept reporting
+        "still running in the background" 20 s after the user hit stop, the
+        client card did not flip for 4m41s, and the CLI's own notification for
+        the same events came 4m43s late. The information was never missing — the
+        CLI emits `task_notification` for every task it kills, and the L2 fold
+        already binds `task_id -> card` — it simply arrived after anyone was
+        still looking at the turn.
+
+        So the connector stops waiting for it. A stop knows exactly which tasks
+        it killed: `ClaudeBackgroundTasks.active_ids` is the live set on that
+        transport, and every id in it is bound to a card by the L2 fold (killed
+        tasks are 100% capturable — findings §8.7). Each is re-folded as the
+        `task_updated`/killed event the CLI itself would have sent, which is the
+        point: the same normalizer, the same overlay table
+        (`AGENT_TASK_TERMINAL_STATUSES` maps killed -> interrupted), the same
+        idempotent closure. The CLI's late notification then finds a card
+        already in the state it would have set, and publishes nothing.
+
+        Only ids the caller vouches for are folded, because that is the one
+        guard this needs: a "killed" overlay on a card the CLI already closed
+        as `done` would walk a finished card backwards. The caller reads the
+        live set, so finished cards are never in it.
+
+        Nothing here changes what a stop does — it only says what already
+        happened, on a surface that is already there. A notification into the
+        model's own context would mean sending a prompt to the process the user
+        just killed, which is the one thing a stop must not do.
+        """
+
+        stopped = 0
+        for task_id in task_ids:
+            await self.fold_agent_task_event(
+                session,
+                ClaudeTaskEvent(
+                    kind="updated",
+                    task_id=task_id,
+                    session_id=session.external_session_id,
+                    status="killed",
+                ),
+            )
+            stopped += 1
+        if stopped:
+            logger.warning(
+                "Claude subagents reported stopped session_id={} tasks={} "
+                "reason={}",
+                session.session_id,
+                stopped,
+                reason,
+            )
+        return stopped
 
     async def project_background_frame(
         self,
@@ -999,6 +1190,61 @@ class ClaudeTurnRunner:
             # silence) is never re-armed into a short deadline.
             cast_frame = client.cast_frame
             cast_reached = cast_frame is None
+            # B · start gate (claude-stale-frame-turn-tasks.md §4/§11, D1).
+            #
+            # The consume loop drains a session-scoped stream: whatever the CLI
+            # is still emitting when this turn takes the lock is in this queue,
+            # including frames that belong to a turn which already settled. The
+            # 12:23 ghost is exactly that — the interrupted turn's residual
+            # result was still on the wire when the next message started (real
+            # session sess_tPcEDi0z9xJYxQ, 2026-10-04). I1 refuses such a frame
+            # to MINT a turn; B is the second half of the same invariant, on the
+            # SETTLE side: a terminal only ends a turn that has shown a start
+            # it owns, and one that cannot is counted and named.
+            #
+            # A turn's start, by kind:
+            #
+            #   cast turn      — the cast frame's own position (`message is
+            #                   cast_frame`): the B1 content gate's positional
+            #                   rule promoted to settlement. The cast frame and
+            #                   everything flushed ahead of it are passive, so a
+            #                   terminal there cannot settle the turn (it is
+            #                   skipped; `counts_as_labour` is false there).
+            #   prompted turn  — the prompt echo the `prompt_uuid` facility binds
+            #                   above, or any other non-terminal frame: once the
+            #                   turn has spoken, a later result is its own.
+            #   command /
+            #     maintenance  — no prompt uuid exists to pair with (the CLI does
+            #                   not echo those), so there is no start evidence to
+            #                   wait for and the gate starts open.
+            #
+            # WHAT THIS GATE DOES NOT DO, and why (recorded here so nobody
+            # re-derives it as an oversight): an unowned terminal is counted and
+            # refused as labour, but it still settles. The refusal cannot go
+            # further for two reasons that are structural, not budgeted.
+            #
+            #   1. It cannot be told apart from a legitimate empty reply. By the
+            #      time a result is the turn's first terminal, the residual and
+            #      an empty answer are the same shape on the same queue — stage-1
+            #      findings §7.1 already established the payload cannot separate
+            #      the reproduced residual from the production one, and the real
+            #      turn's own result is indistinguishable from a leftover by
+            #      construction. Dropping it would hang every empty reply until
+            #      the ceiling (R1's false kill, product-level).
+            #   2. The read cannot simply continue. `ClaudeResponse
+            #      .receive_response` ends a response at its first result, and
+            #      the reader holds `current` until the turn releases it — so
+            #      "keep reading for the real one" needs the release protocol
+            #      rewritten, which is the reader's core backpressure design and
+            #      far outside this batch.
+            #
+            # I1 is the fix that does hold: a residual result can no longer
+            # enter a queue at all from silence, which is the only shape stage 1
+            # ever reproduced (3/3). This gate's job is to make the residue
+            # measurable (the counter and the WARN), to keep it out of the labour
+            # count so a ghost stays in the fast-kill class, and to name the
+            # occurrence for the observation window.
+            turn_started = cast_frame is None and client.prompt_uuid is None
             emitted_final_assistant_content = False
             async for message in receive_response_messages(client):
                 # Position, not shape: the same payload would count one frame
@@ -1078,6 +1324,66 @@ class ClaudeTurnRunner:
                     projector=self.timeline,
                 )
                 terminal_message = terminal_event_from_message(message)
+                if terminal_message is not None and not counts_as_labour:
+                    # B1's position rule promoted to settlement: the cast frame
+                    # and everything the reader flushed ahead of it are passive
+                    # arrival, so a terminal there is not this turn's verdict and
+                    # does not end it. I1 already refuses to let a terminal
+                    # cast a turn, so this is the second line — reachable only
+                    # if that guard ever regresses. Skipped, not counted as
+                    # foreign: it is not another turn's frame, it is simply not
+                    # this turn's result.
+                    continue
+                unowned_terminal = terminal_message is not None and not turn_started
+                if unowned_terminal:
+                    # This turn has shown no work of its own, so this result
+                    # cannot be shown to be its own. Counted and named, and not
+                    # credited as labour (the same rule the cast frame follows:
+                    # a passive arrival is not evidence the turn worked).
+                    #
+                    # It does NOT stop the turn from ending — see the gate's note
+                    # above for why that is not available — but it does decide
+                    # HOW the turn ends. Settling `completed` on a result the
+                    # turn cannot own is the P1 symptom verbatim: the client is
+                    # told the turn succeeded, the real reply never arrives (it
+                    # is still behind the frame that was just swallowed), and the
+                    # user is looking at an idle session with nothing to show.
+                    # So an unowned terminal on a turn that produced nothing
+                    # settles as `interrupted` with a structured reason instead:
+                    # "this round produced nothing" is what actually happened,
+                    # and saying so is both honest and re-sendable.
+                    self.foreign_terminal_frames += 1
+                    logger.warning(
+                        "Claude unowned terminal frame in-turn "
+                        "session_id={} turn_id={} scheduled={} "
+                        "foreign_total={} status={} reason={}",
+                        session.session_id,
+                        turn_id,
+                        scheduled,
+                        self.foreign_terminal_frames,
+                        terminal_message.status,
+                        terminal_message.reason,
+                    )
+                elif message is cast_frame or (
+                    counts_as_labour
+                    and not (
+                        role == "user"
+                        and client.prompt_uuid is not None
+                        and native_message_id == client.prompt_uuid
+                    )
+                ):
+                    # A cast turn starts at its cast; a prompted turn starts at
+                    # the first frame of WORK it owns. The prompt echo is
+                    # excluded on purpose: the echo is the connector's own
+                    # prompt coming back, not the turn doing anything, and a
+                    # leftover result can arrive right behind it (the reconnect
+                    # replay). "Once the turn has spoken" is the proof; the echo
+                    # is not speech.
+                    turn_started = True
+                # Everything downstream that asks "did this frame prove the turn
+                # did work" must also answer no for an unowned arrival: passive
+                # by definition, exactly like the cast frame above.
+                counts_this_frame = counts_as_labour and not unowned_terminal
                 tool_items = self.timeline.tool_items_for_message(
                     session=session,
                     turn_id=turn_id,
@@ -1138,7 +1444,7 @@ class ClaudeTurnRunner:
                 # turns the suite red instead of silently under-counting into a
                 # false kill.
                 if (
-                    counts_as_labour
+                    counts_this_frame
                     and not _is_wire_chrome(message)
                     and (
                         is_stream_event(message)
@@ -1170,12 +1476,16 @@ class ClaudeTurnRunner:
                     await self.publish_items(
                         execution,
                         (stream_item,),
-                        counted=counts_as_labour,
+                        counted=counts_this_frame,
                     )
                 if is_stream_event(message):
                     continue
                 if terminal_message is not None:
-                    terminal = terminal_message
+                    terminal = self._verdict_for_terminal(
+                        execution=execution,
+                        terminal=terminal_message,
+                        unowned=unowned_terminal,
+                    )
                     if not emitted_final_assistant_content:
                         text = message_text(message)
                         if text:
@@ -1196,16 +1506,17 @@ class ClaudeTurnRunner:
                                         revision=stream_accumulator.next_final_revision(),
                                     ),
                                 ),
-                                counted=counts_as_labour,
+                                counted=counts_this_frame,
                             )
                             emitted_final_assistant_content = True
                             stream_accumulator.reset()
-                    break
+                    if not unowned_terminal and counts_as_labour:
+                        break
                 await self.publish_items(
-                    execution, tool_items, counted=counts_as_labour
+                    execution, tool_items, counted=counts_this_frame
                 )
                 await self.publish_items(
-                    execution, system_items, counted=counts_as_labour
+                    execution, system_items, counted=counts_this_frame
                 )
                 if compact_event is not None:
                     await self.publish_items(
@@ -1217,7 +1528,7 @@ class ClaudeTurnRunner:
                                 event=compact_event,
                             ),
                         ),
-                        counted=counts_as_labour,
+                        counted=counts_this_frame,
                     )
                 if suppressed_control:
                     continue
@@ -1243,7 +1554,7 @@ class ClaudeTurnRunner:
                             else 1,
                         ),
                     ),
-                    counted=counts_as_labour,
+                    counted=counts_this_frame,
                 )
                 if role == "assistant":
                     emitted_final_assistant_content = True
@@ -1371,19 +1682,112 @@ class ClaudeTurnRunner:
                             connection.arm_idle()
                         await self.refresh_idle_connection(session)
             try:
-                await self.publish_items(
-                    execution,
-                    stream_accumulator.finalize_pending_thinking(
-                        session,
-                        turn_id,
-                        self.timeline,
-                    ),
+                settled_batch = stream_accumulator.finalize_pending_thinking(
+                    session,
+                    turn_id,
+                    self.timeline,
                 )
+                await self.publish_items(execution, settled_batch)
             except Exception:  # noqa: BLE001
+                settled_batch = ()
                 logger.exception(
                     "Claude reasoning flush failed session_id={}",
                     session.session_id,
                 )
+            if settled_batch:
+                # L3b, second half (red team F4). The first request for this
+                # session's refresh went out from `finish_execution`, which runs
+                # BEFORE this block — so the snapshot it asked for could not
+                # contain the rows this block is about to publish, and the very
+                # batch L3b was raised for (12:24: a dozen rows formed at settle
+                # and shipped on the next global beat) still waited a whole
+                # interval. Ask again now that they are out. Only when there is
+                # a batch: a turn that published nothing extra must not pay for
+                # a second transcript read.
+                await self._request_settled_session_sync(session)
+
+    def _verdict_for_terminal(
+        self,
+        execution: ClaudeExecution,
+        terminal: ClaudeTerminalEvent,
+        *,
+        unowned: bool,
+    ) -> ClaudeTerminalEvent:
+        """Downgrade a `completed` this turn cannot own, and say why.
+
+        The invariant a turn settles on: a terminal frame ends exactly one turn,
+        the one that can prove it started it. When the proof is missing,
+        `completed` is a lie with consequences — the
+        client shows the turn succeeded, the reply that is still behind the
+        swallowed frame never arrives, and the user is looking at an idle
+        session with an empty composer. That is the 2026-10-04 P1 report
+        verbatim, and it survived I1 because I1 only guards the MINT path: this
+        frame was already inside a live turn.
+
+        So the verdict is degraded, not suppressed. `interrupted` with a
+        structured reason says exactly what happened — this round produced
+        nothing — and it is a state the user can act on (re-send) rather than
+        one that invites them to wait for a reply that is never coming. The
+        reason string is what the client's `terminalReason` carries, so the
+        condition is visible in the turn ledger instead of being swallowed here.
+
+        Cost, stated plainly: a genuine empty reply — a turn whose whole stream
+        is its own result — is indistinguishable from this and is degraded too.
+        That is the deliberate trade (pp, red team F1): to the user both are
+        "this round produced nothing", and reporting one of them as a success
+        is the failure mode being fixed.
+
+        THE CASCADE this creates, measured (red team round 2 §5.3, and pinned by
+        `test_a_residual_before_the_prompt_echo_degrades_the_turn_and_leaves_a_
+        phantom`). Downgrading makes the turn BREAK on the frame it could not
+        attribute, so the frames behind it — the prompt echo, the real reply,
+        the real result — are left in the reader's queue with nobody holding
+        them. At silence the echo is a user frame, which mints a scheduled turn,
+        and that phantom consumes the rest and settles `completed` carrying the
+        answer.
+
+        As measured it is benign: two bubbles, `completed`, session back to
+        idle, no error state, nothing left running. The user-visible cost is one
+        answer split across two bubbles, the first marked "interrupted / this
+        round produced nothing".
+
+        The honest edge: the "phantom with only the echo and nothing after it"
+        variant could NOT be constructed by the red team, so whether that one
+        would sit zero-content until the 30 s fast kill and flip the session to
+        an error is UNVERIFIED. Mechanically it is the same shape as a genuinely
+        hung turn (zero content, no terminal), which is why it is on the stage-3
+        watch list rather than dismissed.
+
+        Only `completed` is degraded. `failed` and `interrupted` are already
+        honest about a round that went nowhere, and rewriting them would destroy
+        the failure visibility the pending branch exists to preserve.
+
+        The counter is the observation window's actionable number:
+        `stale_completion_downgrades` is zero in normal operation, and non-zero
+        only when a turn was reported as successful on a result it could not
+        prove was its own — which is the P1 defect, by definition. (F6: the
+        raw `foreign_terminal_frames` cannot carry that job, because a
+        legitimate empty reply increments it too.)
+        """
+
+        if terminal.status != "completed" or not unowned:
+            return terminal
+        # No separate "and the turn produced nothing" test, and that is a
+        # measured decision rather than an omission: it cannot be reached. Any
+        # frame that counts as work also opens the start gate above (every
+        # counted shape is a non-terminal one), so an unowned terminal already
+        # implies a turn that consumed nothing. Writing the check anyway made
+        # it a guard with no failing input — the thing red team F7 flagged in B
+        # — and a guard nobody can trip is a comment that lies about what the
+        # code guarantees.
+        self.stale_completion_downgrades += 1
+        logger.warning(
+            "Claude completed downgraded to interrupted: turn settled on a "
+            "result it could not attribute turn_id={} downgrades={}",
+            execution.turn_id,
+            self.stale_completion_downgrades,
+        )
+        return interrupted_terminal_event(STALE_COMPLETION_REASON)
 
     async def publish_items(
         self,
@@ -1670,6 +2074,20 @@ class ClaudeTurnRunner:
                         update_state=not queued,
                         publish=publish,
                     )
+                    if not queued:
+                        # L3b: ask the connector to refresh this session's
+                        # timeline now instead of at the next global sync beat.
+                        # The push above already carried this turn's rows; what
+                        # this buys is the snapshot that catches anything the
+                        # push published late, reordered, or missed — which on
+                        # 2026-10-04 was the difference between a reply and 30
+                        # to 50 seconds of an idle-looking session.
+                        #
+                        # Fire-and-forget by contract: `on_turn_settled` returns
+                        # immediately, so this costs the turn nothing. And it is
+                        # display plumbing, so it can never fail a turn that has
+                        # already been correctly settled.
+                        await self._request_settled_session_sync(session)
                 finally:
                     if response is not None:
                         response.release(interrupted=terminal.status == "interrupted")
@@ -1686,6 +2104,26 @@ class ClaudeTurnRunner:
                         )
                     execution.finished.set()
             return True
+
+    async def _request_settled_session_sync(self, session: ClaudeSession) -> None:
+        """Tell the connector this session settled, so it can refresh it now.
+
+        L3b. A no-op on any host that does not implement the signal (the
+        protocol default), which is what keeps a runtime built for tests or for
+        an older connector behaving exactly as before. Failures are logged and
+        swallowed: the turn has already published its verdict by the time this
+        runs, and nothing about a follow-up refresh is worth failing it for.
+        """
+
+        try:
+            await self.host.on_turn_settled(
+                session.session_id, session.external_session_id
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Claude settled session sync request failed session_id={}",
+                session.session_id,
+            )
 
     async def publish_terminal_state(
         self,

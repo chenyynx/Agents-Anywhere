@@ -24,6 +24,26 @@ class RuntimeHostClient(ABC):
         """Bind storage before a provider constructs its runtime; legacy hosts are unchanged."""
         return self
 
+    async def on_turn_settled(
+        self,
+        session_id: str,
+        external_session_id: str | None = None,
+    ) -> None:
+        """Tell the connector a turn settled, so it can refresh that session now.
+
+        L3b. A turn's rows reach the client by two different roads: the runtime
+        pushes them as events, and the connector's periodic session sync
+        re-reads the transcript and ships a snapshot. The second road is what
+        covers anything the first one missed or published late, and it runs on a
+        global interval — so a turn that settles just after a beat waits a full
+        interval for its snapshot. That is the 30-50s delivery lag pp measured
+        on 2026-10-04.
+
+        Runtimes call this and return; the host decides what it costs. The
+        default does nothing, so a runtime built without a sync-aware host keeps
+        exactly the behavior it had.
+        """
+
     @property
     def runtime_kv(self) -> JsonKeyValueStore:
         return JsonKeyValueStore.default()

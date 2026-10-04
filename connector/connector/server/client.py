@@ -134,6 +134,11 @@ class BackendRpcClient:
             ingest_notifications=self.ingest_notifications,
             flush_sync_state=self._flush_sync_state,
         )
+        # L3b: the settle signal only has a destination once the sync runner
+        # exists. Bound on the shared host so every runtime bound afterwards
+        # inherits it (`prepare_runtime_host` copies this attribute).
+        if isinstance(self.agent_runtime_host, ConnectorRuntimeHost):
+            self.agent_runtime_host.turn_settled_sink = self._runtime_sync.on_turn_settled
         self._runtime_sync_task: asyncio.Task[None] | None = None
 
     async def run_forever(self) -> None:
@@ -234,6 +239,10 @@ class BackendRpcClient:
                 except (asyncio.CancelledError, Exception):
                     pass
                 self._runtime_sync_task = None
+            # L3b: the on-demand settle refreshes are the sync runner's own
+            # tasks; they must retire with the loop they were serving, or the
+            # loop can outlive a disconnect and publish into a dead session.
+            await self._runtime_sync.stop()
             try:
                 await self._flush_sync_state()
             except Exception:  # noqa: BLE001

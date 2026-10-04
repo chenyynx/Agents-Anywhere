@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -45,6 +46,10 @@ CONNECTION_CLOSE_TIMEOUT_SECONDS = 30
 # protected is "the reader never stops reading the stream", so the queue must be
 # able to say no.
 DEFERRED_EVENT_QUEUE_MAXSIZE = 256
+# F2: the state-bearing queue gets its own budget. Two independent bounds, so
+# a decorative burst cannot consume the space a task closure needs, and a task
+# burst cannot consume the space subagent rows need.
+DEFERRED_TASK_QUEUE_MAXSIZE = 256
 DEFERRED_EVENT_WORKER_TIMEOUT_SECONDS = 5.0
 LEGACY_RECONCILE_PROMPT = (
     "AA connection maintenance: call CronList exactly once to report the current "
@@ -226,11 +231,23 @@ class ClaudeConnection:
     # and push the human turn into `queued_execution` (stage-1 findings §2.2,
     # V9 vs V11). Bounded queue + one drain worker per connection: the reader
     # hands the event over and goes straight back to the stream.
-    deferred_event_queue: asyncio.Queue[Any] = field(
-        default_factory=lambda: asyncio.Queue(maxsize=DEFERRED_EVENT_QUEUE_MAXSIZE)
+    # F2: two queues with two bounds. State-bearing events (the task binding
+    # and the card closure) cannot be evicted by decorative ones; see
+    # `defer_event`. Plainer deques than `asyncio.Queue` because the eviction
+    # rule is by importance, not by arrival, and reaching into a Queue's
+    # internals to express that would be the wrong trade.
+    deferred_task_events: deque[tuple[Awaitable[Any], Any, bool]] = field(
+        default_factory=deque
     )
+    deferred_background_events: deque[tuple[Awaitable[Any], Any, bool]] = field(
+        default_factory=deque
+    )
+    _deferred_wakeup: asyncio.Event = field(default_factory=asyncio.Event)
     deferred_event_worker: asyncio.Task[None] | None = None
     deferred_dropped_events: int = 0
+    # Counted apart from the decorative drops: a non-zero value here means a
+    # task binding or a card closure was lost, which is not a cosmetic loss.
+    deferred_dropped_state_events: int = 0
 
     @property
     def retained(self) -> bool:
@@ -263,20 +280,44 @@ class ClaudeConnection:
         if timer is not None and timer is not asyncio.current_task():
             timer.cancel()
 
-    def defer_event(self, callback: Awaitable[Any] | None, event: Any) -> None:
+    def defer_event(
+        self,
+        callback: Awaitable[Any] | None,
+        event: Any,
+        *,
+        state_bearing: bool = False,
+    ) -> None:
         """Hand one projection event to the drain worker without awaiting it.
 
         The reader calls this instead of awaiting the callback. That is the whole
         point: the reader's job is to read the CLI's stream, and both callbacks
         end in a host upsert whose latency is the server's business, not the
-        stream's. Ordering is preserved by the single worker, so the events this
+        stream's. The single worker keeps arrival order, so the events this
         defers still reach the timeline in the order the CLI produced them.
 
-        Overflow drops the OLDEST event: a progress row the host has not seen
-        yet is already behind whatever the CLI said after it, and stalling the
-        reader to preserve it would trade a cosmetic lag for the ghost this
-        whole queue exists to prevent. Drops are counted and warned so the
-        observation window can see backpressure rather than infer it.
+        TWO QUEUES, because the two kinds of event are not equally lossy (red
+        team F2, round 1). `on_background_frame` carries decorative rows — a
+        subagent's thinking and tool lines — and losing one costs a row.
+        `on_task_event` carries state: `task_started` is the ONLY writer of the
+        task-to-card binding, and the event that closes a card is sent once and
+        never again. A single FIFO let decorative traffic evict the binding, and
+        the result was a subagent card stuck on `running` forever, with P2-N1's
+        "killed" fold silently dead for that subagent too — a loss the pre-V9
+        inline `await` could not suffer, so V9 introduced it.
+
+        The whole `on_task_event` stream goes in the state queue, `task_progress`
+        included: a progress row and the terminal closure that supersedes it are
+        a pair, and draining them out of order leaves the card showing the older
+        usage (`test_terminal_burst_closes_the_card_once_with_summary` is what
+        catches that). Eviction inside it is by IMPORTANCE rather than by age —
+        a `task_progress` row, which the next one supersedes, goes first, and a
+        binding or a closure only when there is nothing else, counted apart and
+        warned in words nobody can misread.
+
+        Cross-queue order is not preserved, and does not need to be: the two
+        queues write different items (subagent rows parented to a call vs the
+        call's own card), and neither one's ordering is meaningful against the
+        other's.
         """
 
         if callback is None:
@@ -285,23 +326,81 @@ class ClaudeConnection:
         if worker is None or worker.done():
             worker = asyncio.create_task(self._drain_deferred_events())
             self.deferred_event_worker = worker
-        queue = self.deferred_event_queue
-        if queue.full():
-            try:
-                queue.get_nowait()
-            except asyncio.QueueEmpty:  # pragma: no cover - single consumer
-                pass
-            self.deferred_dropped_events += 1
-            logger.warning(
-                "Claude deferred projection event dropped on overflow "
-                "dropped_total={} queue_max={}",
-                self.deferred_dropped_events,
-                queue.maxsize,
-            )
-        queue.put_nowait((callback, event))
+        state_queue = self.deferred_task_events
+        queue = state_queue if state_bearing else self.deferred_background_events
+        limit = (
+            DEFERRED_TASK_QUEUE_MAXSIZE
+            if state_bearing
+            else DEFERRED_EVENT_QUEUE_MAXSIZE
+        )
+        droppable = not state_bearing or getattr(event, "kind", None) == "progress"
+        while len(queue) >= limit:
+            victim = next((i for i, item in enumerate(queue) if item[2]), 0)
+            evicted = queue[victim]
+            del queue[victim]
+            if evicted[2] and queue is state_queue:
+                # A repeatable row gave way before a state event: a normal shed.
+                self.deferred_dropped_events += 1
+                logger.warning(
+                    "Claude deferred projection event dropped on overflow "
+                    "dropped_total={} queue_max={}",
+                    self.deferred_dropped_events,
+                    limit,
+                )
+            elif queue is state_queue:
+                self.deferred_dropped_state_events += 1
+                logger.warning(
+                    "Claude deferred TASK event dropped on overflow "
+                    "dropped_total={} queue_max={}",
+                    self.deferred_dropped_state_events,
+                    limit,
+                )
+            else:
+                self.deferred_dropped_events += 1
+                logger.warning(
+                    "Claude deferred projection event dropped on overflow "
+                    "dropped_total={} queue_max={}",
+                    self.deferred_dropped_events,
+                    limit,
+                )
+        queue.append((callback, event, droppable))
+        self._deferred_wakeup.set()
+
+    def _pop_ready_deferred(self) -> tuple[Awaitable[Any], Any, bool] | None:
+        """Next event, state-bearing first. No awaiting."""
+
+        for queue in (self.deferred_task_events, self.deferred_background_events):
+            if queue:
+                return queue.popleft()
+        return None
+
+    def _has_ready_deferred(self) -> bool:
+        """Whether anything is queued. Peeks — never consumes."""
+
+        return bool(self.deferred_task_events or self.deferred_background_events)
+
+    async def _next_deferred_event(self) -> tuple[Awaitable[Any], Any]:
+        """Take the next event, or wait for one to arrive.
+
+        The clear-then-recheck before waiting is what makes this safe: a
+        producer landing between the clear and the re-check is seen by the
+        re-check, and one landing after it re-sets the event, so a wake-up is
+        never lost between the two. The re-check PEEKS — it has to, because a
+        re-check that consumed would silently eat one event per wake-up, which
+        is the very loss this queue's state half was rebuilt to stop.
+        """
+
+        while True:
+            item = self._pop_ready_deferred()
+            if item is not None:
+                return item[0], item[1]
+            self._deferred_wakeup.clear()
+            if self._has_ready_deferred():
+                continue
+            await self._deferred_wakeup.wait()
 
     async def _drain_deferred_events(self) -> None:
-        """Project queued events, one at a time, in order.
+        """Project queued events, one at a time, in arrival order.
 
         Nothing in here may mint or select a turn: these are display-only
         projections, and the worker's whole reason to exist is that they are not
@@ -311,9 +410,8 @@ class ClaudeConnection:
         every later event too.
         """
 
-        queue = self.deferred_event_queue
         while True:
-            callback, event = await queue.get()
+            callback, event = await self._next_deferred_event()
             try:
                 await callback(event)
             except asyncio.CancelledError:
@@ -324,12 +422,12 @@ class ClaudeConnection:
                 )
 
     async def _stop_deferred_events(self) -> None:
-        """Retire the drain worker without letting shutdown wait on the host.
+        """Retire the drain worker without letting the host hold the transport up.
 
-        Cancelling first, then emptying the queue by hand: a worker cancelled
+        Cancelling first, then emptying the queues by hand: a worker cancelled
         mid-host-call leaves whatever it was holding in flight, and calling back
-        into a host that is itself shutting down is exactly the hang this queue
-        was introduced to avoid. What is left is counted, not replayed.
+        into a host that is itself retiring is exactly the hang this queue was
+        introduced to avoid. What is left is counted, not replayed.
         """
 
         worker = self.deferred_event_worker
@@ -339,14 +437,11 @@ class ClaudeConnection:
             await asyncio.wait(
                 (worker,), timeout=DEFERRED_EVENT_WORKER_TIMEOUT_SECONDS
             )
-        queue = self.deferred_event_queue
-        remaining = 0
-        while True:
-            try:
-                queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-            remaining += 1
+        remaining = len(self.deferred_task_events) + len(
+            self.deferred_background_events
+        )
+        self.deferred_task_events.clear()
+        self.deferred_background_events.clear()
         if remaining:
             self.deferred_dropped_events += remaining
             logger.warning(
@@ -546,7 +641,15 @@ class ClaudeConnection:
                     if self.on_task_event is not None:
                         agent_event = task_event_from_message(message)
                         if agent_event is not None:
-                            self.defer_event(self.on_task_event, agent_event)
+                            # `task_started` writes the task-to-card binding and
+                            # the terminal event closes the card; neither may be
+                            # evicted by a decorative burst (F2). A progress row
+                            # is repeatable and may be dropped.
+                            self.defer_event(
+                                self.on_task_event,
+                                agent_event,
+                                state_bearing=True,
+                            )
                 background_activity = is_background_activity(message)
                 if background_activity:
                     # Frames parented to a tool use are activity *inside* a

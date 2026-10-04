@@ -46,6 +46,7 @@ from typing import Any
 import pytest
 from claude_agent_sdk import UserMessage
 from claude_agent_sdk._internal.message_parser import parse_message
+from test_claude_background_guard import WIRE_DANGER_ASSISTANT_THINKING
 from test_claude_compact_ghost import (
     _runtime_with,
     _single_client_factory,
@@ -87,11 +88,17 @@ from connector.runtimes.claude.sdk.connection import (
     ClaudeConnection,
     ClaudeResponse,
 )
+from connector.runtimes.claude.sdk.tasks import task_event_from_message
 from connector.runtimes.claude.timeline.messages import stable_tool_item_id
 from connector.runtimes.claude.turns import lifecycle
 from connector.runtimes.claude.turns.lifecycle import STALE_COMPLETION_REASON
 
 SESSION = "b5a5f0a4-2c17-4f8e-9a6b-1d0e7c4b9a21"
+
+# The decorative stream: parented subagent frames that reach silence. Used
+# as the FLOOD in F2 — it is what an unbounded share of one FIFO lets evict
+# state.
+WIRE_SUBAGENT_THINKING = WIRE_DANGER_ASSISTANT_THINKING
 
 # A bare success result: no `origin`, nothing for the chrome predicate to
 # recognize. This is the shape stage 1 could not build on the real CLI (2.1.285
@@ -744,45 +751,139 @@ def test_slow_host_does_not_stall_the_reader_loop() -> None:
     asyncio.run(run())
 
 
-def test_overflow_drops_the_oldest_event_and_keeps_the_newest(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Backpressure has to end somewhere, and it must not end the reader.
+async def _dispatched_subagent() -> tuple[Any, Any, Any, str]:
+    """A dispatched subagent: the Agent card exists, nothing has bound it yet.
 
-    When the host cannot keep up, a progress row it has not seen yet is already
-    behind whatever the CLI said after it. Dropping the oldest keeps the tail —
-    the state the user is watching — and the drop is counted, because a silently
-    lossy display is worse than a visible one.
+    Deliberately does NOT send `task_started` — the binding is what these tests
+    are about, so it has to arrive inside the burst under test. Feeding it in
+    the setup would make the binding unfalsifiable: it would survive whatever
+    the burst did to the queue.
     """
 
-    monkeypatch.setattr(connection_module, "DEFERRED_EVENT_QUEUE_MAXSIZE", 3)
+    client = _TimedDispatchClient()
+    host = _SlowHost(0.05)
+    runtime = _runtime_with_values(host, _single_client_factory(client), {})
+    session = await _start_dispatch(runtime)
+    card_id = stable_tool_item_id(session, DISPATCH_TUID)
+    assert ("sub_progress", TASK_ID) not in runtime._turns.runner.agent_task_calls
+    return runtime, client, host, card_id
+
+
+def _task_burst() -> list[dict[str, Any]]:
+    """A subagent's whole task stream: bind, a run of progress rows, close."""
+
+    return [
+        WIRE_TASK_STARTED,
+        *[_progress_frame(i) for i in range(12)],
+        WIRE_TASK_UPDATED,
+    ]
+
+
+def _defer_all(
+    connection: Any,
+    callback: Any,
+    frames: list[dict[str, Any]],
+    *,
+    state_bearing: bool,
+) -> None:
+    for frame in frames:
+        event = task_event_from_message(_parse(frame))
+        if event is None:
+            continue
+        connection.defer_event(callback, event, state_bearing=state_bearing)
+
+
+def _last_card_status(host: Any, card_id: str) -> str | None:
+    items = _card_items(host, card_id)
+    return items[-1].status if items else None
+
+
+def test_state_queue_overflow_sheds_a_progress_row_not_the_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F2: when the STATE queue overflows, a `task_progress` row pays first.
+
+    修前红 on the deeper half: `task_started` is not protected merely by being
+    early — it is protected by being evictable LAST. The bound here is 3 and
+    the burst is fourteen task events, so progress rows must absorb the whole
+    loss, and both the binding and the card closure must survive it. Evict by
+    age instead (the pre-F2 rule) and the binding is the oldest thing in the
+    queue: gone, and every later event for that subagent is unbound forever.
+
+    Driven straight at the deferral point. The reader's own burst timing is a
+    separate concern with its own test below; this one is about the policy.
+    """
+
+    monkeypatch.setattr(connection_module, "DEFERRED_TASK_QUEUE_MAXSIZE", 3)
 
     async def run() -> None:
-        client = _TimedDispatchClient()
-        host = _SlowHost(0.05)
-        runtime = _runtime_with(host, _single_client_factory(client))
+        runtime, _client, host, card_id = await _dispatched_subagent()
         try:
-            session = await _start_dispatch(runtime)
-            card_id = stable_tool_item_id(session, DISPATCH_TUID)
-            await client.incoming.put(_parse(WIRE_TASK_STARTED))
-            # The async receipt already seeds an agents entry under this task
-            # id, so the binding proof is the fold's own field — waiting on the
-            # key would pass before `task_started` had been folded.
-            await _wait_until(
-                lambda: "subagentType"
-                in _card_agents(host, card_id).get(TASK_ID, {})
-            )
-
             connection = runtime._turns.runner.connections["sub_progress"]
-            for index in range(12):
-                await client.incoming.put(_parse(_progress_frame(index)))
+            _defer_all(
+                connection,
+                connection.on_task_event,
+                _task_burst(),
+                state_bearing=True,
+            )
 
             await _wait_until(
-                lambda: connection.deferred_dropped_events > 0, timeout=5
+                lambda: _last_card_status(host, card_id) == "done", timeout=5
             )
+            assert connection.deferred_dropped_events > 0, "the burst overflowed"
+            assert ("sub_progress", TASK_ID) in runtime._turns.runner.agent_task_calls
+            # The whole loss fell on repeatable rows: no binding lost, no
+            # closure lost.
+            assert connection.deferred_dropped_state_events == 0
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_a_decorative_burst_cannot_evict_the_task_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F2, the blocking half: decoration and state do not share a bound.
+
+    修前红 (red team RT-4): one FIFO carried both callbacks, so a flood of
+    parented subagent rows could evict the `task_started` that writes the
+    task-to-card binding. With the binding gone, EVERY later task event for
+    that subagent is unbound and returns immediately: the card stays `running`
+    forever and P2-N1's "killed" fold is dead for that subagent too, because it
+    reads the same table. A loss the pre-V9 inline `await` could not suffer.
+
+    The decorative bound is 1 here and the whole task stream arrives alongside
+    it, so under a shared queue the binding cannot survive; with the partition
+    it does, and the card closes.
+    """
+
+    monkeypatch.setattr(connection_module, "DEFERRED_EVENT_QUEUE_MAXSIZE", 1)
+
+    async def run() -> None:
+        runtime, _client, host, card_id = await _dispatched_subagent()
+        try:
+            connection = runtime._turns.runner.connections["sub_progress"]
+            decoration = [
+                _parse({**WIRE_SUBAGENT_THINKING, "uuid": f"bg-{i}"})
+                for i in range(10)
+            ]
+            for frame in decoration:
+                connection.defer_event(connection.on_background_frame, frame)
+            _defer_all(
+                connection,
+                connection.on_task_event,
+                _task_burst(),
+                state_bearing=True,
+            )
+
             await _wait_until(
-                lambda: _card_tokens(host, card_id) == 40000 + 11, timeout=5
+                lambda: _last_card_status(host, card_id) == "done", timeout=5
             )
+            assert ("sub_progress", TASK_ID) in runtime._turns.runner.agent_task_calls
+            # Decoration was shed; state was not touched at all.
+            assert connection.deferred_dropped_events > 0
+            assert connection.deferred_dropped_state_events == 0
         finally:
             await runtime.stop()
 

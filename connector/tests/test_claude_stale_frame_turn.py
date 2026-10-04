@@ -72,6 +72,7 @@ async def _never(_arg: Any = None) -> None:
     return None
 from test_claude_runtime import (
     RuntimeConfig,
+    StreamEvent,
     _default_sdk,
     _FakeClaudeClient,
     _FakeHookMatcher,
@@ -1028,6 +1029,117 @@ def test_a_finished_subagent_card_is_never_walked_backwards() -> None:
             await runtime._turns.runner.publish_stopped_subagents(session, ())
             assert dict(_card_items(host, card_id)[-1].content) == settled
             assert _card_items(host, card_id)[-1].status == "done"
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------
+# L3a · the settle-time batch is published in source order
+# --------------------------------------------------------------------------
+
+
+class _ReorderedThinkingClient(_ScheduledClaudeClient):
+    """A resumed stream whose later thinking block arrives before the earlier one.
+
+    Stage 1's H-b pinned the mechanism for the real machine's "same millisecond,
+    out of order" batch: `order_seq_for` hands out a slot when an item is
+    CREATED, so anything created during settle takes the session's largest slot
+    and a thinking block that was semantically first renders last. The
+    reconnect/replay path is what makes a later block arrive first, and it is
+    the same shape as the residual-frame family this batch is about.
+
+    Neither block is ever closed, so both are still open when the turn settles —
+    which is exactly when `finalize_pending_thinking` publishes them.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+
+    async def _complete_query(self, prompt: str) -> None:
+        await _FakeClaudeClient.query(self, prompt)
+        frames = [
+            StreamEvent(
+                uuid="stream_uu",
+                session_id="stream_sess",
+                event={"type": "message_start", "message": {"id": "msg_l3a"}},
+            ),
+            # Block 1 first.
+            StreamEvent(
+                uuid="stream_uu",
+                session_id="stream_sess",
+                event={
+                    "type": "content_block_delta",
+                    "index": 1,
+                    "delta": {"type": "thinking_delta", "thinking": "second thought"},
+                },
+            ),
+            # Then block 0.
+            StreamEvent(
+                uuid="stream_uu",
+                session_id="stream_sess",
+                event={
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": "first thought"},
+                },
+            ),
+            SimpleNamespace(type="result", session_id="stream_sess"),
+        ]
+        for frame in frames:
+            await self.incoming.put(frame)
+
+
+def _is_thinking(item: Any) -> bool:
+    """The reasoning rows this stream produced (`derivedKey == "thinking"`)."""
+
+    return dict(getattr(item, "source", {}) or {}).get("derivedKey") == "thinking"
+
+
+def test_settle_time_thinking_batch_is_published_in_source_order() -> None:
+    """T4: the batch that forms at settle goes out in source order.
+
+    `finalize_pending_thinking` closes thinking blocks that never received a
+    `content_block_stop`, and it is the one place a whole batch of rows is
+    created outside the frame loop. Publishing it in the order the CLI produced
+    the blocks — not in the order they happened to arrive, and not in slot
+    allocation order — is what keeps a resumed stream from rendering its last
+    thought above its first.
+
+    Pinned rather than changed: reading the code at 70262b64, this already
+    iterates `sorted(self.partial_thinking_blocks)`, so the suite now holds the
+    invariant instead of leaving it to be re-broken by a well-meaning edit.
+    """
+
+    async def run() -> None:
+        client = _ReorderedThinkingClient()
+        host = _RecordingHost()
+        runtime = _runtime_with_values(host, _single_client_factory(client), {})
+        try:
+            await runtime.start_turn("l3a", None, "think")
+            session = runtime._sessions["l3a"]
+            await asyncio.wait_for(session.active_task, 5)
+
+            settled = [
+                item for item in host.timeline_item_upserts if _is_thinking(item)
+            ]
+            assert [
+                item.content["text"] for item in settled if item.status == "running"
+            ] == [
+                "second thought",
+                "first thought",
+            ], "arrival order — each block was published as its delta arrived"
+
+            # The settle-time closure is the final revision of the same two
+            # rows, and it must go out in source order.
+            assert [
+                item.content["text"] for item in settled if item.status == "done"
+            ] == [
+                "first thought",
+                "second thought",
+            ]
+            assert host.session_turn_ends[-1]["outcome"] == "completed"
         finally:
             await runtime.stop()
 

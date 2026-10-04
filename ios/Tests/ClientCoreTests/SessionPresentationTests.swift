@@ -107,8 +107,12 @@ import Testing
         #expect(two[0].title == "2 次工具调用")
         let protected = TimelineGrouping.groups([first, second], interactionTargets: ["a"])
         #expect(protected.count == 2 && protected.allSatisfy { $0.kind == .single })
+        // L2.1: SubAgent child rows never reach the main timeline, and the
+        // interaction-target exemption still overrides the filter.
         let children = try ["x", "y"].map { ChatTimelineRowModel(try item(id: $0, content: ["kind": "agent_call", "parentItemId": "parent"])) }
-        #expect(TimelineGrouping.groups(children, interactionTargets: [])[0].kind == .agents("parent"))
+        #expect(TimelineGrouping.groups(children, interactionTargets: []).isEmpty)
+        let anchored = TimelineGrouping.groups(children, interactionTargets: ["x"])
+        #expect(anchored.count == 1 && anchored[0].kind == .single && anchored[0].rows.map(\.id) == ["x"])
     }
 
     @Test func fileReferencesRouteDevicePathsWithoutOpeningLocalFilesOrWebLinks() throws {

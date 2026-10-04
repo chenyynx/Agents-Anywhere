@@ -228,27 +228,83 @@ import Testing
         #expect(SubAgentProgress.children(of: "m1", in: items).isEmpty)
     }
 
-    // MARK: Widened grouping
+    // MARK: Main timeline filter (L2.1: keep only the dispatch card)
 
-    @Test @MainActor func subagentRowsFoldIntoTheirCardGroup() throws {
+    @Test @MainActor func subagentRowsNeverEnterTheMainTimeline() throws {
         let tool = ChatTimelineRowModel(try item("t1", content: ["kind": "command", "command": "ls", "parentItemId": "card"]))
         let thinking = ChatTimelineRowModel(try item("r1", type: "system",
             content: ["kind": "reasoning", "text": "hmm", "parentItemId": "card"]))
+        // The row projection still classifies them; only the main list drops them.
         #expect(tool.structure.groupKind == .agents("card"))
         #expect(thinking.structure.groupKind == .agents("card"))
         // Main-agent rows keep their existing groups.
         let mainTool = ChatTimelineRowModel(try item("m1", content: ["kind": "command", "command": "pwd"]))
         #expect(mainTool.structure.groupKind == .tools)
-        let groups = TimelineGrouping.groups([tool, thinking], interactionTargets: [])
-        #expect(groups.count == 1 && groups[0].kind == .agents("card"))
-        #expect(groups[0].title == "SubAgent 进展 · 2 项")
+        #expect(TimelineGrouping.groups([tool, thinking], interactionTargets: []).isEmpty)
+        // ...and they do not break the surrounding main-agent run: the rows that
+        // stay keep the grouping they had before the filter.
+        let second = ChatTimelineRowModel(try item("m2", order: 2, content: ["kind": "command", "command": "ls"]))
+        let alone = TimelineGrouping.groups([mainTool, tool, thinking], interactionTargets: [])
+        #expect(alone.map(\.kind) == [.single] && alone[0].rows.map(\.id) == ["m1"])
+        let pair = TimelineGrouping.groups([mainTool, second, tool, thinking], interactionTargets: [])
+        #expect(pair.map(\.kind) == [.tools] && pair[0].rows.map(\.id) == ["m1", "m2"])
     }
 
-    @Test @MainActor func nestedAgentCallsKeepTheirCallCountTitle() throws {
+    @Test @MainActor func nestedAgentCallsStayOutAndKeepTheirCallCountTitle() throws {
         let first = ChatTimelineRowModel(try item("n1", content: ["kind": "agent_call", "parentItemId": "card"]))
         let second = ChatTimelineRowModel(try item("n2", content: ["kind": "agent_call", "parentItemId": "card"]))
-        let groups = TimelineGrouping.groups([first, second], interactionTargets: [])
-        #expect(groups.count == 1 && groups[0].title == "2 次 SubAgent 调用")
+        #expect(TimelineGrouping.groups([first, second], interactionTargets: []).isEmpty)
+        // The `.agents` kind and its title stay on the model layer.
+        let group = ChatTimelineGroup(kind: .agents("card"), rows: [first, second])
+        #expect(group.title == "2 次 SubAgent 调用")
+    }
+
+    @Test @MainActor func theDispatchCardStaysInTheMainTimeline() throws {
+        let card = ChatTimelineRowModel(try cardItem("card", order: 1))
+        let child = ChatTimelineRowModel(try item("t1", order: 2,
+            content: ["kind": "command", "command": "ls", "parentItemId": "card"]))
+        // The card itself carries no parentItemId, so it keeps flowing into the
+        // main tool run as an ordinary tool row.
+        #expect(SubAgentProgress.parentItemID(card.value) == nil)
+        // Alone it is a single-row group (the pre-existing lone-pending rule).
+        let alone = TimelineGrouping.groups([card, child], interactionTargets: [])
+        #expect(alone.count == 1 && alone[0].kind == .single)
+        #expect(alone[0].rows.map(\.id) == ["card"])
+        // Beside another main-agent tool it joins that run as before.
+        let tool = ChatTimelineRowModel(try item("m1", order: 3, content: ["kind": "command", "command": "pwd"]))
+        let joined = TimelineGrouping.groups([tool, card, child], interactionTargets: [])
+        #expect(joined.map(\.kind) == [.tools] && joined[0].rows.map(\.id) == ["m1", "card"])
+    }
+
+    @Test @MainActor func anInteractionAnchorChildRowStaysVisibleAsItsOwnGroup() throws {
+        let first = ChatTimelineRowModel(try item("m1", order: 1, content: ["kind": "command", "command": "ls"]))
+        let second = ChatTimelineRowModel(try item("m2", order: 2, content: ["kind": "command", "command": "pwd"]))
+        let card = ChatTimelineRowModel(try cardItem("card", order: 3))
+        let anchor = ChatTimelineRowModel(try item("t1", order: 4,
+            content: ["kind": "command", "command": "grep", "parentItemId": "card"]))
+        let other = ChatTimelineRowModel(try item("t2", order: 5,
+            content: ["kind": "command", "command": "cat", "parentItemId": "card"]))
+        // Only the anchored child row survives, and it renders on its own so the
+        // approval card can attach to it; the rest keeps the pre-filter grouping.
+        let groups = TimelineGrouping.groups([first, second, card, anchor, other], interactionTargets: ["t1"])
+        #expect(groups.count == 2)
+        #expect(groups.map(\.kind) == [.tools, .single])
+        #expect(groups[0].rows.map(\.id) == ["m1", "m2", "card"])
+        #expect(groups.last?.rows.map(\.id) == ["t1"])
+    }
+
+    @Test @MainActor func theMainTimelineFilterLeavesThePanelAndCapsuleSourcesIntact() throws {
+        let parent = try cardItem("card", order: 1)
+        let tool = try item("t1", status: "done", order: 2,
+                            content: ["kind": "command", "command": "ls", "parentItemId": "card"])
+        let thinking = try item("r1", type: "system", status: "done", order: 3,
+                                content: ["kind": "reasoning", "text": "hmm", "parentItemId": "card"])
+        let items = [parent, tool, thinking]
+        // Both consumers project the raw rows, never the grouped list.
+        #expect(SubAgentProgress.topLevelCards(in: items).map(\.id) == ["card"])
+        #expect(SubAgentProgress.children(of: "card", in: items).map(\.id) == ["t1", "r1"])
+        let capsule = SubAgentProgress.capsuleState(items)
+        #expect(capsule.isVisible && capsule.runningCount == 1 && capsule.firstRunningID == "card")
     }
 
     @Test @MainActor func subagentTextStaysOutOfTheTurnReply() throws {

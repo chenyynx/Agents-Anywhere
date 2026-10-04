@@ -70,6 +70,10 @@ jobs:
     # The package is only released once the unit tests pass: a red test suite
     # must never produce an installable IPA.
     needs: test
+    # Verification-only dispatches (feature branches) run the test job alone:
+    # only the dev line publishes an installable IPA, so a branch dispatch can
+    # never clobber the `ipa-dev` release with a half-finished build.
+    if: github.ref == 'refs/heads/dev'
     runs-on: macos-26
     timeout-minutes: 90
     steps:

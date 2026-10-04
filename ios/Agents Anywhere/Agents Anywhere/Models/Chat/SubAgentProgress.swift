@@ -144,13 +144,22 @@ enum SubAgentProgress {
 
     /// One turn's page (pp 2026-10-05: 每轮都是新的页): the top-level cards
     /// sharing the opening card's turn, so a dispatch point on an older turn
-    /// reopens that turn's page and a new dispatch opens the new one. Falls
-    /// back to the whole presented window when the anchor is gone or predates
-    /// `turnId` on the wire — the pre-scope behaviour, kept deliberately.
+    /// reopens that turn's page and a new dispatch opens the new one.
+    ///
+    /// The wire carries no turn id — `turnId` is a runtime field the server
+    /// strips before publishing (`_without_runtime_turn_ids`), so the model's
+    /// `turnId` decodes to nil in production and cannot anchor a page. The
+    /// turn is bounded by the app's own visible-turn rule instead: from the
+    /// last `startsVisibleTurn` user row at or before the anchor to the next
+    /// one after it (steering messages and interrupt placeholders never split
+    /// a turn). Falls back to the whole presented window when the anchor is
+    /// gone — the pre-scope behaviour, kept deliberately.
     static func turnScopedTopLevelCards(in items: [V2TimelineItem], containing cardID: String?) -> [SubAgentCard] {
         let all = topLevelCards(in: items)
-        guard let cardID, let turn = items.first(where: { $0.id == cardID })?.turnId else { return all }
-        let scoped = topLevelCards(in: items.filter { $0.turnId == turn })
+        guard let cardID, let anchor = items.firstIndex(where: { $0.id == cardID }) else { return all }
+        let start = items[0...anchor].lastIndex(where: { $0.startsVisibleTurn }) ?? 0
+        let end = items[(anchor + 1)...].firstIndex(where: { $0.startsVisibleTurn }) ?? items.count
+        let scoped = topLevelCards(in: Array(items[start..<end]))
         return scoped.isEmpty ? all : scoped
     }
 

@@ -7,14 +7,14 @@ import Testing
 @Suite struct SubAgentProgressTests {
     private func item(_ id: String, type: String = "tool", status: String = "running", order: Int = 1,
                       role: String? = nil, createdAt: String? = nil, updatedAt: String? = nil,
-                      turnId: String? = nil,
+                      source: [String: Any]? = nil,
                       content: [String: Any]) throws -> V2TimelineItem {
         var value = try itemObject(id: id, order: order)
         value["type"] = type; value["status"] = status; value["content"] = content
         if let role { value["role"] = role }
         if let createdAt { value["createdAt"] = createdAt }
         if let updatedAt { value["updatedAt"] = updatedAt }
-        if let turnId { value["turnId"] = turnId }
+        if let source { value["source"] = source }
         return try decode(value)
     }
 
@@ -22,8 +22,7 @@ import Testing
                           description: String? = "排查服务状态", agentType: String? = nil,
                           prompt: String? = nil, agents: [String: Any]? = nil, usage: [String: Any]? = nil,
                           summary: String? = nil, agentId: String? = nil, parentItemId: String? = nil,
-                          createdAt: String? = nil, updatedAt: String? = nil, endTime: Int? = nil,
-                          turnId: String? = nil) throws -> V2TimelineItem {
+                          createdAt: String? = nil, updatedAt: String? = nil, endTime: Int? = nil) throws -> V2TimelineItem {
         var content: [String: Any] = ["kind": "agent_call", "action": "invoke"]
         if let description { content["description"] = description }
         if let agentType { content["agentType"] = agentType }
@@ -34,8 +33,7 @@ import Testing
         if let agentId { content["agentId"] = agentId }
         if let parentItemId { content["parentItemId"] = parentItemId }
         if let endTime { content["endTime"] = endTime }
-        return try item(id, status: status, order: order, createdAt: createdAt, updatedAt: updatedAt,
-                        turnId: turnId, content: content)
+        return try item(id, status: status, order: order, createdAt: createdAt, updatedAt: updatedAt, content: content)
     }
 
     /// The epoch-ms `endTime` the connector folds onto a terminal card.
@@ -255,14 +253,22 @@ import Testing
     }
 
     // MARK: Per-turn pages (pp 2026-10-05: 每轮都是新的页)
+    //
+    // The boundary is the app's own visible-turn rule (`startsVisibleTurn`):
+    // the wire carries no turn id — the server strips the runtime ones before
+    // publishing — so a turn is the span between real user messages.
 
     @Test func panelPageScopesToTheOpeningCardsTurn() throws {
-        let old = try cardItem("old", order: 1, status: "done", turnId: "t1")
-        let oldChild = try item("old-child", status: "done", order: 2, turnId: "t1",
+        let question = try item("q1", type: "message", status: "done", order: 1, role: "user",
+                                content: ["text": "开工"])
+        let old = try cardItem("old", order: 2, status: "done")
+        let oldChild = try item("old-child", status: "done", order: 3,
                                 content: ["kind": "command", "command": "ls", "parentItemId": "old"])
-        let fresh = try cardItem("fresh", order: 3, turnId: "t2")
-        let twin = try cardItem("twin", order: 4, turnId: "t2")
-        let items = [old, oldChild, fresh, twin]
+        let second = try item("q2", type: "message", status: "done", order: 4, role: "user",
+                              content: ["text": "再来一轮"])
+        let fresh = try cardItem("fresh", order: 5)
+        let twin = try cardItem("twin", order: 6)
+        let items = [question, old, oldChild, second, fresh, twin]
         // An older dispatch point reopens its own turn's page…
         #expect(SubAgentProgress.turnScopedTopLevelCards(in: items, containing: "old").map(\.id) == ["old"])
         // …and the new dispatch shows the new page, with its same-turn sibling.
@@ -271,21 +277,43 @@ import Testing
         #expect(SubAgentProgress.turnScopedTopLevelCards(in: items, containing: "old-child").map(\.id) == ["old"])
     }
 
-    @Test func panelPageFallsBackWhenTheAnchorOrItsTurnIsUnknown() throws {
-        let turn = try cardItem("a", order: 1, turnId: "t1")
-        let legacy = try cardItem("b", order: 2) // no turnId on the wire
-        let items = [turn, legacy]
+    @Test func steeringAndInterruptRowsNeverSplitATurn() throws {
+        let question = try item("q1", type: "message", status: "done", order: 1, role: "user",
+                                content: ["text": "开工"])
+        let first = try cardItem("first", order: 2, status: "done")
+        let steering = try item("steer", type: "message", status: "done", order: 3, role: "user",
+                                source: ["itemType": "steeringUserMessage"], content: ["text": "顺带看看"])
+        let second = try cardItem("second", order: 4)
+        let interrupt = try item("interrupt", type: "message", status: "done", order: 5, role: "user",
+                                 source: ["runtime": "claude"], content: ["text": "[Request interrupted by user]"])
+        let third = try cardItem("third", order: 6)
+        let items = [question, first, steering, second, interrupt, third]
+        // Steering and the interrupt placeholder belong to the running turn —
+        // only a real user message opens a new page.
+        #expect(SubAgentProgress.turnScopedTopLevelCards(in: items, containing: "second").map(\.id) == ["first", "second", "third"])
+        #expect(SubAgentProgress.turnScopedTopLevelCards(in: items, containing: "first").map(\.id) == ["first", "second", "third"])
+    }
+
+    @Test func panelPageFallsBackWhenTheAnchorIsUnknown() throws {
+        let question = try item("q1", type: "message", status: "done", order: 1, role: "user",
+                                content: ["text": "开工"])
+        let card = try cardItem("a", order: 2)
+        let items = [question, card]
         // No anchor at all: the whole window (the pre-scope behaviour).
-        #expect(SubAgentProgress.turnScopedTopLevelCards(in: items, containing: nil).map(\.id) == ["a", "b"])
+        #expect(SubAgentProgress.turnScopedTopLevelCards(in: items, containing: nil).map(\.id) == ["a"])
         // Anchor gone from the window: the whole window.
-        #expect(SubAgentProgress.turnScopedTopLevelCards(in: items, containing: "ghost").map(\.id) == ["a", "b"])
-        // Legacy anchor without a turn id: nothing vanishes.
-        #expect(SubAgentProgress.turnScopedTopLevelCards(in: items, containing: "b").map(\.id) == ["a", "b"])
+        #expect(SubAgentProgress.turnScopedTopLevelCards(in: items, containing: "ghost").map(\.id) == ["a"])
+    }
+
+    @Test func panelPageWithoutAnyTurnStartKeepsTheWindow() throws {
+        let a = try cardItem("a", order: 1, status: "done")
+        let b = try cardItem("b", order: 2)
+        #expect(SubAgentProgress.turnScopedTopLevelCards(in: [a, b], containing: "b").map(\.id) == ["a", "b"])
     }
 
     @Test func capsuleOpensTheNewestRunningCardsTurn() throws {
-        let old = try cardItem("old", order: 1, turnId: "t1")
-        let fresh = try cardItem("fresh", order: 2, turnId: "t2")
+        let old = try cardItem("old", order: 1)
+        let fresh = try cardItem("fresh", order: 2)
         let state = SubAgentProgress.capsuleState([old, fresh])
         #expect(state.runningCount == 2)
         #expect(state.latestRunningID == "fresh")

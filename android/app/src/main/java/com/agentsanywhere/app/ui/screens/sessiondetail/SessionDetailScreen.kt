@@ -92,6 +92,8 @@ import com.agentsanywhere.app.feature.sessiondetail.SessionTimelineState
 import com.agentsanywhere.app.feature.sessiondetail.TimelineAttachment
 import com.agentsanywhere.app.feature.sessiondetail.TimelineMessage
 import com.agentsanywhere.app.feature.sessiondetail.beginSnapshotLoad
+import com.agentsanywhere.app.feature.sessiondetail.runtimeErrorCode
+import com.agentsanywhere.app.feature.sessiondetail.runtimeErrorCopyRes
 import com.agentsanywhere.app.feature.sessiondetail.cacheDownloadedAttachment
 import com.agentsanywhere.app.feature.sessiondetail.completeSnapshotLoad
 import com.agentsanywhere.app.feature.sessiondetail.failSnapshotLoad
@@ -1617,6 +1619,8 @@ fun SessionDetailScreen(
     )
     val replyTarget = state.session?.runtimeLabel?.takeIf { it.isNotBlank() }
         ?: stringResource(R.string.session_agent_fallback)
+    val runtimeErrorCopy = runtimeErrorCopyRes(state.runtime.error.runtimeErrorCode())
+        ?.let { stringResource(it) }
     val placeholder = when {
         isPreparedSession -> stringResource(R.string.session_reply_to, replyTarget)
         !takeoverEnabled -> stringResource(R.string.session_read_only_placeholder)
@@ -1625,6 +1629,9 @@ fun SessionDetailScreen(
         state.runtime.errorMessage != null -> state.runtime.errorMessage.orEmpty()
         state.runtime.error?.get("code") == "DSH_CONCURRENT_WRITER_DETECTED" ->
             stringResource(R.string.session_dsh_concurrent_writer)
+        // Codes whose Connector sentence names the wrong cause get their own
+        // copy; everything else keeps the generic error placeholder below.
+        runtimeErrorCopy != null -> runtimeErrorCopy
         runtimeStatus == SessionRuntimeStatus.Unknown -> stringResource(R.string.session_runtime_state_unknown)
         runtimeStatus in setOf(SessionRuntimeStatus.Waiting, SessionRuntimeStatus.Pending) ->
             stringResource(R.string.session_pending_placeholder)

@@ -1396,72 +1396,155 @@ def test_a_host_without_the_signal_keeps_its_behavior() -> None:
     asyncio.run(run())
 
 
-def test_settled_session_refresh_is_coalesced_and_returns_at_once() -> None:
-    """The sync runner side: one refresh per session, and never awaited.
+def _sync_runner_for_l3b(runtime: Any) -> Any:
+    from test_connector_runtime import (
+        FakeRuntimeSupervisor,
+        RecordingRuntimeHost,
+        _client,
+        unused_notification_sender,
+    )
 
-    Two properties the turn's settle path depends on. It returns immediately —
-    a settle must not wait for the very sync it is asking for, or L3b would
-    trade one lag for another. And it coalesces — a session that settles three
-    times in a second is one transcript read, not three.
+    from connector.server.runtime_sync import RuntimeSyncRunner
+
+    async def _sink(batch: Any) -> None:
+        # A real ingest sink: without one the publish path raises and the
+        # refresh aborts before it can report that a settle is still owed,
+        # which would make this test measure the fake rather than the runner.
+        return None
+
+    return RuntimeSyncRunner(
+        config=_client().config,
+        supervisor=FakeRuntimeSupervisor(runtime),
+        host=RecordingRuntimeHost(),
+        preferences_reader=dict,
+        send_notification=unused_notification_sender,
+        ingest_notifications=_sink,
+    )
+
+
+def _settle_runtime(session_id: str) -> Any:
+    """A runtime whose transcript reads are slow and countable."""
+
+    from test_connector_runtime import FakeAgentRuntime
+
+    from connector.runtime_protocol import PreparedSessionTimelineSync, SessionMeta
+
+    class _Runtime(FakeAgentRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.reads: list[int] = []
+            self.version = 0
+            self.gate = asyncio.Event()
+            self.gate.set()
+
+        async def list_sessions(self, **kwargs: Any) -> tuple[SessionMeta, ...]:
+            return (
+                SessionMeta(
+                    session_id=session_id,
+                    external_session_id=session_id,
+                    runtime="codex",
+                    metadata={
+                        "sync": {"changed": True, "requires_timeline_sync": True}
+                    },
+                ),
+            )
+
+        async def prepare_session_timeline_sync(
+            self, sid: str, external: str | None
+        ) -> PreparedSessionTimelineSync:
+            self.reads.append(self.version)
+            await self.gate.wait()
+            return PreparedSessionTimelineSync(snapshot=None, commit=None)
+
+    return _Runtime()
+
+
+def test_settled_session_refresh_coalesces_without_losing_a_wakeup() -> None:
+    """F5: coalescing may fold settles together, but never drop one.
+
+    Two different cases, because they are genuinely different:
+
+    * three settles in ONE tick are folded into one transcript read — they all
+      precede the read, so it covers them, and a second read would buy nothing;
+    * a settle arriving while a refresh is already reading is NOT folded into
+      it — that read may already have snapshotted, so its rows would be in no
+      snapshot at all, which is the 30-50 s lag L3b exists to remove
+      recreated one layer up (red team F5, RT-5).
+
+    修前红 on the second: the runner dropped the request outright
+    (`if key in pending: return`), so `snapshot_at_read` ended at `[1]` and
+    version 10 never reached a snapshot. This test asserts the no-loss
+    property; the shipped implementation owes exactly one extra pass.
     """
 
     async def run() -> None:
-        from test_connector_runtime import (
-            FakeAgentRuntime,
-            FakeRuntimeSupervisor,
-            RecordingRuntimeHost,
-            _client,
-            unused_notification_sender,
-        )
-
-        from connector.runtime_protocol import SessionMeta
-        from connector.server.runtime_sync import RuntimeSyncRunner
-
-        class _Runtime(FakeAgentRuntime):
-            def __init__(self) -> None:
-                super().__init__()
-                self.reads: list[str] = []
-
-            async def list_sessions(self, **kwargs: Any) -> tuple[SessionMeta, ...]:
-                return (
-                    SessionMeta(
-                        session_id="l3b",
-                        external_session_id="l3b",
-                        runtime="codex",
-                        metadata={
-                            "sync": {"changed": True, "requires_timeline_sync": True}
-                        },
-                    ),
-                )
-
-            async def prepare_session_timeline_sync(
-                self, session_id: str, external: str | None
-            ) -> None:
-                self.reads.append(session_id)
-                await asyncio.sleep(0.05)
-
-        runtime = _Runtime()
-        runner = RuntimeSyncRunner(
-            config=_client().config,
-            supervisor=FakeRuntimeSupervisor(runtime),
-            host=RecordingRuntimeHost(),
-            preferences_reader=dict,
-            send_notification=unused_notification_sender,
-            ingest_notifications=None,
-        )
+        runtime = _settle_runtime("s1")
+        runner = _sync_runner_for_l3b(runtime)
         try:
-            started_at = time.monotonic()
+            # Same tick: one read covers all three.
+            runtime.gate.set()
             for _ in range(3):
-                runner.on_turn_settled("codex", "l3b", "l3b")
-            assert time.monotonic() - started_at < 0.05, "the settle path waited"
-
+                runner.on_turn_settled("codex", "s1", "s1")
             await asyncio.gather(*tuple(runner._session_sync_tasks))
-            assert runtime.reads == ["l3b"], "three settles, one transcript read"
-            assert runner._pending_session_syncs == set()
+            assert runtime.reads == [0], "three settles in a tick, one read"
+
+            # Mid-flight: the second settle must buy its own pass.
+            runtime.reads.clear()
+            runtime.gate.clear()
+            runtime.version = 1
+            runner.on_turn_settled("codex", "s1", "s1")
+            await _until(lambda: runtime.reads == [1], 2)
+            runtime.version = 10
+            runner.on_turn_settled("codex", "s1", "s1")
+            await asyncio.sleep(0.02)
+            runtime.gate.set()
+            await asyncio.gather(*tuple(runner._session_sync_tasks))
+
+            assert runtime.reads == [1, 10], (
+                "the settle that arrived mid-refresh was dropped; version 10 "
+                "never reached a snapshot"
+            )
+            assert runner._session_sync_state == {}
+            assert runner._session_sync_dirty == set()
         finally:
             await runner.stop()
 
     asyncio.run(run())
+
+
+def test_the_settle_path_never_waits_for_the_refresh() -> None:
+    """The other half of L3b's contract: asking costs the turn nothing.
+
+    A settle must not wait for the very sync it is asking for, or L3b trades
+    one lag for another. Bounded generously so a loaded CI box cannot fail it,
+    far below the refresh it is not waiting for.
+    """
+
+    async def run() -> None:
+        runtime = _settle_runtime("s1")
+        runtime.gate.clear()  # a refresh that will not finish for a while
+        runner = _sync_runner_for_l3b(runtime)
+        try:
+            started_at = time.monotonic()
+            runner.on_turn_settled("codex", "s1", "s1")
+            elapsed = time.monotonic() - started_at
+            assert elapsed < 0.05, f"the settle path waited {elapsed:.3f}s"
+            runtime.gate.set()
+            await asyncio.gather(*tuple(runner._session_sync_tasks))
+        finally:
+            await runner.stop()
+
+    asyncio.run(run())
+
+
+async def _until(predicate: Any, timeout: float = 2.0) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(0.005)
+    raise TimeoutError
 
 
 # --------------------------------------------------------------------------
@@ -1634,5 +1717,52 @@ def test_the_settle_refresh_is_requested_after_the_settle_time_batch() -> None:
             assert any(item.status == "done" for item in settled_rows)
         finally:
             await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_a_session_past_the_first_page_is_reported_not_silently_skipped() -> None:
+    """F13: the lookup's limit is a stated limit, not a quiet no-op.
+
+    `list_sessions` returns a tuple with no cursor, so there is no directed
+    lookup to write — the honest options are "report it" or "do nothing", and
+    doing nothing would make turn delivery depend on how many sessions the
+    account happens to have. This pins the behavior that is pinnable: the
+    refresh does not fire, does not raise, and leaves the runner clean, and the
+    warning names the page size.
+
+    A real fix needs `list_sessions` to grow a cursor or a get-by-id — a
+    protocol change, deliberately not smuggled into this batch.
+    """
+
+    async def run() -> None:
+        from connector.runtime_protocol import SessionMeta
+
+        runtime = _settle_runtime("other")
+        runner = _sync_runner_for_l3b(runtime)
+
+        async def many(**kwargs: Any) -> tuple[Any, ...]:
+            return tuple(
+                SessionMeta(
+                    session_id=f"s{i}",
+                    external_session_id=f"s{i}",
+                    runtime="codex",
+                    metadata={
+                        "sync": {"changed": True, "requires_timeline_sync": True}
+                    },
+                )
+                for i in range(200)
+                if i != 1  # the settled session is deliberately absent
+            )
+
+        runtime.list_sessions = many  # type: ignore[method-assign]
+        try:
+            runner.on_turn_settled("codex", "s1", "s1")
+            await asyncio.gather(*tuple(runner._session_sync_tasks))
+            assert runtime.reads == [], "nothing was synced for an unfound session"
+            assert runner._session_sync_state == {}
+            assert runner._session_sync_dirty == set()
+        finally:
+            await runner.stop()
 
     asyncio.run(run())

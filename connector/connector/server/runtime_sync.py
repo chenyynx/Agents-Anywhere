@@ -33,6 +33,11 @@ NotificationSender = Callable[[str, dict[str, Any]], Awaitable[None]]
 IngestNotificationSender = Callable[[list[dict[str, Any]]], Awaitable[None]]
 PreferencesReader = Callable[[], dict[str, Any]]
 SyncStateFlusher = Callable[[], Awaitable[bool]]
+# F13: the on-demand settle lookup reads one page, the same bound the global
+# sweep has always used. See `_sync_settled_session_once` for why a session past
+# it is reported rather than silently skipped.
+SESSION_LOOKUP_PAGE_SIZE = 100
+
 ACTIVE_SESSION_SYNC_SKIP_STATUSES: frozenset[RuntimeStatus] = frozenset(
     {"waiting", "pending", "running", "waiting_approval", "stopping"}
 )
@@ -77,7 +82,12 @@ class RuntimeSyncRunner:
         # cannot hold up an unrelated one. And requests coalesce: a turn that
         # settles three times in a second is one refresh, not three.
         self._session_sync_locks: dict[tuple[str, str], asyncio.Lock] = {}
-        self._pending_session_syncs: set[tuple[str, str]] = set()
+        # "queued" = a refresh is scheduled but has not read yet; "running" =
+        # it is reading. The distinction is what makes coalescing lossless: a
+        # settle absorbed by a "queued" refresh is inside the read that is
+        # about to happen, and one that arrives at "running" is not (F5).
+        self._session_sync_state: dict[tuple[str, str], str] = {}
+        self._session_sync_dirty: set[tuple[str, str]] = set()
         self._session_sync_tasks: set[asyncio.Task[None]] = set()
         self.closing = False
 
@@ -102,40 +112,96 @@ class RuntimeSyncRunner:
         if runtime_id is None or self.closing:
             return
         key = (runtime_id, session_id)
-        if key in self._pending_session_syncs:
+        state = self._session_sync_state.get(key)
+        if state == "running":
+            # A refresh for this session has already taken (or is taking) its
+            # transcript read, so absorbing this settle would leave the rows it
+            # produced in no snapshot at all — the exact lag L3b exists to
+            # remove, recreated one layer up (red team F5). Mark it and let the
+            # in-flight pass run once more.
+            self._session_sync_dirty.add(key)
             return
-        self._pending_session_syncs.add(key)
+        if state == "queued":
+            # Scheduled but not yet reading. This settle lands inside the read
+            # that is about to happen, so it is absorbed by it — coalescing
+            # three settles in one tick into one transcript read, with nothing
+            # lost.
+            return
+        self._session_sync_state[key] = "queued"
         task = asyncio.create_task(self._sync_settled_session(runtime_id, session_id))
         self._session_sync_tasks.add(task)
         task.add_done_callback(self._session_sync_tasks.discard)
         _ = external_session_id
 
     async def _sync_settled_session(self, runtime_id: str, session_id: str) -> None:
-        try:
+        key = (runtime_id, session_id)
+        while True:
+            self._session_sync_state[key] = "running"
             try:
-                runtime = self.supervisor.resolve_runtime(runtime_id)
-            except (RuntimeUnavailableError, RuntimeUnsupportedError):
-                return
-            if runtime.sync_mode == "events":
-                # An event runtime owns its own acknowledged lifecycle; its
-                # settle already published everything there is to publish.
-                return
-            sessions = await runtime.list_sessions(limit=100, force=False)
-            session = next(
-                (item for item in sessions if item.session_id == session_id), None
-            )
-            if session is None:
-                return
-            async with self._session_sync_lock(runtime_id, session_id):
-                await self.sync_existing_session(runtime, session)
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "settled session sync failed runtime={} session_id={}",
+                if await self._sync_settled_session_once(runtime_id, session_id):
+                    # A settle landed while this read was in flight and the rows
+                    # it produced are not in the snapshot just taken. One more
+                    # pass, then stop.
+                    self._session_sync_dirty.discard(key)
+                    self._session_sync_state[key] = "queued"
+                    continue
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "settled session sync failed runtime={} session_id={}",
+                    runtime_id,
+                    session_id,
+                )
+            break
+        self._session_sync_dirty.discard(key)
+        self._session_sync_state.pop(key, None)
+
+    async def _sync_settled_session_once(
+        self, runtime_id: str, session_id: str
+    ) -> bool:
+        """Run one refresh. Returns whether a settle is still owed.
+
+        F13, and it is a LIMIT rather than a silent no-op. `list_sessions`
+        returns a tuple with no cursor — the protocol has no directed lookup —
+        so a connector holding more sessions than one page cannot find the one
+        that just settled, and this path would do nothing at all for those
+        users. That is the same hole the global sweep has always had, but here
+        it would mean turn delivery silently depends on how many sessions the
+        account has, which is exactly the kind of environment coupling the
+        product rule forbids.
+
+        So it SAYS so: an explicit warning naming the page size is the honest
+        form, and it is what an on-call reads when a user's turns land slowly.
+        A real directed lookup needs `list_sessions` to grow a cursor or a
+        get-by-id, which is a protocol change and not this batch's business.
+        """
+
+        try:
+            runtime = self.supervisor.resolve_runtime(runtime_id)
+        except (RuntimeUnavailableError, RuntimeUnsupportedError):
+            return False
+        if runtime.sync_mode == "events":
+            # An event runtime owns its own acknowledged lifecycle; its settle
+            # already published everything there is to publish.
+            return False
+        sessions = await runtime.list_sessions(limit=SESSION_LOOKUP_PAGE_SIZE, force=False)
+        session = next(
+            (item for item in sessions if item.session_id == session_id), None
+        )
+        if session is None:
+            logger.warning(
+                "settled session sync found no session in the first page "
+                "runtime={} session_id={} listed={} page_size={} "
+                "(list_sessions has no cursor; a directed lookup is needed for "
+                "connectors past one page)",
                 runtime_id,
                 session_id,
+                len(sessions),
+                SESSION_LOOKUP_PAGE_SIZE,
             )
-        finally:
-            self._pending_session_syncs.discard((runtime_id, session_id))
+            return False
+        async with self._session_sync_lock(runtime_id, session_id):
+            await self.sync_existing_session(runtime, session)
+        return (runtime_id, session_id) in self._session_sync_dirty
 
     async def sync_existing_loop(self) -> None:
         if not self.config.sync_existing_on_connect:

@@ -194,6 +194,13 @@ class ClaudeConnection:
     # across concurrently firing watchdogs (R2).
     stuck_timeout_reports: int = 0
     stuck_report_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # I1: foreign terminal frames absorbed at silence instead of minting a
+    # scheduled turn (claude-stale-frame-turn-tasks.md §4). A counter, not a
+    # limit — the guard is an invariant, not a rate limiter — but it is the
+    # number the post-deploy observation window reads: any non-zero value is a
+    # real cross-turn leak, and a rising value means the CLI is shedding
+    # results this connector could never have attributed.
+    absorbed_terminal_frames: int = 0
 
     @property
     def retained(self) -> bool:
@@ -427,6 +434,37 @@ class ClaudeConnection:
                     if task_event:
                         continue
                     terminal_event = terminal_event_from_message(message)
+                    # I1 (claude-stale-frame-turn-tasks.md §4/§11): a terminal
+                    # frame settles exactly one turn — the one that can prove it
+                    # started it. Arriving at silence it can prove none, because
+                    # the CLI's stream is session-scoped and shared: a result
+                    # belonging to a turn that already settled (real session
+                    # sess_tPcEDi0z9xJYxQ, 2026-10-04 12:22:53) lands here as
+                    # if it were the next turn's own. Minting from it is what
+                    # produced "completed" 0.27 s BEFORE the turn's own model
+                    # request was even sent (stage-1 findings §4 H-a, S2
+                    # upstream/m1).
+                    #
+                    # This is the attribution invariant, NOT a frame-shape
+                    # enumeration. The chrome gate below already proves the
+                    # point: gating on `origin.kind == "task-notification"` (or
+                    # any other observed payload) catches the residual shape
+                    # this investigation happened to record and nothing else —
+                    # a bare `ResultMessage(success)` with no origin still
+                    # mints (findings §2.3). The trigger chain is not
+                    # enumerable, so the guard cannot be either.
+                    #
+                    # Scope, deliberately narrow ("guard narrow, never over-kill"):
+                    # only `completed` is absorbed. `failed` keeps selecting the
+                    # pending below — a queued prompt's failure must stay visible
+                    # (red line) — and `interrupted` keeps its existing route,
+                    # because the CLI emits `aborted_streaming` / `aborted_tools`
+                    # for turns this connector interrupted itself, and refusing
+                    # those would strand the pending.
+                    foreign_terminal = (
+                        terminal_event is not None
+                        and terminal_event.status == "completed"
+                    )
                     if self.pending is not None and (
                         self.pending.user_id is None
                         or (
@@ -437,8 +475,34 @@ class ClaudeConnection:
                             terminal_event is not None
                             and terminal_event.status == "failed"
                         )
+                    ) and not (
+                        foreign_terminal and self.pending.user_id is not None
                     ):
                         await self.select_response(self.pending)
+                    elif foreign_terminal:
+                        # Absorbed. NOT appended to `preamble`: preamble is
+                        # flushed into the queue of whichever response is
+                        # selected next (lines 490-493), so parking a terminal
+                        # there would smuggle it back in as that turn's "first
+                        # frame" — the very ghost this guard exists to kill, by
+                        # the back door. There is also nothing to preserve: a
+                        # result carries no context the CLI will not replay.
+                        #
+                        # A pending without a wire uuid is exempt above: that is
+                        # a prompt submitted on this transport's first turn,
+                        # before the reader has ever yielded a frame, so no
+                        # earlier turn's result can still be in flight here.
+                        self.absorbed_terminal_frames += 1
+                        logger.warning(
+                            "Claude foreign terminal frame absorbed at silence "
+                            "session_pending={} absorbed_total={} status={} "
+                            "reason={}",
+                            self.pending is not None,
+                            self.absorbed_terminal_frames,
+                            terminal_event.status,
+                            terminal_event.reason,
+                        )
+                        continue
                     elif message_role(message) == "system":
                         preamble.append(message)
                         continue

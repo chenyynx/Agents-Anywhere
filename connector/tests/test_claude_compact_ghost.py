@@ -319,6 +319,30 @@ def _turn_ends(host: _RecordingHost, turn_id: str) -> list[dict[str, Any]]:
     return [end for end in host.session_turn_ends if end["turn_id"] == turn_id]
 
 
+def _retirement_disclosures(host: _RecordingHost) -> list[dict[str, Any]]:
+    """Every `claude_process_retired` session state the user was shown.
+
+    Kept as a helper (not an inline filter per test) because the disclosure is
+    the LAST thing a fatal retirement does — it lands after `session_turn_ended`
+    and after the timeout error state — so any assertion written against
+    `session_state_updates[-1]` without first waiting for it is a coin flip,
+    not a test.
+    """
+    return [
+        update
+        for update in host.session_state_updates
+        if (update.get("error") or {}).get("code")
+        == lifecycle.CLAUDE_PROCESS_RETIRED_CODE
+    ]
+
+
+async def _await_retirement_disclosure(
+    host: _RecordingHost, timeout: float = 5.0
+) -> list[dict[str, Any]]:
+    await _wait_until(lambda: bool(_retirement_disclosures(host)), timeout)
+    return _retirement_disclosures(host)
+
+
 def test_ghost_turn_repro_replayed_silence_mints_no_turn() -> None:
     """修前红 / 修后绿: the 2ms replay after a settled turn mints nothing.
 
@@ -436,10 +460,14 @@ def test_watchdog_forces_failed_terminal_on_stuck_scheduled_turn() -> None:
             ended = _turn_ends(host, ghost_turn_id)[-1]
             assert ended["outcome"] == "failed"
             assert ended["metadata"]["terminalReason"] == "scheduled_watchdog_timeout"
+            # The breaker kills the host process on this path, so the user's
+            # last word on the session is the retirement disclosure, not the
+            # timeout text. Waited for explicitly — it lands after the turn end.
+            await _await_retirement_disclosure(host)
             assert host.session_state_updates[-1]["status"] == "error"
             assert (
                 host.session_state_updates[-1]["error"]["code"]
-                == "claude_scheduled_turn_timeout"
+                == lifecycle.CLAUDE_PROCESS_RETIRED_CODE
             )
             assert session.execution is None
             assert session.queued_execution is None

@@ -46,7 +46,9 @@ from test_claude_background_guard import (
     WIRE_WAKE_ASSISTANT,
 )
 from test_claude_compact_ghost import (
+    _await_retirement_disclosure,
     _new_client_per_connection,
+    _retirement_disclosures,
     _runtime_with,
     _single_client_factory,
     _turn_ends,
@@ -496,10 +498,14 @@ def test_zero_content_ghost_is_reaped_by_the_fast_kill(
             ended = _turn_ends(host, execution.turn_id)[-1]
             assert ended["outcome"] == "failed"
             assert ended["metadata"]["terminalReason"] == "scheduled_watchdog_timeout"
+            # This ghost is retired fatally, so the retirement disclosure is the
+            # last word on the session — it lands after the turn end, hence the
+            # explicit wait.
+            await _await_retirement_disclosure(host)
             assert host.session_state_updates[-1]["status"] == "error"
             assert (
                 host.session_state_updates[-1]["error"]["code"]
-                == "claude_scheduled_turn_timeout"
+                == lifecycle.CLAUDE_PROCESS_RETIRED_CODE
             )
             assert session.execution is None
             assert session.queued_execution is None
@@ -608,10 +614,11 @@ def test_recast_ghost_is_reaped_by_the_fast_kill(
             ended = _turn_ends(host, execution.turn_id)[-1]
             assert ended["outcome"] == "failed"
             assert ended["metadata"]["terminalReason"] == "scheduled_watchdog_timeout"
+            await _await_retirement_disclosure(host)
             assert host.session_state_updates[-1]["status"] == "error"
             assert (
                 host.session_state_updates[-1]["error"]["code"]
-                == "claude_scheduled_turn_timeout"
+                == lifecycle.CLAUDE_PROCESS_RETIRED_CODE
             )
             assert session.execution is None
             assert session.queued_execution is None
@@ -881,8 +888,18 @@ def test_fatal_retirement_is_logged_even_when_the_limiter_silences_the_report(
     connection was a rate-limited repeat, so the only trace of a killed
     process and its subagents was "kept off the client ledger".
 
+    Two halves, both load-bearing and both asserted here:
+
+    * the ledger is still silenced — the limiter's meaning is unchanged;
+    * the process death now reaches the USER as well as the log, on its own
+      code. The log line was never enough: it reaches an operator who happens
+      to be grepping, not the person whose turn just died.
+
     修前红: remove the dedicated line in `retire_stuck_transport` and this is
-    the exact accident with nothing to grep for.
+    the exact accident with nothing to grep for. Drop the disclosure call from
+    the same method and the second half fails while the ledger half still
+    passes — which is the point: neither one is allowed to stand in for the
+    other.
     """
 
     _budgets(monkeypatch)
@@ -904,9 +921,9 @@ def test_fatal_retirement_is_logged_even_when_the_limiter_silences_the_report(
             execution = await _cast_with_labour(client, session)
 
             with _CapturedWarnings() as captured:
-                await _wait_until(lambda: client.disconnected is True)
+                await _await_retirement_disclosure(host)
 
-            # The client-visible side stayed silent...
+            # The client-visible LEDGER side stayed silent...
             assert not _turn_ends(host, execution.turn_id), (
                 "this is the rate-limited branch; nothing may reach the ledger"
             )
@@ -915,7 +932,22 @@ def test_fatal_retirement_is_logged_even_when_the_limiter_silences_the_report(
                 "kept off the client ledger" in captured.joined()
             ), captured.joined()
 
-            # ...but the process death is on its own line, with the counters
+            # ...but the USER side was told, on a code of its own. This is the
+            # assertion that is the reason the code exists: gate this
+            # disclosure on `publish` and only this half goes red.
+            disclosure = _retirement_disclosures(host)
+            assert len(disclosure) == 1, disclosure
+            error = disclosure[0]["error"]
+            assert error["code"] == lifecycle.CLAUDE_PROCESS_RETIRED_CODE
+            assert disclosure[0]["status"] == "error"
+            assert disclosure[0]["metadata"]["source"] == (
+                lifecycle.CLAUDE_PROCESS_RETIRED_SOURCE
+            )
+            assert error["params"]["retirementConfirmed"] is True
+            assert error["params"]["stuckSeconds"] == int(CEILING)
+            assert error["message"] == lifecycle.PROCESS_RETIRED_MESSAGE
+
+            # ...and the process death is on its own line, with the counters
             # that explain why the breaker fired at all.
             log = captured.joined()
             assert "Claude stuck transport retirement is FATAL" in log, log

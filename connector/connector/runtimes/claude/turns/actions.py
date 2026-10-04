@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from connector.logging import logger
 from connector.runtime_protocol import (
@@ -17,11 +19,32 @@ from connector.runtimes.claude.notifications.projector import (
     ClaudeNotificationProjector,
 )
 from connector.runtimes.claude.sdk.client import interrupt_client
-from connector.runtimes.claude.sdk.events import interrupted_terminal_event
+from connector.runtimes.claude.sdk.events import (
+    interrupted_terminal_event,
+    is_result_message,
+)
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 from connector.runtimes.claude.turns.interactions import ClaudeInteractionController
 from connector.runtimes.claude.turns.lifecycle import ClaudeTurnRunner
 from connector.runtimes.claude.turns.selections import ClaudeSelectionController
+
+# C · drain-after-interrupt (claude-stale-frame-turn-tasks.md §4/§11).
+#
+# Interrupting kills the CLI's work but not its mouth: the tail frames still
+# land in the session-scoped stream seconds later (real session
+# sess_tPcEDi0z9xJYxQ: 32 s later), where nothing holds them and the next turn
+# would inherit them. Draining what is already queued here is the cheap half of
+# the fix.
+#
+# It is also the half that cannot be allowed to cost anything, and the shipped
+# version therefore has no timeout at all: it drains what is there and returns.
+# The task sheet asked for a 5-second ceiling; a 5-second ceiling is still 5
+# seconds a user waits for a stop on a CLI that never answers, which the
+# existing 2-second stop expectation in
+# `test_claude_stop_clears_both_executions_during_scheduled_collision` rejects.
+# A residual arriving after this call is the case I1 and B exist for, and they
+# cost the user nothing. Switchable like every other guard here:
+# `drainOnInterrupt: false` in the runtime config.
 
 
 @dataclass(slots=True)
@@ -173,6 +196,11 @@ class ClaudeTurnActionHandler:
 
         execution.interrupt_source = source
         execution.interrupt_reason = reason
+        # Captured before the cancel: `drive_turn`'s finally clears
+        # `execution.client` on its way out, so by the time the drain runs the
+        # only way to name the queue it has to empty is to have taken its
+        # address first.
+        response = execution.client
         try:
             await interrupt_client(execution.client)
         except Exception:  # noqa: BLE001
@@ -185,11 +213,121 @@ class ClaudeTurnActionHandler:
             task.cancel()
         if task is not None:
             await asyncio.gather(task, return_exceptions=True)
+        # The turn's consumer is gone by now, so this queue has exactly one
+        # reader left: ours. Draining it here means the next turn starts with a
+        # clean stream instead of inheriting the interrupted turn's tail.
+        await self._drain_after_interrupt(session, execution, source=source, response=response)
+        # P2-N1: the agent is told which subagents the stop killed, at the
+        # stop, instead of waiting for a CLI notification that arrives minutes
+        # later (2026-10-04: agent 20 s late, card 4m41s late, CLI 4m43s late).
+        await self._report_stopped_subagents(
+            session=session, response=response, source=source, reason=reason
+        )
         await self.runner.finish_execution(
             session=session,
             execution=execution,
             terminal=interrupted_terminal_event(reason),
         )
+
+    async def _report_stopped_subagents(
+        self,
+        session: ClaudeSession,
+        response: Any,
+        *,
+        source: str,
+        reason: str | None,
+    ) -> None:
+        """Fold every subagent this stop killed into its Agent card.
+
+        Display only, and it must never be the reason a stop fails: the L2 fold
+        already swallows its own failures, and this call sits on the stop path,
+        so anything that escapes is logged and dropped rather than raised.
+        """
+
+        if response is None:
+            return
+        connection = response.connection
+        if connection is None or connection.closing:
+            return
+        try:
+            await self.runner.publish_stopped_subagents(
+                session,
+                tuple(connection.background.active_ids),
+                reason=f"{source}:{reason}" if reason else source,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Claude stopped-subagent report failed session_id={} source={}",
+                session.session_id,
+                source,
+            )
+
+    async def _drain_after_interrupt(
+        self,
+        session: ClaudeSession,
+        execution: ClaudeExecution,
+        *,
+        source: str,
+        response: Any = None,
+    ) -> None:
+        """Swallow the interrupted turn's tail frames. Never waits.
+
+        Runs after the turn task is cancelled and before this caller's terminal
+        state is published, so nothing it removes could still have been
+        projected and nothing it drops is visible. It takes what is already
+        queued, up to and including this turn's own result — everything before
+        that result is by definition the interrupted turn's residue.
+
+        It does not wait for frames to arrive, and that is the whole design
+        rather than a concession. A user's tap on stop must not be held hostage
+        to a CLI that may never emit its result at all — stage 1 killed a CLI
+        mid-turn, and the budget this originally carried (5 s, per the task
+        sheet) blew the existing 2-second stop expectation in
+        `test_claude_stop_clears_both_executions_during_scheduled_collision`,
+        which is exactly the red line ("never block the stop") catching a
+        guard that had been written without it. A residual that arrives after
+        this call is the case I1 and B exist for, and they do not cost the user
+        a millisecond.
+
+        Measured: on the ordinary interrupt path this drains zero frames —
+        `ClaudeResponse.release(interrupted=True)` empties the same queue and
+        the reader's `discard` stops re-filling it, so the tail is already gone
+        by the time the turn task finishes. It stays in as a cheap safety net
+        for the paths where the turn had already seen a terminal: there
+        `discard` is False, and the reader keeps parking frames in a queue whose
+        consumer no longer exists.
+        """
+
+        if not self._drain_on_interrupt_enabled() or response is None:
+            return
+        messages = response.messages
+        drained = 0
+        saw_result = False
+        started_at = time.monotonic()
+        while True:
+            try:
+                message = messages.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            drained += 1
+            saw_result = saw_result or is_result_message(message)
+            if saw_result:
+                # The turn's own result is the boundary; anything the CLI
+                # queued behind it belongs to the next turn, not to this one.
+                break
+        if drained:
+            logger.info(
+                "Claude interrupt drain settled session_id={} turn_id={} "
+                "source={} drained={} elapsed_ms={:.1f}",
+                session.session_id,
+                execution.turn_id,
+                source,
+                drained,
+                (time.monotonic() - started_at) * 1000,
+            )
+
+    def _drain_on_interrupt_enabled(self) -> bool:
+        return bool(self.runner.config.values.get("drainOnInterrupt", True))
 
     def has_active_turn(self, session_id: str) -> bool:
         session = self.session_store.get(session_id)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -37,6 +38,19 @@ from connector.runtimes.claude.timeline.stream import is_stream_event
 
 RECONCILE_DONE_MARKER = "AA_MAINTENANCE_DONE"
 CONNECTION_CLOSE_TIMEOUT_SECONDS = 30
+# V9/L2: how many projection events one transport may hold while the host is
+# slow. Sized for a burst of subagent progress, not for backpressure: when the
+# host cannot keep up, the OLDEST event is dropped (a progress row that is
+# already stale is worth less than the ones that follow), the drop is counted
+# and warned, and the reader is never made to wait. The invariant being
+# protected is "the reader never stops reading the stream", so the queue must be
+# able to say no.
+DEFERRED_EVENT_QUEUE_MAXSIZE = 256
+# F2: the state-bearing queue gets its own budget. Two independent bounds, so
+# a decorative burst cannot consume the space a task closure needs, and a task
+# burst cannot consume the space subagent rows need.
+DEFERRED_TASK_QUEUE_MAXSIZE = 256
+DEFERRED_EVENT_WORKER_TIMEOUT_SECONDS = 5.0
 LEGACY_RECONCILE_PROMPT = (
     "AA connection maintenance: call CronList exactly once to report the current "
     "scheduled task list, then stop. If needed, use ToolSearch to find CronList. "
@@ -194,6 +208,46 @@ class ClaudeConnection:
     # across concurrently firing watchdogs (R2).
     stuck_timeout_reports: int = 0
     stuck_report_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # I1: foreign terminal frames absorbed at silence instead of minting a
+    # scheduled turn (claude-stale-frame-turn-tasks.md §4). A counter, not a
+    # limit — the guard is an invariant, not a rate limiter.
+    #
+    # It is ALSO not, on its own, a leak alarm, and the per-status breakdown
+    # exists because of that (red team F6, round 1). A turn whose only frame is
+    # its own result — an empty reply — is absorbed by exactly this path, so the
+    # raw total is non-zero in normal operation and a rate alarm on it would
+    # fire on day one. What separates "the CLI shed a result" from "a reply came
+    # back empty" is the status breakdown: `completed` at silence is the ghost
+    # shape (a leftover success that would have reported `completed` on the
+    # wrong turn), `interrupted` is the abort tail of a turn this connector
+    # stopped itself, and `failed` is a queued prompt's failure that found no
+    # pending to land on.
+    absorbed_terminal_frames: int = 0
+    absorbed_terminal_by_status: dict[str, int] = field(default_factory=dict)
+    # V9/L2 (claude-stale-frame-turn-tasks.md §4/§11): the reader loop must do
+    # zero host round trips. Both projection callbacks below end in a host
+    # upsert, and at 400 ms of host backpressure that parked the reader for
+    # 271.66 s against upstream's 2.96 s — while also letting it cast a ghost
+    # and push the human turn into `queued_execution` (stage-1 findings §2.2,
+    # V9 vs V11). Bounded queue + one drain worker per connection: the reader
+    # hands the event over and goes straight back to the stream.
+    # F2: two queues with two bounds. State-bearing events (the task binding
+    # and the card closure) cannot be evicted by decorative ones; see
+    # `defer_event`. Plainer deques than `asyncio.Queue` because the eviction
+    # rule is by importance, not by arrival, and reaching into a Queue's
+    # internals to express that would be the wrong trade.
+    deferred_task_events: deque[tuple[Awaitable[Any], Any, bool]] = field(
+        default_factory=deque
+    )
+    deferred_background_events: deque[tuple[Awaitable[Any], Any, bool]] = field(
+        default_factory=deque
+    )
+    _deferred_wakeup: asyncio.Event = field(default_factory=asyncio.Event)
+    deferred_event_worker: asyncio.Task[None] | None = None
+    deferred_dropped_events: int = 0
+    # Counted apart from the decorative drops: a non-zero value here means a
+    # task binding or a card closure was lost, which is not a cosmetic loss.
+    deferred_dropped_state_events: int = 0
 
     @property
     def retained(self) -> bool:
@@ -225,6 +279,177 @@ class ClaudeConnection:
         self.idle_task = None
         if timer is not None and timer is not asyncio.current_task():
             timer.cancel()
+
+    def defer_event(
+        self,
+        callback: Awaitable[Any] | None,
+        event: Any,
+        *,
+        state_bearing: bool = False,
+    ) -> None:
+        """Hand one projection event to the drain worker without awaiting it.
+
+        The reader calls this instead of awaiting the callback. That is the whole
+        point: the reader's job is to read the CLI's stream, and both callbacks
+        end in a host upsert whose latency is the server's business, not the
+        stream's. The single worker keeps arrival order, so the events this
+        defers still reach the timeline in the order the CLI produced them.
+
+        TWO QUEUES, because the two kinds of event are not equally lossy (red
+        team F2, round 1). `on_background_frame` carries decorative rows — a
+        subagent's thinking and tool lines — and losing one costs a row.
+        `on_task_event` carries state: `task_started` is the ONLY writer of the
+        task-to-card binding, and the event that closes a card is sent once and
+        never again. A single FIFO let decorative traffic evict the binding, and
+        the result was a subagent card stuck on `running` forever, with P2-N1's
+        "killed" fold silently dead for that subagent too — a loss the pre-V9
+        inline `await` could not suffer, so V9 introduced it.
+
+        The whole `on_task_event` stream goes in the state queue, `task_progress`
+        included: a progress row and the terminal closure that supersedes it are
+        a pair, and draining them out of order leaves the card showing the older
+        usage (`test_terminal_burst_closes_the_card_once_with_summary` is what
+        catches that). Eviction inside it is by IMPORTANCE rather than by age —
+        a `task_progress` row, which the next one supersedes, goes first, and a
+        binding or a closure only when there is nothing else, counted apart and
+        warned in words nobody can misread.
+
+        Cross-queue order is not preserved, and does not need to be: the two
+        queues write different items (subagent rows parented to a call vs the
+        call's own card), and neither one's ordering is meaningful against the
+        other's.
+        """
+
+        if callback is None:
+            return
+        worker = self.deferred_event_worker
+        if worker is None or worker.done():
+            worker = asyncio.create_task(self._drain_deferred_events())
+            self.deferred_event_worker = worker
+        state_queue = self.deferred_task_events
+        queue = state_queue if state_bearing else self.deferred_background_events
+        limit = (
+            DEFERRED_TASK_QUEUE_MAXSIZE
+            if state_bearing
+            else DEFERRED_EVENT_QUEUE_MAXSIZE
+        )
+        droppable = not state_bearing or getattr(event, "kind", None) == "progress"
+        while len(queue) >= limit:
+            victim = next((i for i, item in enumerate(queue) if item[2]), 0)
+            evicted = queue[victim]
+            del queue[victim]
+            if evicted[2] and queue is state_queue:
+                # A repeatable row gave way before a state event: a normal shed.
+                self.deferred_dropped_events += 1
+                logger.warning(
+                    "Claude deferred projection event dropped on overflow "
+                    "dropped_total={} queue_max={}",
+                    self.deferred_dropped_events,
+                    limit,
+                )
+            elif queue is state_queue:
+                self.deferred_dropped_state_events += 1
+                logger.warning(
+                    "Claude deferred TASK event dropped on overflow "
+                    "dropped_total={} queue_max={}",
+                    self.deferred_dropped_state_events,
+                    limit,
+                )
+            else:
+                self.deferred_dropped_events += 1
+                logger.warning(
+                    "Claude deferred projection event dropped on overflow "
+                    "dropped_total={} queue_max={}",
+                    self.deferred_dropped_events,
+                    limit,
+                )
+        queue.append((callback, event, droppable))
+        self._deferred_wakeup.set()
+
+    def _pop_ready_deferred(self) -> tuple[Awaitable[Any], Any, bool] | None:
+        """Next event, state-bearing first. No awaiting."""
+
+        for queue in (self.deferred_task_events, self.deferred_background_events):
+            if queue:
+                return queue.popleft()
+        return None
+
+    def _has_ready_deferred(self) -> bool:
+        """Whether anything is queued. Peeks — never consumes."""
+
+        return bool(self.deferred_task_events or self.deferred_background_events)
+
+    async def _next_deferred_event(self) -> tuple[Awaitable[Any], Any]:
+        """Take the next event, or wait for one to arrive.
+
+        The clear-then-recheck before waiting is what makes this safe: a
+        producer landing between the clear and the re-check is seen by the
+        re-check, and one landing after it re-sets the event, so a wake-up is
+        never lost between the two. The re-check PEEKS — it has to, because a
+        re-check that consumed would silently eat one event per wake-up, which
+        is the very loss this queue's state half was rebuilt to stop.
+        """
+
+        while True:
+            item = self._pop_ready_deferred()
+            if item is not None:
+                return item[0], item[1]
+            self._deferred_wakeup.clear()
+            if self._has_ready_deferred():
+                continue
+            await self._deferred_wakeup.wait()
+
+    async def _drain_deferred_events(self) -> None:
+        """Project queued events, one at a time, in arrival order.
+
+        Nothing in here may mint or select a turn: these are display-only
+        projections, and the worker's whole reason to exist is that they are not
+        worth a round trip on the reader's hot path. A failing callback is
+        logged and skipped — the L1 lesson again: nothing on this path may take
+        a transport down, and a poisoned worker would silently stop projecting
+        every later event too.
+        """
+
+        while True:
+            callback, event = await self._next_deferred_event()
+            try:
+                await callback(event)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Claude deferred projection event failed",
+                )
+
+    async def _stop_deferred_events(self) -> None:
+        """Retire the drain worker without letting the host hold the transport up.
+
+        Cancelling first, then emptying the queues by hand: a worker cancelled
+        mid-host-call leaves whatever it was holding in flight, and calling back
+        into a host that is itself retiring is exactly the hang this queue was
+        introduced to avoid. What is left is counted, not replayed.
+        """
+
+        worker = self.deferred_event_worker
+        self.deferred_event_worker = None
+        if worker is not None and worker is not asyncio.current_task():
+            worker.cancel()
+            await asyncio.wait(
+                (worker,), timeout=DEFERRED_EVENT_WORKER_TIMEOUT_SECONDS
+            )
+        remaining = len(self.deferred_task_events) + len(
+            self.deferred_background_events
+        )
+        self.deferred_task_events.clear()
+        self.deferred_background_events.clear()
+        if remaining:
+            self.deferred_dropped_events += remaining
+            logger.warning(
+                "Claude deferred projection events discarded on close "
+                "discarded={} dropped_total={}",
+                remaining,
+                self.deferred_dropped_events,
+            )
 
     def arm_idle(self) -> None:
         if (
@@ -407,10 +632,24 @@ class ClaudeConnection:
                     # discarded later as unprojectable; at silence they were
                     # absorbed outright). The fold itself only publishes the
                     # Agent card and must not mint anything.
+                    #
+                    # V9/L2: handed to the drain worker, not awaited here. The
+                    # fold ends in a host upsert, and at 400 ms of host
+                    # backpressure awaiting it parked the reader for 271.66 s
+                    # (upstream: 2.96 s) — long enough for it to cast a ghost
+                    # and push the human turn into `queued_execution`.
                     if self.on_task_event is not None:
                         agent_event = task_event_from_message(message)
                         if agent_event is not None:
-                            await self.on_task_event(agent_event)
+                            # `task_started` writes the task-to-card binding and
+                            # the terminal event closes the card; neither may be
+                            # evicted by a decorative burst (F2). A progress row
+                            # is repeatable and may be dropped.
+                            self.defer_event(
+                                self.on_task_event,
+                                agent_event,
+                                state_bearing=True,
+                            )
                 background_activity = is_background_activity(message)
                 if background_activity:
                     # Frames parented to a tool use are activity *inside* a
@@ -427,6 +666,51 @@ class ClaudeConnection:
                     if task_event:
                         continue
                     terminal_event = terminal_event_from_message(message)
+                    # I1 (claude-stale-frame-turn-tasks.md §4/§11): a terminal
+                    # frame settles exactly one turn — the one that can prove it
+                    # started it. Arriving at silence it can prove none, because
+                    # the CLI's stream is session-scoped and shared: a result
+                    # belonging to a turn that already settled (real session
+                    # sess_tPcEDi0z9xJYxQ, 2026-10-04 12:22:53) lands here as
+                    # if it were the next turn's own. Minting from it is what
+                    # produced "completed" 0.27 s BEFORE the turn's own model
+                    # request was even sent (stage-1 findings §4 H-a, S2
+                    # upstream/m1).
+                    #
+                    # This is the attribution invariant, NOT a frame-shape
+                    # enumeration. The chrome gate below already proves the
+                    # point: gating on `origin.kind == "task-notification"` (or
+                    # any other observed payload) catches the residual shape
+                    # this investigation happened to record and nothing else —
+                    # a bare `ResultMessage(success)` with no origin still
+                    # mints (findings §2.3). The trigger chain is not
+                    # enumerable, so the guard cannot be either.
+                    #
+                    # EVERY terminal is absorbed here, whatever its status.
+                    # `completed` was the obvious one; `interrupted` was not, and
+                    # it is worse than useless: the CLI emits `aborted_streaming`
+                    # / `aborted_tools` for turns this connector interrupted
+                    # itself, those frames land at silence seconds later, and
+                    # minting from one hands the lifecycle a turn whose only
+                    # content is the abort — which then either settles as a
+                    # bogus `interrupted` or, once the cast-frame position gate
+                    # refuses it, exhausts its stream and turns the session red
+                    # (`claude_stream_ended_without_result`) with no user action
+                    # anywhere. Red team F3, round 1.
+                    #
+                    # `failed` is absorbed from the MINT path too, and keeps its
+                    # visibility through the pending branch above — which runs
+                    # first: a queued prompt whose CLI failed must still surface
+                    # that failure (red line), and that path routes the frame
+                    # into the pending response rather than casting a new turn.
+                    #
+                    # Note what is deliberately NOT special-cased here: the
+                    # pending selection is left exactly as it was. A pending
+                    # with no wire uuid is a prompt submitted on this
+                    # transport's first turn, before the reader has ever yielded
+                    # a frame, so no earlier turn's result can be in flight to
+                    # hijack it (red team could not falsify this, and proved
+                    # the two rebuild entry points set `queried` explicitly).
                     if self.pending is not None and (
                         self.pending.user_id is None
                         or (
@@ -439,6 +723,31 @@ class ClaudeConnection:
                         )
                     ):
                         await self.select_response(self.pending)
+                    elif terminal_event is not None:
+                        # Absorbed. NOT appended to `preamble`: preamble is
+                        # flushed into the queue of whichever response is
+                        # selected next (lines 490-493), so parking a terminal
+                        # there would smuggle it back in as that turn's "first
+                        # frame" — the very ghost this guard exists to kill, by
+                        # the back door. There is also nothing to preserve: a
+                        # result carries no context the CLI will not replay.
+                        self.absorbed_terminal_frames += 1
+                        self.absorbed_terminal_by_status[terminal_event.status] = (
+                            self.absorbed_terminal_by_status.get(
+                                terminal_event.status, 0
+                            )
+                            + 1
+                        )
+                        logger.warning(
+                            "Claude foreign terminal frame absorbed at silence "
+                            "session_pending={} absorbed_total={} status={} "
+                            "reason={}",
+                            self.pending is not None,
+                            self.absorbed_terminal_frames,
+                            terminal_event.status,
+                            terminal_event.reason,
+                        )
+                        continue
                     elif message_role(message) == "system":
                         preamble.append(message)
                         continue
@@ -472,9 +781,10 @@ class ClaudeConnection:
                             # is the strict complement of the in-turn queue
                             # below, so no frame is projected twice, and the
                             # callback publishes items only — still no turn is
-                            # minted here.
-                            if self.on_background_frame is not None:
-                                await self.on_background_frame(message)
+                            # minted here. V9/L2: deferred, same reason as the
+                            # task-event fold above — same-shape host round
+                            # trip on the reader's hot path.
+                            self.defer_event(self.on_background_frame, message)
                             continue
                         # The mint branch: this frame is about to cast a
                         # scheduled turn, so it is stamped as the response's
@@ -524,6 +834,9 @@ class ClaudeConnection:
             if self.background_done_task is not None:
                 self.background_done_task.cancel()
             self.ready.set()
+            # V9/L2: stop the drain worker before the transport goes away, so a
+            # projection in flight cannot call back into a host that is closing.
+            await self._stop_deferred_events()
             try:
                 await disconnect_client(self.client)
             finally:
@@ -560,5 +873,10 @@ class ClaudeConnection:
         finally:
             # A slow SDK disconnect can continue in its owning reader task,
             # but must not keep an expired response or block its replacement.
+            # V9/L2: the same goes for the drain worker — a reader task that
+            # timed out above is still running, so only stop the worker if this
+            # call is not racing its own finally.
+            if self.deferred_event_worker is not None:
+                await self._stop_deferred_events()
             self.cleanup()
             await self._release_responses()

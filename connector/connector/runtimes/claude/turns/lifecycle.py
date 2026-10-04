@@ -1066,6 +1066,12 @@ class ClaudeTurnRunner:
         user_message_published = scheduled or command is not None
         published_user_item_id: str | None = None
         stream_accumulator = ClaudeStreamAccumulator()
+        # The card the accumulator's still-open thinking belongs to. Stream
+        # events carry no parent today (the CLI does not stream sidechains), so
+        # this stays None on every real turn and the settle-time flush below is
+        # an identity transform; it exists so a parented stream frame, if the
+        # CLI ever emits one, cannot leak a second way (recon findings §3.4).
+        stream_parent_item_id: str | None = None
         try:
             if command is not None:
                 # The user asked for this compaction: publish the running
@@ -1269,6 +1275,23 @@ class ClaudeTurnRunner:
                 role = message_role(message)
                 text = message_text(message)
                 native_message_id = message_id(message)
+                # The card this frame is parented to. Read after the native
+                # session id is adopted, so the item id hashes under the same
+                # scope the capture route would (recon findings §1.2).
+                #
+                # A turn active period does not sort frames by parent — every
+                # frame the connection hands to the consume loop is projected
+                # here, so a subagent frame that lands before this turn's result
+                # used to publish its reasoning and text rows with no
+                # `parentItemId` and the SubAgent panel let them into the main
+                # chat (pp session sess_k4g1dE968ahtWg, seq 10/14/16/41). A
+                # main-agent frame has no parent and stays byte-identical.
+                frame_parent_tool_use_id = _parent_tool_use_id(message)
+                frame_parent_item_id = (
+                    stable_tool_item_id(session, frame_parent_tool_use_id)
+                    if frame_parent_tool_use_id is not None
+                    else None
+                )
                 synthetic_control = is_synthetic_control_message(message)
                 # Compaction is reported through the same events whether the CLI
                 # compacted a `/compact` prompt or its own context window, so the
@@ -1323,6 +1346,11 @@ class ClaudeTurnRunner:
                     message=message,
                     projector=self.timeline,
                 )
+                if is_stream_event(message):
+                    # Whatever the accumulator is still holding belongs to the
+                    # message this stream event belongs to, so the card travels
+                    # with it into the settle-time thinking flush.
+                    stream_parent_item_id = frame_parent_item_id
                 terminal_message = terminal_event_from_message(message)
                 if terminal_message is not None and not counts_as_labour:
                     # B1's position rule promoted to settlement: the cast frame
@@ -1475,7 +1503,7 @@ class ClaudeTurnRunner:
                 if stream_item is not None:
                     await self.publish_items(
                         execution,
-                        (stream_item,),
+                        (_with_parent_card(stream_item, frame_parent_item_id),),
                         counted=counts_this_frame,
                     )
                 if is_stream_event(message):
@@ -1492,18 +1520,21 @@ class ClaudeTurnRunner:
                             await self.publish_items(
                                 execution,
                                 (
-                                    self.timeline.message_item(
-                                        session=session,
-                                        turn_id=turn_id,
-                                        role="assistant",
-                                        text=text,
-                                        event="claude.turn.result",
-                                        native_item_id=message_id(message),
-                                        item_id=stream_accumulator.final_item_id(
-                                            session,
-                                            turn_id,
+                                    _with_parent_card(
+                                        self.timeline.message_item(
+                                            session=session,
+                                            turn_id=turn_id,
+                                            role="assistant",
+                                            text=text,
+                                            event="claude.turn.result",
+                                            native_item_id=message_id(message),
+                                            item_id=stream_accumulator.final_item_id(
+                                                session,
+                                                turn_id,
+                                            ),
+                                            revision=stream_accumulator.next_final_revision(),
                                         ),
-                                        revision=stream_accumulator.next_final_revision(),
+                                        frame_parent_item_id,
                                     ),
                                 ),
                                 counted=counts_this_frame,
@@ -1516,7 +1547,9 @@ class ClaudeTurnRunner:
                     execution, tool_items, counted=counts_this_frame
                 )
                 await self.publish_items(
-                    execution, system_items, counted=counts_this_frame
+                    execution,
+                    _with_parent_cards(system_items, frame_parent_item_id),
+                    counted=counts_this_frame,
                 )
                 if compact_event is not None:
                     await self.publish_items(
@@ -1539,19 +1572,24 @@ class ClaudeTurnRunner:
                 await self.publish_items(
                     execution,
                     (
-                        self.timeline.message_item(
-                            session=session,
-                            turn_id=turn_id,
-                            role=role,
-                            text=text,
-                            event=f"claude.turn.{role}",
-                            native_item_id=message_id(message),
-                            item_id=stream_accumulator.final_item_id(session, turn_id)
-                            if role == "assistant"
-                            else None,
-                            revision=stream_accumulator.next_final_revision()
-                            if role == "assistant"
-                            else 1,
+                        _with_parent_card(
+                            self.timeline.message_item(
+                                session=session,
+                                turn_id=turn_id,
+                                role=role,
+                                text=text,
+                                event=f"claude.turn.{role}",
+                                native_item_id=message_id(message),
+                                item_id=stream_accumulator.final_item_id(
+                                    session, turn_id
+                                )
+                                if role == "assistant"
+                                else None,
+                                revision=stream_accumulator.next_final_revision()
+                                if role == "assistant"
+                                else 1,
+                            ),
+                            frame_parent_item_id,
                         ),
                     ),
                     counted=counts_this_frame,
@@ -1687,7 +1725,10 @@ class ClaudeTurnRunner:
                     turn_id,
                     self.timeline,
                 )
-                await self.publish_items(execution, settled_batch)
+                await self.publish_items(
+                    execution,
+                    _with_parent_cards(settled_batch, stream_parent_item_id),
+                )
             except Exception:  # noqa: BLE001
                 settled_batch = ()
                 logger.exception(
@@ -2225,14 +2266,19 @@ def _with_parent_card(
     item: RuntimeTimelineItem,
     parent_item_id: str | None,
 ) -> RuntimeTimelineItem:
-    """Attach the parentItemId convention to a captured subagent row.
+    """Attach the parentItemId convention to a subagent reasoning/message row.
 
     Tool rows already carry it from the projector (messages.py); the rows the
     projector cannot reach — reasoning (thinking) and message (text) rows —
     get the same free-JSON key here so the SubAgent panel can attribute them
-    (claude-subagent-progress-tasks.md §3.3). Scoped to the capture route:
-    the in-turn projection, the history rebuild, nested Agent rows and every
-    main-agent row keep their exact content.
+    (claude-subagent-progress-tasks.md §3.3).
+
+    Two routes reach this, because a subagent frame is projected by whichever
+    one the frame's arrival time selects: the capture route (frames that reach
+    silence) and the in-turn projection (frames that land while a turn or a
+    scheduled turn is active — recon findings §1.2). The history rebuild and
+    nested Agent rows keep their exact content, and so does every row of a
+    frame with no parent: `parent_item_id is None` returns the item itself.
     """
 
     if parent_item_id is None or item.type not in {"system", "message"}:
@@ -2248,3 +2294,21 @@ def _with_parent_card(
             content=content,
         ),
     )
+
+
+def _with_parent_cards(
+    items: Iterable[RuntimeTimelineItem],
+    parent_item_id: str | None,
+) -> tuple[RuntimeTimelineItem, ...]:
+    """`_with_parent_card` over a batch, for the projection's batched rows.
+
+    The in-turn projection publishes two batches rather than single items — the
+    frame's reasoning rows and the settle-time thinking flush — so this keeps
+    the same call at both instead of rebuilding a tuple per site. It stays the
+    identity transform (the very same item objects) when there is no parent, so
+    a main-agent turn publishes exactly what it published before.
+    """
+
+    if parent_item_id is None:
+        return tuple(items)
+    return tuple(_with_parent_card(item, parent_item_id) for item in items)

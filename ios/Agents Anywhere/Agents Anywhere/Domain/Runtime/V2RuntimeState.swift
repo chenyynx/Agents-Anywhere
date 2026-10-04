@@ -161,7 +161,14 @@ struct V2RuntimeError: Codable, Hashable, LocalizedError {
     /// an opaque payload: the client reads what it knows how to render and
     /// ignores the rest, so the Connector can add fields without a client
     /// release.
-    let params: JSONValue? = nil
+    ///
+    /// `var` (with the same nil default) on purpose: a `let` with an initial
+    /// value is excluded from the synthesized `CodingKeys` and from the
+    /// memberwise initializer, which made this payload permanently nil on
+    /// decode and unconstructable in tests. `var` keeps the two-argument
+    /// memberwise call working and lets the synthesized decoder read the
+    /// key; an absent key still decodes as nil.
+    var params: JSONValue? = nil
 
     var errorDescription: String? {
         if let copy = RuntimeLocalizedCopy.runtimeErrorText(code: code, params: params) { return copy }

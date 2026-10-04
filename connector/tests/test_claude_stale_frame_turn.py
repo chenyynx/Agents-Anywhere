@@ -65,9 +65,17 @@ from test_claude_subagent_progress import (
 
 async def _never(_arg: Any = None) -> None:
     return None
-from test_claude_runtime import _RecordingHost, _ScheduledClaudeClient
+from test_claude_runtime import (
+    RuntimeConfig,
+    _default_sdk,
+    _FakeClaudeClient,
+    _FakeHookMatcher,
+    _RecordingHost,
+    _ScheduledClaudeClient,
+)
 
 from connector.runtimes.claude.domain.session import ClaudeExecution
+from connector.runtimes.claude.runtime import ClaudeRuntime
 from connector.runtimes.claude.sdk import connection as connection_module
 from connector.runtimes.claude.sdk.connection import (
     ClaudeConnection,
@@ -102,6 +110,23 @@ FAILED_RESULT = {
     "subtype": "error_during_execution",
     "is_error": True,
     "error": "prompt rejected",
+}
+
+# The interrupted turn's tail, verbatim in shape from the real session: the CLI
+# replays a synthetic control message, then its result, then task notifications.
+RESIDUAL_ECHO = {
+    "type": "user",
+    "message": {
+        "role": "user",
+        "content": "<local-command-stdout>No response requested.</local-command-stdout>",
+    },
+    "uuid": "residual-echo",
+    "session_id": SESSION,
+}
+
+RESIDUAL_ECHO_2 = {
+    **RESIDUAL_ECHO,
+    "uuid": "residual-echo-2",
 }
 
 ASSISTANT_REPLY = {
@@ -713,5 +738,166 @@ def test_a_failing_projection_never_poisons_the_worker() -> None:
         await _wait_until(lambda: seen == ["good"])
         await connection._stop_deferred_events()
         assert connection.deferred_dropped_events == 0
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------
+# C · drain-after-interrupt: fast path clean, stop never blocked
+# --------------------------------------------------------------------------
+
+
+def _runtime_with_values(host: Any, client_factory: Any, values: dict[str, Any]) -> Any:
+    sdk = _default_sdk()
+    sdk.HookMatcher = _FakeHookMatcher
+    return ClaudeRuntime(
+        config=RuntimeConfig(
+            runtime="claude", revision=1, values={"environment": {}, **values}
+        ),
+        host=host,
+        sdk_loader=lambda: sdk,
+        client_factory=client_factory,
+    )
+
+
+class _SilentInterruptClient(_ScheduledClaudeClient):
+    """An interrupt whose result never comes, and whose tail comes very late.
+
+    The worst case any drain has to survive: the CLI is killed mid-turn, so its
+    result may never be emitted at all, and the frames it did emit arrive long
+    after anyone is still reading them. Stage 1 measured a real residual 32 s
+    late — well outside anything a stop may wait for.
+    """
+
+    def __init__(self, tail_delay: float = 3.0) -> None:
+        super().__init__()
+        self.tail_delay = tail_delay
+
+    async def interrupt(self) -> None:
+        await _FakeClaudeClient.interrupt(self)
+        asyncio.create_task(self._late_tail())
+
+    async def _late_tail(self) -> None:
+        await asyncio.sleep(self.tail_delay)
+        await self.incoming.put(_parse(BARE_SUCCESS_RESULT))
+
+
+async def _time_interrupt(runtime: Any) -> float:
+    started_at = time.monotonic()
+    # Bounded, so that reintroducing a waiting drain FAILS this test instead of
+    # hanging the suite — a hang is the production symptom, but a test that
+    # hangs reports nothing. 2 s is the expectation the pre-existing
+    # `test_claude_stop_clears_both_executions_during_scheduled_collision`
+    # already pins.
+    result = await asyncio.wait_for(
+        runtime.interrupt_session("drain", reason="user"), 2
+    )
+    elapsed = time.monotonic() - started_at
+    assert result.ok is True
+    return elapsed
+
+
+def test_interrupt_drain_never_blocks_the_stop() -> None:
+    """The red line, in the shape that broke it once: a CLI that never answers.
+
+    The task sheet's 5-second ceiling was still 5 seconds of a user waiting to
+    stop, and the existing 2-second stop expectation in
+    `test_claude_stop_clears_both_executions_during_scheduled_collision` caught
+    it. The shipped drain has no timeout because it has nothing to wait for, so
+    the bound here is generous enough to survive a loaded CI box and far below
+    anything that could be mistaken for a timeout.
+    """
+
+    async def run() -> None:
+        client = _SilentInterruptClient()
+        host = _RecordingHost()
+        runtime = _runtime_with_values(host, _single_client_factory(client), {})
+        try:
+            # "wait" is the fake's no-reply prompt: the turn stays open, which
+            # is the only state an interrupt means anything in.
+            await runtime.start_turn("drain", None, "wait")
+            await asyncio.sleep(0.05)
+            elapsed = await _time_interrupt(runtime)
+            assert elapsed < 1.0, f"stop blocked for {elapsed:.3f}s"
+            assert host.session_turn_ends[-1]["outcome"] == "interrupted"
+            assert runtime._sessions["drain"].execution is None
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_drain_swallows_a_queued_tail_and_stops_at_the_result() -> None:
+    """The drain's own contract, driven directly: frames in, queue empty out.
+
+    Worth pinning on its own because on the ordinary interrupt path the drain
+    finds nothing to do — `release(interrupted=True)` has already emptied the
+    same queue. This is the path it exists for: a turn that had already seen a
+    terminal releases with `discard=False`, so the reader keeps parking frames
+    in a queue whose consumer no longer exists, and nothing else empties it.
+
+    The result is the boundary. The frame behind it belongs to whatever runs
+    next, and taking it would be this drain doing the very cross-turn theft it
+    exists to prevent.
+    """
+
+    async def run() -> None:
+        client = _ScheduledClaudeClient()
+        host = _RecordingHost()
+        runtime = _runtime_with_values(host, _single_client_factory(client), {})
+        try:
+            await runtime.start_turn("drain", None, "wait")
+            await asyncio.sleep(0.05)
+            session = runtime._sessions["drain"]
+            execution = session.execution
+            response = execution.client
+            assert response is not None
+            for frame in (RESIDUAL_ECHO, RESIDUAL_ECHO_2, BARE_SUCCESS_RESULT):
+                await response.messages.put(_parse(frame))
+            next_turns = _parse(ASSISTANT_REPLY)
+            await response.messages.put(next_turns)
+
+            started_at = time.monotonic()
+            await runtime._turns.actions._drain_after_interrupt(
+                session, execution, source="test", response=response
+            )
+            elapsed = time.monotonic() - started_at
+
+            assert elapsed < 0.05, f"a drain that waits cost {elapsed:.3f}s"
+            assert response.messages.qsize() == 1
+            assert response.messages.get_nowait() is next_turns
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_drain_can_be_switched_off() -> None:
+    """Every guard in this batch is switchable; this one has to be too."""
+
+    async def run() -> None:
+        client = _ScheduledClaudeClient()
+        host = _RecordingHost()
+        runtime = _runtime_with_values(
+            host,
+            _single_client_factory(client),
+            {"drainOnInterrupt": False},
+        )
+        try:
+            await runtime.start_turn("drain", None, "wait")
+            await asyncio.sleep(0.05)
+            session = runtime._sessions["drain"]
+            execution = session.execution
+            response = execution.client
+            assert response is not None
+            for frame in (RESIDUAL_ECHO, BARE_SUCCESS_RESULT):
+                await response.messages.put(_parse(frame))
+
+            await runtime._turns.actions._drain_after_interrupt(
+                session, execution, source="test", response=response
+            )
+            assert response.messages.qsize() == 2, "switched off, nothing drained"
+        finally:
+            await runtime.stop()
 
     asyncio.run(run())

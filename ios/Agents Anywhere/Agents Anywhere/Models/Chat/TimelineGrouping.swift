@@ -58,7 +58,11 @@ enum TimelineGrouping {
             // An interaction target is exempt: an approval card anchors on its
             // own row, and that row has to stay visible or the card would fall
             // between the group renderer and the orphan notice list.
-            if SubAgentProgress.parentItemID(row.value) != nil, !interactionTargets.contains(row.id) { continue }
+            // Grouping reads the row's structure projection, never `row.value`:
+            // `groupKind == .agents` is set exactly when the item carries a
+            // parentItemId, but reading the value would let a streaming token or
+            // tool-output refresh invalidate the list and regroup history.
+            if case .agents = row.structure.groupKind, !interactionTargets.contains(row.id) { continue }
             let kind: ChatTimelineGroup.Kind = interactionTargets.contains(row.id) ? .single : row.structure.groupKind
             if kind == .single { flush(); groups.append(ChatTimelineGroup(kind: .single, rows: [row])); continue }
             if pendingKind != kind { flush() }

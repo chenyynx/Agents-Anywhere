@@ -618,6 +618,67 @@ class ClaudeTurnRunner:
                 event.task_id,
             )
 
+    async def publish_stopped_subagents(
+        self,
+        session: ClaudeSession,
+        task_ids: Iterable[str],
+        *,
+        reason: str | None = None,
+    ) -> int:
+        """Tell the agent card, at the stop, which subagents the stop killed.
+
+        P2-N1 (claude-stale-frame-turn-tasks.md §4/§11). The gap this closes is
+        measured, not hypothetical: on 2026-10-04 12:18 the agent kept reporting
+        "still running in the background" 20 s after the user hit stop, the
+        client card did not flip for 4m41s, and the CLI's own notification for
+        the same events came 4m43s late. The information was never missing — the
+        CLI emits `task_notification` for every task it kills, and the L2 fold
+        already binds `task_id -> card` — it simply arrived after anyone was
+        still looking at the turn.
+
+        So the connector stops waiting for it. A stop knows exactly which tasks
+        it killed: `ClaudeBackgroundTasks.active_ids` is the live set on that
+        transport, and every id in it is bound to a card by the L2 fold (killed
+        tasks are 100% capturable — findings §8.7). Each is re-folded as the
+        `task_updated`/killed event the CLI itself would have sent, which is the
+        point: the same normalizer, the same overlay table
+        (`AGENT_TASK_TERMINAL_STATUSES` maps killed -> interrupted), the same
+        idempotent closure. The CLI's late notification then finds a card
+        already in the state it would have set, and publishes nothing.
+
+        Only ids the caller vouches for are folded, because that is the one
+        guard this needs: a "killed" overlay on a card the CLI already closed
+        as `done` would walk a finished card backwards. The caller reads the
+        live set, so finished cards are never in it.
+
+        Nothing here changes what a stop does — it only says what already
+        happened, on a surface that is already there. A notification into the
+        model's own context would mean sending a prompt to the process the user
+        just killed, which is the one thing a stop must not do.
+        """
+
+        stopped = 0
+        for task_id in task_ids:
+            await self.fold_agent_task_event(
+                session,
+                ClaudeTaskEvent(
+                    kind="updated",
+                    task_id=task_id,
+                    session_id=session.external_session_id,
+                    status="killed",
+                ),
+            )
+            stopped += 1
+        if stopped:
+            logger.warning(
+                "Claude subagents reported stopped session_id={} tasks={} "
+                "reason={}",
+                session.session_id,
+                stopped,
+                reason,
+            )
+        return stopped
+
     async def project_background_frame(
         self,
         session: ClaudeSession,

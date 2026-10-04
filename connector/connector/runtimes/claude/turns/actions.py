@@ -217,11 +217,50 @@ class ClaudeTurnActionHandler:
         # reader left: ours. Draining it here means the next turn starts with a
         # clean stream instead of inheriting the interrupted turn's tail.
         await self._drain_after_interrupt(session, execution, source=source, response=response)
+        # P2-N1: the agent is told which subagents the stop killed, at the
+        # stop, instead of waiting for a CLI notification that arrives minutes
+        # later (2026-10-04: agent 20 s late, card 4m41s late, CLI 4m43s late).
+        await self._report_stopped_subagents(
+            session=session, response=response, source=source, reason=reason
+        )
         await self.runner.finish_execution(
             session=session,
             execution=execution,
             terminal=interrupted_terminal_event(reason),
         )
+
+    async def _report_stopped_subagents(
+        self,
+        session: ClaudeSession,
+        response: Any,
+        *,
+        source: str,
+        reason: str | None,
+    ) -> None:
+        """Fold every subagent this stop killed into its Agent card.
+
+        Display only, and it must never be the reason a stop fails: the L2 fold
+        already swallows its own failures, and this call sits on the stop path,
+        so anything that escapes is logged and dropped rather than raised.
+        """
+
+        if response is None:
+            return
+        connection = response.connection
+        if connection is None or connection.closing:
+            return
+        try:
+            await self.runner.publish_stopped_subagents(
+                session,
+                tuple(connection.background.active_ids),
+                reason=f"{source}:{reason}" if reason else source,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Claude stopped-subagent report failed session_id={} source={}",
+                session.session_id,
+                source,
+            )
 
     async def _drain_after_interrupt(
         self,

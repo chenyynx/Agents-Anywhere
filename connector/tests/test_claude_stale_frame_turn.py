@@ -55,9 +55,14 @@ from test_claude_compact_ghost import (
 from test_claude_subagent_progress import (
     DISPATCH_TUID,
     TASK_ID,
+    WIRE_DISPATCH_RECEIPT,
+    WIRE_DISPATCH_TOOL_USE,
+    WIRE_MAIN_RESULT,
     WIRE_TASK_PROGRESS_FIRST,
     WIRE_TASK_STARTED,
+    WIRE_TASK_UPDATED,
     _card_agents,
+    _card_items,
     _DispatchClient,
     _start_dispatch,
 )
@@ -897,6 +902,132 @@ def test_drain_can_be_switched_off() -> None:
                 session, execution, source="test", response=response
             )
             assert response.messages.qsize() == 2, "switched off, nothing drained"
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------
+# P2-N1 · a stop says which subagents it killed, at the stop
+# --------------------------------------------------------------------------
+
+
+class _SubagentThenWaitClient(_DispatchClient):
+    """Dispatches a background subagent, then leaves the turn running.
+
+    The production shape: pp hits stop while a subagent is still working. The
+    agent kept telling them it was "still running in the background" 20 s
+    later, the client card took 4m41s to flip, and the CLI's own notification
+    for the same events took 4m43s (real session sess_tPcEDi0z9xJYxQ,
+    2026-10-04 12:18). Nothing was missing — the CLI reports every task it
+    kills. It just reported it long after anyone was looking.
+    """
+
+    async def _complete_query(self, prompt: str) -> None:
+        if prompt == "hello":
+            # The dispatch turn settles normally; only the subagent is still
+            # running when the user later hits stop on the NEXT turn.
+            for frame in (
+                WIRE_DISPATCH_TOOL_USE,
+    WIRE_MAIN_RESULT,
+                WIRE_DISPATCH_RECEIPT,
+                WIRE_TASK_STARTED,
+                WIRE_MAIN_RESULT,
+            ):
+                await self.incoming.put(_parse(frame))
+            return
+        await _FakeClaudeClient.query(self, prompt)
+
+
+def test_stop_reports_the_subagents_it_killed_immediately() -> None:
+    """T5: the card flips with the stop, not with the CLI's late notification.
+
+    The bound is the point. The CLI's own `task_notification` for these tasks
+    is never sent in this test, so anything that arrives is the connector
+    reporting it itself — and it must arrive inside the stop call, not
+    "eventually".
+    """
+
+    async def run() -> None:
+        client = _SubagentThenWaitClient()
+        host = _RecordingHost()
+        runtime = _runtime_with_values(host, _single_client_factory(client), {})
+        try:
+            await runtime.start_turn("sub_progress", None, "hello")
+            session = runtime._sessions["sub_progress"]
+            await asyncio.wait_for(session.active_task, 5)
+            card_id = stable_tool_item_id(session, DISPATCH_TUID)
+            await _wait_until(
+                lambda: "subagentType"
+                in _card_agents(host, card_id).get(TASK_ID, {})
+            )
+            assert _card_items(host, card_id)[-1].status == "running"
+            before = len(_card_items(host, card_id))
+
+            # A second turn the user can stop while the subagent still runs.
+            # Waiting on `execution.client` rather than on `session.execution`:
+            # the latter is set the moment the turn is queued, before
+            # `drive_turn` has attached its transport, and a stop in that
+            # window has nothing to interrupt (pre-existing, and correct — pp
+            # cannot tap stop on a turn that has not been dispatched yet).
+            await runtime.start_turn("sub_progress", None, "keep going")
+            await _wait_until(
+                lambda: session.execution is not None
+                and session.execution.client is not None
+            )
+
+            started_at = time.monotonic()
+            result = await runtime.interrupt_session("sub_progress", reason="user")
+            elapsed = time.monotonic() - started_at
+
+            assert result.ok is True
+            assert elapsed < 1.0, f"the stop took {elapsed:.3f}s"
+            cards = _card_items(host, card_id)
+            assert len(cards) == before + 1, "exactly one row, published by the stop"
+            assert cards[-1].status == "interrupted"
+            # The agents-map entry records the wire status verbatim (a CLI
+            # closure would read "completed" here); the timeline status is what
+            # `AGENT_TASK_TERMINAL_STATUSES` maps killed -> interrupted onto.
+            assert _card_agents(host, card_id)[TASK_ID]["status"] == "killed"
+            assert host.session_turn_ends[-1]["outcome"] == "interrupted"
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_a_finished_subagent_card_is_never_walked_backwards() -> None:
+    """The one guard the fold needs: only the caller-vouched live set is folded.
+
+    A "killed" overlay on a card the CLI already closed as `done` would walk a
+    finished card back to `interrupted`, so the live set is what decides — and
+    a card that closed before the stop is not in it.
+    """
+
+    async def run() -> None:
+        client = _SubagentThenWaitClient()
+        host = _RecordingHost()
+        runtime = _runtime_with_values(host, _single_client_factory(client), {})
+        try:
+            await runtime.start_turn("sub_progress", None, "hello")
+            session = runtime._sessions["sub_progress"]
+            await asyncio.wait_for(session.active_task, 5)
+            card_id = stable_tool_item_id(session, DISPATCH_TUID)
+            await _wait_until(
+                lambda: "subagentType"
+                in _card_agents(host, card_id).get(TASK_ID, {})
+            )
+            # The CLI closes the card itself.
+            await client.incoming.put(_parse(WIRE_TASK_UPDATED))
+            await _wait_until(lambda: _card_items(host, card_id)[-1].status == "done")
+            settled = dict(_card_items(host, card_id)[-1].content)
+
+            connection = runtime._turns.runner.connections["sub_progress"]
+            assert tuple(connection.background.active_ids) == ()
+            await runtime._turns.runner.publish_stopped_subagents(session, ())
+            assert dict(_card_items(host, card_id)[-1].content) == settled
+            assert _card_items(host, card_id)[-1].status == "done"
         finally:
             await runtime.stop()
 

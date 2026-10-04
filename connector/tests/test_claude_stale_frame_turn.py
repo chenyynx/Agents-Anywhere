@@ -47,9 +47,12 @@ from claude_agent_sdk._internal.message_parser import parse_message
 from test_claude_compact_ghost import (
     _runtime_with,
     _single_client_factory,
+    _turn_ends,
 )
 from test_claude_runtime import _RecordingHost, _ScheduledClaudeClient
 
+from connector.runtimes.claude.domain.session import ClaudeExecution
+from connector.runtimes.claude.sdk.connection import ClaudeResponse
 from connector.runtimes.claude.turns import lifecycle
 
 SESSION = "b5a5f0a4-2c17-4f8e-9a6b-1d0e7c4b9a21"
@@ -315,6 +318,183 @@ def test_pending_without_a_wire_uuid_still_takes_a_result() -> None:
             assert [end["outcome"] for end in host.session_turn_ends] == [
                 "completed"
             ]
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------
+# B · in-turn start gate: only a terminal this turn can own counts as its work
+# --------------------------------------------------------------------------
+
+
+class _ResidualAfterEchoClient(_ScheduledClaudeClient):
+    """The reconnect shape: the old result lands while the NEW turn is live.
+
+    The prompt echo reaches the reader first, so the turn owns the stream from
+    that frame on — and the previous turn's result arrives right behind it,
+    inside the queue the new turn is already draining. This is the in-turn
+    sibling of the mint path I1 closes, and the shape findings §4 H-a names as
+    the excluded candidate: the `break` in `turns/lifecycle.py` settles the turn
+    on whatever result it reads first.
+    """
+
+    def __init__(self, residual: dict[str, Any], *, from_query: int = 2) -> None:
+        super().__init__()
+        self.residual = residual
+        self.from_query = from_query
+        self.queries_seen = 0
+
+    async def query(self, prompt: Any) -> None:
+        if isinstance(prompt, str):
+            await super().query(prompt)
+            return
+        async for message in prompt:
+            content = message["message"]["content"]
+            self.queries_seen += 1
+            await self.incoming.put(
+                UserMessage(uuid=message["uuid"], content=content)
+            )
+            if self.queries_seen >= self.from_query:
+                await self.incoming.put(_parse(self.residual))
+        await self._complete_query(content)
+
+
+def test_unowned_in_turn_terminal_is_counted_for_the_observation_window() -> None:
+    """The residue B exists to make visible: counted, named, not credited.
+
+    修前红 / 修后绿 on the counter itself: with the gate removed this stays 0 and
+    the occurrence is invisible in production, which is the whole reason the
+    in-turn case was left measurable rather than silently tolerated.
+
+    The turn still settles on the frame — see the gate's note in
+    `drive_turn`: a leftover result and an empty reply are the same shape by the
+    time they reach a turn, so refusing to settle it would hang real replies.
+    I1 closes the entry point that stage 1 actually reproduced.
+    """
+
+    async def run() -> None:
+        client = _ResidualAfterEchoClient(BARE_SUCCESS_RESULT)
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            await runtime.start_turn("inturn", None, "hello")
+            session = runtime._sessions["inturn"]
+            await asyncio.wait_for(session.active_task, 5)
+            runner = runtime._turns.runner
+            assert runner.foreign_terminal_frames == 0
+
+            await runtime.start_turn("inturn", None, "second")
+            await asyncio.wait_for(session.active_task, 5)
+
+            assert [end["outcome"] for end in host.session_turn_ends] == [
+                "completed",
+                "completed",
+            ]
+            assert runner.foreign_terminal_frames == 1
+            # `session.execution` is deliberately NOT asserted empty here: the
+            # frames the premature settle orphaned (this turn's own reply and
+            # result) reach the reader at silence afterwards, and an assistant
+            # frame at silence is the legitimate scheduled-wakeup mint. That
+            # tail is another reason the entry point (I1) is where the fix
+            # belongs, not the settle side.
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_a_terminal_at_the_cast_position_does_not_settle_the_turn() -> None:
+    """The B1 position rule, promoted to settlement: the cast cannot complete.
+
+    Whichever frame cast this turn out of silence is passive arrival — the turn
+    neither produced it nor chose it. If it were ever a terminal again (I1 makes
+    that impossible at the reader, so this is the second line), it must not
+    become the turn's verdict.
+
+    Driven in-process because the reader can no longer produce the shape: the
+    response is handed `cast_frame` directly and then fed frames by hand.
+    """
+
+    async def run() -> None:
+        client = _ScheduledClaudeClient()
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            await runtime.start_turn("cast", None, "hello")
+            session = runtime._sessions["cast"]
+            await asyncio.wait_for(session.active_task, 5)
+
+            connection = runtime._turns.runner.connections["cast"]
+            cast_frame = _parse(BARE_SUCCESS_RESULT)
+            response = ClaudeResponse(connection, cast_frame=cast_frame)
+            execution = ClaudeExecution(turn_id="turn_claude_cast_probe")
+            session.execution = execution
+            task = asyncio.create_task(
+                runtime._turns.runner.drive_turn(
+                    session,
+                    execution,
+                    "",
+                    (),
+                    None,
+                    scheduled=True,
+                    response=response,
+                )
+            )
+            await response.messages.put(cast_frame)
+            await asyncio.wait_for(task, 5)
+
+            ends = _turn_ends(host, execution.turn_id)
+            assert ends[-1]["outcome"] != "completed"
+            assert ends[-1]["metadata"]["terminalReason"] == (
+                "stream_exhausted"
+            )
+            assert (
+                runtime._turns.runner.foreign_terminal_frames == 0
+            ), "the cast frame is skipped by position, not counted as foreign"
+            assert execution.consumed_frames == 0
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+class _ResultOnlyClient(_ScheduledClaudeClient):
+    """An empty reply: the turn's whole stream is its single result.
+
+    R1's false-kill risk in its purest form. The gate must count this turn as
+    having met an unowned terminal and must still report exactly what it
+    reported before the gate existed.
+    """
+
+    async def query(self, prompt: Any) -> None:
+        if isinstance(prompt, str):
+            await super().query(prompt)
+            return
+        async for _message in prompt:
+            pass
+        await self.incoming.put(_parse(BARE_SUCCESS_RESULT))
+
+
+def test_empty_reply_turn_is_not_killed_by_the_start_gate() -> None:
+    """R1: a turn whose only frame is its result still completes, not fails."""
+
+    async def run() -> None:
+        client = _ResultOnlyClient()
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            await runtime.start_turn("empty", None, "hello")
+            session = runtime._sessions["empty"]
+            await asyncio.wait_for(session.active_task, 5)
+
+            assert [end["outcome"] for end in host.session_turn_ends] == [
+                "completed"
+            ]
+            assert host.session_state_updates[-1]["status"] == "idle"
+            assert session.execution is None
+            assert runtime._turns.runner.foreign_terminal_frames == 1
         finally:
             await runtime.stop()
 

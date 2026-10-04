@@ -134,6 +134,11 @@ class ClaudeTurnRunner:
     agent_task_calls: dict[tuple[str, str], str] = field(
         default_factory=dict, init=False
     )
+    # B: terminal frames the start gate refused to settle this turn on. Read by
+    # the post-deploy observation window alongside `ClaudeConnection
+    # .absorbed_terminal_frames`: the two are the same leak seen at its two
+    # entry points (the reader refusing to mint, the turn refusing to settle).
+    foreign_terminal_frames: int = field(default=0, init=False)
     stopping: bool = False
     markers: ClaudeTimelineMarkers = field(init=False)
     scheduled_sessions: ClaudeScheduledSessions = field(init=False)
@@ -999,6 +1004,61 @@ class ClaudeTurnRunner:
             # silence) is never re-armed into a short deadline.
             cast_frame = client.cast_frame
             cast_reached = cast_frame is None
+            # B · start gate (claude-stale-frame-turn-tasks.md §4/§11, D1).
+            #
+            # The consume loop drains a session-scoped stream: whatever the CLI
+            # is still emitting when this turn takes the lock is in this queue,
+            # including frames that belong to a turn which already settled. The
+            # 12:23 ghost is exactly that — the interrupted turn's residual
+            # result was still on the wire when the next message started (real
+            # session sess_tPcEDi0z9xJYxQ, 2026-10-04). I1 refuses such a frame
+            # to MINT a turn; B is the second half of the same invariant, on the
+            # SETTLE side: a terminal only ends a turn that has shown a start
+            # it owns, and one that cannot is counted and named.
+            #
+            # A turn's start, by kind:
+            #
+            #   cast turn      — the cast frame's own position (`message is
+            #                   cast_frame`): the B1 content gate's positional
+            #                   rule promoted to settlement. The cast frame and
+            #                   everything flushed ahead of it are passive, so a
+            #                   terminal there cannot settle the turn (it is
+            #                   skipped; `counts_as_labour` is false there).
+            #   prompted turn  — the prompt echo the `prompt_uuid` facility binds
+            #                   above, or any other non-terminal frame: once the
+            #                   turn has spoken, a later result is its own.
+            #   command /
+            #     maintenance  — no prompt uuid exists to pair with (the CLI does
+            #                   not echo those), so there is no start evidence to
+            #                   wait for and the gate starts open.
+            #
+            # WHAT THIS GATE DOES NOT DO, and why (recorded here so nobody
+            # re-derives it as an oversight): an unowned terminal is counted and
+            # refused as labour, but it still settles. The refusal cannot go
+            # further for two reasons that are structural, not budgeted.
+            #
+            #   1. It cannot be told apart from a legitimate empty reply. By the
+            #      time a result is the turn's first terminal, the residual and
+            #      an empty answer are the same shape on the same queue — stage-1
+            #      findings §7.1 already established the payload cannot separate
+            #      the reproduced residual from the production one, and the real
+            #      turn's own result is indistinguishable from a leftover by
+            #      construction. Dropping it would hang every empty reply until
+            #      the ceiling (R1's false kill, product-level).
+            #   2. The read cannot simply continue. `ClaudeResponse
+            #      .receive_response` ends a response at its first result, and
+            #      the reader holds `current` until the turn releases it — so
+            #      "keep reading for the real one" needs the release protocol
+            #      rewritten, which is the reader's core backpressure design and
+            #      far outside this batch.
+            #
+            # I1 is the fix that does hold: a residual result can no longer
+            # enter a queue at all from silence, which is the only shape stage 1
+            # ever reproduced (3/3). This gate's job is to make the residue
+            # measurable (the counter and the WARN), to keep it out of the labour
+            # count so a ghost stays in the fast-kill class, and to name the
+            # occurrence for the observation window.
+            turn_started = cast_frame is None and client.prompt_uuid is None
             emitted_final_assistant_content = False
             async for message in receive_response_messages(client):
                 # Position, not shape: the same payload would count one frame
@@ -1078,6 +1138,59 @@ class ClaudeTurnRunner:
                     projector=self.timeline,
                 )
                 terminal_message = terminal_event_from_message(message)
+                if terminal_message is not None and not counts_as_labour:
+                    # B1's position rule promoted to settlement: the cast frame
+                    # and everything the reader flushed ahead of it are passive
+                    # arrival, so a terminal there is not this turn's verdict and
+                    # does not end it. I1 already refuses to let a terminal
+                    # cast a turn, so this is the second line — reachable only
+                    # if that guard ever regresses. Skipped, not counted as
+                    # foreign: it is not another turn's frame, it is simply not
+                    # this turn's result.
+                    continue
+                unowned_terminal = terminal_message is not None and not turn_started
+                if unowned_terminal:
+                    # This turn has shown no work of its own, so this result
+                    # cannot be shown to be its own. It is counted and named —
+                    # that is the number the observation window reads — and it
+                    # is not credited as labour, so a turn that only ever saw
+                    # unowned arrivals stays in the zero-content class and is
+                    # reaped by the 30 s fast kill instead of drifting out to
+                    # the 600 s ceiling (the same rule the cast frame follows).
+                    self.foreign_terminal_frames += 1
+                    logger.warning(
+                        "Claude unowned terminal frame in-turn "
+                        "session_id={} turn_id={} scheduled={} "
+                        "foreign_total={} status={} reason={}",
+                        session.session_id,
+                        turn_id,
+                        scheduled,
+                        self.foreign_terminal_frames,
+                        terminal_message.status,
+                        terminal_message.reason,
+                    )
+                elif terminal_message is not None:
+                    turn_started = True
+                elif message is cast_frame or (
+                    counts_as_labour
+                    and not (
+                        role == "user"
+                        and client.prompt_uuid is not None
+                        and native_message_id == client.prompt_uuid
+                    )
+                ):
+                    # A cast turn starts at its cast; a prompted turn starts at
+                    # the first frame of WORK it owns. The prompt echo is
+                    # excluded on purpose: the echo is the connector's own
+                    # prompt coming back, not the turn doing anything, and a
+                    # leftover result can arrive right behind it (the reconnect
+                    # replay). "Once the turn has spoken" is the proof; the echo
+                    # is not speech.
+                    turn_started = True
+                # Everything downstream that asks "did this frame prove the turn
+                # did work" must also answer no for an unowned arrival: passive
+                # by definition, exactly like the cast frame above.
+                counts_this_frame = counts_as_labour and not unowned_terminal
                 tool_items = self.timeline.tool_items_for_message(
                     session=session,
                     turn_id=turn_id,
@@ -1138,7 +1251,7 @@ class ClaudeTurnRunner:
                 # turns the suite red instead of silently under-counting into a
                 # false kill.
                 if (
-                    counts_as_labour
+                    counts_this_frame
                     and not _is_wire_chrome(message)
                     and (
                         is_stream_event(message)
@@ -1170,7 +1283,7 @@ class ClaudeTurnRunner:
                     await self.publish_items(
                         execution,
                         (stream_item,),
-                        counted=counts_as_labour,
+                        counted=counts_this_frame,
                     )
                 if is_stream_event(message):
                     continue
@@ -1196,16 +1309,17 @@ class ClaudeTurnRunner:
                                         revision=stream_accumulator.next_final_revision(),
                                     ),
                                 ),
-                                counted=counts_as_labour,
+                                counted=counts_this_frame,
                             )
                             emitted_final_assistant_content = True
                             stream_accumulator.reset()
-                    break
+                    if not unowned_terminal and counts_as_labour:
+                        break
                 await self.publish_items(
-                    execution, tool_items, counted=counts_as_labour
+                    execution, tool_items, counted=counts_this_frame
                 )
                 await self.publish_items(
-                    execution, system_items, counted=counts_as_labour
+                    execution, system_items, counted=counts_this_frame
                 )
                 if compact_event is not None:
                     await self.publish_items(
@@ -1217,7 +1331,7 @@ class ClaudeTurnRunner:
                                 event=compact_event,
                             ),
                         ),
-                        counted=counts_as_labour,
+                        counted=counts_this_frame,
                     )
                 if suppressed_control:
                     continue
@@ -1243,7 +1357,7 @@ class ClaudeTurnRunner:
                             else 1,
                         ),
                     ),
-                    counted=counts_as_labour,
+                    counted=counts_this_frame,
                 )
                 if role == "assistant":
                     emitted_final_assistant_content = True

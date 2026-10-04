@@ -46,7 +46,10 @@ import Testing
             params: .object(["stuckSeconds": .number(600), "interruptedBackgroundTaskCount": .number(0)])
         )
         #expect(bare.params == nil)
-        #expect(loaded.params?["stuckSeconds"]?.stringValue == nil)
+        // The payload must really arrive, as given — `stringValue` is not the
+        // right probe here: JSONValue deliberately stringifies numbers and
+        // bools, so a numeric detail always reads as "600.0" text.
+        #expect(loaded.params?["stuckSeconds"] == .number(600))
         #expect(RuntimeLocalizedCopy.runtimeErrorText(code: bare.code, params: bare.params)
                 == RuntimeLocalizedCopy.runtimeErrorText(code: loaded.code, params: loaded.params))
     }

@@ -104,6 +104,11 @@ CONTENTING_TURN_WATCHDOG_SECONDS = 600.0
 # G4: why the breaker fired. The two values are the whole diagnosis of a
 # watchdog log line, so they are named once and reused by the fire line, the
 # retirement-skip line and the fatal-close line.
+# F1: the `terminalReason` a turn carries when its `completed` was downgraded
+# because the result could not be attributed to it. It reaches the client's turn
+# ledger verbatim, so the condition is visible rather than silently rewritten.
+STALE_COMPLETION_REASON = "unowned_result_no_content"
+
 WATCHDOG_REASON_ZERO_CONTENT = "zero_content_fast_kill"
 WATCHDOG_REASON_CONTENT_CEILING = "containing_turn_ceiling"
 
@@ -139,6 +144,11 @@ class ClaudeTurnRunner:
     # .absorbed_terminal_frames`: the two are the same leak seen at its two
     # entry points (the reader refusing to mint, the turn refusing to settle).
     foreign_terminal_frames: int = field(default=0, init=False)
+    # F1/F6: turns whose `completed` was downgraded to `interrupted` because
+    # they settled on a result they could not attribute. Zero in normal
+    # operation; non-zero means the P1 ghost shape reached a live turn, which
+    # is the one number the observation window should alarm on.
+    stale_completion_downgrades: int = field(default=0, init=False)
     stopping: bool = False
     markers: ClaudeTimelineMarkers = field(init=False)
     scheduled_sessions: ClaudeScheduledSessions = field(init=False)
@@ -1212,12 +1222,21 @@ class ClaudeTurnRunner:
                 unowned_terminal = terminal_message is not None and not turn_started
                 if unowned_terminal:
                     # This turn has shown no work of its own, so this result
-                    # cannot be shown to be its own. It is counted and named —
-                    # that is the number the observation window reads — and it
-                    # is not credited as labour, so a turn that only ever saw
-                    # unowned arrivals stays in the zero-content class and is
-                    # reaped by the 30 s fast kill instead of drifting out to
-                    # the 600 s ceiling (the same rule the cast frame follows).
+                    # cannot be shown to be its own. Counted and named, and not
+                    # credited as labour (the same rule the cast frame follows:
+                    # a passive arrival is not evidence the turn worked).
+                    #
+                    # It does NOT stop the turn from ending — see the gate's note
+                    # above for why that is not available — but it does decide
+                    # HOW the turn ends. Settling `completed` on a result the
+                    # turn cannot own is the P1 symptom verbatim: the client is
+                    # told the turn succeeded, the real reply never arrives (it
+                    # is still behind the frame that was just swallowed), and the
+                    # user is looking at an idle session with nothing to show.
+                    # So an unowned terminal on a turn that produced nothing
+                    # settles as `interrupted` with a structured reason instead:
+                    # "this round produced nothing" is what actually happened,
+                    # and saying so is both honest and re-sendable.
                     self.foreign_terminal_frames += 1
                     logger.warning(
                         "Claude unowned terminal frame in-turn "
@@ -1230,8 +1249,6 @@ class ClaudeTurnRunner:
                         terminal_message.status,
                         terminal_message.reason,
                     )
-                elif terminal_message is not None:
-                    turn_started = True
                 elif message is cast_frame or (
                     counts_as_labour
                     and not (
@@ -1349,7 +1366,11 @@ class ClaudeTurnRunner:
                 if is_stream_event(message):
                     continue
                 if terminal_message is not None:
-                    terminal = terminal_message
+                    terminal = self._verdict_for_terminal(
+                        execution=execution,
+                        terminal=terminal_message,
+                        unowned=unowned_terminal,
+                    )
                     if not emitted_final_assistant_content:
                         text = message_text(message)
                         if text:
@@ -1559,6 +1580,68 @@ class ClaudeTurnRunner:
                     "Claude reasoning flush failed session_id={}",
                     session.session_id,
                 )
+
+    def _verdict_for_terminal(
+        self,
+        execution: ClaudeExecution,
+        terminal: ClaudeTerminalEvent,
+        *,
+        unowned: bool,
+    ) -> ClaudeTerminalEvent:
+        """Downgrade a `completed` this turn cannot own, and say why.
+
+        The invariant a turn settles on: a terminal frame ends exactly one turn,
+        the one that can prove it started it. When the proof is missing,
+        `completed` is a lie with consequences — the
+        client shows the turn succeeded, the reply that is still behind the
+        swallowed frame never arrives, and the user is looking at an idle
+        session with an empty composer. That is the 2026-10-04 P1 report
+        verbatim, and it survived I1 because I1 only guards the MINT path: this
+        frame was already inside a live turn.
+
+        So the verdict is degraded, not suppressed. `interrupted` with a
+        structured reason says exactly what happened — this round produced
+        nothing — and it is a state the user can act on (re-send) rather than
+        one that invites them to wait for a reply that is never coming. The
+        reason string is what the client's `terminalReason` carries, so the
+        condition is visible in the turn ledger instead of being swallowed here.
+
+        Cost, stated plainly: a genuine empty reply — a turn whose whole stream
+        is its own result — is indistinguishable from this and is degraded too.
+        That is the deliberate trade (pp, red team F1): to the user both are
+        "this round produced nothing", and reporting one of them as a success
+        is the failure mode being fixed.
+
+        Only `completed` is degraded. `failed` and `interrupted` are already
+        honest about a round that went nowhere, and rewriting them would destroy
+        the failure visibility the pending branch exists to preserve.
+
+        The counter is the observation window's actionable number:
+        `stale_completion_downgrades` is zero in normal operation, and non-zero
+        only when a turn was reported as successful on a result it could not
+        prove was its own — which is the P1 defect, by definition. (F6: the
+        raw `foreign_terminal_frames` cannot carry that job, because a
+        legitimate empty reply increments it too.)
+        """
+
+        if terminal.status != "completed" or not unowned:
+            return terminal
+        # No separate "and the turn produced nothing" test, and that is a
+        # measured decision rather than an omission: it cannot be reached. Any
+        # frame that counts as work also opens the start gate above (every
+        # counted shape is a non-terminal one), so an unowned terminal already
+        # implies a turn that consumed nothing. Writing the check anyway made
+        # it a guard with no failing input — the thing red team F7 flagged in B
+        # — and a guard nobody can trip is a comment that lies about what the
+        # code guarantees.
+        self.stale_completion_downgrades += 1
+        logger.warning(
+            "Claude completed downgraded to interrupted: turn settled on a "
+            "result it could not attribute turn_id={} downgrades={}",
+            execution.turn_id,
+            self.stale_completion_downgrades,
+        )
+        return interrupted_terminal_event(STALE_COMPLETION_REASON)
 
     async def publish_items(
         self,

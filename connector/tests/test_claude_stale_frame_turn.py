@@ -89,6 +89,7 @@ from connector.runtimes.claude.sdk.connection import (
 )
 from connector.runtimes.claude.timeline.messages import stable_tool_item_id
 from connector.runtimes.claude.turns import lifecycle
+from connector.runtimes.claude.turns.lifecycle import STALE_COMPLETION_REASON
 
 SESSION = "b5a5f0a4-2c17-4f8e-9a6b-1d0e7c4b9a21"
 
@@ -366,10 +367,13 @@ def test_pending_without_a_wire_uuid_still_takes_a_result() -> None:
             await asyncio.wait_for(session.active_task, 5)
 
             connection = runtime._turns.runner.connections["first"]
-            assert connection.absorbed_terminal_frames == 0
+            assert connection.absorbed_terminal_frames == 0, "selected, not absorbed"
             assert [end["outcome"] for end in host.session_turn_ends] == [
-                "completed"
+                "interrupted"
             ]
+            assert host.session_turn_ends[-1]["metadata"]["terminalReason"] == (
+                STALE_COMPLETION_REASON
+            )
         finally:
             await runtime.stop()
 
@@ -413,17 +417,19 @@ class _ResidualAfterEchoClient(_ScheduledClaudeClient):
         await self._complete_query(content)
 
 
-def test_unowned_in_turn_terminal_is_counted_for_the_observation_window() -> None:
-    """The residue B exists to make visible: counted, named, not credited.
+def test_in_turn_residual_never_reports_a_plain_completed() -> None:
+    """F1, the blocking half: the residual cannot pass itself off as success.
 
-    修前红 / 修后绿 on the counter itself: with the gate removed this stays 0 and
-    the occurrence is invisible in production, which is the whole reason the
-    in-turn case was left measurable rather than silently tolerated.
+    修前红: the turn settled `completed` with no `terminalReason`, the client's
+    reply never arrived, and the user was left looking at an idle session with
+    an empty composer — the P1 report verbatim. I1 does not help here: this
+    frame was already inside a LIVE turn, so the mint path never runs.
 
-    The turn still settles on the frame — see the gate's note in
-    `drive_turn`: a leftover result and an empty reply are the same shape by the
-    time they reach a turn, so refusing to settle it would hang real replies.
-    I1 closes the entry point that stage 1 actually reproduced.
+    The turn cannot simply refuse to settle (a leftover result and an empty
+    reply are the same shape by the time they reach a turn, and refusing hangs
+    real replies). So it settles honestly instead: `interrupted`, carrying the
+    structured reason that names the condition, on a counter that is zero in
+    normal operation.
     """
 
     async def run() -> None:
@@ -435,22 +441,80 @@ def test_unowned_in_turn_terminal_is_counted_for_the_observation_window() -> Non
             session = runtime._sessions["inturn"]
             await asyncio.wait_for(session.active_task, 5)
             runner = runtime._turns.runner
-            assert runner.foreign_terminal_frames == 0
+            assert runner.stale_completion_downgrades == 0
 
             await runtime.start_turn("inturn", None, "second")
             await asyncio.wait_for(session.active_task, 5)
 
-            assert [end["outcome"] for end in host.session_turn_ends] == [
-                "completed",
-                "completed",
-            ]
+            ends = host.session_turn_ends
+            assert [end["outcome"] for end in ends] == ["completed", "interrupted"]
+            assert ends[-1]["metadata"]["terminalReason"] == STALE_COMPLETION_REASON
+            assert runner.stale_completion_downgrades == 1
             assert runner.foreign_terminal_frames == 1
-            # `session.execution` is deliberately NOT asserted empty here: the
-            # frames the premature settle orphaned (this turn's own reply and
-            # result) reach the reader at silence afterwards, and an assistant
-            # frame at silence is the legitimate scheduled-wakeup mint. That
-            # tail is another reason the entry point (I1) is where the fix
-            # belongs, not the settle side.
+            # The turn's own frames never reached the timeline, which is the
+            # point: the user is told "this round produced nothing" instead of
+            # being told it succeeded and then waiting for a reply that the
+            # swallowed frame displaced.
+            texts = [
+                str(item.content.get("text", ""))
+                for item in host.timeline_item_upserts
+            ]
+            assert "reply:second" not in texts
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_a_turn_with_content_still_reports_its_own_result() -> None:
+    """The other half of F1, and the one that must not rot: real work, real verdict.
+
+    F1 degrades a `completed` only when the turn produced nothing. A turn that
+    actually did something keeps its verdict even if the frame it settled on was
+    the one it cannot prove — downgrading there would throw away a real answer
+    to fix a problem the answer does not have.
+    """
+
+    async def run() -> None:
+        client = _ResidualAfterEchoClient(BARE_SUCCESS_RESULT)
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            await runtime.start_turn("worked", None, "hello")
+            session = runtime._sessions["worked"]
+            await asyncio.wait_for(session.active_task, 5)
+
+            # A client whose reply arrives BEFORE the leftover result, so the
+            # turn has content by the time it settles.
+            class _WorkThenResidualClient(_ScheduledClaudeClient):
+                async def query(self, prompt: Any) -> None:
+                    if isinstance(prompt, str):
+                        await super().query(prompt)
+                        return
+                    async for message in prompt:
+                        content = message["message"]["content"]
+                        await self.incoming.put(
+                            UserMessage(uuid=message["uuid"], content=content)
+                        )
+                        await self.incoming.put(_parse(ASSISTANT_REPLY))
+                    await self.incoming.put(_parse(BARE_SUCCESS_RESULT))
+
+            worked = _WorkThenResidualClient()
+            host2 = _RecordingHost()
+            runtime2 = _runtime_with(host2, _single_client_factory(worked))
+            try:
+                await runtime2.start_turn("worked2", None, "hello")
+                session2 = runtime2._sessions["worked2"]
+                await asyncio.wait_for(session2.active_task, 5)
+                assert [e["outcome"] for e in host2.session_turn_ends] == ["completed"]
+                texts = [
+                    str(item.content.get("text", ""))
+                    for item in host2.timeline_item_upserts
+                ]
+                assert ASSISTANT_REPLY["message"]["content"][0]["text"] in texts
+                assert runtime2._turns.runner.stale_completion_downgrades == 0
+            finally:
+                await runtime2.stop()
         finally:
             await runtime.stop()
 
@@ -529,8 +593,16 @@ class _ResultOnlyClient(_ScheduledClaudeClient):
         await self.incoming.put(_parse(BARE_SUCCESS_RESULT))
 
 
-def test_empty_reply_turn_is_not_killed_by_the_start_gate() -> None:
-    """R1: a turn whose only frame is its result still completes, not fails."""
+def test_empty_reply_turn_settles_as_produced_nothing_not_as_success() -> None:
+    """F1's deliberate cost, pinned as the target semantics.
+
+    A turn whose whole stream is its own result cannot be told apart from a
+    leftover, so it is degraded too. What it must NOT be is reported as a
+    success: "this round produced nothing" is what happened, it leaves the
+    session idle and re-sendable, and it carries the reason. R1 still holds in
+    the sense that matters — the turn settles promptly instead of hanging until
+    a ceiling, and nothing is force-failed.
+    """
 
     async def run() -> None:
         client = _ResultOnlyClient()
@@ -542,8 +614,11 @@ def test_empty_reply_turn_is_not_killed_by_the_start_gate() -> None:
             await asyncio.wait_for(session.active_task, 5)
 
             assert [end["outcome"] for end in host.session_turn_ends] == [
-                "completed"
+                "interrupted"
             ]
+            assert host.session_turn_ends[-1]["metadata"]["terminalReason"] == (
+                STALE_COMPLETION_REASON
+            )
             assert host.session_state_updates[-1]["status"] == "idle"
             assert session.execution is None
             assert runtime._turns.runner.foreign_terminal_frames == 1
@@ -1284,5 +1359,89 @@ def test_settled_session_refresh_is_coalesced_and_returns_at_once() -> None:
             assert runner._pending_session_syncs == set()
         finally:
             await runner.stop()
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------
+# F3 · every terminal status is absorbed at silence, not just `completed`
+# --------------------------------------------------------------------------
+
+
+ABORTED_TAIL = {**BARE_SUCCESS_RESULT, "terminal_reason": "aborted_streaming"}
+
+
+def test_aborted_tail_at_silence_mints_no_turn_and_no_error_state() -> None:
+    """F3, the blocking half: `interrupted` tails mint nothing either.
+
+    修前红: a user stops, sends nothing, and ~32 s later the CLI's
+    `aborted_streaming` tail lands at silence. The guard only matched
+    `completed`, so this frame fell through to the mint branch — and the
+    resulting turn, whose only content IS the abort, was then refused by the
+    cast-frame position gate, exhausted its stream and published
+    `claude_stream_ended_without_result`. A session turned red with no user
+    action anywhere in it.
+
+    Both halves are asserted because either alone would be a partial fix: no
+    second turn, and no error state. The per-status breakdown is what makes the
+    counter usable (F6): this is an `interrupted` absorption, which is a normal
+    consequence of stopping, not the `completed` ghost shape.
+    """
+
+    async def run() -> None:
+        client = _ScheduledClaudeClient()
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            await runtime.start_turn("aborted", None, "hello")
+            session = runtime._sessions["aborted"]
+            await asyncio.wait_for(session.active_task, 5)
+            connection = runtime._turns.runner.connections["aborted"]
+            assert connection.current is None
+
+            await client.incoming.put(_parse(ABORTED_TAIL))
+            await asyncio.sleep(0.2)
+
+            assert len(host.session_turn_ends) == 1, "an abort tail minted a turn"
+            assert session.execution is None
+            assert session.queued_execution is None
+            assert host.session_state_updates[-1]["status"] == "idle"
+            assert connection.absorbed_terminal_frames == 1
+            assert connection.absorbed_terminal_by_status == {"interrupted": 1}
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_a_failed_tail_at_silence_mints_nothing_either() -> None:
+    """`failed` keeps its visibility through the PENDING branch, and nowhere else.
+
+    The red line is that a queued prompt whose CLI failed must still show that
+    failure — which is what `test_failed_result_still_reaches_the_pending_turn`
+    pins. With no pending to land on there is nothing to be visible to, so the
+    mint branch must not invent a turn to carry it: an invented failed turn is a
+    red bubble on a session the user never broke.
+    """
+
+    async def run() -> None:
+        client = _ScheduledClaudeClient()
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            await runtime.start_turn("failed_tail", None, "hello")
+            session = runtime._sessions["failed_tail"]
+            await asyncio.wait_for(session.active_task, 5)
+            connection = runtime._turns.runner.connections["failed_tail"]
+
+            await client.incoming.put(_parse(FAILED_RESULT))
+            await asyncio.sleep(0.2)
+
+            assert len(host.session_turn_ends) == 1
+            assert session.execution is None
+            assert host.session_state_updates[-1]["status"] == "idle"
+            assert connection.absorbed_terminal_by_status == {"failed": 1}
+        finally:
+            await runtime.stop()
 
     asyncio.run(run())

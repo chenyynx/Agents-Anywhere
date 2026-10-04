@@ -205,11 +205,20 @@ class ClaudeConnection:
     stuck_report_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # I1: foreign terminal frames absorbed at silence instead of minting a
     # scheduled turn (claude-stale-frame-turn-tasks.md §4). A counter, not a
-    # limit — the guard is an invariant, not a rate limiter — but it is the
-    # number the post-deploy observation window reads: any non-zero value is a
-    # real cross-turn leak, and a rising value means the CLI is shedding
-    # results this connector could never have attributed.
+    # limit — the guard is an invariant, not a rate limiter.
+    #
+    # It is ALSO not, on its own, a leak alarm, and the per-status breakdown
+    # exists because of that (red team F6, round 1). A turn whose only frame is
+    # its own result — an empty reply — is absorbed by exactly this path, so the
+    # raw total is non-zero in normal operation and a rate alarm on it would
+    # fire on day one. What separates "the CLI shed a result" from "a reply came
+    # back empty" is the status breakdown: `completed` at silence is the ghost
+    # shape (a leftover success that would have reported `completed` on the
+    # wrong turn), `interrupted` is the abort tail of a turn this connector
+    # stopped itself, and `failed` is a queued prompt's failure that found no
+    # pending to land on.
     absorbed_terminal_frames: int = 0
+    absorbed_terminal_by_status: dict[str, int] = field(default_factory=dict)
     # V9/L2 (claude-stale-frame-turn-tasks.md §4/§11): the reader loop must do
     # zero host round trips. Both projection callbacks below end in a host
     # upsert, and at 400 ms of host backpressure that parked the reader for
@@ -574,17 +583,31 @@ class ClaudeConnection:
                     # mints (findings §2.3). The trigger chain is not
                     # enumerable, so the guard cannot be either.
                     #
-                    # Scope, deliberately narrow ("guard narrow, never over-kill"):
-                    # only `completed` is absorbed. `failed` keeps selecting the
-                    # pending below — a queued prompt's failure must stay visible
-                    # (red line) — and `interrupted` keeps its existing route,
-                    # because the CLI emits `aborted_streaming` / `aborted_tools`
-                    # for turns this connector interrupted itself, and refusing
-                    # those would strand the pending.
-                    foreign_terminal = (
-                        terminal_event is not None
-                        and terminal_event.status == "completed"
-                    )
+                    # EVERY terminal is absorbed here, whatever its status.
+                    # `completed` was the obvious one; `interrupted` was not, and
+                    # it is worse than useless: the CLI emits `aborted_streaming`
+                    # / `aborted_tools` for turns this connector interrupted
+                    # itself, those frames land at silence seconds later, and
+                    # minting from one hands the lifecycle a turn whose only
+                    # content is the abort — which then either settles as a
+                    # bogus `interrupted` or, once the cast-frame position gate
+                    # refuses it, exhausts its stream and turns the session red
+                    # (`claude_stream_ended_without_result`) with no user action
+                    # anywhere. Red team F3, round 1.
+                    #
+                    # `failed` is absorbed from the MINT path too, and keeps its
+                    # visibility through the pending branch above — which runs
+                    # first: a queued prompt whose CLI failed must still surface
+                    # that failure (red line), and that path routes the frame
+                    # into the pending response rather than casting a new turn.
+                    #
+                    # Note what is deliberately NOT special-cased here: the
+                    # pending selection is left exactly as it was. A pending
+                    # with no wire uuid is a prompt submitted on this
+                    # transport's first turn, before the reader has ever yielded
+                    # a frame, so no earlier turn's result can be in flight to
+                    # hijack it (red team could not falsify this, and proved
+                    # the two rebuild entry points set `queried` explicitly).
                     if self.pending is not None and (
                         self.pending.user_id is None
                         or (
@@ -595,11 +618,9 @@ class ClaudeConnection:
                             terminal_event is not None
                             and terminal_event.status == "failed"
                         )
-                    ) and not (
-                        foreign_terminal and self.pending.user_id is not None
                     ):
                         await self.select_response(self.pending)
-                    elif foreign_terminal:
+                    elif terminal_event is not None:
                         # Absorbed. NOT appended to `preamble`: preamble is
                         # flushed into the queue of whichever response is
                         # selected next (lines 490-493), so parking a terminal
@@ -607,12 +628,13 @@ class ClaudeConnection:
                         # frame" — the very ghost this guard exists to kill, by
                         # the back door. There is also nothing to preserve: a
                         # result carries no context the CLI will not replay.
-                        #
-                        # A pending without a wire uuid is exempt above: that is
-                        # a prompt submitted on this transport's first turn,
-                        # before the reader has ever yielded a frame, so no
-                        # earlier turn's result can still be in flight here.
                         self.absorbed_terminal_frames += 1
+                        self.absorbed_terminal_by_status[terminal_event.status] = (
+                            self.absorbed_terminal_by_status.get(
+                                terminal_event.status, 0
+                            )
+                            + 1
+                        )
                         logger.warning(
                             "Claude foreign terminal frame absorbed at silence "
                             "session_pending={} absorbed_total={} status={} "

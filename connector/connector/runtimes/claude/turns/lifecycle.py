@@ -107,6 +107,36 @@ CONTENTING_TURN_WATCHDOG_SECONDS = 600.0
 WATCHDOG_REASON_ZERO_CONTENT = "zero_content_fast_kill"
 WATCHDOG_REASON_CONTENT_CEILING = "containing_turn_ceiling"
 
+# G4's client-visible half (pp verdict, 2026-10-04, product-level —
+# .local-dev/ratelimit-fatal-retirement-notice-order.md §2 A). A killed process
+# needs its own code: `claude_scheduled_turn_timeout` reads "no result within
+# N seconds", which the user takes as "the model was slow", while the truth is
+# "the CLI process was terminated and every task running inside it ended". They
+# retry nothing and rescue nothing, because nothing in the old text says work
+# was lost.
+#
+# The disclosure is driven by the FACT that close() happened — never by the
+# ledger slot — so the watchdog limiter may be spent or not and the message
+# still reaches the user. `claude_scheduled_turn_timeout` keeps its own text and
+# its own path: a turn that timed out WITHOUT a close is a different incident.
+CLAUDE_PROCESS_RETIRED_CODE = "claude_process_retired"
+CLAUDE_PROCESS_RETIRED_SOURCE = "claude.process.retired"
+
+# Kept in the connector so a client that has not shipped the localized copy yet
+# still shows something true rather than an empty or raw-JSON error.
+PROCESS_RETIRED_MESSAGE = (
+    "The Claude process was terminated after failing to respond. This turn "
+    "produced no result and any running background tasks have ended. Please "
+    "try again."
+)
+# close() raised: the kill was attempted but never confirmed. Downgraded, not
+# silent — the turn is lost either way; only the certainty changed.
+PROCESS_RETIRED_UNCONFIRMED_MESSAGE = (
+    "The Claude process was terminated after failing to respond, but the "
+    "shutdown could not be confirmed. This turn produced no result. Please "
+    "try again."
+)
+
 
 @dataclass(slots=True)
 class ClaudeTurnRunner:
@@ -341,6 +371,10 @@ class ClaudeTurnRunner:
                 async with connection.stuck_report_lock:
                     connection.stuck_timeout_reports -= 1
 
+        # The budget the turn actually ran out of. Named once because three
+        # consumers depend on it agreeing: the failed terminal's text, the fire
+        # line, and the process-retirement disclosure's `stuckSeconds`.
+        stuck_budget = timeout if reason == WATCHDOG_REASON_ZERO_CONTENT else ceiling
         try:
             settled = await self.finish_execution(
                 session=session,
@@ -349,7 +383,7 @@ class ClaudeTurnRunner:
                     code="claude_scheduled_turn_timeout",
                     message=(
                         "Scheduled work did not report a result within "
-                        f"{int(timeout if reason == WATCHDOG_REASON_ZERO_CONTENT else ceiling)}"
+                        f"{int(stuck_budget)}"
                         " seconds"
                     ),
                     reason="scheduled_watchdog_timeout",
@@ -374,6 +408,7 @@ class ClaudeTurnRunner:
             response,
             reason=reason,
             client_reported=publish,
+            stuck_seconds=stuck_budget,
         )
 
     async def retire_stuck_transport(
@@ -384,6 +419,7 @@ class ClaudeTurnRunner:
         *,
         reason: str | None = None,
         client_reported: bool = True,
+        stuck_seconds: float | None = None,
     ) -> None:
         """Retire everything the stuck turn left behind on its connection.
 
@@ -461,6 +497,13 @@ class ClaudeTurnRunner:
         # 13:49 exactly this branch fired on a rate-limited watchdog
         # (`stuck_timeout_reports` already spent) and left no server-side trace
         # of a killed process anywhere. Server WARNING, not a ledger report.
+        #
+        # Snapshotted before the close so the disclosure below reports what was
+        # in the process at the moment it was killed. It is 0 on the ordinary
+        # path — the L1 gate above already returned when background work was
+        # live — and non-zero only when the transport was failing or closing,
+        # which is exactly when the user needs to be told work was cut.
+        interrupted_background_tasks = len(connection.background.active_ids)
         logger.warning(
             "Claude stuck transport retirement is FATAL: closing the host CLI "
             "process and every subagent in it session_id={} turn_id={} "
@@ -480,6 +523,78 @@ class ClaudeTurnRunner:
                 "Claude stuck transport retirement failed session_id={}: {}",
                 session.session_id,
                 exc,
+            )
+            # Not confirmed, not silent: the turn is lost either way, and a
+            # user who is told "still working" when the kill was attempted is
+            # worse off than one told the truth.
+            await self._disclose_process_retirement(
+                session,
+                stuck_seconds=stuck_seconds,
+                interrupted_background_tasks=interrupted_background_tasks,
+                confirmed=False,
+            )
+            return
+        await self._disclose_process_retirement(
+            session,
+            stuck_seconds=stuck_seconds,
+            interrupted_background_tasks=interrupted_background_tasks,
+            confirmed=True,
+        )
+
+    async def _disclose_process_retirement(
+        self,
+        session: ClaudeSession,
+        *,
+        stuck_seconds: float | None,
+        interrupted_background_tasks: int | None,
+        confirmed: bool,
+    ) -> None:
+        """Tell the user the host process died, whatever the limiters decided.
+
+        This sits outside every gate on the retirement path, and that is the
+        whole point of it. `publish` decides whether a failed TURN reaches the
+        ledger; `update_state` decides who owns the session status. Neither has
+        anything to do with "the CLI process was just killed", and on
+        2026-10-03 13:49 that gap produced a killed process whose only trace
+        was a WARNING line no user will ever read. So this disclosure is driven
+        by the close itself and therefore fires on every retirement: with the
+        ledger slot spent or not, and for a queued execution that never owned
+        the status (`update_state=False`).
+
+        It is deliberately NOT reached when the L1 gate withholds the kill —
+        `retire_stuck_transport` returns before the close, so nothing was
+        retired and nothing is disclosed. A disclosure that fires when the
+        process survived would teach users to distrust it.
+
+        Failures are logged and swallowed: by the time this runs the turn is
+        already settled and the process already dead, so a host I/O error must
+        not escalate into a second incident on top of the first.
+        """
+
+        params: dict[str, Any] = {"retirementConfirmed": confirmed}
+        if stuck_seconds is not None:
+            params["stuckSeconds"] = int(stuck_seconds)
+        if interrupted_background_tasks is not None:
+            params["interruptedBackgroundTaskCount"] = interrupted_background_tasks
+        try:
+            await self.notifications.session_state.session_state_update(
+                session,
+                "error",
+                error={
+                    "code": CLAUDE_PROCESS_RETIRED_CODE,
+                    "message": (
+                        PROCESS_RETIRED_MESSAGE
+                        if confirmed
+                        else PROCESS_RETIRED_UNCONFIRMED_MESSAGE
+                    ),
+                    "params": params,
+                },
+                metadata={"source": CLAUDE_PROCESS_RETIRED_SOURCE},
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Claude process retirement disclosure failed session_id={}",
+                session.session_id,
             )
 
     async def reclaim_idle_connection(

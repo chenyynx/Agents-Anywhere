@@ -39,6 +39,8 @@ P0 there).
 from __future__ import annotations
 
 import asyncio
+import time
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -48,11 +50,30 @@ from test_claude_compact_ghost import (
     _runtime_with,
     _single_client_factory,
     _turn_ends,
+    _wait_until,
 )
+from test_claude_subagent_progress import (
+    DISPATCH_TUID,
+    TASK_ID,
+    WIRE_TASK_PROGRESS_FIRST,
+    WIRE_TASK_STARTED,
+    _card_agents,
+    _DispatchClient,
+    _start_dispatch,
+)
+
+
+async def _never(_arg: Any = None) -> None:
+    return None
 from test_claude_runtime import _RecordingHost, _ScheduledClaudeClient
 
 from connector.runtimes.claude.domain.session import ClaudeExecution
-from connector.runtimes.claude.sdk.connection import ClaudeResponse
+from connector.runtimes.claude.sdk import connection as connection_module
+from connector.runtimes.claude.sdk.connection import (
+    ClaudeConnection,
+    ClaudeResponse,
+)
+from connector.runtimes.claude.timeline.messages import stable_tool_item_id
 from connector.runtimes.claude.turns import lifecycle
 
 SESSION = "b5a5f0a4-2c17-4f8e-9a6b-1d0e7c4b9a21"
@@ -497,5 +518,200 @@ def test_empty_reply_turn_is_not_killed_by_the_start_gate() -> None:
             assert runtime._turns.runner.foreign_terminal_frames == 1
         finally:
             await runtime.stop()
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------
+# V9/L2 · the reader loop does no host round trips
+# --------------------------------------------------------------------------
+
+
+class _SlowHost(_RecordingHost):
+    """A host that is slow on every timeline upsert — the backpressure knob.
+
+    Stage 1 modelled the real server's session-lock quantum with exactly this
+    shape (`HOST_DELAY_MS` in the harness). It is the one variable that turned
+    a 2.96 s reader into a 271.66 s one, so it is the one variable the unit
+    test has to be able to apply.
+    """
+
+    def __init__(self, delay: float) -> None:
+        super().__init__()
+        self.delay = delay
+        self.upserts = 0
+
+    async def timeline_item_upsert(self, item: Any) -> None:
+        self.upserts += 1
+        await asyncio.sleep(self.delay)
+        await super().timeline_item_upsert(item)
+
+
+class _TimedDispatchClient(_DispatchClient):
+    """Records when the READER pulled each frame off the transport.
+
+    `receive_messages` is the reader's own source, so its timestamps measure the
+    reader and nothing else — the turn consumes a different queue. That is what
+    makes "the reader did not stall" an observation rather than an inference.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.consumed_at: list[float] = []
+
+    async def receive_messages(self):
+        while True:
+            message = await self.incoming.get()
+            self.consumed_at.append(time.monotonic())
+            if isinstance(message, Exception):
+                raise message
+            yield message
+
+
+def _card_tokens(host: Any, card_id: str) -> int | None:
+    """The card's token total — usage lives on the card, not in the agents map."""
+
+    items = [item for item in host.timeline_item_upserts if item.id == card_id]
+    return dict(items[-1].content.get("usage") or {}).get("tokens") if items else None
+
+
+def _progress_frame(index: int) -> dict[str, Any]:
+    """A distinct progress frame — a repeat is idempotent and would not publish."""
+
+    return {
+        **WIRE_TASK_PROGRESS_FIRST,
+        "usage": {"total_tokens": 40000 + index, "tool_uses": 1, "duration_ms": 1},
+        "uuid": f"progress-{index}",
+    }
+
+
+def test_slow_host_does_not_stall_the_reader_loop() -> None:
+    """The amplifier, at unit scale: 12 x 50 ms of host, zero reader stall.
+
+    Stage-1 V9 vs V11 is the whole reason this queue exists: on the FIXED tree
+    the reader stalled 271.66 s where upstream managed 2.96 s, because it
+    awaited a host upsert per task event, and while it was stalled it cast a
+    ghost and pushed the human turn into `queued_execution`. Awaiting this burst
+    inline costs 12 x 50 ms = 600 ms of reader time; deferred, the reader must
+    be done with it in a fraction of that.
+    """
+
+    delay = 0.05
+    burst = 12
+
+    async def run() -> None:
+        client = _TimedDispatchClient()
+        host = _SlowHost(delay)
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            session = await _start_dispatch(runtime)
+            card_id = stable_tool_item_id(session, DISPATCH_TUID)
+            await client.incoming.put(_parse(WIRE_TASK_STARTED))
+            # The async receipt already seeds an agents entry under this task
+            # id, so the binding proof is the fold's own field — waiting on the
+            # key would pass before `task_started` had been folded.
+            await _wait_until(
+                lambda: "subagentType"
+                in _card_agents(host, card_id).get(TASK_ID, {})
+            )
+
+            connection = runtime._turns.runner.connections["sub_progress"]
+            mark = len(client.consumed_at)
+            fed_at = time.monotonic()
+            for index in range(burst):
+                await client.incoming.put(_parse(_progress_frame(index)))
+
+            await _wait_until(
+                lambda: len(client.consumed_at) >= mark + burst, timeout=5
+            )
+            elapsed = client.consumed_at[mark + burst - 1] - fed_at
+            assert elapsed < burst * delay / 2, (
+                f"reader took {elapsed:.3f}s for {burst} frames; awaiting the "
+                f"host inline costs {burst * delay:.3f}s"
+            )
+            assert connection.deferred_dropped_events == 0
+            # The work still lands, in order, once the host catches up.
+            await _wait_until(lambda: _card_tokens(host, card_id) == 40000 + burst - 1)
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_overflow_drops_the_oldest_event_and_keeps_the_newest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Backpressure has to end somewhere, and it must not end the reader.
+
+    When the host cannot keep up, a progress row it has not seen yet is already
+    behind whatever the CLI said after it. Dropping the oldest keeps the tail —
+    the state the user is watching — and the drop is counted, because a silently
+    lossy display is worse than a visible one.
+    """
+
+    monkeypatch.setattr(connection_module, "DEFERRED_EVENT_QUEUE_MAXSIZE", 3)
+
+    async def run() -> None:
+        client = _TimedDispatchClient()
+        host = _SlowHost(0.05)
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            session = await _start_dispatch(runtime)
+            card_id = stable_tool_item_id(session, DISPATCH_TUID)
+            await client.incoming.put(_parse(WIRE_TASK_STARTED))
+            # The async receipt already seeds an agents entry under this task
+            # id, so the binding proof is the fold's own field — waiting on the
+            # key would pass before `task_started` had been folded.
+            await _wait_until(
+                lambda: "subagentType"
+                in _card_agents(host, card_id).get(TASK_ID, {})
+            )
+
+            connection = runtime._turns.runner.connections["sub_progress"]
+            for index in range(12):
+                await client.incoming.put(_parse(_progress_frame(index)))
+
+            await _wait_until(
+                lambda: connection.deferred_dropped_events > 0, timeout=5
+            )
+            await _wait_until(
+                lambda: _card_tokens(host, card_id) == 40000 + 11, timeout=5
+            )
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_a_failing_projection_never_poisons_the_worker() -> None:
+    """One bad callback must not stop every later event from projecting.
+
+    The L1 lesson again, in its V9 form: the worker is a display path, so a
+    failure there is logged and skipped rather than allowed to end the worker —
+    which would silently stop the SubAgent panel for the rest of the transport.
+    """
+
+    seen: list[str] = []
+    boom = RuntimeError("host rejected the upsert")
+
+    async def flaky(event: Any) -> None:
+        if event == "bad":
+            raise boom
+        seen.append(event)
+
+    async def run() -> None:
+        connection = ClaudeConnection(
+            client=SimpleNamespace(),
+            on_activity=_never,
+            on_idle=_never,
+            on_background_done=_never,
+            cleanup=lambda: None,
+            on_task_event=flaky,
+        )
+        connection.defer_event(flaky, "bad")
+        connection.defer_event(flaky, "good")
+        await _wait_until(lambda: seen == ["good"])
+        await connection._stop_deferred_events()
+        assert connection.deferred_dropped_events == 0
 
     asyncio.run(run())

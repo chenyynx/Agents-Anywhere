@@ -37,6 +37,15 @@ from connector.runtimes.claude.timeline.stream import is_stream_event
 
 RECONCILE_DONE_MARKER = "AA_MAINTENANCE_DONE"
 CONNECTION_CLOSE_TIMEOUT_SECONDS = 30
+# V9/L2: how many projection events one transport may hold while the host is
+# slow. Sized for a burst of subagent progress, not for backpressure: when the
+# host cannot keep up, the OLDEST event is dropped (a progress row that is
+# already stale is worth less than the ones that follow), the drop is counted
+# and warned, and the reader is never made to wait. The invariant being
+# protected is "the reader never stops reading the stream", so the queue must be
+# able to say no.
+DEFERRED_EVENT_QUEUE_MAXSIZE = 256
+DEFERRED_EVENT_WORKER_TIMEOUT_SECONDS = 5.0
 LEGACY_RECONCILE_PROMPT = (
     "AA connection maintenance: call CronList exactly once to report the current "
     "scheduled task list, then stop. If needed, use ToolSearch to find CronList. "
@@ -201,6 +210,18 @@ class ClaudeConnection:
     # real cross-turn leak, and a rising value means the CLI is shedding
     # results this connector could never have attributed.
     absorbed_terminal_frames: int = 0
+    # V9/L2 (claude-stale-frame-turn-tasks.md §4/§11): the reader loop must do
+    # zero host round trips. Both projection callbacks below end in a host
+    # upsert, and at 400 ms of host backpressure that parked the reader for
+    # 271.66 s against upstream's 2.96 s — while also letting it cast a ghost
+    # and push the human turn into `queued_execution` (stage-1 findings §2.2,
+    # V9 vs V11). Bounded queue + one drain worker per connection: the reader
+    # hands the event over and goes straight back to the stream.
+    deferred_event_queue: asyncio.Queue[Any] = field(
+        default_factory=lambda: asyncio.Queue(maxsize=DEFERRED_EVENT_QUEUE_MAXSIZE)
+    )
+    deferred_event_worker: asyncio.Task[None] | None = None
+    deferred_dropped_events: int = 0
 
     @property
     def retained(self) -> bool:
@@ -232,6 +253,99 @@ class ClaudeConnection:
         self.idle_task = None
         if timer is not None and timer is not asyncio.current_task():
             timer.cancel()
+
+    def defer_event(self, callback: Awaitable[Any] | None, event: Any) -> None:
+        """Hand one projection event to the drain worker without awaiting it.
+
+        The reader calls this instead of awaiting the callback. That is the whole
+        point: the reader's job is to read the CLI's stream, and both callbacks
+        end in a host upsert whose latency is the server's business, not the
+        stream's. Ordering is preserved by the single worker, so the events this
+        defers still reach the timeline in the order the CLI produced them.
+
+        Overflow drops the OLDEST event: a progress row the host has not seen
+        yet is already behind whatever the CLI said after it, and stalling the
+        reader to preserve it would trade a cosmetic lag for the ghost this
+        whole queue exists to prevent. Drops are counted and warned so the
+        observation window can see backpressure rather than infer it.
+        """
+
+        if callback is None:
+            return
+        worker = self.deferred_event_worker
+        if worker is None or worker.done():
+            worker = asyncio.create_task(self._drain_deferred_events())
+            self.deferred_event_worker = worker
+        queue = self.deferred_event_queue
+        if queue.full():
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:  # pragma: no cover - single consumer
+                pass
+            self.deferred_dropped_events += 1
+            logger.warning(
+                "Claude deferred projection event dropped on overflow "
+                "dropped_total={} queue_max={}",
+                self.deferred_dropped_events,
+                queue.maxsize,
+            )
+        queue.put_nowait((callback, event))
+
+    async def _drain_deferred_events(self) -> None:
+        """Project queued events, one at a time, in order.
+
+        Nothing in here may mint or select a turn: these are display-only
+        projections, and the worker's whole reason to exist is that they are not
+        worth a round trip on the reader's hot path. A failing callback is
+        logged and skipped — the L1 lesson again: nothing on this path may take
+        a transport down, and a poisoned worker would silently stop projecting
+        every later event too.
+        """
+
+        queue = self.deferred_event_queue
+        while True:
+            callback, event = await queue.get()
+            try:
+                await callback(event)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Claude deferred projection event failed",
+                )
+
+    async def _stop_deferred_events(self) -> None:
+        """Retire the drain worker without letting shutdown wait on the host.
+
+        Cancelling first, then emptying the queue by hand: a worker cancelled
+        mid-host-call leaves whatever it was holding in flight, and calling back
+        into a host that is itself shutting down is exactly the hang this queue
+        was introduced to avoid. What is left is counted, not replayed.
+        """
+
+        worker = self.deferred_event_worker
+        self.deferred_event_worker = None
+        if worker is not None and worker is not asyncio.current_task():
+            worker.cancel()
+            await asyncio.wait(
+                (worker,), timeout=DEFERRED_EVENT_WORKER_TIMEOUT_SECONDS
+            )
+        queue = self.deferred_event_queue
+        remaining = 0
+        while True:
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            remaining += 1
+        if remaining:
+            self.deferred_dropped_events += remaining
+            logger.warning(
+                "Claude deferred projection events discarded on close "
+                "discarded={} dropped_total={}",
+                remaining,
+                self.deferred_dropped_events,
+            )
 
     def arm_idle(self) -> None:
         if (
@@ -414,10 +528,16 @@ class ClaudeConnection:
                     # discarded later as unprojectable; at silence they were
                     # absorbed outright). The fold itself only publishes the
                     # Agent card and must not mint anything.
+                    #
+                    # V9/L2: handed to the drain worker, not awaited here. The
+                    # fold ends in a host upsert, and at 400 ms of host
+                    # backpressure awaiting it parked the reader for 271.66 s
+                    # (upstream: 2.96 s) — long enough for it to cast a ghost
+                    # and push the human turn into `queued_execution`.
                     if self.on_task_event is not None:
                         agent_event = task_event_from_message(message)
                         if agent_event is not None:
-                            await self.on_task_event(agent_event)
+                            self.defer_event(self.on_task_event, agent_event)
                 background_activity = is_background_activity(message)
                 if background_activity:
                     # Frames parented to a tool use are activity *inside* a
@@ -536,9 +656,10 @@ class ClaudeConnection:
                             # is the strict complement of the in-turn queue
                             # below, so no frame is projected twice, and the
                             # callback publishes items only — still no turn is
-                            # minted here.
-                            if self.on_background_frame is not None:
-                                await self.on_background_frame(message)
+                            # minted here. V9/L2: deferred, same reason as the
+                            # task-event fold above — same-shape host round
+                            # trip on the reader's hot path.
+                            self.defer_event(self.on_background_frame, message)
                             continue
                         # The mint branch: this frame is about to cast a
                         # scheduled turn, so it is stamped as the response's
@@ -588,6 +709,9 @@ class ClaudeConnection:
             if self.background_done_task is not None:
                 self.background_done_task.cancel()
             self.ready.set()
+            # V9/L2: stop the drain worker before the transport goes away, so a
+            # projection in flight cannot call back into a host that is closing.
+            await self._stop_deferred_events()
             try:
                 await disconnect_client(self.client)
             finally:
@@ -624,5 +748,10 @@ class ClaudeConnection:
         finally:
             # A slow SDK disconnect can continue in its owning reader task,
             # but must not keep an expired response or block its replacement.
+            # V9/L2: the same goes for the drain worker — a reader task that
+            # timed out above is still running, so only stop the worker if this
+            # call is not racing its own finally.
+            if self.deferred_event_worker is not None:
+                await self._stop_deferred_events()
             self.cleanup()
             await self._release_responses()

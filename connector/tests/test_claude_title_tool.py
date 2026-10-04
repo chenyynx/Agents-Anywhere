@@ -46,6 +46,8 @@ from connector.runtimes.claude.sdk.connection import ClaudeConnection
 from connector.runtimes.claude.sdk.title_tool import (
     TITLE_SERVER_NAME,
     TITLE_SYSTEM_PROMPT,
+    TITLE_TOOL_NAME,
+    TITLE_TOOL_WIRE_NAME,
     build_change_title_tool,
     is_title_tool_name,
     should_apply_model_title,
@@ -339,3 +341,80 @@ def test_before_tool_auto_allows_title_tool():
         assert await connection.before_tool({"tool_name": "Bash"}) == {}
 
     asyncio.run(exercise())
+
+
+# ---------------------------------------------------------------------------
+# Prompt/description must speak the tool's wire name (2026-10-04 regression)
+#
+# Production incident: the prompt named the bare ``change_title`` and told the
+# model to look for it with ``ToolSearch``, which CLI 2.1.285 does not expose.
+# Weak models then invented a wire name (``mcp__change-title``), the gateway
+# rejected the call, and the model reported "the tool isn't registered" to the
+# user. Both prompts now carry the exact wire name instead.
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_names_the_exact_wire_tool():
+    assert TITLE_TOOL_WIRE_NAME == "mcp__change-title__change_title"
+    assert TITLE_TOOL_WIRE_NAME in TITLE_SYSTEM_PROMPT
+
+
+def test_prompt_never_references_absent_tools():
+    # Sentinel: CLI 2.1.285's tool list has no ToolSearch, so the prompt must
+    # not send the model hunting for one. If a future CLI really does expose
+    # ToolSearch, this failure is the signal to re-evaluate the whole prompt.
+    assert "ToolSearch" not in TITLE_SYSTEM_PROMPT
+
+    # Nor may the prompt hand the model a short name it will paste into a call:
+    # every mention of the tool has to be the full wire name.
+    without_wire_name = TITLE_SYSTEM_PROMPT.replace(TITLE_TOOL_WIRE_NAME, "")
+    assert TITLE_TOOL_NAME not in without_wire_name
+
+    # A missing tool must degrade to "skip the title", not to a user-facing
+    # error report — that was the incident's actual user-visible symptom.
+    assert "skip" in TITLE_SYSTEM_PROMPT.lower()
+    assert "never tell the user" in TITLE_SYSTEM_PROMPT.lower()
+
+
+class _RecordingSdk:
+    """Minimal SDK surface capturing what ``build_change_title_tool`` asks for."""
+
+    def __init__(self) -> None:
+        self.tools: list[tuple[str, str, object]] = []
+
+    def tool(self, name: str, description: str, schema: object) -> Any:
+        self.tools.append((name, description, schema))
+
+        def decorator(fn: Any) -> Any:
+            return fn
+
+        return decorator
+
+    def create_sdk_mcp_server(self, *, name: str, version: str, tools: list) -> Any:
+        return (name, version, tools)
+
+    def rename_session(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+def test_tool_description_carries_the_wire_name():
+    sdk = _RecordingSdk()
+
+    async def dummy(_title: str) -> None:
+        return None
+
+    control = build_change_title_tool(
+        sdk,
+        session_id="sess-title-1",
+        current_title=lambda: None,
+        external_session_id=lambda: SESSION_UUID,
+        cwd=lambda: "/tmp",
+        on_applied=dummy,
+    )
+    assert control is not None
+
+    ((name, description, _schema),) = sdk.tools
+    assert name == TITLE_TOOL_NAME
+    # The description sits right next to the tool in the tool list — the last
+    # chance to name it the way the model must actually type it.
+    assert TITLE_TOOL_WIRE_NAME in description

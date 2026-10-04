@@ -142,6 +142,18 @@ enum SubAgentProgress {
         cards(in: items).filter(\.isTopLevel)
     }
 
+    /// One turn's page (pp 2026-10-05: 每轮都是新的页): the top-level cards
+    /// sharing the opening card's turn, so a dispatch point on an older turn
+    /// reopens that turn's page and a new dispatch opens the new one. Falls
+    /// back to the whole presented window when the anchor is gone or predates
+    /// `turnId` on the wire — the pre-scope behaviour, kept deliberately.
+    static func turnScopedTopLevelCards(in items: [V2TimelineItem], containing cardID: String?) -> [SubAgentCard] {
+        let all = topLevelCards(in: items)
+        guard let cardID, let turn = items.first(where: { $0.id == cardID })?.turnId else { return all }
+        let scoped = topLevelCards(in: items.filter { $0.turnId == turn })
+        return scoped.isEmpty ? all : scoped
+    }
+
     /// The card's child rows, in timeline order (tool, thinking and text rows
     /// the connector attributed with `content.parentItemId`).
     static func children(of cardID: String, in items: [V2TimelineItem]) -> [V2TimelineItem] {
@@ -164,7 +176,7 @@ enum SubAgentProgress {
             runningCount: running.count,
             hasFailure: hasLiveFailure(in: cards),
             singleTaskName: running.count == 1 ? running[0].taskName : nil,
-            firstRunningID: running.first?.id
+            latestRunningID: running.last?.id
         )
     }
 
@@ -261,7 +273,10 @@ struct SubAgentCapsuleState: Equatable {
     let runningCount: Int
     let hasFailure: Bool
     let singleTaskName: String?
-    let firstRunningID: String?
+    /// The newest running card. With per-turn pages (pp 2026-10-05) the
+    /// capsule opens the turn where the newest work lives, so a fresh
+    /// dispatch shows its own page instead of the oldest running one's.
+    let latestRunningID: String?
 
     var isVisible: Bool { runningCount > 0 }
 

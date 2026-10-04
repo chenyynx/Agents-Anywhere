@@ -3,7 +3,7 @@ import SwiftUI
 /// L2 (§3.2): the glass capsule above the composer that says a SubAgent is
 /// still running. Visibility is data-driven (a running top-level Agent card in
 /// the presented window) — never scroll or keyboard state. It is the first
-/// tinted glass in the app: smoked dark glass with a blue bot mark while
+/// tinted glass in the app: a light smoke with a blue bot mark while
 /// running, red glass with a red bot mark while the newest batch carries a
 /// failure — dispatching a new SubAgent clears older failures
 /// (`SubAgentProgress.hasLiveFailure`). Like the “到底部” pill, the capsule
@@ -42,10 +42,10 @@ struct SubAgentCapsule: View {
 
 /// The SubAgent concept colors, single point: running is blue, the semantic
 /// colors (green done / red failure) carry over from the rest of the app. The
-/// running capsule wears near-black smoked glass — a neutral dark tint, not a
-/// hue — so the blue bot mark carries the state; failure stays red. Both
-/// tints stay low-opacity so the capsule still reads as glass beside the
-/// neutral “到底部” and takeover pills.
+/// running capsule wears a light neutral smoke — not a hue — so the blue bot
+/// mark carries the state; failure stays red. Both tints stay low-opacity so
+/// the capsule still reads as glass beside the neutral “到底部” and takeover
+/// pills (pp 2026-10-05: 再透一点 — dropped another step).
 enum SubAgentPalette {
     static let running = Color.blue
     static let failure = Color.red
@@ -65,6 +65,6 @@ enum SubAgentPalette {
     }
 
     static func capsuleTint(failure: Bool) -> Color {
-        failure ? Self.failure.opacity(0.40) : Color.black.opacity(0.22)
+        failure ? Self.failure.opacity(0.26) : Color.black.opacity(0.12)
     }
 }

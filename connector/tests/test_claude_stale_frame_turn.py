@@ -1546,3 +1546,93 @@ def test_a_failed_tail_at_silence_mints_nothing_either() -> None:
             await runtime.stop()
 
     asyncio.run(run())
+
+
+# --------------------------------------------------------------------------
+# L3b follow-up · the refresh must be asked for AFTER the settle-time batch
+# --------------------------------------------------------------------------
+
+
+class _OrderedSettleHost(_SettleSignalHost):
+    """Records how much had been published at each settle request."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.upserts_at_settle: list[int] = []
+
+    async def on_turn_settled(
+        self,
+        session_id: str,
+        external_session_id: str | None = None,
+    ) -> None:
+        self.upserts_at_settle.append(len(self.timeline_item_upserts))
+        await super().on_turn_settled(session_id, external_session_id)
+
+
+class _UnclosedThinkingClient(_ScheduledClaudeClient):
+    """A turn whose reasoning block never gets its `content_block_stop`.
+
+    That is the shape that makes the settle-time batch exist: `drive_turn`'s
+    finally calls `finalize_pending_thinking`, which is the one place a whole
+    batch of rows is created outside the frame loop — the 12:24 batch.
+    """
+
+    async def _complete_query(self, prompt: str) -> None:
+        await _FakeClaudeClient.query(self, prompt)
+        for frame in (
+            StreamEvent(
+                uuid="stream_uu",
+                session_id="f4_sess",
+                event={"type": "message_start", "message": {"id": "msg_f4"}},
+            ),
+            StreamEvent(
+                uuid="stream_uu",
+                session_id="f4_sess",
+                event={
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": "settle me"},
+                },
+            ),
+            SimpleNamespace(type="result", session_id="f4_sess"),
+        ):
+            await self.incoming.put(frame)
+
+
+def test_the_settle_refresh_is_requested_after_the_settle_time_batch() -> None:
+    """F4: the snapshot L3b asks for must be able to contain the settled rows.
+
+    修前红: the only request went out from `finish_execution`, which runs BEFORE
+    `drive_turn`'s finally publishes `finalize_pending_thinking`. Nothing
+    synchronised the two, so the snapshot task could take its transcript read at
+    the next scheduling point — before the batch existed — and the rows L3b
+    exists to deliver faster still waited for the global beat.
+
+    Measured rather than asserted indirectly: the host records how many items
+    had been published at each request, so "the batch was out before the last
+    request" is a fact about the ordering, not an inference from a count.
+    """
+
+    async def run() -> None:
+        client = _UnclosedThinkingClient()
+        host = _OrderedSettleHost()
+        runtime = _runtime_with_values(host, _single_client_factory(client), {})
+        try:
+            await runtime.start_turn("f4", None, "think")
+            session = runtime._sessions["f4"]
+            await asyncio.wait_for(session.active_task, 5)
+
+            assert host.session_turn_ends[-1]["outcome"] == "completed"
+            assert len(host.upserts_at_settle) >= 2, (
+                "the batch published but only one refresh was requested"
+            )
+            assert host.upserts_at_settle[-1] > host.upserts_at_settle[0], (
+                "the second request saw nothing new — the batch was still in "
+                "flight when it was made"
+            )
+            settled_rows = [item for item in host.timeline_item_upserts if _is_thinking(item)]
+            assert any(item.status == "done" for item in settled_rows)
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())

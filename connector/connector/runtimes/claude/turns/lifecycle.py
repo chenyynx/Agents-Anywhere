@@ -1567,19 +1567,29 @@ class ClaudeTurnRunner:
                             connection.arm_idle()
                         await self.refresh_idle_connection(session)
             try:
-                await self.publish_items(
-                    execution,
-                    stream_accumulator.finalize_pending_thinking(
-                        session,
-                        turn_id,
-                        self.timeline,
-                    ),
+                settled_batch = stream_accumulator.finalize_pending_thinking(
+                    session,
+                    turn_id,
+                    self.timeline,
                 )
+                await self.publish_items(execution, settled_batch)
             except Exception:  # noqa: BLE001
+                settled_batch = ()
                 logger.exception(
                     "Claude reasoning flush failed session_id={}",
                     session.session_id,
                 )
+            if settled_batch:
+                # L3b, second half (red team F4). The first request for this
+                # session's refresh went out from `finish_execution`, which runs
+                # BEFORE this block — so the snapshot it asked for could not
+                # contain the rows this block is about to publish, and the very
+                # batch L3b was raised for (12:24: a dozen rows formed at settle
+                # and shipped on the next global beat) still waited a whole
+                # interval. Ask again now that they are out. Only when there is
+                # a batch: a turn that published nothing extra must not pay for
+                # a second transcript read.
+                await self._request_settled_session_sync(session)
 
     def _verdict_for_terminal(
         self,

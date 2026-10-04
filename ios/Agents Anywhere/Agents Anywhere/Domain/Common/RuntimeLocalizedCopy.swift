@@ -8,6 +8,58 @@ enum RuntimeLocalizedCopy {
         let translated = String(localized: String.LocalizationValue(key), bundle: bundle, locale: locale)
         return translated == key ? fallback : translated
     }
+
+    /// Runtime errors whose Connector copy is product copy, not a log line.
+    ///
+    /// A `message` on the wire is written once, in English, by the Connector.
+    /// That is the right default: most errors are diagnostic and are shown
+    /// verbatim. It is the wrong default for the codes below, where the
+    /// English sentence names the wrong cause — "Scheduled work did not
+    /// report a result within 600 seconds" reads as *the model was slow*,
+    /// while the truth is *the CLI process was terminated and every task
+    /// running inside it ended*. A user told the false cause rescues nothing
+    /// and retries nothing, so the false cause is the defect, not the wording.
+    ///
+    /// Entries are looked up by CODE, never matched on message text: the
+    /// Connector owns the code's stability, and matching prose would break
+    /// silently the first time that prose is edited.
+    ///
+    /// Unknown codes return nil so the caller keeps today's behaviour — the
+    /// Connector's own message — rather than degrading to an empty string or
+    /// a raw payload. That fallback is the contract with every future code
+    /// this table has not been taught yet, and it is pinned by test.
+    private static let runtimeErrorCopyKeys: [String: String.LocalizationValue] = [
+        "claude_process_retired": "runtime.error.claudeProcessRetired",
+    ]
+
+    /// The catalog key this build would use for `code`, or nil when the code
+    /// has no entry.
+    ///
+    /// Split out from `runtimeErrorText` so the SELECTION half — which code
+    /// maps to which copy — is a pure function that tests can pin without a
+    /// bundle. The catalog binding is verified by `ios/scripts/
+    /// check-localization.py` and by the app build, not from a unit test.
+    static func runtimeErrorCopyKey(for code: String?) -> String.LocalizationValue? {
+        guard let code else { return nil }
+        return runtimeErrorCopyKeys[code]
+    }
+
+    /// The localized sentence for `code`, or nil when this build has no copy
+    /// for it.
+    ///
+    /// `params` is carried through rather than interpolated today: pp's
+    /// finalized sentence is fixed, so an entry that consumes parameters must
+    /// degrade to its parameterless form rather than print a hole. Callers
+    /// pass the payload regardless, which keeps the signature honest for the
+    /// first entry that does interpolate.
+    static func runtimeErrorText(code: String?, params: JSONValue?, locale: Locale = .current, bundle: Bundle = .main) -> String? {
+        guard let key = runtimeErrorCopyKey(for: code) else { return nil }
+        let identifier = String(key)
+        let translated = String(localized: key, bundle: bundle, locale: locale)
+        // An untranslated catalog hands the key back. That is not copy.
+        guard translated != identifier else { return nil }
+        return translated
+    }
 }
 
 extension V2DeviceRuntimeStatus {

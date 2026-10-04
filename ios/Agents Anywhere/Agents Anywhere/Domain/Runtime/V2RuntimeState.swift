@@ -157,8 +157,22 @@ struct V2RuntimeSelectionUpdateResponse: Decodable, Hashable {
 struct V2RuntimeError: Codable, Hashable, LocalizedError {
     let code: String?
     let message: String
+    /// Connector-supplied details (`stuckSeconds`, task counts, …). Kept as
+    /// an opaque payload: the client reads what it knows how to render and
+    /// ignores the rest, so the Connector can add fields without a client
+    /// release.
+    let params: JSONValue? = nil
 
-    var errorDescription: String? { message }
+    var errorDescription: String? {
+        if let copy = RuntimeLocalizedCopy.runtimeErrorText(code: code, params: params) { return copy }
+        // Last resort, and it must be readable text: an unknown code from a
+        // newer Connector still reaches the user as its own message rather
+        // than as nothing. Blank falls to the generic failure copy below.
+        guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return String(localized: "The runtime reported an error.")
+        }
+        return message
+    }
 }
 
 struct V2RuntimeSelectionUpdateRequest: Encodable, Hashable {

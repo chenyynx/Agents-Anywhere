@@ -5461,6 +5461,23 @@
         }
       }
     },
+    "The runtime reported an error.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The runtime reported an error."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "运行时返回了一个错误。"
+          }
+        }
+      }
+    },
     "The secure sign-in browser could not open. Please try again.": {
       "extractionState": "manual",
       "localizations": {
@@ -8237,6 +8254,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "更新日期：2026 年 9 月 7 日"
+          }
+        }
+      }
+    },
+    "runtime.error.claudeProcessRetired": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The Claude process was terminated after failing to respond. This turn produced no result and any running background tasks have ended. Please try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude 进程长时间无响应已被终止。本轮未产出，运行中的后台任务已一并结束。请重新发起。"
           }
         }
       }

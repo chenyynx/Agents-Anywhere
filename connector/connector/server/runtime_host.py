@@ -56,15 +56,45 @@ class ConnectorRuntimeHost(RuntimeHostClient):
         self._defer_payload_projection = defer_payload_projection
         self._runtime_storage = RuntimeStorageManager(sync_state_store) if isinstance(sync_state_store, JsonSyncStateStore) else None
         self._runtime_kv = None
+        # L3b: set by the connector client once the sync runner exists. Bound in
+        # `prepare_runtime_host` copies, so every runtime sees it.
+        self.turn_settled_sink: Callable[[str | None, str, str | None], None] | None = None
+        self._runtime_id: str | None = None
 
     async def prepare_runtime_host(self, runtime_id: str) -> ConnectorRuntimeHost:
         if self._runtime_storage is None:
-            return self
+            bound = copy.copy(self)
+            bound._runtime_id = runtime_id
+            return bound
         state, kv = await asyncio.to_thread(self._runtime_storage.prepare, self.connector_id, runtime_id)
         bound = copy.copy(self)
         bound._sync_state_store = state
         bound._runtime_kv = kv
+        bound._runtime_id = runtime_id
         return bound
+
+    async def on_turn_settled(
+        self,
+        session_id: str,
+        external_session_id: str | None = None,
+    ) -> None:
+        """L3b: hand the settle signal to the sync runner, and return at once.
+
+        Nothing here may await the sync itself. This runs inside the turn's own
+        settle path, and the whole point is to cut delivery latency — making the
+        user wait on a transcript read to do it would trade one lag for another.
+        """
+
+        sink = self.turn_settled_sink
+        if sink is None:
+            return
+        try:
+            sink(self._runtime_id, session_id, external_session_id)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "turn settle sync request failed session_id={}",
+                session_id,
+            )
 
     @property
     def runtime_kv(self):

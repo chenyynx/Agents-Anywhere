@@ -1144,3 +1144,145 @@ def test_settle_time_thinking_batch_is_published_in_source_order() -> None:
             await runtime.stop()
 
     asyncio.run(run())
+
+
+# --------------------------------------------------------------------------
+# L3b · a settled turn refreshes its own session instead of waiting a beat
+# --------------------------------------------------------------------------
+
+
+class _SettleSignalHost(_RecordingHost):
+    """Records the L3b settle signal the turn's host receives."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.settled: list[tuple[str, str | None]] = []
+
+    async def on_turn_settled(
+        self,
+        session_id: str,
+        external_session_id: str | None = None,
+    ) -> None:
+        self.settled.append((session_id, external_session_id))
+
+
+def test_a_settled_turn_asks_for_its_own_session_refresh() -> None:
+    """L3b: the push already carried the rows; this carries the snapshot.
+
+    The two roads are not redundant. The runtime pushes each row as it is
+    projected, and the connector's periodic sync re-reads the transcript and
+    ships a snapshot that catches whatever the push published late, out of
+    order, or not at all — which is the 2026-10-04 12:24 batch. Waiting for the
+    global beat is what turned a settled reply into 30-50 s of an idle-looking
+    session.
+    """
+
+    async def run() -> None:
+        client = _ScheduledClaudeClient()
+        host = _SettleSignalHost()
+        runtime = _runtime_with_values(host, _single_client_factory(client), {})
+        try:
+            await runtime.start_turn("l3b", None, "hello")
+            session = runtime._sessions["l3b"]
+            await asyncio.wait_for(session.active_task, 5)
+            assert host.session_turn_ends[-1]["outcome"] == "completed"
+            assert host.settled, "a settled turn must ask for its session refresh"
+            assert [sid for sid, _ in host.settled] == ["l3b"]
+            assert host.settled[0][1] == session.external_session_id
+
+            # A second turn asks again — the signal is per settle, not per
+            # session-lifetime.
+            await runtime.start_turn("l3b", None, "second")
+            await asyncio.wait_for(session.active_task, 5)
+            assert len(host.settled) == 2
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_a_host_without_the_signal_keeps_its_behavior() -> None:
+    """The protocol default is a no-op, so nothing depends on the signal existing."""
+
+    async def run() -> None:
+        client = _ScheduledClaudeClient()
+        host = _RecordingHost()
+        runtime = _runtime_with_values(host, _single_client_factory(client), {})
+        try:
+            await runtime.start_turn("l3b", None, "hello")
+            session = runtime._sessions["l3b"]
+            await asyncio.wait_for(session.active_task, 5)
+            assert host.session_turn_ends[-1]["outcome"] == "completed"
+            assert session.execution is None
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_settled_session_refresh_is_coalesced_and_returns_at_once() -> None:
+    """The sync runner side: one refresh per session, and never awaited.
+
+    Two properties the turn's settle path depends on. It returns immediately —
+    a settle must not wait for the very sync it is asking for, or L3b would
+    trade one lag for another. And it coalesces — a session that settles three
+    times in a second is one transcript read, not three.
+    """
+
+    async def run() -> None:
+        from test_connector_runtime import (
+            FakeAgentRuntime,
+            FakeRuntimeSupervisor,
+            RecordingRuntimeHost,
+            _client,
+            unused_notification_sender,
+        )
+
+        from connector.runtime_protocol import SessionMeta
+        from connector.server.runtime_sync import RuntimeSyncRunner
+
+        class _Runtime(FakeAgentRuntime):
+            def __init__(self) -> None:
+                super().__init__()
+                self.reads: list[str] = []
+
+            async def list_sessions(self, **kwargs: Any) -> tuple[SessionMeta, ...]:
+                return (
+                    SessionMeta(
+                        session_id="l3b",
+                        external_session_id="l3b",
+                        runtime="codex",
+                        metadata={
+                            "sync": {"changed": True, "requires_timeline_sync": True}
+                        },
+                    ),
+                )
+
+            async def prepare_session_timeline_sync(
+                self, session_id: str, external: str | None
+            ) -> None:
+                self.reads.append(session_id)
+                await asyncio.sleep(0.05)
+
+        runtime = _Runtime()
+        runner = RuntimeSyncRunner(
+            config=_client().config,
+            supervisor=FakeRuntimeSupervisor(runtime),
+            host=RecordingRuntimeHost(),
+            preferences_reader=dict,
+            send_notification=unused_notification_sender,
+            ingest_notifications=None,
+        )
+        try:
+            started_at = time.monotonic()
+            for _ in range(3):
+                runner.on_turn_settled("codex", "l3b", "l3b")
+            assert time.monotonic() - started_at < 0.05, "the settle path waited"
+
+            await asyncio.gather(*tuple(runner._session_sync_tasks))
+            assert runtime.reads == ["l3b"], "three settles, one transcript read"
+            assert runner._pending_session_syncs == set()
+        finally:
+            await runner.stop()
+
+    asyncio.run(run())

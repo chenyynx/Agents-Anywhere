@@ -386,6 +386,16 @@ class RuntimeInstanceHost(RuntimeHostClient):
             raise ValueError("Cannot rebind an instance Host to another runtime")
         return replace(self, base=await self.base.prepare_runtime_host(runtime_id))
 
+    async def on_turn_settled(
+        self,
+        session_id: str,
+        external_session_id: str | None = None,
+    ) -> None:
+        # L3b: forwarded, not swallowed. This wrapper exists to scope storage
+        # and status, and a settle signal that stopped here would make every
+        # runtime behind an instance wrapper invisible to the connector's sync.
+        await self.base.on_turn_settled(session_id, external_session_id)
+
     async def sync_state_write(
         self,
         key: str,

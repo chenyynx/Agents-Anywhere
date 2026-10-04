@@ -66,6 +66,76 @@ class RuntimeSyncRunner:
         self._last_active_session_updates: dict[
             str, tuple[SessionMeta, SessionState]
         ] = {}
+        # L3b (claude-stale-frame-turn-tasks.md §4/§11): one session's
+        # timeline is refreshed the moment its turn settles instead of at the
+        # next global beat, which is what turned a settled reply into 30-50 s of
+        # silence on 2026-10-04.
+        #
+        # Two rules make that safe. The per-session lock is the SAME one the
+        # periodic sweep takes, so a session is never read by two writers at
+        # once — but it is per session rather than global, so a busy session
+        # cannot hold up an unrelated one. And requests coalesce: a turn that
+        # settles three times in a second is one refresh, not three.
+        self._session_sync_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._pending_session_syncs: set[tuple[str, str]] = set()
+        self._session_sync_tasks: set[asyncio.Task[None]] = set()
+        self.closing = False
+
+    def _session_sync_lock(self, runtime_id: str, session_id: str) -> asyncio.Lock:
+        return self._session_sync_locks.setdefault(
+            (runtime_id, session_id), asyncio.Lock()
+        )
+
+    def on_turn_settled(
+        self,
+        runtime_id: str | None,
+        session_id: str,
+        external_session_id: str | None = None,
+    ) -> None:
+        """Queue one refresh of the session that just settled. Returns at once.
+
+        Called from the turn's settle path, so this schedules and returns — the
+        transcript read and the publish happen on their own task. A settle must
+        never wait for the very sync it is asking for.
+        """
+
+        if runtime_id is None or self.closing:
+            return
+        key = (runtime_id, session_id)
+        if key in self._pending_session_syncs:
+            return
+        self._pending_session_syncs.add(key)
+        task = asyncio.create_task(self._sync_settled_session(runtime_id, session_id))
+        self._session_sync_tasks.add(task)
+        task.add_done_callback(self._session_sync_tasks.discard)
+        _ = external_session_id
+
+    async def _sync_settled_session(self, runtime_id: str, session_id: str) -> None:
+        try:
+            try:
+                runtime = self.supervisor.resolve_runtime(runtime_id)
+            except (RuntimeUnavailableError, RuntimeUnsupportedError):
+                return
+            if runtime.sync_mode == "events":
+                # An event runtime owns its own acknowledged lifecycle; its
+                # settle already published everything there is to publish.
+                return
+            sessions = await runtime.list_sessions(limit=100, force=False)
+            session = next(
+                (item for item in sessions if item.session_id == session_id), None
+            )
+            if session is None:
+                return
+            async with self._session_sync_lock(runtime_id, session_id):
+                await self.sync_existing_session(runtime, session)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "settled session sync failed runtime={} session_id={}",
+                runtime_id,
+                session_id,
+            )
+        finally:
+            self._pending_session_syncs.discard((runtime_id, session_id))
 
     async def sync_existing_loop(self) -> None:
         if not self.config.sync_existing_on_connect:
@@ -79,6 +149,16 @@ class RuntimeSyncRunner:
             await self.sync_existing_once()
             await self.push_preferences_if_changed()
             await asyncio.sleep(self.config.sync_interval_seconds)
+
+    async def stop(self) -> None:
+        """L3b: retire the on-demand refreshes along with the loop."""
+
+        self.closing = True
+        tasks = tuple(self._session_sync_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def reconnect_event_runtimes(self) -> None:
         self._recovery_generation += 1
@@ -159,10 +239,15 @@ class RuntimeSyncRunner:
                                 **dict(session.metadata),
                                 "sync": {"changed": True, "requires_timeline_sync": True},
                             })
-                        completed = await self.sync_existing_session(
-                            runtime, session, source_in_inventory=inventory_scan_token is not None,
-                            recovering=recover_session,
-                        )
+                        async with self._session_sync_lock(runtime_id, session.session_id):
+                            # L3b: the same per-session lock the on-demand
+                            # settle refresh takes, so the two writers of one
+                            # timeline can never overlap. Per session, not
+                            # global: a slow session must not delay the rest.
+                            completed = await self.sync_existing_session(
+                                runtime, session, source_in_inventory=inventory_scan_token is not None,
+                                recovering=recover_session,
+                            )
                         if completed is False:
                             failed = True
                         elif recover_session and recovery_generation == self._recovery_generation:

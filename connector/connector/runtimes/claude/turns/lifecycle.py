@@ -1845,6 +1845,20 @@ class ClaudeTurnRunner:
                         update_state=not queued,
                         publish=publish,
                     )
+                    if not queued:
+                        # L3b: ask the connector to refresh this session's
+                        # timeline now instead of at the next global sync beat.
+                        # The push above already carried this turn's rows; what
+                        # this buys is the snapshot that catches anything the
+                        # push published late, reordered, or missed — which on
+                        # 2026-10-04 was the difference between a reply and 30
+                        # to 50 seconds of an idle-looking session.
+                        #
+                        # Fire-and-forget by contract: `on_turn_settled` returns
+                        # immediately, so this costs the turn nothing. And it is
+                        # display plumbing, so it can never fail a turn that has
+                        # already been correctly settled.
+                        await self._request_settled_session_sync(session)
                 finally:
                     if response is not None:
                         response.release(interrupted=terminal.status == "interrupted")
@@ -1861,6 +1875,26 @@ class ClaudeTurnRunner:
                         )
                     execution.finished.set()
             return True
+
+    async def _request_settled_session_sync(self, session: ClaudeSession) -> None:
+        """Tell the connector this session settled, so it can refresh it now.
+
+        L3b. A no-op on any host that does not implement the signal (the
+        protocol default), which is what keeps a runtime built for tests or for
+        an older connector behaving exactly as before. Failures are logged and
+        swallowed: the turn has already published its verdict by the time this
+        runs, and nothing about a follow-up refresh is worth failing it for.
+        """
+
+        try:
+            await self.host.on_turn_settled(
+                session.session_id, session.external_session_id
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Claude settled session sync request failed session_id={}",
+                session.session_id,
+            )
 
     async def publish_terminal_state(
         self,

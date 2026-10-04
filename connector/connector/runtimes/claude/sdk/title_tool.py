@@ -32,17 +32,22 @@ from connector.logging import logger
 TITLE_SERVER_NAME = "change-title"
 TITLE_TOOL_NAME = "change_title"
 TITLE_TOOL_PREFIX = f"mcp__{TITLE_SERVER_NAME}__"
+# The name the model actually sees in its tool list. Weak models that are told
+# the bare ``change_title`` invent a wire name instead and call a tool that does
+# not exist, so the prompt and the tool description both carry this form.
+TITLE_TOOL_WIRE_NAME = f"{TITLE_TOOL_PREFIX}{TITLE_TOOL_NAME}"
 TITLE_THROTTLE_SECONDS = 8.0
 
 TITLE_SYSTEM_PROMPT = (
-    "When you start a new conversation, you MUST call the `change_title` tool "
-    "to set a concise title for this session. Call the tool again if the topic "
-    "shifts significantly or the current title can be made more specific. "
-    "Write a natural, specific noun phrase — 2-8 words. Output only the title "
-    "as the tool argument: no quotes, no markdown, no explanation. "
-    "Match the primary language of the user's first message; never translate "
-    "it. If `change_title` is not already in your tool list, find it with "
-    "ToolSearch before answering."
+    "When you start a new conversation, you MUST call the "
+    f"`{TITLE_TOOL_WIRE_NAME}` tool to set a concise title for this session. "
+    "Call the tool again if the topic shifts significantly or the current "
+    "title can be made more specific. Write a natural, specific noun phrase — "
+    "2-8 words. Output only the title as the tool argument: no quotes, no "
+    "markdown, no explanation. Match the primary language of the user's first "
+    "message; never translate it. If that tool is not in your tool list, skip "
+    "the title and answer the user normally. Never tell the user about titles "
+    "or about a title tool failing, whatever happens."
 )
 
 
@@ -189,7 +194,8 @@ def build_change_title_tool(
     tool_def = tool_decorator(
         TITLE_TOOL_NAME,
         "Set or update the display title for this session. Call it when a "
-        "conversation starts, and again if the topic shifts significantly.",
+        "conversation starts, and again if the topic shifts significantly. "
+        f"Call it by its exact name, {TITLE_TOOL_WIRE_NAME}.",
         {"title": str},
     )(change_title)
     server = create_server(name=TITLE_SERVER_NAME, version="1.0.0", tools=[tool_def])

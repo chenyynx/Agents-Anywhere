@@ -48,6 +48,7 @@ from test_claude_runtime import (
     _ScheduledClaudeClient,
 )
 
+from connector.runtime_protocol.timeline import timeline_content_hash
 from connector.runtimes.claude.domain.session import ClaudeSession
 from connector.runtimes.claude.sdk.tasks import task_event_from_message
 from connector.runtimes.claude.timeline.agent_calls import (
@@ -58,6 +59,11 @@ from connector.runtimes.claude.timeline.agent_calls import (
 from connector.runtimes.claude.timeline.messages import (
     ClaudeMessageProjector,
     stable_tool_item_id,
+)
+from connector.runtimes.claude.turns.lifecycle import (
+    _parent_tool_use_id,
+    _with_parent_card,
+    _with_parent_cards,
 )
 
 SESSION = "c94c9a5a-649d-4bda-9010-1c4ee4eb7a6a"
@@ -926,11 +932,13 @@ def test_idle_subagent_frames_project_as_rows_with_parent_item_id() -> None:
 
 
 def test_projector_itself_never_tags_system_or_message_rows() -> None:
-    """The parentItemId backfill for those rows lives on the capture route.
+    """The parentItemId backfill for those rows lives above the projector.
 
-    In-turn subagent frames (the 47 ms thinking frame of the L1 incident) and
-    the history rebuild share this projector and keep their exact content;
-    only the capture route attributes reasoning/message rows.
+    Both live routes (the capture route and the in-turn projection) share this
+    projector and tag reasoning/message rows on the way out, through
+    `_with_parent_card`; the history rebuild and nested Agent rows keep their
+    exact content. So the projector itself still knows nothing about parents —
+    which is what keeps this the single place a row is shaped.
     """
 
     projector = ClaudeMessageProjector()
@@ -1143,3 +1151,234 @@ def test_overlay_statuses_and_fill_only_fields() -> None:
     assert resolve_agent_card_status("running", "done") == "done"
     assert resolve_agent_card_status("done", "failed") == "done"
     assert resolve_agent_card_status(None, "running") == "running"
+
+
+# --------------------------------------------------------------------------
+# 6. the in-turn route: a subagent frame that lands mid-turn (2026-10-05)
+# --------------------------------------------------------------------------
+#
+# The capture route (section 4) is only half the map. A frame that arrives
+# while a turn — or a scheduled turn — is active is handed straight to the
+# response queue without being sorted by parent, so `drive_turn` projects it
+# as a `turn.*` row instead. Those rows carried no `parentItemId`, and the
+# SubAgent panel's `groupKind == .agents` test let them into the main chat:
+# 4 rows in pp's session sess_k4g1dE968ahtWg (recon findings §1.2, channels
+# A and B).
+#
+# The frames below are the same shapes as section 4's, queued BEFORE the
+# dispatch turn's result — the arrival order is the whole point, since it is
+# what selects the route.
+
+# Synthetic, not a capture: no recon session produced a parented result frame,
+# so this models the CLI's sidechain result on the dispatch turn's own shape.
+WIRE_SUBAGENT_RESULT = {
+    **WIRE_MAIN_RESULT,
+    "result": "AUDIT DONE: 3 files, 7 tool calls",
+    "duration_ms": 2104,
+    "parent_tool_use_id": DISPATCH_TUID,
+}
+
+
+class _InTurnSubagentClient(_ScheduledClaudeClient):
+    """The dispatch turn, with the subagent's own frames landing before it ends."""
+
+    async def _complete_query(self, prompt: str) -> None:
+        await _FakeClaudeClient.query(self, prompt)
+        for frame in (
+            WIRE_DISPATCH_TOOL_USE,
+            WIRE_SUBAGENT_THINKING,
+            WIRE_SUBAGENT_TEXT,
+            WIRE_SUBAGENT_TOOL_USE_WRITE,
+            WIRE_MAIN_RESULT,
+        ):
+            await self.incoming.put(_parse(frame))
+
+
+class _InTurnSubagentResultClient(_ScheduledClaudeClient):
+    """A parented result frame in-turn: the `turn.result` publish point."""
+
+    async def _complete_query(self, prompt: str) -> None:
+        await _FakeClaudeClient.query(self, prompt)
+        for frame in (WIRE_DISPATCH_TOOL_USE, WIRE_SUBAGENT_RESULT):
+            await self.incoming.put(_parse(frame))
+
+
+def _rows_with_event(host: _RecordingHost, event: str) -> list[Any]:
+    return [
+        item for item in host.timeline_item_upserts if item.source.get("event") == event
+    ]
+
+
+def _last_row(host: _RecordingHost, event: str, text: str) -> Any:
+    rows = [
+        item
+        for item in _rows_with_event(host, event)
+        if text in str(item.content.get("text", ""))
+    ]
+    assert rows, f"no {event} row carrying {text!r}"
+    return rows[-1]
+
+
+def test_in_turn_subagent_rows_carry_the_parent_card() -> None:
+    """The leak itself: `turn.*` rows from a subagent frame, attributed."""
+
+    async def run() -> None:
+        client = _InTurnSubagentClient()
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            await runtime.start_turn("in_turn", None, "hello")
+            session = runtime._sessions["in_turn"]
+            await asyncio.wait_for(session.active_task, 5)
+            card_id = stable_tool_item_id(session, DISPATCH_TUID)
+
+            # The thinking row the leak report filed as seq 16. It must be an
+            # in-turn row (`claude.turn.system`), NOT a capture-route row
+            # (`claude.subagent.system`) — otherwise this test would be
+            # asserting the already-correct half and proving nothing.
+            thinking = _rows_with_event(host, "claude.turn.system")
+            assert thinking, "the subagent thinking frame must project in-turn"
+            assert not _rows_with_event(host, "claude.subagent.system"), (
+                "these frames belong to the in-turn route"
+            )
+            for row in thinking:
+                assert row.content["parentItemId"] == card_id
+                # The key rides along with the hash, so the row still dedupes
+                # against its own content.
+                assert row.content_hash == timeline_content_hash(
+                    item_type=row.type,  # type: ignore[arg-type]
+                    status=row.status,  # type: ignore[arg-type]
+                    role=row.role,  # type: ignore[arg-type]
+                    content=row.content,
+                )
+
+            # ... and the text row the report filed as seq 10.
+            text_row = _last_row(
+                host,
+                "claude.turn.assistant",
+                "I'll execute the steps in order",
+            )
+            assert text_row.content["parentItemId"] == card_id
+
+            # The tool row of the same frame keeps the projector's own tag and
+            # its own content: the backfill never re-projects a tool row.
+            tool_row_id = stable_tool_item_id(session, SUBAGENT_WRITE_TUID)
+            tool_rows = [
+                item for item in host.timeline_item_upserts if item.id == tool_row_id
+            ]
+            assert tool_rows, "the subagent tool row must project in-turn"
+            assert tool_rows[-1].content["parentItemId"] == card_id
+            assert tool_rows[-1].content["kind"] == "file_change"
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_result_frames_lose_the_parent_at_the_sdk_boundary() -> None:
+    """Why the `turn.result` publish point is only the defensive half.
+
+    `drive_turn` reads the parent off the frame the same way it does for every
+    other frame, and wraps the terminal row with it — but `parse_message` types
+    a result frame into `ResultMessage`, which has no `parent_tool_use_id`
+    field, so the signal does not survive parsing. The wrap is kept (it costs
+    nothing and starts working if a future SDK carries the field), and this
+    test pins the boundary so the day it moves, it is a red test here rather
+    than a silent gap.
+    """
+
+    parsed = _parse(WIRE_SUBAGENT_RESULT)
+    assert _parent_tool_use_id(parsed) is None
+    # The frames that DO leak (assistant thinking / text, user tool_result)
+    # keep it — the attribution this fix relies on is real.
+    assert _parent_tool_use_id(_parse(WIRE_SUBAGENT_THINKING)) == DISPATCH_TUID
+
+    async def run() -> None:
+        client = _InTurnSubagentResultClient()
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            await runtime.start_turn("in_turn_result", None, "hello")
+            session = runtime._sessions["in_turn_result"]
+            await asyncio.wait_for(session.active_task, 5)
+
+            result_row = _last_row(host, "claude.turn.result", "AUDIT DONE")
+            assert "parentItemId" not in result_row.content
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_main_agent_in_turn_rows_never_gain_a_parent_card() -> None:
+    """The other half of the invariant: this fix must not tag the main agent.
+
+    `_MainAgentReplyClient` is the whole live path for a main-agent reply
+    (thinking + text, `parent_tool_use_id=None` on every frame), and the reply
+    must reach the chat exactly as it did before.
+    """
+
+    async def run() -> None:
+        client = _MainAgentReplyClient()
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            await runtime.start_turn("main_untouched", None, "hello")
+            session = runtime._sessions["main_untouched"]
+            await asyncio.wait_for(session.active_task, 5)
+
+            assert _rows_with_event(host, "claude.turn.system")
+            assert _last_row(
+                host, "claude.turn.assistant", "Checking the workspace now."
+            )
+            assert not [
+                item
+                for item in host.timeline_item_upserts
+                if "parentItemId" in item.content
+            ]
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_parent_card_helper_is_the_identity_without_a_parent() -> None:
+    """Pins the transform itself: no parent → the very same objects come back."""
+
+    projector = ClaudeMessageProjector()
+    session = _session()
+    parent_id = stable_tool_item_id(session, DISPATCH_TUID)
+
+    system_row = projector.system_items_for_message(
+        session=session,
+        turn_id="turn-1",
+        message=_parse(WIRE_SUBAGENT_THINKING),
+        event="claude.turn.system",
+    )[0]
+    tool_row = projector.tool_items_for_message(
+        session=session,
+        turn_id="turn-1",
+        message=_parse(WIRE_SUBAGENT_TOOL_USE_WRITE),
+    )[0]
+
+    # Unparented: identity, so a main-agent turn publishes exactly what it
+    # published before this fix — same object, not a rebuilt copy.
+    assert _with_parent_card(system_row, None) is system_row
+    assert _with_parent_cards((system_row,), None)[0] is system_row
+    # Parented: the free-JSON key, plus the matching hash.
+    tagged = _with_parent_cards((system_row,), parent_id)[0]
+    assert tagged is not system_row
+    assert tagged.content["parentItemId"] == parent_id
+    assert tagged.content_hash == timeline_content_hash(
+        item_type=tagged.type,  # type: ignore[arg-type]
+        status=tagged.status,  # type: ignore[arg-type]
+        role=tagged.role,  # type: ignore[arg-type]
+        content=tagged.content,
+    )
+    assert "parentItemId" not in system_row.content
+
+    # Tool rows are the projector's business (messages.py already tags them);
+    # the helper must not re-touch one on either route.
+    assert tool_row.content["parentItemId"] == parent_id
+    assert _with_parent_card(tool_row, parent_id) is tool_row
+    assert _with_parent_cards((tool_row,), parent_id)[0] is tool_row

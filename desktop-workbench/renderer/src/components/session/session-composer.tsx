@@ -50,6 +50,7 @@ import {
 } from "@/components/session/catalog-selection"
 import { SelectionSettingsDrawer } from "@/components/session/selection-settings-drawer"
 import { CAPABILITY, capabilityIsUsable, findCapability, attachmentMimeTypes } from "@/components/session/capabilities"
+import { runtimeErrorCopyKey } from "@/components/session/runtime-error-copy"
 import { useElementWidth } from "@/hooks/use-element-width"
 import { sessionRuntimeId, sessionRuntimeType } from "@/features/dashboard/runtime-instances"
 
@@ -422,6 +423,9 @@ export function SessionComposer({
     attachmentsReady &&
     (attachments.length === 0 || canUseAttachments) && mode.kind === "message"
   const concurrentWriter = runtimeState?.error?.code === "DSH_CONCURRENT_WRITER_DETECTED"
+  // Codes whose Connector sentence names the wrong cause get their own copy;
+  // everything else keeps the generic error placeholder.
+  const runtimeErrorCopy = runtimeErrorCopyKey(runtimeState?.error?.code)
   const updateValue = React.useCallback((nextValue: string) => {
     valueRef.current = nextValue
     onValueChange(nextValue)
@@ -558,6 +562,11 @@ export function SessionComposer({
         {concurrentWriter ? (
           <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
             {tSession("dshConcurrentWriter")}
+          </div>
+        ) : null}
+        {runtimeErrorCopy ? (
+          <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+            {tSession(runtimeErrorCopy)}
           </div>
         ) : null}
         <div

@@ -1032,6 +1032,7 @@
       "busyPlaceholder": "发送中断，或等待当前回合结束",
       "errorPlaceholder": "这个会话有错误，发送后会重试",
       "dshConcurrentWriter": "请先停止其他正在运行此 DSH Session 的实例，等待其退出后刷新并重试。",
+      "claudeProcessRetired": "Claude 进程长时间无响应已被终止。本轮未产出，运行中的后台任务已一并结束。请重新发起。",
       "replyPlaceholder": "回复，或用新指令中断...",
       "dropFiles": "松开以添加附件",
       "commandNoMatches": "没有匹配的指令",

@@ -1032,6 +1032,7 @@
       "busyPlaceholder": "Send an interrupt or wait for the current turn to finish",
       "errorPlaceholder": "This session has an error; sending will retry",
       "dshConcurrentWriter": "Stop the other process using this DSH session, wait for it to exit, then refresh before retrying.",
+      "claudeProcessRetired": "The Claude process was terminated after failing to respond. This turn produced no result and any running background tasks have ended. Please try again.",
       "replyPlaceholder": "Reply, or interrupt with new instructions...",
       "dropFiles": "Drop files to attach",
       "commandNoMatches": "No matching commands",

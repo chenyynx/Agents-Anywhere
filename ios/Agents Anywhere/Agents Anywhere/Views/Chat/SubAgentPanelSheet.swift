@@ -115,18 +115,46 @@ struct SubAgentPanelSheet: View {
 
     /// The fixed stats line (§3.3): pinned below the header, never scrolls with
     /// the body, follows the selected tab and freezes when the card closes.
+    /// Redesigned as a status badge plus trimmed metrics: the phase word wears
+    /// its own color on a wash of that color, the numbers stay neutral gray so
+    /// the row scans as one glanceable state + one line of numbers.
     private func statsRow(_ card: SubAgentCard) -> some View {
-        HStack(spacing: 6) {
-            Circle().fill(SubAgentPalette.phase(card.phase)).frame(width: 7, height: 7)
-            Text(SubAgentProgress.statsLine(for: card))
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+        let phaseColor = SubAgentPalette.phase(card.phase)
+        let metrics = SubAgentProgress.statsLine(for: card)
+        return HStack(spacing: 8) {
+            HStack(spacing: 5) {
+                Circle().fill(phaseColor).frame(width: 6, height: 6)
+                Text(card.phase.word)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(phaseColor)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(phaseColor.opacity(Self.badgeFillOpacity(colorScheme)), in: .capsule)
+            if !metrics.isEmpty {
+                Text(metrics)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 20)
         .padding(.top, 8)
         .padding(.bottom, 6)
+        // One element, one sentence: VoiceOver should read the state and its
+        // numbers together instead of stopping on the dot, the badge and the
+        // metrics separately.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(SubAgentProgress.statsAccessibilityLabel(for: card))
+    }
+
+    /// Light mode: a 12% wash reads as a chip on white. Dark mode needs more of
+    /// the same color or the chip dissolves into the black background.
+    private static func badgeFillOpacity(_ scheme: ColorScheme) -> Double {
+        scheme == .dark ? 0.20 : 0.12
     }
 
     // MARK: Body

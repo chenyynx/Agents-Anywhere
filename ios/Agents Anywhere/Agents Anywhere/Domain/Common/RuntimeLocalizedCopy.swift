@@ -28,18 +28,21 @@ enum RuntimeLocalizedCopy {
     /// Connector's own message — rather than degrading to an empty string or
     /// a raw payload. That fallback is the contract with every future code
     /// this table has not been taught yet, and it is pinned by test.
-    private static let runtimeErrorCopyKeys: [String: String.LocalizationValue] = [
+    private static let runtimeErrorCopyKeys: [String: String] = [
         "claude_process_retired": "runtime.error.claudeProcessRetired",
     ]
 
-    /// The catalog key this build would use for `code`, or nil when the code
-    /// has no entry.
+    /// The catalog key this build would use for `code`, as the raw string, or
+    /// nil when the code has no entry.
     ///
     /// Split out from `runtimeErrorText` so the SELECTION half — which code
     /// maps to which copy — is a pure function that tests can pin without a
     /// bundle. The catalog binding is verified by `ios/scripts/
     /// check-localization.py` and by the app build, not from a unit test.
-    static func runtimeErrorCopyKey(for code: String?) -> String.LocalizationValue? {
+    /// Keys stay raw `String`s because `String.LocalizationValue` cannot be
+    /// converted back to a string (no such initializer); the catalog value is
+    /// built at the lookup site instead.
+    static func runtimeErrorCopyKey(for code: String?) -> String? {
         guard let code else { return nil }
         return runtimeErrorCopyKeys[code]
     }
@@ -54,10 +57,9 @@ enum RuntimeLocalizedCopy {
     /// first entry that does interpolate.
     static func runtimeErrorText(code: String?, params: JSONValue?, locale: Locale = .current, bundle: Bundle = .main) -> String? {
         guard let key = runtimeErrorCopyKey(for: code) else { return nil }
-        let identifier = String(key)
-        let translated = String(localized: key, bundle: bundle, locale: locale)
+        let translated = String(localized: String.LocalizationValue(key), bundle: bundle, locale: locale)
         // An untranslated catalog hands the key back. That is not copy.
-        guard translated != identifier else { return nil }
+        guard translated != key else { return nil }
         return translated
     }
 }

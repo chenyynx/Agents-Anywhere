@@ -1276,12 +1276,14 @@ def _is_thinking(item: Any) -> bool:
 def test_settle_time_thinking_batch_is_published_in_source_order() -> None:
     """T4: the batch that forms at settle goes out in source order.
 
-    `finalize_pending_thinking` closes thinking blocks that never received a
-    `content_block_stop`, and it is the one place a whole batch of rows is
-    created outside the frame loop. Publishing it in the order the CLI produced
-    the blocks — not in the order they happened to arrive, and not in slot
-    allocation order — is what keeps a resumed stream from rendering its last
-    thought above its first.
+    Scope, stated narrowly on purpose (red team F9). This pins ONE shape: the
+    reasoning rows `finalize_pending_thinking` forms at settle, which is the
+    path the 12:24 batch was traced to. It is NOT a claim about every row a turn
+    creates outside the frame loop — tool rows and streamed text are projected
+    per frame as they arrive and keep their arrival order by construction, so
+    they have nothing to sort. The general statement the earlier version of this
+    docstring made was broader than the test measured; this is the part it
+    measures.
 
     Pinned rather than changed: reading the code at 70262b64, this already
     iterates `sorted(self.partial_thinking_blocks)`, so the suite now holds the
@@ -1764,5 +1766,57 @@ def test_a_session_past_the_first_page_is_reported_not_silently_skipped() -> Non
             assert runner._session_sync_dirty == set()
         finally:
             await runner.stop()
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------
+# F7 · an unowned terminal is not credited as work, and that is observable
+# --------------------------------------------------------------------------
+
+
+def test_an_unowned_terminal_is_not_credited_as_work() -> None:
+    """F7: the flag has to be visible from outside, or it is a comment.
+
+    The red team removed the guard (`counts_this_frame = counts_as_labour and not
+    unowned_terminal` -> `counts_as_labour`) and 20 tests stayed green. It was
+    justified by "the turn stays in the zero-content class and is reaped by the
+    30 s fast kill" — which is unreachable, since I1 forbids a terminal from
+    minting and the cast-frame gate discards one at the cast.
+
+    The justification is gone (see the gate's note in `drive_turn`). What
+    survives is the plain statement, and this makes it checkable: a turn that
+    consumed only an unowned terminal has consumed NOTHING, which is the same
+    rule the cast frame has always followed. Pinned on the shape where it is
+    reachable — a result-only turn, since any counted frame opens the start gate.
+    """
+
+    async def run() -> None:
+        from connector.runtimes.claude.turns import lifecycle as lifecycle_module
+
+        executions: list[Any] = []
+        original = lifecycle_module.ClaudeTurnRunner.drive_turn
+
+        async def spy(self: Any, session: Any, execution: Any, *args: Any, **kwargs: Any) -> Any:
+            executions.append(execution)
+            return await original(self, session, execution, *args, **kwargs)
+
+        client = _ResultOnlyClient()
+        host = _RecordingHost()
+        runtime = _runtime_with_values(host, _single_client_factory(client), {})
+        lifecycle_module.ClaudeTurnRunner.drive_turn = spy
+        try:
+            await runtime.start_turn("unowned", None, "hello")
+            session = runtime._sessions["unowned"]
+            await asyncio.wait_for(session.active_task, 5)
+
+            assert executions, "the spy did not see the turn"
+            assert executions[-1].consumed_frames == 0, (
+                "an unowned terminal was credited as work"
+            )
+            assert runtime._turns.runner.stale_completion_downgrades == 1
+        finally:
+            lifecycle_module.ClaudeTurnRunner.drive_turn = original
+            await runtime.stop()
 
     asyncio.run(run())

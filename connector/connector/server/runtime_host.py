@@ -62,6 +62,17 @@ class ConnectorRuntimeHost(RuntimeHostClient):
         self._runtime_id: str | None = None
 
     async def prepare_runtime_host(self, runtime_id: str) -> ConnectorRuntimeHost:
+        """Bind this host to one runtime instance.
+
+        L3b widened this: it used to return `self` unchanged when there was no
+        per-runtime storage, and now always returns a copy, because the settle
+        signal (F-era of L3b) rides the bound copy and has to know which runtime
+        it came from. With storage it already copied, so the no-storage branch
+        was the odd one out rather than this being a new behaviour — but it IS a
+        behaviour change on a path that previously shared one object across
+        runtimes, so it is named here rather than left to be discovered.
+        """
+
         if self._runtime_storage is None:
             bound = copy.copy(self)
             bound._runtime_id = runtime_id

@@ -2,6 +2,11 @@ import Foundation
 import Observation
 
 struct ChatTimelineGroup: Identifiable {
+    // `.agents` no longer reaches the main timeline since L2.1 (the grouping
+    // filter in `groups` keeps SubAgent child rows out). It stays declared
+    // because `TimelineRowStructure` still classifies those rows and the
+    // panel reuses the same row projection — dropping the case would reach
+    // into the panel's rendering for no user-visible gain.
     enum Kind: Equatable { case single, tools, reconnect, agents(String) }
     let kind: Kind
     let rows: [ChatTimelineRowModel]
@@ -45,6 +50,15 @@ enum TimelineGrouping {
             pending = []
         }
         for row in rows {
+            // L2.1 (pp 2026-10-04): the main chat keeps only the dispatch card.
+            // Every row the connector attributed to an Agent card — tool,
+            // thinking and text alike — leaves the main timeline; its content is
+            // read from `chat.timeline.rows` by the panel and the card's 查看详情
+            // entry, both of which this filter does not touch.
+            // An interaction target is exempt: an approval card anchors on its
+            // own row, and that row has to stay visible or the card would fall
+            // between the group renderer and the orphan notice list.
+            if SubAgentProgress.parentItemID(row.value) != nil, !interactionTargets.contains(row.id) { continue }
             let kind: ChatTimelineGroup.Kind = interactionTargets.contains(row.id) ? .single : row.structure.groupKind
             if kind == .single { flush(); groups.append(ChatTimelineGroup(kind: .single, rows: [row])); continue }
             if pendingKind != kind { flush() }

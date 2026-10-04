@@ -1,15 +1,20 @@
 import SwiftUI
 
 /// L2 (§3.3): the SubAgent detail panel. Opened from the capsule or from the
-/// timeline's Agent card / SubAgent group. Everything renders from the
-/// presented rows, so the panel restores after a relaunch and follows live
-/// updates exactly like the timeline does.
+/// timeline's Agent card / SubAgent group. Each page is one turn (pp
+/// 2026-10-05): the tab strip lists the opening card's turn, so an older
+/// dispatch point reopens its own page and a new dispatch opens the new one.
+/// Everything renders from the presented rows, so the panel restores after a
+/// relaunch and follows live updates exactly like the timeline does.
 struct SubAgentPanelSheet: View {
     let chat: SessionChatModel
     let deviceName: String?
     let fallbackRuntimeName: String?
     let onFile: (String) -> Void
     let onAttachment: (V2AttachmentContent) -> Void
+    /// The card the panel was opened from — the per-turn page's anchor
+    /// (pp 2026-10-05: each turn reopens its own page).
+    private let openingCardID: String?
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
@@ -27,13 +32,15 @@ struct SubAgentPanelSheet: View {
         self.fallbackRuntimeName = fallbackRuntimeName
         self.onFile = onFile
         self.onAttachment = onAttachment
+        self.openingCardID = initialCardID
         // The requested card wins; the opening rule (first running tab, else
         // the first) applies whenever it is nil or no longer present.
         _selection = State(initialValue: initialCardID)
     }
 
     private var cards: [SubAgentCard] {
-        SubAgentProgress.topLevelCards(in: chat.timeline.rows.map(\.value))
+        SubAgentProgress.turnScopedTopLevelCards(in: chat.timeline.rows.map(\.value),
+                                                 containing: openingCardID)
     }
     /// The requested card when it still exists; otherwise the opening rule —
     /// first running tab, else the first one.

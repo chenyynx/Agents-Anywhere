@@ -613,7 +613,7 @@ private struct SubAgentCapsuleSlot: View {
         let state = SubAgentProgress.capsuleState(model.timeline.rows.map(\.value))
         if state.isVisible {
             SubAgentCapsule(state: state) {
-                if let id = state.firstRunningID { onOpen(id) }
+                if let id = state.latestRunningID { onOpen(id) }
             }
         }
     }

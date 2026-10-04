@@ -1622,6 +1622,27 @@ class ClaudeTurnRunner:
         "this round produced nothing", and reporting one of them as a success
         is the failure mode being fixed.
 
+        THE CASCADE this creates, measured (red team round 2 §5.3, and pinned by
+        `test_a_residual_before_the_prompt_echo_degrades_the_turn_and_leaves_a_
+        phantom`). Downgrading makes the turn BREAK on the frame it could not
+        attribute, so the frames behind it — the prompt echo, the real reply,
+        the real result — are left in the reader's queue with nobody holding
+        them. At silence the echo is a user frame, which mints a scheduled turn,
+        and that phantom consumes the rest and settles `completed` carrying the
+        answer.
+
+        As measured it is benign: two bubbles, `completed`, session back to
+        idle, no error state, nothing left running. The user-visible cost is one
+        answer split across two bubbles, the first marked "interrupted / this
+        round produced nothing".
+
+        The honest edge: the "phantom with only the echo and nothing after it"
+        variant could NOT be constructed by the red team, so whether that one
+        would sit zero-content until the 30 s fast kill and flip the session to
+        an error is UNVERIFIED. Mechanically it is the same shape as a genuinely
+        hung turn (zero content, no terminal), which is why it is on the stage-3
+        watch list rather than dismissed.
+
         Only `completed` is degraded. `failed` and `interrupted` are already
         honest about a round that went nowhere, and rewriting them would destroy
         the failure visibility the pending branch exists to preserve.

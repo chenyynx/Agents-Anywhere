@@ -356,12 +356,30 @@ def test_failed_result_still_reaches_the_pending_turn() -> None:
     asyncio.run(run())
 
 
-def test_pending_without_a_wire_uuid_still_takes_a_result() -> None:
-    """A prompt submitted on a transport's first turn has no uuid to pair with.
+def test_a_residual_before_the_prompt_echo_degrades_the_turn_and_leaves_a_phantom() -> (
+    None
+):
+    """Red team round 2 §5.4: renamed to what it actually measures.
 
-    Nothing can be a residual of a turn this transport never ran, so the
-    status quo is kept there: the result selects the pending and the turn ends.
-    This is what keeps approval round-trips and empty replies working.
+    The shape is the ghost's simplest one — on a brand-new transport the
+    previous turn's result arrives BEFORE the prompt echo — and what happens is
+    three steps that used to be described as one:
+
+    1. the reader selects the pending (this prompt has no wire uuid yet, see the
+       exemption test below), so the result is routed rather than absorbed;
+    2. inside the turn it is the first terminal, with no work before it, so the
+       turn degrades to `interrupted` + `unowned_result_no_content`;
+    3. the frames the early break orphaned — the echo, the real reply, the real
+       result — reach the reader at silence, the echo mints a scheduled turn,
+       and that phantom settles `completed` carrying the answer.
+
+    Step 3 is the cascade red team §5.3 measured and this pins. It is benign as
+    measured: the session returns to idle, no error state, two bubbles. Its
+    shape is documented in `_verdict_for_terminal`.
+
+    Both turn ends are asserted. An earlier version of this test asserted a
+    single turn end and passed only because it read the ledger before the
+    phantom settled — a latent race, not a claim.
     """
 
     async def run() -> None:
@@ -372,16 +390,84 @@ def test_pending_without_a_wire_uuid_still_takes_a_result() -> None:
             await runtime.start_turn("first", None, "hello")
             session = runtime._sessions["first"]
             await asyncio.wait_for(session.active_task, 5)
+            await _wait_until(lambda: len(host.session_turn_ends) >= 2, 5)
 
-            connection = runtime._turns.runner.connections["first"]
-            assert connection.absorbed_terminal_frames == 0, "selected, not absorbed"
+            ends = host.session_turn_ends
+            assert [end["outcome"] for end in ends] == ["interrupted", "completed"]
+            assert ends[0]["metadata"]["terminalReason"] == STALE_COMPLETION_REASON
+            # Benign, as measured: idle again, no error state, nothing left
+            # running.
+            assert host.session_state_updates[-1]["status"] == "idle"
+            assert not any(u["status"] == "error" for u in host.session_state_updates)
+            assert session.execution is None
+            # The answer is not lost — it lands in the phantom's bubble, which is
+            # the user-visible cost of this shape (one answer, two bubbles).
+            texts = [
+                str(item.content.get("text", ""))
+                for item in host.timeline_item_upserts
+            ]
+            assert "reply:hello" in texts
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_a_result_at_silence_still_selects_a_prompt_with_no_wire_uuid() -> None:
+    """The exemption the red team proved unfalsifiable, now pinned (round 2 §5.4).
+
+    `response_for` leaves `user_id` unset for a prompt submitted on this
+    transport's first turn — the SDK has not been given an envelope to replay
+    yet — and the reader treats "any frame selects this pending" as the rule
+    there. If that ever stops, the turn is never selected at all: it hangs
+    until the ceiling, and every approval round-trip and empty reply on a fresh
+    connection goes with it.
+
+    It is safe because a prompt with no wire uuid cannot have a leftover in
+    flight: `user_id is None` means this transport has never been queried, the
+    reader does not read the stream before `queried.wait()`, and both rebuild
+    entry points set `queried` explicitly. Round 1 tried to falsify this via
+    transport rebuild and could not.
+
+    The assertion that matters is on the READER's decision, not on the verdict:
+    a result at silence must reach the pending (`absorbed_terminal_frames == 0`)
+    rather than be swallowed by the I1 absorb branch.
+    """
+
+    async def run() -> None:
+        from connector.runtimes.claude.sdk.connection import ClaudeConnection
+
+        seen: list[Any] = []
+        original = ClaudeConnection.response_for
+
+        def spy(self: Any, execution: Any) -> Any:
+            response = original(self, execution)
+            seen.append(response)
+            return response
+
+        client = _ResultOnlyClient()
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        ClaudeConnection.response_for = spy
+        try:
+            await runtime.start_turn("exempt", None, "hello")
+            session = runtime._sessions["exempt"]
+            await asyncio.wait_for(session.active_task, 5)
+
+            assert seen, "the spy did not see a response"
+            assert seen[0].user_id is None, (
+                "this shape is supposed to be the no-wire-uuid exemption"
+            )
+            connection = runtime._turns.runner.connections["exempt"]
+            assert connection.absorbed_terminal_frames == 0, (
+                "a result at silence was swallowed instead of selecting the "
+                "pending — approval round-trips and empty replies depend on this"
+            )
             assert [end["outcome"] for end in host.session_turn_ends] == [
                 "interrupted"
             ]
-            assert host.session_turn_ends[-1]["metadata"]["terminalReason"] == (
-                STALE_COMPLETION_REASON
-            )
         finally:
+            ClaudeConnection.response_for = original
             await runtime.stop()
 
     asyncio.run(run())

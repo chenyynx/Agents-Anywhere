@@ -74,6 +74,44 @@ progress, not replies, and never mint a turn from silence (the main agent's
 own wake-and-report frames carry `parent_tool_use_id=None`). This is noise
 reduction only; the breaker above is what guarantees the outcome.
 
+## Runtime errors the breaker raises
+
+The breaker raises two client-visible errors on the session state, and the
+difference between them is a fact about the process, not about timing:
+
+| `code` | Fires when | `params` |
+| --- | --- | --- |
+| `claude_scheduled_turn_timeout` | the turn budget expired and the turn was closed out as failed, **whatever happened to the transport** | — |
+| `claude_process_retired` | `connection.close()` actually ran: the host CLI process, and every task inside it, was terminated | `stuckSeconds`, `interruptedBackgroundTaskCount`, `retirementConfirmed` |
+
+`claude_process_retired` exists because the timeout text names the wrong
+cause. "Scheduled work did not report a result within 600 seconds" reads as
+*the model was slow*; the truth is *the process was terminated and the work
+in it ended*. A user told the false cause rescues nothing and retries
+nothing, so the false cause is the defect. The disclosure is driven by the
+close, therefore it is outside every limiter on the path: it fires whether or
+not the connection window's single ledger slot is spent, and for a queued
+execution that never owned the session status. It is deliberately **not**
+raised when `has_live_background_work` withholds the kill — nothing was
+retired, and a message that fires when the process survived would teach users
+to distrust it. When `close()` raises, the same code is sent with
+`retirementConfirmed: false` rather than dropped: the turn is lost either
+way, and only the certainty changed.
+
+The failed *turn ledger entry* stays behind the limiter — that is the
+breakers's one-report-per-window rule and this change does not touch it.
+
+Clients render these by `code`, never by message text: the Connector owns the
+code's stability, whereas matching prose breaks silently the first time that
+prose is edited. A code with no localized entry falls back to the Connector's
+own message rather than to an empty string or a raw payload.
+
+| Client | Copy for `claude_process_retired` |
+| --- | --- |
+| iOS | `RuntimeLocalizedCopy.runtimeErrorCopyKey` → `runtime.error.claudeProcessRetired` |
+| Android | `runtimeErrorCopyRes` → `R.string.session_claude_process_retired` |
+| Desktop | `runtimeErrorCopyKey` → `dashboard.session.claudeProcessRetired` |
+
 ## Agent-set session titles
 
 Every Claude session's system prompt extends Claude Code's own with an

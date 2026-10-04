@@ -202,21 +202,43 @@ enum SubAgentProgress {
         return date(item.completedAt) ?? date(item.updatedAt)
     }
 
-    /// The stats line under the panel header: "运行中 · N 个工具 · 用时 X · Y tokens".
-    /// Zero/missing counters stay out (缺失不显、不留 "0"); the values freeze when
-    /// the card closes because the task events stop writing.
+    /// The panel's metrics, beside the status badge: "12 个工具 · 8.1s · 31.2k".
+    /// Bare values only — the phase word is the badge's job and the unit words
+    /// are the spoken label's. Empty when every counter is missing or zero;
+    /// the values freeze when the card closes because the task events stop
+    /// writing.
     static func statsLine(for card: SubAgentCard) -> String {
-        var parts = [card.phase.word]
+        metrics(for: card).joined(separator: " · ")
+    }
+
+    /// The same row as one spoken sentence: "已完成，12 个工具，用时 8.1s，31.2k
+    /// tokens". VoiceOver needs the words "用时"/"tokens" — a bare "8.1s" is
+    /// read as a stray letter — and it needs the phase word, which the badge
+    /// already carries visually.
+    static func statsAccessibilityLabel(for card: SubAgentCard) -> String {
+        let spoken = metrics(for: card,
+            duration: { String(localized: "用时 \(SubAgentUsageFormat.duration(milliseconds: $0))") },
+            tokens: { String(localized: "\(SubAgentUsageFormat.tokens($0)) tokens") })
+        return ([card.phase.word] + spoken).joined(separator: "，")
+    }
+
+    /// The counters in display order, dropping the missing and the zero ones
+    /// (缺失不显、不留 "0"). Only the unit wording changes between the visible
+    /// line and the spoken label, so the drop rule stays in one place.
+    private static func metrics(for card: SubAgentCard,
+                                duration: (Int) -> String = { SubAgentUsageFormat.duration(milliseconds: $0) },
+                                tokens: (Int) -> String = { SubAgentUsageFormat.tokens($0) }) -> [String] {
+        var parts: [String] = []
         if let toolCalls = card.toolCalls, toolCalls > 0 {
             parts.append(String(localized: "\(toolCalls) 个工具"))
         }
         if let durationMs = card.durationMs, durationMs > 0 {
-            parts.append(String(localized: "用时 \(SubAgentUsageFormat.duration(milliseconds: durationMs))"))
+            parts.append(duration(durationMs))
         }
-        if let tokens = card.tokens, tokens > 0 {
-            parts.append(String(localized: "\(SubAgentUsageFormat.tokens(tokens)) tokens"))
+        if let tokenCount = card.tokens, tokenCount > 0 {
+            parts.append(tokens(tokenCount))
         }
-        return parts.joined(separator: " · ")
+        return parts
     }
 
     /// The `agents` entry that belongs to the card. The map is normally keyed

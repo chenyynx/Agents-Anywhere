@@ -42,11 +42,22 @@ struct SubAgentPanelSheet: View {
         SubAgentProgress.turnScopedTopLevelCards(in: chat.timeline.rows.map(\.value),
                                                  containing: openingCardID)
     }
-    /// The requested card when it still exists; otherwise the opening rule —
-    /// first running tab, else the first one.
+    /// §8: active cards the capsule counts that this turn's page does not list —
+    /// a dispatch from another turn, or one the loaded window has moved past.
+    /// The page itself is unchanged; this only keeps the panel from showing
+    /// fewer cards than the capsule counted.
+    private var otherActiveCards: [SubAgentCard] {
+        SubAgentProgress.otherActiveCards(inWindow: chat.timeline.rows.map(\.value),
+                                          activeCards: chat.session.activeAgentCards,
+                                          page: cards)
+    }
+    /// The requested card when it still exists — in the page or, once tapped,
+    /// among the other active cards; otherwise the opening rule (first running
+    /// tab, else the first one).
     private var selectedCard: SubAgentCard? {
         let list = cards
         if let current = list.first(where: { $0.id == selection }) { return current }
+        if let picked = otherActiveCards.first(where: { $0.id == selection }) { return picked }
         let fallback = SubAgentProgress.defaultSelection(list, requested: nil)
         return list.first { $0.id == fallback }
     }
@@ -59,6 +70,7 @@ struct SubAgentPanelSheet: View {
                     // title/subtitle; the tab chips follow, above the body.
                     statsRow(card)
                     tabStrip(selectedID: card.id)
+                    if !otherActiveCards.isEmpty { otherCardsSection(selectedID: card.id) }
                     ScrollView {
                         sections(card)
                             // Switching tabs swaps the whole body in place, and
@@ -172,15 +184,70 @@ struct SubAgentPanelSheet: View {
         scheme == .dark ? 0.20 : 0.12
     }
 
+    /// §8: the panel's own list of the cards the capsule counted but this
+    /// turn's page does not show. Deliberately a plain list, not more chips —
+    /// it must not read as part of the turn's tab strip. Tapping a row selects
+    /// that card and renders it through the same body as a page card, including
+    /// the not-loaded notice when its rows are outside the window.
+    private func otherCardsSection(selectedID: String) -> some View {
+        let others = otherActiveCards
+        return VStack(alignment: .leading, spacing: 2) {
+            sectionLabel(String(localized: "其他回合还有 \(others.count) 个运行中"))
+            ForEach(others) { card in
+                Button { selection = card.id } label: {
+                    HStack(spacing: 6) {
+                        Circle().fill(SubAgentPalette.phase(card.phase)).frame(width: 7, height: 7)
+                        Text(card.taskName)
+                            .font(.footnote.weight(.medium))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer(minLength: 0)
+                        Text(card.phase.word).font(.caption).foregroundStyle(.secondary)
+                    }
+                    .foregroundStyle(card.id == selectedID
+                        ? AppTheme.primaryControlForeground(colorScheme)
+                        : AppTheme.primaryText(colorScheme))
+                    .padding(.horizontal, 12).frame(height: 32)
+                    .background(card.id == selectedID
+                        ? AppTheme.primaryControlBackground(colorScheme)
+                        : Color.clear, in: .rect(cornerRadius: 10))
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(card.taskName)
+                .accessibilityValue(card.phase.word)
+                .accessibilityAddTraits(card.id == selectedID ? .isSelected : [])
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.bottom, 6)
+    }
+
     // MARK: Body
 
     @ViewBuilder private func sections(_ card: SubAgentCard) -> some View {
         VStack(alignment: .leading, spacing: 20) {
+            // §3.3 honesty: a card the window has moved past still has its own
+            // name, phase and prompt, but none of its rows. Say so instead of
+            // rendering a blank body that reads as "nothing happened".
+            if !SubAgentProgress.isContentLoaded(card, in: chat.timeline.rows.map(\.value)) {
+                notLoadedNotice
+            }
             promptSection(card)
             toolSection(card)
             reasoningSection(card)
             outputSection(card)
         }
+    }
+
+    private var notLoadedNotice: some View {
+        Text(String(localized: "该回合尚未加载，加载历史后可查看详情"))
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+            .background(Color(uiColor: .secondarySystemBackground), in: .rect(cornerRadius: 14))
     }
 
     @ViewBuilder private func promptSection(_ card: SubAgentCard) -> some View {

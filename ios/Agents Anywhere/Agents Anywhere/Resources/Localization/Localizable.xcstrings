@@ -16172,6 +16172,52 @@
           }
         }
       }
+    },
+    "其他回合还有 %lld 个运行中": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld still running in another turn"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld still running in other turns"
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "其他回合还有 %lld 个运行中"
+          }
+        }
+      }
+    },
+    "该回合尚未加载，加载历史后可查看详情": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This turn is not loaded yet. Load more history to see its details."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该回合尚未加载，加载历史后可查看详情"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

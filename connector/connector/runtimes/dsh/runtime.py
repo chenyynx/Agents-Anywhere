@@ -402,7 +402,15 @@ class DshRuntime(AgentRuntime):
                                           result=_object(payload.get("result") or {}))
         return RuntimeOperationResult(result=payload)
 
-    async def interrupt_session(self, session_id: str, reason: str | None = None) -> RuntimeOperationResult:
+    async def interrupt_session(
+        self,
+        session_id: str,
+        reason: str | None = None,
+        preserve_background: bool = False,
+    ) -> RuntimeOperationResult:
+        # DSH's turn machinery owns its own background semantics; the flag is
+        # part of the shared interrupt contract and is deliberately unused.
+        _ = reason, preserve_background
         return RuntimeOperationResult(result=_object(await self._request("session.interrupt", {"sessionId": session_id})))
 
     async def _start_client(self) -> None:

@@ -898,6 +898,61 @@ class ClaudeTurnRunner:
             return parent.turn_id
         return f"turn_claude_subagent_{parent_item_id}"
 
+    async def wait_for_selection_change(
+        self,
+        session: ClaudeSession,
+        connection: ClaudeConnection,
+    ) -> None:
+        """Wait out a transport's background work instead of refusing to rebuild.
+
+        The model is a CLI launch argument, so a selection change must rebuild
+        the process; the do-not-retire invariant forbids killing live
+        background work. This used to refuse — the next turn failed with
+        `RuntimeError("Claude selection change requires background work to
+        finish")` and the user's message never ran (measured 2026-10-05 in
+        ~/aa-test/model-switch-composer-harness). Wait instead:
+
+        - the drain is event-driven — the last terminal task frame is the
+          signal (`ClaudeBackgroundTasks.drained`);
+        - the wake turn the CLI starts to report that task is allowed to
+          finish, bounded by `selectionChangeDrainCeilingSeconds` (a long
+          report cannot hold the rebuild forever);
+        - a second switch during the wait is seen on the next pass, and the
+          caller re-checks the selections when this returns;
+        - the wait is cancellable: a stop cancels the driving turn's task and
+          the `CancelledError` propagates into the interrupted terminal the
+          turn machinery already publishes.
+
+        State is never republished from here: the queued turn's "waiting"
+        state (published by `start_turn`) stays the honest one until the turn
+        actually runs, so no client sees a fake idle or a re-locked composer.
+        """
+
+        settle = float(self.config.values.get("selectionChangeSettleSeconds", 1.0))
+        ceiling = float(
+            self.config.values.get("selectionChangeDrainCeilingSeconds", 600.0)
+        )
+        while connection.background.active_ids:
+            if self.stopping or connection.closing:
+                raise asyncio.CancelledError
+            await connection.wait_background_drained()
+            if self.stopping or connection.closing:
+                raise asyncio.CancelledError
+            if not await connection.wait_settled(grace=settle, ceiling=ceiling):
+                logger.warning(
+                    "Claude selection change proceeding without a settled "
+                    "transport session_id={} background_tasks={}",
+                    session.session_id,
+                    len(connection.background.active_ids),
+                )
+                return
+            if dict(session.selections) == connection.selections:
+                # The user switched back while this waited; the caller reuses
+                # the transport.
+                return
+            # Otherwise loop: the wake turn may have dispatched fresh
+            # background work, and that new batch owns the transport too.
+
     async def connection_for(
         self,
         session: ClaudeSession,
@@ -909,9 +964,12 @@ class ClaudeTurnRunner:
                 existing.cancel_idle()
                 return existing
             if existing.background.active_ids:
-                raise RuntimeError(
-                    "Claude selection change requires background work to finish"
-                )
+                await self.wait_for_selection_change(session, existing)
+            if not existing.closing and existing.selections == session.selections:
+                # A second switch during the wait may land back on the
+                # selection this transport already carries.
+                existing.cancel_idle()
+                return existing
             await existing.close()
         # A transport retired out of band (the scheduled-turn circuit breaker)
         # is already gone from `connections`, so its Cron* bookkeeping arrives

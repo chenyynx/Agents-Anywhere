@@ -10,6 +10,9 @@ from connector.runtimes.claude.domain.permissions import (
     permission_mode_from_selection_id,
 )
 from connector.runtimes.claude.domain.session import ClaudeSession
+from connector.runtimes.claude.sdk.stop_affordance import (
+    install_per_task_stop_declaration,
+)
 from connector.runtimes.model_gateway import model_gateway_from_config
 
 SdkLoader = Callable[[], Any]
@@ -39,6 +42,13 @@ def new_sdk_client(
     before_tool: Any | None = None,
     title_control: Any | None = None,
 ) -> Any:
+    # Every connection this process opens declares AA's per-task stop control,
+    # so a CLI interrupt spares running background work (kill-switch:
+    # `perTaskStopAffordance`, default on; see sdk/stop_affordance.py).
+    install_per_task_stop_declaration(
+        sdk,
+        declare=bool(config_values.get("perTaskStopAffordance", True)),
+    )
     options = build_sdk_options(
         sdk,
         config_values,

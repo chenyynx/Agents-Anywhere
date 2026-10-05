@@ -402,10 +402,12 @@ class ClaudeRuntime(AgentRuntime):
         self,
         session_id: str,
         reason: str | None = None,
+        preserve_background: bool = False,
     ) -> RuntimeOperationResult:
         return await self._turns.interrupt_session(
             session_id=session_id,
             reason=reason,
+            preserve_background=preserve_background,
         )
 
     async def respond_interaction(

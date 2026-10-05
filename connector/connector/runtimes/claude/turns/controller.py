@@ -147,10 +147,12 @@ class ClaudeTurnController:
         self,
         session_id: str,
         reason: str | None = None,
+        preserve_background: bool = False,
     ) -> RuntimeOperationResult:
         return await self.actions.interrupt_session(
             session_id=session_id,
             reason=reason,
+            preserve_background=preserve_background,
         )
 
     def list_commands(

@@ -191,7 +191,14 @@ class AgentRuntime(ABC):
         self,
         session_id: str,
         reason: str | None = None,
+        preserve_background: bool = False,
     ) -> RuntimeOperationResult:
+        """Stop the current turn.
+
+        `preserve_background` is the model-switch flavor: spare running
+        background tasks (runtimes without such work ignore it). The default
+        keeps every stop's historical all-stop semantics.
+        """
         raise RuntimeUnsupportedError("interrupt_session")
 
     async def update_session_selections(

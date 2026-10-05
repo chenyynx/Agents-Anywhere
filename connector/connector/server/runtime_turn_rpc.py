@@ -92,6 +92,7 @@ async def dispatch_session_interrupt(
     result = await runtime.interrupt_session(
         session_id=parsed.session_id,
         reason=parsed.reason,
+        preserve_background=parsed.preserve_background,
     )
     return operation_result_payload(result)
 

@@ -410,12 +410,22 @@ class TurnSteerParams:
 class SessionInterruptParams:
     session_id: str
     reason: str | None
+    # Optional, defaulting to the historical all-stop semantics so every
+    # client that does not send it is unaffected (the model-switch flow sends
+    # true: spare running background agents).
+    preserve_background: bool
 
     @classmethod
     def parse(cls, params: dict[str, Any]) -> SessionInterruptParams:
+        preserve_background = params.get("preserveBackground")
+        if preserve_background is not None and not isinstance(
+            preserve_background, bool
+        ):
+            raise RuntimeInvalidRequestError("preserveBackground must be a boolean")
         return cls(
             session_id=required_session_id(params),
             reason=optional_string(params.get("reason")),
+            preserve_background=bool(preserve_background),
         )
 
 

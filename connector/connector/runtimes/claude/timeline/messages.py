@@ -31,10 +31,12 @@ from connector.runtime_protocol import (
 from connector.runtimes.claude.domain.session import ClaudeSession
 from connector.runtimes.claude.sdk.title_tool import is_title_tool_name
 from connector.runtimes.claude.timeline.agent_calls import (
+    AGENT_CARD_TERMINAL_STATUSES,
     ClaudeAgentCallCard,
     ClaudeAgentTaskOverlay,
     claude_agent_call_content,
     complete_claude_agent_call_content,
+    has_live_agent_tasks,
     is_async_agent_receipt,
     resolve_agent_card_status,
 )
@@ -372,11 +374,16 @@ class ClaudeMessageProjector:
             if (
                 call is not None
                 and call.tool_name == "Agent"
-                and is_async_agent_receipt(block.tool_result_metadata)
+                and is_async_agent_receipt(
+                    block.tool_result_metadata, _result_text(block.tool_result)
+                )
             ):
                 # L2: the async launch receipt is metadata, not an outcome —
                 # the card keeps running until task_updated/task_notification
                 # closes it. Foreground (sync) calls still land done here.
+                # The body is passed alongside the metadata because a
+                # dispatch made inside a subagent's sidechain carries no
+                # toolUseResult at all (2026-10-05 findings §A).
                 status = "running"
         else:
             self._tool_calls[item_id] = ClaudePendingToolCall(
@@ -393,6 +400,17 @@ class ClaudeMessageProjector:
             status, content = self._fold_agent_card(
                 item_id, item_turn_id, status, content
             )
+            if status in AGENT_CARD_TERMINAL_STATUSES and has_live_agent_tasks(
+                content
+            ):
+                # I1: agents still alive means the card is not finished. The
+                # wire frames above can classify a launch as an outcome (the
+                # sidechain receipt carries no metadata to tell them apart),
+                # and `resolve_agent_card_status` keeps the first terminal
+                # status — so unstick it here, on the item and on the card,
+                # which also heals a status a wrong frame already pinned.
+                status = "running"
+                self._agent_cards[item_id].status = "running"
 
         return ToolTimelineItem(
             id=item_id,

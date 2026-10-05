@@ -15,6 +15,7 @@ from agent_server.core.capabilities import (
     SESSION_INTERRUPT,
     SESSION_SEND_MESSAGE,
     SESSION_STEER,
+    SESSION_SUBAGENT_CONTROL,
 )
 from agent_server.core.models import (
     InlineAttachmentRef,
@@ -944,6 +945,54 @@ class SessionRunService:
         except ConnectorRpcError as exc:
             raise SessionRunUpstreamError(exc.message or exc.code) from exc
         await self._store.clear_active_run(session_id)
+        return RpcResponsePayload(ok=True, result=result)
+
+    async def stop_subagent(
+        self,
+        session_id: str,
+        *,
+        user_id: str,
+        task_id: str,
+    ) -> RpcResponsePayload:
+        """Stop one background subagent through the connector's per-task stop.
+
+        Mirrors the interrupt shape (takeover -> live capability gate ->
+        forward -> existing error mapping). The capability is
+        ``session.subagent_control``, whose availability is connection-based
+        rather than turn-based, so this gate admits stops while the session is
+        idle with background work. The connector answers factually:
+        `{"stopped": false}` for an id it does not know is a success here,
+        not an error — the card converges on its own terminal task event.
+        """
+
+        try:
+            session = await self._store.get_session(session_id, user_id=user_id)
+        except KeyError:
+            raise SessionRunNotFoundError("session not found") from None
+        if not session.takeover:
+            raise SessionRunConflictError("session is read-only until takeover is enabled")
+        await self._require_session_capability(
+            session,
+            SESSION_SUBAGENT_CONTROL,
+            user_id=user_id,
+        )
+        await self._ensure_session_runtime_running(session, user_id=user_id)
+        params: dict[str, Any] = {
+            "sessionId": session_id,
+            "runtime": session.runtime,
+            "runtimeId": _session_runtime_id(session),
+            "taskId": task_id,
+        }
+        try:
+            result = await self._manager.request(
+                session.connectorId,
+                "session.stopSubagent",
+                params,
+            )
+        except ConnectorOfflineError as exc:
+            raise SessionRunConflictError(str(exc)) from exc
+        except ConnectorRpcError as exc:
+            raise SessionRunUpstreamError(exc.message or exc.code) from exc
         return RpcResponsePayload(ok=True, result=result)
 
 

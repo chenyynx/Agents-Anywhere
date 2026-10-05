@@ -15,6 +15,7 @@ from agent_server.core.capabilities import (
     SESSION_INTERRUPT,
     SESSION_SEND_MESSAGE,
     SESSION_STEER,
+    SESSION_SUBAGENT_CONTROL,
 )
 from agent_server.core.models import SessionView
 from agent_server.core.protocol import ProtocolCapability, ProtocolCapabilitySet
@@ -32,6 +33,7 @@ _ACTIVE_PUBLICATIONS: WeakKeyDictionary[Any, dict[str, object]] = WeakKeyDiction
 _INHERITED_RUNTIME_CAPABILITY_IDS = (
     SESSION_SEND_MESSAGE,
     SESSION_INTERRUPT,
+    SESSION_SUBAGENT_CONTROL,
     SESSION_STEER,
     SESSION_INTERACTION_APPROVAL,
     SESSION_COMMANDS,

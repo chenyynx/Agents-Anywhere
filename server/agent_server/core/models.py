@@ -880,6 +880,20 @@ class SessionInterruptRequest(BaseModel):
     preserveBackground: bool = False
 
 
+class SessionSubagentStopRequest(BaseModel):
+    """Body of `POST …/runtime/subagent/stop`.
+
+    `taskId` is the runtime task id of the background subagent to stop — the
+    id carried by the session's Agent-card entries. An id the runtime does
+    not know is answered with `stopped=false` (a factual result), not an
+    error.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    taskId: str = Field(min_length=1, max_length=128)
+
+
 class SessionPatchRequest(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=255)
     pinned: bool | None = None

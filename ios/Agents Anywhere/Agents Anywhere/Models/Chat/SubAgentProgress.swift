@@ -190,6 +190,16 @@ enum SubAgentProgress {
         items.filter { parentItemID($0) == cardID }
     }
 
+    /// One card's activity rows: every child row the chat would show, in
+    /// timeline order — tools, reasoning and text interleaved exactly as the
+    /// connector published them (pp 2026-10-05: the panel shows one
+    /// chronological activity list, not per-kind sections). The same
+    /// `isVisibleInChat` gate the main chat uses, so a row hidden there (an
+    /// empty reasoning, a hidden status) never enters the panel either.
+    static func activityRows(of cardID: String, in items: [V2TimelineItem]) -> [V2TimelineItem] {
+        children(of: cardID, in: items).filter(\.isVisibleInChat)
+    }
+
     /// Opening rule (§3.2/§3.3): an explicitly requested card wins; otherwise
     /// the first running tab, else the first card.
     static func defaultSelection(_ cards: [SubAgentCard], requested: String?) -> String? {

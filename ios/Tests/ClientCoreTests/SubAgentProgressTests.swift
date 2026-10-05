@@ -441,6 +441,57 @@ import Testing
         #expect(SubAgentProgress.children(of: "m1", in: items).isEmpty)
     }
 
+    // MARK: Panel activity list (pp 2026-10-05: 穿插)
+
+    /// The panel's body is one chronological list, not per-kind sections: the
+    /// activity rows keep the connector's publication order — reasoning, tool,
+    /// reasoning, text — and nothing re-groups or re-orders them.
+    @Test func panelActivityRowsInterleaveInTimelineOrder() throws {
+        let card = try cardItem("card", order: 1, status: "done")
+        let firstThought = try item("r1", type: "system", status: "done", order: 2,
+                                    content: ["kind": "reasoning", "text": "first thought", "parentItemId": "card"])
+        let tool = try item("t1", status: "done", order: 3,
+                            content: ["kind": "command", "command": "ls", "parentItemId": "card"])
+        let secondThought = try item("r2", type: "reasoning", status: "done", order: 4,
+                                     content: ["text": "second thought", "parentItemId": "card"])
+        let reply = try item("m1", type: "message", status: "done", order: 5, role: "assistant",
+                             content: ["text": "Step 1.", "parentItemId": "card"])
+        let items = [card, firstThought, tool, secondThought, reply]
+        #expect(SubAgentProgress.activityRows(of: "card", in: items).map(\.id)
+            == ["r1", "t1", "r2", "m1"])
+    }
+
+    /// The panel applies the chat's own visibility gate, so rows the chat
+    /// hides never enter the activity list: the empty reasoning dead row
+    /// (2026-10-05) and a hidden status. Main-agent rows stay out entirely.
+    @Test func panelActivityRowsDropWhatTheChatHides() throws {
+        let card = try cardItem("card", order: 1, status: "done")
+        let deadRow = try item("r-empty", type: "system", status: "done", order: 2,
+                               content: ["kind": "reasoning", "text": "", "signature": "sig", "parentItemId": "card"])
+        let hiddenTool = try item("t-hidden", status: "hidden", order: 3,
+                                  content: ["kind": "command", "command": "ls", "parentItemId": "card"])
+        let tool = try item("t1", status: "done", order: 4,
+                            content: ["kind": "command", "command": "pwd", "parentItemId": "card"])
+        let mainRow = try item("m-main", type: "message", status: "done", order: 5, role: "assistant",
+                               content: ["text": "outside"])
+        #expect(SubAgentProgress.activityRows(of: "card", in: [card, deadRow, hiddenTool, tool, mainRow]).map(\.id)
+            == ["t1"])
+    }
+
+    /// The two empty cases: a card nothing was attributed to, and a card whose
+    /// rows sit outside the loaded window (the panel's not-loaded notice —
+    /// its own facts still render, but there is no activity to list).
+    @Test func panelActivityRowsAreEmptyWithoutRowsOrBeforeTheCardLoads() throws {
+        let card = try cardItem("card", order: 1)
+        #expect(SubAgentProgress.activityRows(of: "card", in: [card]).isEmpty)
+        let other = try cardItem("other", order: 1, status: "done")
+        let otherTool = try item("t1", status: "done", order: 2,
+                                 content: ["kind": "command", "command": "ls", "parentItemId": "other"])
+        let items = [other, otherTool]
+        #expect(!SubAgentProgress.isContentLoaded(try card(card), in: items))
+        #expect(SubAgentProgress.activityRows(of: "card", in: items).isEmpty)
+    }
+
     // MARK: Main timeline filter (L2.1: keep only the dispatch card)
 
     @Test @MainActor func subagentRowsNeverEnterTheMainTimeline() throws {

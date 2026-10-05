@@ -12,6 +12,7 @@ import asyncer
 
 from connector.logging import logger
 from connector.runtime_protocol import (
+    AgentCallToolContent,
     RuntimeConfig,
     RuntimeTimelineItem,
     RuntimeTimelineSnapshot,
@@ -42,18 +43,28 @@ from connector.runtimes.claude.sdk.history import (
     read_sdk_session_info,
     read_sdk_session_messages,
 )
+from connector.runtimes.claude.sdk.tasks import (
+    ClaudeTaskEvent,
+    task_event_from_notification_text,
+)
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 from connector.runtimes.claude.sessions.sync_state import ClaudeSessionSyncStateStore
+from connector.runtimes.claude.timeline.agent_calls import (
+    ClaudeAgentTaskOverlay,
+    agent_task_overlay_for_event,
+)
 from connector.runtimes.claude.timeline.messages import (
     ClaudeMessageProjector,
     ClaudePendingToolCall,
     is_compact_summary_text,
     is_hidden_tool_name,
     is_synthetic_control_message,
+    is_task_notification_message,
     message_id,
     message_role,
     message_text,
     message_tool_blocks,
+    synthesized_agent_call_content,
 )
 
 UNRESOLVED_LIVE_HISTORY_IMPORT_TTL_SECONDS = 120.0
@@ -332,6 +343,11 @@ def _history_items_from_messages(
         tool_call_lookup=tool_call_lookup,
         hidden_tool_use_ids=hidden_tool_use_ids,
     )
+    notification_folds = _agent_task_notification_folds(
+        session,
+        messages,
+        tool_call_lookup,
+    )
     items: list[RuntimeTimelineItem] = []
     matches = client_message_matches or {}
     turn_seed: str | None = None
@@ -401,7 +417,171 @@ def _history_items_from_messages(
             )
         )
     items.extend(projector.missing_history_tool_result_items(session=session))
+    # The folds come last so the dedupe merge below never lets the synthetic
+    # "no tool result was recorded" row — minted for a dispatch whose receipt
+    # has not been written yet — clobber the terminal overlay with its
+    # boilerplate: last writer wins, and the notice is the last true writer.
+    for index in sorted(notification_folds):
+        fold = notification_folds[index]
+        items.append(
+            projector.fold_agent_task_event(
+                session,
+                tool_use_id=fold.tool_use_id,
+                overlay=fold.overlay,
+                status=fold.status,
+                base=fold.base,
+                turn_id=fold.turn_id,
+            )
+        )
     return _resequence_history_items(_dedupe_history_items(items))
+
+
+@dataclass(frozen=True, slots=True)
+class _AgentTaskNotificationFold:
+    """One terminal fold an import window's notice will apply to its card."""
+
+    tool_use_id: str
+    overlay: ClaudeAgentTaskOverlay
+    status: str | None
+    base: AgentCallToolContent | None
+    turn_id: str | None
+
+
+def _agent_task_notification_folds(
+    session: ClaudeSession,
+    messages: tuple[Any, ...],
+    tool_call_lookup: Mapping[str, ClaudePendingToolCall] | None,
+) -> dict[int, _AgentTaskNotificationFold]:
+    """Plan one terminal fold per background Agent card from the window.
+
+    Terminal task frames never reach the transcript — only the live stream
+    carries them — so a background task's completion survives as a plain
+    ``<task-notification>`` user message. This scan turns those notices back
+    into the same normalized event the live fold consumes, and the projection
+    then closes the card the dispatch opened (import path, 2026-10-05: the
+    ten stuck cards of session aba0a291 were all notices nobody folded).
+
+    Only notices of Agent dispatches fold. A ``local_bash`` notice points at
+    a Bash call and a resumed agent's notice at the SendMessage that resumed
+    it — neither owns an Agent card. And a card whose last notice is followed
+    by more child activity was resumed after that notice, so folding it would
+    lie the card closed while its agent runs again: that notice is skipped
+    and the next stop's notice closes the card.
+
+    Returns the fold keyed by the notice's position in the window, or an
+    empty mapping when the window has none.
+    """
+
+    lookup = dict(tool_call_lookup or {})
+    notifications: dict[str, list[tuple[int, ClaudeTaskEvent]]] = {}
+    last_activity: dict[str, int] = {}
+    window_agent_tool_use_ids: set[str] = set()
+    for index, message in enumerate(messages):
+        # Child activity can hang off the message itself (a subagent frame the
+        # SDK merged into the chain) or off a tool block (an orphaned result
+        # that still names its call); either way the row belongs to that
+        # call's card, and only the latest one counts per call.
+        parent_tool_use_id = _string_attr(
+            message, "parent_tool_use_id", "parentToolUseId"
+        )
+        if parent_tool_use_id is not None:
+            last_activity[parent_tool_use_id] = index
+        for block in message_tool_blocks(message):
+            if block.parent_tool_use_id is not None:
+                last_activity[block.parent_tool_use_id] = index
+            if block.block_type == "tool_use" and block.tool_name == "Agent":
+                window_agent_tool_use_ids.add(block.tool_use_id)
+        if not is_task_notification_message(message):
+            continue
+        event = task_event_from_notification_text(
+            message_text(message),
+            timestamp_ms=_message_timestamp_ms(message),
+        )
+        if event is not None and event.tool_use_id is not None:
+            notifications.setdefault(event.tool_use_id, []).append((index, event))
+
+    folds: dict[int, _AgentTaskNotificationFold] = {}
+    for tool_use_id, candidates in notifications.items():
+        if not _is_agent_dispatch(
+            tool_use_id,
+            lookup,
+            window_agent_tool_use_ids,
+        ):
+            continue
+        # Resume rounds notify once per stop; the last notice carries the
+        # final status, summary and usage, so it alone folds (an earlier one
+        # would only be overwritten by these same fields).
+        index, event = candidates[-1]
+        activity = last_activity.get(tool_use_id)
+        if activity is not None and activity >= index:
+            logger.debug(
+                "Claude history notification fold skipped for resumed agent "
+                "tool_use_id={} notice_index={} activity_index={}",
+                tool_use_id,
+                index,
+                activity,
+            )
+            continue
+        call = lookup.get(tool_use_id)
+        overlay, status = agent_task_overlay_for_event(event)
+        folds[index] = _AgentTaskNotificationFold(
+            tool_use_id=tool_use_id,
+            overlay=overlay,
+            status=status,
+            base=(
+                synthesized_agent_call_content(session, call)
+                if call is not None
+                else None
+            ),
+            turn_id=call.turn_id if call is not None else None,
+        )
+    return folds
+
+
+def _is_agent_dispatch(
+    tool_use_id: str,
+    lookup: Mapping[str, ClaudePendingToolCall],
+    window_agent_tool_use_ids: set[str],
+) -> bool:
+    """Whether the notice's id names an Agent dispatch that owns a card.
+
+    The lookup covers the whole visible chain when the caller built one (the
+    sync path), so it answers for dispatches that sit outside the window; a
+    full-chain snapshot has no lookup and recognises its own dispatches from
+    the messages alone.
+    """
+
+    call = lookup.get(tool_use_id)
+    if call is not None:
+        return call.block.tool_name == "Agent"
+    return tool_use_id in window_agent_tool_use_ids
+
+
+def _message_timestamp_ms(message: Any) -> int | None:
+    """The transcript message's wall-clock time in epoch milliseconds.
+
+    The SDK's top-level ``SessionMessage`` exposes no timestamp today (its
+    conversion drops the transcript's ISO field; verified on 0.2.162/0.2.163),
+    so this stays attribute-first: fixtures and any future SDK that carry it
+    give the fold its ``endTime``; without one the fold omits it, exactly like
+    the live notification frame, which carries no end time either.
+    """
+
+    value = _attr(message, "timestamp")
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            # Python 3.11+ parses the transcript's trailing "Z" natively.
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return int(parsed.timestamp() * 1000)
+    return None
 
 
 def _without_maintenance_messages(messages: tuple[Any, ...]) -> tuple[Any, ...]:

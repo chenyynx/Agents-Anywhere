@@ -354,12 +354,16 @@ def agent_task_overlay_for_event(
             agent_task_terminal_status(event.status) or "running",
         )
     # notification: the terminal frame carrying the agent's verbatim final
-    # reply (summary) plus the final usage snapshot.
+    # reply (summary) plus the final usage snapshot. The live wire carries no
+    # end time on this frame (only task_updated's patch has one), so for the
+    # live path ``event.end_time`` is None and nothing changes; an import fold
+    # that read one from the transcript message passes it through here.
     return (
         ClaudeAgentTaskOverlay(
             agents={event.task_id: _terminal_agent_entry(event.status)},
             usage=task_usage(event.usage),
             summary=event.summary,
+            end_time=event.end_time,
         ),
         agent_task_terminal_status(event.status) or "running",
     )

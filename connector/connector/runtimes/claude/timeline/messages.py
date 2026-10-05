@@ -29,6 +29,7 @@ from connector.runtime_protocol import (
     complete_tool_content,
 )
 from connector.runtimes.claude.domain.session import ClaudeSession
+from connector.runtimes.claude.sdk.tasks import is_task_notification_text
 from connector.runtimes.claude.sdk.title_tool import is_title_tool_name
 from connector.runtimes.claude.timeline.agent_calls import (
     AGENT_CARD_TERMINAL_STATUSES,
@@ -459,27 +460,39 @@ class ClaudeMessageProjector:
         tool_use_id: str,
         overlay: ClaudeAgentTaskOverlay,
         status: str | None,
+        base: AgentCallToolContent | None = None,
+        turn_id: str | None = None,
     ) -> RuntimeTimelineItem:
         """Fold one task event into its Agent card and return the item to publish.
 
         The item keeps the card's stable id and order slot, so every fold
         upserts the one card the dispatch minted, and a projection that
         arrives later republishes the same base with this same overlay.
+
+        ``base``/``turn_id`` are the import path's additions: its sync window
+        is a suffix of the transcript, so the dispatch frame can sit outside
+        it. A card already minted in-window always wins; otherwise the fold
+        publishes the dispatch shape its caller rebuilt from the history
+        lookup, so a dispatch-less window still opens the right card.
         """
 
         item_id = stable_tool_item_id(session, tool_use_id)
         order_seq = self.order_seq_for(item_id)
         card = self._agent_cards.setdefault(item_id, ClaudeAgentCallCard())
+        if card.turn_id is None and turn_id is not None:
+            card.turn_id = turn_id
         card.overlay.merge(overlay)
         card.status = resolve_agent_card_status(card.status, status)
-        base = card.content or card.overlay.synthesized_call(tool_use_id)
+        resolved_base = card.content or base or card.overlay.synthesized_call(
+            tool_use_id
+        )
         return ToolTimelineItem(
             id=item_id,
             type="tool",
             status=card.status,  # type: ignore[arg-type]
             role="tool",
             turn_id=card.turn_id,
-            content=card.overlay.apply(base),
+            content=card.overlay.apply(resolved_base),
             source=TimelineSource(
                 runtime="claude",
                 external_session_id=session.external_session_id,
@@ -489,6 +502,28 @@ class ClaudeMessageProjector:
                 event="claude.agent.task",
             ),
         ).to_platform_item(session_id=session.session_id, order_seq=order_seq)
+
+
+def synthesized_agent_call_content(
+    session: ClaudeSession,
+    call: ClaudePendingToolCall,
+) -> AgentCallToolContent:
+    """The card the dispatch frame would have minted, rebuilt from the lookup.
+
+    The import sync window is a suffix of the transcript, so a background
+    task's notification can arrive in a later pass than the dispatch it
+    closes. The lookup keeps the dispatch's block and turn, and building the
+    content through the same path the projection uses keeps stable id, turn
+    and nested-parent semantics identical to a card minted in-window.
+    """
+
+    block = call.block
+    tool_input = block.tool_input if isinstance(block.tool_input, Mapping) else {}
+    return claude_agent_call_content(
+        tool_use_id=block.tool_use_id,
+        tool_input=tool_input,
+        parent_item_id=_parent_tool_item_id(session, block),
+    )
 
 
 def message_role(message: Any) -> str | None:
@@ -541,11 +576,26 @@ def is_compact_summary_text(text: str | None) -> bool:
     return bool(text) and text.strip().startswith(CLAUDE_COMPACT_SUMMARY_PREFIX)
 
 
+def is_task_notification_message(message: Any) -> bool:
+    """Whether a message is the CLI's persisted background-task notice.
+
+    Two channels, same as the bubble suppression below: the SDK keeps
+    ``origin.kind`` on some paths and strips it on others (the top-level
+    transcript read drops it), so the text's own wrapper is the fallback
+    that works on every surface. The terminal fold and the "no bubble" skip
+    must agree on what counts as a notice, so both read this one answer.
+    """
+
+    origin = _extract(message, "origin")
+    if _extract(origin, "kind") == "task-notification":
+        return True
+    return is_task_notification_text(message_text(message))
+
+
 def is_synthetic_control_message(message: Any) -> bool:
     role = message_role(message)
     text = message_text(message)
-    origin = _extract(message, "origin")
-    if _extract(origin, "kind") == "task-notification":
+    if is_task_notification_message(message):
         return True
     if message.__class__.__name__ == "HookEventMessage":
         # The CLI's own hook lifecycle narration (SessionStart:compact,
@@ -557,10 +607,6 @@ def is_synthetic_control_message(message: Any) -> bool:
     if text is None:
         return False
     normalized = text.strip()
-    if normalized.startswith("<task-notification>") and normalized.endswith(
-        "</task-notification>"
-    ):
-        return True
     if role == "user" and normalized in CLAUDE_INTERRUPTED_REQUEST_MARKERS:
         return True
     if role == "user" and is_compact_summary_text(normalized):

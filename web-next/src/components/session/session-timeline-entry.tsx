@@ -39,6 +39,7 @@ export function TimelineEntry({
   toolOpen,
   nestedAgentCall = false,
   readOnly = false,
+  canStopSubagents = false,
   attachmentUrl,
   onToolOpenChange,
   onRespondInteraction,
@@ -52,6 +53,7 @@ export function TimelineEntry({
   toolOpen?: boolean
   nestedAgentCall?: boolean
   readOnly?: boolean
+  canStopSubagents?: boolean
   attachmentUrl?: (fileId: string) => string
   onToolOpenChange?: (open: boolean) => void
   onRespondInteraction: (noticeId: string, actionId: string, input?: Record<string, unknown>) => void
@@ -75,6 +77,7 @@ export function TimelineEntry({
           onOpenChange={onToolOpenChange}
           onRespondInteraction={onRespondInteraction}
           readOnly={readOnly}
+          canStopSubagents={canStopSubagents}
         />
       </div>
     )

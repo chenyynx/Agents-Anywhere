@@ -427,6 +427,14 @@ export function SessionDetail({
       effectiveCapabilities &&
       capabilityIsUsable(effectiveCapabilities, CAPABILITY.permissionCatalog, sessionRuntimeScope),
   )
+  // Per-subagent stop buttons: capability-usable only. Deliberately no
+  // runtimeStatus gate — a background subagent can still run while the
+  // session is idle (task spec v2 §7.3).
+  const canStopSubagents = capabilityIsUsable(
+    effectiveCapabilities,
+    CAPABILITY.subagentControl,
+    sessionRuntimeScope,
+  )
   const commandSessionId = session?.id === sessionId ? sessionId : null
   const commandCapability = session ? findCapability(effectiveCapabilities, CAPABILITY.commands, sessionRuntimeScope) : null
   const catalogMetadata = commandCapability?.metadata as Record<string, unknown> | undefined
@@ -1697,6 +1705,7 @@ export function SessionDetail({
                     resolvingActionId={resolvingActionId}
                     groupOpen={group.kind === "single" ? false : timelineGroupOpenByKey[group.key] ?? false}
                     itemOpenById={timelineItemOpenById}
+                    canStopSubagents={canStopSubagents}
                     onGroupOpenChange={group.kind === "single"
                       ? undefined
                       : (open) => handleTimelineGroupOpenChange(group.key, open)}
@@ -2194,6 +2203,7 @@ export function TimelineGroupEntry({
   groupOpen,
   itemOpenById,
   readOnly = false,
+  canStopSubagents = false,
   attachmentUrl,
   onGroupOpenChange,
   onItemOpenChange,
@@ -2208,6 +2218,7 @@ export function TimelineGroupEntry({
   groupOpen: boolean
   itemOpenById: Record<string, boolean>
   readOnly?: boolean
+  canStopSubagents?: boolean
   attachmentUrl?: (fileId: string) => string
   onGroupOpenChange?: (open: boolean) => void
   onItemOpenChange: (itemId: string, open: boolean) => void
@@ -2234,6 +2245,7 @@ export function TimelineGroupEntry({
         open={groupOpen}
         itemOpenById={itemOpenById}
         readOnly={readOnly}
+        canStopSubagents={canStopSubagents}
         attachmentUrl={attachmentUrl}
         onOpenChange={onGroupOpenChange}
         onItemOpenChange={onItemOpenChange}
@@ -2253,6 +2265,7 @@ export function TimelineGroupEntry({
         open={groupOpen}
         itemOpenById={itemOpenById}
         readOnly={readOnly}
+        canStopSubagents={canStopSubagents}
         attachmentUrl={attachmentUrl}
         onOpenChange={onGroupOpenChange}
         onItemOpenChange={onItemOpenChange}
@@ -2270,6 +2283,7 @@ export function TimelineGroupEntry({
       resolvingActionId={resolvingActionId}
       toolOpen={itemOpenById[group.item.id] ?? false}
       readOnly={readOnly}
+      canStopSubagents={canStopSubagents}
       attachmentUrl={attachmentUrl}
       onToolOpenChange={(open) => onItemOpenChange(group.item.id, open)}
       onRespondInteraction={onRespondInteraction}
@@ -2335,6 +2349,7 @@ function ToolRunGroup({
   open,
   itemOpenById,
   readOnly,
+  canStopSubagents,
   attachmentUrl,
   onOpenChange,
   onItemOpenChange,
@@ -2349,6 +2364,7 @@ function ToolRunGroup({
   open: boolean
   itemOpenById: Record<string, boolean>
   readOnly: boolean
+  canStopSubagents: boolean
   attachmentUrl?: (fileId: string) => string
   onOpenChange?: (open: boolean) => void
   onItemOpenChange: (itemId: string, open: boolean) => void
@@ -2386,6 +2402,7 @@ function ToolRunGroup({
                 resolvingActionId={resolvingActionId}
                 toolOpen={itemOpenById[item.id] ?? false}
                 readOnly={readOnly}
+                canStopSubagents={canStopSubagents}
                 attachmentUrl={attachmentUrl}
                 onToolOpenChange={(open) => onItemOpenChange(item.id, open)}
                 onRespondInteraction={onRespondInteraction}
@@ -2408,6 +2425,7 @@ function AgentCallGroup({
   open,
   itemOpenById,
   readOnly,
+  canStopSubagents,
   attachmentUrl,
   onOpenChange,
   onItemOpenChange,
@@ -2422,6 +2440,7 @@ function AgentCallGroup({
   open: boolean
   itemOpenById: Record<string, boolean>
   readOnly: boolean
+  canStopSubagents: boolean
   attachmentUrl?: (fileId: string) => string
   onOpenChange?: (open: boolean) => void
   onItemOpenChange: (itemId: string, open: boolean) => void
@@ -2459,6 +2478,7 @@ function AgentCallGroup({
                 nestedAgentCall
                 toolOpen={itemOpenById[item.id] ?? false}
                 readOnly={readOnly}
+                canStopSubagents={canStopSubagents}
                 attachmentUrl={attachmentUrl}
                 onToolOpenChange={(open) => onItemOpenChange(item.id, open)}
                 onRespondInteraction={onRespondInteraction}

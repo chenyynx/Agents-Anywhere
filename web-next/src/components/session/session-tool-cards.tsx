@@ -3,7 +3,7 @@
 import * as React from "react"
 import { toast } from "sonner"
 import { copyText } from "@/lib/clipboard"
-import { Bot, Check, ChevronDown, Code2, Copy, FilePenLine, Hammer, Loader2, TerminalSquare } from "lucide-react"
+import { Bot, Check, ChevronDown, Code2, Copy, FilePenLine, Hammer, Loader2, Square, TerminalSquare } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
@@ -19,6 +19,12 @@ import { dashboardApi } from "@/features/dashboard/api"
 import type { Notice, SessionView, TimelineItem } from "@/features/dashboard/types"
 import { useTranslations } from "next-intl"
 import { commandText, firstTextOf, recordsOf, textOf } from "@/components/session/session-utils"
+import {
+  SUBAGENT_STOP_PENDING_TIMEOUT_MS,
+  liveSubagentTasks,
+  subagentTaskLabel,
+  type SubagentTaskEntry,
+} from "@/components/session/subagent-actions"
 import {
   fileChangeAction,
   fileChangeDisplayDiff,
@@ -50,6 +56,7 @@ export function ToolCard({
   onOpenChange,
   onRespondInteraction,
   readOnly = false,
+  canStopSubagents = false,
 }: {
   item: TimelineItem
   token: string
@@ -61,10 +68,17 @@ export function ToolCard({
   onOpenChange?: (open: boolean) => void
   onRespondInteraction: (noticeId: string, actionId: string, input?: Record<string, unknown>) => void
   readOnly?: boolean
+  canStopSubagents?: boolean
 }) {
   const tSession = useTranslations("dashboard.session")
   const kind = timelineToolKind(item)
   const isAgentCall = kind === "agent_call"
+  // Stop buttons only exist on agent_call cards whose `agents` entries are
+  // still live — never for background bash/workflow, and never behind the
+  // session runtimeStatus gate (§7.3).
+  const liveSubagents = isAgentCall && canStopSubagents && !readOnly
+    ? liveSubagentTasks(item.content.agents)
+    : []
   const command = timelineToolCommand(item)
   const output =
     textOf(item.content.output) ||
@@ -91,11 +105,30 @@ export function ToolCard({
   }, [shouldOpenForInteraction, updateOpen])
 
   if (!hasDetail) {
+    if (liveSubagents.length >= 2) {
+      // Several live subagents on one card: one row per task so every button
+      // stays bound to exactly one taskId (§7.3).
+      return (
+        <div className="flex min-w-0 max-w-full flex-col overflow-hidden">
+          <ToolMarkerRow kind={kind} status={item.status} title={title} />
+          <SubagentStopRows
+            tasks={liveSubagents}
+            agentType={textOf(item.content.agentType)}
+            token={token}
+            sessionId={session.id}
+          />
+        </div>
+      )
+    }
+    const singleTask = liveSubagents[0]
     return (
       <ToolMarkerRow
         kind={kind}
         status={item.status}
         title={title}
+        trailing={singleTask ? (
+          <SubagentStopButton token={token} sessionId={session.id} taskId={singleTask.taskId} />
+        ) : undefined}
       />
     )
   }
@@ -145,15 +178,104 @@ function ToolMarkerRow({
   kind,
   status,
   title,
+  trailing,
 }: {
   kind: string
   status: TimelineItem["status"]
   title: string
+  trailing?: React.ReactNode
 }) {
   return (
     <Marker className="w-full">
       <ToolMarkerRowContent kind={kind} status={status} title={title} />
+      {trailing}
     </Marker>
+  )
+}
+
+function SubagentStopRows({
+  tasks,
+  agentType,
+  token,
+  sessionId,
+}: {
+  tasks: SubagentTaskEntry[]
+  agentType: string | null
+  token: string
+  sessionId: string
+}) {
+  return (
+    <div className="flex min-w-0 max-w-full flex-col overflow-hidden">
+      {tasks.map((task) => (
+        <Marker key={task.taskId} className="w-full pl-7">
+          <span className="code-mono min-w-0 flex-1 truncate text-xs text-muted-foreground">
+            {subagentTaskLabel(task, agentType)}
+            {task.lastToolName ? ` · ${task.lastToolName}` : ""}
+          </span>
+          <SubagentStopButton token={token} sessionId={sessionId} taskId={task.taskId} />
+        </Marker>
+      ))}
+    </div>
+  )
+}
+
+function SubagentStopButton({
+  token,
+  sessionId,
+  taskId,
+}: {
+  token: string
+  sessionId: string
+  taskId: string
+}) {
+  const tSession = useTranslations("dashboard.session")
+  const [stopping, setStopping] = React.useState(false)
+  const timeoutRef = React.useRef<number | null>(null)
+
+  const clearStopping = React.useCallback(() => {
+    if (timeoutRef.current !== null) {
+      window.clearTimeout(timeoutRef.current)
+      timeoutRef.current = null
+    }
+    setStopping(false)
+  }, [])
+
+  React.useEffect(() => () => {
+    if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current)
+  }, [])
+
+  const stop = async () => {
+    if (stopping) return
+    setStopping(true)
+    // Stay disabled until the terminal task event converges the card; the
+    // timeout re-enables the button so a missed event cannot leave it stuck.
+    timeoutRef.current = window.setTimeout(clearStopping, SUBAGENT_STOP_PENDING_TIMEOUT_MS)
+    try {
+      const response = await dashboardApi.stopSubagent(token, sessionId, taskId)
+      if (response.ok === false) {
+        clearStopping()
+        toast.error(response.error?.message || tSession("interruptFailed"))
+        return
+      }
+      // Unknown taskId is a factual answer, not a failure (§7.2): nothing
+      // will converge, so allow a retry right away.
+      if (response.result?.stopped === false) clearStopping()
+    } catch (error) {
+      clearStopping()
+      toast.error(error instanceof Error ? error.message : tSession("interruptFailed"))
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-60"
+      aria-label={tSession("interrupt")}
+      disabled={stopping}
+      onClick={() => { void stop() }}
+    >
+      {stopping ? <Loader2 className="size-3.5 animate-spin" /> : <Square className="size-3.5" />}
+    </button>
   )
 }
 

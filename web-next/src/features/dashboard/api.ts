@@ -53,6 +53,7 @@ import type {
   SessionSelectionPatchResponse,
   SessionSnapshotResponse,
   SessionTimelineResponse,
+  SubagentStopResult,
   TakeoverResponse,
   TerminalCreateRequest,
   TerminalListResult,
@@ -707,7 +708,23 @@ export class DashboardApi {
   interruptSession(token: string, sessionId: string): Promise<RpcResponse<unknown>> {
     return this.client.post<RpcResponse<unknown>>(
       `/sessions/${encodeURIComponent(sessionId)}/runtime/interrupt`,
-      {},
+      // Manual stop asks the runtime to spare running background work
+      // (task spec v2 §7.4); the server defaults the field to false, so the
+      // historical all-stop behavior stays one omitted flag away.
+      { preserveBackground: true },
+      { token },
+    );
+  }
+
+  /** Stop one subagent by taskId; unknown ids answer `{stopped: false}` (§7.2). */
+  stopSubagent(
+    token: string,
+    sessionId: string,
+    taskId: string,
+  ): Promise<RpcResponse<SubagentStopResult>> {
+    return this.client.post<RpcResponse<SubagentStopResult>>(
+      `/sessions/${encodeURIComponent(sessionId)}/runtime/subagent/stop`,
+      { taskId },
       { token },
     );
   }

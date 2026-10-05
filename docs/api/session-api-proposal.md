@@ -343,11 +343,22 @@ PATCH /sessions/{sessionId}/runtime/selections
 POST  /sessions/{sessionId}/runtime/messages
 POST  /sessions/{sessionId}/runtime/steer
 POST  /sessions/{sessionId}/runtime/interrupt
+POST  /sessions/{sessionId}/runtime/subagent/stop
 ```
 
 `/sessions/{sessionId}/runtime/capabilities` returns session-scoped effective
 capabilities. Web must use those capabilities for current-session action
 availability instead of deriving availability from local runtime status.
+
+`/sessions/{sessionId}/runtime/subagent/stop` stops one background subagent of
+the session, addressed by its runtime task id. The request body is
+`{"taskId": "..."}`; the response result is `{"stopped": true|false}` — true
+when the runtime accepted the per-task stop for an id present in its live task
+snapshot, false when the id is unknown there (the card is left to converge on
+its own terminal task event). An unknown id is a factual result, not a failure:
+the endpoint answers 200 with `stopped: false` and never throws or surfaces an
+error for it. Gating follows the session-scoped `session.subagent_control`
+capability (see [capabilities](./capabilities.md)).
 
 Runtime-scoped live endpoints use runtime resources:
 

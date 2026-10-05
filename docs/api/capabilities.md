@@ -41,6 +41,7 @@ Examples:
 session.send_message
 session.steer
 session.interrupt
+session.subagent_control
 session.commands
 session.interaction.approval
 catalog.model
@@ -61,6 +62,31 @@ busy gating lives in the catalog instead, where each command carries its own
 `disabledReason` (`session_unloaded`, `session_<status>`, ...). Those strings are
 what clients translate and fallback to verbatim, so runtimes report only tokens
 from the shared vocabulary here rather than inventing per-runtime reasons.
+
+### `session.subagent_control`
+
+`session.subagent_control` answers one question: can this user stop one
+background subagent of this session right now, through the per-task stop
+channel (`POST /sessions/{sessionId}/runtime/subagent/stop`)?
+
+Its three flags mean:
+
+- `supported`: the runtime can stop an individual background task at all.
+  Claude sessions report true only when the bundled Agent SDK exposes the
+  `stop_task` control request; runtimes without that control report false.
+- `available`: the session's runtime connection is online — a live connection
+  hosts the session's work, so a stop control request can reach it. It is
+  deliberately **not** tied to turn state: background subagents can keep
+  running while the session itself is idle, and the stop channel works in that
+  state too (this is the difference from `session.interrupt`, whose
+  `available` tracks the active turn). It does not answer "is a subagent
+  running now"; clients learn that from the session's Agent cards and render
+  one stop control per `running`/`async_launched` agent entry, each bound to
+  that entry's task id.
+- `allowed`: the same takeover rule as `session.interrupt`.
+
+The scope fields (`runtime`, `runtimeId`, `sessionId`, `connectorId`) match
+`session.interrupt`.
 
 ## Capability shape
 
@@ -232,6 +258,8 @@ turn finishes     -> session.send_message true, session.interrupt false
 compact starts    -> session.send_message false, session.commands unchanged
 compact finishes  -> session.send_message true, session.commands unchanged
 no active turn    -> session.interrupt false
+runtime connection opens/closes -> session.subagent_control availability changes
+                                  (it does not track turn state)
 takeover changes  -> allowed changes on session actions
 ```
 

@@ -189,6 +189,15 @@ extension V2TimelineItem {
     var isVisibleInChat: Bool {
         guard status != .hidden, ![.turnStart, .turnEnd].contains(type) else { return false }
         if type == .artifact && raw["content"]?["kind"] == .string("diff") { return false }
+        if isReasoning,
+           TimelineText.reasoning(raw["content"] ?? .object([:]))
+               .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // The affected model channel emits signature-only thinking blocks;
+            // with nothing to display the row renders as a bare, un-expandable
+            // 「推理」 marker (pp, 2026-10-05). New ones are never minted
+            // (connector gate); existing DB rows disappear here instead.
+            return false
+        }
         if type == .message, source["runtime"] == .string("claude") {
             let text = displayText.trimmingCharacters(in: .whitespacesAndNewlines)
             if role == .user && ["[Request interrupted by user]", "[Request interrupted by user for tool use]"].contains(text) { return false }

@@ -566,11 +566,28 @@ class SessionsApi(
         serverUrl: String,
         authorizationToken: String,
         sessionId: String,
+        preserveBackground: Boolean = false,
     ): RemoteRpcResponse {
+        val body = JSONObject()
+        if (preserveBackground) body.put("preserveBackground", true)
         return client.postJson(
             serverUrl = serverUrl,
             path = "/sessions/${sessionId.urlEncode()}/runtime/interrupt",
-            body = JSONObject(),
+            body = body,
+            authorizationToken = authorizationToken,
+        ).toRemoteRpcResponse()
+    }
+
+    fun stopSubagent(
+        serverUrl: String,
+        authorizationToken: String,
+        sessionId: String,
+        taskId: String,
+    ): RemoteRpcResponse {
+        return client.postJson(
+            serverUrl = serverUrl,
+            path = "/sessions/${sessionId.urlEncode()}/runtime/subagent/stop",
+            body = JSONObject().put("taskId", taskId),
             authorizationToken = authorizationToken,
         ).toRemoteRpcResponse()
     }

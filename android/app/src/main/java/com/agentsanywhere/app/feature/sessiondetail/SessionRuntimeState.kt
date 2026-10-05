@@ -7,6 +7,7 @@ import com.agentsanywhere.app.api.RemoteSessionCommand
 
 const val SESSION_SEND_MESSAGE_CAPABILITY = "session.send_message"
 const val SESSION_INTERRUPT_CAPABILITY = "session.interrupt"
+const val SESSION_SUBAGENT_CONTROL_CAPABILITY = "session.subagent_control"
 const val SESSION_NOTICE_RESPONSE_CAPABILITY = "session.interaction.approval"
 const val SESSION_COMMANDS_CAPABILITY = "session.commands"
 const val SESSION_COMMAND_EXECUTE_CAPABILITY = "session.command.execute"

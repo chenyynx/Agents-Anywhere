@@ -17,6 +17,7 @@ data class SessionDetailState(
     val takeoverInFlight: Boolean = false,
     val sending: Boolean = false,
     val interrupting: Boolean = false,
+    val stoppingSubagentTaskIds: Set<String> = emptySet(),
     val selectionUpdating: Boolean = false,
     val commandExecuting: Boolean = false,
     val respondingNoticeIds: Set<String> = emptySet(),

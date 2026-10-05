@@ -528,9 +528,35 @@ class SessionDetailController(
         return withContext(Dispatchers.IO) {
             runCatching {
                 val auth = authSession()
-                val response = sessionsApi.interruptSession(auth.serverUrl, auth.accessToken, sessionId)
+                // A manual stop keeps running background subagents alive; the
+                // connector only folds them away on the historical
+                // (preserveBackground=false) path.
+                val response = sessionsApi.interruptSession(
+                    auth.serverUrl,
+                    auth.accessToken,
+                    sessionId,
+                    preserveBackground = true,
+                )
                 if (!response.ok) {
                     throw IllegalStateException(response.failureMessage("Runtime rejected the interrupt."))
+                }
+                Unit
+            }
+        }
+    }
+
+    suspend fun stopSubagent(sessionId: String, taskId: String): Result<Unit> {
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                val auth = authSession()
+                val response = sessionsApi.stopSubagent(
+                    auth.serverUrl,
+                    auth.accessToken,
+                    sessionId,
+                    taskId,
+                )
+                if (!response.ok) {
+                    throw IllegalStateException(response.failureMessage("Runtime rejected the subagent stop."))
                 }
                 Unit
             }

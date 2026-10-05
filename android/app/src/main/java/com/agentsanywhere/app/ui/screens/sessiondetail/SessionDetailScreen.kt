@@ -122,6 +122,7 @@ import com.agentsanywhere.app.feature.sessiondetail.SESSION_MODEL_CATALOG_CAPABI
 import com.agentsanywhere.app.feature.sessiondetail.SESSION_NOTICE_RESPONSE_CAPABILITY
 import com.agentsanywhere.app.feature.sessiondetail.SESSION_PERMISSION_CATALOG_CAPABILITY
 import com.agentsanywhere.app.feature.sessiondetail.SESSION_SEND_MESSAGE_CAPABILITY
+import com.agentsanywhere.app.feature.sessiondetail.SESSION_SUBAGENT_CONTROL_CAPABILITY
 import com.agentsanywhere.app.feature.sessiondetail.selectionOptions
 import com.agentsanywhere.app.feature.sessiondetail.sessionComposerEnabled
 import com.agentsanywhere.app.feature.sessiondetail.validatedSelection
@@ -901,6 +902,31 @@ fun SessionDetailScreen(
         }
     }
 
+    fun stopSubagent(taskId: String) {
+        val id = sessionId ?: return
+        if (taskId.isBlank() || taskId in state.stoppingSubagentTaskIds) return
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        state = state.copy(
+            stoppingSubagentTaskIds = state.stoppingSubagentTaskIds + taskId,
+            actionError = null,
+        )
+        scope.launch {
+            controller.stopSubagent(id, taskId)
+                // Success keeps the in-flight state: the card closes on the
+                // task's terminal event (or the in-flight timeout), never on a
+                // local guess. An unknown task id is a factual result too, not
+                // a failure.
+                .onFailure { error ->
+                    val message = error.message ?: context.getString(R.string.session_subagent_stop_failed)
+                    state = state.copy(
+                        stoppingSubagentTaskIds = state.stoppingSubagentTaskIds - taskId,
+                        actionError = message,
+                    )
+                    showError(message)
+                }
+        }
+    }
+
     fun loadModelCatalog() {
         val pending = preparedSession
         if (pending != null) {
@@ -1283,6 +1309,14 @@ fun SessionDetailScreen(
     val canUseCommands = state.capabilities.isUsable(SESSION_COMMANDS_CAPABILITY, runtimeId, runtimeType) ||
         state.capabilities.isUsable(SESSION_COMMAND_EXECUTE_CAPABILITY, runtimeId, runtimeType)
     val capabilityFactsFresh = state.capabilities.isLoaded && state.capabilities.errorMessage == null
+    // Unlike the main interrupt, this is never gated on the turn/runtime
+    // status: a background subagent can be alive while the session is idle.
+    // The card itself decides per live task which controls to render.
+    val canUseSubagentControl = capabilityFactsFresh && state.capabilities.isUsable(
+        SESSION_SUBAGENT_CONTROL_CAPABILITY,
+        runtimeId,
+        runtimeType,
+    )
     val runtimeStatus = state.effectiveRuntimeStatus()
     val openInteractions = remember(state.notices.notices) {
         state.notices.notices
@@ -1582,6 +1616,20 @@ fun SessionDetailScreen(
     LaunchedEffect(state.interrupting, canUseInterrupt) {
         if (state.interrupting && !canUseInterrupt) state = state.copy(interrupting = false)
     }
+    LaunchedEffect(state.stoppingSubagentTaskIds, canUseSubagentControl) {
+        if (!canUseSubagentControl) {
+            if (state.stoppingSubagentTaskIds.isNotEmpty()) {
+                state = state.copy(stoppingSubagentTaskIds = emptySet())
+            }
+            return@LaunchedEffect
+        }
+        val pending = state.stoppingSubagentTaskIds
+        if (pending.isEmpty()) return@LaunchedEffect
+        // The card converges on the task's terminal event; this only re-arms
+        // the control if that event never arrives.
+        delay(SUBAGENT_STOP_IN_FLIGHT_TIMEOUT_MS)
+        state = state.copy(stoppingSubagentTaskIds = state.stoppingSubagentTaskIds - pending)
+    }
     val agentLabel = state.session?.runtimeLabel?.takeIf { it.isNotBlank() }
         ?: context.getString(R.string.session_agent_fallback)
     val turnInProgress = state.sending ||
@@ -1726,6 +1774,9 @@ fun SessionDetailScreen(
                                 onShareReply = ::requestShare,
                                 onOpenFile = ::openReferencedFile,
                                 onRespondNotice = ::respondNotice,
+                                canControlSubagents = canUseSubagentControl,
+                                stoppingSubagentTaskIds = state.stoppingSubagentTaskIds,
+                                onStopSubagent = ::stopSubagent,
                             )
                         }
                         ComposerVeil(
@@ -2405,3 +2456,4 @@ private fun uniqueGalleryFile(directory: File, displayName: String): File {
 
 private const val MAX_ATTACHMENT_FILES = 6
 private const val MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+private const val SUBAGENT_STOP_IN_FLIGHT_TIMEOUT_MS = 10_000L

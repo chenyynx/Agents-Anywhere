@@ -414,6 +414,8 @@
     <string name="session_notice_expand">展开</string>
     <string name="session_notice_response_failed">无法发送运行时响应。</string>
     <string name="session_interrupt_failed">无法中断这个会话。</string>
+    <string name="session_subagent_stop">停止子代理</string>
+    <string name="session_subagent_stop_failed">无法停止这个子代理。</string>
     <string name="session_approval_resolve_failed">无法处理审批。</string>
     <string name="session_agent_working">%1$s 正在处理</string>
     <string name="session_agent_interrupting">正在中断 %1$s</string>

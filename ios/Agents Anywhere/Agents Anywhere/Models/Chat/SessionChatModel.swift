@@ -307,13 +307,24 @@ final class SessionChatModel {
     /// or whose state cannot prove it is not — is interrupted right after it,
     /// so the next message starts under the new model.
     func applySettings() async -> Bool {
-        guard !isWorking, session.runtime.isFresh else { return false }
+        guard !isWorking else { return false }
+        // A stale projection cannot prove the offered selection still exists,
+        // and the write-discipline gates are fail-closed by design. The
+        // refusal is explicit — the sheet's own error surface — instead of a
+        // silent no-op, and the background heal re-reads within a bounded
+        // backoff, so the user can simply retry (red team F3).
+        guard session.runtime.isFresh else {
+            self.settingsError = String(localized: "连接恢复后可更改对话选项。")
+            return false
+        }
         isWorking = true
         defer { isWorking = false }
         do {
+            let modelBefore = settings.model?.id
             var switchedModel = false
-            // Deterministic order: the model selection precedes the interrupt
-            // it triggers; a permission change rides along after.
+            // Deterministic order (pp 2026-10-05): every selection — model
+            // first, then a permission change riding along — lands before the
+            // interrupt it implies.
             for scope in [V2RuntimeSelectionScope.model, .permission] {
                 guard let value = settings.selections[scope], currentSelections[scope] != value else { continue }
                 guard session.runtime.allows(scope == .model ? "catalog.model" : "catalog.permission") else {
@@ -333,7 +344,12 @@ final class SessionChatModel {
                         self.error = error.localizedDescription
                     }
                 }
-                announceModelSwitch()
+                // The note names a *model*: switching only the thinking effort
+                // inside the same model interrupts the turn but announces
+                // nothing (red team F8).
+                if modelBefore != settings.model?.id {
+                    announceModelSwitch()
+                }
             }
             return session.isValid
         } catch {
@@ -344,11 +360,17 @@ final class SessionChatModel {
     }
 
     /// The interrupt branch of a model switch: a turn in flight, or any state
-    /// that cannot prove there is none (stale facts, no state yet), gets an
-    /// idempotent interrupt — an interrupt that finds no active turn answers
-    /// 409, which the repository treats as success.
+    /// that cannot prove there is none (no state yet), gets an idempotent
+    /// interrupt — an interrupt that finds no active turn answers 409, which
+    /// the repository only treats as success when the last-known interrupt
+    /// capability supports it. A runtime that cannot interrupt at all is not
+    /// asked to: the attempt could only produce a capability refusal the user
+    /// cannot act on (red team F2, DG-10).
     private func needsInterruptAfterModelSwitch() -> Bool {
-        guard session.runtime.isFresh, let status = session.runtime.state?.status else { return true }
+        guard session.runtime.isFresh else { return true }
+        guard let capability = session.runtime.capabilities?.capability(id: "session.interrupt"),
+              capability.supported, capability.allowed else { return false }
+        guard let status = session.runtime.state?.status else { return true }
         return status.isTurnInFlight || status == .unknown
     }
 

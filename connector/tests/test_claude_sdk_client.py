@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from typing import Any
 
 import claude_agent_sdk
 import pytest
 
 from connector.runtimes.claude.domain.session import ClaudeSession
-from connector.runtimes.claude.sdk.client import build_sdk_options, interrupt_client
+from connector.runtimes.claude.sdk.client import (
+    CLAUDE_INTERRUPT_TIMEOUT_SECONDS,
+    build_sdk_options,
+    interrupt_client,
+)
 
 
 def test_claude_sdk_buffer_handles_25_mib_image_read_result() -> None:
@@ -67,3 +72,18 @@ def test_interrupt_client_waits_for_a_sync_result_shape() -> None:
         assert await interrupt_client(_SyncClient()) is True
 
     asyncio.run(run())
+
+
+def test_interrupt_client_default_timeout_stays_a_stop_path_budget() -> None:
+    """The bound belongs to the stop path, not to the SDK.
+
+    A red-team note: the timeout test above passes its own value, so the
+    default could drift to a minute and every test would stay green. The
+    default is the real budget: bounded well below the server's 30 s RPC
+    timeout (a stop that waits that long is the bug this guard exists for),
+    and never zero (the CLI must get a chance to answer).
+    """
+
+    default = inspect.signature(interrupt_client).parameters["timeout"].default
+    assert default == CLAUDE_INTERRUPT_TIMEOUT_SECONDS
+    assert 0 < default <= 5

@@ -10,6 +10,19 @@ nonisolated struct V2SessionCachePolicy {
     var catalogLifetime: TimeInterval = 30
 }
 
+/// The observed-session self-healing cadence. Doubling from `initial` up to
+/// `maximum`, never beyond it. Injectable so tests pin the production schedule
+/// instead of inheriting the 1 ms test sleep (red team F6).
+nonisolated struct V2SessionHealBackoff: Equatable {
+    var initial: Duration = .seconds(1)
+    var maximum: Duration = .seconds(30)
+    var mismatch: Duration = .milliseconds(600)
+
+    func delay(step: Int) -> Duration {
+        min(initial * (1 << min(step, 16)), maximum)
+    }
+}
+
 /// One repository per authenticated server/account. Views observe values and invoke
 /// operations; this layer owns request coalescing, bounded caches and live recovery.
 @MainActor
@@ -25,6 +38,7 @@ final class V2SessionRepository {
     /// Bounded window an attempt waits for the path monitor's first report
     /// before opening a socket anyway (see `waitUntilConnectionReady`).
     private let connectionReadinessWindow: Duration
+    private let healBackoff: V2SessionHealBackoff
     private var entries: [V2SessionID: Entry] = [:]
     private var accessCounter = 0
     private var suspended = false
@@ -38,7 +52,8 @@ final class V2SessionRepository {
         localStore: V2LocalStore? = nil,
         now: @escaping () -> Date = Date.init,
         sleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
-        connectionReadinessWindow: Duration = .milliseconds(1500)
+        connectionReadinessWindow: Duration = .milliseconds(1500),
+        healBackoff: V2SessionHealBackoff = V2SessionHealBackoff()
     ) {
         self.scope = scope
         self.detail = detail
@@ -48,6 +63,7 @@ final class V2SessionRepository {
         self.now = now
         self.sleep = sleep
         self.connectionReadinessWindow = connectionReadinessWindow
+        self.healBackoff = healBackoff
     }
 
     /// Bound on how long a not-ready path delays one connection attempt.
@@ -313,33 +329,34 @@ final class V2SessionRepository {
             // That is the outcome the caller asked for, and the second half of
             // a double send lands here; both are success. Every other failure
             // is real and keeps propagating.
-            if !Self.meansNoActiveTurnInterrupt(error) { throw error }
+            if !meansNoActiveTurnInterrupt(error, entry: entry) { throw error }
         }
         try requireCurrent(entry)
         // The accepted interrupt is proof the runtime is stopping the turn,
         // but its ack carries no state and the frames that would report the
         // idle turn can be late or lost. Flow the composer to the post-stop
-        // turn window now; the recovery round below calibrates it against
+        // turn window now; a background round calibrates it against
         // authoritative facts (and a failed round rolls it back).
+        entry.predictedIdleSequence = entry.recoverySequence
         entry.model.runtime.beginPredictedIdle()
         emit(entry)
-        do { try await reconcile(entry, requiringRoundAfter: entry.recoverySequence) }
-        catch {
-            if isCurrent(entry) {
-                entry.model.runtime.endPredictedIdle()
-                entry.error = V2ClientFailure(error)
-                emit(entry)
-            }
-        }
+        launchFollowUpReconcile(entry)
     }
 
     /// Recognises the one 409 that means "already stopped" rather than "the
     /// stop failed": the session capability gate refusing `session.interrupt`
-    /// because no turn is active. Read-only (takeover) and offline conflicts
-    /// use different details and must keep failing loudly.
-    private static func meansNoActiveTurnInterrupt(_ error: Error) -> Bool {
+    /// because no turn is active. The server answers the same sentence for
+    /// every capability refusal — `supported=false`, `available=false` and
+    /// `allowed=false` alike (`session_run.py:762-767`) — so the text alone
+    /// cannot tell "nothing to stop" from "this runtime has no interrupt at
+    /// all"; only a last-known interrupt capability the runtime supports and
+    /// permits lets the refusal count as success. Everything else, including
+    /// read-only and offline conflicts, keeps failing loudly (red team F2).
+    private func meansNoActiveTurnInterrupt(_ error: Error, entry: Entry) -> Bool {
         guard let http = error as? HTTPError, case let .server(status, message, _) = http, status == 409 else { return false }
-        return message.contains("session capability is unavailable") && message.contains("session.interrupt")
+        guard message.contains("session capability is unavailable") && message.contains("session.interrupt") else { return false }
+        guard let capability = entry.projection?.data.capabilities.capability(id: "session.interrupt") else { return false }
+        return capability.supported && capability.allowed
     }
 
     func setTakeover(sessionId: V2SessionID, enabled: Bool) async throws {
@@ -373,8 +390,29 @@ final class V2SessionRepository {
         // a recovery round whether or not a frame arrives, so the projection
         // holds live facts again. The write is already confirmed; a failed
         // read reports itself without making the write look rejected.
-        do { try await reconcile(entry, requiringRoundAfter: entry.recoverySequence) }
-        catch { if isCurrent(entry) { entry.error = V2ClientFailure(error); emit(entry) } }
+        launchFollowUpReconcile(entry)
+    }
+
+    /// The write's follow-up recovery, run as a *background* round: the caller
+    /// returns as soon as the write is confirmed, so neither the options sheet
+    /// nor the composer's `isWorking` gate ever waits on network reads (red
+    /// team F1 — an awaited round put a read with HTTP-level retries inside
+    /// the stop path). The round keeps the single-flight/epoch discipline:
+    /// `performRecovery` joins a suitable in-flight round or launches one that
+    /// `stop()` can supersede. On failure the optimistic turn end rolls back
+    /// and the failure lands on the entry's existing error channel; on success
+    /// the live facts end the prediction themselves.
+    private func launchFollowUpReconcile(_ entry: Entry) {
+        let sequence = entry.recoverySequence
+        Task { [weak self] in
+            guard let self else { return }
+            let failure = await self.performRecovery(entry, requiringRoundAfter: sequence)
+            guard let failure, self.isCurrent(entry) else { return }
+            entry.predictedIdleSequence = nil
+            entry.model.runtime.endPredictedIdle()
+            entry.error = V2ClientFailure(failure)
+            emit(entry)
+        }
     }
 
     func respond(sessionId: V2SessionID, noticeId: V2NoticeID, actionId: String, input: JSONValue? = nil) async throws {
@@ -498,11 +536,13 @@ final class V2SessionRepository {
     }
 
     private func start(_ entry: Entry, catchUp: Bool = false) {
-        // Healing rides the observed lifecycle: it needs an entry someone is
-        // looking at, and stop() ends both.
-        startHealing(entry)
         guard isCurrent(entry), !entry.model.isLocalCreation, !suspended, network.availability != .offline,
               !entry.observers.isEmpty, entry.connectionTask == nil else { return }
+        // Healing rides the observed lifecycle: it needs an entry someone is
+        // looking at, and stop() ends both. It starts *after* the guards so an
+        // entry nobody observes (a cached session, a suspended one) is never
+        // given a spinning task (red team F5).
+        startHealing(entry)
         let connectionID = UUID()
         entry.connectionID = connectionID
         entry.connectionTask = Task { [weak self] in
@@ -639,26 +679,17 @@ final class V2SessionRepository {
 
     // MARK: - Self-healing
 
-    /// Cadence for healing a projection that no later event is guaranteed to
-    /// repair: bounded backoff (1, 2, 4, 8, 16 s), capped at 30 s, and never
-    /// abandoned — past the cap the retry continues at the capped interval so
-    /// a session the user can see cannot sit grey forever (U6). The cap also
-    /// keeps a persistently failing read at one attempt per interval instead
-    /// of a storm.
-    private static func healDelay(step: Int) -> Duration {
-        .seconds(min(1 << min(step, 5), 30))
-    }
-
-    /// The sibling frames of one protocol envelope arrive back to back; a
-    /// contradiction that survives this window lost a frame rather than
-    /// merely waiting for its pair.
-    private static let mismatchHealDelay: Duration = .milliseconds(600)
-
     /// Watches one observed session for a projection that needs healing and
     /// nudges a recovery round. It starts with the socket lifecycle and ends
     /// with it; failures are quiet here (the socket path reports its own
     /// failures), and the condition is re-checked before every attempt so a
     /// session that healed keeps costing nothing.
+    ///
+    /// The cadence is the injected `healBackoff` — doubling from its initial
+    /// delay to its cap, and never abandoned: past the cap the retry continues
+    /// at the capped interval so a session the user can see cannot sit grey
+    /// forever (U6). The cap also keeps a persistently failing read at one
+    /// attempt per interval instead of a storm.
     private func startHealing(_ entry: Entry) {
         guard entry.healTask == nil else { return }
         let healID = UUID()
@@ -668,11 +699,11 @@ final class V2SessionRepository {
             var step = 0
             while !Task.isCancelled {
                 guard let self, self.isCurrent(entry) else { return }
-                do { try await self.sleep(Self.healDelay(step: step)) } catch { return }
+                do { try await self.sleep(self.healBackoff.delay(step: step)) } catch { return }
                 guard !Task.isCancelled, self.isCurrent(entry) else { return }
                 guard self.needsHealing(entry) else { step = 0; continue }
                 let failure = await self.performRecovery(entry)
-                step = failure == nil && !self.needsHealing(entry) ? 0 : min(step + 1, 5)
+                step = failure == nil && !self.needsHealing(entry) ? 0 : min(step + 1, 16)
             }
         }
     }
@@ -722,10 +753,11 @@ final class V2SessionRepository {
         guard hasStateCapabilityMismatch(entry), entry.mismatchHealTask == nil else { return }
         let healID = UUID()
         entry.mismatchHealID = healID
+        let delay = healBackoff.mismatch
         entry.mismatchHealTask = Task { [weak self] in
             defer { if entry.mismatchHealID == healID { entry.mismatchHealTask = nil } }
             guard let self else { return }
-            do { try await self.sleep(Self.mismatchHealDelay) } catch { return }
+            do { try await self.sleep(delay) } catch { return }
             guard !Task.isCancelled, self.isCurrent(entry), self.hasStateCapabilityMismatch(entry) else { return }
             _ = await self.performRecovery(entry)
         }
@@ -773,7 +805,7 @@ final class V2SessionRepository {
         let epoch = entry.recoveryEpoch
         entry.recoveryTaskSequence = sequence
         entry.recoveryTask = Task { [self] () -> Error? in
-            let outcome = await self.runRecovery(entry, epoch: epoch)
+            let outcome = await self.runRecovery(entry, epoch: epoch, sequence: sequence)
             // Only the round that owns the slot may clear it, so a superseded
             // round can never erase a newer round's registration.
             if entry.recoveryEpoch == epoch, entry.recoveryTaskSequence == sequence {
@@ -793,7 +825,7 @@ final class V2SessionRepository {
     ///
     /// The round never writes `entry.error`; it reports failure to its caller.
     /// The socket path surfaces it, the catch-up path ignores it.
-    private func runRecovery(_ entry: Entry, epoch: UUID) async -> Error? {
+    private func runRecovery(_ entry: Entry, epoch: UUID, sequence: Int) async -> Error? {
         do {
             try requireRecoveryEpoch(entry, epoch: epoch)
             try requireNetwork()
@@ -849,8 +881,15 @@ final class V2SessionRepository {
                     entry.projectionBarrier = barrier
                     entry.error = nil
                     // Authoritative facts landed: the optimistic turn end has
-                    // done its job and truth takes over, whatever it says.
-                    entry.model.runtime.endPredictedIdle()
+                    // done its job and truth takes over, whatever it says. A
+                    // round launched *before* the prediction carries a
+                    // pre-write read, so it must not end the window the ack
+                    // just opened (red team F4) — only a round the prediction
+                    // ordered can.
+                    if let predictedAt = entry.predictedIdleSequence, sequence > predictedAt {
+                        entry.predictedIdleSequence = nil
+                        entry.model.runtime.endPredictedIdle()
+                    }
                 }
             }
             emit(entry)
@@ -937,6 +976,11 @@ final class V2SessionRepository {
         entry.recoveryTask?.cancel()
         entry.recoveryTask = nil
         entry.connection = .inactive
+        // A stopped or disconnected entry cannot carry a live prediction: the
+        // optimistic turn end belongs to the connection lifecycle that proved
+        // it (red team F4).
+        entry.predictedIdleSequence = nil
+        entry.model.runtime.endPredictedIdle()
         entry.projection?.markStale()
         invalidateCatalogs(entry)
         emit(entry)
@@ -993,6 +1037,10 @@ private final class Entry {
     /// launched after the frame it is closing.
     var recoverySequence = 0
     var recoveryTaskSequence = 0
+    /// The recovery sequence in force when the optimistic turn end began, or
+    /// nil with no prediction. Only a round launched after it may end the
+    /// prediction (red team F4).
+    var predictedIdleSequence: Int?
     var connectionTask: Task<Void, Never>?
     /// The observed-session heal loop. Cancelled by `stop()`; the id lets a
     /// round that is ending clear its own registration only.

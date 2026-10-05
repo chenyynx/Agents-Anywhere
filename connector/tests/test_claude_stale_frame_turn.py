@@ -172,6 +172,16 @@ def _short_breaker_budget(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(lifecycle, "POLLED_TURN_WATCHDOG_SECONDS", 0.2)
     monkeypatch.setattr(lifecycle, "CONTENTING_TURN_WATCHDOG_SECONDS", 0.4)
+    # F1: the declined-terminal grace window, for the same reason and with the
+    # same caveat. It is 30 s in production (see the constant's trade note);
+    # here it is 0.2 s so a turn that starves after a decline settles in
+    # milliseconds. No test below measures a recovery against it — the frames
+    # that recover a turn arrive immediately — and
+    # `test_claude_stale_frame_release.py` runs the recovery cases at the real
+    # value on purpose.
+    monkeypatch.setattr(
+        connection_module, "DECLINED_TERMINAL_GRACE_SECONDS", 0.2
+    )
 
 
 # --------------------------------------------------------------------------
@@ -356,30 +366,28 @@ def test_failed_result_still_reaches_the_pending_turn() -> None:
     asyncio.run(run())
 
 
-def test_a_residual_before_the_prompt_echo_degrades_the_turn_and_leaves_a_phantom() -> (
-    None
-):
-    """Red team round 2 §5.4: renamed to what it actually measures.
+def test_a_residual_before_the_prompt_echo_recovers_in_one_turn() -> None:
+    """The simplest ghost shape, and the cascade it used to leave behind.
 
-    The shape is the ghost's simplest one — on a brand-new transport the
-    previous turn's result arrives BEFORE the prompt echo — and what happens is
-    three steps that used to be described as one:
+    On a brand-new transport the previous turn's result arrives BEFORE the
+    prompt echo. The reader selects the pending (this prompt has no wire uuid
+    yet — see the exemption test below), so the result is routed into the live
+    turn rather than absorbed, and it is that turn's first terminal with no
+    work before it.
 
-    1. the reader selects the pending (this prompt has no wire uuid yet, see the
-       exemption test below), so the result is routed rather than absorbed;
-    2. inside the turn it is the first terminal, with no work before it, so the
-       turn degrades to `interrupted` + `unowned_result_no_content`;
-    3. the frames the early break orphaned — the echo, the real reply, the real
-       result — reach the reader at silence, the echo mints a scheduled turn,
-       and that phantom settles `completed` carrying the answer.
+    Before the release protocol that was two turns: the first degraded to
+    `interrupted` + `unowned_result_no_content`, and the frames its early
+    break orphaned — the echo, the real reply, the real result — reached the
+    reader at silence, where the echo minted a scheduled turn whose phantom
+    settled `completed` carrying the answer. Red team round 2 §5.3 measured
+    that cascade as benign but split one answer across two bubbles, and §5.4
+    pinned it here.
 
-    Step 3 is the cascade red team §5.3 measured and this pins. It is benign as
-    measured: the session returns to idle, no error state, two bubbles. Its
-    shape is documented in `_verdict_for_terminal`.
-
-    Both turn ends are asserted. An earlier version of this test asserted a
-    single turn end and passed only because it read the ledger before the
-    phantom settled — a latent race, not a claim.
+    Now it is one turn. The leftover is declined, the read continues past it,
+    and the turn settles on its own result with the answer in its own bubble —
+    no second turn end at all. The settle delay before the final assertion is
+    the point: a phantom mints within microseconds of the orphan frames
+    reaching the reader, so a turn end appearing here would be one.
     """
 
     async def run() -> None:
@@ -390,18 +398,24 @@ def test_a_residual_before_the_prompt_echo_degrades_the_turn_and_leaves_a_phanto
             await runtime.start_turn("first", None, "hello")
             session = runtime._sessions["first"]
             await asyncio.wait_for(session.active_task, 5)
-            await _wait_until(lambda: len(host.session_turn_ends) >= 2, 5)
+            await _wait_until(lambda: len(host.session_turn_ends) >= 1, 5)
+            # Long enough for a phantom to mint if anything still orphans the
+            # frames behind the leftover.
+            await asyncio.sleep(0.5)
 
             ends = host.session_turn_ends
-            assert [end["outcome"] for end in ends] == ["interrupted", "completed"]
-            assert ends[0]["metadata"]["terminalReason"] == STALE_COMPLETION_REASON
-            # Benign, as measured: idle again, no error state, nothing left
-            # running.
+            assert [end["outcome"] for end in ends] == ["completed"]
+            assert "terminalReason" not in ends[-1]["metadata"]
+            runner = runtime._turns.runner
+            assert runner.stale_terminal_recoveries == 1
+            assert runner.stale_completion_downgrades == 0
+            assert runner.foreign_terminal_frames == 1
+            # Idle again, no error state, nothing left running — and still one
+            # turn end, so no phantom rode in behind it.
             assert host.session_state_updates[-1]["status"] == "idle"
             assert not any(u["status"] == "error" for u in host.session_state_updates)
             assert session.execution is None
-            # The answer is not lost — it lands in the phantom's bubble, which is
-            # the user-visible cost of this shape (one answer, two bubbles).
+            # The answer is in the turn that asked for it.
             texts = [
                 str(item.content.get("text", ""))
                 for item in host.timeline_item_upserts
@@ -510,19 +524,28 @@ class _ResidualAfterEchoClient(_ScheduledClaudeClient):
         await self._complete_query(content)
 
 
-def test_in_turn_residual_never_reports_a_plain_completed() -> None:
-    """F1, the blocking half: the residual cannot pass itself off as success.
+def test_in_turn_residual_is_declined_and_the_turn_still_completes() -> None:
+    """F1, completed: the leftover no longer costs the user their answer.
 
-    修前红: the turn settled `completed` with no `terminalReason`, the client's
-    reply never arrived, and the user was left looking at an idle session with
-    an empty composer — the P1 report verbatim. I1 does not help here: this
-    frame was already inside a LIVE turn, so the mint path never runs.
+    This test used to pin the half-fix. The shape is unchanged — the previous
+    turn's result lands behind the new turn's prompt echo, inside the queue
+    that turn is already draining (the reconnect replay, real session
+    sess_tPcEDi0z9xJYxQ, 2026-10-04) — but what happens to it is not:
 
-    The turn cannot simply refuse to settle (a leftover result and an empty
-    reply are the same shape by the time they reach a turn, and refusing hangs
-    real replies). So it settles honestly instead: `interrupted`, carrying the
-    structured reason that names the condition, on a counter that is zero in
-    normal operation.
+      before  the leftover settled the turn `interrupted`, and the frames
+              behind it (the reply, the turn's own result) died in a queue
+              nobody drained. Honest, and the user still got nothing.
+      now     the leftover is DECLINED, the read continues, the reply is
+              consumed by the turn that asked for it, and the turn settles on
+              ITS OWN result.
+
+    So the old assertions — `interrupted`, `STALE_COMPLETION_REASON`,
+    `reply:second` absent — were pinning the symptom, and the symptom is gone.
+    They are replaced, not relaxed: the turn must still produce exactly one
+    verdict, the answer must be in the timeline, and the downgrade counter
+    must stay at zero, because a recovery is not a downgrade. The bound that
+    keeps this from hanging on a turn with nothing behind the leftover is
+    pinned in `test_claude_stale_frame_release.py`.
     """
 
     async def run() -> None:
@@ -535,24 +558,28 @@ def test_in_turn_residual_never_reports_a_plain_completed() -> None:
             await asyncio.wait_for(session.active_task, 5)
             runner = runtime._turns.runner
             assert runner.stale_completion_downgrades == 0
+            assert runner.stale_terminal_recoveries == 0
 
             await runtime.start_turn("inturn", None, "second")
             await asyncio.wait_for(session.active_task, 5)
+            await asyncio.sleep(0.2)
 
             ends = host.session_turn_ends
-            assert [end["outcome"] for end in ends] == ["completed", "interrupted"]
-            assert ends[-1]["metadata"]["terminalReason"] == STALE_COMPLETION_REASON
-            assert runner.stale_completion_downgrades == 1
+            assert [end["outcome"] for end in ends] == ["completed", "completed"]
+            assert "terminalReason" not in ends[-1]["metadata"]
+            assert runner.stale_terminal_recoveries == 1
+            # The leftover is still counted and still named — it is not
+            # unmeasured because it no longer hurts.
             assert runner.foreign_terminal_frames == 1
-            # The turn's own frames never reached the timeline, which is the
-            # point: the user is told "this round produced nothing" instead of
-            # being told it succeeded and then waiting for a reply that the
-            # swallowed frame displaced.
+            # And it is not a downgrade: this turn settled on its own result.
+            assert runner.stale_completion_downgrades == 0
             texts = [
                 str(item.content.get("text", ""))
                 for item in host.timeline_item_upserts
             ]
-            assert "reply:second" not in texts
+            assert "reply:second" in texts
+            assert host.session_state_updates[-1]["status"] == "idle"
+            assert session.execution is None
         finally:
             await runtime.stop()
 

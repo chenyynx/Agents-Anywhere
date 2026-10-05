@@ -1103,7 +1103,6 @@ private fun SubagentStopControl(
     onClick: () -> Unit,
 ) {
     val colors = LocalAAColors.current
-    val haptic = LocalHapticFeedback.current
     val stopDescription = stringResource(R.string.session_subagent_stop)
     Box(
         modifier = Modifier
@@ -1114,10 +1113,7 @@ private fun SubagentStopControl(
                 if (stopping) {
                     Modifier
                 } else {
-                    Modifier.noRippleClickable {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onClick()
-                    }
+                    Modifier.noRippleClickable(onClick = onClick)
                 },
             ),
         contentAlignment = Alignment.Center,

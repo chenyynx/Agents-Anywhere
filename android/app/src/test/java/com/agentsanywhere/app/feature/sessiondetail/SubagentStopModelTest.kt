@@ -82,12 +82,14 @@ class SubagentStopModelTest {
     @Test
     fun tasksWithoutTaskIdOrWithUnknownShapesAreNotStopTargets() {
         val agents = JSONObject()
+            .put("", JSONObject().put("status", "running")) // A blank key is never a task id.
             .put("task-1", JSONObject()) // A status-less task event leaves {} behind.
             .put("task-2", "not-an-object")
             .put("task-3", JSONObject().put("status", "running"))
 
         val call = agentCall(project(listOf(agentCallItem(agents = agents))))
 
+        assertEquals(listOf("task-3"), call.tasks.map { it.taskId })
         assertEquals(listOf("task-3"), call.stoppableTasks().map { it.taskId })
     }
 

@@ -1972,9 +1972,17 @@ class ClaudeTurnRunner:
 
         The fallback for a turn whose reply never arrived as a separate
         assistant frame — the CLI put the words in the result envelope
-        instead. It shares the assistant frame's item id, so a reply that does
-        arrive later replaces this text by revision rather than sitting beside
-        it as a second bubble.
+        instead. It is reached in exactly two shapes: an ordinary empty reply,
+        and a turn that declined a leftover and then got nothing better, where
+        the declined frame becomes the verdict after all (see the publish
+        below the read loop).
+
+        The item id it shares with the assistant frame is NOT a "a later reply
+        replaces this text by revision" promise. Within a turn the read is
+        over by the time this runs, so there is no later reply to do any
+        replacing; and a reply that arrives in a LATER turn is that turn's own
+        bubble — if the same answer is ever seen in two bubbles, the second is
+        a phantom, not a revision.
 
         Returns whether anything was published, so the caller can keep its
         "final content already emitted" flag honest.

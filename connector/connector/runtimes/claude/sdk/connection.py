@@ -206,6 +206,70 @@ class ClaudeResponse:
         self.terminal_declined.set()
         self._settle_verdict(False)
 
+    def _consume_verdict_signals(self) -> None:
+        """Destroy a ruling exactly once, on whichever channel answered it.
+
+        The decline ruling travels on three channels: the level event a park
+        would poll, the remembered flag for a ruling that arrived with nobody
+        parked, and the future handed to a parked reader. Whichever one
+        answers a park must clear the others with it. A ruling that outlives
+        the park it answered pre-empts the NEXT park — and that is not a rare
+        race, it is every recovered turn: the reader parks twice (once on the
+        leftover, once on the turn's own terminal) and the second park would
+        be answered by the first decline's leftovers. The reader then never
+        waits where it must, reads through the whole settle phase, and every
+        frame that arrives in that window is routed into a response whose turn
+        has already chosen its verdict — and destroyed with it.
+
+        `released` is deliberately not cleared. It is level-triggered, it is
+        checked first at every park, and it says something permanent about
+        `current`; only the one-shot decline needs consuming.
+        """
+
+        self.terminal_declined.clear()
+        self._verdict_pending = False
+
+    async def await_terminal_verdict(self) -> bool:
+        """Wait for the consumer's ruling on the terminal just enqueued.
+
+        Returns True when the turn settled this response (`released`) and the
+        reader must hand the transport back. Returns False when the turn
+        declined the frame and the reader must keep `current` and keep
+        reading. `released` wins when both are set: it is the one that says
+        something about `current`, and a release that lands while a decline's
+        answer is in flight is a release about a turn that has since ended.
+
+        Every channel consumes the ruling as it answers
+        (`_consume_verdict_signals`), so the next terminal frame re-arms the
+        handshake.
+        """
+
+        if self.released.is_set():
+            return True
+        if self.terminal_declined.is_set():
+            self._consume_verdict_signals()
+            return False
+        if self._verdict_pending:
+            # Both rulings can land while the reader is away and both answer
+            # the same question, so one flag is enough: `released` first.
+            self._consume_verdict_signals()
+            return self.released.is_set()
+        waiter: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        self._verdict_waiter = waiter
+        try:
+            released = await waiter
+        finally:
+            if self._verdict_waiter is waiter:
+                self._verdict_waiter = None
+        self._consume_verdict_signals()
+        # The waiter can be answered while the turn is still on this response
+        # (a decline), and the turn can END in the gap before the reader is
+        # scheduled back — `release()` reads `reader_declined` for its
+        # self-heal and would miss it here. `released` is level-triggered, so
+        # it catches that order too, and handing the transport back is the
+        # only safe answer once the consumer is done with it.
+        return released or self.released.is_set()
+
     def _settle_verdict(self, released: bool) -> None:
         """Hand a ruling to the parked reader, or remember it for one.
 
@@ -224,37 +288,6 @@ class ClaudeResponse:
             return
         self._verdict_waiter = None
         waiter.set_result(released)
-
-    async def await_terminal_verdict(self) -> bool:
-        """Wait for the consumer's ruling on the terminal just enqueued.
-
-        Returns True when the turn settled this response (`released`) and the
-        reader must hand the transport back. Returns False when the turn
-        declined the frame and the reader must keep `current` and keep
-        reading. `released` wins when both are set: it is the one that says
-        something about `current`.
-
-        The declined signal is cleared on the way out so the next terminal
-        frame re-arms the handshake.
-        """
-
-        if self.released.is_set():
-            return True
-        if self.terminal_declined.is_set():
-            self.terminal_declined.clear()
-            return False
-        if self._verdict_pending:
-            # Both rulings can land while the reader is away and both answer
-            # the same question, so one flag is enough: `released` first.
-            self._verdict_pending = False
-            return self.released.is_set()
-        waiter: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
-        self._verdict_waiter = waiter
-        try:
-            return await waiter
-        finally:
-            if self._verdict_waiter is waiter:
-                self._verdict_waiter = None
 
     async def receive_response(self):
         """Yield this response's frames until the transport stops producing.

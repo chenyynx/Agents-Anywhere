@@ -172,7 +172,7 @@ import Testing
         // A fresh dispatch clears an older batch's failure like any other.
         let failed = try cardItem("old", order: 1, status: "failed",
                                   createdAt: "2026-10-05T10:00:00Z", endTime: millis("2026-10-05T10:05:00Z"))
-        let fresh = try cardItem("new", order: 2, createdAt: "2026-10-05T10:10:00Z", agents: asyncEntry())
+        let fresh = try cardItem("new", order: 2, agents: asyncEntry(), createdAt: "2026-10-05T10:10:00Z")
         let state = SubAgentProgress.capsuleState([failed, fresh])
         #expect(state.isVisible && !state.hasFailure)
     }

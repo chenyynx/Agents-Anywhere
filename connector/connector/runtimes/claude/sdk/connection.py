@@ -51,6 +51,26 @@ DEFERRED_EVENT_QUEUE_MAXSIZE = 256
 # burst cannot consume the space subagent rows need.
 DEFERRED_TASK_QUEUE_MAXSIZE = 256
 DEFERRED_EVENT_WORKER_TIMEOUT_SECONDS = 5.0
+# F1 release protocol (claude-stale-frame-f1-release-protocol.md §8.1.3): how
+# long a response keeps reading after the turn DECLINED a terminal frame.
+#
+# This is R1's arm, and it is not optional. A human turn has no watchdog —
+# `arm_scheduled_watchdog` is only installed for `scheduled_activity`, so the
+# 600 s ceiling and the 30 s fast kill do NOT cover this shape. Without a
+# bound, "echo → leftover result → decline → nothing after it" would wait for
+# the user forever.
+#
+# Why 30 s: it sits in the same class as the existing 30 s fast kill and the
+# ~32 s residual window measured on the real transport (2026-10-04), so the
+# extra user-visible latency for an empty-reply-shaped turn is one such
+# window and no more. The trade this buys is explicit: a leftover whose real
+# frames arrive MORE than G later falls back to exactly today's behavior
+# (settle on the downgraded verdict, late by G), including the benign
+# phantom-turn cascade documented in `turns/lifecycle.py`. That direction is
+# deliberate — this must never be worse than not shipping it.
+#
+# Read at call time, so a test can shrink it without patching call sites.
+DECLINED_TERMINAL_GRACE_SECONDS = 30.0
 LEGACY_RECONCILE_PROMPT = (
     "AA connection maintenance: call CronList exactly once to report the current "
     "scheduled task list, then stop. If needed, use ToolSearch to find CronList. "
@@ -82,12 +102,58 @@ def _is_wire_chrome(message: Any) -> bool:
 
 @dataclass(slots=True)
 class ClaudeResponse:
+    """One response's place on a shared transport, and the handshake that hands
+    it back and forth between the reader and the turn consuming it.
+
+    THE RELEASE PROTOCOL (F1, claude-stale-frame-f1-release-protocol.md §8.1).
+    After every terminal frame the reader enqueues, it parks for exactly one of
+    two signals, and both are set from the consumer:
+
+    * `released` — the turn is done with this response. The reader clears
+      `current`, re-arms the idle reclaim, and re-evaluates whether the
+      transport should keep running. This is the verdict the reader acted on
+      before the protocol existed.
+    * `terminal_declined` — the turn read that terminal and ruled it NOT its
+      own verdict (an unowned `completed`: a leftover from a turn that already
+      settled). The reader keeps `current` and keeps reading, so the frames
+      behind the leftover — the real reply, this turn's own result — are still
+      this response's. Before this signal existed, the leftover swallowed
+      them: the turn settled on it and they died in a queue nobody drained.
+
+    `released` has priority: a turn that declines and then ends anyway (grace
+    window expired, stream ended, user interrupted) sets both, and only the
+    first is a verdict about `current`.
+
+    There is deliberately no own/foreign judgement here. The reader cannot
+    make one — the same payload is a legitimate empty reply and a leftover —
+    and duplicating the decision in two places is how the two would drift.
+    `drive_turn` is the single authority; the reader only answers signals.
+    """
+
     connection: ClaudeConnection
     execution: ClaudeExecution | None = None
     user_id: str | None = None
     prompt_uuid: str | None = None
     messages: asyncio.Queue[Any] = field(default_factory=asyncio.Queue)
     released: asyncio.Event = field(default_factory=asyncio.Event)
+    # The other half of the handshake: "this terminal is not yours, keep
+    # reading". Cleared by `await_terminal_verdict` when it is consumed, so it
+    # re-arms for the next terminal.
+    terminal_declined: asyncio.Event = field(default_factory=asyncio.Event)
+    # Monotonic count of terminals the turn declined, and how many of those
+    # declines were followed by another frame (which is what lifts the grace
+    # window). Diagnostic only: the actionable numbers live on the runner.
+    declined_terminals: int = 0
+    _satisfied_declines: int = 0
+    # The parked reader, and a verdict that arrived with nobody parked. The
+    # turn can rule on a frame before the reader gets to wait on it, so the
+    # ruling has to be remembered rather than dropped.
+    _verdict_waiter: asyncio.Future[bool] | None = None
+    _verdict_pending: bool = False
+    # Set by the reader when it keeps `current` after a decline. From then on
+    # the reader will not run the clear-`current` step that follows a
+    # `released` verdict, so `release()` takes `current` back instead.
+    reader_declined: bool = False
     terminal_received: bool = False
     discard: bool = False
     maintenance: bool = False
@@ -126,16 +192,162 @@ class ClaudeResponse:
             await self.connection.client.query(prompt())
         self.connection.queried.set()
 
+    def decline_terminal(self) -> None:
+        """Rule the terminal just read out of this turn, and keep reading.
+
+        `drive_turn` calls this immediately before it `continue`s past a frame
+        it cannot attribute. It is the consumer's half of a handshake the
+        reader is parked on: without it the reader would sit on `released`,
+        which only a SETTLED turn can set, and the two would wait on each
+        other forever.
+        """
+
+        self.declined_terminals += 1
+        self.terminal_declined.set()
+        self._settle_verdict(False)
+
+    def _consume_verdict_signals(self) -> None:
+        """Destroy a ruling exactly once, on whichever channel answered it.
+
+        The decline ruling travels on three channels: the level event a park
+        would poll, the remembered flag for a ruling that arrived with nobody
+        parked, and the future handed to a parked reader. Whichever one
+        answers a park must clear the others with it. A ruling that outlives
+        the park it answered pre-empts the NEXT park — and that is not a rare
+        race, it is every recovered turn: the reader parks twice (once on the
+        leftover, once on the turn's own terminal) and the second park would
+        be answered by the first decline's leftovers. The reader then never
+        waits where it must, reads through the whole settle phase, and every
+        frame that arrives in that window is routed into a response whose turn
+        has already chosen its verdict — and destroyed with it.
+
+        `released` is deliberately not cleared. It is level-triggered, it is
+        checked first at every park, and it says something permanent about
+        `current`; only the one-shot decline needs consuming.
+        """
+
+        self.terminal_declined.clear()
+        self._verdict_pending = False
+
+    async def await_terminal_verdict(self) -> bool:
+        """Wait for the consumer's ruling on the terminal just enqueued.
+
+        Returns True when the turn settled this response (`released`) and the
+        reader must hand the transport back. Returns False when the turn
+        declined the frame and the reader must keep `current` and keep
+        reading. `released` wins when both are set: it is the one that says
+        something about `current`, and a release that lands while a decline's
+        answer is in flight is a release about a turn that has since ended.
+
+        Every channel consumes the ruling as it answers
+        (`_consume_verdict_signals`), so the next terminal frame re-arms the
+        handshake.
+        """
+
+        if self.released.is_set():
+            return True
+        if self.terminal_declined.is_set():
+            self._consume_verdict_signals()
+            return False
+        if self._verdict_pending:
+            # Both rulings can land while the reader is away and both answer
+            # the same question, so one flag is enough: `released` first.
+            #
+            # DEFENSIVE, not load-bearing — and measured, not assumed. Red
+            # team round 3 counted 138 park resolutions in the real recovery
+            # loop and 0 hits here: with the direct hand-off the reader parks
+            # before the consumer can rule, so nothing ever has to be
+            # remembered. It stops being redundancy the moment a third,
+            # non-level channel can deliver a ruling across that gap, and it
+            # needs a pin of its own if one is ever introduced.
+            self._consume_verdict_signals()
+            return self.released.is_set()
+        waiter: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        self._verdict_waiter = waiter
+        try:
+            released = await waiter
+        finally:
+            if self._verdict_waiter is waiter:
+                self._verdict_waiter = None
+        self._consume_verdict_signals()
+        # The waiter can be answered while the turn is still on this response
+        # (a decline), and the turn can END in the gap before the reader is
+        # scheduled back — `release()` reads `reader_declined` for its
+        # self-heal and would miss it here. `released` is level-triggered, so
+        # it catches that order too, and handing the transport back is the
+        # only safe answer once the consumer is done with it.
+        return released or self.released.is_set()
+
+    def _settle_verdict(self, released: bool) -> None:
+        """Hand a ruling to the parked reader, or remember it for one.
+
+        A direct hand-off, not a second event to race on. Waiting on two
+        `asyncio.Event`s needs two tasks and `asyncio.wait`, which put three
+        extra event-loop hops between `release()` and the reader giving
+        `current` back — measured, and enough to break the existing pins that
+        assert the transport is free the moment a turn ends. This costs the
+        same single hop the old `await released.wait()` did.
+        """
+
+        waiter = self._verdict_waiter
+        if waiter is None or waiter.done():
+            # Nobody is parked: the turn ruled before the reader got here.
+            self._verdict_pending = True
+            return
+        self._verdict_waiter = None
+        waiter.set_result(released)
+
     async def receive_response(self):
+        """Yield this response's frames until the transport stops producing.
+
+        A response is NOT ended by its first result any more (F1, §8.1.1). A
+        leftover result from a turn that already settled is byte-identical to
+        this turn's own by the time it reaches a turn, and stopping there is
+        precisely what swallowed the real reply queued behind it. Whether a
+        terminal is this turn's verdict is decided by the consumer —
+        `drive_turn`, the single authority — and announced back over
+        `decline_terminal`.
+
+        So the generator ends on exactly two things: the transport stopped
+        (`None`, or a failure to raise), or the grace window opened by a
+        decline ran out. The second is R1's guarantee. A human turn has no
+        watchdog, so "keep reading" has to be bounded; when the window expires
+        the turn settles on the downgraded verdict it recorded at decline
+        time — today's behavior, reached G later, never a hang.
+
+        The window lifts by itself as soon as anything else arrives, so the
+        fast path for a healthy stream is unchanged.
+        """
+
         while True:
-            message = await self.messages.get()
+            if self.declined_terminals > self._satisfied_declines:
+                try:
+                    message = await asyncio.wait_for(
+                        self.messages.get(), DECLINED_TERMINAL_GRACE_SECONDS
+                    )
+                except TimeoutError:
+                    logger.warning(
+                        "Claude declined-terminal grace window expired "
+                        "declined={} grace={}s",
+                        self.declined_terminals,
+                        DECLINED_TERMINAL_GRACE_SECONDS,
+                    )
+                    return
+            else:
+                message = await self.messages.get()
             if message is None:
                 if self.connection.failure is not None:
                     raise self.connection.failure
                 return
+            # Snapshot the decline count BEFORE the yield. This generator is
+            # suspended while the consumer judges the frame, and a decline
+            # registered during that window belongs to THIS frame — it has to
+            # leave the next get bounded. Reading the counter after the yield
+            # instead would mark the decline as already satisfied and disarm
+            # the window on exactly the shape it exists for.
+            declines_seen = self.declined_terminals
             yield message
-            if is_result_message(message):
-                return
+            self._satisfied_declines = declines_seen
 
     async def interrupt(self) -> None:
         if self.connection.current is None and self.connection.pending is self:
@@ -156,6 +368,18 @@ class ClaudeResponse:
                 self.messages.get_nowait()
         self.discard = interrupted and not self.terminal_received
         self.released.set()
+        self._settle_verdict(True)
+        if self.reader_declined:
+            self.reader_declined = False
+            if self.connection.drop_current(self):
+                # The reader is no longer parked on this response — it took
+                # `released` from an earlier decline and went back to reading,
+                # so it will never run the clear-`current` step itself. Take
+                # it back here or `current` is stranded for good: the idle
+                # reclaim could never arm again, and every later frame,
+                # including the NEXT human turn's prompt echo and a queued
+                # prompt's failure, would be parked in a dead queue.
+                self.connection.arm_idle()
 
     def ensure_prompt_uuid(self) -> str:
         """Return the UUID this prompt carries on the wire, pre-assigning one.
@@ -806,16 +1030,36 @@ class ClaudeConnection:
                 if not response.discard:
                     await response.messages.put(message)
                 if terminal:
-                    await response.released.wait()
-                    self.current = None
-                    self.selected.clear()
-                    self.arm_idle()
-                    if (
-                        not self.streaming
-                        and not self.retained
-                        and self.pending is None
-                    ) or self.closing:
-                        break
+                    # Park until the consumer rules on this terminal (F1
+                    # release protocol, §8.1.2). Until the protocol this was
+                    # an unconditional `await released.wait()`, which is why a
+                    # leftover result could only ever end a response: the
+                    # reader held `current`, so the frames behind it had
+                    # nowhere to go once the turn settled on it.
+                    #
+                    # `released` → the turn is done: hand the transport back,
+                    # exactly as before. `terminal_declined` → the turn says
+                    # this terminal is not its verdict and is still reading;
+                    # `current` stays put so the frames behind the leftover
+                    # reach the same response, and the reader carries on. That
+                    # path can end with the turn settling without another
+                    # terminal (grace window, stream end, interrupt), so
+                    # `release()` takes `current` back — see `ClaudeResponse
+                    # .release`. Either way the reader is released again by
+                    # the next frame or by the transport closing, so the loop
+                    # cannot stall here.
+                    if await response.await_terminal_verdict():
+                        self.current = None
+                        self.selected.clear()
+                        self.arm_idle()
+                        if (
+                            not self.streaming
+                            and not self.retained
+                            and self.pending is None
+                        ) or self.closing:
+                            break
+                    else:
+                        response.reader_declined = True
             if (
                 self.streaming or self.retained or self.background.active_ids
             ) and not self.closing:

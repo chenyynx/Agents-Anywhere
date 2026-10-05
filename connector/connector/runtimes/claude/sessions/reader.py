@@ -31,6 +31,10 @@ from connector.runtimes.claude.domain.session import (
     ClaudeSession,
     stable_session_id,
 )
+from connector.runtimes.claude.history.cursor import (
+    HISTORY_PROJECTION_VERSION,
+    cursor_from_state,
+)
 from connector.runtimes.claude.history.state import history_cursor_key
 from connector.runtimes.claude.sdk.client import SdkLoader, load_sdk
 from connector.runtimes.claude.sdk.connection import (
@@ -211,11 +215,20 @@ class ClaudeSessionReader:
         previous_marker = (
             previous_sync.get("marker") if isinstance(previous_sync, Mapping) else None
         )
-        previous_cursor = await self.host.sync_state_read(
-            history_cursor_key(external_session_id)
+        previous_cursor = cursor_from_state(
+            await self.host.sync_state_read(history_cursor_key(external_session_id))
         )
         changed = force or previous_marker != sync_marker
-        requires_timeline_sync = changed or previous_cursor is None
+        # A cursor written by an older projection cannot vouch for the current
+        # projection's items — the terminal task fold is the first such change
+        # — so its session must sync even when the transcript has not moved.
+        # The rebuild writes the current version and this settles after one
+        # pass: every later scan sees a current cursor again.
+        projection_outdated = (
+            previous_cursor is None
+            or previous_cursor.projector_version != HISTORY_PROJECTION_VERSION
+        )
+        requires_timeline_sync = changed or projection_outdated
         sync_state = {
             "marker": sync_marker,
             "title": title,

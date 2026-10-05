@@ -388,7 +388,7 @@ class ClaudeTurnActionHandler:
         (`_sweep_open_agent_cards`), deliberately not gated on this set.
         """
 
-        if response is None:
+        if response is None or not task_ids:
             return
         connection = response.connection
         if connection is None or connection.closing:

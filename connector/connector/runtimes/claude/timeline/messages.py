@@ -36,7 +36,6 @@ from connector.runtimes.claude.timeline.agent_calls import (
     ClaudeAgentTaskOverlay,
     claude_agent_call_content,
     complete_claude_agent_call_content,
-    has_live_agent_tasks,
     has_running_agent_tasks,
     is_async_agent_receipt,
     resolve_agent_card_status,
@@ -406,15 +405,23 @@ class ClaudeMessageProjector:
                 session_id=session.session_id,
                 tool_use_id=block.tool_use_id,
             )
-            if status in AGENT_CARD_TERMINAL_STATUSES and has_live_agent_tasks(
+            if status in AGENT_CARD_TERMINAL_STATUSES and has_running_agent_tasks(
                 content
             ):
-                # I1: agents still alive means the card is not finished. The
+                # I1: a *started* task means the card is not finished. The
                 # wire frames above can classify a launch as an outcome (the
                 # sidechain receipt carries no metadata to tell them apart),
                 # and `resolve_agent_card_status` keeps the first terminal
                 # status — so unstick it here, on the item and on the card,
                 # which also heals a status a wrong frame already pinned.
+                #
+                # Narrowed to `running` with the A3 batch (red team F-D): the
+                # `async_launched` receipt is a launch report, not proof a
+                # task exists, and vouching for it here would reopen a card
+                # the stop's sweep just judged (the late aborted receipt is
+                # exactly the frame a stop races). A spared call that really
+                # starts re-opens the card through the task_started fold
+                # clamp; running is the one entry that vouches for a task.
                 status = "running"
                 self._agent_cards[item_id].status = "running"
 

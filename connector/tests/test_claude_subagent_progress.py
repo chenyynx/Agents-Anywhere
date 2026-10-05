@@ -1728,7 +1728,14 @@ def test_terminal_entry_is_not_clamped() -> None:
 
 
 def test_false_done_self_heals_on_the_next_progress() -> None:
-    """A card pinned done by a misread frame is un-pinned, item and ledger."""
+    """A card pinned done by a misread frame is un-pinned, item and ledger.
+
+    Since the A3 batch's I-G2 fold clamp (ghost-card-findings §5.1, red team
+    F-D), the un-pin happens the moment the live task is known: the nested
+    task_started fold outranks the terminal status the misread receipt wrote.
+    The wire replay stays in the flow as the reconnect shape and must remain
+    convergent with the clamp.
+    """
 
     async def run() -> None:
         client = _NestedDispatchClient(receipt=UNREADABLE_NESTED_RECEIPT)
@@ -1737,16 +1744,15 @@ def test_false_done_self_heals_on_the_next_progress() -> None:
         try:
             session = await _start_dispatch(runtime)
             card_id = stable_tool_item_id(session, NESTED_TUID)
-            # The production state: terminal card, live agent underneath.
+            # The clamp heals at the task_started fold: a running entry and a
+            # terminal card may not coexist, whatever wrote the terminal.
             await _wait_until(
-                lambda: _card_items(host, card_id)[-1].status
-                in AGENT_CARD_TERMINAL_STATUSES
+                lambda: _card_items(host, card_id)[-1].status == "running"
                 and _nested_agent_status(_card_items(host, card_id)[-1]) == "running"
             )
 
             # The next projection of the dispatch frame — what a reconnect
-            # replays — is what un-sticks it. The task route alone cannot:
-            # `resolve_agent_card_status` keeps a terminal status forever.
+            # replays — keeps it running and must not fight the clamp.
             await client.incoming.put(_parse(WIRE_NESTED_DISPATCH_TOOL_USE))
             await client.incoming.put(_parse(WIRE_NESTED_TASK_PROGRESS))
             await _wait_until(
@@ -1766,7 +1772,12 @@ def test_false_done_self_heals_on_the_next_progress() -> None:
 
 
 def test_task_updated_after_a_false_done_still_closes() -> None:
-    """The clamp is not a latch: a real closure still lands exactly once."""
+    """The clamp is not a latch: a real closure still lands exactly once.
+
+    The misread receipt's "done" is corrected at the task_started fold (the
+    A3 batch's I-G2 clamp), so the card waits here in `running`; the CLI's
+    real terminal frame still closes it.
+    """
 
     async def run() -> None:
         client = _NestedDispatchClient(receipt=UNREADABLE_NESTED_RECEIPT)
@@ -1776,8 +1787,7 @@ def test_task_updated_after_a_false_done_still_closes() -> None:
             session = await _start_dispatch(runtime)
             card_id = stable_tool_item_id(session, NESTED_TUID)
             await _wait_until(
-                lambda: _card_items(host, card_id)[-1].status
-                in AGENT_CARD_TERMINAL_STATUSES
+                lambda: _card_items(host, card_id)[-1].status == "running"
             )
 
             await client.incoming.put(_parse(WIRE_NESTED_TASK_UPDATED))

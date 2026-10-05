@@ -24,6 +24,7 @@ tests: before this batch they leave the card ``running`` forever.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 from test_claude_compact_ghost import (
@@ -31,13 +32,19 @@ from test_claude_compact_ghost import (
     _single_client_factory,
     _wait_until,
 )
-from test_claude_runtime import _FakeHookMatcher, _RecordingHost, _default_sdk
+from test_claude_runtime import (
+    _FakeClaudeClient,
+    _FakeHookMatcher,
+    _RecordingHost,
+    _default_sdk,
+)
 from test_claude_stop_affordance import (
     _PartialStopDispatchClient,
     _StoppingDispatchClient,
 )
 from test_claude_subagent_progress import (
     DISPATCH_TUID,
+    SESSION,
     TASK_ID,
     WIRE_DISPATCH_RECEIPT,
     WIRE_DISPATCH_TOOL_USE,
@@ -178,7 +185,26 @@ async def _bind_subagent(host: Any, runtime: Any, client: Any) -> str:
     return card_id
 
 
-class _WindowGhostClient(_StoppingDispatchClient):
+class _SessionScopedInterrupt:
+    """An interrupt whose abort tail carries the real session id.
+
+    `_ScheduledClaudeClient.interrupt` hardcodes `native_timer`; a stop whose
+    tail re-scopes the session would re-key every later fold's card id — an
+    artefact of the fake, not the product (a real abort's result carries the
+    session's own id), so the tests that assert per-card after a stop pin
+    the production shape here.
+    """
+
+    async def interrupt(self) -> None:
+        await _FakeClaudeClient.interrupt(self)
+        await self.incoming.put(
+            SimpleNamespace(
+                type="result", session_id=SESSION, terminal_reason="aborted_streaming"
+            )
+        )
+
+
+class _WindowGhostClient(_SessionScopedInterrupt, _StoppingDispatchClient):
     """The dispatch-window ghost: the Agent call goes out, no task starts.
 
     Only the dispatch tool_use frame and the turn's own result are replayed —
@@ -187,7 +213,7 @@ class _WindowGhostClient(_StoppingDispatchClient):
     """
 
     async def _complete_query(self, prompt: str) -> None:
-        await _StoppingDispatchClient.query(self, prompt)
+        await _FakeClaudeClient.query(self, prompt)
         if prompt == "wait":
             return
         if prompt != "hello":
@@ -673,18 +699,28 @@ def test_sweep_leaves_a_live_task_card_untouched() -> None:
 # --- the fan-out's fold honesty (red team F-A) -------------------------------
 
 
-async def _bind_second_subagent(host: Any, runtime: Any, client: Any) -> str:
-    """Dispatch a second Agent call into the live turn and bind it."""
+class _TwoAgentDispatchClient(_SessionScopedInterrupt, _PartialStopDispatchClient):
+    """One turn dispatching two background Agents (the burst shape).
 
-    await client.incoming.put(_parse(WIRE_SECOND_DISPATCH_TOOL_USE))
-    await client.incoming.put(_parse(WIRE_SECOND_DISPATCH_RECEIPT))
-    await client.incoming.put(_parse(WIRE_SECOND_TASK_STARTED))
-    card_id = stable_tool_item_id(runtime._sessions["sub_progress"], SECOND_TUID)
-    await _wait_until(
-        lambda: _card_agents(host, card_id).get(SECOND_TASK_ID, {}).get("status")
-        == "running"
-    )
-    return card_id
+    The partial-refusal arm needs two bound tasks; dispatching both in the
+    one turn keeps the card minting on the route every other test uses.
+    """
+
+    async def _complete_query(self, prompt: str) -> None:
+        await _FakeClaudeClient.query(self, prompt)
+        if prompt == "wait":
+            return
+        if prompt != "hello":
+            await self.reply(f"reply:{prompt}")
+            return
+        for frame in (
+            WIRE_DISPATCH_TOOL_USE,
+            WIRE_DISPATCH_RECEIPT,
+            WIRE_SECOND_DISPATCH_TOOL_USE,
+            WIRE_SECOND_DISPATCH_RECEIPT,
+            WIRE_MAIN_RESULT,
+        ):
+            await self.incoming.put(_parse(frame))
 
 
 def test_declared_partial_refusal_folds_only_the_accepted_stops() -> None:
@@ -696,12 +732,34 @@ def test_declared_partial_refusal_folds_only_the_accepted_stops() -> None:
     """
 
     async def run() -> None:
-        client = _PartialStopDispatchClient()
+        client = _TwoAgentDispatchClient()
         host = _RecordingHost()
         runtime = _runtime_with(host, _single_client_factory(client))
         try:
-            first_card = await _bind_subagent(host, runtime, client)
-            second_card = await _bind_second_subagent(host, runtime, client)
+            session = await _start_dispatch(runtime)
+            first_card = stable_tool_item_id(session, DISPATCH_TUID)
+            second_card = stable_tool_item_id(session, SECOND_TUID)
+            # Both launches are on the cards; bind both tasks (the idle fold).
+            await client.incoming.put(_parse(WIRE_TASK_STARTED))
+            await client.incoming.put(_parse(WIRE_SECOND_TASK_STARTED))
+            await _wait_until(
+                lambda: (
+                    _card_agents(host, first_card).get(TASK_ID, {}).get("status")
+                    == "running"
+                    and _card_agents(host, second_card)
+                    .get(SECOND_TASK_ID, {})
+                    .get("status")
+                    == "running"
+                )
+            )
+            await runtime.start_turn("sub_progress", None, "wait")
+            await _wait_until(
+                lambda: getattr(
+                    runtime._sessions["sub_progress"].execution, "client", None
+                )
+                is not None
+            )
+
             connection = runtime._turns.runner.connections["sub_progress"]
             # Precondition (F-C): the declaration is this connection's fact,
             # not a process-global switch another instance could have flipped.

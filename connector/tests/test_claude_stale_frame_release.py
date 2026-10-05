@@ -29,6 +29,7 @@ from test_claude_compact_ghost import _runtime_with, _single_client_factory
 from test_claude_runtime import _RecordingHost, _ScheduledClaudeClient
 
 from connector.runtimes.claude.sdk import connection as connection_module
+from connector.runtimes.claude.sdk.connection import ClaudeResponse
 from connector.runtimes.claude.turns.lifecycle import STALE_COMPLETION_REASON
 
 SESSION = "b5a5f0a4-2c17-4f8e-9a6b-1d0e7c4b9a21"
@@ -476,5 +477,141 @@ def test_a_declined_terminal_does_not_swallow_the_next_turn(short_grace) -> None
             assert connection.current is None
         finally:
             await runtime.stop()
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------
+# Red team round 3 · B1/B2 — the ruling is consumed exactly once
+# --------------------------------------------------------------------------
+
+
+class _SettleWindowHost(_RecordingHost):
+    """A host that offers the transport frames while a turn is settling.
+
+    `session_turn_ended` is the last host round trip before
+    `finish_execution` calls `release()`, so a frame pushed to the client from
+    here lands strictly inside the window: the turn has already chosen its
+    verdict and the reader must still be parked on it. The latency widens that
+    window so the measurement is not a race with the scheduler — on a real
+    device the same span is the whole settle phase, measured at hundreds of
+    milliseconds of host backpressure (V9).
+    """
+
+    def __init__(self, frames: list[Any], *, latency: float = 0.25) -> None:
+        super().__init__()
+        self.frames = frames
+        self.latency = latency
+        # Frames still in the transport's inbound queue when the window
+        # closes: the measure of whether the reader was parked.
+        self.left_in_queue: int | None = None
+
+    def watch(self, client: _ScheduledClaudeClient, turn_index: int = 1) -> None:
+        self._client = client
+        self._turn_index = turn_index
+
+    async def session_turn_ended(self, **kwargs: Any) -> None:
+        if len(self.session_turn_ends) == self._turn_index:
+            for frame in self.frames:
+                await self._client.incoming.put(frame)
+            await asyncio.sleep(self.latency)
+            self.left_in_queue = self._client.incoming.qsize()
+        return await super().session_turn_ended(**kwargs)
+
+
+def test_frames_arriving_in_the_settle_window_are_not_destroyed() -> None:
+    """Red team B1, product-visible: a frame the transport offers while a turn
+    settles must survive it.
+
+    The reader parks on the turn's own terminal, so nothing is read past the
+    verdict until the turn releases the transport — that park is what makes
+    the window safe. A ruling that outlives the park it answered (a stale
+    `terminal_declined` left set by the decline) pre-empts the next park: the
+    reader never stops, reads the whole settle phase, and every frame that
+    arrives in it is routed into a response whose turn has already settled
+    and is destroyed with it — silently, uncounted.
+
+    A scheduled task waking up is that frame class in production: it is a
+    cast frame, it should mint a turn, and instead the task simply never runs.
+    """
+
+    async def run() -> None:
+        wakes = [
+            _parse(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "model": "claude-opus-5",
+                        "content": [{"type": "text", "text": f"WAKE-{index}"}],
+                    },
+                    "uuid": f"wake-{index}",
+                    "session_id": SESSION,
+                }
+            )
+            for index in range(3)
+        ]
+        client = _ScriptedTurnClient()
+        host = _SettleWindowHost(wakes)
+        host.watch(client)
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            await runtime.start_turn("window", None, "hello")
+            session = runtime._sessions["window"]
+            await asyncio.wait_for(session.active_task, 5)
+
+            await runtime.start_turn("window", None, "second")
+            await asyncio.wait_for(session.active_task, 5)
+            await asyncio.sleep(0.5)
+
+            assert host.left_in_queue == len(wakes), (
+                "the reader was not parked through the settle: it read ahead "
+                "and consumed frames no turn was waiting for"
+            )
+            # Not merely queued — they reached the routing layer and the first
+            # one minted the turn its text was waiting for.
+            texts = _published(host)
+            assert [f"WAKE-{index}" for index in range(3)] == [
+                text for text in texts if text.startswith("WAKE-")
+            ], texts
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_one_decline_ruling_answers_exactly_one_park() -> None:
+    """Red team B2, unit level: the decline ruling is one-shot.
+
+    It travels on three channels — the level event, the remembered flag for a
+    ruling that arrived with nobody parked, and the future handed to a parked
+    reader — and whichever channel answers a park must consume the others
+    with it. Otherwise the ruling survives its own consumption and answers
+    the NEXT park without waiting, which is the reader-side half of the
+    read-ahead above.
+    """
+
+    async def run() -> None:
+        connection = SimpleNamespace(
+            drop_current=lambda _response: True, arm_idle=lambda: None
+        )
+        response = ClaudeResponse(connection)  # type: ignore[arg-type]
+
+        # The turn rules before the reader parks; the ruling is remembered.
+        response.decline_terminal()
+        assert response._verdict_pending is True
+
+        # The first park consumes it, and destroys it in the consuming.
+        assert await response.await_terminal_verdict() is False
+
+        # The next terminal has NOT been ruled on. A park here must really
+        # wait — a stale channel answering it is the defect.
+        second = asyncio.create_task(response.await_terminal_verdict())
+        await asyncio.sleep(0.05)
+        assert not second.done(), (
+            "a consumed decline ruling answered a second park without waiting"
+        )
+        response.release()
+        assert await asyncio.wait_for(second, 1) is True
 
     asyncio.run(run())

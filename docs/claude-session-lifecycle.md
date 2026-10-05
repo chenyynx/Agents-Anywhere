@@ -35,6 +35,64 @@ After process loss, ordinary turns can resume from the native session ID;
 in-flight background work is not automatically replayed. Startup reconnects
 only sessions registered with observed scheduled jobs.
 
+## Residual terminal at the head of a live turn
+
+The CLI's stream is session-scoped, so when a turn is interrupted its terminal
+result can still be on the wire when the next message starts — and the
+leftover then lands inside the queue the new turn is already draining. Measured
+on the real transport: the residual arrives roughly 32 s after the interrupt,
+on a bare `ResultMessage(success)`.
+
+Two guards keep it out of a turn. One refuses a terminal that arrives at
+**silence** to mint a turn at all. The other runs inside a live turn, where the
+frame is already inside the queue and the mint path never runs: a turn may only
+settle on a terminal it can show it started. "Started" means **a frame of real
+work** — the cast frame for a scheduled turn, otherwise any frame that is
+neither the connector's own prompt echo nor wire chrome. The handshake frames
+(`init`, `status`) and the SDK's bookkeeping messages are chrome and do not
+count; without that exclusion the real order `[init, status, echo, residual]`
+would open the gate before the echo and the leftover would pass as owned.
+
+An unowned `completed` terminal is **declined** rather than settled on. The
+turn records the verdict it would have used, skips the frame entirely (none of
+its text is published — that text belongs to the turn that already answered),
+and keeps reading. What follows it — the real reply, this turn's own result —
+belongs to the same turn and is consumed normally.
+
+`failed` and `interrupted` terminals are **not** declined. They are already
+honest, and holding a turn open past them would bury a failure the user needs
+to see; they settle the turn immediately.
+
+Declining is a deferral, not a discard, and it is bounded. After a decline the
+read continues for at most `DECLINED_TERMINAL_GRACE_SECONDS` (30 s, module
+constant). The bound is not optional: a human turn has no watchdog — the
+scheduled watchdog is only installed for scheduled activity — so an unbounded
+continued read would wait for the user forever.
+
+| After a decline | Outcome |
+| --- | --- |
+| The turn's own result arrives in the window | Settles `completed` on it; the reply is in this turn's timeline |
+| Nothing arrives in the window | Settles on the recorded downgraded verdict: `interrupted` / `unowned_result_no_content` |
+| The stream ends | Same as the window expiring |
+| The user interrupts | `interrupted`, as any interrupt settles |
+
+Only `completed` is downgraded, and only as this fallback. In the fallback the
+declined frame becomes the turn's verdict again, so its text is published then —
+that is what keeps a legitimate empty reply from losing its answer.
+
+Three counters describe this, and they are read as a set:
+
+| Counter | Meaning |
+| --- | --- |
+| `ClaudeTurnRunner.foreign_terminal_frames` | Terminals the start gate refused, whatever became of them |
+| `ClaudeTurnRunner.stale_terminal_recoveries` | Declines followed by the turn's own result — the fix working |
+| `ClaudeTurnRunner.stale_completion_downgrades` | Declines that fell back to the downgrade — the bound firing |
+
+Recoveries plus downgrades is every time the gate saw an unowned `completed` in
+a live turn. A falling downgrade count with a rising recovery count is the fix
+working; downgrades alone rising means the bound, not the recovery, is the
+thing answering.
+
 ## Stuck-turn circuit breaker
 
 A turn that holds the session's execution lock without ever seeing a terminal

@@ -1411,7 +1411,9 @@ async def _exercise_runtime_sync_pushes_each_session_snapshot_before_next_meta()
 
     assert host.events == [
         ("model_catalog", "codex"),
+        ("sync_state_write", "codex/instances/codex/catalog-push/model"),
         ("permission_catalog", "codex"),
+        ("sync_state_write", "codex/instances/codex/catalog-push/permission"),
         ("meta", "sess_changed"),
         ("timeline", "sess_changed"),
         ("state", "sess_changed"),
@@ -1678,7 +1680,9 @@ async def _exercise_runtime_sync_uses_runtime_timeline_hook_when_available() -> 
 
     assert host.events == [
         ("model_catalog", "codex"),
+        ("sync_state_write", "codex/instances/codex/catalog-push/model"),
         ("permission_catalog", "codex"),
+        ("sync_state_write", "codex/instances/codex/catalog-push/permission"),
         ("meta", "sess_hook"),
         ("state", "sess_hook"),
         ("notice", "sess_hook"),
@@ -1776,11 +1780,11 @@ async def _exercise_runtime_sync_skips_active_session_timeline_reads() -> None:
 
     assert host.events == [
         ("model_catalog", "codex"),
+        ("sync_state_write", "codex/instances/codex/catalog-push/model"),
         ("permission_catalog", "codex"),
+        ("sync_state_write", "codex/instances/codex/catalog-push/permission"),
         ("meta", "sess_running"),
         ("state", "sess_running"),
-        ("model_catalog", "codex"),
-        ("permission_catalog", "codex"),
     ]
     assert [call[0] for call in runtime.calls] == [
         "runtime.modelCatalog",

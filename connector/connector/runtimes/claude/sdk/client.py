@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from typing import Any
@@ -164,11 +165,25 @@ async def disconnect_client(client: Any) -> None:
         await maybe_await(disconnect())
 
 
-async def interrupt_client(client: Any) -> bool:
+# The authoritative stop is the `task.cancel()` that follows this call; the
+# SDK's `interrupt()` only asks the CLI to stop and waits for it to answer.
+# A CLI that hangs mid-turn (the 2026-10-05 shape) would otherwise hold the
+# whole stop path until the server's 30 s RPC timeout, so the wait is bounded
+# here: on timeout the stop proceeds to the cancel exactly as it does today
+# when `interrupt()` raises (the caller already logs and drops that error).
+CLAUDE_INTERRUPT_TIMEOUT_SECONDS = 2.0
+
+
+async def interrupt_client(
+    client: Any,
+    timeout: float = CLAUDE_INTERRUPT_TIMEOUT_SECONDS,
+) -> bool:
     interrupt = getattr(client, "interrupt", None)
     if not callable(interrupt):
         return False
-    await maybe_await(interrupt())
+    result = interrupt()
+    if inspect.isawaitable(result):
+        await asyncio.wait_for(result, timeout=timeout)
     return True
 
 

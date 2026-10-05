@@ -30,6 +30,16 @@ AGENT_CARD_TERMINAL_STATUSES = frozenset(
 # 2026-10-03): metadata only — the real result arrives later through task
 # events. It is not an outcome, so an Agent card must not land "done" on it.
 ASYNC_AGENT_RECEIPT_STATUS = "async_launched"
+# The same receipt, recognisable from the body alone. A dispatch made inside a
+# subagent's own sidechain arrives with no `toolUseResult` at all (2026-10-05
+# findings §A), so the metadata above is empty and the text is the only signal
+# left that this call launched instead of finished.
+ASYNC_AGENT_RECEIPT_PREFIX = "Async agent launched"
+# Per-agent statuses that still mean the subagent is alive: the receipt's own
+# marker, plus "running" from the task events. An entry with no status key is
+# deliberately not in here — a task event without a status leaves `{}` behind,
+# and counting that as live would pin every closed card open.
+AGENT_TASK_LIVE_STATUSES = frozenset({"running", ASYNC_AGENT_RECEIPT_STATUS})
 
 
 def claude_agent_call_content(
@@ -104,12 +114,40 @@ def _agent_call_usage(result: Mapping[str, Any]) -> Mapping[str, int]:
     }
 
 
-def is_async_agent_receipt(result_details: Mapping[str, Any] | None) -> bool:
-    """Whether an Agent tool_result is the CLI's async launch receipt."""
+def is_async_agent_receipt(
+    result_details: Mapping[str, Any] | None,
+    output: str | None = None,
+) -> bool:
+    """Whether an Agent tool_result is the CLI's async launch receipt.
 
-    return (
-        isinstance(result_details, Mapping)
-        and result_details.get("status") == ASYNC_AGENT_RECEIPT_STATUS
+    An explicit status in the frame's metadata decides on its own: a sync
+    call's receipt *is* its outcome, even when its body carries the launch
+    boilerplate. Only when the metadata names no status does the body speak —
+    which is the sidechain case, where `toolUseResult` never exists and the
+    text is all the frame offers.
+    """
+
+    details = result_details if isinstance(result_details, Mapping) else {}
+    status = details.get("status")
+    if isinstance(status, str) and status:
+        return status == ASYNC_AGENT_RECEIPT_STATUS
+    return isinstance(output, str) and output.lstrip().startswith(
+        ASYNC_AGENT_RECEIPT_PREFIX
+    )
+
+
+def has_live_agent_tasks(content: AgentCallToolContent) -> bool:
+    """Whether any agent on this card is still alive.
+
+    Read off the content rather than the card, so it sees the task overlay the
+    fold just merged in. An entry whose status is missing is not live — that
+    is a status-less task event, not an agent in flight.
+    """
+
+    return any(
+        _string(entry.get("status")) in AGENT_TASK_LIVE_STATUSES
+        for entry in content.agents.values()
+        if isinstance(entry, Mapping)
     )
 
 
@@ -122,6 +160,9 @@ def resolve_agent_card_status(previous: str | None, incoming: str | None) -> str
     ones so a late frame can still finish a card; once terminal, the status
     sticks — the CLI's terminal burst (task_updated → task_notification,
     findings §8.6) must fold into a single closure, never a second one.
+    That stickiness is also what makes a misclassification irreversible, so
+    ``has_live_agent_tasks`` is the escape hatch a wrong "done" is unsticky
+    with; see the caller in ``messages.tool_item``.
     """
 
     if incoming is None:

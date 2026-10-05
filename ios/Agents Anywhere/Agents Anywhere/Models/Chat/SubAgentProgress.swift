@@ -19,28 +19,40 @@ import Foundation
 /// (the design's 防御式透传: 运行中/已完成/失败/已中断/未知原文).
 enum SubAgentPhase: Equatable {
     case running
+    /// Dispatched, but the subagent has not reported its first task event yet
+    /// (the connector's `async_launched` receipt is still the agent's status).
+    case starting
     case completed
     case failed
     case interrupted
     case unknown(String?)
 
-    static func from(itemStatus: V2TimelineItemStatus, rawStatus: String?) -> SubAgentPhase {
+    /// `launching` comes from the card's **agents entry** status, never from
+    /// the item status: during the launch window the item already reads
+    /// `running`, so an item-level test would never see the launch.
+    static func from(itemStatus: V2TimelineItemStatus, rawStatus: String?, launching: Bool) -> SubAgentPhase {
         switch itemStatus {
-        case .pending, .running, .waitingApproval: return .running
-        case .done: return .completed
+        case .pending, .running, .waitingApproval: return launching ? .starting : .running
+        // 防御行: a connector that stamps `done` on a still-launched agent must
+        // not close the card — the live entry outranks the item status, which
+        // also heals the cards misjudged before the server-side clamp landed.
+        case .done: return launching ? .starting : .completed
         case .failed: return .failed
         case .interrupted, .cancelled: return .interrupted
         case .hidden, .unknown: return .unknown(rawStatus)
         }
     }
 
-    var isActive: Bool { self == .running }
+    /// Starting counts as active everywhere "still working" is asked
+    /// (capsule, default tab, the final-output gate).
+    var isActive: Bool { self == .running || self == .starting }
     var isFailure: Bool { self == .failed || self == .interrupted }
 
     /// The panel's status word. Unknown statuses show the wire text as-is.
     var word: String {
         switch self {
         case .running: return String(localized: "运行中")
+        case .starting: return String(localized: "启动中")
         case .completed: return String(localized: "已完成")
         case .failed: return String(localized: "失败")
         case .interrupted: return String(localized: "已中断")
@@ -91,6 +103,11 @@ enum SubAgentProgress {
     /// The CLI resolves an omitted subagent_type to this name (A1 findings §6).
     static let defaultAgentType = "general-purpose"
 
+    /// The connector's "dispatched, not started yet" marker on an agents entry
+    /// (`agent_calls.py` async receipt). While it holds, the subagent is alive
+    /// whatever the item status says.
+    static let asyncLaunchedStatus = "async_launched"
+
     /// An Agent call card: a tool item whose content kind is `agent_call`.
     static func isAgentCall(_ item: V2TimelineItem) -> Bool {
         item.type == .tool && item.raw["content"]?["kind"] == .string("agent_call")
@@ -118,8 +135,12 @@ enum SubAgentProgress {
             prompt: TimelineText.first(raw["prompt"]),
             // The unrecognized status text lives on the item itself; the
             // agents entry is the fallback when the item one is missing.
+            // The launch signal, on the other hand, is read from the entry
+            // alone: while a subagent starts the item status is already
+            // "running", so an item-level test could never show 启动中.
             phase: .from(itemStatus: item.status,
-                         rawStatus: TimelineText.first(item.raw["status"], entry?["status"])),
+                         rawStatus: TimelineText.first(item.raw["status"], entry?["status"]),
+                         launching: entry?["status"]?.stringValue == asyncLaunchedStatus),
             toolCalls: usage["toolCalls"]?.intValue,
             tokens: usage["tokens"]?.intValue,
             durationMs: usage["durationMs"]?.intValue,
@@ -176,8 +197,9 @@ enum SubAgentProgress {
         return cards.first(where: { $0.phase.isActive })?.id ?? cards.first?.id
     }
 
-    /// The capsule: visible exactly while a top-level SubAgent runs; a failure
-    /// of the newest batch tints the whole capsule red (§3.2, rule below).
+    /// The capsule: visible exactly while a top-level SubAgent runs or is still
+    /// starting; a failure of the newest batch tints the whole capsule red
+    /// (§3.2, rule below).
     static func capsuleState(_ items: [V2TimelineItem]) -> SubAgentCapsuleState {
         let cards = topLevelCards(in: items)
         let running = cards.filter { $0.phase.isActive }
@@ -185,7 +207,11 @@ enum SubAgentProgress {
             runningCount: running.count,
             hasFailure: hasLiveFailure(in: cards),
             singleTaskName: running.count == 1 ? running[0].taskName : nil,
-            latestRunningID: running.last?.id
+            latestRunningID: running.last?.id,
+            // The word follows the card the capsule speaks for (the newest
+            // active one), so a subagent that is still starting is not read
+            // out as "运行中".
+            phaseWord: running.last?.phase.word ?? String(localized: "运行中")
         )
     }
 
@@ -269,7 +295,7 @@ enum SubAgentProgress {
         if let agentID = raw["agentId"]?.stringValue, let entry = agents[agentID]?.objectValue { return entry }
         if agents.count == 1 { return agents.values.first?.objectValue }
         let keys = agents.keys.sorted()
-        for key in keys where agents[key]?.objectValue?["status"]?.stringValue != "async_launched" {
+        for key in keys where agents[key]?.objectValue?["status"]?.stringValue != asyncLaunchedStatus {
             return agents[key]?.objectValue
         }
         return keys.first.flatMap { agents[$0]?.objectValue }
@@ -286,6 +312,9 @@ struct SubAgentCapsuleState: Equatable {
     /// capsule opens the turn where the newest work lives, so a fresh
     /// dispatch shows its own page instead of the oldest running one's.
     let latestRunningID: String?
+    /// The newest active card's phase word, so a subagent that is still
+    /// starting is announced as 启动中 rather than 运行中.
+    let phaseWord: String
 
     var isVisible: Bool { runningCount > 0 }
 
@@ -296,7 +325,7 @@ struct SubAgentCapsuleState: Equatable {
     }
 
     var accessibilityText: String {
-        "\(title)，\(hasFailure ? String(localized: "失败") : String(localized: "运行中"))"
+        "\(title)，\(hasFailure ? String(localized: "失败") : phaseWord)"
     }
 }
 

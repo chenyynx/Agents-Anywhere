@@ -53,7 +53,10 @@ enum SubAgentPalette {
 
     static func phase(_ phase: SubAgentPhase) -> Color {
         switch phase {
-        case .running: return running
+        // Starting borrows the running hue on purpose: it is the same work one
+        // step earlier, and a fourth color here would read as a second,
+        // unexplained state in a badge that has no room to explain itself.
+        case .running, .starting: return running
         case .completed: return completed
         case .failed, .interrupted: return failure
         case .unknown: return .secondary

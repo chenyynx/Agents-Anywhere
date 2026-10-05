@@ -48,12 +48,15 @@ from test_claude_runtime import (
     _ScheduledClaudeClient,
 )
 
+from connector.runtime_protocol import AgentCallToolContent
 from connector.runtime_protocol.timeline import timeline_content_hash
 from connector.runtimes.claude.domain.session import ClaudeSession
 from connector.runtimes.claude.sdk.tasks import task_event_from_message
 from connector.runtimes.claude.timeline.agent_calls import (
     AGENT_CARD_TERMINAL_STATUSES,
     agent_task_overlay_for_event,
+    has_live_agent_tasks,
+    is_async_agent_receipt,
     resolve_agent_card_status,
 )
 from connector.runtimes.claude.timeline.messages import (
@@ -483,6 +486,18 @@ def _card_items(host: _RecordingHost, card_id: str) -> list[Any]:
 def _card_agents(host: _RecordingHost, card_id: str) -> dict[str, Any]:
     card = _card_items(host, card_id)[-1]
     return dict(card.content.get("agents") or {})
+
+
+def _nested_agent_status(item: Any) -> str | None:
+    """The nested agent's status on one projected row.
+
+    Read one key instead of comparing the whole entry: a task_started also
+    carries subagentType/isBackgrounded/spawnDepth, and those are the event's
+    business, not this fix's.
+    """
+
+    agents = dict(item.content.get("agents") or {})
+    return str(agents.get(NESTED_TASK_ID, {}).get("status") or "") or None
 
 
 class _DispatchClient(_ScheduledClaudeClient):
@@ -1382,3 +1397,406 @@ def test_parent_card_helper_is_the_identity_without_a_parent() -> None:
     assert tool_row.content["parentItemId"] == parent_id
     assert _with_parent_card(tool_row, parent_id) is tool_row
     assert _with_parent_cards((tool_row,), parent_id)[0] is tool_row
+
+
+# --------------------------------------------------------------------------
+# 7. the nested dispatch: a subagent dispatching its own subagent
+# --------------------------------------------------------------------------
+#
+# Session sess_VPALa6eqfhLLBg, 2026-10-05: a nested Agent dispatch published
+# `status=done` with `agents[*].status=running` still sitting under it, and the
+# terminal status never moved again — the CLI writes NO `toolUseResult` on a
+# tool_result frame produced inside a sidechain, so the metadata-only guard
+# read None, called the launch receipt an outcome, and
+# `resolve_agent_card_status` made that first terminal permanent.
+#
+# The frames below are the outer dispatch's own shapes plus the keys a
+# sidechain frame carries (parent_tool_use_id + isSidechain); the receipt is
+# the real one with its `tool_use_result` key removed — that missing key IS
+# the defect, and it is the only difference from the passing root-level case.
+
+NESTED_TUID = "call_00_Ne5tedDispatchK7d0"
+NESTED_TASK_ID = "c40d9e1b83af4277"
+
+WIRE_NESTED_DISPATCH_TOOL_USE = {
+    "type": "assistant",
+    "message": {
+        "id": "1f0d5a6c-9a4e-4c62-9b0e-2f7b6c1d84aa",
+        "type": "message",
+        "role": "assistant",
+        "stop_reason": None,
+        "model": "deepseek-v4.1-flash",
+        "content": [
+            {
+                "type": "tool_use",
+                "id": NESTED_TUID,
+                "name": "Agent",
+                "input": {
+                    "description": "Second opinion on alpha.txt",
+                    "prompt": "Read .../run1/work/alpha.txt and ...",
+                },
+            }
+        ],
+        "usage": {
+            "input_tokens": 31204,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 20480,
+        },
+    },
+    "parent_tool_use_id": DISPATCH_TUID,
+    "session_id": SESSION,
+    "uuid": "6d1a4c77-1f8b-4a92-9a3d-0c5b7e2f41d8",
+    "timestamp": "2026-10-03T03:10:50.114Z",
+    "isSidechain": True,
+    "subagent_type": "general-purpose",
+    "task_description": "Multi-tool file audit",
+}
+
+# Same body as WIRE_DISPATCH_RECEIPT, minus `tool_use_result`.
+WIRE_NESTED_DISPATCH_RECEIPT = {
+    "type": "user",
+    "message": {
+        "role": "user",
+        "content": [
+            {
+                "tool_use_id": NESTED_TUID,
+                "type": "tool_result",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Async agent launched successfully. (This tool "
+                            "result is internal metadata — never quote or "
+                            "paste any part of it ...) (receipt body, elided)"
+                        ),
+                    }
+                ],
+            }
+        ],
+    },
+    "parent_tool_use_id": DISPATCH_TUID,
+    "session_id": SESSION,
+    "uuid": "b6f0c2a4-7d31-4e58-8a19-3c0d5b8e6f42",
+    "timestamp": "2026-10-03T03:10:50.233Z",
+    "isSidechain": True,
+    "subagent_type": "general-purpose",
+    "task_description": "Multi-tool file audit",
+}
+
+WIRE_NESTED_TASK_STARTED = {
+    "type": "system",
+    "subtype": "task_started",
+    "task_id": NESTED_TASK_ID,
+    "tool_use_id": NESTED_TUID,
+    "description": "Second opinion on alpha.txt",
+    "subagent_type": "general-purpose",
+    "is_backgrounded": True,
+    "spawn_depth": 2,
+    "task_type": "local_agent",
+    "prompt": "Read .../run1/work/alpha.txt and ...",
+    "uuid": "e2f7b0c9-4a13-4d6f-b58e-7c1a9d3f20b6",
+    "session_id": SESSION,
+}
+
+WIRE_NESTED_TASK_PROGRESS = {
+    "type": "system",
+    "subtype": "task_progress",
+    "task_id": NESTED_TASK_ID,
+    "tool_use_id": NESTED_TUID,
+    "description": "Reading alpha.txt",
+    "subagent_type": "general-purpose",
+    "usage": {"total_tokens": 33412, "tool_uses": 2, "duration_ms": 3118},
+    "last_tool_name": "Read",
+    "uuid": "0a9e7c53-6b28-4f19-8d70-15e3b9c2a846",
+    "session_id": SESSION,
+}
+
+WIRE_NESTED_TASK_UPDATED = {
+    "type": "system",
+    "subtype": "task_updated",
+    "task_id": NESTED_TASK_ID,
+    "patch": {"status": "completed", "end_time": 1790997079000},
+    "uuid": "5c9a1d3e-7b02-4f86-91ca-0d4e8b2f6137",
+    "session_id": SESSION,
+}
+
+# Synthetic, not a capture: the nested receipt above is the one shape this fix
+# can read. This is the guard's blind spot, and it is what I1 exists for — a
+# sidechain receipt whose body does not announce a launch (CLI phrasing drift,
+# or any body the prefix does not match) leaves nothing in the metadata, so
+# only the agents map still knows the call has not finished.
+UNREADABLE_NESTED_RECEIPT = {
+    **WIRE_NESTED_DISPATCH_RECEIPT,
+    "uuid": "nested-unreadable-1",
+    "message": {
+        **WIRE_NESTED_DISPATCH_RECEIPT["message"],
+        "content": [
+            {
+                "tool_use_id": NESTED_TUID,
+                "type": "tool_result",
+                "content": "The nested run ended without reporting back.",
+            }
+        ],
+    },
+}
+
+LAUNCH_RECEIPT_TEXT = (
+    "Async agent launched successfully. (This tool result is internal "
+    "metadata — never quote or paste any part of it ...)"
+)
+
+
+class _NestedDispatchClient(_ScheduledClaudeClient):
+    """The dispatch turn, with the subagent's own Agent dispatch inside it.
+
+    The frames arrive in the order production sent them: the nested launch
+    receipt lands before the nested task_started, which is what left the card
+    with a decision already made by the time the agent was known to be alive.
+    """
+
+    def __init__(
+        self, receipt: dict[str, Any] = WIRE_NESTED_DISPATCH_RECEIPT
+    ) -> None:
+        super().__init__()
+        self.receipt = receipt
+
+    async def _complete_query(self, prompt: str) -> None:
+        await _FakeClaudeClient.query(self, prompt)
+        if prompt != "hello":
+            await self.reply(f"reply:{prompt}")
+            return
+        for frame in (
+            WIRE_DISPATCH_TOOL_USE,
+            WIRE_DISPATCH_RECEIPT,
+            WIRE_TASK_STARTED,
+            WIRE_NESTED_DISPATCH_TOOL_USE,
+            self.receipt,
+            WIRE_NESTED_TASK_STARTED,
+            WIRE_MAIN_RESULT,
+        ):
+            await self.incoming.put(_parse(frame))
+
+
+def test_sidechain_receipt_keeps_the_card_running() -> None:
+    """The production nail: a nested launch must never read as done."""
+
+    async def run() -> None:
+        client = _NestedDispatchClient()
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            session = await _start_dispatch(runtime)
+            card_id = stable_tool_item_id(session, NESTED_TUID)
+            await _wait_until(
+                lambda: _nested_agent_status(_card_items(host, card_id)[-1])
+                == "running"
+            )
+
+            card = _card_items(host, card_id)[-1]
+            assert card.status == "running", "a launch is not an outcome"
+            assert card.content["output"].startswith("Async agent launched")
+            # The stronger form: no upsert of this card ever claimed done.
+            assert not [
+                item
+                for item in _card_items(host, card_id)
+                if item.status in AGENT_CARD_TERMINAL_STATUSES
+            ]
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_receipt_text_recognises_a_sidechain_dispatch() -> None:
+    # No metadata at all — the sidechain case, where the guard used to read
+    # None and land done.
+    assert is_async_agent_receipt(None) is False
+    assert is_async_agent_receipt(None, LAUNCH_RECEIPT_TEXT) is True
+    # Leading whitespace must not hide it: the CLI wraps the boilerplate.
+    assert is_async_agent_receipt(None, f"\n  {LAUNCH_RECEIPT_TEXT}") is True
+    # The real nested frame's own body, as the projector extracts it.
+    nested_body = WIRE_NESTED_DISPATCH_RECEIPT["message"]["content"][0]["content"][0][
+        "text"
+    ]
+    assert is_async_agent_receipt(None, nested_body) is True
+    # An ordinary outcome is not a receipt.
+    assert is_async_agent_receipt(None, "3 files checked, no findings") is False
+    # Neither is a non-string body smuggled into the text slot.
+    assert is_async_agent_receipt(None, 42) is False
+
+
+def test_explicit_metadata_status_wins_over_receipt_text() -> None:
+    """The sync guardrail: a foreground call's receipt *is* its outcome."""
+
+    assert is_async_agent_receipt({"status": "completed"}, LAUNCH_RECEIPT_TEXT) is (
+        False
+    )
+    assert is_async_agent_receipt({"status": "failed"}, LAUNCH_RECEIPT_TEXT) is False
+    # Metadata without a status is no opinion, so the body decides.
+    assert is_async_agent_receipt({"agentId": TASK_ID}, LAUNCH_RECEIPT_TEXT) is True
+    assert is_async_agent_receipt({"status": ""}, LAUNCH_RECEIPT_TEXT) is True
+    assert is_async_agent_receipt({"status": "async_launched"}, "") is True
+    # And the wire regression itself, through the parsed frame.
+    assert is_async_agent_receipt({"status": "async_launched"}) is True
+
+
+def test_live_agents_map_forbids_a_terminal_card() -> None:
+    """I1: agents still alive means the card is not finished, whatever said so."""
+
+    projector = ClaudeMessageProjector()
+    session = _session()
+    card_id = stable_tool_item_id(session, NESTED_TUID)
+
+    projector.tool_items_for_message(
+        session=session,
+        turn_id="turn-1",
+        message=_parse(WIRE_NESTED_DISPATCH_TOOL_USE),
+    )
+    started = task_event_from_message(_parse(WIRE_NESTED_TASK_STARTED))
+    assert started is not None
+    overlay, status = agent_task_overlay_for_event(started)
+    projector.fold_agent_task_event(
+        session, tool_use_id=NESTED_TUID, overlay=overlay, status=status
+    )
+
+    # A receipt the guard cannot read as a launch, with a live agent under it.
+    row = projector.tool_items_for_message(
+        session=session,
+        turn_id="turn-1",
+        message=_parse(UNREADABLE_NESTED_RECEIPT),
+    )[0]
+    assert row.id == card_id
+    assert _nested_agent_status(row) == "running"
+    assert row.status == "running", "a live agent outranks a terminal frame"
+
+
+def test_terminal_entry_is_not_clamped() -> None:
+    """An agents entry with no status is not an agent in flight."""
+
+    assert has_live_agent_tasks(AgentCallToolContent(agents={"a": {}})) is False
+    assert (
+        has_live_agent_tasks(
+            AgentCallToolContent(agents={"a": {}, "b": {"status": "completed"}})
+        )
+        is False
+    )
+    assert (
+        has_live_agent_tasks(AgentCallToolContent(agents={"a": {"status": "running"}}))
+        is True
+    )
+    assert (
+        has_live_agent_tasks(
+            AgentCallToolContent(agents={"a": {"status": "async_launched"}})
+        )
+        is True
+    )
+
+    # End to end: a status-less task event leaves `{}` in the map, and the card
+    # it closes is allowed to reach terminal.
+    projector = ClaudeMessageProjector()
+    session = _session()
+    projector.tool_items_for_message(
+        session=session,
+        turn_id="turn-1",
+        message=_parse(WIRE_NESTED_DISPATCH_TOOL_USE),
+    )
+    # task_updated with no status in its patch: the agents entry is `{}`.
+    blank = task_event_from_message(
+        _parse(
+            {
+                **WIRE_NESTED_TASK_UPDATED,
+                "uuid": "nested-blank-1",
+                "patch": {"end_time": 1790997079000},
+            }
+        )
+    )
+    assert blank is not None
+    overlay, status = agent_task_overlay_for_event(blank)
+    assert overlay.agents == {NESTED_TASK_ID: {}}
+    projector.fold_agent_task_event(
+        session, tool_use_id=NESTED_TUID, overlay=overlay, status=status
+    )
+
+    row = projector.tool_items_for_message(
+        session=session,
+        turn_id="turn-1",
+        message=_parse(UNREADABLE_NESTED_RECEIPT),
+    )[0]
+    assert row.content["agents"] == {NESTED_TASK_ID: {}}
+    assert row.status == "done", "no live agent, nothing to clamp"
+
+
+def test_false_done_self_heals_on_the_next_progress() -> None:
+    """A card pinned done by a misread frame is un-pinned, item and ledger."""
+
+    async def run() -> None:
+        client = _NestedDispatchClient(receipt=UNREADABLE_NESTED_RECEIPT)
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            session = await _start_dispatch(runtime)
+            card_id = stable_tool_item_id(session, NESTED_TUID)
+            # The production state: terminal card, live agent underneath.
+            await _wait_until(
+                lambda: _card_items(host, card_id)[-1].status
+                in AGENT_CARD_TERMINAL_STATUSES
+                and _nested_agent_status(_card_items(host, card_id)[-1]) == "running"
+            )
+
+            # The next projection of the dispatch frame — what a reconnect
+            # replays — is what un-sticks it. The task route alone cannot:
+            # `resolve_agent_card_status` keeps a terminal status forever.
+            await client.incoming.put(_parse(WIRE_NESTED_DISPATCH_TOOL_USE))
+            await client.incoming.put(_parse(WIRE_NESTED_TASK_PROGRESS))
+            await _wait_until(
+                lambda: _card_items(host, card_id)[-1].status == "running"
+            )
+
+            card = _card_items(host, card_id)[-1]
+            assert card.status == "running"
+            assert _nested_agent_status(card) == "running"
+            # Ledger and item agree, so the next terminal frame is not blocked
+            # by the status the bad frame left behind.
+            assert runtime._timeline._agent_cards[card_id].status == "running"
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_task_updated_after_a_false_done_still_closes() -> None:
+    """The clamp is not a latch: a real closure still lands exactly once."""
+
+    async def run() -> None:
+        client = _NestedDispatchClient(receipt=UNREADABLE_NESTED_RECEIPT)
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            session = await _start_dispatch(runtime)
+            card_id = stable_tool_item_id(session, NESTED_TUID)
+            await _wait_until(
+                lambda: _card_items(host, card_id)[-1].status
+                in AGENT_CARD_TERMINAL_STATUSES
+            )
+
+            await client.incoming.put(_parse(WIRE_NESTED_TASK_UPDATED))
+            await _wait_until(
+                lambda: _nested_agent_status(_card_items(host, card_id)[-1])
+                == "completed"
+            )
+
+            card = _card_items(host, card_id)[-1]
+            assert card.status == "done"
+            # Still one closure, and the progress that followed it did not
+            # reopen the card on its way.
+            assert card.content["endTime"] == 1790997079000
+            published = len(_card_items(host, card_id))
+            await client.incoming.put(_parse(WIRE_NESTED_TASK_UPDATED))
+            await asyncio.sleep(0.05)
+            assert len(_card_items(host, card_id)) == published
+            assert _card_items(host, card_id)[-1].status == "done"
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())

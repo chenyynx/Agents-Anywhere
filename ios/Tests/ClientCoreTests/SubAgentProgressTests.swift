@@ -46,6 +46,12 @@ import Testing
         try #require(SubAgentProgress.card(item))
     }
 
+    /// The connector's launch receipt: the subagent is dispatched but has not
+    /// reported a task event yet, so this entry is still `async_launched`.
+    private func asyncEntry(_ status: String = "async_launched") -> [String: Any] {
+        ["t1": ["status": status, "subagentType": "general-purpose"]]
+    }
+
     // MARK: Card projection
 
     @Test func cardParsingReadsTheConnectorConvention() throws {
@@ -101,6 +107,101 @@ import Testing
         value.removeValue(forKey: "status")
         let missing = try card(try decode(value))
         #expect(missing.phase == .unknown(nil) && missing.phase.word == "未知")
+        // 启动中 is a word of its own — it must not borrow 运行中's.
+        let starting = try card(try cardItem(status: "running", agents: asyncEntry()))
+        #expect(starting.phase == .starting && starting.phase.word == "启动中")
+    }
+
+    // MARK: Launch window (async_launched)
+    //
+    // The item status and the agents entry disagree on purpose: a launch
+    // receipt keeps the entry at `async_launched` while the item is already
+    // `running`, and an old connector may even stamp `done` on it. The entry
+    // is the only thing that knows, so it outranks the item status.
+
+    @Test func doneWithAsyncAgentEntryDefendsToStarting() throws {
+        // The false-done window: the item is terminal, the subagent is not.
+        let stale = try card(try cardItem(status: "done", agents: asyncEntry()))
+        #expect(stale.phase == .starting && stale.phase.word == "启动中")
+        // Mid-launch the item already reads "running" — 启动中 must win over it.
+        let launching = try card(try cardItem(status: "running", agents: asyncEntry()))
+        #expect(launching.phase == .starting)
+        // …and over "pending" / "waiting_approval" too.
+        #expect(try card(try cardItem(status: "pending", agents: asyncEntry())).phase == .starting)
+        // Failures stay failures: a launch never launders a real failure.
+        #expect(try card(try cardItem(status: "failed", agents: asyncEntry())).phase == .failed)
+        #expect(try card(try cardItem(status: "interrupted", agents: asyncEntry())).phase == .interrupted)
+    }
+
+    @Test func doneWithoutAsyncAgentEntryStaysCompleted() throws {
+        // No agents entry at all: the pre-existing mapping, untouched.
+        #expect(try card(try cardItem(status: "done")).phase == .completed)
+        // A finished subagent says so on its entry: no launch signal to honor.
+        let finished = try card(try cardItem(status: "done", agents: asyncEntry("completed")))
+        #expect(finished.phase == .completed && finished.phase.word == "已完成")
+        // An entry without a status is not a launch (缺失不显), or every card
+        // with an agents map would be stuck at 启动中 forever.
+        let bare = try card(try cardItem(status: "done", agents: ["t1": ["subagentType": "Explore"]]))
+        #expect(bare.phase == .completed)
+        // Only the single-entry map launches: with several tasks the primary
+        // entry is the one that reports a real state.
+        let multi = try card(try cardItem(status: "running",
+            agents: ["t1": ["status": "async_launched"], "t2": ["status": "running"]]))
+        #expect(multi.phase == .running)
+    }
+
+    @Test func startingIsActiveAndKeepsTheCapsuleAndDefaultTab() throws {
+        let starting = try cardItem("a", order: 1, description: "排查日志", agents: asyncEntry())
+        let state = SubAgentProgress.capsuleState([starting, try cardItem("b", order: 2, status: "done")])
+        #expect(state.isVisible && state.runningCount == 1)
+        #expect(state.latestRunningID == "a" && state.title == "排查日志")
+        // VoiceOver follows the phase word instead of a hardcoded 运行中.
+        #expect(state.accessibilityText == "排查日志，启动中")
+        let running = SubAgentProgress.capsuleState([try cardItem("a", order: 1, description: "排查日志")])
+        #expect(running.accessibilityText == "排查日志，运行中")
+        // …and a failing batch still overrides both.
+        let failed = SubAgentProgress.capsuleState(try [
+            cardItem("x", order: 1, status: "failed", agents: asyncEntry("failed")),
+            cardItem("y", order: 2, agents: asyncEntry())])
+        #expect(failed.hasFailure && failed.accessibilityText.hasSuffix("，失败"))
+    }
+
+    @Test func startingIsNotAFailure() throws {
+        let parsed = try card(try cardItem(status: "done", agents: asyncEntry()))
+        #expect(!parsed.phase.isFailure)
+        // A fresh dispatch clears an older batch's failure like any other.
+        let failed = try cardItem("old", order: 1, status: "failed",
+                                  createdAt: "2026-10-05T10:00:00Z", endTime: millis("2026-10-05T10:05:00Z"))
+        let fresh = try cardItem("new", order: 2, createdAt: "2026-10-05T10:10:00Z", agents: asyncEntry())
+        let state = SubAgentProgress.capsuleState([failed, fresh])
+        #expect(state.isVisible && !state.hasFailure)
+    }
+
+    @Test func startingHidesTheFinalOutputSection() throws {
+        // The panel shows 最终输出 only when `!phase.isActive`; a launching card
+        // that already carries a summary (a folded early receipt) must not
+        // pass that gate while the subagent is still launching.
+        let launching = try card(try cardItem(status: "done", agents: asyncEntry(), summary: "EARLY DRAFT"))
+        #expect(launching.phase.isActive && launching.summary == "EARLY DRAFT")
+        // The same card once the entry reports a real state closes normally.
+        let closed = try card(try cardItem(status: "done", agents: asyncEntry("completed"), summary: "FINAL"))
+        #expect(!closed.phase.isActive)
+    }
+
+    @Test func unknownStatusStillPassesThrough() throws {
+        // The launch signal never invents a phase for an unrecognized status:
+        // 防御式透传 keeps the wire text verbatim.
+        let custom = try card(try cardItem(status: "vendor_paused", agents: asyncEntry()))
+        #expect(custom.phase == .unknown("vendor_paused") && custom.phase.word == "vendor_paused")
+        // …and a launching card is not active, so it cannot hold the capsule.
+        #expect(!custom.phase.isActive)
+        // The item status is the passthrough source; the entry is the fallback.
+        var value = try itemObject(id: "card", order: 1)
+        value["type"] = "tool"
+        value.removeValue(forKey: "status")
+        value["content"] = ["kind": "agent_call", "agents": ["t1": ["status": "vendor_paused"]]]
+        let fallback = try card(try decode(value))
+        #expect(fallback.phase == .unknown("vendor_paused"))
     }
 
     // MARK: Capsule
@@ -250,6 +351,15 @@ import Testing
         #expect(SubAgentProgress.defaultSelection(cards, requested: "missing") == "b")
         let allDone = SubAgentProgress.topLevelCards(in: [finished])
         #expect(SubAgentProgress.defaultSelection(allDone, requested: nil) == "a")
+        // A subagent still launching is active, so it opens the panel exactly like a
+        // running one — otherwise the dispatch lands on an older, closed tab.
+        let launched = try cardItem("d", order: 4, agents: asyncEntry())
+        let withLaunch = SubAgentProgress.topLevelCards(in: [finished, running, launched])
+        #expect(withLaunch.map(\.id) == ["a", "b", "d"])
+        #expect(SubAgentProgress.defaultSelection(withLaunch, requested: nil) == "b")
+        let onlyLaunch = SubAgentProgress.topLevelCards(in: [finished, launched])
+        #expect(SubAgentProgress.defaultSelection(onlyLaunch, requested: nil) == "d")
+        #expect(SubAgentProgress.defaultSelection(onlyLaunch, requested: "a") == "a")
     }
 
     // MARK: Per-turn pages (pp 2026-10-05: 每轮都是新的页)

@@ -11,6 +11,7 @@ from connector.server.runtime_rpc_params import (
     SessionCreateParams,
     SessionInterruptParams,
     SessionSelectionUpdateParams,
+    SessionStopSubagentParams,
     TurnStartParams,
     TurnSteerParams,
 )
@@ -93,6 +94,18 @@ async def dispatch_session_interrupt(
         session_id=parsed.session_id,
         reason=parsed.reason,
         preserve_background=parsed.preserve_background,
+    )
+    return operation_result_payload(result)
+
+
+async def dispatch_session_stop_subagent(
+    runtime: AgentRuntime,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    parsed = SessionStopSubagentParams.parse(params)
+    result = await runtime.stop_subagent(
+        session_id=parsed.session_id,
+        task_id=parsed.task_id,
     )
     return operation_result_payload(result)
 

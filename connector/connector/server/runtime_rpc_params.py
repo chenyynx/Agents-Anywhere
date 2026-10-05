@@ -430,6 +430,22 @@ class SessionInterruptParams:
 
 
 @dataclass(frozen=True, slots=True)
+class SessionStopSubagentParams:
+    session_id: str
+    task_id: str
+
+    @classmethod
+    def parse(cls, params: dict[str, Any]) -> SessionStopSubagentParams:
+        task_id = params.get("taskId")
+        if not isinstance(task_id, str) or not task_id:
+            raise ValueError("taskId is required")
+        return cls(
+            session_id=required_session_id(params),
+            task_id=task_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class SessionCommandsParams:
     session_id: str
     external_session_id: str | None

@@ -12,6 +12,7 @@ from connector.runtimes.claude.domain.permissions import (
 from connector.runtimes.claude.domain.session import ClaudeSession
 from connector.runtimes.claude.sdk.stop_affordance import (
     install_per_task_stop_declaration,
+    mark_declared_client,
 )
 from connector.runtimes.model_gateway import model_gateway_from_config
 
@@ -44,8 +45,11 @@ def new_sdk_client(
 ) -> Any:
     # Every connection this process opens declares AA's per-task stop control,
     # so a CLI interrupt spares running background work (kill-switch:
-    # `perTaskStopAffordance`, default on; see sdk/stop_affordance.py).
-    install_per_task_stop_declaration(
+    # `perTaskStopAffordance`, default on; see sdk/stop_affordance.py). The
+    # install's return value is the connection-level fact the stop path reads
+    # (red team F-A/F-C): it is recorded on the client here and copied onto
+    # the `ClaudeConnection` at build time.
+    declared = install_per_task_stop_declaration(
         sdk,
         declare=bool(config_values.get("perTaskStopAffordance", True)),
     )
@@ -62,14 +66,17 @@ def new_sdk_client(
         title_control=title_control,
     )
     if client_factory is not None:
-        return client_factory(sdk, options)
-    client_cls = getattr(sdk, "ClaudeSDKClient", None)
-    if client_cls is None:
-        raise RuntimeError("ClaudeSDKClient is not available")
-    try:
-        return client_cls(options=options)
-    except TypeError:
-        return client_cls(options)
+        client = client_factory(sdk, options)
+    else:
+        client_cls = getattr(sdk, "ClaudeSDKClient", None)
+        if client_cls is None:
+            raise RuntimeError("ClaudeSDKClient is not available")
+        try:
+            client = client_cls(options=options)
+        except TypeError:
+            client = client_cls(options)
+    mark_declared_client(client, declared)
+    return client
 
 
 def build_sdk_options(

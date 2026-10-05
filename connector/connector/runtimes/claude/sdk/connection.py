@@ -427,6 +427,13 @@ class ClaudeConnection:
     closing: bool = False
     task_ids: set[str] = field(default_factory=set)
     background: ClaudeBackgroundTasks = field(default_factory=ClaudeBackgroundTasks)
+    #: Whether THIS connection's initialize declared the per-task stop
+    #: affordance. Recorded at build time from the declaration install's
+    #: return value (red team F-A/F-C: the stop path reads the connection's
+    #: own fact, never a process-level switch that another runtime instance
+    #: could have flipped). False = the CLI's interrupt owns the all-stop, so
+    #: an explicit fan-out must not run and survivors must not be folded.
+    per_task_stop_declared: bool = False
     selections: dict[str, str | None] = field(default_factory=dict)
     reconcile_needed: bool = False
     reconciling: bool = False

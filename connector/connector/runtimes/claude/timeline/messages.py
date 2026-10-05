@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from connector.runtime_protocol import (
@@ -37,6 +37,7 @@ from connector.runtimes.claude.timeline.agent_calls import (
     claude_agent_call_content,
     complete_claude_agent_call_content,
     has_live_agent_tasks,
+    has_running_agent_tasks,
     is_async_agent_receipt,
     resolve_agent_card_status,
 )
@@ -398,7 +399,12 @@ class ClaudeMessageProjector:
 
         if isinstance(content, AgentCallToolContent):
             status, content = self._fold_agent_card(
-                item_id, item_turn_id, status, content
+                item_id,
+                item_turn_id,
+                status,
+                content,
+                session_id=session.session_id,
+                tool_use_id=block.tool_use_id,
             )
             if status in AGENT_CARD_TERMINAL_STATUSES and has_live_agent_tasks(
                 content
@@ -435,6 +441,9 @@ class ClaudeMessageProjector:
         turn_id: str,
         status: str,
         content: AgentCallToolContent,
+        *,
+        session_id: str,
+        tool_use_id: str,
     ) -> tuple[str, AgentCallToolContent]:
         """Remember one wire-projected Agent card and merge live task state.
 
@@ -449,6 +458,8 @@ class ClaudeMessageProjector:
         card = self._agent_cards.setdefault(item_id, ClaudeAgentCallCard())
         card.turn_id = turn_id
         card.content = content
+        card.session_id = session_id
+        card.tool_use_id = tool_use_id
         card.status = resolve_agent_card_status(card.status, status)
         return card.status, card.overlay.apply(content)
 
@@ -471,15 +482,30 @@ class ClaudeMessageProjector:
         order_seq = self.order_seq_for(item_id)
         card = self._agent_cards.setdefault(item_id, ClaudeAgentCallCard())
         card.overlay.merge(overlay)
+        card.session_id = session.session_id
+        card.tool_use_id = tool_use_id
         card.status = resolve_agent_card_status(card.status, status)
         base = card.content or card.overlay.synthesized_call(tool_use_id)
+        content = card.overlay.apply(base)
+        if card.status in AGENT_CARD_TERMINAL_STATUSES and has_running_agent_tasks(
+            content
+        ):
+            # I-G2 (ghost-card-findings §5.1, narrowed by red team F-D): a
+            # *started* task outranks a terminal fold. The stop-path sweep
+            # judges open cards at a stop, and a spared dispatch can start
+            # after that judgment (the preserve edge); this clamp is what
+            # turns the card back to running instead of leaving "card says
+            # interrupted, agent runs". The `async_launched` receipt does not
+            # trigger it — a receipt proves a launch was reported, not that a
+            # task exists, and vouching for it would strand the S3 ghost.
+            card.status = "running"
         return ToolTimelineItem(
             id=item_id,
             type="tool",
             status=card.status,  # type: ignore[arg-type]
             role="tool",
             turn_id=card.turn_id,
-            content=card.overlay.apply(base),
+            content=content,
             source=TimelineSource(
                 runtime="claude",
                 external_session_id=session.external_session_id,
@@ -489,6 +515,78 @@ class ClaudeMessageProjector:
                 event="claude.agent.task",
             ),
         ).to_platform_item(session_id=session.session_id, order_seq=order_seq)
+
+    def close_open_agent_cards(
+        self,
+        session: ClaudeSession,
+    ) -> tuple[RuntimeTimelineItem, ...]:
+        """Judge every open Agent card of this session that has no live task.
+
+        The stop-path sweep (I-G1, `ghost-card-findings.md` §5.1): a dispatch
+        aborted inside its dispatch window has no task to close it — the CLI
+        never created one — and the single frame that could (the aborted
+        call's tool_result) is discarded by the stop's own release. Nothing
+        else ever re-projects that card, so the stop is the last moment that
+        can judge it; this returns the items that do.
+
+        Open cards backed by a *started* task (a ``running`` entry) are left
+        alone (I-G2), and a card whose task starts after this ran is re-opened
+        by the fold clamp in ``fold_agent_task_event`` — the sweep cannot lie
+        about a live agent, and cannot strand a dead card. The exemption is
+        deliberately narrow (red team F-D): the ``async_launched`` receipt
+        marks a launch report, not a task, so a receipt-only card is still a
+        dispatch-window ghost and is judged here; the per-task stop control
+        covers it if the task turns out to be real. Terminal cards are
+        untouched.
+        """
+
+        items: list[RuntimeTimelineItem] = []
+        for item_id, card in tuple(self._agent_cards.items()):
+            if card.session_id != session.session_id:
+                # One projector serves every session of the runtime.
+                continue
+            if card.status in AGENT_CARD_TERMINAL_STATUSES:
+                continue
+            base = card.content
+            if base is None:
+                # A card minted by task events before its dispatch frame:
+                # with no agents it has nothing to say, and it cannot be
+                # re-based without its tool_use id.
+                if not card.overlay.agents or card.tool_use_id is None:
+                    continue
+                base = card.overlay.synthesized_call(card.tool_use_id)
+            content = card.overlay.apply(base)
+            if has_running_agent_tasks(content):
+                continue
+            card.status = resolve_agent_card_status(card.status, "interrupted")
+            items.append(
+                ToolTimelineItem(
+                    id=item_id,
+                    type="tool",
+                    status=card.status,  # type: ignore[arg-type]
+                    role="tool",
+                    turn_id=card.turn_id,
+                    # The marker keeps the judgment observable in the
+                    # timeline (free JSON), next to the terminal status the
+                    # client renders from the status field alone.
+                    content=replace(
+                        content,
+                        metadata={**dict(content.metadata), "stoppedWithoutTask": True},
+                    ),
+                    source=TimelineSource(
+                        runtime="claude",
+                        external_session_id=session.external_session_id,
+                        turn_id=card.turn_id,
+                        native_item_id=card.tool_use_id,
+                        native_item_type="tool_use",
+                        event="claude.agent.stopped",
+                    ),
+                ).to_platform_item(
+                    session_id=session.session_id,
+                    order_seq=self.order_seq_for(item_id),
+                )
+            )
+        return tuple(items)
 
 
 def message_role(message: Any) -> str | None:

@@ -48,6 +48,9 @@ from connector.runtimes.claude.sdk.settings import (
     remove_gateway_settings_file,
 )
 from connector.runtimes.claude.sdk.stderr import ClaudeStderrBuffer
+from connector.runtimes.claude.sdk.stop_affordance import (
+    client_declares_per_task_stop,
+)
 from connector.runtimes.claude.sdk.tasks import ClaudeTaskEvent
 from connector.runtimes.claude.sdk.title_tool import build_change_title_tool
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
@@ -817,6 +820,64 @@ class ClaudeTurnRunner:
             )
         return stopped
 
+    async def close_open_agent_cards(
+        self,
+        session: ClaudeSession,
+        *,
+        reason: str | None = None,
+    ) -> int:
+        """Judge every open Agent card the stop left without a live task.
+
+        The ghost fix (2026-10-05, `ghost-card-findings.md`): a dispatch
+        aborted inside the "dispatch window" (the tool_use frame is out, the
+        CLI never created the task) closes no card through task events — there
+        is no task — and the one frame that could close it (the aborted
+        call's tool_result) is discarded by the stop. So the stop itself is
+        the last moment that can judge the card, and this is that judgment:
+        open cards with no live agent entry fold to ``interrupted``.
+
+        Display only, and never the reason a stop fails: the projector sweep
+        is pure state, and a failure here is logged and swallowed like every
+        other fold on this path (the L1 lesson). Publication reuses the
+        fold's own no-op comparison, so a re-run (or a card a task event
+        already closed) publishes nothing.
+
+        I-G2 is the safety valve: a card whose agents map still holds a live
+        entry is skipped, and should the spared dispatch start after the
+        sweep, the next task_started fold re-opens it (the fold clamp in
+        `timeline.messages`). The sweep therefore cannot lie about a live
+        agent, and cannot strand a dead card.
+        """
+
+        try:
+            items = self.timeline.close_open_agent_cards(session)
+            published = 0
+            for item in items:
+                previous = session.timeline_items.get(item.id)
+                if (
+                    previous is not None
+                    and previous.status == item.status
+                    and dict(previous.content) == dict(item.content)
+                ):
+                    continue
+                await self.notifications.timeline_activity.timeline_item_upsert(item)
+                published += 1
+            if published:
+                logger.warning(
+                    "Claude open subagent cards closed without a task "
+                    "session_id={} cards={} reason={}",
+                    session.session_id,
+                    published,
+                    reason,
+                )
+            return published
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Claude open-agent-card sweep failed session_id={}",
+                session.session_id,
+            )
+            return 0
+
     async def project_background_frame(
         self,
         session: ClaudeSession,
@@ -966,6 +1027,18 @@ class ClaudeTurnRunner:
             # Otherwise loop: the wake turn may have dispatched fresh
             # background work, and that new batch owns the transport too.
 
+    def has_live_connection(self, session_id: str) -> bool:
+        """Whether a live transport currently hosts this session's work.
+
+        The per-task stop rides this connection, so it is the fact behind
+        ``session.subagent_control`` availability: true while the connection
+        is open, regardless of whether a turn is running (background
+        subagents keep their transport alive through idle).
+        """
+
+        connection = self.connections.get(session_id)
+        return connection is not None and not connection.closing
+
     async def connection_for(
         self,
         session: ClaudeSession,
@@ -1068,6 +1141,7 @@ class ClaudeTurnRunner:
             ),
             cleanup=cleanup,
             idle_timeout_seconds=self.config.values.get("idleTimeoutSeconds", 600),
+            per_task_stop_declared=client_declares_per_task_stop(client),
             selections=dict(session.selections),
             task_ids=(
                 set(existing.task_ids) | set(carried or ())

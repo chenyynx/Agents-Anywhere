@@ -20,7 +20,10 @@ therefore amended in the one place it goes out. The patch is narrow (only dict
 requests whose subtype is ``initialize``), installed once per process, shared
 by every connection, and fail-soft: an SDK that no longer exposes the seam
 leaves the pre-declaration behavior in place instead of failing a connection.
-Kill-switch: the runtime config value ``perTaskStopAffordance`` (default on).
+Kill-switch: the runtime config value ``perTaskStopAffordance`` (default on),
+effective per connection at build time — the install's return value is
+recorded on the connection (``DECLARED_ATTR``) and every stop-path decision
+reads that connection fact, not the process-level switch.
 """
 
 from __future__ import annotations
@@ -34,6 +37,13 @@ from connector.logging import logger
 
 DECLARE_FIELD = "perTaskStopAffordance"
 _PATCH_MARKER = "_aa_declares_per_task_stop"
+#: Set on every client whose connection was built with the declaration in
+#: force. The connection copies it (``ClaudeConnection.per_task_stop_declared``)
+#: so the stop path reads the connection's own fact: the process-level
+#: ``_declared`` switch is only the startup-time install decision, and another
+#: runtime instance (different config, runtime flip) must not re-decide this
+#: connection's semantics (red team F-A/F-C, 2026-10-06).
+DECLARED_ATTR = "_aa_per_task_stop_declared"
 
 # A per-task stop is a control request the CLI answers promptly; bounding it
 # keeps a silent CLI from holding the stop path it belongs to.
@@ -90,6 +100,39 @@ def install_per_task_stop_declaration(sdk: Any, *, declare: bool = True) -> bool
         query_cls._send_control_request = declaring_send_control_request
     _declared = declare
     return declare
+
+
+def sdk_supports_stop_task(sdk: Any) -> bool:
+    """Whether this SDK offers the per-task stop control at all.
+
+    The capability bit's ``supported`` fact: an SDK whose client class has no
+    ``stop_task`` cannot stop an individual background task, whatever the CLI
+    underneath would accept. Checked on the class (the control is a method on
+    ``ClaudeSDKClient``), never by version number.
+    """
+
+    client_cls = getattr(sdk, "ClaudeSDKClient", None)
+    return callable(getattr(client_cls, "stop_task", None))
+
+
+def mark_declared_client(client: Any, declared: bool) -> None:
+    """Record the connection-level declaration fact on its client.
+
+    Fail-soft: a client that forbids attributes keeps the safe default
+    (undeclared = the CLI owns the all-stop), which is the pre-declaration
+    semantics rather than a missing stop.
+    """
+
+    try:
+        setattr(client, DECLARED_ATTR, bool(declared))
+    except Exception:  # noqa: BLE001 - fail-soft by contract
+        pass
+
+
+def client_declares_per_task_stop(client: Any) -> bool:
+    """Whether this client's connection was built with the declaration."""
+
+    return bool(getattr(client, DECLARED_ATTR, False))
 
 
 def _query_class(sdk: Any) -> Any:

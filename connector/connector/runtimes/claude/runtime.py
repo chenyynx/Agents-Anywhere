@@ -45,7 +45,9 @@ from connector.runtimes.claude.notifications.projector import (
 from connector.runtimes.claude.sdk.client import (
     ClaudeClientFactory,
     SdkLoader,
+    load_sdk,
 )
+from connector.runtimes.claude.sdk.stop_affordance import sdk_supports_stop_task
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 from connector.runtimes.claude.sessions.reader import ClaudeSessionReader
 from connector.runtimes.claude.sessions.sync_state import ClaudeSessionSyncStateStore
@@ -73,6 +75,10 @@ class ClaudeRuntime(AgentRuntime):
     _notices: ClaudeNoticeRegistry = field(init=False)
     _notifications: ClaudeNotificationProjector = field(init=False)
     _turns: ClaudeTurnController = field(init=False)
+    #: Lazy probe of the loaded SDK (``stop_task`` presence). None until the
+    #: first capability read; importing the SDK here would make every runtime
+    #: construction depend on it.
+    _subagent_control_supported: bool | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self._session_states = RuntimeSessionStateCache(
@@ -230,6 +236,7 @@ class ClaudeRuntime(AgentRuntime):
                     state,
                 ),
                 has_active_turn=claude_state_has_active_execution(state),
+                **self._subagent_control_context(session_id),
             )
         )
 
@@ -251,9 +258,33 @@ class ClaudeRuntime(AgentRuntime):
                         state,
                     ),
                     has_active_turn=claude_state_has_active_execution(state),
+                    **self._subagent_control_context(state.session_id),
                 )
             )
         )
+
+    def _subagent_control_context(self, session_id: str) -> dict[str, bool]:
+        """The two live facts behind ``session.subagent_control``.
+
+        ``subagent_control_supported`` is the SDK's per-task stop control,
+        probed once and cached (fail-soft: no loader / no SDK means no
+        support). ``connection_online`` is this session's live transport,
+        read fresh — it opens and closes independently of any state
+        transition.
+        """
+
+        if self._subagent_control_supported is None:
+            try:
+                sdk = load_sdk(self.sdk_loader)
+            except Exception:  # noqa: BLE001 - fail-soft by contract
+                supported = False
+            else:
+                supported = sdk_supports_stop_task(sdk)
+            self._subagent_control_supported = supported
+        return {
+            "subagent_control_supported": self._subagent_control_supported,
+            "connection_online": self._turns.has_live_connection(session_id),
+        }
 
     def _session_binding(
         self,
@@ -408,6 +439,16 @@ class ClaudeRuntime(AgentRuntime):
             session_id=session_id,
             reason=reason,
             preserve_background=preserve_background,
+        )
+
+    async def stop_subagent(
+        self,
+        session_id: str,
+        task_id: str,
+    ) -> RuntimeOperationResult:
+        return await self._turns.stop_subagent(
+            session_id=session_id,
+            task_id=task_id,
         )
 
     async def respond_interaction(

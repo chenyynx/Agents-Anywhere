@@ -201,6 +201,22 @@ class AgentRuntime(ABC):
         """
         raise RuntimeUnsupportedError("interrupt_session")
 
+    async def stop_subagent(
+        self,
+        session_id: str,
+        task_id: str,
+    ) -> RuntimeOperationResult:
+        """Stop one background task of a session by its runtime task id.
+
+        The result is factual: ``{"stopped": true}`` when a task with this id
+        was live and the runtime accepted the stop, ``{"stopped": false}``
+        when the id is unknown there. Runtimes without a per-task stop raise
+        ``RuntimeUnsupportedError``; clients gate on
+        ``session.subagent_control``, so they never ask those runtimes.
+        """
+        _ = session_id, task_id
+        raise RuntimeUnsupportedError("stop_subagent")
+
     async def update_session_selections(
         self,
         session_id: str,

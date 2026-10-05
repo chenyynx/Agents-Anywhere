@@ -151,6 +151,25 @@ def has_live_agent_tasks(content: AgentCallToolContent) -> bool:
     )
 
 
+def has_running_agent_tasks(content: AgentCallToolContent) -> bool:
+    """Whether a *started* task backs this card (a ``running`` entry).
+
+    The narrower form for the stop path's two judgments (red team F-D,
+    2026-10-06): the ghost sweep's exemption and the fold clamp. The
+    ``async_launched`` receipt is metadata about a launch, not proof a task
+    exists — a card holding only that marker is still the dispatch-window
+    ghost the sweep exists to close. ``running`` comes from task lifecycle
+    frames, so it is the entry that genuinely vouches for a live task; a
+    spared call that starts after the sweep re-opens the card through it.
+    """
+
+    return any(
+        _string(entry.get("status")) == "running"
+        for entry in content.agents.values()
+        if isinstance(entry, Mapping)
+    )
+
+
 def resolve_agent_card_status(previous: str | None, incoming: str | None) -> str:
     """Pick the card status when projections and task events meet.
 
@@ -305,6 +324,13 @@ class ClaudeAgentCallCard:
     content: AgentCallToolContent | None = None
     overlay: ClaudeAgentTaskOverlay = field(default_factory=ClaudeAgentTaskOverlay)
     status: str | None = None
+    #: The dispatch tool_use id and the owning platform session. One projector
+    #: serves every session of the runtime, so the stop-path sweep
+    #: (`messages.close_open_agent_cards`) must know which cards are this
+    #: session's, and a card minted by task events before its dispatch frame
+    #: (content None) needs the raw id to synthesize a base.
+    tool_use_id: str | None = None
+    session_id: str | None = None
 
 
 def agent_task_overlay_for_event(

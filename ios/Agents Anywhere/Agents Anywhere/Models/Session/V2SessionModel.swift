@@ -25,13 +25,68 @@ final class V2SessionRuntimeModel {
     /// lifecycle states that cannot carry current facts are excluded, so the
     /// gate is only ever true while a live recovery owns the data.
     private(set) var isFresh = false
+    /// Optimistic turn end after an accepted interrupt. The ack proves the
+    /// runtime stopped the turn, but the frames that say so can be late or
+    /// lost, so the composer gates read the post-stop turn-window shape until
+    /// authoritative facts (or an explicit rollback) end the prediction. It
+    /// never writes the projected state, never counts as an authoritative
+    /// turn ending, and is only honoured while the projection is fresh.
+    private(set) var predictedIdle = false
+    /// Authoritative turn endings: transitions of the projected state from a
+    /// turn in flight to `idle`, applied while live facts were fresh. The
+    /// completion cue keys off this instead of a raw status edge so that a
+    /// status no authoritative source ever confirmed (an optimistic
+    /// prediction, a selection write response) cannot announce a completion.
+    private(set) var authoritativeTurnEnds = 0
 
     func allows(_ id: V2CapabilityID) -> Bool {
         guard isFresh, let capability = capabilities?.capability(id: id) else { return false }
-        return capability.supported && capability.available && capability.allowed
+        guard capability.allowed else { return false }
+        if predictedIdle, capability.supported {
+            // The accepted stop already closed the turn window: report the
+            // post-stop shape of the two complementary turn capabilities
+            // (docs/api/capabilities.md) and leave every other capability —
+            // and every unavailable runtime — exactly as the snapshot says.
+            switch id {
+            case "session.send_message": return true
+            case "session.interrupt": return false
+            default: break
+            }
+        }
+        return capability.supported && capability.available
+    }
+
+    /// Whether the predicted idle is currently in force for composer gating.
+    /// A prediction only gets to speak while the projection is fresh; once
+    /// fresh facts stop flowing, the last authoritative state is the honest
+    /// one (and the stop affordance stays reachable through its own gate).
+    var isPredictedIdle: Bool { predictedIdle && isFresh }
+
+    /// The stop affordance's gate. Interrupt is idempotent on the server —
+    /// an already-finished turn answers 409 and is treated as success — so a
+    /// stale projection must not turn a user's stop tap into a silent no-op:
+    /// with a last-known supported, allowed capability the button stays live
+    /// and every outcome lands on the existing error channel.
+    func permitsInterruptAttempt() -> Bool {
+        guard let capability = capabilities?.capability(id: "session.interrupt") else { return false }
+        guard capability.supported, capability.allowed else { return false }
+        return capability.available || !isFresh
+    }
+
+    func beginPredictedIdle() {
+        guard !predictedIdle else { return }
+        predictedIdle = true
+    }
+
+    /// Ends the prediction. Called when authoritative facts land (truth wins)
+    /// and when the follow-up read fails (the optimistic value rolls back).
+    func endPredictedIdle() {
+        guard predictedIdle else { return }
+        predictedIdle = false
     }
 
     func update(_ data: V2SessionData?, connection: V2SessionConnectionState) {
+        let previousStatus = state?.status
         if state != data?.state { state = data?.state }
         if capabilities != data?.capabilities { capabilities = data?.capabilities }
         let notices = data?.notices ?? []
@@ -43,6 +98,9 @@ final class V2SessionRuntimeModel {
         }
         let fresh = data?.liveStateIsFresh == true && carriesCurrentFacts
         if isFresh != fresh { isFresh = fresh }
+        if fresh, previousStatus?.isTurnInFlight == true, data?.state?.status == .idle {
+            authoritativeTurnEnds += 1
+        }
     }
 }
 

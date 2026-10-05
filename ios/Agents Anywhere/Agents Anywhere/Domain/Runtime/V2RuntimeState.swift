@@ -16,6 +16,17 @@ nonisolated enum V2RuntimeStatus: String, Codable, Hashable {
         let value = try decoder.singleValueContainer().decode(String.self)
         self = Self(rawValue: value) ?? .unknown
     }
+
+    /// A turn is in flight. This is the window the composer's stop affordance
+    /// exists for, and the state half of the documented turn-window contract
+    /// (docs/api/capabilities.md: while a turn runs `session.send_message` is
+    /// unavailable and `session.interrupt` is available).
+    var isTurnInFlight: Bool {
+        switch self {
+        case .running, .pending, .waiting, .waitingApproval, .stopping, .blocked: true
+        default: false
+        }
+    }
 }
 
 struct V2RuntimeSelectionScope: RawRepresentable, Codable, Hashable, ExpressibleByStringLiteral {
@@ -119,6 +130,18 @@ struct V2RuntimeState: Codable, Hashable {
         updatedSeq = try container.decode(Int.self, forKey: .updatedSeq)
         createdAt = try container.decode(String.self, forKey: .createdAt)
         updatedAt = try container.decode(String.self, forKey: .updatedAt)
+    }
+
+    /// The same state with different selections. A selection write response is
+    /// only trusted for the selections it changed; every other field keeps its
+    /// authoritative value (see `V2SessionProjection.applySelections`).
+    func replacing(selections: [V2RuntimeSelectionScope: V2SelectionID?]) -> V2RuntimeState {
+        V2RuntimeState(
+            sessionId: sessionId, runtime: runtime, runtimeId: runtimeId, runtimeType: runtimeType,
+            externalSessionId: externalSessionId, status: status, selections: selections,
+            statusReason: statusReason, error: error, metadata: metadata, updatedSeq: updatedSeq,
+            createdAt: createdAt, updatedAt: updatedAt
+        )
     }
 
     func encode(to encoder: Encoder) throws {

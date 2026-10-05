@@ -305,8 +305,41 @@ final class V2SessionRepository {
     func interrupt(sessionId: V2SessionID) async throws {
         try requireNetwork()
         let entry = entry(for: sessionId)
-        _ = try await detail.interrupt(sessionId: sessionId)
+        do { _ = try await detail.interrupt(sessionId: sessionId) }
+        catch {
+            // The capability gate refuses an interrupt exactly when there is
+            // no turn to stop ("session capability is unavailable:
+            // session.interrupt" — server/agent_server/services/session_run.py).
+            // That is the outcome the caller asked for, and the second half of
+            // a double send lands here; both are success. Every other failure
+            // is real and keeps propagating.
+            if !Self.meansNoActiveTurnInterrupt(error) { throw error }
+        }
         try requireCurrent(entry)
+        // The accepted interrupt is proof the runtime is stopping the turn,
+        // but its ack carries no state and the frames that would report the
+        // idle turn can be late or lost. Flow the composer to the post-stop
+        // turn window now; the recovery round below calibrates it against
+        // authoritative facts (and a failed round rolls it back).
+        entry.model.runtime.beginPredictedIdle()
+        emit(entry)
+        do { try await reconcile(entry, requiringRoundAfter: entry.recoverySequence) }
+        catch {
+            if isCurrent(entry) {
+                entry.model.runtime.endPredictedIdle()
+                entry.error = V2ClientFailure(error)
+                emit(entry)
+            }
+        }
+    }
+
+    /// Recognises the one 409 that means "already stopped" rather than "the
+    /// stop failed": the session capability gate refusing `session.interrupt`
+    /// because no turn is active. Read-only (takeover) and offline conflicts
+    /// use different details and must keep failing loudly.
+    private static func meansNoActiveTurnInterrupt(_ error: Error) -> Bool {
+        guard let http = error as? HTTPError, case let .server(status, message, _) = http, status == 409 else { return false }
+        return message.contains("session capability is unavailable") && message.contains("session.interrupt")
     }
 
     func setTakeover(sessionId: V2SessionID, enabled: Bool) async throws {
@@ -330,9 +363,18 @@ final class V2SessionRepository {
         let entry = entry(for: sessionId)
         let state = try await detail.updateSelection(sessionId: sessionId, scope: scope, selectionId: selectionId)
         try requireCurrent(entry)
-        if let state { entry.projection?.applyState(state) }
+        // Only the selections come from this response; its status is not a
+        // fact (see V2SessionProjection.applySelections), so a switch made
+        // while a turn runs can no longer rewrite the projection to idle.
+        if let state { entry.projection?.applySelections(state) }
         invalidateCatalogs(entry)
         emit(entry)
+        // Aligned with setTakeover/respond: the confirmed write is followed by
+        // a recovery round whether or not a frame arrives, so the projection
+        // holds live facts again. The write is already confirmed; a failed
+        // read reports itself without making the write look rejected.
+        do { try await reconcile(entry, requiringRoundAfter: entry.recoverySequence) }
+        catch { if isCurrent(entry) { entry.error = V2ClientFailure(error); emit(entry) } }
     }
 
     func respond(sessionId: V2SessionID, noticeId: V2NoticeID, actionId: String, input: JSONValue? = nil) async throws {
@@ -456,6 +498,9 @@ final class V2SessionRepository {
     }
 
     private func start(_ entry: Entry, catchUp: Bool = false) {
+        // Healing rides the observed lifecycle: it needs an entry someone is
+        // looking at, and stop() ends both.
+        startHealing(entry)
         guard isCurrent(entry), !entry.model.isLocalCreation, !suspended, network.availability != .offline,
               !entry.observers.isEmpty, entry.connectionTask == nil else { return }
         let connectionID = UUID()
@@ -578,6 +623,9 @@ final class V2SessionRepository {
         if event.type == "runtime.catalog.updated" || entry.projection?.data.session.connectorStatus != .online {
             invalidateCatalogs(entry)
         }
+        if event.type == "runtime.state.updated" || event.type == "runtime.capability.updated" {
+            scheduleMismatchHeal(entry)
+        }
         emit(entry)
         if entry.projection?.data.session.connectorStatus == .online,
            !wasOnline || previousRuntime != entry.projection?.data.session.effectiveRuntimeId {
@@ -587,6 +635,100 @@ final class V2SessionRepository {
 
     private func reconcile(_ entry: Entry, requiringRoundAfter sequence: Int? = nil) async throws {
         if let error = await performRecovery(entry, requiringRoundAfter: sequence) { throw error }
+    }
+
+    // MARK: - Self-healing
+
+    /// Cadence for healing a projection that no later event is guaranteed to
+    /// repair: bounded backoff (1, 2, 4, 8, 16 s), capped at 30 s, and never
+    /// abandoned — past the cap the retry continues at the capped interval so
+    /// a session the user can see cannot sit grey forever (U6). The cap also
+    /// keeps a persistently failing read at one attempt per interval instead
+    /// of a storm.
+    private static func healDelay(step: Int) -> Duration {
+        .seconds(min(1 << min(step, 5), 30))
+    }
+
+    /// The sibling frames of one protocol envelope arrive back to back; a
+    /// contradiction that survives this window lost a frame rather than
+    /// merely waiting for its pair.
+    private static let mismatchHealDelay: Duration = .milliseconds(600)
+
+    /// Watches one observed session for a projection that needs healing and
+    /// nudges a recovery round. It starts with the socket lifecycle and ends
+    /// with it; failures are quiet here (the socket path reports its own
+    /// failures), and the condition is re-checked before every attempt so a
+    /// session that healed keeps costing nothing.
+    private func startHealing(_ entry: Entry) {
+        guard entry.healTask == nil else { return }
+        let healID = UUID()
+        entry.healID = healID
+        entry.healTask = Task { [weak self] in
+            defer { if entry.healID == healID { entry.healTask = nil } }
+            var step = 0
+            while !Task.isCancelled {
+                guard let self, self.isCurrent(entry) else { return }
+                do { try await self.sleep(Self.healDelay(step: step)) } catch { return }
+                guard !Task.isCancelled, self.isCurrent(entry) else { return }
+                guard self.needsHealing(entry) else { step = 0; continue }
+                let failure = await self.performRecovery(entry)
+                step = failure == nil && !self.needsHealing(entry) ? 0 : min(step + 1, 5)
+            }
+        }
+    }
+
+    /// Whether this projection needs a heal round. Staleness is only one of
+    /// the cases: the state and capability frames of one turn window are
+    /// delivered independently, so a fresh projection can also be internally
+    /// contradictory, and that state has no frame of its own to wait for.
+    ///
+    /// Healing waits for a settled connection: the connect and reconnect
+    /// paths run their own recovery, and a write that fails a round while the
+    /// socket is up is exactly the hole this fills. A failed connection and
+    /// an offline connector are their own, explainable states; the reconnect
+    /// paths re-run recovery when either returns.
+    private func needsHealing(_ entry: Entry) -> Bool {
+        guard let projection = entry.projection, !entry.model.isLocalCreation else { return false }
+        guard entry.connection == .connected else { return false }
+        guard projection.data.session.connectorStatus == .online else { return false }
+        if !projection.data.liveStateIsFresh { return true }
+        return hasStateCapabilityMismatch(entry)
+    }
+
+    /// The documented turn-window contract keeps `session.send_message` and
+    /// `session.interrupt` complementary while a turn is active
+    /// (docs/api/capabilities.md). When a fresh projection has a complementary
+    /// pair that contradicts the state status, one of the two independently
+    /// delivered frames is stale. Only complementary pairs are judged, so a
+    /// runtime that does not follow the contract is never second-guessed, and
+    /// the remedy is a read, never a local rewrite.
+    private func hasStateCapabilityMismatch(_ entry: Entry) -> Bool {
+        guard let projection = entry.projection, projection.data.liveStateIsFresh,
+              let state = projection.data.state else { return false }
+        let capabilities = projection.data.capabilities
+        guard let send = capabilities.capability(id: "session.send_message"),
+              let interrupt = capabilities.capability(id: "session.interrupt"),
+              send.supported, interrupt.supported else { return false }
+        let turnActiveByCapability = interrupt.available && !send.available
+        let turnIdleByCapability = !interrupt.available && send.available
+        guard turnActiveByCapability || turnIdleByCapability else { return false }
+        return state.status.isTurnInFlight != turnActiveByCapability
+    }
+
+    /// A contradiction observed on a frame gets its own trigger, debounced so
+    /// the frame's sibling can land first; the periodic heal above is the
+    /// backstop for one that is never re-observed.
+    private func scheduleMismatchHeal(_ entry: Entry) {
+        guard hasStateCapabilityMismatch(entry), entry.mismatchHealTask == nil else { return }
+        let healID = UUID()
+        entry.mismatchHealID = healID
+        entry.mismatchHealTask = Task { [weak self] in
+            defer { if entry.mismatchHealID == healID { entry.mismatchHealTask = nil } }
+            guard let self else { return }
+            do { try await self.sleep(Self.mismatchHealDelay) } catch { return }
+            guard !Task.isCancelled, self.isCurrent(entry), self.hasStateCapabilityMismatch(entry) else { return }
+            _ = await self.performRecovery(entry)
+        }
     }
 
     /// Runs, or joins, the single recovery round for this entry.
@@ -706,6 +848,9 @@ final class V2SessionRepository {
                     entry.projection?.applyLive(liveState)
                     entry.projectionBarrier = barrier
                     entry.error = nil
+                    // Authoritative facts landed: the optimistic turn end has
+                    // done its job and truth takes over, whatever it says.
+                    entry.model.runtime.endPredictedIdle()
                 }
             }
             emit(entry)
@@ -779,6 +924,12 @@ final class V2SessionRepository {
         entry.connectionID = UUID()
         entry.connectionTask?.cancel()
         entry.connectionTask = nil
+        entry.healID = UUID()
+        entry.healTask?.cancel()
+        entry.healTask = nil
+        entry.mismatchHealID = UUID()
+        entry.mismatchHealTask?.cancel()
+        entry.mismatchHealTask = nil
         // Recovery identity belongs to the lifecycle, not to a socket
         // generation: rotating it here makes an in-flight round abandon its
         // results quietly, while a later start() runs a round of its own.
@@ -843,6 +994,13 @@ private final class Entry {
     var recoverySequence = 0
     var recoveryTaskSequence = 0
     var connectionTask: Task<Void, Never>?
+    /// The observed-session heal loop. Cancelled by `stop()`; the id lets a
+    /// round that is ending clear its own registration only.
+    var healTask: Task<Void, Never>?
+    var healID = UUID()
+    /// Debounced heal for a state/capability contradiction seen on a frame.
+    var mismatchHealTask: Task<Void, Never>?
+    var mismatchHealID = UUID()
     var catalogs: V2SessionCatalogs?
     var catalogScopes: Set<String>?
     var catalogReadAt: Date?

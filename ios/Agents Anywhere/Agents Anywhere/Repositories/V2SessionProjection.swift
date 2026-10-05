@@ -61,6 +61,21 @@ struct V2SessionProjection {
         data.state = state
     }
 
+    /// A selection write response carries selections together with a status
+    /// that is not proof of anything: connectors whose selection result has no
+    /// state make the server synthesise `status: "idle"`, and writing that over
+    /// a running projection is how a live turn turned into a grey send key
+    /// (2026-10-05). Take only the selections; status, statusReason, error and
+    /// timestamps stay on the values live facts provided. With no projection
+    /// state yet there is nothing safe to graft onto, so nothing is written —
+    /// the write path's follow-up recovery supplies the facts.
+    mutating func applySelections(_ state: V2RuntimeState) {
+        guard state.sessionId == data.session.id,
+              (state.runtimeId ?? state.runtime) == data.session.effectiveRuntimeId else { return }
+        guard let existing = data.state else { return }
+        data.state = existing.replacing(selections: state.selections)
+    }
+
     mutating func apply(_ event: V2SessionEvent) throws {
         guard event.sessionId == data.session.id else { return }
         guard event.sequence >= sequence else { return }

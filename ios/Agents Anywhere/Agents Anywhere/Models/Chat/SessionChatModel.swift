@@ -40,6 +40,10 @@ final class SessionChatModel {
     /// Success is transient; failures stay until the user dismisses them.
     var commandSuccess: CommandFeedback?
     var commandFailure: CommandFeedback?
+    /// The short confirmation a model switch leaves behind — the AA form of
+    /// the CLI's own "model set" note. Transient, and it never mentions the
+    /// interrupt that accompanies the switch.
+    var switchFeedback: CommandFeedback?
     /// Selector commands (model, permission, …) open the existing options sheet.
     private(set) var optionsRequest = 0
     @ObservationIgnored var onEditCreation: ((V2PendingMessage) -> Void)?
@@ -56,9 +60,18 @@ final class SessionChatModel {
         // performs that work after the page's navigation transition settles.
     }
 
+    /// The authoritative answer: a turn is in flight according to live facts.
+    /// Everything except the composer gates (timeline actions, subtitles,
+    /// feedback) reads this value, so an optimistic turn end can never leak
+    /// into anything but the send/stop decision.
     var isRunning: Bool {
-        guard let status = session.runtime.state?.status else { return false }
-        return [.running, .pending, .waiting, .waitingApproval, .stopping, .blocked].contains(status)
+        session.runtime.state?.status?.isTurnInFlight == true
+    }
+    /// The composer's view of the turn window. It equals `isRunning` except
+    /// inside an accepted interrupt's optimistic window, where the send key is
+    /// already usable — before the frames that report the idle turn land.
+    var isComposerStreaming: Bool {
+        isRunning && !session.runtime.isPredictedIdle
     }
     /// The configured instance name, like Web, then its runtime type. Status
     /// copy names the Agent the user chose instead of a generic "Agent".
@@ -289,16 +302,38 @@ final class SessionChatModel {
         (session.runtime.state?.selections ?? [:]).compactMapValues { $0 }
     }
 
+    /// Applies the sheet's selections. A model switch is "stop and switch"
+    /// (pp 2026-10-05): the selection lands first and a turn that is running —
+    /// or whose state cannot prove it is not — is interrupted right after it,
+    /// so the next message starts under the new model.
     func applySettings() async -> Bool {
         guard !isWorking, session.runtime.isFresh else { return false }
         isWorking = true
         defer { isWorking = false }
         do {
-            for (scope, value) in settings.selections where currentSelections[scope] != value {
+            var switchedModel = false
+            // Deterministic order: the model selection precedes the interrupt
+            // it triggers; a permission change rides along after.
+            for scope in [V2RuntimeSelectionScope.model, .permission] {
+                guard let value = settings.selections[scope], currentSelections[scope] != value else { continue }
                 guard session.runtime.allows(scope == .model ? "catalog.model" : "catalog.permission") else {
                     throw V2ClientFailure(kind: .unavailable, message: String(localized: "This selection is currently unavailable."))
                 }
                 try await repository.setSelection(sessionId: session.id, scope: scope, selectionId: value)
+                if scope == .model { switchedModel = true }
+            }
+            if switchedModel {
+                if needsInterruptAfterModelSwitch() {
+                    do { try await repository.interrupt(sessionId: session.id) }
+                    catch {
+                        // "Switched but not stopped": the selection is in, the
+                        // turn keeps running under the old model. The real
+                        // failure goes out on the existing error channel and
+                        // the user can stop manually.
+                        self.error = error.localizedDescription
+                    }
+                }
+                announceModelSwitch()
             }
             return session.isValid
         } catch {
@@ -306,6 +341,23 @@ final class SessionChatModel {
             settings.replace(settings.catalog, selections: currentSelections, defaults: false)
             return false
         }
+    }
+
+    /// The interrupt branch of a model switch: a turn in flight, or any state
+    /// that cannot prove there is none (stale facts, no state yet), gets an
+    /// idempotent interrupt — an interrupt that finds no active turn answers
+    /// 409, which the repository treats as success.
+    private func needsInterruptAfterModelSwitch() -> Bool {
+        guard session.runtime.isFresh, let status = session.runtime.state?.status else { return true }
+        return status.isTurnInFlight || status == .unknown
+    }
+
+    /// The official-alignment transient for a switch — the same short note the
+    /// CLI prints for its own model change, and it never mentions the
+    /// interrupt that accompanies it.
+    private func announceModelSwitch() {
+        let title = settings.model?.option.title ?? String(localized: "默认模型")
+        switchFeedback = CommandFeedback(title: String(localized: "已切换到 \(title)"))
     }
 
     func send(_ text: String) async {
@@ -334,8 +386,13 @@ final class SessionChatModel {
         }
     }
 
+    /// Stop is idempotent on the server (an already-finished turn answers 409,
+    /// which the repository treats as success), so the tap always becomes a
+    /// real attempt and every outcome lands on the existing error channel
+    /// instead of a silent no-op — including while the projection is stale,
+    /// when the ability to stop matters most.
     func interrupt() async {
-        guard !isWorking, session.runtime.allows("session.interrupt") else { return }
+        guard !isWorking else { return }
         await perform { try await self.repository.interrupt(sessionId: self.session.id) }
     }
 

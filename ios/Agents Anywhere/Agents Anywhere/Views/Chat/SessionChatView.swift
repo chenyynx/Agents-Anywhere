@@ -84,7 +84,7 @@ struct SessionChatView: View, Equatable {
                             canSend: session.canSend, canAttach: model.canAttach,
                             canSelectModel: session.runtime.allows("catalog.model"),
                             canSelectPermission: session.runtime.allows("catalog.permission"),
-                            isStreaming: model.isRunning, canStop: session.runtime.allows("session.interrupt"),
+                            isStreaming: model.isComposerStreaming, canStop: session.runtime.permitsInterruptAttempt(),
                             isBusy: model.isWorking || !model.isOpeningReady, placeholder: requiresTakeover ? String(localized: "请先接管") : String(localized: "询问 Agents"),
                             isLoadingSettings: model.isLoadingSettings,
                             settingsError: model.settingsError, sessionChat: model,
@@ -107,6 +107,10 @@ struct SessionChatView: View, Equatable {
                         ChatErrorToasts(store: toasts, isRetrying: session.isLoading, onRetry: { _ in await session.refresh() })
                         if let success = model.commandSuccess {
                             CommandSuccessToast(feedback: success) { model.commandSuccess = nil }
+                                .frame(maxWidth: .infinity, alignment: .center)
+                        }
+                        if let switched = model.switchFeedback {
+                            CommandSuccessToast(feedback: switched) { model.switchFeedback = nil }
                                 .frame(maxWidth: .infinity, alignment: .center)
                         }
                     }.padding(.top, 8)
@@ -132,8 +136,12 @@ struct SessionChatView: View, Equatable {
             model.error = nil
             if !(await model.setTakeover(enabled)), let error = model.takeoverError { model.error = error }
         })
-        .completionFeedback(trigger: model.isRunning) { wasRunning, isRunning in
-            wasRunning && !isRunning && model.isOpeningReady && session.runtime.isFresh
+        // The cue is driven by authoritative turn endings, not by the running
+        // flag's edge: an optimistic turn end (an accepted interrupt before
+        // its facts land) and any status no live read confirmed can no longer
+        // announce a completion the user never saw.
+        .completionFeedback(trigger: session.runtime.authoritativeTurnEnds) { previous, current in
+            current > previous && model.isOpeningReady && session.runtime.isFresh
                 && session.runtime.state?.status == .idle
         }
         .sidebarDrawerSettledTask(id: hasStartedLoading) { settled in

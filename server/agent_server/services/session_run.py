@@ -885,8 +885,14 @@ class SessionRunService:
         session_id: str,
         *,
         user_id: str,
+        preserve_background: bool = False,
     ) -> RpcResponsePayload:
-        return await self._interrupt_session(session_id, user_id=user_id, require_takeover=True)
+        return await self._interrupt_session(
+            session_id,
+            user_id=user_id,
+            require_takeover=True,
+            preserve_background=preserve_background,
+        )
 
     async def interrupt_session_internal(
         self,
@@ -902,6 +908,7 @@ class SessionRunService:
         *,
         user_id: str,
         require_takeover: bool,
+        preserve_background: bool = False,
     ) -> RpcResponsePayload:
         try:
             session = await self._store.get_session(session_id, user_id=user_id)
@@ -921,6 +928,11 @@ class SessionRunService:
             "runtime": session.runtime,
             "runtimeId": _session_runtime_id(session),
         }
+        if preserve_background:
+            # Optional field, sent only when asked for: a connector that does
+            # not know it keeps its historical all-stop behavior, and the
+            # default request stays byte-identical.
+            params["preserveBackground"] = True
         try:
             result = await self._manager.request(
                 session.connectorId,

@@ -866,6 +866,20 @@ class SessionSelectionPatchResponse(BaseModel):
     serverTime: str
 
 
+class SessionInterruptRequest(BaseModel):
+    """Optional body of `POST …/runtime/interrupt`.
+
+    `preserveBackground` is the model-switch flavor: the runtime is asked to
+    spare running background work while it stops the current turn. The default
+    keeps the historical all-stop semantics, so a client that sends no body —
+    or no field — is unaffected.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    preserveBackground: bool = False
+
+
 class SessionPatchRequest(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=255)
     pinned: bool | None = None

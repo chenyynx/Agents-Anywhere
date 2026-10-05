@@ -50,6 +50,7 @@ from agent_server.core.models import (
     SessionCommandResponse,
     SessionCreateAndStartRequest,
     SessionCreateRequest,
+    SessionInterruptRequest,
     SessionPatchRequest,
     SessionResponse,
     SessionRuntimeState,
@@ -1411,6 +1412,7 @@ async def send_message(
 @router.post("/{session_id}/runtime/interrupt", response_model=RpcResponsePayload)
 async def interrupt_session(
     session_id: str,
+    payload: SessionInterruptRequest | None = None,
     user_id: str = Depends(current_user_id),
     run_service: SessionRunService = Depends(get_session_run_service),
     db: Store = Depends(get_store),
@@ -1421,7 +1423,11 @@ async def interrupt_session(
     ),
 ) -> RpcResponsePayload:
     try:
-        result = await run_service.interrupt_session(session_id, user_id=user_id)
+        result = await run_service.interrupt_session(
+            session_id,
+            user_id=user_id,
+            preserve_background=payload.preserveBackground if payload is not None else False,
+        )
         await _publish_session_protocol_update(
             db,
             broker,

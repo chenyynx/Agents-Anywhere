@@ -215,6 +215,122 @@ enum SubAgentProgress {
         )
     }
 
+    // MARK: Active-card sidecar
+
+    /// How long a card may go unconfirmed before the sidecar drops it.
+    ///
+    /// The API has no single-timeline-item read (`GET /sessions/{id}/timeline`
+    /// serves latest / changes / history ranges only), so a card cannot be
+    /// reconciled by id after a disconnect; ageing is the backstop for the one
+    /// case the recovery replay cannot cover — a terminal frame lost while
+    /// offline, or a card that never reported again. The threshold is
+    /// deliberately long (宁长勿短): the connector writes the card on every task
+    /// event, so a genuinely active card is confirmed orders of magnitude more
+    /// often than this, while a real SubAgent run has been observed at 30+
+    /// minutes and may block on a single long tool call without writing
+    /// anything. Six hours therefore never hides live work, and a card whose
+    /// terminal frame was missed cannot pin the capsule for a whole workday.
+    static let activeCardStaleAfter: TimeInterval = 6 * 60 * 60
+
+    /// Memory fuse. Concurrent top-level SubAgents beyond this are not a real
+    /// shape (the field is 1 while a card runs); the oldest dispatch is evicted
+    /// so the newest work survives if the bound is ever reached.
+    static let maximumActiveAgentCards = 20
+
+    /// Fold one timeline item into the sidecar: a top-level card that has not
+    /// reached a terminal phase is stored, a terminal one is removed, and any
+    /// other row is ignored. Callers feed **every** item, before any window
+    /// guard — a card that has been pushed out of the loaded timeline still
+    /// reaches here, which is the whole point of the sidecar.
+    ///
+    /// A version older than the stored one changes nothing in either direction:
+    /// a stale "running" frame cannot revive a newer card and a stale "done"
+    /// cannot close it (the same rule the timeline window uses).
+    static func absorbingActiveCards(
+        _ item: V2TimelineItem,
+        into stored: [V2ActiveAgentCard],
+        now: Date
+    ) -> [V2ActiveAgentCard] {
+        // Ageing runs here as well as at read time, and on every row rather than
+        // only on card rows, so a session that is visited but never re-confirms
+        // an entry cannot keep it alive.
+        var cards = liveCards(stored, now: now)
+        guard isAgentCall(item) else { return cards }
+        let index = cards.firstIndex { $0.item.id == item.id }
+        if let index, !item.supersedes(cards[index].item) { return cards }
+        guard let parsed = card(item), parsed.isTopLevel, parsed.phase.isActive else {
+            // Nested cards never entered, so removing a miss is a no-op.
+            guard let index else { return cards }
+            cards.remove(at: index)
+            return cards
+        }
+        let entry = V2ActiveAgentCard(item: item, confirmedAt: now)
+        if let index { cards[index] = entry } else { cards.append(entry) }
+        guard cards.count > maximumActiveAgentCards else { return cards }
+        cards.sort { $0.item.orderSeq < $1.item.orderSeq }
+        return Array(cards.suffix(maximumActiveAgentCards))
+    }
+
+    /// The entries still inside the ageing window. Every timeline row runs this,
+    /// so the check keeps the common path allocation-free.
+    private static func liveCards(_ stored: [V2ActiveAgentCard], now: Date) -> [V2ActiveAgentCard] {
+        guard stored.contains(where: { now.timeIntervalSince($0.confirmedAt) >= activeCardStaleAfter })
+        else { return stored }
+        return stored.filter { now.timeIntervalSince($0.confirmedAt) < activeCardStaleAfter }
+    }
+
+    /// The capsule's item set: the loaded window plus the sidecar, unioned by id
+    /// with the newer version winning so a card present in both is counted once.
+    /// This is what makes the capsule's visibility independent of the window
+    /// (§3.2: 显隐只由有无活跃 SubAgent 决定).
+    static func capsuleItems(
+        inWindow window: [V2TimelineItem],
+        activeCards: [V2ActiveAgentCard],
+        now: Date = Date()
+    ) -> [V2TimelineItem] {
+        var byID = Dictionary(uniqueKeysWithValues: window.map { ($0.id, $0) })
+        for entry in activeCards where now.timeIntervalSince(entry.confirmedAt) < activeCardStaleAfter {
+            if let existing = byID[entry.item.id], !entry.item.supersedes(existing) { continue }
+            byID[entry.item.id] = entry.item
+        }
+        return byID.values.sorted { ($0.orderSeq, $0.id) < ($1.orderSeq, $1.id) }
+    }
+
+    /// The capsule over the window plus the sidecar. The item-level overload
+    /// stays the one place the state itself is derived.
+    static func capsuleState(
+        inWindow window: [V2TimelineItem],
+        activeCards: [V2ActiveAgentCard],
+        now: Date = Date()
+    ) -> SubAgentCapsuleState {
+        capsuleState(capsuleItems(inWindow: window, activeCards: activeCards, now: now))
+    }
+
+    /// The panel's reach for the capsule's count
+    /// (ios-capsule-activity-window §8): every active card the capsule counts
+    /// that the opening turn's page does not already list — a dispatch from an
+    /// earlier turn, or one the loaded window has moved past. Read from the same
+    /// window ∪ sidecar union as the capsule, so the panel can never show fewer
+    /// cards than the capsule promises.
+    static func otherActiveCards(
+        inWindow window: [V2TimelineItem],
+        activeCards: [V2ActiveAgentCard],
+        page: [SubAgentCard],
+        now: Date = Date()
+    ) -> [SubAgentCard] {
+        let listed = Set(page.map(\.id))
+        return topLevelCards(in: capsuleItems(inWindow: window, activeCards: activeCards, now: now))
+            .filter { $0.phase.isActive && !listed.contains($0.id) }
+    }
+
+    /// Whether a card's own rows are loaded, i.e. it is one of the rows this
+    /// client holds. False means the panel can still show the card's own facts
+    /// (name, phase, prompt) but has none of its tool / thinking / output rows,
+    /// and must say so rather than render an empty body or a silent "finished".
+    static func isContentLoaded(_ card: SubAgentCard, in items: [V2TimelineItem]) -> Bool {
+        items.contains { $0.id == card.id }
+    }
+
     /// The capsule's failure rule (pp 2026-10-03, option A): the capsule reds
     /// for the newest batch's failures only — dispatching a new SubAgent clears
     /// older ones. A failure counts while no top-level card was dispatched

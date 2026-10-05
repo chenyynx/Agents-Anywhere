@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Iterable
+from contextlib import suppress
 from typing import Any
 
 from connector.logging import logger
@@ -123,10 +124,8 @@ def mark_declared_client(client: Any, declared: bool) -> None:
     semantics rather than a missing stop.
     """
 
-    try:
+    with suppress(Exception):  # fail-soft by contract (slotted clients)
         setattr(client, DECLARED_ATTR, bool(declared))
-    except Exception:  # noqa: BLE001 - fail-soft by contract
-        pass
 
 
 def client_declares_per_task_stop(client: Any) -> bool:

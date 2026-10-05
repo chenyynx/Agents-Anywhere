@@ -33,10 +33,10 @@ from test_claude_compact_ghost import (
     _wait_until,
 )
 from test_claude_runtime import (
+    _default_sdk,
     _FakeClaudeClient,
     _FakeHookMatcher,
     _RecordingHost,
-    _default_sdk,
 )
 from test_claude_stop_affordance import (
     _PartialStopDispatchClient,

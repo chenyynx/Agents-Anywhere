@@ -48,14 +48,14 @@ nonisolated struct V2SessionArchive: Codable {
         }
     }
 
-    @MainActor func projection(maximumItems: Int) throws -> V2SessionProjection {
+    @MainActor func projection(maximumItems: Int, now: @escaping () -> Date = Date.init) throws -> V2SessionProjection {
         let decoded = try items.map { try JSONDecoder().decode(V2TimelineItem.self, from: JSONEncoder().encode($0)) }
         let empty = V2RuntimeCapabilitySnapshot(revision: 0, capabilities: [])
         let snapshot = V2SessionSnapshot(session: session, state: nil,
             timeline: .init(items: decoded, nextSeq: V2SessionProjection.sequence(cursor), hasMore: hasOlderItems),
             approvals: [], notices: [], effectiveCapabilities: empty, runtimeCapabilities: empty,
             catalogs: [:], eventCursor: cursor, serverTime: "")
-        return V2SessionProjection(archive: snapshot, hasNewerItems: hasNewerItems, maximumItems: maximumItems)
+        return V2SessionProjection(archive: snapshot, hasNewerItems: hasNewerItems, maximumItems: maximumItems, now: now)
     }
 }
 

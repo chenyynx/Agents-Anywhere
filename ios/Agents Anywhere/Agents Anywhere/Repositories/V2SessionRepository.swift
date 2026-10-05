@@ -117,7 +117,7 @@ final class V2SessionRepository {
 
     func stageCreation(_ submission: NewSessionSubmission) {
         let entry = entry(for: submission.session.id)
-        entry.projection = V2SessionProjection.placeholder(submission.session, maximumItems: policy.maximumTimelineItems)
+        entry.projection = V2SessionProjection.placeholder(submission.session, maximumItems: policy.maximumTimelineItems, now: now)
         entry.model.stage(submission.pending)
         emit(entry)
     }
@@ -125,7 +125,7 @@ final class V2SessionRepository {
     func bindCreation(_ submission: NewSessionSubmission, response: V2SessionCreateResponse) {
         let entry = entry(for: response.session.id)
         if entry.projection == nil {
-            entry.projection = V2SessionProjection.placeholder(response.session, maximumItems: policy.maximumTimelineItems)
+            entry.projection = V2SessionProjection.placeholder(response.session, maximumItems: policy.maximumTimelineItems, now: now)
             entry.needsSnapshot = true
         }
         for (attachment, uploaded) in zip(submission.pending.attachments, response.attachments ?? []) {
@@ -148,7 +148,7 @@ final class V2SessionRepository {
         guard isCurrent(entry), entry.projection == nil, !entry.hasReadLocal else { return }
         entry.hasReadLocal = true; entry.localReadTask = nil
         guard let saved, saved.session.id == id,
-              let projection = try? saved.projection(maximumItems: policy.maximumTimelineItems) else { return }
+              let projection = try? saved.projection(maximumItems: policy.maximumTimelineItems, now: now) else { return }
         entry.projection = projection
         entry.model.restoreLocal(saved)
         emit(entry)
@@ -524,7 +524,7 @@ final class V2SessionRepository {
             let snapshot = try await detail.load(sessionId: entry.id)
             try requireCurrent(entry, version: version)
             guard snapshot.session.id == entry.id else { throw CacheError.invalidated }
-            entry.projection = V2SessionProjection(snapshot: snapshot, maximumItems: policy.maximumTimelineItems)
+            entry.projection = V2SessionProjection(snapshot: snapshot, maximumItems: policy.maximumTimelineItems, now: now)
             invalidateCatalogs(entry)
             entry.error = nil
             emit(entry)

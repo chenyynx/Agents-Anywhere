@@ -7,24 +7,26 @@ struct V2SessionProjection {
     private let maximumItems: Int
     private var eventIDs: Set<String> = []
     private var eventOrder: [String] = []
+    private let now: () -> Date
     private let decoder = JSONDecoder()
 
-    init(snapshot: V2SessionSnapshot, maximumItems: Int) {
+    init(snapshot: V2SessionSnapshot, maximumItems: Int, now: @escaping () -> Date = Date.init) {
         data = V2SessionData(snapshot: snapshot)
         self.maximumItems = max(1, maximumItems)
+        self.now = now
         replaceTimeline(snapshot.timeline.items, hasMore: snapshot.timeline.hasMore)
     }
 
-    init(archive: V2SessionSnapshot, hasNewerItems: Bool, maximumItems: Int) {
-        self.init(snapshot: archive, maximumItems: maximumItems)
+    init(archive: V2SessionSnapshot, hasNewerItems: Bool, maximumItems: Int, now: @escaping () -> Date = Date.init) {
+        self.init(snapshot: archive, maximumItems: maximumItems, now: now)
         data.hasNewerItems = hasNewerItems
     }
 
-    static func placeholder(_ session: V2SessionMeta, maximumItems: Int) -> Self {
+    static func placeholder(_ session: V2SessionMeta, maximumItems: Int, now: @escaping () -> Date = Date.init) -> Self {
         let empty = V2RuntimeCapabilitySnapshot(revision: 0, capabilities: [])
         return Self(snapshot: .init(session: session, state: nil, timeline: .init(items: [], nextSeq: 0, hasMore: false),
             approvals: [], notices: [], effectiveCapabilities: empty, runtimeCapabilities: empty, catalogs: [:],
-            eventCursor: "seq:0", serverTime: ""), maximumItems: maximumItems)
+            eventCursor: "seq:0", serverTime: ""), maximumItems: maximumItems, now: now)
     }
 
     var sequence: Int { Self.sequence(data.cursor) }
@@ -154,9 +156,17 @@ struct V2SessionProjection {
         var byID = Dictionary(uniqueKeysWithValues: data.items.map { ($0.id, $0) })
         let start = data.items.first?.orderSeq ?? 0
         let end = data.items.last?.orderSeq ?? 0
+        let confirmedAt = now()
         for item in incoming where item.sessionId == data.session.id {
+            // The active-card sidecar is fed before the window guards, and so
+            // before the version check below: a SubAgent card that later traffic
+            // pushed out of the window must still reach the capsule. Everything
+            // else about the window — its size, its boundaries, its paging — is
+            // untouched, and the sidecar is never written back into `items`.
+            data.activeAgentCards = SubAgentProgress.absorbingActiveCards(
+                item, into: data.activeAgentCards, now: confirmedAt)
             if let old = byID[item.id] {
-                guard item.revision > old.revision || (item.revision == old.revision && item.updatedSeq >= old.updatedSeq) else { continue }
+                guard item.supersedes(old) else { continue }
             } else if !history, data.hasOlderItems, item.orderSeq < start {
                 continue // Recovery must not reinsert older rows outside the selected window.
             } else if !history, data.hasNewerItems, item.orderSeq > end {

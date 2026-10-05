@@ -175,10 +175,23 @@ class ClaudeTurnRunner:
     # entry points (the reader refusing to mint, the turn refusing to settle).
     foreign_terminal_frames: int = field(default=0, init=False)
     # F1/F6: turns whose `completed` was downgraded to `interrupted` because
-    # they settled on a result they could not attribute. Zero in normal
-    # operation; non-zero means the P1 ghost shape reached a live turn, which
-    # is the one number the observation window should alarm on.
+    # they settled on a result they could not attribute. After the release
+    # protocol this is the FALLBACK number: the turn declined the leftover and
+    # kept reading, and nothing of its own ever arrived, so it settled on the
+    # downgraded verdict instead. Zero in normal operation; non-zero means the
+    # fix did not catch this one and the session is back to reporting "this
+    # round produced nothing" — read it together with
+    # `stale_terminal_recoveries`, which counts the ones it did catch.
     stale_completion_downgrades: int = field(default=0, init=False)
+    # F1 release protocol: turns that met an unowned terminal, declined it,
+    # kept reading, and DID get their own result behind it. This is the
+    # "the reply reached the timeline in the turn that asked for it" counter —
+    # the P1 shape being closed, not merely re-labelled. Its counterpart is
+    # `stale_completion_downgrades`: recoveries + downgrades is every time the
+    # gate saw an unowned terminal and settled the turn by one of the two
+    # rules, so a falling downgrade count with a rising recovery count is the
+    # fix working, and not a disappearing symptom.
+    stale_terminal_recoveries: int = field(default=0, init=False)
     stopping: bool = False
     markers: ClaudeTimelineMarkers = field(init=False)
     scheduled_sessions: ClaudeScheduledSessions = field(init=False)
@@ -1130,6 +1143,23 @@ class ClaudeTurnRunner:
         # an identity transform; it exists so a parented stream frame, if the
         # CLI ever emits one, cannot leak a second way (recon findings §3.4).
         stream_parent_item_id: str | None = None
+        # F1 release protocol state, seeded HERE rather than beside the read
+        # loop below: the `finally` consults them, and anything raised between
+        # the loop's opening and its body would otherwise leave them unbound —
+        # which raises out of `finally` and replaces the real error with a
+        # name error. `terminal` above follows the same rule.
+        #
+        # `declined_any` says at least one terminal was ruled out of this turn;
+        # `downgraded_verdict` holds the exact verdict object recorded for
+        # that case, so the settle path can tell "this turn fell back to the
+        # downgrade" from "this turn recovered and overwrote it" by identity,
+        # without a second judgement about the frames.
+        declined_any = False
+        downgraded_verdict: ClaudeTerminalEvent | None = None
+        # The frame that was deferred, kept so the fallback can still publish
+        # its text if the read ends without anything better. See the publish
+        # below the read loop.
+        declined_message: Any = None
         try:
             if command is not None:
                 # The user asked for this compaction: publish the running
@@ -1282,32 +1312,47 @@ class ClaudeTurnRunner:
             #                   not echo those), so there is no start evidence to
             #                   wait for and the gate starts open.
             #
-            # WHAT THIS GATE DOES NOT DO, and why (recorded here so nobody
-            # re-derives it as an oversight): an unowned terminal is counted and
-            # refused as labour, but it still settles. The refusal cannot go
-            # further for two reasons that are structural, not budgeted.
+            # WHAT HAPPENS TO AN UNOWNED TERMINAL, and why it is not simply
+            # settled (claude-stale-frame-f1-release-protocol.md §8.1).
             #
-            #   1. It cannot be told apart from a legitimate empty reply. By the
-            #      time a result is the turn's first terminal, the residual and
-            #      an empty answer are the same shape on the same queue — stage-1
-            #      findings §7.1 already established the payload cannot separate
-            #      the reproduced residual from the production one, and the real
-            #      turn's own result is indistinguishable from a leftover by
-            #      construction. Dropping it would hang every empty reply until
-            #      the ceiling (R1's false kill, product-level).
-            #   2. The read cannot simply continue. `ClaudeResponse
-            #      .receive_response` ends a response at its first result, and
-            #      the reader holds `current` until the turn releases it — so
-            #      "keep reading for the real one" needs the release protocol
-            #      rewritten, which is the reader's core backpressure design and
-            #      far outside this batch.
+            # An unowned terminal cannot be told apart from a legitimate empty
+            # reply: by the time a result is the turn's first terminal, the
+            # leftover and an empty answer are the same shape on the same
+            # queue (stage-1 findings §7.1), and the turn's own result is
+            # indistinguishable from a leftover by construction. So the turn
+            # cannot WAIT for a better frame to prove itself — that would hang
+            # every empty reply until the ceiling (R1's false kill).
             #
-            # I1 is the fix that does hold: a residual result can no longer
-            # enter a queue at all from silence, which is the only shape stage 1
-            # ever reproduced (3/3). This gate's job is to make the residue
-            # measurable (the counter and the WARN), to keep it out of the labour
-            # count so a ghost stays in the fast-kill class, and to name the
-            # occurrence for the observation window.
+            # It does not have to. The reason the read could not simply
+            # continue used to be structural — `ClaudeResponse
+            # .receive_response` ended a response at its first result, and the
+            # reader held `current` until the turn released it, so "keep
+            # reading for the real one" needed the release protocol rewritten.
+            # That protocol now exists (F1, §8.1.2):
+            #
+            #   * a `completed` unowned terminal is DECLINED — recorded, never
+            #     published, and the read continues;
+            #   * `receive_response` bounds that continued read with
+            #     `DECLINED_TERMINAL_GRACE_SECONDS`, because a human turn has
+            #     no watchdog and an unbounded read is R1's worst outcome;
+            #   * if the turn's own result arrives inside the window, the turn
+            #     settles on it — `completed`, reply delivered
+            #     (`stale_terminal_recoveries`);
+            #   * if the window expires or the stream ends, the turn settles
+            #     on the downgraded verdict recorded at decline time — exactly
+            #     the pre-protocol behavior, G later
+            #     (`stale_completion_downgrades`). The downgrade is the
+            #     FALLBACK, not the verdict.
+            #
+            # `failed` and `interrupted` are NOT declined: they are already
+            # honest about a round that went nowhere, and holding a turn open
+            # past them would bury a failure the user needs to see.
+            #
+            # I1 still holds and is still the first line: a residual result can
+            # no longer enter a queue at all from silence, which is the only
+            # shape stage 1 ever reproduced (3/3). This gate is the second
+            # line, and its residue stays measurable (the counters and the
+            # WARN) and out of the labour count.
             turn_started = cast_frame is None and client.prompt_uuid is None
             emitted_final_assistant_content = False
             async for message in receive_response_messages(client):
@@ -1419,6 +1464,14 @@ class ClaudeTurnRunner:
                     # if that guard ever regresses. Skipped, not counted as
                     # foreign: it is not another turn's frame, it is simply not
                     # this turn's result.
+                    #
+                    # The decline is defensive, and it has to be here anyway:
+                    # since the release protocol the reader parks on a verdict
+                    # after EVERY terminal, so a path that skips a terminal
+                    # without answering would leave it waiting on a `released`
+                    # only a settled turn can set. Unreachable under I1, fatal
+                    # without this line if I1 ever regresses.
+                    client.decline_terminal()
                     continue
                 unowned_terminal = terminal_message is not None and not turn_started
                 if unowned_terminal:
@@ -1427,17 +1480,28 @@ class ClaudeTurnRunner:
                     # credited as labour (the same rule the cast frame follows:
                     # a passive arrival is not evidence the turn worked).
                     #
-                    # It does NOT stop the turn from ending — see the gate's note
-                    # above for why that is not available — but it does decide
-                    # HOW the turn ends. Settling `completed` on a result the
-                    # turn cannot own is the P1 symptom verbatim: the client is
-                    # told the turn succeeded, the real reply never arrives (it
-                    # is still behind the frame that was just swallowed), and the
-                    # user is looking at an idle session with nothing to show.
-                    # So an unowned terminal on a turn that produced nothing
-                    # settles as `interrupted` with a structured reason instead:
-                    # "this round produced nothing" is what actually happened,
-                    # and saying so is both honest and re-sendable.
+                    # A `completed` one does not settle the turn at all: it is
+                    # DECLINED. The verdict is recorded first and the frame is
+                    # then skipped completely — no result text published, no
+                    # stream accumulator touched — because that text belongs to
+                    # the turn that already settled, and publishing it would
+                    # show the user a second copy of an answer they have. What
+                    # follows it on the queue (the real reply, this turn's own
+                    # result) is consumed normally and reaches the timeline.
+                    #
+                    # The recorded verdict is the fallback, not the outcome: if
+                    # this turn's own result arrives inside the grace window it
+                    # overwrites `terminal` below and the turn settles
+                    # `completed`. If nothing arrives, the loop ends and the
+                    # downgrade is what the user is told — "this round produced
+                    # nothing" — which is both honest and re-sendable.
+                    #
+                    # `failed` and `interrupted` are deliberately NOT declined.
+                    # They are already honest, they are not the shape this
+                    # protocol was written for, and holding a turn open past
+                    # them would bury the failure visibility the pending branch
+                    # exists to preserve. They fall through to the settle block
+                    # below, which breaks the turn.
                     self.foreign_terminal_frames += 1
                     logger.warning(
                         "Claude unowned terminal frame in-turn "
@@ -1450,8 +1514,20 @@ class ClaudeTurnRunner:
                         terminal_message.status,
                         terminal_message.reason,
                     )
+                    if terminal_message.status == "completed":
+                        downgraded_verdict = self._verdict_for_terminal(
+                            execution=execution,
+                            terminal=terminal_message,
+                            unowned=True,
+                        )
+                        terminal = downgraded_verdict
+                        declined_any = True
+                        declined_message = message
+                        client.decline_terminal()
+                        continue
                 elif message is cast_frame or (
                     counts_as_labour
+                    and not _is_wire_chrome(message)
                     and not (
                         role == "user"
                         and client.prompt_uuid is not None
@@ -1459,12 +1535,28 @@ class ClaudeTurnRunner:
                     )
                 ):
                     # A cast turn starts at its cast; a prompted turn starts at
-                    # the first frame of WORK it owns. The prompt echo is
-                    # excluded on purpose: the echo is the connector's own
-                    # prompt coming back, not the turn doing anything, and a
-                    # leftover result can arrive right behind it (the reconnect
-                    # replay). "Once the turn has spoken" is the proof; the echo
-                    # is not speech.
+                    # the first frame of WORK it owns. Two kinds of frame are
+                    # excluded on purpose, and neither of them is the turn
+                    # speaking:
+                    #
+                    #   * the prompt echo — the connector's own prompt coming
+                    #     back, with a leftover result able to arrive right
+                    #     behind it (the reconnect replay);
+                    #   * wire chrome — the CLI's handshake and bookkeeping
+                    #     (`_is_wire_chrome`, the single authority the reader
+                    #     itself gates minting on). This is §9 of the F1
+                    #     release protocol, and it is what makes the gate fire
+                    #     on the REAL wire. The observed order there is
+                    #     [init, status, echo, residual, …]: without the
+                    #     exclusion the handshake opened the gate before the
+                    #     echo was even seen, the leftover counted as owned,
+                    #     and the turn settled `completed` ~2 s before its own
+                    #     model request — the P1 report, unfixed. 31/31 real
+                    #     captures put `init` first
+                    #     (recon/stale-frame/f1-preamble-gate-finding.md).
+                    #
+                    # "Once the turn has done real work" is the proof. Neither
+                    # an echo nor a handshake is that.
                     turn_started = True
                 # Everything downstream that asks "did this frame prove the turn
                 # did work" must also answer no for an unowned arrival: passive
@@ -1573,33 +1665,39 @@ class ClaudeTurnRunner:
                         unowned=unowned_terminal,
                     )
                     if not emitted_final_assistant_content:
-                        text = message_text(message)
-                        if text:
-                            await self.publish_items(
-                                execution,
-                                (
-                                    _with_parent_card(
-                                        self.timeline.message_item(
-                                            session=session,
-                                            turn_id=turn_id,
-                                            role="assistant",
-                                            text=text,
-                                            event="claude.turn.result",
-                                            native_item_id=message_id(message),
-                                            item_id=stream_accumulator.final_item_id(
-                                                session,
-                                                turn_id,
-                                            ),
-                                            revision=stream_accumulator.next_final_revision(),
-                                        ),
-                                        frame_parent_item_id,
-                                    ),
-                                ),
-                                counted=counts_this_frame,
-                            )
-                            emitted_final_assistant_content = True
-                            stream_accumulator.reset()
-                    if not unowned_terminal and counts_as_labour:
+                        emitted_final_assistant_content = await self._publish_result_text(
+                            execution=execution,
+                            session=session,
+                            turn_id=turn_id,
+                            message=message,
+                            stream_accumulator=stream_accumulator,
+                            parent_item_id=frame_parent_item_id,
+                            counted=counts_this_frame,
+                        )
+                    if declined_any and not unowned_terminal:
+                        # The turn's verdict was NOT the frame it would have
+                        # settled on: a leftover was declined, the read
+                        # continued, and this turn's own result arrived behind
+                        # it. The reply reached the timeline in the turn that
+                        # asked for it — the P1 shape closed, not relabelled.
+                        self.stale_terminal_recoveries += 1
+                        logger.info(
+                            "Claude stale terminal declined, turn recovered "
+                            "turn_id={} recoveries={}",
+                            execution.turn_id,
+                            self.stale_terminal_recoveries,
+                        )
+                    if counts_as_labour:
+                        # Every case where this terminal is NOT the turn's
+                        # verdict has already left the loop above: the cast
+                        # position, or an unowned `completed` declined. So
+                        # arriving here always ends the turn. The condition
+                        # used to also name `not unowned_terminal`, because an
+                        # unowned terminal used to fall through HERE to settle;
+                        # it is the `continue` that decides that now. Leaving
+                        # this out would read past the turn's own verdict into
+                        # whatever the next turn sends — the generator no longer
+                        # stops at its first result, so nothing else stops it.
                         break
                 await self.publish_items(
                     execution, tool_items, counted=counts_this_frame
@@ -1656,6 +1754,28 @@ class ClaudeTurnRunner:
                     emitted_final_assistant_content = True
                     stream_accumulator.reset()
 
+            if (
+                declined_message is not None
+                and not emitted_final_assistant_content
+                and terminal is downgraded_verdict
+            ):
+                # The decline was a DEFERRAL, and the read ended without
+                # anything better, so the frame the turn deferred is now its
+                # verdict — text included. Publishing it here is what the
+                # pre-protocol path did; staying silent would drop a
+                # legitimate empty reply's answer on the floor, which is a
+                # worse failure than the one the protocol fixes. When a real
+                # reply did arrive, this branch is skipped and the leftover's
+                # text is never published at all.
+                await self._publish_result_text(
+                    execution=execution,
+                    session=session,
+                    turn_id=turn_id,
+                    message=declined_message,
+                    stream_accumulator=stream_accumulator,
+                    parent_item_id=None,
+                    counted=False,
+                )
             if terminal is None:
                 terminal = failed_terminal_event(
                     code="claude_stream_ended_without_result",
@@ -1738,6 +1858,15 @@ class ClaudeTurnRunner:
                     code="claude_turn_missing_terminal_state",
                     message="Claude turn stopped without a terminal state",
                 )
+            # F1: commit the downgrade only now, and only if it is still the
+            # verdict. Identity is the test — a decline recorded the exact
+            # object, and every path that replaced the verdict since (this
+            # turn's own result, a failure, an interrupt, an exhausted stream)
+            # left a different object behind. So a recovered turn never lands
+            # here with the downgrade, and the counter keeps its narrowed
+            # meaning: "the fix did not catch this one".
+            if downgraded_verdict is not None and terminal is downgraded_verdict:
+                self._record_stale_completion_downgrade(execution)
             await self.settle_compact_markers(session, turn_id, execution)
             try:
                 await self.finish_execution(
@@ -1830,25 +1959,35 @@ class ClaudeTurnRunner:
         reason string is what the client's `terminalReason` carries, so the
         condition is visible in the turn ledger instead of being swallowed here.
 
+        This is a PURE function of the frame: it decides the verdict and counts
+        nothing. Since F1 the verdict is recorded at DECLINE time, long before
+        the turn knows whether it will be the one it settles on, so the
+        counter moved to `_record_stale_completion_downgrade`, which only runs
+        where the downgrade is actually committed.
+
         Cost, stated plainly: a genuine empty reply — a turn whose whole stream
         is its own result — is indistinguishable from this and is degraded too.
         That is the deliberate trade (pp, red team F1): to the user both are
         "this round produced nothing", and reporting one of them as a success
-        is the failure mode being fixed.
+        is the failure mode being fixed. Under the release protocol that trade
+        is now bounded by the grace window rather than permanent: the empty
+        reply settles on this verdict G seconds late instead of at once, and
+        the reply that does exist behind a leftover is no longer lost.
 
-        THE CASCADE this creates, measured (red team round 2 §5.3, and pinned by
-        `test_a_residual_before_the_prompt_echo_degrades_the_turn_and_leaves_a_
-        phantom`). Downgrading makes the turn BREAK on the frame it could not
-        attribute, so the frames behind it — the prompt echo, the real reply,
-        the real result — are left in the reader's queue with nobody holding
-        them. At silence the echo is a user frame, which mints a scheduled turn,
-        and that phantom consumes the rest and settles `completed` carrying the
-        answer.
-
-        As measured it is benign: two bubbles, `completed`, session back to
-        idle, no error state, nothing left running. The user-visible cost is one
-        answer split across two bubbles, the first marked "interrupted / this
-        round produced nothing".
+        THE CASCADE this can still create, measured (red team round 2 §5.3).
+        The release protocol removes the everyday path: a leftover no longer
+        ends the turn, so the frames behind it — the prompt echo, the real
+        reply, the real result — are consumed by the turn that asked for
+        them. But it is bounded by `DECLINED_TERMINAL_GRACE_SECONDS`, and a
+        leftover whose real frames arrive later than that still falls back to
+        settling here. Then the turn breaks on the frame it could not attribute,
+        the frames behind it are left in the reader's queue with nobody holding
+        them, and at silence the echo is a user frame, which mints a scheduled
+        turn: that phantom consumes the rest and settles `completed` carrying
+        the answer. As measured it is benign — two bubbles, `completed`,
+        session back to idle, no error state, nothing left running — and the
+        user-visible cost is one answer split across two bubbles, the first
+        marked "interrupted / this round produced nothing".
 
         The honest edge: the "phantom with only the echo and nothing after it"
         variant could NOT be constructed by the red team, so whether that one
@@ -1859,14 +1998,9 @@ class ClaudeTurnRunner:
 
         Only `completed` is degraded. `failed` and `interrupted` are already
         honest about a round that went nowhere, and rewriting them would destroy
-        the failure visibility the pending branch exists to preserve.
-
-        The counter is the observation window's actionable number:
-        `stale_completion_downgrades` is zero in normal operation, and non-zero
-        only when a turn was reported as successful on a result it could not
-        prove was its own — which is the P1 defect, by definition. (F6: the
-        raw `foreign_terminal_frames` cannot carry that job, because a
-        legitimate empty reply increments it too.)
+        the failure visibility the pending branch exists to preserve. Only
+        `completed` is declined, too — see the gate's note in `drive_turn` for
+        why a failure must not be waited out.
         """
 
         if terminal.status != "completed" or not unowned:
@@ -1879,6 +2013,81 @@ class ClaudeTurnRunner:
         # it a guard with no failing input — the thing red team F7 flagged in B
         # — and a guard nobody can trip is a comment that lies about what the
         # code guarantees.
+        return interrupted_terminal_event(STALE_COMPLETION_REASON)
+
+    async def _publish_result_text(
+        self,
+        *,
+        execution: ClaudeExecution,
+        session: ClaudeSession,
+        turn_id: str,
+        message: Any,
+        stream_accumulator: ClaudeStreamAccumulator,
+        parent_item_id: str | None,
+        counted: bool,
+    ) -> bool:
+        """Publish a terminal frame's own text as this turn's final bubble.
+
+        The fallback for a turn whose reply never arrived as a separate
+        assistant frame — the CLI put the words in the result envelope
+        instead. It is reached in exactly two shapes: an ordinary empty reply,
+        and a turn that declined a leftover and then got nothing better, where
+        the declined frame becomes the verdict after all (see the publish
+        below the read loop).
+
+        The item id it shares with the assistant frame is NOT a "a later reply
+        replaces this text by revision" promise. Within a turn the read is
+        over by the time this runs, so there is no later reply to do any
+        replacing; and a reply that arrives in a LATER turn is that turn's own
+        bubble — if the same answer is ever seen in two bubbles, the second is
+        a phantom, not a revision.
+
+        Returns whether anything was published, so the caller can keep its
+        "final content already emitted" flag honest.
+        """
+
+        text = message_text(message)
+        if not text:
+            return False
+        await self.publish_items(
+            execution,
+            (
+                _with_parent_card(
+                    self.timeline.message_item(
+                        session=session,
+                        turn_id=turn_id,
+                        role="assistant",
+                        text=text,
+                        event="claude.turn.result",
+                        native_item_id=message_id(message),
+                        item_id=stream_accumulator.final_item_id(
+                            session,
+                            turn_id,
+                        ),
+                        revision=stream_accumulator.next_final_revision(),
+                    ),
+                    parent_item_id,
+                ),
+            ),
+            counted=counted,
+        )
+        stream_accumulator.reset()
+        return True
+
+    def _record_stale_completion_downgrade(self, execution: ClaudeExecution) -> None:
+        """Count a turn that really did settle on a result it could not own.
+
+        Called only where that verdict is COMMITTED — after the read ends, once
+        nothing better has replaced it. A turn that declined a leftover and
+        then received its own result never reaches here with the downgraded
+        verdict, which is what makes this counter and
+        `stale_terminal_recoveries` a control pair: one counts the frames the
+        release protocol saved, the other the ones it did not, and the raw
+        `foreign_terminal_frames` counts every unowned terminal either way
+        (F6: it cannot carry this job — a legitimate empty reply increments
+        it too).
+        """
+
         self.stale_completion_downgrades += 1
         logger.warning(
             "Claude completed downgraded to interrupted: turn settled on a "
@@ -1886,7 +2095,6 @@ class ClaudeTurnRunner:
             execution.turn_id,
             self.stale_completion_downgrades,
         )
-        return interrupted_terminal_event(STALE_COMPLETION_REASON)
 
     async def publish_items(
         self,

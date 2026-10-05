@@ -99,6 +99,14 @@ struct V2TimelineItem: Decodable, Identifiable, Hashable {
         updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt) ?? createdAt
         completedAt = try container.decodeIfPresent(String.self, forKey: .completedAt)
     }
+
+    /// The projection's single ordering rule for two versions of one row: a
+    /// newer revision wins, and an equal revision is broken by the newer durable
+    /// sequence. Every reader of "is this the newer copy?" goes through here so
+    /// the timeline window and the active-card sidecar cannot disagree.
+    func supersedes(_ other: V2TimelineItem) -> Bool {
+        revision > other.revision || (revision == other.revision && updatedSeq >= other.updatedSeq)
+    }
 }
 
 enum V2TimelineItemContent: Hashable {

@@ -153,6 +153,10 @@ final class V2SessionModel: Identifiable {
     private(set) var failure: V2ClientFailure?
     private(set) var hasOlderItems = false
     private(set) var hasNewerItems = false
+    /// The projection's active SubAgent cards, mirroring the same field on
+    /// `V2SessionData`. They are read beside the presented rows so the capsule
+    /// does not depend on which part of the timeline the client holds.
+    private(set) var activeAgentCards: [V2ActiveAgentCard] = []
     private(set) var isLoading = false
     private(set) var isLoadingHistory = false
     private(set) var isValid = true
@@ -288,6 +292,8 @@ final class V2SessionModel: Identifiable {
         notices.update(runtime.notices, sessionID: id)
         if hasOlderItems != (data?.hasOlderItems ?? false) { hasOlderItems = data?.hasOlderItems ?? false }
         if hasNewerItems != (data?.hasNewerItems ?? false) { hasNewerItems = data?.hasNewerItems ?? false }
+        let activeCards = data?.activeAgentCards ?? []
+        if activeAgentCards != activeCards { activeAgentCards = activeCards }
         let existing = Dictionary(uniqueKeysWithValues: timeline.map { ($0.id, $0) })
         let rows = (data?.items ?? []).map { item in
             let row = existing[item.id] ?? V2TimelineItemModel(item)
@@ -347,6 +353,7 @@ final class V2SessionModel: Identifiable {
     func invalidate() {
         runtime.update(nil, connection: .inactive)
         metadata = nil; timeline = []; pendingMessages = []; awaitingReplyID = nil; draft = ""; draftAttachmentIDs = []
+        activeAgentCards = []
         composer.invalidate()
         attachmentPreviews.clear()
         notices.clear()

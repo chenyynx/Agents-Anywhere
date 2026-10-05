@@ -61,6 +61,14 @@ struct SubAgentPanelSheet: View {
                     tabStrip(selectedID: card.id)
                     ScrollView {
                         sections(card)
+                            // Switching tabs swaps the whole body in place, and
+                            // the markdown block views are reused by block
+                            // position while their reserved height only ever
+                            // grows. Without an identity of its own the body
+                            // keeps the previous card's heights, so a long block
+                            // leaves a blank gap in a short one (pp, device,
+                            // 2026-10-05).
+                            .id(card.id)
                             .padding(.horizontal, 20)
                             .padding(.top, 4)
                             .padding(.bottom, 24)

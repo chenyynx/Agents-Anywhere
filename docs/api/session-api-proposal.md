@@ -352,13 +352,17 @@ availability instead of deriving availability from local runtime status.
 
 `/sessions/{sessionId}/runtime/subagent/stop` stops one background subagent of
 the session, addressed by its runtime task id. The request body is
-`{"taskId": "..."}`; the response result is `{"stopped": true|false}` — true
-when the runtime accepted the per-task stop for an id present in its live task
-snapshot, false when the id is unknown there (the card is left to converge on
-its own terminal task event). An unknown id is a factual result, not a failure:
-the endpoint answers 200 with `stopped: false` and never throws or surfaces an
-error for it. Gating follows the session-scoped `session.subagent_control`
-capability (see [capabilities](./capabilities.md)).
+`{"taskId": "..."}` (camelCase, like the interrupt body); the response result
+is `{"stopped": true|false}` — true when the CLI **accepted** the per-task
+stop for an id present in the live task snapshot, false otherwise. False is a
+factual result, not a failure, in every case: an unknown id, a refused stop,
+and a timed-out stop all answer HTTP 200 with `stopped: false` and never
+throw or surface an error. The card is left to converge on the task's own
+terminal event — driven by `task_updated` (`killed`) as the primary frame;
+`task_notification` may be suppressed and must not be relied on. Gating
+follows the session-scoped `session.subagent_control` capability, whose
+availability is connection-based and must not reuse the turn-based
+`session.interrupt` gate (see [capabilities](./capabilities.md)).
 
 Runtime-scoped live endpoints use runtime resources:
 

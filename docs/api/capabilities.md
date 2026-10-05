@@ -82,7 +82,10 @@ Its three flags mean:
   `available` tracks the active turn). It does not answer "is a subagent
   running now"; clients learn that from the session's Agent cards and render
   one stop control per `running`/`async_launched` agent entry, each bound to
-  that entry's task id.
+  that entry's task id. A click's outcome is `{"stopped": true|false}` — a
+  refused or timed-out stop is `false`, a factual result, not an error — and
+  the card converges on the task's own terminal event (`task_updated` as the
+  primary frame; `task_notification` may be suppressed).
 - `allowed`: the same takeover rule as `session.interrupt`.
 
 The scope fields (`runtime`, `runtimeId`, `sessionId`, `connectorId`) match

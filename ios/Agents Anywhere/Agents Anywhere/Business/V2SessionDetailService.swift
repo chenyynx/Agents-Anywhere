@@ -74,8 +74,8 @@ struct V2SessionDetailService {
         ).requireSuccess()
     }
 
-    func interrupt(sessionId: V2SessionID) async throws -> V2RuntimeActionResponse {
-        try await runtimeAPI.interrupt(sessionId: sessionId).requireSuccess()
+    func interrupt(sessionId: V2SessionID, preserveBackground: Bool = false) async throws -> V2RuntimeActionResponse {
+        try await runtimeAPI.interrupt(sessionId: sessionId, preserveBackground: preserveBackground).requireSuccess()
     }
 
     func updateSelection(

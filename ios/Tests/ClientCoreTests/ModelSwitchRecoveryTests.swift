@@ -206,6 +206,9 @@ import Testing
         let interruptIndex = try #require(http.calls.firstIndex { $0.path.hasSuffix("interrupt") })
         #expect(selectionsIndex < interruptIndex)
         #expect(http.count("interrupt") == 1)
+        // The switch asks the runtime to spare running background work; the
+        // field is the contract the connector's per-task stop reads.
+        #expect(http.calls[interruptIndex].body?["preserveBackground"] == .bool(true))
         // The switch reports itself, once, and never mentions the interrupt.
         #expect(chat.switchFeedback?.title == "已切换到 Model B")
         #expect(chat.error == nil)
@@ -348,6 +351,9 @@ import Testing
         running.overflowGate = gate
         let stop = Task { await chat.interrupt() }
         try await eventually { running.interruptCalls == 1 && running.liveStateReads > 1 }
+        // A manual stop keeps the historical all-stop semantics.
+        let stopCall = try #require(http.calls.last { $0.path.hasSuffix("interrupt") })
+        #expect(stopCall.body?["preserveBackground"] == .bool(false))
 
         // Within the acknowledgement, through the full model layer: the call
         // has returned (no `isWorking`), the send key is open, and nothing has

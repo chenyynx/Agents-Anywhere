@@ -335,7 +335,11 @@ final class SessionChatModel {
             }
             if switchedModel {
                 if needsInterruptAfterModelSwitch() {
-                    do { try await repository.interrupt(sessionId: session.id) }
+                    // The model-switch flavor: stop the turn, spare the
+                    // background agents it dispatched (per-task stop
+                    // affordance). Every other stop keeps the all-stop
+                    // semantics.
+                    do { try await repository.interrupt(sessionId: session.id, preserveBackground: true) }
                     catch {
                         // "Switched but not stopped": the selection is in, the
                         // turn keeps running under the old model. The real

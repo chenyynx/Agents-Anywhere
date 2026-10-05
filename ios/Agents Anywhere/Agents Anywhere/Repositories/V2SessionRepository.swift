@@ -318,10 +318,10 @@ final class V2SessionRepository {
         return response
     }
 
-    func interrupt(sessionId: V2SessionID) async throws {
+    func interrupt(sessionId: V2SessionID, preserveBackground: Bool = false) async throws {
         try requireNetwork()
         let entry = entry(for: sessionId)
-        do { _ = try await detail.interrupt(sessionId: sessionId) }
+        do { _ = try await detail.interrupt(sessionId: sessionId, preserveBackground: preserveBackground) }
         catch {
             // The capability gate refuses an interrupt exactly when there is
             // no turn to stop ("session capability is unavailable:

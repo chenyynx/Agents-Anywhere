@@ -10,6 +10,14 @@ struct V2AttachmentSendReference: Encodable, Hashable {
     let fileId: V2AttachmentID
 }
 
+/// Optional body of `POST …/runtime/interrupt`. `preserveBackground` asks the
+/// runtime to spare running background work while it stops the current turn
+/// (the model-switch flow); the default is the historical all-stop semantics,
+/// so a server that does not know the field is unaffected.
+struct V2RuntimeInterruptRequest: Encodable, Hashable {
+    let preserveBackground: Bool
+}
+
 struct V2RuntimeActionResponse: Decodable, Hashable {
     let ok: Bool
     let result: JSONValue?

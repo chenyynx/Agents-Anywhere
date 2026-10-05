@@ -10,7 +10,7 @@ protocol V2RuntimeAPIProtocol {
     func executeCommand(sessionId: V2SessionID, request: V2RuntimeCommandExecuteRequest) async throws -> V2RuntimeCommandExecuteResponse
     func sendMessage(sessionId: V2SessionID, request: V2RuntimeMessageSendRequest) async throws -> V2RuntimeActionResponse
     func steer(sessionId: V2SessionID, request: V2RuntimeSteerRequest) async throws -> V2RuntimeActionResponse
-    func interrupt(sessionId: V2SessionID) async throws -> V2RuntimeActionResponse
+    func interrupt(sessionId: V2SessionID, preserveBackground: Bool) async throws -> V2RuntimeActionResponse
     func notices(sessionId: V2SessionID) async throws -> V2RuntimeNoticeSnapshot
     func respondToNotice(sessionId: V2SessionID, noticeId: V2NoticeID, request: V2RuntimeNoticeRespondRequest) async throws -> V2RuntimeActionResponse
 }
@@ -63,10 +63,11 @@ struct V2RuntimeAPI: V2RuntimeAPIProtocol {
         try await send(sessionId: sessionId, suffix: "steer", method: .post, body: body)
     }
 
-    func interrupt(sessionId: V2SessionID) async throws -> V2RuntimeActionResponse {
-        let request = HTTPRequest<EmptyRequestBody, V2RuntimeActionResponse>(
+    func interrupt(sessionId: V2SessionID, preserveBackground: Bool) async throws -> V2RuntimeActionResponse {
+        let request = HTTPRequest<V2RuntimeInterruptRequest, V2RuntimeActionResponse>(
             method: .post,
-            path: runtimePath(sessionId, suffix: "interrupt")
+            path: runtimePath(sessionId, suffix: "interrupt"),
+            body: V2RuntimeInterruptRequest(preserveBackground: preserveBackground)
         )
         return try await transport.send(request)
     }

@@ -615,3 +615,52 @@ def test_one_decline_ruling_answers_exactly_one_park() -> None:
         assert await asyncio.wait_for(second, 1) is True
 
     asyncio.run(run())
+
+
+def test_a_release_landing_before_the_reader_returns_still_hands_the_transport_back() -> (
+    None
+):
+    """The park's answer and `release()` can land in the same tick.
+
+    `decline_terminal()` answers the parked reader with False, and `release()`
+    then ends the turn before that reader is scheduled back. In that order
+    `release()` reads `reader_declined == False` — the reader has not run yet,
+    so it has not set the flag the self-heal looks at — and therefore does NOT
+    take `current` back. A reader that then returned the decline's False would
+    keep `current` and keep reading, and nothing would ever clear it: the mint
+    branch can never run again and the session answers nothing at all.
+
+    `released` is level-triggered, so the park sees the later release too and
+    hands the transport back. This is the deterministic construction of that
+    order — the park is created first and both rulings are issued before the
+    task is awaited, so no scheduler luck is involved.
+    """
+
+    async def run() -> None:
+        dropped: list[Any] = []
+        connection = SimpleNamespace(
+            drop_current=lambda response: dropped.append(response) or True,
+            arm_idle=lambda: None,
+        )
+        response = ClaudeResponse(connection)  # type: ignore[arg-type]
+
+        park = asyncio.ensure_future(response.await_terminal_verdict())
+        await asyncio.sleep(0.05)
+        assert not park.done(), "precondition: the reader must be parked"
+
+        response.decline_terminal()  # answers the park with False
+        response.release()  # ... and the turn ends before the reader returns
+
+        # Precondition, and the reason the assertion below is load-bearing:
+        # `release()` ran its self-heal before the reader could set the flag
+        # it reads, so nothing else is going to take `current` back.
+        assert response.reader_declined is False
+        assert dropped == []
+
+        assert await asyncio.wait_for(park, 1) is True, (
+            "the reader took the decline and kept current, but release() had "
+            "already run and will never take it back — the transport is "
+            "stranded"
+        )
+
+    asyncio.run(run())

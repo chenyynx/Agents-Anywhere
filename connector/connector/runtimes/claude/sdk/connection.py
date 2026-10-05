@@ -252,6 +252,14 @@ class ClaudeResponse:
         if self._verdict_pending:
             # Both rulings can land while the reader is away and both answer
             # the same question, so one flag is enough: `released` first.
+            #
+            # DEFENSIVE, not load-bearing — and measured, not assumed. Red
+            # team round 3 counted 138 park resolutions in the real recovery
+            # loop and 0 hits here: with the direct hand-off the reader parks
+            # before the consumer can rule, so nothing ever has to be
+            # remembered. It stops being redundancy the moment a third,
+            # non-level channel can deliver a ruling across that gap, and it
+            # needs a pin of its own if one is ever introduced.
             self._consume_verdict_signals()
             return self.released.is_set()
         waiter: asyncio.Future[bool] = asyncio.get_running_loop().create_future()

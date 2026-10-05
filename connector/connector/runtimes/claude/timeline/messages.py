@@ -85,6 +85,10 @@ CLAUDE_LOCAL_COMMAND_CHROME_PREFIXES = (
     CLAUDE_COMMAND_NAME_TAG,
     *CLAUDE_LOCAL_COMMAND_ECHO_TAGS,
 )
+# The wire's reasoning shapes. One set for the extraction, the revision rule
+# and the display gate, so the three can never drift apart on what counts as
+# reasoning.
+REASONING_BLOCK_TYPES = frozenset({"thinking", "reasoning", "redacted_thinking"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,6 +243,22 @@ class ClaudeMessageProjector:
         items: list[RuntimeTimelineItem] = []
         native_message_id = message_id(message)
         for block in message_system_blocks(message):
+            if (
+                block.block_type in REASONING_BLOCK_TYPES
+                and not _reasoning_block_is_displayable(block)
+            ):
+                # The empty-reasoning shape the affected model channel emits:
+                # a thinking block carrying only its signature (9 of 49 blocks
+                # in the reported session, 2026-10-05), or a redacted_thinking
+                # with nothing readable. Published, it renders as a bare,
+                # un-expandable 「推理」 dead row with no body, so it is never
+                # projected — the same invariant the streaming path keeps
+                # (`stream.py::_thinking_partial_item` drops empty text before
+                # `reasoning_item`). All three routes share this projector
+                # (live subagent frames, the turn-end projection, the history
+                # import), and the client gate additionally hides rows already
+                # persisted by older connectors.
+                continue
             item_id = stable_system_item_id(
                 session=session,
                 turn_id=turn_id,
@@ -254,7 +274,7 @@ class ClaudeMessageProjector:
             revision = (
                 reasoning_revision
                 if reasoning_revision is not None
-                and block.block_type in {"thinking", "reasoning", "redacted_thinking"}
+                and block.block_type in REASONING_BLOCK_TYPES
                 else 1
             )
             items.append(
@@ -294,6 +314,10 @@ class ClaudeMessageProjector:
 
         Shares stable_system_item_id with the finished-message projection, so
         the live item, the turn-end item and history converge on one row.
+        Callers must not pass empty text: an empty reasoning block is never
+        published (the stream guard in `stream.py` answers the same question),
+        and `system_items_for_message` drops the same shape on the other
+        routes.
         """
 
         block = ClaudeSystemBlock(
@@ -784,12 +808,53 @@ def _block_type(block: Any) -> str | None:
     return None
 
 
+def _reasoning_block_is_displayable(block: ClaudeSystemBlock) -> bool:
+    """Whether a reasoning block would render with visible text.
+
+    Mirrors the client's caliber (`TimelineText.reasoning` in
+    `TimelineEntryPresentation.swift`): the `summaries` win when the list has
+    any non-empty text, otherwise the first non-empty of rawText/text/summary;
+    the winner is trimmed, and an empty result draws only the bare marker.
+    Read here too so the connector never publishes a row the client would
+    have nothing to show for.
+    """
+
+    return bool(_reasoning_display_text(block).strip())
+
+
+def _reasoning_display_text(block: ClaudeSystemBlock) -> str:
+    metadata = block.metadata or {}
+    summaries = _summary_texts(metadata.get("summaries"))
+    if summaries:
+        return "\n\n".join(summaries)
+    raw_text = metadata.get("rawText")
+    if isinstance(raw_text, str) and raw_text:
+        return raw_text
+    if block.text:
+        return block.text
+    summary = metadata.get("summary")
+    return summary if isinstance(summary, str) else ""
+
+
+def _summary_texts(value: Any) -> list[str]:
+    """The client's summary entries: `{"text": ...}` mappings with real text."""
+
+    if not isinstance(value, list | tuple):
+        return []
+    texts: list[str] = []
+    for entry in value:
+        text = entry.get("text") if isinstance(entry, Mapping) else None
+        if isinstance(text, str) and text:
+            texts.append(text)
+    return texts
+
+
 def _system_content(block: ClaudeSystemBlock) -> Any:
     metadata = {
         "blockType": block.block_type,
         **dict(block.metadata or {}),
     }
-    if block.block_type in {"thinking", "reasoning", "redacted_thinking"}:
+    if block.block_type in REASONING_BLOCK_TYPES:
         return ReasoningSystemContent(
             text=block.text,
             metadata=metadata,

@@ -149,33 +149,54 @@ struct SubAgentPanelSheet: View {
         let phaseColor = SubAgentPalette.phase(card.phase)
         let metrics = SubAgentProgress.statsLine(for: card)
         return HStack(spacing: 8) {
-            HStack(spacing: 5) {
-                Circle().fill(phaseColor).frame(width: 6, height: 6)
-                Text(card.phase.word)
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(phaseColor)
-                    .lineLimit(1)
+            HStack(spacing: 8) {
+                HStack(spacing: 5) {
+                    Circle().fill(phaseColor).frame(width: 6, height: 6)
+                    Text(card.phase.word)
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(phaseColor)
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(phaseColor.opacity(Self.badgeFillOpacity(colorScheme)), in: .capsule)
+                if !metrics.isEmpty {
+                    Text(metrics)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(phaseColor.opacity(Self.badgeFillOpacity(colorScheme)), in: .capsule)
-            if !metrics.isEmpty {
-                Text(metrics)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
+            // One element, one sentence: VoiceOver should read the state and
+            // its numbers together instead of stopping on the dot, the badge
+            // and the metrics separately. The stop controls stay outside this
+            // element — children-ignoring would swallow the buttons.
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(SubAgentProgress.statsAccessibilityLabel(for: card))
             Spacer(minLength: 0)
+            stopControls(for: card)
         }
         .padding(.horizontal, 20)
         .padding(.top, 8)
         .padding(.bottom, 6)
-        // One element, one sentence: VoiceOver should read the state and its
-        // numbers together instead of stopping on the dot, the badge and the
-        // metrics separately.
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(SubAgentProgress.statsAccessibilityLabel(for: card))
+    }
+
+    /// §A3: the selected card's live-task stop controls, trailing the header.
+    /// 门控不渲染: nothing without the usable `session.subagent_control`
+    /// capability, nothing for a card without live tasks; otherwise one
+    /// control per live task, each bound to exactly one task id (including
+    /// nested tasks, G3 — the projection reads every live `agents` entry).
+    @ViewBuilder private func stopControls(for card: SubAgentCard) -> some View {
+        let tasks = SubAgentProgress.stopTasks(for: card, capabilities: chat.session.runtime.capabilities)
+        if !tasks.isEmpty {
+            ForEach(tasks) { task in
+                SubAgentStopControl(task: task, showsName: tasks.count > 1,
+                    isStopping: chat.stoppingSubagentTaskIDs.contains(task.taskID)) {
+                    Task { await chat.stopSubagent(taskID: task.taskID) }
+                }
+            }
+        }
     }
 
     /// Light mode: a 12% wash reads as a chip on white. Dark mode needs more of

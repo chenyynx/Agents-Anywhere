@@ -343,6 +343,19 @@ final class V2SessionRepository {
         launchFollowUpReconcile(entry)
     }
 
+    /// Stops one SubAgent task (§A3). Deliberately not an interrupt: a
+    /// background task lives outside any turn, so this never plays with the
+    /// turn window and never predicts an idle — the card converges from the
+    /// task's own terminal event. An unknown task id is a non-event (the
+    /// server answers `stopped: false` inside a successful envelope), so it
+    /// is not an error; every real failure keeps propagating.
+    func stopSubagent(sessionId: V2SessionID, taskId: String) async throws {
+        try requireNetwork()
+        let entry = entry(for: sessionId)
+        _ = try await detail.stopSubagent(sessionId: sessionId, taskId: taskId)
+        try requireCurrent(entry)
+    }
+
     /// Recognises the one 409 that means "already stopped" rather than "the
     /// stop failed": the session capability gate refusing `session.interrupt`
     /// because no turn is active. The server answers the same sentence for

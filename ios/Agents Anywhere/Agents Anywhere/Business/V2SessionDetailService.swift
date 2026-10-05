@@ -78,6 +78,13 @@ struct V2SessionDetailService {
         try await runtimeAPI.interrupt(sessionId: sessionId, preserveBackground: preserveBackground).requireSuccess()
     }
 
+    /// Stops one SubAgent task (§A3). The result's `stopped` flag is not an
+    /// error path: an unknown task id is a fact (the card converges from its
+    /// own events), not a failure to surface.
+    func stopSubagent(sessionId: V2SessionID, taskId: String) async throws -> V2RuntimeActionResponse {
+        try await runtimeAPI.stopSubagent(sessionId: sessionId, taskId: taskId).requireSuccess()
+    }
+
     func updateSelection(
         sessionId: V2SessionID,
         scope: V2RuntimeSelectionScope,

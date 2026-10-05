@@ -40,6 +40,58 @@ struct SubAgentCapsule: View {
     }
 }
 
+/// §A3: the one stop control the SubAgent surfaces share — the panel header
+/// and the Agent card's timeline fold. It is the composer's official stop
+/// affordance at row scale: same symbol, same primary-control colors, same
+/// disabled wash. One control carries one `SubAgentTask`, so its button is
+/// always bound to exactly one task id; a card with several live tasks
+/// renders one named control per task (逐条渲染), and the single-task case
+/// stays the bare control.
+struct SubAgentStopControl: View {
+    let task: SubAgentTask
+    /// Show the task's own data-sourced name beside the control.
+    let showsName: Bool
+    /// The stop request is accepted and the card has not converged: the
+    /// control shows its in-flight disabled form until either lands.
+    let isStopping: Bool
+    let action: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+    @ScaledMetric(relativeTo: .footnote) private var diameter: CGFloat = 26
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if showsName, let label = task.label {
+                Text(label)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            Button(action: action) {
+                AppSymbol("stop.fill", size: 12)
+                    .foregroundStyle(AppTheme.primaryControlForeground(colorScheme))
+                    .frame(width: diameter, height: diameter)
+                    .background(AppTheme.primaryControlBackground(colorScheme).opacity(isStopping ? 0.42 : 1), in: Circle())
+                    .frame(minHeight: 32)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(isStopping)
+            .accessibilityLabel(accessibilityLabel)
+            .accessibilityIdentifier("chat.subagent.stop.\(task.taskID)")
+        }
+    }
+
+    /// Minimal by design: the control is the feature's own body. The entry's
+    /// name joins only when controls are stacked, so a multi-task card's
+    /// buttons are told apart by voice.
+    private var accessibilityLabel: String {
+        let base = String(localized: "停止子代理")
+        guard showsName, let label = task.label else { return base }
+        return "\(base) \(label)"
+    }
+}
+
 /// The SubAgent concept colors, single point: running is blue, the semantic
 /// colors (green done / red failure) carry over from the rest of the app. The
 /// running capsule wears a light neutral smoke — not a hue — so the blue bot

@@ -61,6 +61,37 @@ enum SubAgentPhase: Equatable {
     }
 }
 
+// MARK: - Per-task stop targets
+
+/// One live task inside a card's `agents` map — the unit a stop control binds
+/// to (§A3). The map is keyed by the task id (the receipt's agentId,
+/// `agent_calls.py`), and an entry counts as live at exactly the connector's
+/// two live statuses: `running` and the launch receipt `async_launched`
+/// (`AGENT_TASK_LIVE_STATUSES`). A foreground dispatch that never produced a
+/// task receipt has no entry, so no control can be built for it; a terminal
+/// entry is not live either.
+struct SubAgentTask: Identifiable, Equatable {
+    let taskID: String
+    let status: String
+    let subagentType: String?
+    let lastToolName: String?
+    /// `>0` marks a task another subagent dispatched (nested coverage, G3);
+    /// its control still binds this task's own id, never the parent's.
+    let spawnDepth: Int?
+
+    var id: String { taskID }
+
+    /// The name a control shows/speaks when a card holds several live tasks.
+    /// Data-sourced only — the entry's type, else its last tool, else the raw
+    /// task id — so no new visible copy is introduced.
+    var label: String? {
+        for value in [subagentType, lastToolName] {
+            if let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty { return value }
+        }
+        return taskID
+    }
+}
+
 // MARK: - Card
 
 /// One SubAgent as seen on the timeline: an Agent call card plus the aggregate
@@ -80,6 +111,9 @@ struct SubAgentCard: Identifiable, Equatable {
     /// Non-nil for a nested card (a frame parented to another Agent call).
     let parentItemID: String?
     let isBackgrounded: Bool?
+    /// The card's live tasks, one stop control each (§A3). Empty for a
+    /// dispatch with no task receipt — the shape that must not grow a button.
+    let liveTasks: [SubAgentTask]
     /// The card's dispatch moment (item creation). The capsule's failure rule
     /// compares it against a failure's end to tell a new batch from an older one.
     let dispatchedAt: Date?
@@ -147,9 +181,56 @@ enum SubAgentProgress {
             summary: TimelineText.first(raw["summary"]),
             parentItemID: parent,
             isBackgrounded: entry?["isBackgrounded"]?.boolValue ?? raw["runInBackground"]?.boolValue,
+            liveTasks: liveTasks(in: item),
             dispatchedAt: Self.date(item.createdAt),
             failedAt: Self.terminalDate(raw: raw, item: item)
         )
+    }
+
+    /// The connector's two live task statuses (`AGENT_TASK_LIVE_STATUSES`).
+    /// A status-less entry is deliberately not live: a task event without a
+    /// status leaves `{}` behind, and counting that as live would pin a
+    /// closed card's stop control open.
+    static let liveTaskStatuses: Set<String> = ["running", asyncLaunchedStatus]
+
+    /// The A3 capability id (frozen interface §7.1).
+    static let controlCapability: V2CapabilityID = "session.subagent_control"
+
+    /// The §A3 render gate and its targets in one place: a card's live tasks
+    /// exactly when the runtime advertises `session.subagent_control` usable
+    /// (supported && available && allowed) — nothing otherwise (门控不渲染).
+    /// Deliberately not the interrupt gate: a background SubAgent stays live
+    /// while no turn is in flight and the session reads idle, so a
+    /// runtimeStatus window must never hide the control.
+    static func stopTasks(in item: V2TimelineItem, capabilities: V2RuntimeCapabilitySnapshot?) -> [SubAgentTask] {
+        guard capabilities?.allows(controlCapability) == true else { return [] }
+        return liveTasks(in: item)
+    }
+
+    /// The same gate for a parsed card — the panel header's shape.
+    static func stopTasks(for card: SubAgentCard, capabilities: V2RuntimeCapabilitySnapshot?) -> [SubAgentTask] {
+        guard capabilities?.allows(controlCapability) == true else { return [] }
+        return card.liveTasks
+    }
+
+    /// Every live task in an Agent card's `agents` map, in a deterministic
+    /// order. The map key is the task id (the receipt's agentId); an entry
+    /// that names its own id wins as a defensive reading. A non-card item
+    /// yields nothing, so no control can be built from it (§A3 gate input).
+    static func liveTasks(in item: V2TimelineItem) -> [SubAgentTask] {
+        guard isAgentCall(item) else { return [] }
+        let agents = item.raw["content"]?["agents"]?.objectValue ?? [:]
+        return agents.compactMap { key, entry in
+            guard let status = entry["status"]?.stringValue, liveTaskStatuses.contains(status) else { return nil }
+            return SubAgentTask(
+                taskID: TimelineText.first(entry["taskId"], entry["agentId"]) ?? key,
+                status: status,
+                subagentType: TimelineText.first(entry["subagentType"]),
+                lastToolName: TimelineText.first(entry["lastToolName"]),
+                spawnDepth: entry["spawnDepth"]?.intValue
+            )
+        }
+        .sorted { $0.taskID < $1.taskID }
     }
 
     /// Every Agent call card in the window, in dispatch (order) sequence.

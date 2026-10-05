@@ -56,6 +56,7 @@ struct SessionTimelineGroupView: View {
 
 struct SessionTimelineEventView: View {
     let row: ChatTimelineRowModel
+    let chat: SessionChatModel
     let cwd: String?
     let disclosures: TimelineDisclosureState
     let onFile: (String) -> Void
@@ -69,6 +70,17 @@ struct SessionTimelineEventView: View {
         guard let onSubAgent, SubAgentProgress.isAgentCall(row.value),
               SubAgentProgress.parentItemID(row.value) == nil else { return nil }
         return { onSubAgent(row.id) }
+    }
+    /// §A3 gate + targets: the card's live tasks, one stop control each —
+    /// including nested tasks (G3), because the projection reads every live
+    /// `agents` entry, not just the primary one. Empty for non-card rows and
+    /// while the capability gate is closed (门控不渲染).
+    private var stopTasks: [SubAgentTask] {
+        SubAgentProgress.stopTasks(in: row.value, capabilities: chat.session.runtime.capabilities)
+    }
+    private var stopTask: ((String) -> Void)? {
+        guard !stopTasks.isEmpty else { return nil }
+        return { taskID in Task { await chat.stopSubagent(taskID: taskID) } }
     }
 
     var body: some View {
@@ -94,7 +106,8 @@ struct SessionTimelineEventView: View {
         case .tool:
             if value.hasToolDetails {
                 TimelineFold(id: row.id, title: value.title, symbol: value.symbol, status: row.value.status,
-                    disclosures: disclosures, detailsAction: agentCardDetailsAction) {
+                    disclosures: disclosures, detailsAction: agentCardDetailsAction,
+                    stopTasks: stopTasks, stoppingTaskIDs: chat.stoppingSubagentTaskIDs, onStopTask: stopTask) {
                     TimelineToolDetails(row: row, cwd: cwd, onFile: onFile)
                 }
             } else { TimelineMarkerRow(title: value.title, symbol: value.symbol, status: row.value.status) }
@@ -171,6 +184,13 @@ private struct TimelineFold<Content: View>: View {
     /// SubAgent progress group). It is a sibling button, not a tap on the
     /// disclosure row, so the existing expand gesture is never intercepted.
     var detailsAction: (() -> Void)?
+    /// §A3: the card's live SubAgent tasks whose own stop control renders in
+    /// the header row — one control per task, each bound to exactly one task
+    /// id (a multi-task card renders one named control each; 能唯一确定目标
+    /// 才出单按钮).
+    var stopTasks: [SubAgentTask] = []
+    var stoppingTaskIDs: Set<String> = []
+    var onStopTask: ((String) -> Void)?
     @ViewBuilder var content: () -> Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
@@ -190,6 +210,14 @@ private struct TimelineFold<Content: View>: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("chat.subagent.details")
+                }
+                if let onStopTask {
+                    ForEach(stopTasks) { task in
+                        SubAgentStopControl(task: task, showsName: stopTasks.count > 1,
+                            isStopping: stoppingTaskIDs.contains(task.taskID)) {
+                            onStopTask(task.taskID)
+                        }
+                    }
                 }
             }
             if disclosures.isExpanded(id) { content().transition(.identity) }

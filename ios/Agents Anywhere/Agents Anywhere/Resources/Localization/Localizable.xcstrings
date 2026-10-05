@@ -8938,6 +8938,23 @@
         }
       }
     },
+    "停止子代理": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop subagent"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止子代理"
+          }
+        }
+      }
+    },
     "停止生成": {
       "comment": "Shared with Web: dashboard.session.interrupt. Sync with ios/scripts/web_copy.py.",
       "extractionState": "manual",

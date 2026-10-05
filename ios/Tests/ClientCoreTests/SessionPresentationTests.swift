@@ -98,6 +98,26 @@ import Testing
         #expect(unknown.raw["content"]?["newField"] == .number(42))
     }
 
+    @Test func longerSingleLineThoughtsFoldInsteadOfTruncating() throws {
+        // The marker row truncates at one line with no expansion (pp
+        // 2026-10-05: a 69-char thought could not be read to the end), so the
+        // inline gate holds only genuinely short lines; everything longer
+        // folds like the rest of the reasoning.
+        let short = String(repeating: "a", count: 30)
+        #expect(TimelineText.inlineSummary(short) == short)
+        #expect(TimelineEntryPresentation(item: try item("system", content: ["kind": "reasoning", "text": short]), cwd: nil)
+            .title == String(localized: "思考：\(short)"))
+        let longer = String(repeating: "a", count: 31)
+        #expect(TimelineText.inlineSummary(longer) == nil)
+        let oneLine = "Both agents done. Report to user. Same hook block. Summarize results."
+        #expect(TimelineText.inlineSummary(oneLine) == nil)
+        let entry = TimelineEntryPresentation(item: try item("system", content: ["kind": "reasoning", "text": oneLine]), cwd: nil)
+        #expect(entry.title == String(localized: "思考过程"))
+        // Multiline and markdown-shortened lines still gate correctly.
+        #expect(TimelineText.inlineSummary("first\nsecond") == nil)
+        #expect(TimelineText.inlineSummary("**bold_and_short**") == "boldandshort")
+    }
+
     @Test @MainActor func toolGroupsKeepFirstIdentityAndDoNotHideInteractions() throws {
         let first = ChatTimelineRowModel(try item(id: "a", content: ["kind": "command", "command": "ls"]))
         let second = ChatTimelineRowModel(try item(id: "b", content: ["kind": "mcp"]))

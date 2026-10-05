@@ -171,11 +171,16 @@ nonisolated enum TimelineText {
         let summaries = raw["summaries"]?.arrayValue?.compactMap { first($0["text"]) } ?? []
         return summaries.isEmpty ? first(raw["rawText"], raw["text"], raw["summary"]) ?? "" : summaries.joined(separator: "\n\n")
     }
+    /// The one-line marker's gate for reasoning text. Kept short deliberately
+    /// (pp 2026-10-05): the marker row renders the title at lineLimit(1) in a
+    /// monospaced font behind the 「思考：」 prefix, so a longer single line
+    /// truncated with no way to expand; everything past this folds like the
+    /// rest of the reasoning.
     static func inlineSummary(_ text: String) -> String? {
         guard !text.contains("\n"), !text.contains("\r") else { return nil }
         let plain = text.replacingOccurrences(of: "!?\\[([^\\]]*)\\]\\([^)]+\\)", with: "$1", options: .regularExpression)
             .replacingOccurrences(of: "[`*_~#>]", with: "", options: .regularExpression).trimmingCharacters(in: .whitespaces)
-        return plain.count <= 80 ? plain.nonempty : nil
+        return plain.count <= 30 ? plain.nonempty : nil
     }
 }
 

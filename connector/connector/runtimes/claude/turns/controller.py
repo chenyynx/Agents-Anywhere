@@ -170,6 +170,11 @@ class ClaudeTurnController:
 
         return self.runner.has_live_connection(session_id)
 
+    def subagent_control_supported(self) -> bool:
+        """Whether the loaded SDK offers the per-task stop control."""
+
+        return self.runner.subagent_control_supported()
+
     def list_commands(
         self,
         session_id: str,

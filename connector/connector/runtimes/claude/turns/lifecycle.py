@@ -50,6 +50,7 @@ from connector.runtimes.claude.sdk.settings import (
 from connector.runtimes.claude.sdk.stderr import ClaudeStderrBuffer
 from connector.runtimes.claude.sdk.stop_affordance import (
     client_declares_per_task_stop,
+    sdk_supports_stop_task,
 )
 from connector.runtimes.claude.sdk.tasks import ClaudeTaskEvent
 from connector.runtimes.claude.sdk.title_tool import build_change_title_tool
@@ -172,6 +173,9 @@ class ClaudeTurnRunner:
     agent_task_calls: dict[tuple[str, str], str] = field(
         default_factory=dict, init=False
     )
+    #: Lazy, cached probe of the loaded SDK's ``stop_task`` presence (the
+    #: ``session.subagent_control`` supported fact). None until first read.
+    _subagent_control_supported: bool | None = field(default=None, init=False)
     # B: terminal frames the start gate refused to settle this turn on. Read by
     # the post-deploy observation window alongside `ClaudeConnection
     # .absorbed_terminal_frames`: the two are the same leak seen at its two
@@ -1026,6 +1030,24 @@ class ClaudeTurnRunner:
                 return
             # Otherwise loop: the wake turn may have dispatched fresh
             # background work, and that new batch owns the transport too.
+
+    def subagent_control_supported(self) -> bool:
+        """Whether the loaded SDK offers the per-task stop control at all.
+
+        Probed once, lazily, fail-soft (no loader / no SDK = no support).
+        Lives on the runner because loading the SDK is a collaborator's job
+        — the architecture test keeps it out of the runtime module.
+        """
+
+        if self._subagent_control_supported is None:
+            try:
+                sdk = load_sdk(self.sdk_loader)
+            except Exception:  # noqa: BLE001 - fail-soft by contract
+                supported = False
+            else:
+                supported = sdk_supports_stop_task(sdk)
+            self._subagent_control_supported = supported
+        return self._subagent_control_supported
 
     def has_live_connection(self, session_id: str) -> bool:
         """Whether a live transport currently hosts this session's work.

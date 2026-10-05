@@ -1212,7 +1212,32 @@ class _SubagentThenWaitClient(_DispatchClient):
     for the same events took 4m43s (real session sess_tPcEDi0z9xJYxQ,
     2026-10-04 12:18). Nothing was missing — the CLI reports every task it
     kills. It just reported it long after anyone was looking.
+
+    Since the A3 batch (red team F-A) a declared connection reports exactly
+    the fan-out's accepted stops, so the client carries the real SDK's
+    per-task control: the stop confirms the kill the test expects folded.
     """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stopped: list[str] = []
+
+    async def stop_task(self, task_id: str) -> None:
+        self.stopped.append(task_id)
+
+    async def interrupt(self) -> None:
+        # The real abort tail carries the session's own id; the base fake
+        # hardcodes `native_timer`, which would re-scope the card the stop's
+        # own fold must land on (and the stop would publish to the wrong
+        # item id — an artefact of the fake, not the product).
+        await _FakeClaudeClient.interrupt(self)
+        await self.incoming.put(
+            SimpleNamespace(
+                type="result",
+                session_id=str(WIRE_DISPATCH_RECEIPT["session_id"]),
+                terminal_reason="aborted_streaming",
+            )
+        )
 
     async def _complete_query(self, prompt: str) -> None:
         if prompt == "hello":
@@ -1274,6 +1299,7 @@ def test_stop_reports_the_subagents_it_killed_immediately() -> None:
             assert result.ok is True
             assert elapsed < 1.0, f"the stop took {elapsed:.3f}s"
             cards = _card_items(host, card_id)
+            assert client.stopped == [TASK_ID]  # the CLI accepted the per-task stop
             assert len(cards) == before + 1, "exactly one row, published by the stop"
             assert cards[-1].status == "interrupted"
             # The agents-map entry records the wire status verbatim (a CLI

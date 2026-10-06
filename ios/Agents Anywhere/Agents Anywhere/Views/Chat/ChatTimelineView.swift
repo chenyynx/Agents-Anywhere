@@ -487,6 +487,14 @@ private struct ChatTimelineContent: View, Equatable {
     let onPromptVisibility: (Bool) -> Void
     let onOlderPromptVisibility: (Bool) -> Void
     let onTailVisibility: (TimelineTailVisibility.Region, Bool) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// F1 (pp 2026-10-07): the tail spacer's resting height — the two-tier
+    /// contract is 32 with a status line present and this value at rest, so
+    /// the SubAgent capsule seats near the content when the session is idle.
+    private static let idleTailHeight: CGFloat = 12
+    /// The two-tier height's only input: the status line's presence. The body
+    /// reads this one boolean for both the frame and the animation value.
+    private var hasStatusLine: Bool { model.sendingPlaceholder != nil }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.model === rhs.model && lhs.latestPullReady == rhs.latestPullReady && lhs.isLoadingLatest == rhs.isLoadingLatest
@@ -562,8 +570,13 @@ private struct ChatTimelineContent: View, Equatable {
                 .disabled(model.session.isLoadingHistory || isLoadingLatest || isLoadingOlder)
                 .onScrollVisibilityChange { onPromptVisibility($0) }
             }
-            // Constant breathing room: status text and card counts cannot
-            // change this spacer or create a spurious follow request.
+            // Dual-tier breathing room (pp 2026-10-07): the spacer is 32 with
+            // a status line present and `idleTailHeight` at rest. The old
+            // single-constant convention is upgraded, not abolished: the tier
+            // follows only that one boolean, so status text and card counts
+            // still cannot change this spacer or create a spurious follow
+            // request. Only the top edge condenses — the content's bottom edge
+            // and both bottom-anchored probes stay put.
             Group {
                 if let text = model.sendingPlaceholder {
                     HStack(spacing: 8) {
@@ -572,7 +585,8 @@ private struct ChatTimelineContent: View, Equatable {
                         Spacer(minLength: 0)
                     }
                 } else { Color.clear }
-            }.frame(height: 32)
+            }.frame(height: hasStatusLine ? 32 : Self.idleTailHeight)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: hasStatusLine)
                 .traceChatLayout("tail-spacer")
                 .overlay(alignment: .bottom) {
                     Color.clear.frame(height: 96)

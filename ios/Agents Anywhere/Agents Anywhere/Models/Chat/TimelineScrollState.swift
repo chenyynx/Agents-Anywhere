@@ -35,6 +35,24 @@ nonisolated struct TimelineScrollState: Equatable {
     /// Set by `open()`, consumed by the first command it produces. A reader
     /// gesture before that command clears it, so later returns animate.
     private var openingReturnIsPending = false
+    /// R2 backstop: the publish-point reconcile asks at most once per
+    /// displacement episode. The latch re-arms only when a published sample
+    /// measurably reaches the bottom, so a failed native target cannot turn
+    /// the recheck into a layout loop.
+    private var bottomReconcileIsSpent = false
+
+    /// The marker probes lie — round 1.3's device probe read "at bottom"
+    /// from the tail flag while the measured gap sat hundreds of points
+    /// short, and the follow chain (gated on that flag) never started. The
+    /// at-bottom truth is measured directly from the last published
+    /// viewport: `visibleBottom` reaches `contentHeight` exactly when the
+    /// scroll rests at its maximum offset, so the gap is the real remaining
+    /// travel. The probes stay only as the fallback before the first
+    /// measurement.
+    var viewportIsAtBottom: Bool {
+        guard viewport.isMeasured else { return tail.isAtBottom }
+        return viewport.measuredAtBottom
+    }
 
     var userIsScrolling: Bool { [.tracking, .interacting, .decelerating].contains(phase) }
     var returningToBottom: Bool { mode == .returning }
@@ -81,7 +99,12 @@ nonisolated struct TimelineScrollState: Equatable {
         lastRequest = nil
     }
 
-    mutating func geometryChanged(_ next: TimelineViewport) { viewport = next }
+    mutating func geometryChanged(_ next: TimelineViewport) {
+        viewport = next
+        // A measurable arrival ends the displacement episode; the next one
+        // may be reconciled again.
+        if next.measuredAtBottom { bottomReconcileIsSpent = false }
+    }
 
     mutating func tailVisibilityChanged(_ region: TimelineTailVisibility.Region, visible: Bool) {
         tail.update(region, visible: visible)
@@ -106,7 +129,9 @@ nonisolated struct TimelineScrollState: Equatable {
     mutating func settleUserScroll() {
         guard needsUserScrollSettlement, !returningToBottom else { return }
         awaitsUserScrollSettlement = false
-        mode = tail.isAtBottom && !interactionIsPresented ? .following : .reading
+        // A stale visible marker must not grant auto-follow and pull the
+        // reader back down; the arrival is measured, not probed (round 1.3).
+        mode = viewportIsAtBottom && !interactionIsPresented ? .following : .reading
     }
 
     var pendingBottomRequest: BottomRequest? {
@@ -115,11 +140,44 @@ nonisolated struct TimelineScrollState: Equatable {
               mode != .reading, !userIsScrolling || returningToBottom,
               !interactionIsPresented || returningToBottom else { return nil }
         // A return is issued once even for short content. Subsequent layout
-        // changes only need correction when they actually move away from bottom.
-        if tail.isAtBottom && (mode == .following || lastRequest != nil) { return nil }
+        // changes only need correction when they actually move away from
+        // bottom — judged by the measured gap (round 1.3): the stale marker
+        // flag would suppress the follow while the page sat hundreds of
+        // points short, leaving it parked away from the bottom for good.
+        if viewportIsAtBottom && (mode == .following || lastRequest != nil) { return nil }
         let request = BottomRequest(generation: navigationGeneration,
             contentHeight: viewport.contentHeight.rounded(), visibleHeight: viewport.visibleHeight.rounded())
-        return request == lastRequest ? nil : request
+        // The value dedup only holds while the scroll measurably rests at
+        // the bottom: a layout that returns to an already-claimed request
+        // after an intermediate move (the confirm replace's round trip) is
+        // a new displacement, not a processed one — value equality alone
+        // would park the page short for good.
+        return request == lastRequest && viewport.measuredAtBottom ? nil : request
+    }
+
+    /// R2 backstop: the bounded authoritative re-ask the view runs at its
+    /// publish point after a sample lands. Both request gates above judge by
+    /// the measured gap, but a displacement can still leave nothing to
+    /// restart the coalescer: the tail probes may never have measured (the
+    /// request guard keeps waiting for them), or the layout can round-trip
+    /// to the already-claimed request so its value never changes again (the
+    /// confirm replace). When the state is measurably short at rest in
+    /// following mode, ask once — a fresh generation restarts the return
+    /// chain from scratch. Bounded by construction: the spent latch stops
+    /// repeats until the geometry measurably reaches the bottom, an
+    /// in-flight command or a reader gesture suppresses the ask entirely,
+    /// and a fresh request (one that differs from the last begun return)
+    /// stays out of its way — that one is already traveling through the
+    /// 24 ms coalescing task.
+    @discardableResult
+    mutating func reconcileToBottom() -> Bool {
+        guard hasOpened, !navigationIsSuspended, viewport.isMeasured,
+              mode == .following, !userIsScrolling, activeCommand == nil,
+              !viewport.measuredAtBottom, !bottomReconcileIsSpent else { return false }
+        guard pendingBottomRequest == nil || pendingBottomRequest == lastRequest else { return false }
+        bottomReconcileIsSpent = true
+        requestBottom()
+        return true
     }
 
     mutating func begin(_ request: BottomRequest) -> BottomCommand? {

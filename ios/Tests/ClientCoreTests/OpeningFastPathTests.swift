@@ -46,6 +46,10 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         state.open()
         let opening = try nextCommand(&state)
         #expect(opening.instant)
+        // The instant return lands before its completion is acknowledged
+        // (the view acknowledges on measured arrival), so the resting state
+        // is judged at the bottom.
+        state.geometryChanged(viewport(offset: 1320))
         let completed = state.complete(opening)
         #expect(completed)
         #expect(state.mode == .following && state.pendingBottomRequest == nil)

@@ -90,7 +90,13 @@ import Testing
         state.phaseChanged(.animating, viewport: viewport(offset: 1320, height: 2200))
         for offset in stride(from: 1325.0, through: 1515.0, by: 5) {
             state.geometryChanged(viewport(offset: offset, height: 2200))
-            #expect(state.pendingBottomRequest == nil && !state.showsBottomButton())
+            // The coalescer restarts only when the request value changes.
+            // While the page is measurably short the value stays pinned to
+            // the in-flight command's own request; on arrival it clears.
+            // Neither spelling is a new command, and the completion still
+            // settles the animation the callbacks never restarted.
+            #expect(state.pendingBottomRequest == nil || state.pendingBottomRequest == command.request)
+            #expect(state.activeCommand == command && !state.showsBottomButton())
         }
         state.phaseChanged(.idle, viewport: viewport(offset: 1520, height: 2200))
         visibility(&state, end: true)
@@ -139,9 +145,12 @@ import Testing
             visibility(&state, end: false)
             state.phaseChanged(.interacting, viewport: viewport(offset: 1000))
             state.phaseChanged(.idle, viewport: viewport(offset: 1100))
-            // Arrival can be reported after idle. Only the end marker, not
-            // the wider pill margin, may restore following after settlement.
-            visibility(&state, end: arrived, near: true)
+            // Round 1.3: arrival is measured, not probed — and the marker is
+            // staged to contradict the measurement either way (off even when
+            // the reader arrived, on while the reader is short), so only the
+            // measured geometry can produce the expected mode.
+            state.geometryChanged(viewport(offset: arrived ? 1320 : 1100))
+            visibility(&state, end: !arrived, near: true)
             state.settleUserScroll()
             #expect(state.mode == expected && !state.showsBottomButton())
             state.geometryChanged(viewport(offset: 1100, height: 2200))
@@ -267,7 +276,7 @@ import Testing
         #expect(state.pendingBottomRequest == nil && !state.showsBottomButton())
     }
 
-    @Test func anUnchangedFailedNativeTargetIsNotRetriedInALayoutLoop() throws {
+    @Test func aFailedNativeTargetIsReconciledOnceWhileShortAndIdleNotLooped() throws {
         var state = TimelineScrollState()
         state.geometryChanged(viewport())
         visibility(&state, end: false)
@@ -275,10 +284,37 @@ import Testing
         let command = try nextCommand(&state)
         let completed = state.complete(command)
         #expect(completed)
+        // The return completed without the page moving. Value equality alone
+        // used to suppress this layout forever (the pill was the way back);
+        // the windowed compromise keeps the correction requestable while the
+        // state is short, idle and following — and the coalescer still holds
+        // because the request value does not change.
         for offset in [0.0, 0.25, 0, 0.5] {
             state.geometryChanged(viewport(offset: offset))
-            #expect(state.pendingBottomRequest == nil && state.showsBottomButton())
+            let request = try #require(state.pendingBottomRequest)
+            #expect(request.contentHeight == 2000)
         }
+        // The backstop asks exactly once; a second failed round cannot ask
+        // again while the loop keeps publishing the same short layout. (The
+        // mutating ask is taken out of the `#expect` macro, which captures
+        // its expression immutably.)
+        let parkedAsk = state.reconcileToBottom()
+        #expect(parkedAsk)
+        let retry = try nextCommand(&state)
+        let retried = state.complete(retry)
+        #expect(retried)
+        for offset in [0.0, 0.25, 0] {
+            state.geometryChanged(viewport(offset: offset))
+            let latchedAsk = state.reconcileToBottom()
+            #expect(!latchedAsk)
+        }
+        // A measurable arrival re-arms it, so a later displacement may be
+        // reconciled again...
+        state.geometryChanged(viewport(offset: 1320))
+        state.geometryChanged(viewport(offset: 1000))
+        let rearmedAsk = state.reconcileToBottom()
+        #expect(rearmedAsk)
+        // ...and an explicit return still works after everything.
         state.requestBottom()
         #expect(state.pendingBottomRequest != nil)
     }

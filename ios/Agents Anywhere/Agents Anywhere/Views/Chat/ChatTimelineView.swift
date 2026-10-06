@@ -358,6 +358,13 @@ struct ChatTimelineView: View {
         guard outcome == .publish else { return }
         scrolling.geometryChanged(value)
         viewportSample.tailUpdatedAtPublish = scrolling.tail
+        // R2 backstop: even with the geometry gates, a published sample can
+        // still find the page measurably short with nothing on the way (a
+        // lost probe flip, or a confirm replace that round-trips back to the
+        // claimed request). The state asks at most once per episode; an
+        // in-flight command, a reader gesture or an armed request keep it
+        // quiet, and the 24 ms coalescing task keeps its own claim.
+        scrolling.reconcileToBottom()
     }
     /// Every frame change restarts the transition window; the window's close
     /// settles the withheld sample. The end is scheduled for every event,

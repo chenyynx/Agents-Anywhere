@@ -355,6 +355,29 @@ struct ChatTimelineView: View {
         let tailChanged = viewportSample.tailUpdatedAtPublish != scrolling.tail
         let outcome = TimelineViewportPublicationDecision.outcome(published: scrolling.viewport, next: value,
             keyboardTransitionActive: keyboardTransitionActive, tailChanged: tailChanged)
+        // R2 backstop, judged *outside* the publication gate by the freshest
+        // sample: a filtered sample can still carry newer physical truth
+        // than the published viewport. The burst coalescer delivers only the
+        // confirm replace's last frame, so the intermediate frame's native
+        // clamp never publishes — the stale "at bottom" viewport would
+        // refuse the request gate and the backstop at once and park the
+        // page until the next content change. The same delivery also ends
+        // the displacement episode when it shows the page measurably at the
+        // bottom: the latch's re-arm must not depend on the publication
+        // gate or the phase echo either — a filtered arrival frame is often
+        // the only report that ever arrives. Both judgements are pure (S2):
+        // the common filtered tick — an offset-only scroll frame — writes
+        // nothing, and each mutating outcome is itself bounded (the ask by
+        // its latch, the re-arm to once per spent episode). While the
+        // keyboard transition window is open both stay quiet: its end
+        // re-evaluates the settled sample with the window closed (rule ⑤).
+        if outcome != .publish, !keyboardTransitionActive {
+            if scrolling.needsBottomReconcile(using: value) {
+                scrolling.reconcileToBottom(using: value)
+            } else if scrolling.needsBottomReconcileRearm(using: value) {
+                scrolling.rearmBottomReconcile(using: value)
+            }
+        }
         guard outcome == .publish else { return }
         scrolling.geometryChanged(value)
         viewportSample.tailUpdatedAtPublish = scrolling.tail
@@ -363,8 +386,9 @@ struct ChatTimelineView: View {
         // lost probe flip, or a confirm replace that round-trips back to the
         // claimed request). The state asks at most once per episode; an
         // in-flight command, a reader gesture or an armed request keep it
-        // quiet, and the 24 ms coalescing task keeps its own claim.
-        scrolling.reconcileToBottom()
+        // quiet, and the 24 ms coalescing task keeps its own claim. The
+        // judgement reads the freshest sample — the one just published.
+        scrolling.reconcileToBottom(using: value)
     }
     /// Every frame change restarts the transition window; the window's close
     /// settles the withheld sample. The end is scheduled for every event,

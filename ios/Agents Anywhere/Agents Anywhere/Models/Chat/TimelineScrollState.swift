@@ -169,15 +169,54 @@ nonisolated struct TimelineScrollState: Equatable {
     /// and a fresh request (one that differs from the last begun return)
     /// stays out of its way — that one is already traveling through the
     /// 24 ms coalescing task.
+    ///
+    /// The judgement reads the freshest delivered sample (`sample`) — not
+    /// the last *published* viewport — while the stored `viewport` and the
+    /// request construction stay untouched, so the S2 publication gating
+    /// still stands. The sample box is the one place a burst's dropped
+    /// intermediate frame survives (the same main-queue turn delivers only
+    /// the last one); the confirm replace's clamp rides exactly such a
+    /// frame, and the stale "at bottom" viewport would refuse the request
+    /// gate and this backstop at once, parking the page until the next
+    /// content change. `nil` judges by the stored viewport, as before.
     @discardableResult
-    mutating func reconcileToBottom() -> Bool {
-        guard hasOpened, !navigationIsSuspended, viewport.isMeasured,
-              mode == .following, !userIsScrolling, activeCommand == nil,
-              !viewport.measuredAtBottom, !bottomReconcileIsSpent else { return false }
-        guard pendingBottomRequest == nil || pendingBottomRequest == lastRequest else { return false }
+    mutating func reconcileToBottom(using sample: TimelineViewport? = nil) -> Bool {
+        guard needsBottomReconcile(using: sample) else { return false }
         bottomReconcileIsSpent = true
         requestBottom()
         return true
+    }
+
+    /// The pure twin of `reconcileToBottom(using:)`'s guards, so the view can
+    /// ask "would the mutating ask fire?" for every delivered sample without
+    /// writing `@State` on the ones that do not need it (S2: sampling stays
+    /// per-frame in the non-invalidating box; publishing re-evaluates the
+    /// page body). The mutating method stays the authority; both share this
+    /// one guard list by construction.
+    func needsBottomReconcile(using sample: TimelineViewport? = nil) -> Bool {
+        let truth = sample ?? viewport
+        guard hasOpened, !navigationIsSuspended, truth.isMeasured,
+              mode == .following, !userIsScrolling, activeCommand == nil,
+              !truth.measuredAtBottom, !bottomReconcileIsSpent else { return false }
+        return pendingBottomRequest == nil || pendingBottomRequest == lastRequest
+    }
+
+    /// The pure gate for the spent latch's re-arm from a delivered sample.
+    /// `geometryChanged` re-arms it for published samples; a delivered
+    /// sample the publication gate filtered (an offset-only arrival frame)
+    /// carries the same at-bottom truth, and in the worst modelled world —
+    /// coalesced bursts, no phase echo — it is the only channel that ever
+    /// reports arrival. The episode ends on the same judgement either way;
+    /// asking first keeps the armed state free per frame (S2), and the
+    /// write fires once per spent episode. A failed native target still
+    /// never produces an at-bottom sample, so the bound stands.
+    func needsBottomReconcileRearm(using sample: TimelineViewport) -> Bool {
+        bottomReconcileIsSpent && sample.measuredAtBottom
+    }
+
+    mutating func rearmBottomReconcile(using sample: TimelineViewport) {
+        guard sample.measuredAtBottom else { return }
+        bottomReconcileIsSpent = false
     }
 
     mutating func begin(_ request: BottomRequest) -> BottomCommand? {

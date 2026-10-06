@@ -256,8 +256,7 @@ struct SubAgentPanelSheet: View {
                 notLoadedNotice
             }
             promptSection(card)
-            toolSection(card)
-            reasoningSection(card)
+            activitySection(card)
             outputSection(card)
         }
     }
@@ -298,31 +297,22 @@ struct SubAgentPanelSheet: View {
         }
     }
 
-    @ViewBuilder private func toolSection(_ card: SubAgentCard) -> some View {
-        let rows = childRows(of: card).filter { $0.value.type == .tool }
+    /// The card's activity as one chronological list (pp 2026-10-05): tool
+    /// calls, reasoning and the subagent's text rows interleaved in the order
+    /// the connector published them, the way the main chat reads. The
+    /// per-kind 「工具调用」/「深度思考」 section headers are deliberately
+    /// gone; prompt and final output stay at the ends. Which rows qualify is
+    /// `SubAgentProgress.activityRows` (the same `isVisibleInChat` gate the
+    /// chat applies, so hidden rows and empty reasoning never enter the
+    /// panel); the row component itself is unchanged and gets no `onSubAgent`
+    /// (v1 renders one nested layer).
+    @ViewBuilder private func activitySection(_ card: SubAgentCard) -> some View {
+        let rows = activityRows(of: card)
         if !rows.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                sectionLabel(String(localized: "工具调用"))
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(rows) { row in
-                        SessionTimelineRow(row: row, chat: chat, onAttachment: onAttachment,
-                            cwd: chat.session.metadata?.cwd, disclosures: chat.disclosures, onFile: onFile)
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder private func reasoningSection(_ card: SubAgentCard) -> some View {
-        let rows = childRows(of: card).filter { $0.value.isReasoning }
-        if !rows.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                sectionLabel(String(localized: "深度思考"))
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(rows) { row in
-                        SessionTimelineRow(row: row, chat: chat, onAttachment: onAttachment,
-                            cwd: chat.session.metadata?.cwd, disclosures: chat.disclosures, onFile: onFile)
-                    }
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(rows) { row in
+                    SessionTimelineRow(row: row, chat: chat, onAttachment: onAttachment,
+                        cwd: chat.session.metadata?.cwd, disclosures: chat.disclosures, onFile: onFile)
                 }
             }
         }
@@ -337,8 +327,15 @@ struct SubAgentPanelSheet: View {
         }
     }
 
-    private func childRows(of card: SubAgentCard) -> [ChatTimelineRowModel] {
-        chat.timeline.rows.filter { SubAgentProgress.parentItemID($0.value) == card.id }
+    /// The card's visible activity rows, as the row models the chat already
+    /// holds. Membership and order come from the ClientCore rule
+    /// (`SubAgentProgress.activityRows`); the lookup only swaps item ids for
+    /// those live models, so the panel renders the chat's own reveal state.
+    private func activityRows(of card: SubAgentCard) -> [ChatTimelineRowModel] {
+        let rowsByID = Dictionary(chat.timeline.rows.map { ($0.id, $0) },
+                                  uniquingKeysWith: { first, _ in first })
+        return SubAgentProgress.activityRows(of: card.id, in: chat.timeline.rows.map(\.value))
+            .compactMap { rowsByID[$0.id] }
     }
 
     private func sectionLabel(_ text: String) -> some View {

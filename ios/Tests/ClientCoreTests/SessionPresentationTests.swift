@@ -98,6 +98,30 @@ import Testing
         #expect(unknown.raw["content"]?["newField"] == .number(42))
     }
 
+    @Test func emptyReasoningRowsNeverEnterTheChat() throws {
+        // The dead-row shape (pp, 2026-10-05): a thinking block that carries
+        // only its signature. Nothing displayable means the row would draw as
+        // a bare, un-expandable 「推理」 marker, so it is invisible wherever
+        // the chat's visibility rule is consumed (main timeline and the
+        // SubAgent panel, both through this one gate). The connector no
+        // longer publishes new ones; this clears the rows already stored.
+        let signatureOnly = try item("system", content: ["kind": "reasoning", "text": "", "signature": "sig"])
+        #expect(signatureOnly.isReasoning && !signatureOnly.isVisibleInChat)
+        let whitespaceOnly = try item("system", content: ["kind": "reasoning", "text": "   "])
+        #expect(!whitespaceOnly.isVisibleInChat)
+        let emptySummaries = try item("system", content: ["kind": "reasoning", "summaries": [["text": ""]]])
+        #expect(!emptySummaries.isVisibleInChat)
+        let dedicatedType = try item("reasoning", content: ["text": ""])
+        #expect(!dedicatedType.isVisibleInChat)
+        // The displayable shapes stay visible, including the rawText fallback.
+        #expect((try item("system", content: ["kind": "reasoning", "text": "Thinking about it."])).isVisibleInChat)
+        #expect((try item("system", content: ["kind": "reasoning", "rawText": "fallback body"])).isVisibleInChat)
+        // The ≤30 字 inline marker (237de2a8) is untouched: a short thought is
+        // still visible and still reaches the inline title path.
+        let shortMarker = try item("system", content: ["kind": "reasoning", "text": "Short thought."])
+        #expect(shortMarker.isVisibleInChat && TimelineText.inlineSummary(shortMarker.displayText) != nil)
+    }
+
     @Test func longerSingleLineThoughtsFoldInsteadOfTruncating() throws {
         // The marker row truncates at one line with no expansion (pp
         // 2026-10-05: a 69-char thought could not be read to the end), so the

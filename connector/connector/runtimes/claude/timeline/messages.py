@@ -29,6 +29,7 @@ from connector.runtime_protocol import (
     complete_tool_content,
 )
 from connector.runtimes.claude.domain.session import ClaudeSession
+from connector.runtimes.claude.sdk.tasks import is_task_notification_text
 from connector.runtimes.claude.sdk.title_tool import is_title_tool_name
 from connector.runtimes.claude.timeline.agent_calls import (
     AGENT_CARD_TERMINAL_STATUSES,
@@ -84,6 +85,10 @@ CLAUDE_LOCAL_COMMAND_CHROME_PREFIXES = (
     CLAUDE_COMMAND_NAME_TAG,
     *CLAUDE_LOCAL_COMMAND_ECHO_TAGS,
 )
+# The wire's reasoning shapes. One set for the extraction, the revision rule
+# and the display gate, so the three can never drift apart on what counts as
+# reasoning.
+REASONING_BLOCK_TYPES = frozenset({"thinking", "reasoning", "redacted_thinking"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +243,22 @@ class ClaudeMessageProjector:
         items: list[RuntimeTimelineItem] = []
         native_message_id = message_id(message)
         for block in message_system_blocks(message):
+            if (
+                block.block_type in REASONING_BLOCK_TYPES
+                and not _reasoning_block_is_displayable(block)
+            ):
+                # The empty-reasoning shape the affected model channel emits:
+                # a thinking block carrying only its signature (9 of 49 blocks
+                # in the reported session, 2026-10-05), or a redacted_thinking
+                # with nothing readable. Published, it renders as a bare,
+                # un-expandable 「推理」 dead row with no body, so it is never
+                # projected — the same invariant the streaming path keeps
+                # (`stream.py::_thinking_partial_item` drops empty text before
+                # `reasoning_item`). All three routes share this projector
+                # (live subagent frames, the turn-end projection, the history
+                # import), and the client gate additionally hides rows already
+                # persisted by older connectors.
+                continue
             item_id = stable_system_item_id(
                 session=session,
                 turn_id=turn_id,
@@ -253,7 +274,7 @@ class ClaudeMessageProjector:
             revision = (
                 reasoning_revision
                 if reasoning_revision is not None
-                and block.block_type in {"thinking", "reasoning", "redacted_thinking"}
+                and block.block_type in REASONING_BLOCK_TYPES
                 else 1
             )
             items.append(
@@ -293,6 +314,10 @@ class ClaudeMessageProjector:
 
         Shares stable_system_item_id with the finished-message projection, so
         the live item, the turn-end item and history converge on one row.
+        Callers must not pass empty text: an empty reasoning block is never
+        published (the stream guard in `stream.py` answers the same question),
+        and `system_items_for_message` drops the same shape on the other
+        routes.
         """
 
         block = ClaudeSystemBlock(
@@ -477,23 +502,35 @@ class ClaudeMessageProjector:
         tool_use_id: str,
         overlay: ClaudeAgentTaskOverlay,
         status: str | None,
+        base: AgentCallToolContent | None = None,
+        turn_id: str | None = None,
     ) -> RuntimeTimelineItem:
         """Fold one task event into its Agent card and return the item to publish.
 
         The item keeps the card's stable id and order slot, so every fold
         upserts the one card the dispatch minted, and a projection that
         arrives later republishes the same base with this same overlay.
+
+        ``base``/``turn_id`` are the import path's additions: its sync window
+        is a suffix of the transcript, so the dispatch frame can sit outside
+        it. A card already minted in-window always wins; otherwise the fold
+        publishes the dispatch shape its caller rebuilt from the history
+        lookup, so a dispatch-less window still opens the right card.
         """
 
         item_id = stable_tool_item_id(session, tool_use_id)
         order_seq = self.order_seq_for(item_id)
         card = self._agent_cards.setdefault(item_id, ClaudeAgentCallCard())
+        if card.turn_id is None and turn_id is not None:
+            card.turn_id = turn_id
         card.overlay.merge(overlay)
         card.session_id = session.session_id
         card.tool_use_id = tool_use_id
         card.status = resolve_agent_card_status(card.status, status)
-        base = card.content or card.overlay.synthesized_call(tool_use_id)
-        content = card.overlay.apply(base)
+        resolved_base = card.content or base or card.overlay.synthesized_call(
+            tool_use_id
+        )
+        content = card.overlay.apply(resolved_base)
         if card.status in AGENT_CARD_TERMINAL_STATUSES and has_running_agent_tasks(
             content
         ):
@@ -596,6 +633,28 @@ class ClaudeMessageProjector:
         return tuple(items)
 
 
+def synthesized_agent_call_content(
+    session: ClaudeSession,
+    call: ClaudePendingToolCall,
+) -> AgentCallToolContent:
+    """The card the dispatch frame would have minted, rebuilt from the lookup.
+
+    The import sync window is a suffix of the transcript, so a background
+    task's notification can arrive in a later pass than the dispatch it
+    closes. The lookup keeps the dispatch's block and turn, and building the
+    content through the same path the projection uses keeps stable id, turn
+    and nested-parent semantics identical to a card minted in-window.
+    """
+
+    block = call.block
+    tool_input = block.tool_input if isinstance(block.tool_input, Mapping) else {}
+    return claude_agent_call_content(
+        tool_use_id=block.tool_use_id,
+        tool_input=tool_input,
+        parent_item_id=_parent_tool_item_id(session, block),
+    )
+
+
 def message_role(message: Any) -> str | None:
     raw_role = _extract(message, "role")
     if isinstance(raw_role, str) and raw_role:
@@ -646,11 +705,26 @@ def is_compact_summary_text(text: str | None) -> bool:
     return bool(text) and text.strip().startswith(CLAUDE_COMPACT_SUMMARY_PREFIX)
 
 
+def is_task_notification_message(message: Any) -> bool:
+    """Whether a message is the CLI's persisted background-task notice.
+
+    Two channels, same as the bubble suppression below: the SDK keeps
+    ``origin.kind`` on some paths and strips it on others (the top-level
+    transcript read drops it), so the text's own wrapper is the fallback
+    that works on every surface. The terminal fold and the "no bubble" skip
+    must agree on what counts as a notice, so both read this one answer.
+    """
+
+    origin = _extract(message, "origin")
+    if _extract(origin, "kind") == "task-notification":
+        return True
+    return is_task_notification_text(message_text(message))
+
+
 def is_synthetic_control_message(message: Any) -> bool:
     role = message_role(message)
     text = message_text(message)
-    origin = _extract(message, "origin")
-    if _extract(origin, "kind") == "task-notification":
+    if is_task_notification_message(message):
         return True
     if message.__class__.__name__ == "HookEventMessage":
         # The CLI's own hook lifecycle narration (SessionStart:compact,
@@ -662,10 +736,6 @@ def is_synthetic_control_message(message: Any) -> bool:
     if text is None:
         return False
     normalized = text.strip()
-    if normalized.startswith("<task-notification>") and normalized.endswith(
-        "</task-notification>"
-    ):
-        return True
     if role == "user" and normalized in CLAUDE_INTERRUPTED_REQUEST_MARKERS:
         return True
     if role == "user" and is_compact_summary_text(normalized):
@@ -843,12 +913,53 @@ def _block_type(block: Any) -> str | None:
     return None
 
 
+def _reasoning_block_is_displayable(block: ClaudeSystemBlock) -> bool:
+    """Whether a reasoning block would render with visible text.
+
+    Mirrors the client's caliber (`TimelineText.reasoning` in
+    `TimelineEntryPresentation.swift`): the `summaries` win when the list has
+    any non-empty text, otherwise the first non-empty of rawText/text/summary;
+    the winner is trimmed, and an empty result draws only the bare marker.
+    Read here too so the connector never publishes a row the client would
+    have nothing to show for.
+    """
+
+    return bool(_reasoning_display_text(block).strip())
+
+
+def _reasoning_display_text(block: ClaudeSystemBlock) -> str:
+    metadata = block.metadata or {}
+    summaries = _summary_texts(metadata.get("summaries"))
+    if summaries:
+        return "\n\n".join(summaries)
+    raw_text = metadata.get("rawText")
+    if isinstance(raw_text, str) and raw_text:
+        return raw_text
+    if block.text:
+        return block.text
+    summary = metadata.get("summary")
+    return summary if isinstance(summary, str) else ""
+
+
+def _summary_texts(value: Any) -> list[str]:
+    """The client's summary entries: `{"text": ...}` mappings with real text."""
+
+    if not isinstance(value, list | tuple):
+        return []
+    texts: list[str] = []
+    for entry in value:
+        text = entry.get("text") if isinstance(entry, Mapping) else None
+        if isinstance(text, str) and text:
+            texts.append(text)
+    return texts
+
+
 def _system_content(block: ClaudeSystemBlock) -> Any:
     metadata = {
         "blockType": block.block_type,
         **dict(block.metadata or {}),
     }
-    if block.block_type in {"thinking", "reasoning", "redacted_thinking"}:
+    if block.block_type in REASONING_BLOCK_TYPES:
         return ReasoningSystemContent(
             text=block.text,
             metadata=metadata,

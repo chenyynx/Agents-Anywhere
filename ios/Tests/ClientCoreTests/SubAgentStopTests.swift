@@ -198,10 +198,19 @@ import Testing
 
     @Test func stopInFlightIsReleasedWhenTheTerminalFrameNeverLands() async throws {
         let http = TestHTTPTransport()
+        let gate = TestGate()
+        http.respond = { call in
+            if call.path.hasSuffix("subagent/stop") { await gate.wait() }
+            return try http.defaultResponse(call)
+        }
         let chat = chat(http, releaseAfter: .milliseconds(30))
         defer { chat.repository.reset() }
-        await chat.stopSubagent(taskID: "t1")
-        #expect(chat.stoppingSubagentTaskIDs.contains("t1"))
+        let stop = Task { await chat.stopSubagent(taskID: "t1") }
+        // In flight while the request is still on the wire (no timer race).
+        try await eventually { chat.stoppingSubagentTaskIDs.contains("t1") }
+        gate.release()
+        await stop.value
+        // The terminal frame never lands: the bounded release is the exit.
         try await eventually { !chat.stoppingSubagentTaskIDs.contains("t1") }
     }
 
@@ -230,12 +239,13 @@ import Testing
             }
             return try http.defaultResponse(call)
         }
-        let chat = chat(http, releaseAfter: .milliseconds(25))
+        let chat = chat(http)
         defer { chat.repository.reset() }
         await chat.stopSubagent(taskID: "ghost")
         #expect(chat.error == nil)
+        // Accepted (though not matched): the control holds its in-flight form
+        // until the card converges or the bounded release expires.
         #expect(chat.stoppingSubagentTaskIDs.contains("ghost"))
-        try await eventually { !chat.stoppingSubagentTaskIDs.contains("ghost") }
     }
 
     @Test func manualStopCarriesThePreserveBackgroundFlip() async throws {
@@ -248,5 +258,97 @@ import Testing
         await chat.interrupt()
         let call = try #require(http.calls.last { $0.path.hasSuffix("interrupt") })
         #expect(call.body?["preserveBackground"] == .bool(true))
+    }
+
+    // MARK: - F-I (review LOW-1): the follow-up reconcile belongs to the lifecycle
+
+    /// One parked follow-up reconcile window: a connected session whose manual
+    /// stop orders the background round; the round's live-state read parks on
+    /// `gate` and fails with a real transport error once released.
+    @MainActor private final class ParkedFollowUp {
+        /// What the transport closure and the test share (a box, so the
+        /// closure never captures the fixture mid-initialization).
+        @MainActor final class Reads {
+            var gated = false
+            var parked = 0
+        }
+        let http: TestHTTPTransport
+        let realtime = TestRealtimeAPI()
+        let gate: TestGate
+        let reads: Reads
+        let repo: V2SessionRepository
+        let session: V2SessionModel
+        let chat: SessionChatModel
+
+        init() {
+            let transport = TestHTTPTransport()
+            let gate = TestGate()
+            let reads = Reads()
+            transport.respond = { call in
+                if reads.gated, call.path.hasSuffix("/state") {
+                    reads.parked += 1
+                    await gate.wait()
+                    throw URLError(.networkConnectionLost)
+                }
+                return try transport.defaultResponse(call)
+            }
+            http = transport
+            self.gate = gate
+            self.reads = reads
+            repo = repository(transport: transport, realtime: realtime)
+            session = repo.session(id: "session")
+            chat = SessionChatModel(session: session, repository: repo,
+                attachments: .init(attachmentAPI: V2AttachmentAPI(transport: transport)))
+        }
+
+        /// Connects (its observation keeps the entry registered), arms the
+        /// gate and stops manually — the follow-up round is ordered by the
+        /// stop; returns once the round's read is parked, plus the connection
+        /// task the caller cancels to stop the entry.
+        func startParkedFollowUp() async throws -> Task<Void, Never> {
+            let connection = Task { await session.connect() }
+            try await eventually { session.runtime.isFresh }
+            reads.gated = true
+            await chat.interrupt()
+            try await eventually { reads.parked == 1 }
+            return connection
+        }
+    }
+
+    /// F-I: the follow-up reconcile wrapper is registered on the entry and
+    /// cancelled by the lifecycle stop, so a failure that lands after the
+    /// entry was stopped never writes itself into a dead lifecycle. The entry
+    /// stays registered across the stop (only the observer leaves), so the
+    /// `isCurrent` guard alone cannot catch this — the parked read does fail
+    /// with a real transport error, which is the one the stopped case must
+    /// swallow.
+    @Test func stoppedEntryNeverReceivesAFollowUpReconcileFailure() async throws {
+        let fixture = ParkedFollowUp()
+        defer { fixture.repo.reset() }
+        let connection = try await fixture.startParkedFollowUp()
+
+        // The last observer leaves: the entry stops but stays registered.
+        connection.cancel()
+        try await eventually { !fixture.session.runtime.isFresh }
+        #expect(fixture.repo.cached(sessionId: "session") != nil)
+
+        // The parked read now fails; the round completes with that real error.
+        // Give the wrapper every chance to write it back.
+        fixture.gate.release()
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(fixture.session.failure == nil)
+    }
+
+    /// The control for the case above: with the lifecycle alive, the very same
+    /// parked window surfaces the failure on the entry's error channel — the
+    /// stopped case is exercised against wiring that does produce the error.
+    @Test func liveEntrySurfacesTheSameFollowUpReconcileFailure() async throws {
+        let fixture = ParkedFollowUp()
+        defer { fixture.repo.reset() }
+        let connection = try await fixture.startParkedFollowUp()
+        defer { connection.cancel() }
+
+        fixture.gate.release()
+        try await eventually { fixture.session.failure != nil }
     }
 }

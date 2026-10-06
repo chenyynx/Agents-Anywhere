@@ -42,9 +42,11 @@ export function subagentTaskEntries(agents: unknown): SubagentTaskEntry[] {
   const map = asRecord(agents)
   if (!map) return []
   const entries: SubagentTaskEntry[] = []
-  for (const [taskId, value] of Object.entries(map)) {
+  for (const [rawTaskId, value] of Object.entries(map)) {
+    const taskId = rawTaskId.trim()
+    if (!taskId) continue
     const raw = asRecord(value)
-    if (!taskId || !raw) continue
+    if (!raw) continue
     entries.push({
       taskId,
       status: asText(raw.status),

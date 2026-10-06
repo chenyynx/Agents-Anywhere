@@ -40,6 +40,14 @@ test("malformed agents maps are ignored defensively", () => {
   assert.deepEqual(subagentTaskEntries({ t1: { status: 3, subagentType: 7 } })[0].status, null)
 })
 
+test("taskId keys are trimmed symmetrically with the entry fields", () => {
+  assert.deepEqual(
+    subagentTaskEntries({ "  task-1  ": { status: " running " } }).map((entry) => entry.taskId),
+    ["task-1"],
+  )
+  assert.deepEqual(subagentTaskEntries({ "   ": { status: "running" } }), [])
+})
+
 test("entries keep the connector fields and labels fall back meaningfully", () => {
   const [entry] = subagentTaskEntries({
     "task-1": {

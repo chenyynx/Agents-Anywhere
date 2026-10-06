@@ -105,6 +105,7 @@ export function ToolCard({
   }, [shouldOpenForInteraction, updateOpen])
 
   if (!hasDetail) {
+    const agentType = textOf(item.content.agentType)
     if (liveSubagents.length >= 2) {
       // Several live subagents on one card: one row per task so every button
       // stays bound to exactly one taskId (§7.3).
@@ -113,7 +114,7 @@ export function ToolCard({
           <ToolMarkerRow kind={kind} status={item.status} title={title} />
           <SubagentStopRows
             tasks={liveSubagents}
-            agentType={textOf(item.content.agentType)}
+            agentType={agentType}
             token={token}
             sessionId={session.id}
           />
@@ -127,7 +128,12 @@ export function ToolCard({
         status={item.status}
         title={title}
         trailing={singleTask ? (
-          <SubagentStopButton token={token} sessionId={session.id} taskId={singleTask.taskId} />
+          <SubagentStopButton
+            token={token}
+            sessionId={session.id}
+            taskId={singleTask.taskId}
+            label={subagentRowLabel(singleTask, agentType)}
+          />
         ) : undefined}
       />
     )
@@ -206,31 +212,43 @@ function SubagentStopRows({
 }) {
   return (
     <div className="flex min-w-0 max-w-full flex-col overflow-hidden">
-      {tasks.map((task) => (
-        <Marker key={task.taskId} className="w-full pl-7">
-          <span className="code-mono min-w-0 flex-1 truncate text-xs text-muted-foreground">
-            {subagentTaskLabel(task, agentType)}
-            {task.lastToolName ? ` · ${task.lastToolName}` : ""}
-          </span>
-          <SubagentStopButton token={token} sessionId={sessionId} taskId={task.taskId} />
-        </Marker>
-      ))}
+      {tasks.map((task) => {
+        const label = subagentRowLabel(task, agentType)
+        return (
+          <Marker key={task.taskId} className="w-full pl-7">
+            <span className="code-mono min-w-0 flex-1 truncate text-xs text-muted-foreground">
+              {label}
+            </span>
+            <SubagentStopButton token={token} sessionId={sessionId} taskId={task.taskId} label={label} />
+          </Marker>
+        )
+      })}
     </div>
   )
+}
+
+function subagentRowLabel(task: SubagentTaskEntry, agentType: string | null): string {
+  const base = subagentTaskLabel(task, agentType)
+  return task.lastToolName ? `${base} · ${task.lastToolName}` : base
 }
 
 function SubagentStopButton({
   token,
   sessionId,
   taskId,
+  label,
 }: {
   token: string
   sessionId: string
   taskId: string
+  label?: string | null
 }) {
   const tSession = useTranslations("dashboard.session")
   const [stopping, setStopping] = React.useState(false)
   const timeoutRef = React.useRef<number | null>(null)
+  // Disambiguate several stop buttons on one page without new copy: the
+  // existing "interrupt" label plus the task's row label.
+  const stopLabel = label ? `${tSession("interrupt")}: ${label}` : tSession("interrupt")
 
   const clearStopping = React.useCallback(() => {
     if (timeoutRef.current !== null) {
@@ -252,9 +270,9 @@ function SubagentStopButton({
     timeoutRef.current = window.setTimeout(clearStopping, SUBAGENT_STOP_PENDING_TIMEOUT_MS)
     try {
       const response = await dashboardApi.stopSubagent(token, sessionId, taskId)
-      if (response.ok === false) {
+      if (!response || response.ok === false) {
         clearStopping()
-        toast.error(response.error?.message || tSession("interruptFailed"))
+        toast.error(response?.error?.message || tSession("interruptFailed"))
         return
       }
       // Unknown taskId is a factual answer, not a failure (§7.2): nothing
@@ -270,7 +288,7 @@ function SubagentStopButton({
     <button
       type="button"
       className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-60"
-      aria-label={tSession("interrupt")}
+      aria-label={stopLabel}
       disabled={stopping}
       onClick={() => { void stop() }}
     >

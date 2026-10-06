@@ -39,6 +39,7 @@ from typing import Any
 from connector.runtimes.claude.domain.session import ClaudeSession
 from connector.runtimes.claude.sdk.tasks import (
     task_event_from_notification_text,
+    task_events_from_notification_text,
 )
 from connector.runtimes.claude.sessions.reader import (
     _history_items_from_messages,
@@ -207,16 +208,39 @@ def _dispatch_message(
     )
 
 
-def _receipt_message(*, tool_use_id: str = DISPATCH_TUID, uuid: str = "receipt-native") -> Any:
+def _send_message_message(
+    *,
+    to: str = TASK_ID,
+    tool_use_id: str = "call_01_resume0000000000000000000",
+    uuid: str = "resume-native",
+) -> Any:
+    return SimpleNamespace(
+        type="assistant",
+        uuid=uuid,
+        message={
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": tool_use_id,
+                    "name": "SendMessage",
+                    "input": {"to": to, "message": "Continue the same task."},
+                }
+            ],
+        },
+    )
+
+
+def _receipt_message(
+    *,
+    tool_use_id: str = DISPATCH_TUID,
+    uuid: str = "receipt-native",
+    task_id: str = TASK_ID,
+    description: str = "D0 侦察：切模型/灰键修复",
+) -> Any:
     return SimpleNamespace(
         type="user",
         uuid=uuid,
-        tool_use_result={
-            "isAsync": True,
-            "status": "async_launched",
-            "agentId": TASK_ID,
-            "description": "D0 侦察：切模型/灰键修复",
-        },
         message={
             "role": "user",
             "content": [
@@ -226,7 +250,10 @@ def _receipt_message(*, tool_use_id: str = DISPATCH_TUID, uuid: str = "receipt-n
                     "content": [
                         {
                             "type": "text",
-                            "text": "Async agent launched successfully.",
+                            "text": (
+                                "Async agent launched successfully.\n"
+                                f"agentId: {task_id} (internal ID - do not mention to user.)"
+                            ),
                         }
                     ],
                 }
@@ -235,13 +262,17 @@ def _receipt_message(*, tool_use_id: str = DISPATCH_TUID, uuid: str = "receipt-n
     )
 
 
-def _child_activity_message(*, uuid: str = "child-native") -> Any:
+def _child_activity_message(
+    *,
+    uuid: str = "child-native",
+    parent_tool_use_id: str = DISPATCH_TUID,
+) -> Any:
     """A subagent frame leaking into the parent chain, parented to the card."""
 
     return SimpleNamespace(
         type="assistant",
         uuid=uuid,
-        parent_tool_use_id=DISPATCH_TUID,
+        parent_tool_use_id=parent_tool_use_id,
         message={
             "role": "assistant",
             "content": [
@@ -430,9 +461,11 @@ def test_full_window_folds_the_async_card_to_done() -> None:
         "toolCalls": 138,
     }
     assert card.content["endTime"] == NOTICE_TIMESTAMP_MS
-    # The dispatch input survives: the overlay backfills, never overwrites.
     assert card.content["prompt"] == "Recon the composer."
     assert card.content["description"] == "D0 侦察：切模型/灰键修复"
+    assert card.content["agentId"] == TASK_ID
+    assert card.content["targetIds"] == [TASK_ID]
+    assert "Async agent launched successfully." in card.content["output"]
 
 
 def test_incremental_window_synthesizes_the_card_from_the_lookup() -> None:
@@ -518,11 +551,10 @@ def test_notice_after_child_activity_is_not_folded() -> None:
     cards = _card_items(items)
     assert len(cards) == 1
     assert cards[0].status == "running"
-    # The receipt's own live marker stays; the notice's terminal overlay —
-    # its "completed" status and its summary — was not applied.
-    assert "summary" not in cards[0].content
+    # A later child frame reopens the task; history no longer keeps a stale
+    # terminal overlay or leaves the async receipt marker as the card status.
     agents = dict(cards[0].content.get("agents") or {})
-    assert agents[TASK_ID]["status"] == "async_launched"
+    assert agents[TASK_ID]["status"] == "running"
 
 
 def test_notice_before_child_activity_still_folds_the_last_notice() -> None:
@@ -650,3 +682,234 @@ def _pending_call(
         turn_id="turn_lookup",
     )
 
+
+
+# --------------------------------------------------------------------------
+# 3. task-id lineage across resumed and batched notifications
+# --------------------------------------------------------------------------
+
+
+def test_notification_parser_accepts_multiple_task_ids_without_tool_id() -> None:
+    text = """<task-notification>
+<task-id>task-one</task-id>
+<task-id>task-two</task-id>
+<status>stopped</status>
+<summary>Two tasks stopped with the previous session.</summary>
+</task-notification>"""
+    events = task_events_from_notification_text(text)
+    assert [event.task_id for event in events] == ["task-one", "task-two"]
+    assert all(event.tool_use_id is None for event in events)
+    assert all(event.status == "stopped" for event in events)
+    # The legacy one-event API remains conservative for multi-task wrappers.
+    assert task_event_from_notification_text(text) is None
+
+
+def test_task_id_only_multi_stop_closes_each_receipted_agent_card() -> None:
+    second_tuid = "call_00_second0000000000000000000"
+    second_task = "asecondtask000000000"
+    second_dispatch = _dispatch_message(
+        tool_use_id=second_tuid,
+        uuid="dispatch-second",
+        description="Second task",
+    )
+    second_receipt = _receipt_message(
+        tool_use_id=second_tuid,
+        uuid="receipt-second",
+        task_id=second_task,
+        description="Second task",
+    )
+    text = f"""<task-notification>
+<task-id>{TASK_ID}</task-id>
+<task-id>{second_task}</task-id>
+<status>stopped</status>
+<summary>Both tasks stopped before completion.</summary>
+<note>No completion record was found.</note>
+</task-notification>"""
+    items = _project(
+        (
+            _user_message("u1", "go"),
+            _dispatch_message(),
+            _receipt_message(),
+            second_dispatch,
+            second_receipt,
+            _notification_message(text),
+        )
+    )
+    cards = [*_card_items(items), *_card_items(items, second_tuid)]
+    assert len(cards) == 2
+    assert {card.status for card in cards} == {"interrupted"}
+    assert all(card.content["summary"] == "Both tasks stopped before completion." for card in cards)
+
+
+def test_send_message_notification_updates_the_original_agent_card() -> None:
+    resume_tuid = "call_01_resume0000000000000000000"
+    resumed = _send_message_message(tool_use_id=resume_tuid)
+    resumed_notice = COMPLETED_NOTIFICATION.replace(
+        f"<tool-use-id>{DISPATCH_TUID}</tool-use-id>",
+        f"<tool-use-id>{resume_tuid}</tool-use-id>",
+    ).replace(
+        "Reconnaissance complete. (result body elided; shape untouched)",
+        "The resumed task is complete.",
+    )
+    items = _project(
+        (
+            _user_message("u1", "go"),
+            _dispatch_message(),
+            _receipt_message(),
+            resumed,
+            _notification_message(resumed_notice),
+        )
+    )
+    cards = _card_items(items)
+    assert len(cards) == 1
+    assert cards[0].status == "done"
+    assert cards[0].content["summary"] == "The resumed task is complete."
+    assert dict(cards[0].content["agents"])[TASK_ID]["status"] == "completed"
+    send_card_id = stable_tool_item_id(_session(), resume_tuid)
+    assert not any(
+        item.id == send_card_id and item.content.get("kind") == "agent_call"
+        for item in items
+    )
+
+
+def test_send_message_after_terminal_reopens_original_agent_card() -> None:
+    resumed = _send_message_message()
+    items = _project(
+        (
+            _user_message("u1", "go"),
+            _dispatch_message(),
+            _receipt_message(),
+            _notification_message(COMPLETED_NOTIFICATION, uuid="notice-first"),
+            resumed,
+        )
+    )
+    cards = _card_items(items)
+    assert len(cards) == 1
+    assert cards[0].status == "running"
+    assert dict(cards[0].content["agents"])[TASK_ID]["status"] == "running"
+    assert "summary" not in cards[0].content
+
+
+def test_later_send_message_terminal_wins_over_an_earlier_failure() -> None:
+    task_id = "a86a564e206445a29"
+    dispatch_tuid = "call_00_rQCNPFrYFsteetTBzUdG0681"
+    resume_tuid = "call_01_XAusbv44B3VEAPPUjGYT6984"
+    dispatch = _dispatch_message(
+        tool_use_id=dispatch_tuid,
+        description="Catalog revision repair",
+    )
+    receipt = _receipt_message(
+        tool_use_id=dispatch_tuid,
+        task_id=task_id,
+        description="Catalog revision repair",
+    )
+    failed = FAILED_NOTIFICATION
+    completed = f"""<task-notification>
+<task-id>{task_id}</task-id>
+<tool-use-id>{resume_tuid}</tool-use-id>
+<status>completed</status>
+<summary>Agent finished after resume</summary>
+<result>Recovered and verified.</result>
+</task-notification>"""
+    items = _project(
+        (
+            _user_message("u1", "go"),
+            dispatch,
+            receipt,
+            _notification_message(failed, uuid="notice-failed"),
+            _send_message_message(to=task_id, tool_use_id=resume_tuid),
+            _notification_message(completed, uuid="notice-completed"),
+        )
+    )
+    cards = _card_items(items, dispatch_tuid)
+    assert len(cards) == 1
+    assert cards[0].status == "done"
+    assert cards[0].content["summary"] == "Recovered and verified."
+    assert dict(cards[0].content["agents"])[task_id]["status"] == "completed"
+
+
+def test_child_activity_after_send_message_reopens_old_terminal() -> None:
+    resume_tuid = "call_01_resume0000000000000000000"
+    child = _child_activity_message(parent_tool_use_id=resume_tuid)
+    items = _project(
+        (
+            _user_message("u1", "go"),
+            _dispatch_message(),
+            _receipt_message(),
+            _notification_message(COMPLETED_NOTIFICATION, uuid="notice-first"),
+            _send_message_message(tool_use_id=resume_tuid),
+            child,
+        )
+    )
+    card = _card_items(items)[0]
+    assert card.status == "running"
+    assert dict(card.content["agents"])[TASK_ID]["status"] == "running"
+    assert "summary" not in card.content
+
+
+def test_incremental_fold_rebuilds_receipt_content_from_the_full_lookup() -> None:
+    chain = (
+        _user_message("u1", "go"),
+        _dispatch_message(),
+        _receipt_message(),
+        _notification_message(COMPLETED_NOTIFICATION),
+    )
+    lookup, hidden = _history_tool_call_context(_session(), chain)
+    items = _history_items_from_messages(
+        _session(),
+        (chain[-1],),
+        tool_call_lookup=lookup,
+        hidden_tool_use_ids=hidden,
+    )
+    card = _card_items(items)[0]
+    assert card.status == "done"
+    assert card.content["agentId"] == TASK_ID
+    assert card.content["targetIds"] == [TASK_ID]
+    assert "Async agent launched successfully." in card.content["output"]
+    assert "agentId: " + TASK_ID in card.content["output"]
+    assert card.content["outputText"] == card.content["output"]
+    assert card.content["outputPreview"] == card.content["output"]
+    assert card.content["outputLength"] == len(card.content["output"])
+    assert card.content["isError"] is False
+    assert card.content["result"]
+
+
+def test_notification_usage_ignores_fixture_tags_inside_result() -> None:
+    decoy = (
+        "<usage><subagent_tokens>999</subagent_tokens>"
+        "<tool_uses>7</tool_uses><duration_ms>42</duration_ms></usage>"
+    )
+    text = COMPLETED_NOTIFICATION.replace(
+        "Reconnaissance complete. (result body elided; shape untouched)",
+        f"Fixture example: {decoy}",
+    )
+    event = task_event_from_notification_text(text)
+    assert event is not None
+    assert dict(event.usage or {}) == {
+        "total_tokens": 175587,
+        "tool_uses": 138,
+        "duration_ms": 1968808,
+    }
+
+
+def test_foreign_tool_id_still_folds_through_task_id_lineage() -> None:
+    """A notice whose tool id is not on the visible chain (trimmed or
+    sidechain calls, other providers' id shapes) still folds: the receipt's
+    task-id lineage is the join, and the notice behaves like one without a
+    tool id. Regression: session 2a98e985, card "Verify subagent after resume".
+    """
+    foreign_notice = COMPLETED_NOTIFICATION.replace(
+        f"<tool-use-id>{DISPATCH_TUID}</tool-use-id>",
+        "<tool-use-id>call_00_sEWmWXNsQCe4OGwNTQ32Z1382</tool-use-id>",
+    )
+    items = _project(
+        (
+            _user_message("u1", "go"),
+            _dispatch_message(),
+            _receipt_message(),
+            _notification_message(foreign_notice),
+        )
+    )
+    cards = _card_items(items)
+    assert len(cards) == 1
+    assert cards[0].status == "done"

@@ -11,7 +11,7 @@ from typing import Any
 # 2026-10-05 terminal-task fold was the first such fix: its notices sit behind
 # the cursors of every stuck session). Increment for any projection change
 # that must be re-applied to existing transcripts.
-HISTORY_PROJECTION_VERSION = 2
+HISTORY_PROJECTION_VERSION = 3
 
 
 @dataclass(frozen=True, slots=True)

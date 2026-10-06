@@ -35,6 +35,49 @@ After process loss, ordinary turns can resume from the native session ID;
 in-flight background work is not automatically replayed. Startup reconnects
 only sessions registered with observed scheduled jobs.
 
+## Terminal task notifications in history import
+
+A terminal `task_notification` frame lives only on the live stream. In the
+transcript a background task's outcome survives as a plain
+`<task-notification>` user message, so importing a session folds those notices
+back into the Agent card the dispatch opened. Without that fold a card the live
+turn already closed comes back as `running` after any history rebuild.
+
+Addressing is by **task-id lineage**, not by the notice's tool id alone: the
+stable join is `task id ↔ receipt agentId ↔ SendMessage input.to`. A receipt
+recovers its agent id from `toolUseResult` metadata when present, and from the
+receipt body's `agentId:` line when the historical reader kept only the body.
+
+| Notice shape | Resolution |
+| --- | --- |
+| One task, `tool-use-id` names the dispatch | fold onto that Agent card |
+| One task, `tool-use-id` names the `SendMessage` that resumed it | fold onto the original Agent card, never a second card |
+| Several `task-id` elements, no tool id (session teardown) | one event per task id; each folds onto its own card |
+| Unknown, missing, or conflicting links | not folded; a structured warning is logged |
+
+For each task id, **the last transcript signal wins**: a later terminal notice
+closes the card (`completed` → `done`, `failed` → `failed`, `killed`/`stopped`
+→ `interrupted`); a later `SendMessage` to that task id, or later child
+activity under its dispatch or resume alias, reopens the card as `running` and
+clears the stale terminal overlay. A task with no notice at all is left exactly
+as it was — an unknown outcome is never fabricated into `completed`.
+
+An incremental window must rebuild the same card shape a full window would
+mint: when a window sees only the notice, the fold reconstructs the dispatch
+*and its launch receipt* from the full-chain lookup, so re-publishing never
+drops the receipt keys (`agentId`, `output`/`outputText`/`outputPreview`/
+`outputLength`, `text`, `targetIds`, `result`, `isError`, …). `<usage>` is
+parsed only after the last `</result>` — a result body is subagent output and
+may quote a literal usage block that must not overwrite the real counters.
+
+`HISTORY_PROJECTION_VERSION` was raised to 3 so every existing Claude session
+is re-projected once on its next safe idle sync, which backfills cards that
+stalled before the fix. Two consecutive projections of the same transcript
+produce identical output; the rebase leaves cursors and the database untouched;
+an active-turn session keeps its existing skip behavior. The live path
+(`task_event_from_message`) is unchanged — this section covers the import path
+only.
+
 ## Residual terminal at the head of a live turn
 
 The CLI's stream is session-scoped, so when a turn is interrupted its terminal

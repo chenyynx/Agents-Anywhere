@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -108,6 +109,11 @@ class ClaudeToolBlock:
 class ClaudePendingToolCall:
     block: ClaudeToolBlock
     turn_id: str
+    # History lookup only: the public SDK SessionMessage carries the original
+    # tool_result body but drops transcript-level toolUseResult metadata.
+    # Keeping the matched result lets a later incremental window rebuild the
+    # same recoverable receipt shape before applying its task overlay.
+    result_block: ClaudeToolBlock | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -532,21 +538,48 @@ def synthesized_agent_call_content(
     session: ClaudeSession,
     call: ClaudePendingToolCall,
 ) -> AgentCallToolContent:
-    """The card the dispatch frame would have minted, rebuilt from the lookup.
+    """Rebuild the dispatch plus recoverable receipt from the full lookup.
 
     The import sync window is a suffix of the transcript, so a background
-    task's notification can arrive in a later pass than the dispatch it
-    closes. The lookup keeps the dispatch's block and turn, and building the
-    content through the same path the projection uses keeps stable id, turn
-    and nested-parent semantics identical to a card minted in-window.
+    task's notification can arrive in a later pass than the dispatch and its
+    launch receipt. The lookup keeps the dispatch's block, turn and matching
+    result block; rebuilding both through the same content constructors makes
+    an incremental terminal fold stable with a full-window projection.
     """
 
     block = call.block
     tool_input = block.tool_input if isinstance(block.tool_input, Mapping) else {}
-    return claude_agent_call_content(
+    content = claude_agent_call_content(
         tool_use_id=block.tool_use_id,
         tool_input=tool_input,
         parent_item_id=_parent_tool_item_id(session, block),
+    )
+    receipt = call.result_block
+    if receipt is None:
+        return content
+
+    output = _result_text(receipt.tool_result)
+    details = dict(receipt.tool_result_metadata or {})
+
+    result_metadata: dict[str, Any] = {
+        "toolUseId": receipt.tool_use_id,
+        "toolName": block.tool_name,
+        "input": block.tool_input,
+        "text": output,
+        "outputText": output,
+        "outputPreview": _preview_text(output),
+        "outputLength": len(output),
+        "isError": receipt.is_error,
+        **({"synthetic": True, "missingResult": True} if receipt.is_synthetic else {}),
+        **({"error": output} if receipt.is_error else {}),
+    }
+    return complete_claude_agent_call_content(
+        content,
+        output=output,
+        result=receipt.tool_result,
+        is_error=receipt.is_error,
+        result_details=details,
+        metadata=result_metadata,
     )
 
 
@@ -654,6 +687,28 @@ def message_model(message: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def receipt_agent_id(
+    result_metadata: Mapping[str, Any] | None,
+    output: str | None,
+) -> str | None:
+    """The background task id an async Agent launch receipt names.
+
+    The SDK's historical ``SessionMessage`` drops the transcript's
+    ``toolUseResult``, so the receipt body (``agentId: <id>``) is the only
+    identity channel there; metadata covers raw-transcript readers.
+    """
+
+    details = result_metadata if isinstance(result_metadata, Mapping) else {}
+    for key in ("agentId", "agent_id"):
+        value = details.get(key)
+        if isinstance(value, str) and value:
+            return value
+    if not output or "agentId:" not in output:
+        return None
+    match = re.search(r"(?m)^\s*agentId:\s*([A-Za-z0-9_-]+)", output)
+    return match.group(1) if match is not None else None
+
+
 def message_tool_blocks(message: Any) -> tuple[ClaudeToolBlock, ...]:
     content = _message_content(message)
     if not isinstance(content, list | tuple):
@@ -681,15 +736,31 @@ def message_tool_blocks(message: Any) -> tuple[ClaudeToolBlock, ...]:
                 )
             )
         elif block_type == "tool_result":
+            result = _extract(block, "content", "result", "toolResult")
+            output = _content_text(result)
+            metadata = result_metadata
+            if is_async_agent_receipt(metadata, output):
+                # The SDK's historical reader drops the transcript's
+                # toolUseResult, so a launch receipt there keeps only its body.
+                # Restore the identity/status the raw transcript carried so
+                # every downstream consumer sees one receipt shape.
+                merged = dict(metadata or {})
+                agent_id = receipt_agent_id(metadata, output)
+                if agent_id is not None and not (
+                    merged.get("agentId") or merged.get("agent_id")
+                ):
+                    merged["agentId"] = agent_id
+                merged.setdefault("status", "async_launched")
+                metadata = merged
             blocks.append(
                 ClaudeToolBlock(
                     block_type="tool_result",
                     tool_use_id=_string(_extract(block, "tool_use_id", "toolUseId"))
                     or _stable_id("tool", repr(block)),
-                    tool_result=_extract(block, "content", "result", "toolResult"),
+                    tool_result=result,
                     is_error=_extract(block, "is_error", "isError") is True,
                     parent_tool_use_id=parent_tool_use_id,
-                    tool_result_metadata=result_metadata,
+                    tool_result_metadata=metadata,
                 )
             )
     return tuple(blocks)

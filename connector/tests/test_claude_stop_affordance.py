@@ -356,19 +356,21 @@ class _CountingFactory:
         return self.client
 
 
-def _switch_runtime(host: _RecordingHost, factory: Any) -> ClaudeRuntime:
+def _switch_runtime(
+    host: _RecordingHost,
+    factory: Any,
+    **value_overrides: float,
+) -> ClaudeRuntime:
     sdk = _default_sdk()
     sdk.HookMatcher = _FakeHookMatcher
+    values: dict[str, Any] = {
+        "environment": {},
+        "selectionChangeSettleSeconds": 0.05,
+        "selectionChangeDrainCeilingSeconds": 5.0,
+    }
+    values.update(value_overrides)
     return ClaudeRuntime(
-        config=RuntimeConfig(
-            runtime="claude",
-            revision=1,
-            values={
-                "environment": {},
-                "selectionChangeSettleSeconds": 0.05,
-                "selectionChangeDrainCeilingSeconds": 5.0,
-            },
-        ),
+        config=RuntimeConfig(runtime="claude", revision=1, values=values),
         host=host,
         sdk_loader=lambda: sdk,
         client_factory=factory,
@@ -538,6 +540,130 @@ def test_selection_change_reuses_the_transport_when_the_switch_is_reverted() -> 
             assert [end["outcome"] for end in host.session_turn_ends] == [
                 "interrupted",
                 "completed",
+            ]
+        finally:
+            _reset_declaration()
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+# --- F-B: the drain phase is bounded too -------------------------------------
+
+
+def test_drain_wait_is_false_at_the_ceiling_and_true_when_drained() -> None:
+    """The bounded drain API, at the connection itself (red team F-B)."""
+
+    async def run() -> None:
+        connection = ClaudeConnection(
+            client=SimpleNamespace(),
+            on_activity=_never,
+            on_idle=_never,
+            on_background_done=_never,
+            cleanup=lambda: None,
+        )
+        # An id whose terminal frame never lands: the ceiling is the only exit.
+        connection.background.active_ids.add("bg_stale")
+        started = time.monotonic()
+        assert await connection.wait_background_drained(ceiling=0.1) is False
+        assert time.monotonic() - started >= 0.1
+
+        # A real terminal drains it well inside the ceiling, and the wait
+        # really waits until then.
+        connection.background.active_ids.discard("bg_stale")
+        connection.background.active_ids.add("bg_real")
+        waiter = asyncio.create_task(
+            connection.wait_background_drained(ceiling=5.0)
+        )
+        await asyncio.sleep(0.05)
+        assert not waiter.done()
+        connection.background.observed(
+            SystemMessage(
+                subtype="task_updated",
+                task_id="bg_real",
+                patch={"status": "completed"},
+                data={"task_id": "bg_real"},
+            )
+        )
+        assert await asyncio.wait_for(waiter, 1) is True
+
+        # A transport already gone has nothing to drain.
+        connection.background.active_ids.add("bg_after_close")
+        connection.closing = True
+        assert await connection.wait_background_drained(ceiling=5.0) is True
+        connection.closing = False
+
+    asyncio.run(run())
+
+
+def test_drain_wait_is_bounded_and_the_switch_proceeds() -> None:
+    """The red-team F-B probe, converted: a stale id cannot pin the queued
+    turn forever.
+
+    The drain phase now shares the settle ceiling; on it the wall logs and
+    proceeds to the rebuild (no error, no fabricated state), so the user's
+    next message runs instead of waiting silently behind an id whose
+    terminal frame never arrives.
+    """
+
+    async def run() -> None:
+        client = _StoppingClient()
+        host = _RecordingHost()
+        factory = _CountingFactory(client)
+        runtime = _switch_runtime(
+            host, factory, selectionChangeDrainCeilingSeconds=0.3
+        )
+        stop_affordance._declared = True
+        try:
+            first_choice, second_choice = await _model_selections(runtime)
+            await runtime.start_turn(
+                "switch", None, "wait", selections={"model": first_choice}
+            )
+            await _wait_until(lambda: "switch" in runtime._turns.runner.connections)
+            connection = runtime._turns.runner.connections["switch"]
+            # A background task whose terminal frame never arrives.
+            await client.incoming.put(
+                SystemMessage(
+                    subtype="task_started",
+                    task_id="bg_no_terminal",
+                    data={"task_id": "bg_no_terminal"},
+                )
+            )
+            await _wait_until(
+                lambda: "bg_no_terminal" in connection.background.active_ids
+            )
+
+            await runtime.interrupt_session(
+                "switch", reason="switch", preserve_background=True
+            )
+            update = await runtime.update_session_selections(
+                "switch", None, {"model": second_choice}
+            )
+            assert update.ok is True
+            assert (await runtime.start_turn("switch", None, "next")).ok is True
+            queued_task = runtime._sessions["switch"].active_task
+            assert queued_task is not None
+
+            # Inside the ceiling the wait is real: with a live background id
+            # the queued turn must not have started.
+            await asyncio.sleep(0.1)
+            assert not queued_task.done(), (
+                "the wall must still wait for real background work"
+            )
+
+            # Past the drain ceiling the wall proceeds to the rebuild, which
+            # is the explicit path — no error, no fake state, and the queued
+            # turn runs on the new transport.
+            await asyncio.wait_for(queued_task, 10)
+            assert [end["outcome"] for end in host.session_turn_ends] == [
+                "interrupted",
+                "completed",
+            ]
+            assert factory.calls == 2  # the transport was rebuilt
+            assert not [
+                update
+                for update in host.session_state_updates
+                if (update.get("error") or {})
             ]
         finally:
             _reset_declaration()

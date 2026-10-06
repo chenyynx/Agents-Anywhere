@@ -992,9 +992,13 @@ class ClaudeTurnRunner:
 
         - the drain is event-driven — the last terminal task frame is the
           signal (`ClaudeBackgroundTasks.drained`);
-        - the wake turn the CLI starts to report that task is allowed to
-          finish, bounded by `selectionChangeDrainCeilingSeconds` (a long
-          report cannot hold the rebuild forever);
+        - both phases are bounded by `selectionChangeDrainCeilingSeconds`
+          (red team F-B): a real background task that keeps working is
+          waited for as long as its terminal frames keep coming, but an id
+          that never drains — a stale snapshot id, a lost terminal — cannot
+          pin the user's next message forever. On either ceiling the wait
+          logs and proceeds to the rebuild below, which is the explicit
+          path (the CLI's own exit ends its tasks);
         - a second switch during the wait is seen on the next pass, and the
           caller re-checks the selections when this returns;
         - the wait is cancellable: a stop cancels the driving turn's task and
@@ -1013,7 +1017,14 @@ class ClaudeTurnRunner:
         while connection.background.active_ids:
             if self.stopping or connection.closing:
                 raise asyncio.CancelledError
-            await connection.wait_background_drained()
+            if not await connection.wait_background_drained(ceiling=ceiling):
+                logger.warning(
+                    "Claude selection change proceeding without drained "
+                    "background work session_id={} background_tasks={}",
+                    session.session_id,
+                    len(connection.background.active_ids),
+                )
+                return
             if self.stopping or connection.closing:
                 raise asyncio.CancelledError
             if not await connection.wait_settled(grace=settle, ceiling=ceiling):

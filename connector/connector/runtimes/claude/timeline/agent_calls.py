@@ -179,9 +179,12 @@ def resolve_agent_card_status(previous: str | None, incoming: str | None) -> str
     ones so a late frame can still finish a card; once terminal, the status
     sticks — the CLI's terminal burst (task_updated → task_notification,
     findings §8.6) must fold into a single closure, never a second one.
-    That stickiness is also what makes a misclassification irreversible, so
-    ``has_live_agent_tasks`` is the escape hatch a wrong "done" is unsticky
-    with; see the caller in ``messages.tool_item``.
+    That stickiness is also what makes a misclassification irreversible, so a
+    wrong "done" is unsticky with the A3 batch's single card-opening rule:
+    ``has_running_agent_tasks`` unwinds it on the wire path
+    (``messages.tool_item``), on the task-event fold (``messages.
+    fold_agent_task_event``) and at the stop sweep
+    (``messages.close_open_agent_cards``).
     """
 
     if incoming is None:

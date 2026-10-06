@@ -54,7 +54,15 @@ _declared = False
 
 
 def is_declared() -> bool:
-    """Whether new CLI connections declare the per-task stop affordance."""
+    """The process-level install switch, for introspection only.
+
+    Install-time state: whether the most recent declaration install is in
+    force. The stop path must NEVER read this — it reads the connection's own
+    recorded fact (``ClaudeConnection.per_task_stop_declared``), because
+    another runtime instance or a runtime kill-switch flip would otherwise
+    change this connection's semantics (red team F-C). Kept as a public
+    introspection hook for tests/diagnostics.
+    """
 
     return _declared
 

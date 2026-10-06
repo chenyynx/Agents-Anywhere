@@ -88,6 +88,12 @@ Its three flags mean:
   primary frame; `task_notification` may be suppressed).
 - `allowed`: the same takeover rule as `session.interrupt`.
 
+`unavailableReason` uses the shared vocabulary: `not_implemented` when
+`supported=false` (the runtime has no per-task stop control), and
+`session_disconnected` when the capability is supported but no live runtime
+connection hosts the session. Clients may translate these tokens and fall
+back to the reason string verbatim.
+
 The scope fields (`runtime`, `runtimeId`, `sessionId`, `connectorId`) match
 `session.interrupt`.
 

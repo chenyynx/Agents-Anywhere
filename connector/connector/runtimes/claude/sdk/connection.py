@@ -752,19 +752,51 @@ class ClaudeConnection:
             waiter.cancel()
             await asyncio.gather(waiter, return_exceptions=True)
 
-    async def wait_background_drained(self) -> None:
+    async def wait_background_drained(
+        self,
+        *,
+        ceiling: float | None = None,
+    ) -> bool:
         """Wait until no background work is registered on this transport.
 
         Event-driven: the terminal task frame is the signal. Returns early
         when the transport dies; the caller re-checks the lifecycle either way.
+
+        ``ceiling`` bounds the wait (red team F-B). Since the selection-change
+        wall waits here instead of failing fast, an id whose terminal frame
+        never lands — the documented stale-id cost — would otherwise pin the
+        user's next message forever, silently. On the ceiling this returns
+        False and the caller logs and proceeds to the rebuild, the same
+        explicit path the settle phase already takes; True means the set
+        emptied (or the transport died under the wait).
         """
 
+        deadline = None if ceiling is None else time.monotonic() + ceiling
         while self.background.active_ids:
             if self.closing or self.failure is not None:
-                return
+                return True
             self.background.drained.clear()
-            if not await self._wait_event_or_death(self.background.drained):
-                return
+            if deadline is None:
+                if not await self._wait_event_or_death(self.background.drained):
+                    return True
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            if await self._wait_event_or_death(
+                self.background.drained, timeout=remaining
+            ):
+                continue
+            # The wait ended without the drained signal: either the transport
+            # is gone (nothing left to drain here) or the ceiling ran out
+            # with ids still live.
+            transport_gone = (
+                self.closing
+                or self.failure is not None
+                or (self.task is not None and self.task.done())
+            )
+            return transport_gone
+        return True
 
     async def wait_settled(self, *, grace: float, ceiling: float) -> bool:
         """Wait until no turn is in flight for a settled `grace` window.

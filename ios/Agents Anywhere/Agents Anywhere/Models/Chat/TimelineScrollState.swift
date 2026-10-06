@@ -35,6 +35,24 @@ nonisolated struct TimelineScrollState: Equatable {
     /// Set by `open()`, consumed by the first command it produces. A reader
     /// gesture before that command clears it, so later returns animate.
     private var openingReturnIsPending = false
+    /// R2 backstop: the publish-point reconcile asks at most once per
+    /// displacement episode. The latch re-arms only when a published sample
+    /// measurably reaches the bottom, so a failed native target cannot turn
+    /// the recheck into a layout loop.
+    private var bottomReconcileIsSpent = false
+
+    /// The marker probes lie — round 1.3's device probe read "at bottom"
+    /// from the tail flag while the measured gap sat hundreds of points
+    /// short, and the follow chain (gated on that flag) never started. The
+    /// at-bottom truth is measured directly from the last published
+    /// viewport: `visibleBottom` reaches `contentHeight` exactly when the
+    /// scroll rests at its maximum offset, so the gap is the real remaining
+    /// travel. The probes stay only as the fallback before the first
+    /// measurement.
+    var viewportIsAtBottom: Bool {
+        guard viewport.isMeasured else { return tail.isAtBottom }
+        return viewport.measuredAtBottom
+    }
 
     var userIsScrolling: Bool { [.tracking, .interacting, .decelerating].contains(phase) }
     var returningToBottom: Bool { mode == .returning }
@@ -81,7 +99,12 @@ nonisolated struct TimelineScrollState: Equatable {
         lastRequest = nil
     }
 
-    mutating func geometryChanged(_ next: TimelineViewport) { viewport = next }
+    mutating func geometryChanged(_ next: TimelineViewport) {
+        viewport = next
+        // A measurable arrival ends the displacement episode; the next one
+        // may be reconciled again.
+        if next.measuredAtBottom { bottomReconcileIsSpent = false }
+    }
 
     mutating func tailVisibilityChanged(_ region: TimelineTailVisibility.Region, visible: Bool) {
         tail.update(region, visible: visible)
@@ -106,7 +129,9 @@ nonisolated struct TimelineScrollState: Equatable {
     mutating func settleUserScroll() {
         guard needsUserScrollSettlement, !returningToBottom else { return }
         awaitsUserScrollSettlement = false
-        mode = tail.isAtBottom && !interactionIsPresented ? .following : .reading
+        // A stale visible marker must not grant auto-follow and pull the
+        // reader back down; the arrival is measured, not probed (round 1.3).
+        mode = viewportIsAtBottom && !interactionIsPresented ? .following : .reading
     }
 
     var pendingBottomRequest: BottomRequest? {
@@ -115,11 +140,83 @@ nonisolated struct TimelineScrollState: Equatable {
               mode != .reading, !userIsScrolling || returningToBottom,
               !interactionIsPresented || returningToBottom else { return nil }
         // A return is issued once even for short content. Subsequent layout
-        // changes only need correction when they actually move away from bottom.
-        if tail.isAtBottom && (mode == .following || lastRequest != nil) { return nil }
+        // changes only need correction when they actually move away from
+        // bottom — judged by the measured gap (round 1.3): the stale marker
+        // flag would suppress the follow while the page sat hundreds of
+        // points short, leaving it parked away from the bottom for good.
+        if viewportIsAtBottom && (mode == .following || lastRequest != nil) { return nil }
         let request = BottomRequest(generation: navigationGeneration,
             contentHeight: viewport.contentHeight.rounded(), visibleHeight: viewport.visibleHeight.rounded())
-        return request == lastRequest ? nil : request
+        // The value dedup only holds while the scroll measurably rests at
+        // the bottom: a layout that returns to an already-claimed request
+        // after an intermediate move (the confirm replace's round trip) is
+        // a new displacement, not a processed one — value equality alone
+        // would park the page short for good.
+        return request == lastRequest && viewport.measuredAtBottom ? nil : request
+    }
+
+    /// R2 backstop: the bounded authoritative re-ask the view runs at its
+    /// publish point after a sample lands. Both request gates above judge by
+    /// the measured gap, but a displacement can still leave nothing to
+    /// restart the coalescer: the tail probes may never have measured (the
+    /// request guard keeps waiting for them), or the layout can round-trip
+    /// to the already-claimed request so its value never changes again (the
+    /// confirm replace). When the state is measurably short at rest in
+    /// following mode, ask once — a fresh generation restarts the return
+    /// chain from scratch. Bounded by construction: the spent latch stops
+    /// repeats until the geometry measurably reaches the bottom, an
+    /// in-flight command or a reader gesture suppresses the ask entirely,
+    /// and a fresh request (one that differs from the last begun return)
+    /// stays out of its way — that one is already traveling through the
+    /// 24 ms coalescing task.
+    ///
+    /// The judgement reads the freshest delivered sample (`sample`) — not
+    /// the last *published* viewport — while the stored `viewport` and the
+    /// request construction stay untouched, so the S2 publication gating
+    /// still stands. The sample box is the one place a burst's dropped
+    /// intermediate frame survives (the same main-queue turn delivers only
+    /// the last one); the confirm replace's clamp rides exactly such a
+    /// frame, and the stale "at bottom" viewport would refuse the request
+    /// gate and this backstop at once, parking the page until the next
+    /// content change. `nil` judges by the stored viewport, as before.
+    @discardableResult
+    mutating func reconcileToBottom(using sample: TimelineViewport? = nil) -> Bool {
+        guard needsBottomReconcile(using: sample) else { return false }
+        bottomReconcileIsSpent = true
+        requestBottom()
+        return true
+    }
+
+    /// The pure twin of `reconcileToBottom(using:)`'s guards, so the view can
+    /// ask "would the mutating ask fire?" for every delivered sample without
+    /// writing `@State` on the ones that do not need it (S2: sampling stays
+    /// per-frame in the non-invalidating box; publishing re-evaluates the
+    /// page body). The mutating method stays the authority; both share this
+    /// one guard list by construction.
+    func needsBottomReconcile(using sample: TimelineViewport? = nil) -> Bool {
+        let truth = sample ?? viewport
+        guard hasOpened, !navigationIsSuspended, truth.isMeasured,
+              mode == .following, !userIsScrolling, activeCommand == nil,
+              !truth.measuredAtBottom, !bottomReconcileIsSpent else { return false }
+        return pendingBottomRequest == nil || pendingBottomRequest == lastRequest
+    }
+
+    /// The pure gate for the spent latch's re-arm from a delivered sample.
+    /// `geometryChanged` re-arms it for published samples; a delivered
+    /// sample the publication gate filtered (an offset-only arrival frame)
+    /// carries the same at-bottom truth, and in the worst modelled world —
+    /// coalesced bursts, no phase echo — it is the only channel that ever
+    /// reports arrival. The episode ends on the same judgement either way;
+    /// asking first keeps the armed state free per frame (S2), and the
+    /// write fires once per spent episode. A failed native target still
+    /// never produces an at-bottom sample, so the bound stands.
+    func needsBottomReconcileRearm(using sample: TimelineViewport) -> Bool {
+        bottomReconcileIsSpent && sample.measuredAtBottom
+    }
+
+    mutating func rearmBottomReconcile(using sample: TimelineViewport) {
+        guard sample.measuredAtBottom else { return }
+        bottomReconcileIsSpent = false
     }
 
     mutating func begin(_ request: BottomRequest) -> BottomCommand? {
@@ -141,9 +238,18 @@ nonisolated struct TimelineScrollState: Equatable {
         return true
     }
 
+    /// The return pill is the reader's way back — and its only escape hatch
+    /// when a native return failed to move the page. It stays hidden while a
+    /// return is on its way, but a request that merely *lingers* (equal to
+    /// the last begun return: the coalescer consumed it and the id never
+    /// changes again, so nothing will re-begin it) must not hide the pill
+    /// for good. The failed-native-target world parks exactly such an inert
+    /// request; hiding on it unconditionally turned the pill into a
+    /// permanently invisible affordance there.
     func showsBottomButton() -> Bool {
         hasOpened && !navigationIsSuspended && phase == .idle && tail.isMeasured
-            && !tail.isNearBottom && activeCommand == nil && pendingBottomRequest == nil
+            && !tail.isNearBottom && activeCommand == nil
+            && (pendingBottomRequest == nil || pendingBottomRequest == lastRequest)
     }
 
     private mutating func invalidateNavigation() {

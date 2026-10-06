@@ -482,13 +482,13 @@ import Testing
     /// rows sit outside the loaded window (the panel's not-loaded notice —
     /// its own facts still render, but there is no activity to list).
     @Test func panelActivityRowsAreEmptyWithoutRowsOrBeforeTheCardLoads() throws {
-        let card = try cardItem("card", order: 1)
-        #expect(SubAgentProgress.activityRows(of: "card", in: [card]).isEmpty)
+        let parentCard = try cardItem("card", order: 1)
+        #expect(SubAgentProgress.activityRows(of: "card", in: [parentCard]).isEmpty)
         let other = try cardItem("other", order: 1, status: "done")
         let otherTool = try item("t1", status: "done", order: 2,
                                  content: ["kind": "command", "command": "ls", "parentItemId": "other"])
         let items = [other, otherTool]
-        #expect(!SubAgentProgress.isContentLoaded(try card(card), in: items))
+        #expect(!SubAgentProgress.isContentLoaded(try card(parentCard), in: items))
         #expect(SubAgentProgress.activityRows(of: "card", in: items).isEmpty)
     }
 

@@ -76,6 +76,11 @@ struct SessionChatView: View, Equatable {
                 .overlay { if model.showsOpeningMask { openingMask } }
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     VStack(spacing: 0) {
+                        // B (pp 2026-10-06): the SubAgent capsule is the dock's
+                        // first row — it takes its own space above the composer
+                        // instead of floating over the timeline's last row.
+                        SubAgentCapsuleSlot(model: model, onOpen: { sheet = .subagents($0) })
+                            .traceChatLayout("subagent-capsule")
                         SessionInteractionDock(chat: model,
                             onShowAll: { expandedNoticeID = $0; sheet = .notices })
                             .traceChatLayout("interaction-dock")

@@ -40,6 +40,29 @@ struct SubAgentCapsule: View {
     }
 }
 
+/// The capsule's own leaf (S2), docked as the composer dock's first row
+/// (B, pp 2026-10-06): only this view reads the presented rows, so a streamed
+/// token re-evaluates one capsule instead of the dock that hosts it. It is
+/// empty — not hidden — without a running SubAgent, so a hidden capsule never
+/// leaves a phantom gap between the timeline and the composer. The rows are
+/// read together with the projection's active-card sidecar: a card that later
+/// traffic pushed out of the loaded window still holds the capsule open
+/// (ios-capsule-activity-window §2).
+struct SubAgentCapsuleSlot: View {
+    let model: SessionChatModel
+    let onOpen: (String) -> Void
+
+    var body: some View {
+        let state = SubAgentProgress.capsuleState(inWindow: model.timeline.rows.map(\.value),
+                                                  activeCards: model.session.activeAgentCards)
+        if state.isVisible {
+            SubAgentCapsule(state: state) {
+                if let id = state.latestRunningID { onOpen(id) }
+            }
+        }
+    }
+}
+
 /// §A3: the one stop control the SubAgent surfaces share — the panel header
 /// and the Agent card's timeline fold. It is the composer's official stop
 /// affordance at row scale: same symbol, same primary-control colors, same

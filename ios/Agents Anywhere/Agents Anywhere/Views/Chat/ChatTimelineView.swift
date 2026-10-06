@@ -238,17 +238,16 @@ struct ChatTimelineView: View {
                 if scrolling.navigationGeneration == generation { scrolling.requestBottom() }
                 latestLoadRequest = nil
             }
-            // The return pill would sit on top of the keyboard while typing;
-            // the SubAgent capsule stacks above it and stays visible through
-            // the keyboard (§3.2) — same layout container, no overlap.
-            TimelinePillStack(model: model, keyboard: keyboard,
+            // The return pill would sit on top of the keyboard while typing,
+            // so it hides while the keyboard is up. (The SubAgent capsule no
+            // longer shares this stack — it is docked above the composer.)
+            TimelinePillStack(keyboard: keyboard,
                 isBottomShown: scrolling.showsBottomButton(),
                 onBottom: {
                     latestPull.cancel(); olderPull.cancel()
                     historyPosition?.cancelRestoration()
                     scrolling.requestBottom()
-                },
-                onSubAgent: onSubAgent)
+                })
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // K3: with the keyboard up, a tap on empty message space closes it.
@@ -579,47 +578,22 @@ private extension TimelineViewport {
     var tailUpdatedAtPublish: TimelineTailVisibility?
 }
 
-/// L2/S2 leaf: the SubAgent capsule and the return pill share one bottom stack
-/// (§3.2). Only this leaf observes the keyboard monitor — the page body never
-/// reads it. The keyboard owns the layout while its transition window is open:
-/// the stack animates its own slot change with the keyboard's event duration
-/// and curve, so the capsule rides the composer with no relative jump when the
-/// return pill's slot collapses or re-expands.
+/// K5/S2 leaf: the return pill floats at the timeline's bottom edge. Only this
+/// leaf observes the keyboard monitor — the page body never reads it. The
+/// keyboard owns the layout while its transition window is open: the stack
+/// animates its own slot change with the keyboard's event duration and curve,
+/// so the pill collapses and re-expands with the keyboard instead of popping.
+/// (The SubAgent capsule, its old stack-mate, now rides the composer dock.)
 private struct TimelinePillStack: View {
-    let model: SessionChatModel
     let keyboard: TimelineKeyboardMonitor
     let isBottomShown: Bool
     let onBottom: () -> Void
-    let onSubAgent: (String) -> Void
 
     var body: some View {
         VStack(spacing: 8) {
-            SubAgentCapsuleSlot(model: model, onOpen: onSubAgent)
             TimelineBottomPill(keyboard: keyboard, isShown: isBottomShown, onTap: onBottom)
         }
         .animation(keyboard.layoutAnimation, value: keyboard.isVisible)
-    }
-}
-
-/// The capsule's own leaf: only this view reads the presented rows, so a
-/// streamed token re-evaluates one capsule instead of the pill stack. It is
-/// empty — not hidden — without a running SubAgent, exactly like the return
-/// pill's own `if`, so no overlay occupies the composer. The rows are read
-/// together with the projection's active-card sidecar: a card that later traffic
-/// pushed out of the loaded window still holds the capsule open
-/// (ios-capsule-activity-window §2).
-private struct SubAgentCapsuleSlot: View {
-    let model: SessionChatModel
-    let onOpen: (String) -> Void
-
-    var body: some View {
-        let state = SubAgentProgress.capsuleState(inWindow: model.timeline.rows.map(\.value),
-                                                  activeCards: model.session.activeAgentCards)
-        if state.isVisible {
-            SubAgentCapsule(state: state) {
-                if let id = state.latestRunningID { onOpen(id) }
-            }
-        }
     }
 }
 
@@ -674,9 +648,9 @@ private struct TimelineKeyboardDismissLayer: ViewModifier {
         isVisible = visible
     }
 
-    /// Records the system clock the pill stack's slot change animates on, so
-    /// the capsules keep riding the composer instead of jumping while the
-    /// return pill's footprint collapses or re-expands.
+    /// Records the system clock the pill stack's slot change animates on: the
+    /// return pill collapses and re-expands on the keyboard's own duration and
+    /// curve instead of popping while the keyboard transitions.
     func noteLayoutEvent(_ event: TimelineKeyboardEvent) {
         guard !event.isFinal else { layoutAnimation = nil; return }
         switch event.curve {

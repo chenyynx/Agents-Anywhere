@@ -90,7 +90,8 @@ struct SessionTimelineEventView: View {
             if row.text.isEmpty || TimelineText.inlineSummary(row.text) != nil {
                 TimelineMarkerRow(title: value.title, symbol: value.symbol, status: row.value.status)
             } else {
-                TimelineFold(id: row.id, title: value.title, symbol: value.symbol, status: row.value.status, disclosures: disclosures) {
+                TimelineFold(id: row.id, title: value.title, symbol: value.symbol, status: row.value.status, disclosures: disclosures,
+                    collapsesOnBodyDoubleTap: true) {
                     ChatMarkdownView(text: row.text, isStreaming: row.isRevealing, resolvesFileReferences: true)
                         .id(row.layoutGeneration).padding(.leading, 24).foregroundStyle(.secondary)
                         // Reasoning stays well below the reply text.
@@ -180,6 +181,11 @@ private struct TimelineFold<Content: View>: View {
     let symbol: String
     let status: V2TimelineItemStatus
     let disclosures: TimelineDisclosureState
+    /// pp 2026-10-06: opt-in — an expanded body collapses on a double tap,
+    /// because the header button scrolls out of reach on long reasoning.
+    /// Only the reasoning fold opts in; every other fold attaches no gesture
+    /// and keeps its exact interaction surface.
+    var collapsesOnBodyDoubleTap = false
     /// L2: an explicit entry beside the disclosure title (the Agent card / the
     /// SubAgent progress group). It is a sibling button, not a tap on the
     /// disclosure row, so the existing expand gesture is never intercepted.
@@ -220,7 +226,25 @@ private struct TimelineFold<Content: View>: View {
                     }
                 }
             }
-            if disclosures.isExpanded(id) { content().transition(.identity) }
+            if disclosures.isExpanded(id) { expandedBody.transition(.identity) }
+        }
+    }
+    /// The expanded body. With `collapsesOnBodyDoubleTap`, a double tap
+    /// anywhere in the body collapses the fold — the same toggle and animation
+    /// as the header button (the header scrolls out of reach on long
+    /// reasoning). Without it, the body is attached unmodified: the other
+    /// folds attach no gesture and keep their exact interaction surface.
+    /// A plain two-tap gesture, so single taps (links), scrolling and
+    /// long-press selection keep working as before.
+    @ViewBuilder private var expandedBody: some View {
+        if collapsesOnBodyDoubleTap {
+            content()
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) {
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { disclosures.toggle(id) }
+                }
+        } else {
+            content()
         }
     }
 }

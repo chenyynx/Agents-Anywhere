@@ -8535,6 +8535,23 @@
         }
       }
     },
+    "任务已中断": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Task interrupted"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "任务已中断"
+          }
+        }
+      }
+    },
     "会话": {
       "comment": "Shared with Web: common.sessions. Sync with ios/scripts/web_copy.py.",
       "extractionState": "manual",

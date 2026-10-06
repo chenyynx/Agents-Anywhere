@@ -211,6 +211,14 @@ struct SessionChatView: View, Equatable {
         .onChange(of: model.openingError, initial: true) { _, message in
             toasts.update(source: "opening", failure: message.map { V2ClientFailure(kind: .unavailable, message: $0) })
         }
+        // The runtime's durable error, disclosed as its own notice. The field
+        // outlives any single view, so this refires on every state read; the
+        // store pins a dismissal to the event it acknowledged (the error code
+        // plus its params), so the same incident cannot revive on reconnect
+        // while a changed payload re-opens the notice.
+        .onChange(of: ChatRuntimeErrorNotice.make(for: session.runtime.state?.error), initial: true) { _, notice in
+            toasts.update(source: "runtime", notice: notice)
+        }
     }
 
     private var openingMask: some View {

@@ -276,6 +276,7 @@ internal fun reduceSnapshotWithLiveState(
         takeoverInFlight = live.takeoverInFlight,
         sending = live.sending || timeline.messages.hasPendingOptimisticSend(),
         interrupting = live.interrupting,
+        stoppingSubagentTaskIds = live.stoppingSubagentTaskIds,
         selectionUpdating = live.selectionUpdating,
         commandExecuting = live.commandExecuting,
         respondingNoticeIds = live.respondingNoticeIds,

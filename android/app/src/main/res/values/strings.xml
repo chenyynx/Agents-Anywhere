@@ -415,6 +415,8 @@
     <string name="session_notice_expand">Expand</string>
     <string name="session_notice_response_failed">Could not send the runtime response.</string>
     <string name="session_interrupt_failed">Could not interrupt this session.</string>
+    <string name="session_subagent_stop">Stop sub-agent</string>
+    <string name="session_subagent_stop_failed">Could not stop the sub-agent.</string>
     <string name="session_approval_resolve_failed">Could not resolve approval.</string>
     <string name="session_agent_working">%1$s is working</string>
     <string name="session_agent_interrupting">Interrupting %1$s</string>

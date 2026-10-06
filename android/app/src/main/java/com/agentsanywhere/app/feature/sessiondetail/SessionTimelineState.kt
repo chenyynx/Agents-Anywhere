@@ -68,7 +68,42 @@ data class TimelineAgentCall(
     val action: TimelineAgentCallAction,
     val description: String = "",
     val parentItemId: String? = null,
+    val tasks: List<TimelineAgentTask> = emptyList(),
 )
+
+/**
+ * One entry of a card's `agents` map: the CLI's per-task state for a
+ * dispatched subagent, keyed by `taskId` (the same id `stop_task` takes).
+ */
+data class TimelineAgentTask(
+    val taskId: String,
+    val status: String,
+    val subagentType: String = "",
+    val isBackgrounded: Boolean = false,
+    val lastToolName: String = "",
+)
+
+/**
+ * Subagent statuses that still mean the task is alive. Mirrors the
+ * connector's `AGENT_TASK_LIVE_STATUSES`: an entry without a recognised
+ * status (including a status-less task event) is not stoppable.
+ */
+internal val AGENT_TASK_LIVE_STATUSES = setOf("running", "async_launched")
+
+internal fun agentTaskIsLive(status: String): Boolean = status in AGENT_TASK_LIVE_STATUSES
+
+/** Tasks on this card that can be stopped individually, in wire order. */
+internal fun TimelineAgentCall.stoppableTasks(): List<TimelineAgentTask> =
+    tasks.filter { it.taskId.isNotBlank() && agentTaskIsLive(it.status) }
+
+/**
+ * The card's stop targets: the capability is the only global gate (the turn
+ * status must not be consulted), and the per-task status stays local.
+ */
+internal fun subagentStopTasks(
+    canControlSubagents: Boolean,
+    call: TimelineAgentCall?,
+): List<TimelineAgentTask> = if (canControlSubagents) call?.stoppableTasks().orEmpty() else emptyList()
 
 enum class TimelineAgentCallAction {
     Invoke,

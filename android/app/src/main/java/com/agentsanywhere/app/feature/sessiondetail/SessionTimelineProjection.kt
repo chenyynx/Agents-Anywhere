@@ -349,6 +349,7 @@ private fun RemoteTimelineItem.toAgentCallMessage(): TimelineMessage {
             action = action,
             description = description,
             parentItemId = content.text("parentItemId"),
+            tasks = content.toAgentTasks(),
         ),
         rawContent = content.toString(2),
         orderSeq = orderSeq,
@@ -356,6 +357,26 @@ private fun RemoteTimelineItem.toAgentCallMessage(): TimelineMessage {
         updatedSeq = updatedSeq,
         clientMessageId = source.text("clientMessageId"),
     )
+}
+
+/**
+ * Reads a card's `agents` map (`{taskId: {status, subagentType, …}}`) into
+ * per-task entries. The map key is the task id `stop_task` takes; a card
+ * with several live entries renders one stop control per entry.
+ */
+private fun JSONObject.toAgentTasks(): List<TimelineAgentTask> {
+    val agents = optJSONObject("agents") ?: return emptyList()
+    return agents.keys().asSequence().mapNotNull { rawTaskId ->
+        val taskId = rawTaskId.takeIf(String::isNotBlank) ?: return@mapNotNull null
+        val entry = agents.optJSONObject(rawTaskId) ?: return@mapNotNull null
+        TimelineAgentTask(
+            taskId = taskId,
+            status = entry.text("status").orEmpty(),
+            subagentType = entry.text("subagentType").orEmpty(),
+            isBackgrounded = entry.optBoolean("isBackgrounded", false),
+            lastToolName = entry.text("lastToolName").orEmpty(),
+        )
+    }.toList()
 }
 
 private fun RemoteTimelineItem.toFileChangeMessages(): List<TimelineMessage> {

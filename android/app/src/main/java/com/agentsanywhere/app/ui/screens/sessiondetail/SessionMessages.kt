@@ -72,6 +72,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.Font
@@ -87,8 +89,10 @@ import com.agentsanywhere.app.feature.sessiondetail.MessageAuthor
 import com.agentsanywhere.app.feature.sessiondetail.SessionDetailController
 import com.agentsanywhere.app.feature.sessiondetail.RuntimeNotice
 import com.agentsanywhere.app.feature.sessiondetail.RuntimeNoticeAction
+import com.agentsanywhere.app.feature.sessiondetail.subagentStopTasks
 import com.agentsanywhere.app.feature.sessiondetail.TimelineAttachment
 import com.agentsanywhere.app.feature.sessiondetail.TimelineAgentCallAction
+import com.agentsanywhere.app.feature.sessiondetail.TimelineAgentTask
 import com.agentsanywhere.app.feature.sessiondetail.TimelineMessage
 import com.agentsanywhere.app.feature.sessiondetail.TimelineMessageKind
 import com.agentsanywhere.app.ui.designsystem.LocalAAColors
@@ -270,6 +274,9 @@ internal fun MessageList(
     onShareReply: (List<String>) -> Unit,
     onOpenFile: (String) -> Unit,
     onRespondNotice: (RuntimeNotice, RuntimeNoticeAction, Map<String, Any?>?) -> Unit = { _, _, _ -> },
+    canControlSubagents: Boolean = false,
+    stoppingSubagentTaskIds: Set<String> = emptySet(),
+    onStopSubagent: (String) -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -474,6 +481,9 @@ internal fun MessageList(
                                 respondingNoticeIds = respondingNoticeIds,
                                 noticeResponseErrors = noticeResponseErrors,
                                 onRespondNotice = onRespondNotice,
+                                canControlSubagents = canControlSubagents,
+                                stoppingSubagentTaskIds = stoppingSubagentTaskIds,
+                                onStopSubagent = onStopSubagent,
                             )
                             is TimelineRenderItem.ToolRun -> ToolRunGroup(
                                 messages = item.messages,
@@ -481,6 +491,9 @@ internal fun MessageList(
                                 listState = listState,
                                 workspaceRoot = workspaceRoot,
                                 onOpenFile = onOpenFile,
+                                canControlSubagents = canControlSubagents,
+                                stoppingSubagentTaskIds = stoppingSubagentTaskIds,
+                                onStopSubagent = onStopSubagent,
                             )
                             is TimelineRenderItem.Reconnect -> ReconnectGroup(
                                 messages = item.messages,
@@ -489,6 +502,9 @@ internal fun MessageList(
                             is TimelineRenderItem.AgentCalls -> AgentCallGroup(
                                 messages = item.messages,
                                 darkMode = darkMode,
+                                canControlSubagents = canControlSubagents,
+                                stoppingSubagentTaskIds = stoppingSubagentTaskIds,
+                                onStopSubagent = onStopSubagent,
                             )
                         }
                         agentActionsByTurnEnd[item.key]?.let { action ->
@@ -785,6 +801,9 @@ private fun ToolRunGroup(
     listState: LazyListState,
     workspaceRoot: String?,
     onOpenFile: (String) -> Unit = {},
+    canControlSubagents: Boolean = false,
+    stoppingSubagentTaskIds: Set<String> = emptySet(),
+    onStopSubagent: (String) -> Unit = {},
 ) {
     val colors = LocalAAColors.current
     val primary = colors.ink
@@ -890,7 +909,13 @@ private fun ToolRunGroup(
                     embedded = true,
                 )
             } else if (message.kind == TimelineMessageKind.AgentCall) {
-                AgentCallMarkerRow(message = message, darkMode = darkMode)
+                AgentCallMarkerRow(
+                    message = message,
+                    darkMode = darkMode,
+                    canControlSubagents = canControlSubagents,
+                    stoppingSubagentTaskIds = stoppingSubagentTaskIds,
+                    onStopSubagent = onStopSubagent,
+                )
             } else {
                 ToolActivityCard(
                     message = message,
@@ -909,6 +934,9 @@ private fun ToolRunGroup(
 private fun AgentCallGroup(
     messages: List<TimelineMessage>,
     darkMode: Boolean,
+    canControlSubagents: Boolean = false,
+    stoppingSubagentTaskIds: Set<String> = emptySet(),
+    onStopSubagent: (String) -> Unit = {},
 ) {
     val colors = LocalAAColors.current
     val muted = colors.muted
@@ -967,7 +995,13 @@ private fun AgentCallGroup(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 messages.forEach { message ->
-                    AgentCallMarkerRow(message = message, darkMode = darkMode)
+                    AgentCallMarkerRow(
+                        message = message,
+                        darkMode = darkMode,
+                        canControlSubagents = canControlSubagents,
+                        stoppingSubagentTaskIds = stoppingSubagentTaskIds,
+                        onStopSubagent = onStopSubagent,
+                    )
                 }
             }
         }
@@ -978,36 +1012,126 @@ private fun AgentCallGroup(
 private fun AgentCallMarkerRow(
     message: TimelineMessage,
     darkMode: Boolean,
+    canControlSubagents: Boolean = false,
+    stoppingSubagentTaskIds: Set<String> = emptySet(),
+    onStopSubagent: (String) -> Unit = {},
 ) {
     val colors = LocalAAColors.current
     val active = message.status in setOf("pending", "running", "waiting_approval")
     val failed = message.status in setOf("failed", "cancelled", "interrupted")
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 34.dp)
-            .padding(horizontal = 6.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
+    // The stop affordance needs both the capability and a live task; a card
+    // with several live tasks renders one bounded control per task.
+    val stoppableTasks = subagentStopTasks(canControlSubagents, message.agentCall)
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        Icon(
-            imageVector = Lucide.Bot,
-            contentDescription = null,
-            tint = if (failed) colors.errorIcon else colors.muted,
-            modifier = Modifier.size(16.dp),
-        )
-        TimelineShimmerText(
-            text = agentCallSummary(message),
-            active = active,
-            darkMode = darkMode,
-            modifier = Modifier.weight(1f),
-            color = if (failed) colors.errorIcon else colors.muted,
-            fontSize = 13.sp,
-            fontWeight = TimelineActivityLabelWeight,
-            fontFamily = FontFamily.Monospace,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 34.dp)
+                .padding(horizontal = 6.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Lucide.Bot,
+                contentDescription = null,
+                tint = if (failed) colors.errorIcon else colors.muted,
+                modifier = Modifier.size(16.dp),
+            )
+            TimelineShimmerText(
+                text = agentCallSummary(message),
+                active = active,
+                darkMode = darkMode,
+                modifier = Modifier.weight(1f),
+                color = if (failed) colors.errorIcon else colors.muted,
+                fontSize = 13.sp,
+                fontWeight = TimelineActivityLabelWeight,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            // A single live task makes one trailing control unambiguous; with
+            // several, each one gets its own row below (taskId-bound).
+            if (stoppableTasks.size == 1) {
+                SubagentStopControl(
+                    stopping = stoppableTasks.first().taskId in stoppingSubagentTaskIds,
+                    onClick = { onStopSubagent(stoppableTasks.first().taskId) },
+                )
+            }
+        }
+        if (stoppableTasks.size > 1) {
+            stoppableTasks.forEach { task ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 30.dp)
+                        .padding(start = 30.dp, end = 6.dp, top = 2.dp, bottom = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = subagentTaskLabel(task),
+                        color = colors.muted,
+                        fontSize = 13.sp,
+                        fontWeight = TimelineActivityLabelWeight,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    SubagentStopControl(
+                        stopping = task.taskId in stoppingSubagentTaskIds,
+                        onClick = { onStopSubagent(task.taskId) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun subagentTaskLabel(task: TimelineAgentTask): String {
+    return task.subagentType.ifBlank { task.lastToolName }
+        .ifBlank { stringResource(R.string.session_agent_fallback) }
+}
+
+@Composable
+private fun SubagentStopControl(
+    stopping: Boolean,
+    onClick: () -> Unit,
+) {
+    val colors = LocalAAColors.current
+    val stopDescription = stringResource(R.string.session_subagent_stop)
+    Box(
+        modifier = Modifier
+            .size(30.dp)
+            .clip(CircleShape)
+            .semantics { contentDescription = stopDescription }
+            .then(
+                if (stopping) {
+                    Modifier
+                } else {
+                    Modifier.noRippleClickable(onClick = onClick)
+                },
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (stopping) {
+            CircularProgressIndicator(
+                color = colors.muted,
+                strokeWidth = 2.dp,
+                modifier = Modifier.size(14.dp),
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .size(10.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(Color(0xFFEF4444)),
+            )
+        }
     }
 }
 
@@ -1162,6 +1286,9 @@ private fun TimelineMessageRow(
     respondingNoticeIds: Set<String> = emptySet(),
     noticeResponseErrors: Map<String, String> = emptyMap(),
     onRespondNotice: (RuntimeNotice, RuntimeNoticeAction, Map<String, Any?>?) -> Unit = { _, _, _ -> },
+    canControlSubagents: Boolean = false,
+    stoppingSubagentTaskIds: Set<String> = emptySet(),
+    onStopSubagent: (String) -> Unit = {},
 ) {
     when (message.kind) {
         TimelineMessageKind.Reasoning -> ReasoningSection(
@@ -1170,7 +1297,13 @@ private fun TimelineMessageRow(
             listState = listState,
         )
         TimelineMessageKind.AgentCall -> if (interaction == null) {
-            AgentCallMarkerRow(message = message, darkMode = darkMode)
+            AgentCallMarkerRow(
+                message = message,
+                darkMode = darkMode,
+                canControlSubagents = canControlSubagents,
+                stoppingSubagentTaskIds = stoppingSubagentTaskIds,
+                onStopSubagent = onStopSubagent,
+            )
         } else {
             ToolActivityCard(
                 message = message,

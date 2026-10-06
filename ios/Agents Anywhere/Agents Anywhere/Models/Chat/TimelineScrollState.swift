@@ -199,9 +199,18 @@ nonisolated struct TimelineScrollState: Equatable {
         return true
     }
 
+    /// The return pill is the reader's way back — and its only escape hatch
+    /// when a native return failed to move the page. It stays hidden while a
+    /// return is on its way, but a request that merely *lingers* (equal to
+    /// the last begun return: the coalescer consumed it and the id never
+    /// changes again, so nothing will re-begin it) must not hide the pill
+    /// for good. The failed-native-target world parks exactly such an inert
+    /// request; hiding on it unconditionally turned the pill into a
+    /// permanently invisible affordance there.
     func showsBottomButton() -> Bool {
         hasOpened && !navigationIsSuspended && phase == .idle && tail.isMeasured
-            && !tail.isNearBottom && activeCommand == nil && pendingBottomRequest == nil
+            && !tail.isNearBottom && activeCommand == nil
+            && (pendingBottomRequest == nil || pendingBottomRequest == lastRequest)
     }
 
     private mutating func invalidateNavigation() {

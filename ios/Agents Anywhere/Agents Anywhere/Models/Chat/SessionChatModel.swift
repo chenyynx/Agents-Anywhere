@@ -78,7 +78,7 @@ final class SessionChatModel {
     /// feedback) reads this value, so an optimistic turn end can never leak
     /// into anything but the send/stop decision.
     var isRunning: Bool {
-        session.runtime.state?.status?.isTurnInFlight == true
+        session.runtime.state?.status.isTurnInFlight == true
     }
     /// The composer's view of the turn window. It equals `isRunning` except
     /// inside an accepted interrupt's optimistic window, where the send key is
@@ -396,7 +396,7 @@ final class SessionChatModel {
     /// interrupt that accompanies it.
     private func announceModelSwitch() {
         let title = settings.model?.option.title ?? String(localized: "默认模型")
-        switchFeedback = CommandFeedback(title: String(localized: "已切换到 \(title)"))
+        switchFeedback = CommandFeedback(title: String(localized: "已切换到 \(title)"), message: nil)
     }
 
     func send(_ text: String) async {

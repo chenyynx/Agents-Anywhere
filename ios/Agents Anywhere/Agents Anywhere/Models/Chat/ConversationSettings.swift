@@ -75,6 +75,20 @@ final class ConversationSettings {
             && (catalog.permissions.isEmpty || selections[.permission] != nil)
     }
 
+    /// The model a server-side selection id belongs to — the inverse of the
+    /// mapping `replace` performs — so a model switch can be told apart from
+    /// an effort-only change inside the same model (red team F8).
+    func modelID(forSelection selection: V2SelectionID?) -> String? {
+        guard let selection else { return nil }
+        for model in catalog.models where model.option.isEnabled {
+            if model.option.selectionID == selection { return model.id }
+            if model.reasoning.contains(where: { $0.isEnabled && $0.selectionID == selection }) {
+                return model.id
+            }
+        }
+        return nil
+    }
+
     func replace(_ catalog: ChatSettingsCatalog, selections: [V2RuntimeSelectionScope: V2SelectionID] = [:], defaults: Bool = true) {
         self.catalog = catalog
         modelID = ""; reasoningID = ""; permissionID = ""

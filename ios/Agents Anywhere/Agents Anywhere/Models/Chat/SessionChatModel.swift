@@ -333,7 +333,10 @@ final class SessionChatModel {
         isWorking = true
         defer { isWorking = false }
         do {
-            let modelBefore = settings.model?.id
+            // The server's own view (not `settings`, which `selectModel`
+            // already flipped when the user picked): the note below must tell
+            // a model switch from an effort-only change within one model.
+            let modelBefore = settings.modelID(forSelection: currentSelections[.model])
             var switchedModel = false
             // Deterministic order (pp 2026-10-05): every selection — model
             // first, then a permission change riding along — lands before the

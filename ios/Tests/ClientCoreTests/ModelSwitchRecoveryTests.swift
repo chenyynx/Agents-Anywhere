@@ -213,8 +213,11 @@ import Testing
         #expect(chat.switchFeedback?.title == "已切换到 Model B")
         #expect(chat.error == nil)
         // The turn is really over and the composer is usable without any
-        // further user action.
-        #expect(!chat.isRunning && !chat.isComposerStreaming && session.canSend)
+        // further user action: the live facts are proven by the switch's own
+        // background reconciliation (the predicted idle already unblocked the
+        // composer the moment the stop was accepted).
+        try await eventually { !chat.isRunning }
+        #expect(!chat.isComposerStreaming && session.canSend)
         #expect(session.runtime.state?.status == .idle)
     }
 
@@ -252,7 +255,9 @@ import Testing
         #expect(http.count("interrupt") == 1)
         #expect(chat.switchFeedback == nil)
         #expect(chat.error == nil)
-        #expect(!chat.isRunning)
+        // The turn really ends: the accepted interrupt's background
+        // reconciliation proves the live facts — never a synchronous lie.
+        try await eventually { !chat.isRunning }
     }
 
     // MARK: - A2: interrupt acknowledgement and the local turn window
@@ -491,11 +496,16 @@ import Testing
         defer { repo.reset() }
         let connection = try await connect(session)
         defer { connection.cancel() }
+        // Compose with the rig's responder (its catalogs and live-state
+        // answers are what the switch flow reads); only the selections call
+        // is answered with a refusal.
+        let rig = http.respond
         http.respond = { call in
             if call.path.hasSuffix("selections") {
                 throw HTTPError.server(statusCode: 422, message: "unknown Claude model selection")
             }
-            return try http.defaultResponse(call)
+            guard let rig else { throw HTTPError.invalidResponse }
+            return try await rig(call)
         }
         await chat.loadSettings()
         #expect(chat.settings.selectModel("model-b"))
@@ -591,7 +601,7 @@ import Testing
     @Test func connectionContradictionHealsFromTheFrameNotThePeriodicLoop() async throws {
         let http = TestHTTPTransport(), realtime = TestRealtimeAPI()
         let running = RunningSession()
-        let parked = V2SessionHealBackoff(initial: .seconds(600), maximum: .seconds(600), mismatch: .milliseconds(1))
+        let parked = V2SessionHealBackoff(initial: .seconds(3600), maximum: .seconds(3600), mismatch: .milliseconds(1))
         let (repo, session, _) = try makeSession(http, realtime, running, healBackoff: parked,
             sleep: { try await Task.sleep(for: $0 / 1000) })
         defer { repo.reset() }
@@ -604,9 +614,10 @@ import Testing
             payload: ["capabilitySet": capabilityFrame["capabilitySet"]!]))
         try await eventually { !session.runtime.allows("session.interrupt") }
 
-        // Healed far sooner than the parked periodic loop could have fired.
-        try await Task.sleep(for: .milliseconds(50))
-        #expect(session.runtime.allows("session.interrupt"))
+        // The frame's own debounced mismatch heal must repair this: the
+        // parked periodic loop is ~3.6s away at the rig's 1/1000 sleep
+        // scale, so only the frame trigger can land inside the bounded wait.
+        try await eventually { session.runtime.allows("session.interrupt") }
         #expect(!session.runtime.allows("session.send_message"))
     }
 

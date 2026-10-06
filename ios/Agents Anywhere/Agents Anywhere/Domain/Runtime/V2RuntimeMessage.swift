@@ -18,6 +18,15 @@ struct V2RuntimeInterruptRequest: Encodable, Hashable {
     let preserveBackground: Bool
 }
 
+/// Body of `POST …/runtime/subagent/stop` (§A3): the task id the runtime's
+/// per-task stop targets. The server resolves the runtime scope, mirroring
+/// the interrupt endpoint. The response is the shared RPC envelope whose
+/// result carries `{stopped: boolean}` — an unknown task id is `false`, a
+/// fact the card converges from, never an error the user must see.
+struct V2RuntimeStopSubagentRequest: Encodable, Hashable {
+    let taskId: String
+}
+
 struct V2RuntimeActionResponse: Decodable, Hashable {
     let ok: Bool
     let result: JSONValue?

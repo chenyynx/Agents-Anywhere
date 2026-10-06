@@ -11,6 +11,7 @@ protocol V2RuntimeAPIProtocol {
     func sendMessage(sessionId: V2SessionID, request: V2RuntimeMessageSendRequest) async throws -> V2RuntimeActionResponse
     func steer(sessionId: V2SessionID, request: V2RuntimeSteerRequest) async throws -> V2RuntimeActionResponse
     func interrupt(sessionId: V2SessionID, preserveBackground: Bool) async throws -> V2RuntimeActionResponse
+    func stopSubagent(sessionId: V2SessionID, taskId: String) async throws -> V2RuntimeActionResponse
     func notices(sessionId: V2SessionID) async throws -> V2RuntimeNoticeSnapshot
     func respondToNotice(sessionId: V2SessionID, noticeId: V2NoticeID, request: V2RuntimeNoticeRespondRequest) async throws -> V2RuntimeActionResponse
 }
@@ -70,6 +71,14 @@ struct V2RuntimeAPI: V2RuntimeAPIProtocol {
             body: V2RuntimeInterruptRequest(preserveBackground: preserveBackground)
         )
         return try await transport.send(request)
+    }
+
+    /// Stops one SubAgent task (§A3). Mirrors the interrupt call shape: the
+    /// server owns the capability gate and the runtime scope, and the RPC
+    /// envelope carries the connector's `{stopped: boolean}` result.
+    func stopSubagent(sessionId: V2SessionID, taskId: String) async throws -> V2RuntimeActionResponse {
+        try await send(sessionId: sessionId, suffix: "subagent/stop", method: .post,
+                       body: V2RuntimeStopSubagentRequest(taskId: taskId))
     }
 
     func notices(sessionId: V2SessionID) async throws -> V2RuntimeNoticeSnapshot {

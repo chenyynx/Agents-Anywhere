@@ -13,6 +13,17 @@ final class SessionChatModel {
         get { session.isPerformingAction }
         set { session.isPerformingAction = newValue }
     }
+    /// Task ids whose SubAgent stop is accepted-and-unconverged (§A3). The
+    /// matching control shows its in-flight disabled form until the card's
+    /// terminal event removes the task, or the bounded release below fires.
+    private(set) var stoppingSubagentTaskIDs: Set<String> = []
+    /// Bound on the in-flight form: a terminal frame that never lands must
+    /// not pin the control for good — the "超时清理" half of the contract.
+    /// Long enough that a real stop's terminal event beats it by orders of
+    /// magnitude, short enough not to read as a dead button.
+    static let subagentStopDeadline: Duration = .seconds(20)
+    @ObservationIgnored private let subagentStopReleaseDelay: Duration
+    @ObservationIgnored private var subagentStopReleases: [String: Task<Void, Never>] = [:]
     private(set) var isLoadingSettings = false
     var error: String?
     var settingsError: String?
@@ -52,9 +63,11 @@ final class SessionChatModel {
     @ObservationIgnored private let attachments: V2AttachmentService
     @ObservationIgnored private let files: V2WorkspaceFilesService?
 
-    init(session: V2SessionModel, repository: V2SessionRepository, attachments: V2AttachmentService, files: V2WorkspaceFilesService? = nil) {
+    init(session: V2SessionModel, repository: V2SessionRepository, attachments: V2AttachmentService, files: V2WorkspaceFilesService? = nil,
+         subagentStopReleaseDelay: Duration = SessionChatModel.subagentStopDeadline) {
         self.session = session; self.repository = repository; self.attachments = attachments
         self.files = files
+        self.subagentStopReleaseDelay = subagentStopReleaseDelay
         opensFromCachedSnapshot = repository.cached(sessionId: session.id) != nil
         // Cached history can still be expensive to project. prepareOpening()
         // performs that work after the page's navigation transition settles.
@@ -417,9 +430,42 @@ final class SessionChatModel {
     /// real attempt and every outcome lands on the existing error channel
     /// instead of a silent no-op — including while the projection is stale,
     /// when the ability to stop matters most.
+    ///
+    /// §A3 flip: the manual stop now asks the runtime to spare background
+    /// work (`preserveBackground: true`), matching the terminal's Esc — a
+    /// running SubAgent survives the turn stop and is stopped individually
+    /// from its own control. This lands in the same version as those controls
+    /// (the batch's release rule): without them a spared task would have no
+    /// way to be stopped.
     func interrupt() async {
         guard !isWorking else { return }
-        await perform { try await self.repository.interrupt(sessionId: self.session.id) }
+        await perform { try await self.repository.interrupt(sessionId: self.session.id, preserveBackground: true) }
+    }
+
+    /// Stops one running SubAgent task (§A3). One tap per task: a second tap
+    /// while the control is in flight is not a second request. The in-flight
+    /// form is released by the card's terminal event (the task leaves the
+    /// live set, so its control disappears) or, when that frame never lands,
+    /// by the bounded release — never by a local optimistic rewrite.
+    func stopSubagent(taskID: String) async {
+        guard session.isValid, !stoppingSubagentTaskIDs.contains(taskID) else { return }
+        stoppingSubagentTaskIDs.insert(taskID)
+        let release = Task { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: subagentStopReleaseDelay)
+            guard !Task.isCancelled else { return }
+            stoppingSubagentTaskIDs.remove(taskID)
+            subagentStopReleases[taskID] = nil
+        }
+        subagentStopReleases[taskID] = release
+        let reachedServer = await perform { try await self.repository.stopSubagent(sessionId: self.session.id, taskId: taskID) }
+        guard !reachedServer else { return }
+        // The attempt never reached the server (or the model was busy): roll
+        // the in-flight form back so the tap is never a dead end. A real
+        // failure already went out on the existing error channel.
+        release.cancel()
+        subagentStopReleases[taskID] = nil
+        stoppingSubagentTaskIDs.remove(taskID)
     }
 
     func respond(notice: SessionNoticeModel, action: V2RuntimeNoticeAction) async {

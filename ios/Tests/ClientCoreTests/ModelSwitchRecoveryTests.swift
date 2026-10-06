@@ -351,9 +351,11 @@ import Testing
         running.overflowGate = gate
         let stop = Task { await chat.interrupt() }
         try await eventually { running.interruptCalls == 1 && running.liveStateReads > 1 }
-        // A manual stop keeps the historical all-stop semantics.
+        // §A3 flip: the manual stop now spares background work (the per-task
+        // stop controls ship in the same version). The flip must not disturb
+        // the acknowledgement window this test measures.
         let stopCall = try #require(http.calls.last { $0.path.hasSuffix("interrupt") })
-        #expect(stopCall.body?["preserveBackground"] == .bool(false))
+        #expect(stopCall.body?["preserveBackground"] == .bool(true))
 
         // Within the acknowledgement, through the full model layer: the call
         // has returned (no `isWorking`), the send key is open, and nothing has

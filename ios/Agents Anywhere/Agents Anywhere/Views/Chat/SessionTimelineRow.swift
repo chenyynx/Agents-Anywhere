@@ -37,7 +37,7 @@ struct SessionTimelineRow: View {
                     }
                 }
             default:
-                SessionTimelineEventView(row: row, cwd: cwd, disclosures: disclosures, onFile: onFile, onSubAgent: onSubAgent)
+                SessionTimelineEventView(row: row, chat: chat, cwd: cwd, disclosures: disclosures, onFile: onFile, onSubAgent: onSubAgent)
 
             }
         }

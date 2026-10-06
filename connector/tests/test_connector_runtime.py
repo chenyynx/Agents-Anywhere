@@ -685,6 +685,7 @@ class FakeAgentRuntime(AgentRuntime):
         self,
         session_id: str,
         reason: str | None = None,
+        preserve_background: bool = False,
     ) -> RuntimeOperationResult:
         self.calls.append(
             (
@@ -692,6 +693,7 @@ class FakeAgentRuntime(AgentRuntime):
                 {
                     "sessionId": session_id,
                     "reason": reason,
+                    "preserveBackground": preserve_background,
                 },
             )
         )

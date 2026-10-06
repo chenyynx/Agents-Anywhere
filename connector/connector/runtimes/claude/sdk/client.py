@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from typing import Any
@@ -9,6 +10,10 @@ from connector.runtimes.claude.domain.permissions import (
     permission_mode_from_selection_id,
 )
 from connector.runtimes.claude.domain.session import ClaudeSession
+from connector.runtimes.claude.sdk.stop_affordance import (
+    install_per_task_stop_declaration,
+    mark_declared_client,
+)
 from connector.runtimes.model_gateway import model_gateway_from_config
 
 SdkLoader = Callable[[], Any]
@@ -38,6 +43,16 @@ def new_sdk_client(
     before_tool: Any | None = None,
     title_control: Any | None = None,
 ) -> Any:
+    # Every connection this process opens declares AA's per-task stop control,
+    # so a CLI interrupt spares running background work (kill-switch:
+    # `perTaskStopAffordance`, default on; see sdk/stop_affordance.py). The
+    # install's return value is the connection-level fact the stop path reads
+    # (red team F-A/F-C): it is recorded on the client here and copied onto
+    # the `ClaudeConnection` at build time.
+    declared = install_per_task_stop_declaration(
+        sdk,
+        declare=bool(config_values.get("perTaskStopAffordance", True)),
+    )
     options = build_sdk_options(
         sdk,
         config_values,
@@ -51,14 +66,17 @@ def new_sdk_client(
         title_control=title_control,
     )
     if client_factory is not None:
-        return client_factory(sdk, options)
-    client_cls = getattr(sdk, "ClaudeSDKClient", None)
-    if client_cls is None:
-        raise RuntimeError("ClaudeSDKClient is not available")
-    try:
-        return client_cls(options=options)
-    except TypeError:
-        return client_cls(options)
+        client = client_factory(sdk, options)
+    else:
+        client_cls = getattr(sdk, "ClaudeSDKClient", None)
+        if client_cls is None:
+            raise RuntimeError("ClaudeSDKClient is not available")
+        try:
+            client = client_cls(options=options)
+        except TypeError:
+            client = client_cls(options)
+    mark_declared_client(client, declared)
+    return client
 
 
 def build_sdk_options(
@@ -164,11 +182,25 @@ async def disconnect_client(client: Any) -> None:
         await maybe_await(disconnect())
 
 
-async def interrupt_client(client: Any) -> bool:
+# The authoritative stop is the `task.cancel()` that follows this call; the
+# SDK's `interrupt()` only asks the CLI to stop and waits for it to answer.
+# A CLI that hangs mid-turn (the 2026-10-05 shape) would otherwise hold the
+# whole stop path until the server's 30 s RPC timeout, so the wait is bounded
+# here: on timeout the stop proceeds to the cancel exactly as it does today
+# when `interrupt()` raises (the caller already logs and drops that error).
+CLAUDE_INTERRUPT_TIMEOUT_SECONDS = 2.0
+
+
+async def interrupt_client(
+    client: Any,
+    timeout: float = CLAUDE_INTERRUPT_TIMEOUT_SECONDS,
+) -> bool:
     interrupt = getattr(client, "interrupt", None)
     if not callable(interrupt):
         return False
-    await maybe_await(interrupt())
+    result = interrupt()
+    if inspect.isawaitable(result):
+        await asyncio.wait_for(result, timeout=timeout)
     return True
 
 

@@ -151,6 +151,25 @@ def has_live_agent_tasks(content: AgentCallToolContent) -> bool:
     )
 
 
+def has_running_agent_tasks(content: AgentCallToolContent) -> bool:
+    """Whether a *started* task backs this card (a ``running`` entry).
+
+    The narrower form for the stop path's two judgments (red team F-D,
+    2026-10-06): the ghost sweep's exemption and the fold clamp. The
+    ``async_launched`` receipt is metadata about a launch, not proof a task
+    exists — a card holding only that marker is still the dispatch-window
+    ghost the sweep exists to close. ``running`` comes from task lifecycle
+    frames, so it is the entry that genuinely vouches for a live task; a
+    spared call that starts after the sweep re-opens the card through it.
+    """
+
+    return any(
+        _string(entry.get("status")) == "running"
+        for entry in content.agents.values()
+        if isinstance(entry, Mapping)
+    )
+
+
 def resolve_agent_card_status(previous: str | None, incoming: str | None) -> str:
     """Pick the card status when projections and task events meet.
 
@@ -160,9 +179,12 @@ def resolve_agent_card_status(previous: str | None, incoming: str | None) -> str
     ones so a late frame can still finish a card; once terminal, the status
     sticks — the CLI's terminal burst (task_updated → task_notification,
     findings §8.6) must fold into a single closure, never a second one.
-    That stickiness is also what makes a misclassification irreversible, so
-    ``has_live_agent_tasks`` is the escape hatch a wrong "done" is unsticky
-    with; see the caller in ``messages.tool_item``.
+    That stickiness is also what makes a misclassification irreversible, so a
+    wrong "done" is unsticky with the A3 batch's single card-opening rule:
+    ``has_running_agent_tasks`` unwinds it on the wire path
+    (``messages.tool_item``), on the task-event fold (``messages.
+    fold_agent_task_event``) and at the stop sweep
+    (``messages.close_open_agent_cards``).
     """
 
     if incoming is None:
@@ -305,6 +327,13 @@ class ClaudeAgentCallCard:
     content: AgentCallToolContent | None = None
     overlay: ClaudeAgentTaskOverlay = field(default_factory=ClaudeAgentTaskOverlay)
     status: str | None = None
+    #: The dispatch tool_use id and the owning platform session. One projector
+    #: serves every session of the runtime, so the stop-path sweep
+    #: (`messages.close_open_agent_cards`) must know which cards are this
+    #: session's, and a card minted by task events before its dispatch frame
+    #: (content None) needs the raw id to synthesize a base.
+    tool_use_id: str | None = None
+    session_id: str | None = None
 
 
 def agent_task_overlay_for_event(
@@ -354,12 +383,16 @@ def agent_task_overlay_for_event(
             agent_task_terminal_status(event.status) or "running",
         )
     # notification: the terminal frame carrying the agent's verbatim final
-    # reply (summary) plus the final usage snapshot.
+    # reply (summary) plus the final usage snapshot. The live wire carries no
+    # end time on this frame (only task_updated's patch has one), so for the
+    # live path ``event.end_time`` is None and nothing changes; an import fold
+    # that read one from the transcript message passes it through here.
     return (
         ClaudeAgentTaskOverlay(
             agents={event.task_id: _terminal_agent_entry(event.status)},
             usage=task_usage(event.usage),
             summary=event.summary,
+            end_time=event.end_time,
         ),
         agent_task_terminal_status(event.status) or "running",
     )

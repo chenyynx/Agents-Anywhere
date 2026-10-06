@@ -327,8 +327,9 @@ class CodexTurnActions:
         self,
         session_id: str,
         reason: str | None = None,
+        preserve_background: bool = False,
     ) -> RuntimeOperationResult:
-        _ = reason
+        _ = reason, preserve_background
         state = self.session_states.get(session_id)
         external_session_id = state.external_session_id if state is not None else None
         turn_id = self.active_turn_ids.get(session_id)

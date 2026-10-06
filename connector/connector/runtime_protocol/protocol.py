@@ -191,8 +191,31 @@ class AgentRuntime(ABC):
         self,
         session_id: str,
         reason: str | None = None,
+        preserve_background: bool = False,
     ) -> RuntimeOperationResult:
+        """Stop the current turn.
+
+        `preserve_background` is the model-switch flavor: spare running
+        background tasks (runtimes without such work ignore it). The default
+        keeps every stop's historical all-stop semantics.
+        """
         raise RuntimeUnsupportedError("interrupt_session")
+
+    async def stop_subagent(
+        self,
+        session_id: str,
+        task_id: str,
+    ) -> RuntimeOperationResult:
+        """Stop one background task of a session by its runtime task id.
+
+        The result is factual: ``{"stopped": true}`` when a task with this id
+        was live and the runtime accepted the stop, ``{"stopped": false}``
+        when the id is unknown there. Runtimes without a per-task stop raise
+        ``RuntimeUnsupportedError``; clients gate on
+        ``session.subagent_control``, so they never ask those runtimes.
+        """
+        _ = session_id, task_id
+        raise RuntimeUnsupportedError("stop_subagent")
 
     async def update_session_selections(
         self,

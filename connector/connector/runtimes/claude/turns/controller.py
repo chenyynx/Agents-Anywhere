@@ -147,11 +147,33 @@ class ClaudeTurnController:
         self,
         session_id: str,
         reason: str | None = None,
+        preserve_background: bool = False,
     ) -> RuntimeOperationResult:
         return await self.actions.interrupt_session(
             session_id=session_id,
             reason=reason,
+            preserve_background=preserve_background,
         )
+
+    async def stop_subagent(
+        self,
+        session_id: str,
+        task_id: str,
+    ) -> RuntimeOperationResult:
+        return await self.actions.stop_subagent(
+            session_id=session_id,
+            task_id=task_id,
+        )
+
+    def has_live_connection(self, session_id: str) -> bool:
+        """Whether a live transport currently hosts this session's work."""
+
+        return self.runner.has_live_connection(session_id)
+
+    def subagent_control_supported(self) -> bool:
+        """Whether the loaded SDK offers the per-task stop control."""
+
+        return self.runner.subagent_control_supported()
 
     def list_commands(
         self,

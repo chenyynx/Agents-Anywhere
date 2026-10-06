@@ -230,6 +230,7 @@ class ClaudeRuntime(AgentRuntime):
                     state,
                 ),
                 has_active_turn=claude_state_has_active_execution(state),
+                **self._subagent_control_context(session_id),
             )
         )
 
@@ -251,9 +252,25 @@ class ClaudeRuntime(AgentRuntime):
                         state,
                     ),
                     has_active_turn=claude_state_has_active_execution(state),
+                    **self._subagent_control_context(state.session_id),
                 )
             )
         )
+
+    def _subagent_control_context(self, session_id: str) -> dict[str, bool]:
+        """The two live facts behind ``session.subagent_control``.
+
+        ``subagent_control_supported`` is the SDK's per-task stop control,
+        probed once by the runner (SDK loading is a collaborator's job — the
+        architecture test pins that boundary) and cached fail-soft.
+        ``connection_online`` is this session's live transport, read fresh —
+        it opens and closes independently of any state transition.
+        """
+
+        return {
+            "subagent_control_supported": self._turns.subagent_control_supported(),
+            "connection_online": self._turns.has_live_connection(session_id),
+        }
 
     def _session_binding(
         self,
@@ -402,10 +419,22 @@ class ClaudeRuntime(AgentRuntime):
         self,
         session_id: str,
         reason: str | None = None,
+        preserve_background: bool = False,
     ) -> RuntimeOperationResult:
         return await self._turns.interrupt_session(
             session_id=session_id,
             reason=reason,
+            preserve_background=preserve_background,
+        )
+
+    async def stop_subagent(
+        self,
+        session_id: str,
+        task_id: str,
+    ) -> RuntimeOperationResult:
+        return await self._turns.stop_subagent(
+            session_id=session_id,
+            task_id=task_id,
         )
 
     async def respond_interaction(

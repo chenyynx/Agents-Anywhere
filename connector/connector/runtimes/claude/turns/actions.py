@@ -23,6 +23,7 @@ from connector.runtimes.claude.sdk.events import (
     interrupted_terminal_event,
     is_result_message,
 )
+from connector.runtimes.claude.sdk.stop_affordance import stop_background_tasks
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 from connector.runtimes.claude.turns.interactions import ClaudeInteractionController
 from connector.runtimes.claude.turns.lifecycle import ClaudeTurnRunner
@@ -150,7 +151,22 @@ class ClaudeTurnActionHandler:
         self,
         session_id: str,
         reason: str | None = None,
+        preserve_background: bool = False,
     ) -> RuntimeOperationResult:
+        """Stop this session's current turn.
+
+        Two flavors, one flag (pp 2026-10-05):
+
+        - ``preserve_background=True`` (the model-switch flow): the declared
+          per-task stop affordance makes the CLI interrupt spare running
+          background agents; they keep working and report later.
+        - ``preserve_background=False`` (manual stop and every internal stop,
+          the default): the pre-declaration semantics. The CLI interrupt
+          spares the tasks, so each one is stopped explicitly right after
+          (``stop_task``; a no-op on a CLI without the declaration, which
+          already killed them).
+        """
+
         session = self.session_store.get(session_id)
         if session is None:
             return RuntimeOperationResult(
@@ -168,6 +184,8 @@ class ClaudeTurnActionHandler:
             execution.interrupt_reason = reason
             queued = session.queued_execution
         if queued is not None:
+            # A queued execution is an unstarted user message, not background
+            # work: it is always dropped, whichever flavor the caller asked for.
             await self.interrupt_execution(
                 session=session,
                 execution=queued,
@@ -179,11 +197,44 @@ class ClaudeTurnActionHandler:
             execution=execution,
             source="claude.session.interrupt",
             reason=reason,
+            preserve_background=preserve_background,
         )
         return RuntimeOperationResult(
             ok=True,
             result={"interrupted": True, "alreadyStopped": False},
         )
+
+    async def stop_subagent(
+        self,
+        session_id: str,
+        task_id: str,
+    ) -> RuntimeOperationResult:
+        """Stop one background task of this session by its runtime task id.
+
+        The per-task half of the stop channel. The live task snapshot is the
+        authority on what can be stopped: an id that is not in it is a
+        factual "nothing was stopped" (``stopped=false``), never an error —
+        the card, if any, is left to converge on its own terminal event. The
+        stop itself is the SDK's ``stop_task`` control request; the CLI's
+        terminal frame for the task then closes the card through the existing
+        fold, so this method never rewrites card state itself.
+        """
+
+        connection = self.runner.connections.get(session_id)
+        if connection is None or connection.closing:
+            return RuntimeOperationResult(ok=True, result={"stopped": False})
+        if task_id not in connection.background.active_ids:
+            return RuntimeOperationResult(ok=True, result={"stopped": False})
+        accepted = task_id in await stop_background_tasks(
+            connection.client, (task_id,)
+        )
+        if accepted:
+            logger.warning(
+                "Claude subagent stopped on request session_id={} task_id={}",
+                session_id,
+                task_id,
+            )
+        return RuntimeOperationResult(ok=True, result={"stopped": accepted})
 
     async def interrupt_execution(
         self,
@@ -191,6 +242,7 @@ class ClaudeTurnActionHandler:
         execution: ClaudeExecution,
         source: str,
         reason: str | None,
+        preserve_background: bool = False,
     ) -> None:
         """Stop one owned execution and wait until all of its work has exited."""
 
@@ -201,6 +253,21 @@ class ClaudeTurnActionHandler:
         # only way to name the queue it has to empty is to have taken its
         # address first.
         response = execution.client
+        connection = response.connection if response is not None else None
+        # Snapshot before the interrupt: the ids a non-preserving stop owns,
+        # whether the CLI killed them already (no declaration) or spared them
+        # (declared). Only *subagents* are owned: the live set also holds bash
+        # and workflow tasks, and those are left to the CLI's own releasing
+        # (pp 2026-10-05: "先不杀" — they are neither stopped here nor folded
+        # as killed). The Agent-card binding is the existing subagent
+        # registry: bash/workflow tasks never bind one, and it is the same
+        # vouching the killed fold uses, so what is stopped and what may be
+        # reported as killed cannot drift apart.
+        background_ids = (
+            self._bound_subagent_ids(session, connection)
+            if connection is not None and not preserve_background
+            else ()
+        )
         try:
             await interrupt_client(execution.client)
         except Exception:  # noqa: BLE001
@@ -208,6 +275,26 @@ class ClaudeTurnActionHandler:
                 "Claude SDK interrupt raced with shutdown session_id={}",
                 session.session_id,
             )
+        stopped_ids: tuple[str, ...] = ()
+        if (
+            background_ids
+            and connection is not None
+            and connection.per_task_stop_declared
+        ):
+            # Declared CLI interrupts spare background work; a caller without
+            # a per-task control still gets the old all-stop, so kill what the
+            # interrupt left alive. Not reached on a CLI without the
+            # declaration: the interrupt already ended them. The declaration
+            # is read off the connection, never a process-level switch another
+            # runtime instance could have flipped (red team F-A/F-C).
+            stopped_ids = await stop_background_tasks(connection.client, background_ids)
+            if stopped_ids:
+                logger.warning(
+                    "Claude interrupt stopped background tasks session_id={} "
+                    "tasks={}",
+                    session.session_id,
+                    len(stopped_ids),
+                )
         task = execution.task
         if task is not None and not task.done():
             task.cancel()
@@ -220,8 +307,38 @@ class ClaudeTurnActionHandler:
         # P2-N1: the agent is told which subagents the stop killed, at the
         # stop, instead of waiting for a CLI notification that arrives minutes
         # later (2026-10-04: agent 20 s late, card 4m41s late, CLI 4m43s late).
+        # Only the tasks this stop actually killed may be folded as killed —
+        # a survivor folded into "interrupted" is a lie that sticks (Agent
+        # cards do not heal). A preserving stop killed nothing; a declared
+        # connection's stop killed exactly the fan-out's accepted set (an
+        # empty set stays empty — a refused or timed-out stop is not a kill,
+        # red team F-A); only a connection without the declaration may report
+        # the live set, because there the CLI's own all-stop killed it.
+        if preserve_background:
+            reported_ids: tuple[str, ...] = ()
+        elif connection is not None and connection.per_task_stop_declared:
+            reported_ids = stopped_ids
+        elif connection is not None:
+            reported_ids = self._bound_subagent_ids(session, connection)
+        else:
+            reported_ids = ()
         await self._report_stopped_subagents(
-            session=session, response=response, source=source, reason=reason
+            session=session,
+            response=response,
+            task_ids=reported_ids,
+            source=source,
+            reason=reason,
+        )
+        # I-G1's judgment step (red team F-E): independent of the killed
+        # report and of `task_ids` — the ghost (no task id at all) and the
+        # preserving stop (empty fold set) are exactly the two stops that
+        # still must judge open cards, and both are the model-switch path's
+        # main shapes. Purely display, same never-fail discipline.
+        await self._sweep_open_agent_cards(
+            session=session,
+            response=response,
+            source=source,
+            reason=reason,
         )
         await self.runner.finish_execution(
             session=session,
@@ -229,11 +346,33 @@ class ClaudeTurnActionHandler:
             terminal=interrupted_terminal_event(reason),
         )
 
+    def _bound_subagent_ids(
+        self,
+        session: ClaudeSession,
+        connection: Any,
+    ) -> tuple[str, ...]:
+        """The live background ids that are bound to an Agent card.
+
+        `ClaudeTurnRunner.agent_task_calls` is the card registry the L2 fold
+        fills from `task_started` frames — only `local_agent` tasks ever bind
+        one — so it is the subagent set. Bash and workflow tasks are excluded
+        here exactly as they are excluded from the fold ("先不杀", pp
+        2026-10-05), which keeps "what a stop kills" and "what a stop may
+        report as killed" the same set by construction.
+        """
+
+        return tuple(
+            task_id
+            for task_id in connection.background.active_ids
+            if (session.session_id, task_id) in self.runner.agent_task_calls
+        )
+
     async def _report_stopped_subagents(
         self,
         session: ClaudeSession,
         response: Any,
         *,
+        task_ids: tuple[str, ...],
         source: str,
         reason: str | None,
     ) -> None:
@@ -242,9 +381,14 @@ class ClaudeTurnActionHandler:
         Display only, and it must never be the reason a stop fails: the L2 fold
         already swallows its own failures, and this call sits on the stop path,
         so anything that escapes is logged and dropped rather than raised.
+
+        `task_ids` may be empty (a preserving stop, or a declared stop whose
+        fan-out accepted nothing); the fold then does nothing, which is the
+        honest report. Judging the cards no task covers is a separate step
+        (`_sweep_open_agent_cards`), deliberately not gated on this set.
         """
 
-        if response is None:
+        if response is None or not task_ids:
             return
         connection = response.connection
         if connection is None or connection.closing:
@@ -252,7 +396,7 @@ class ClaudeTurnActionHandler:
         try:
             await self.runner.publish_stopped_subagents(
                 session,
-                tuple(connection.background.active_ids),
+                task_ids,
                 reason=f"{source}:{reason}" if reason else source,
             )
         except Exception:  # noqa: BLE001
@@ -261,6 +405,35 @@ class ClaudeTurnActionHandler:
                 session.session_id,
                 source,
             )
+
+    async def _sweep_open_agent_cards(
+        self,
+        session: ClaudeSession,
+        response: Any,
+        *,
+        source: str,
+        reason: str | None,
+    ) -> None:
+        """I-G1: judge every open Agent card this stop left without a task.
+
+        The dispatch-window ghost has no task id, so no killed fold can ever
+        name it, and the one frame that could close it (the aborted call's
+        tool_result) is discarded by the stop's own release — this step is
+        the stop's last chance to judge it, and it runs on every stop that
+        has a live response, declared or not, preserving or not (red team
+        F-E). Display only, same never-fail discipline as the fold above (the
+        runner method swallows and logs).
+        """
+
+        if response is None:
+            return
+        connection = response.connection
+        if connection is None or connection.closing:
+            return
+        await self.runner.close_open_agent_cards(
+            session,
+            reason=f"{source}:{reason}" if reason else source,
+        )
 
     async def _drain_after_interrupt(
         self,

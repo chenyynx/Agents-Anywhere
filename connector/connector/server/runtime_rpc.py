@@ -43,6 +43,7 @@ from connector.server.runtime_turn_rpc import (
     dispatch_session_selections_update,
     dispatch_session_send_message,
     dispatch_session_steer,
+    dispatch_session_stop_subagent,
 )
 
 BackgroundScheduler = Callable[[Any], None]
@@ -75,6 +76,7 @@ class RuntimeRpcHandler:
         "session.send_message",
         "session.steer",
         "session.interrupt",
+        "session.stopSubagent",
     }
 
     def __init__(
@@ -265,6 +267,12 @@ class RuntimeRpcHandler:
             return self._runtime_result(
                 runtime,
                 await dispatch_session_interrupt(runtime, params),
+            )
+        if method == "session.stopSubagent":
+            runtime = self._resolve_agent_runtime(params)
+            return self._runtime_result(
+                runtime,
+                await dispatch_session_stop_subagent(runtime, params),
             )
         raise ValueError(f"unsupported runtime method: {method}")
 

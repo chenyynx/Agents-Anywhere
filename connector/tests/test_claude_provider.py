@@ -102,7 +102,10 @@ async def _test_claude_provider_schema_and_config_validation() -> None:
     )
 
     assert schema.defaults == {
-        "environment": {}, "customModels": [], "idleTimeoutSeconds": 600,
+        "environment": {},
+        "customModels": [],
+        "idleTimeoutSeconds": 600,
+        "perTaskStopAffordance": True,
     }
     assert schema.ui_schema["customModels"]["component"] == "customModels"
     assert schema.ui_schema["modelGateway"]["component"] == "modelGateway"
@@ -112,6 +115,7 @@ async def _test_claude_provider_schema_and_config_validation() -> None:
         "executablePath",
         "idleTimeoutSeconds",
         "modelGateway",
+        "perTaskStopAffordance",
     }
     assert schema.schema["properties"]["executablePath"]["metadata"] == {
         "i18n": {
@@ -140,6 +144,12 @@ async def _test_claude_provider_schema_and_config_validation() -> None:
         }
     ]
     assert config.metadata["launchTarget"]["path"] == "/opt/claude"
+
+    # The per-task stop declaration is on by default (kill-switch off is an
+    # explicit choice), and its value survives validation.
+    assert config.values["perTaskStopAffordance"] is True
+    off = await provider.validate_config({"perTaskStopAffordance": False})
+    assert off.values["perTaskStopAffordance"] is False
 
     custom_timeout = await provider.validate_config({"idleTimeoutSeconds": 120})
     assert custom_timeout.values["idleTimeoutSeconds"] == 120

@@ -4,19 +4,38 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+# Bumped whenever the history projection starts producing items a stored
+# cursor's window cannot retroactively cover. A stored cursor stamped with an
+# older version triggers one full rebuild on the session's next sync, which
+# is how a projection fix reaches transcripts already past their cursor (the
+# 2026-10-05 terminal-task fold was the first such fix: its notices sit behind
+# the cursors of every stuck session). Increment for any projection change
+# that must be re-applied to existing transcripts.
+HISTORY_PROJECTION_VERSION = 2
+
 
 @dataclass(frozen=True, slots=True)
 class ClaudeHistoryCursor:
+    """One stored sync position.
+
+    ``projector_version`` names the history projection that produced the
+    timeline items up to this position. Cursors built in code default to the
+    current version — only a cursor deserialized from older state can be
+    stale — and a stale one makes ``messages_after_cursor`` rebase once.
+    """
+
     last_modified: int | None
     file_size: int | None
     message_count: int
     last_message_uuid: str | None
+    projector_version: int | None = HISTORY_PROJECTION_VERSION
 
 
 # Reasons a sync window ends up covering the whole transcript again.
 REBASE_NO_CURSOR = "no_cursor"
 REBASE_UUID_DANGLING = "uuid_dangling"
 REBASE_CHAIN_REWRITTEN = "chain_rewritten"
+REBASE_PROJECTOR_VERSION = "projector_version"
 # Reasons the window is an incremental slice of the transcript.
 INCREMENTAL_UUID_ANCHORED = "uuid_anchored"
 INCREMENTAL_COUNT_ANCHORED = "count_anchored"
@@ -50,11 +69,13 @@ def cursor_for(session_info: Any, messages: tuple[Any, ...]) -> ClaudeHistoryCur
         file_size=_int_attr(session_info, "file_size"),
         message_count=len(messages),
         last_message_uuid=last_message_uuid,
+        projector_version=HISTORY_PROJECTION_VERSION,
     )
 
 
 def cursor_to_state(cursor: ClaudeHistoryCursor) -> dict[str, Any]:
     return {
+        "projectorVersion": cursor.projector_version,
         "fingerprint": {
             "lastModified": cursor.last_modified,
             "fileSize": cursor.file_size,
@@ -80,6 +101,9 @@ def cursor_from_state(state: Mapping[str, Any] | None) -> ClaudeHistoryCursor | 
         file_size=_optional_int(fingerprint.get("fileSize")),
         message_count=_optional_int(cursor.get("messageCount")) or 0,
         last_message_uuid=_optional_json_string(cursor.get("lastMessageUuid")),
+        # Absent means the state predates the version stamp, so it is stale
+        # (None), never the current default.
+        projector_version=_optional_int(state.get("projectorVersion")),
     )
 
 
@@ -105,12 +129,24 @@ def messages_after_cursor(
     A missing cursor is the first sync of a session: nothing was covered yet,
     so the window is the whole chain and it counts as a rebase, exactly like the
     sync that follows a rewrite.
+
+    A cursor stamped with an older projection version is the same kind of
+    stale: the window it describes may already have been published, but the
+    items it produced no longer match what today's projector would emit (the
+    terminal task fold is the first such change), so the whole chain is
+    re-projected once and the cursor lands stamped with the current version.
     """
     if cursor is None:
         return ClaudeHistorySyncWindow(
             messages=messages,
             rebased=True,
             reason=REBASE_NO_CURSOR,
+        )
+    if cursor.projector_version != HISTORY_PROJECTION_VERSION:
+        return ClaudeHistorySyncWindow(
+            messages=messages,
+            rebased=True,
+            reason=REBASE_PROJECTOR_VERSION,
         )
     if cursor.last_message_uuid:
         for index, message in enumerate(messages):

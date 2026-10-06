@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -37,8 +38,28 @@ class ClaudeBackgroundTasks:
     """Track native work that may outlive the reply which started it."""
 
     active_ids: set[str] = field(default_factory=set)
+    #: Set while `active_ids` is empty. This is the event-driven "background
+    #: drained" signal a selection change waits on instead of refusing to
+    #: rebuild the transport (2026-10-05): the terminal task frame is the
+    #: signal, not a poll. It is synced on every observed lifecycle frame; a
+    #: waiter checks `active_ids` itself first, so the pre-first-frame state
+    #: is never mistaken for pending work.
+    drained: asyncio.Event = field(default_factory=asyncio.Event)
 
-    def observe(self, message: Any) -> bool:
+    def observed(self, message: Any) -> bool:
+        """Observe one frame and keep the drain signal in step with it."""
+
+        handled = self._observe(message)
+        self._sync_drained()
+        return handled
+
+    def _sync_drained(self) -> None:
+        if self.active_ids:
+            self.drained.clear()
+        else:
+            self.drained.set()
+
+    def _observe(self, message: Any) -> bool:
         """Return whether this was a task lifecycle event."""
         kind = _value(message, "subtype")
         if kind == "background_tasks_changed":

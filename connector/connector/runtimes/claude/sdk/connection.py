@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -415,12 +416,24 @@ class ClaudeConnection:
     ready: asyncio.Event = field(default_factory=asyncio.Event)
     queried: asyncio.Event = field(default_factory=asyncio.Event)
     selected: asyncio.Event = field(default_factory=asyncio.Event)
+    #: Condition-variable signal: set whenever the turn set changes (a turn
+    #: starts or ends, reconciliation ends). A selection change waits on it so
+    #: a rebuild never cuts off a turn — the event is the hint, `is_quiescent`
+    #: is the truth, and waiters clear it before awaiting.
+    turn_changed: asyncio.Event = field(default_factory=asyncio.Event)
     pending: ClaudeResponse | None = None
     current: ClaudeResponse | None = None
     failure: BaseException | None = None
     closing: bool = False
     task_ids: set[str] = field(default_factory=set)
     background: ClaudeBackgroundTasks = field(default_factory=ClaudeBackgroundTasks)
+    #: Whether THIS connection's initialize declared the per-task stop
+    #: affordance. Recorded at build time from the declaration install's
+    #: return value (red team F-A/F-C: the stop path reads the connection's
+    #: own fact, never a process-level switch that another runtime instance
+    #: could have flipped). False = the CLI's interrupt owns the all-stop, so
+    #: an explicit fan-out must not run and survivors must not be folded.
+    per_task_stop_declared: bool = False
     selections: dict[str, str | None] = field(default_factory=dict)
     reconcile_needed: bool = False
     reconciling: bool = False
@@ -693,6 +706,138 @@ class ClaudeConnection:
 
         self.idle_task = asyncio.create_task(expire())
 
+    @property
+    def is_quiescent(self) -> bool:
+        """No turn is in flight on this transport.
+
+        A selection change may rebuild the transport when this holds: there is
+        nothing to cut off. Background work is tracked separately — its own
+        drain is a prerequisite, because a rebuild would kill the process
+        that hosts it.
+        """
+
+        return (
+            self.closing is False
+            and self.current is None
+            and self.pending is None
+            and not self.reconciling
+        )
+
+    def _notify_turn_changed(self) -> None:
+        self.turn_changed.set()
+
+    async def _wait_event_or_death(
+        self,
+        event: asyncio.Event,
+        timeout: float | None = None,
+    ) -> bool:
+        """Wait for `event`, for the reader task to end, or for the timeout.
+
+        Returns True only when the event fired. Cancellation propagates (a
+        stop cancels the turn that is waiting here).
+        """
+
+        waiter = asyncio.create_task(event.wait())
+        watches: list[asyncio.Future[Any]] = [waiter]
+        if self.task is not None and not self.task.done():
+            watches.append(self.task)
+        try:
+            done, _ = await asyncio.wait(
+                watches,
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            return waiter in done
+        finally:
+            waiter.cancel()
+            await asyncio.gather(waiter, return_exceptions=True)
+
+    async def wait_background_drained(
+        self,
+        *,
+        ceiling: float | None = None,
+    ) -> bool:
+        """Wait until no background work is registered on this transport.
+
+        Event-driven: the terminal task frame is the signal. Returns early
+        when the transport dies; the caller re-checks the lifecycle either way.
+
+        ``ceiling`` bounds the wait (red team F-B). Since the selection-change
+        wall waits here instead of failing fast, an id whose terminal frame
+        never lands — the documented stale-id cost — would otherwise pin the
+        user's next message forever, silently. On the ceiling this returns
+        False and the caller logs and proceeds to the rebuild, the same
+        explicit path the settle phase already takes; True means the set
+        emptied (or the transport died under the wait).
+        """
+
+        deadline = None if ceiling is None else time.monotonic() + ceiling
+        while self.background.active_ids:
+            if self.closing or self.failure is not None:
+                return True
+            self.background.drained.clear()
+            if deadline is None:
+                if not await self._wait_event_or_death(self.background.drained):
+                    return True
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            if await self._wait_event_or_death(
+                self.background.drained, timeout=remaining
+            ):
+                continue
+            # The wait ended without the drained signal: either the transport
+            # is gone (nothing left to drain here) or the ceiling ran out
+            # with ids still live.
+            transport_gone = (
+                self.closing
+                or self.failure is not None
+                or (self.task is not None and self.task.done())
+            )
+            return transport_gone
+        return True
+
+    async def wait_settled(self, *, grace: float, ceiling: float) -> bool:
+        """Wait until no turn is in flight for a settled `grace` window.
+
+        "Idle right now" is not "nothing more is coming": the completion of the
+        last background task wakes the main agent to report it, and rebuilding
+        the transport under that turn would kill the report the user is
+        waiting for. A turn that starts inside the window restarts it; the
+        `ceiling` bounds the wait on a turn that is actually running, so a long
+        report cannot hold the rebuild forever (on the ceiling this returns
+        False and the caller logs and proceeds).
+
+        Returns whether the transport settled.
+        """
+
+        deadline = time.monotonic() + ceiling
+        quiet_since: float | None = None
+        while True:
+            if self.closing or self.failure is not None:
+                return False
+            now = time.monotonic()
+            if self.is_quiescent:
+                if quiet_since is None:
+                    quiet_since = now
+                if now - quiet_since >= grace:
+                    return True
+                remaining = min(quiet_since + grace, deadline) - now
+            else:
+                quiet_since = None
+                if now >= deadline:
+                    logger.warning(
+                        "Claude selection change settle ceiling reached: a turn "
+                        "did not finish in time"
+                    )
+                    return False
+                remaining = deadline - now
+            if remaining <= 0:
+                continue
+            self.turn_changed.clear()
+            await self._wait_event_or_death(self.turn_changed, timeout=remaining)
+
     def response_for(self, execution: ClaudeExecution | None) -> ClaudeResponse:
         self.cancel_idle()
         response = ClaudeResponse(
@@ -701,6 +846,7 @@ class ClaudeConnection:
             user_id=str(uuid4()) if self.retained or self.queried.is_set() else None,
         )
         self.pending = response
+        self._notify_turn_changed()
         return response
 
     async def select_response(self, response: ClaudeResponse) -> None:
@@ -708,6 +854,7 @@ class ClaudeConnection:
         self.current = response
         if self.pending is response:
             self.pending = None
+        self._notify_turn_changed()
         if not response.maintenance:
             await self.on_activity(response)
         self.selected.set()
@@ -726,6 +873,7 @@ class ClaudeConnection:
             return False
         self.current = None
         self.selected.clear()
+        self._notify_turn_changed()
         return True
 
     async def prepare_approval(self) -> None:
@@ -825,6 +973,7 @@ class ClaudeConnection:
             finally:
                 check.release(interrupted=not check.terminal_received)
                 self.reconciling = False
+                self._notify_turn_changed()
 
     async def connect(self) -> None:
         if self.task is None:
@@ -841,7 +990,7 @@ class ClaudeConnection:
             preamble = []
             async for message in receive_response_messages(self.client):
                 had_background = bool(self.background.active_ids)
-                task_event = self.background.observe(message)
+                task_event = self.background.observed(message)
                 if task_event:
                     if self.background.active_ids:
                         self.cancel_idle()
@@ -1051,6 +1200,7 @@ class ClaudeConnection:
                     if await response.await_terminal_verdict():
                         self.current = None
                         self.selected.clear()
+                        self._notify_turn_changed()
                         self.arm_idle()
                         if (
                             not self.streaming
@@ -1090,6 +1240,7 @@ class ClaudeConnection:
     async def _release_responses(self) -> None:
         responses = (self.current, self.pending)
         self.current = self.pending = None
+        self._notify_turn_changed()
         for response in responses:
             if response is not None:
                 await response.messages.put(None)
@@ -1097,6 +1248,7 @@ class ClaudeConnection:
     async def close(self) -> None:
         was_closing = self.closing
         self.closing = True
+        self._notify_turn_changed()
         if self.background_done_task is asyncio.current_task():
             # The reader's finally must not cancel the maintenance task that
             # is waiting here for the reader's own shutdown.

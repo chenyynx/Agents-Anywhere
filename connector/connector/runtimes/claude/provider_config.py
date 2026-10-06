@@ -64,6 +64,18 @@ def claude_config_schema() -> dict[str, Any]:
                     "active work. Scheduled jobs and background tasks keep it alive."
                 ),
             },
+            "perTaskStopAffordance": {
+                "type": "boolean",
+                "default": True,
+                "title": "Per-task stop affordance",
+                "description": (
+                    "Declare to Claude Code that this client renders a per-task "
+                    "stop control. With the declaration, interrupting a turn "
+                    "spares running background agents (manual stop still ends "
+                    "them explicitly). Turn off to restore the pre-declaration "
+                    "behavior, where an interrupt kills background agents."
+                ),
+            },
         },
         "additionalProperties": False,
     }

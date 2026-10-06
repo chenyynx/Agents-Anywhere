@@ -12,6 +12,7 @@ from connector.runtime_protocol import (
     CAPABILITY_SESSION_INTERRUPT,
     CAPABILITY_SESSION_SEND_MESSAGE,
     CAPABILITY_SESSION_STEER,
+    CAPABILITY_SESSION_SUBAGENT_CONTROL,
     RuntimeCapability,
     RuntimeCapabilitySet,
     SessionState,
@@ -26,6 +27,14 @@ class ClaudeCapabilityContext:
     session_id: str | None = None
     external_session_id: str | None = None
     has_active_turn: bool = False
+    #: The SDK this connector loaded offers ``stop_task`` (the per-task stop
+    #: control). False on an SDK without the method.
+    subagent_control_supported: bool = False
+    #: A live (non-closing) runtime connection hosts this session. The
+    #: per-task stop rides that connection, so this — not the turn — decides
+    #: ``session.subagent_control`` availability: background subagents can be
+    #: running while the session itself is idle.
+    connection_online: bool = False
 
 
 def claude_runtime_capabilities(
@@ -135,6 +144,31 @@ def claude_session_capabilities(
                 supported=True,
                 available=active,
                 unavailable_reason=None if active else "no_active_turn",
+                metadata={"source": "claude.runtime"},
+            ),
+            RuntimeCapability(
+                capability_id=CAPABILITY_SESSION_SUBAGENT_CONTROL,
+                scope="session",
+                runtime="claude",
+                session_id=session_id,
+                connector_id=context.connector_id,
+                supported=context.subagent_control_supported,
+                # Deliberately not turn-gated: background subagents keep
+                # running while the session is idle, and the per-task stop
+                # rides the live connection, not the turn.
+                available=(
+                    context.subagent_control_supported and context.connection_online
+                ),
+                unavailable_reason=(
+                    None
+                    if context.subagent_control_supported
+                    and context.connection_online
+                    else (
+                        "not_implemented"
+                        if not context.subagent_control_supported
+                        else "session_disconnected"
+                    )
+                ),
                 metadata={"source": "claude.runtime"},
             ),
             RuntimeCapability(

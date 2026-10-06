@@ -338,7 +338,11 @@ class CodexRuntime(AgentRuntime):
         self,
         session_id: str,
         reason: str | None = None,
+        preserve_background: bool = False,
     ) -> RuntimeOperationResult:
+        # Codex has no background-agent transport to preserve; the flag exists
+        # for the shared interrupt contract and is deliberately unused.
+        _ = preserve_background
         return await self._turns.interrupt_session(
             session_id=session_id,
             reason=reason,

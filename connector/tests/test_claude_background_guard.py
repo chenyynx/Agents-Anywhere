@@ -260,7 +260,7 @@ def test_wake_and_human_frames_are_not_background_activity() -> None:
 
 def test_background_tasks_changed_marks_work_active() -> None:
     tasks = ClaudeBackgroundTasks()
-    assert tasks.observe(_parse(WIRE_BACKGROUND_TASKS_CHANGED)) is True
+    assert tasks.observed(_parse(WIRE_BACKGROUND_TASKS_CHANGED)) is True
     assert tasks.active_ids == {"aebf59759706f3446"}
 
     # An empty snapshot releases nothing on its own — only terminal task
@@ -274,7 +274,7 @@ def test_background_tasks_changed_marks_work_active() -> None:
             "session_id": SESSION,
         }
     )
-    assert tasks.observe(empty) is True
+    assert tasks.observed(empty) is True
     assert tasks.active_ids == {"aebf59759706f3446"}
 
 

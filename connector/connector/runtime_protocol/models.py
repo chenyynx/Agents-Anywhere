@@ -33,6 +33,7 @@ SessionSourceObservationOrigin = Literal["event", "inventory", "operation"]
 
 CAPABILITY_SESSION_SEND_MESSAGE = "session.send_message"
 CAPABILITY_SESSION_INTERRUPT = "session.interrupt"
+CAPABILITY_SESSION_SUBAGENT_CONTROL = "session.subagent_control"
 CAPABILITY_SESSION_STEER = "session.steer"
 CAPABILITY_SESSION_INTERACTION_APPROVAL = "session.interaction.approval"
 CAPABILITY_RUNTIME_ATTACHMENT = "runtime.attachment"

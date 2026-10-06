@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from connector.runtime_protocol import (
@@ -29,6 +29,7 @@ from connector.runtime_protocol import (
     complete_tool_content,
 )
 from connector.runtimes.claude.domain.session import ClaudeSession
+from connector.runtimes.claude.sdk.tasks import is_task_notification_text
 from connector.runtimes.claude.sdk.title_tool import is_title_tool_name
 from connector.runtimes.claude.timeline.agent_calls import (
     AGENT_CARD_TERMINAL_STATUSES,
@@ -36,7 +37,7 @@ from connector.runtimes.claude.timeline.agent_calls import (
     ClaudeAgentTaskOverlay,
     claude_agent_call_content,
     complete_claude_agent_call_content,
-    has_live_agent_tasks,
+    has_running_agent_tasks,
     is_async_agent_receipt,
     resolve_agent_card_status,
 )
@@ -84,6 +85,10 @@ CLAUDE_LOCAL_COMMAND_CHROME_PREFIXES = (
     CLAUDE_COMMAND_NAME_TAG,
     *CLAUDE_LOCAL_COMMAND_ECHO_TAGS,
 )
+# The wire's reasoning shapes. One set for the extraction, the revision rule
+# and the display gate, so the three can never drift apart on what counts as
+# reasoning.
+REASONING_BLOCK_TYPES = frozenset({"thinking", "reasoning", "redacted_thinking"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +243,22 @@ class ClaudeMessageProjector:
         items: list[RuntimeTimelineItem] = []
         native_message_id = message_id(message)
         for block in message_system_blocks(message):
+            if (
+                block.block_type in REASONING_BLOCK_TYPES
+                and not _reasoning_block_is_displayable(block)
+            ):
+                # The empty-reasoning shape the affected model channel emits:
+                # a thinking block carrying only its signature (9 of 49 blocks
+                # in the reported session, 2026-10-05), or a redacted_thinking
+                # with nothing readable. Published, it renders as a bare,
+                # un-expandable 「推理」 dead row with no body, so it is never
+                # projected — the same invariant the streaming path keeps
+                # (`stream.py::_thinking_partial_item` drops empty text before
+                # `reasoning_item`). All three routes share this projector
+                # (live subagent frames, the turn-end projection, the history
+                # import), and the client gate additionally hides rows already
+                # persisted by older connectors.
+                continue
             item_id = stable_system_item_id(
                 session=session,
                 turn_id=turn_id,
@@ -253,7 +274,7 @@ class ClaudeMessageProjector:
             revision = (
                 reasoning_revision
                 if reasoning_revision is not None
-                and block.block_type in {"thinking", "reasoning", "redacted_thinking"}
+                and block.block_type in REASONING_BLOCK_TYPES
                 else 1
             )
             items.append(
@@ -293,6 +314,10 @@ class ClaudeMessageProjector:
 
         Shares stable_system_item_id with the finished-message projection, so
         the live item, the turn-end item and history converge on one row.
+        Callers must not pass empty text: an empty reasoning block is never
+        published (the stream guard in `stream.py` answers the same question),
+        and `system_items_for_message` drops the same shape on the other
+        routes.
         """
 
         block = ClaudeSystemBlock(
@@ -398,17 +423,30 @@ class ClaudeMessageProjector:
 
         if isinstance(content, AgentCallToolContent):
             status, content = self._fold_agent_card(
-                item_id, item_turn_id, status, content
+                item_id,
+                item_turn_id,
+                status,
+                content,
+                session_id=session.session_id,
+                tool_use_id=block.tool_use_id,
             )
-            if status in AGENT_CARD_TERMINAL_STATUSES and has_live_agent_tasks(
+            if status in AGENT_CARD_TERMINAL_STATUSES and has_running_agent_tasks(
                 content
             ):
-                # I1: agents still alive means the card is not finished. The
+                # I1: a *started* task means the card is not finished. The
                 # wire frames above can classify a launch as an outcome (the
                 # sidechain receipt carries no metadata to tell them apart),
                 # and `resolve_agent_card_status` keeps the first terminal
                 # status — so unstick it here, on the item and on the card,
                 # which also heals a status a wrong frame already pinned.
+                #
+                # Narrowed to `running` with the A3 batch (red team F-D): the
+                # `async_launched` receipt is a launch report, not proof a
+                # task exists, and vouching for it here would reopen a card
+                # the stop's sweep just judged (the late aborted receipt is
+                # exactly the frame a stop races). A spared call that really
+                # starts re-opens the card through the task_started fold
+                # clamp; running is the one entry that vouches for a task.
                 status = "running"
                 self._agent_cards[item_id].status = "running"
 
@@ -435,6 +473,9 @@ class ClaudeMessageProjector:
         turn_id: str,
         status: str,
         content: AgentCallToolContent,
+        *,
+        session_id: str,
+        tool_use_id: str,
     ) -> tuple[str, AgentCallToolContent]:
         """Remember one wire-projected Agent card and merge live task state.
 
@@ -449,6 +490,8 @@ class ClaudeMessageProjector:
         card = self._agent_cards.setdefault(item_id, ClaudeAgentCallCard())
         card.turn_id = turn_id
         card.content = content
+        card.session_id = session_id
+        card.tool_use_id = tool_use_id
         card.status = resolve_agent_card_status(card.status, status)
         return card.status, card.overlay.apply(content)
 
@@ -459,27 +502,54 @@ class ClaudeMessageProjector:
         tool_use_id: str,
         overlay: ClaudeAgentTaskOverlay,
         status: str | None,
+        base: AgentCallToolContent | None = None,
+        turn_id: str | None = None,
     ) -> RuntimeTimelineItem:
         """Fold one task event into its Agent card and return the item to publish.
 
         The item keeps the card's stable id and order slot, so every fold
         upserts the one card the dispatch minted, and a projection that
         arrives later republishes the same base with this same overlay.
+
+        ``base``/``turn_id`` are the import path's additions: its sync window
+        is a suffix of the transcript, so the dispatch frame can sit outside
+        it. A card already minted in-window always wins; otherwise the fold
+        publishes the dispatch shape its caller rebuilt from the history
+        lookup, so a dispatch-less window still opens the right card.
         """
 
         item_id = stable_tool_item_id(session, tool_use_id)
         order_seq = self.order_seq_for(item_id)
         card = self._agent_cards.setdefault(item_id, ClaudeAgentCallCard())
+        if card.turn_id is None and turn_id is not None:
+            card.turn_id = turn_id
         card.overlay.merge(overlay)
+        card.session_id = session.session_id
+        card.tool_use_id = tool_use_id
         card.status = resolve_agent_card_status(card.status, status)
-        base = card.content or card.overlay.synthesized_call(tool_use_id)
+        resolved_base = card.content or base or card.overlay.synthesized_call(
+            tool_use_id
+        )
+        content = card.overlay.apply(resolved_base)
+        if card.status in AGENT_CARD_TERMINAL_STATUSES and has_running_agent_tasks(
+            content
+        ):
+            # I-G2 (ghost-card-findings §5.1, narrowed by red team F-D): a
+            # *started* task outranks a terminal fold. The stop-path sweep
+            # judges open cards at a stop, and a spared dispatch can start
+            # after that judgment (the preserve edge); this clamp is what
+            # turns the card back to running instead of leaving "card says
+            # interrupted, agent runs". The `async_launched` receipt does not
+            # trigger it — a receipt proves a launch was reported, not that a
+            # task exists, and vouching for it would strand the S3 ghost.
+            card.status = "running"
         return ToolTimelineItem(
             id=item_id,
             type="tool",
             status=card.status,  # type: ignore[arg-type]
             role="tool",
             turn_id=card.turn_id,
-            content=card.overlay.apply(base),
+            content=content,
             source=TimelineSource(
                 runtime="claude",
                 external_session_id=session.external_session_id,
@@ -489,6 +559,100 @@ class ClaudeMessageProjector:
                 event="claude.agent.task",
             ),
         ).to_platform_item(session_id=session.session_id, order_seq=order_seq)
+
+    def close_open_agent_cards(
+        self,
+        session: ClaudeSession,
+    ) -> tuple[RuntimeTimelineItem, ...]:
+        """Judge every open Agent card of this session that has no live task.
+
+        The stop-path sweep (I-G1, `ghost-card-findings.md` §5.1): a dispatch
+        aborted inside its dispatch window has no task to close it — the CLI
+        never created one — and the single frame that could (the aborted
+        call's tool_result) is discarded by the stop's own release. Nothing
+        else ever re-projects that card, so the stop is the last moment that
+        can judge it; this returns the items that do.
+
+        Open cards backed by a *started* task (a ``running`` entry) are left
+        alone (I-G2), and a card whose task starts after this ran is re-opened
+        by the fold clamp in ``fold_agent_task_event`` — the sweep cannot lie
+        about a live agent, and cannot strand a dead card. The exemption is
+        deliberately narrow (red team F-D): the ``async_launched`` receipt
+        marks a launch report, not a task, so a receipt-only card is still a
+        dispatch-window ghost and is judged here; the per-task stop control
+        covers it if the task turns out to be real. Terminal cards are
+        untouched.
+        """
+
+        items: list[RuntimeTimelineItem] = []
+        for item_id, card in tuple(self._agent_cards.items()):
+            if card.session_id != session.session_id:
+                # One projector serves every session of the runtime.
+                continue
+            if card.status in AGENT_CARD_TERMINAL_STATUSES:
+                continue
+            base = card.content
+            if base is None:
+                # A card minted by task events before its dispatch frame:
+                # with no agents it has nothing to say, and it cannot be
+                # re-based without its tool_use id.
+                if not card.overlay.agents or card.tool_use_id is None:
+                    continue
+                base = card.overlay.synthesized_call(card.tool_use_id)
+            content = card.overlay.apply(base)
+            if has_running_agent_tasks(content):
+                continue
+            card.status = resolve_agent_card_status(card.status, "interrupted")
+            items.append(
+                ToolTimelineItem(
+                    id=item_id,
+                    type="tool",
+                    status=card.status,  # type: ignore[arg-type]
+                    role="tool",
+                    turn_id=card.turn_id,
+                    # The marker keeps the judgment observable in the
+                    # timeline (free JSON), next to the terminal status the
+                    # client renders from the status field alone.
+                    content=replace(
+                        content,
+                        metadata={**dict(content.metadata), "stoppedWithoutTask": True},
+                    ),
+                    source=TimelineSource(
+                        runtime="claude",
+                        external_session_id=session.external_session_id,
+                        turn_id=card.turn_id,
+                        native_item_id=card.tool_use_id,
+                        native_item_type="tool_use",
+                        event="claude.agent.stopped",
+                    ),
+                ).to_platform_item(
+                    session_id=session.session_id,
+                    order_seq=self.order_seq_for(item_id),
+                )
+            )
+        return tuple(items)
+
+
+def synthesized_agent_call_content(
+    session: ClaudeSession,
+    call: ClaudePendingToolCall,
+) -> AgentCallToolContent:
+    """The card the dispatch frame would have minted, rebuilt from the lookup.
+
+    The import sync window is a suffix of the transcript, so a background
+    task's notification can arrive in a later pass than the dispatch it
+    closes. The lookup keeps the dispatch's block and turn, and building the
+    content through the same path the projection uses keeps stable id, turn
+    and nested-parent semantics identical to a card minted in-window.
+    """
+
+    block = call.block
+    tool_input = block.tool_input if isinstance(block.tool_input, Mapping) else {}
+    return claude_agent_call_content(
+        tool_use_id=block.tool_use_id,
+        tool_input=tool_input,
+        parent_item_id=_parent_tool_item_id(session, block),
+    )
 
 
 def message_role(message: Any) -> str | None:
@@ -541,11 +705,26 @@ def is_compact_summary_text(text: str | None) -> bool:
     return bool(text) and text.strip().startswith(CLAUDE_COMPACT_SUMMARY_PREFIX)
 
 
+def is_task_notification_message(message: Any) -> bool:
+    """Whether a message is the CLI's persisted background-task notice.
+
+    Two channels, same as the bubble suppression below: the SDK keeps
+    ``origin.kind`` on some paths and strips it on others (the top-level
+    transcript read drops it), so the text's own wrapper is the fallback
+    that works on every surface. The terminal fold and the "no bubble" skip
+    must agree on what counts as a notice, so both read this one answer.
+    """
+
+    origin = _extract(message, "origin")
+    if _extract(origin, "kind") == "task-notification":
+        return True
+    return is_task_notification_text(message_text(message))
+
+
 def is_synthetic_control_message(message: Any) -> bool:
     role = message_role(message)
     text = message_text(message)
-    origin = _extract(message, "origin")
-    if _extract(origin, "kind") == "task-notification":
+    if is_task_notification_message(message):
         return True
     if message.__class__.__name__ == "HookEventMessage":
         # The CLI's own hook lifecycle narration (SessionStart:compact,
@@ -557,10 +736,6 @@ def is_synthetic_control_message(message: Any) -> bool:
     if text is None:
         return False
     normalized = text.strip()
-    if normalized.startswith("<task-notification>") and normalized.endswith(
-        "</task-notification>"
-    ):
-        return True
     if role == "user" and normalized in CLAUDE_INTERRUPTED_REQUEST_MARKERS:
         return True
     if role == "user" and is_compact_summary_text(normalized):
@@ -738,12 +913,53 @@ def _block_type(block: Any) -> str | None:
     return None
 
 
+def _reasoning_block_is_displayable(block: ClaudeSystemBlock) -> bool:
+    """Whether a reasoning block would render with visible text.
+
+    Mirrors the client's caliber (`TimelineText.reasoning` in
+    `TimelineEntryPresentation.swift`): the `summaries` win when the list has
+    any non-empty text, otherwise the first non-empty of rawText/text/summary;
+    the winner is trimmed, and an empty result draws only the bare marker.
+    Read here too so the connector never publishes a row the client would
+    have nothing to show for.
+    """
+
+    return bool(_reasoning_display_text(block).strip())
+
+
+def _reasoning_display_text(block: ClaudeSystemBlock) -> str:
+    metadata = block.metadata or {}
+    summaries = _summary_texts(metadata.get("summaries"))
+    if summaries:
+        return "\n\n".join(summaries)
+    raw_text = metadata.get("rawText")
+    if isinstance(raw_text, str) and raw_text:
+        return raw_text
+    if block.text:
+        return block.text
+    summary = metadata.get("summary")
+    return summary if isinstance(summary, str) else ""
+
+
+def _summary_texts(value: Any) -> list[str]:
+    """The client's summary entries: `{"text": ...}` mappings with real text."""
+
+    if not isinstance(value, list | tuple):
+        return []
+    texts: list[str] = []
+    for entry in value:
+        text = entry.get("text") if isinstance(entry, Mapping) else None
+        if isinstance(text, str) and text:
+            texts.append(text)
+    return texts
+
+
 def _system_content(block: ClaudeSystemBlock) -> Any:
     metadata = {
         "blockType": block.block_type,
         **dict(block.metadata or {}),
     }
-    if block.block_type in {"thinking", "reasoning", "redacted_thinking"}:
+    if block.block_type in REASONING_BLOCK_TYPES:
         return ReasoningSystemContent(
             text=block.text,
             metadata=metadata,

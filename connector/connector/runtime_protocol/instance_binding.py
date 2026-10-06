@@ -683,8 +683,18 @@ class RuntimeInstance(AgentRuntime):
         self,
         session_id: str,
         reason: str | None = None,
+        preserve_background: bool = False,
     ) -> RuntimeOperationResult:
-        return await self.native_runtime.interrupt_session(session_id, reason)
+        return await self.native_runtime.interrupt_session(
+            session_id, reason, preserve_background=preserve_background
+        )
+
+    async def stop_subagent(
+        self,
+        session_id: str,
+        task_id: str,
+    ) -> RuntimeOperationResult:
+        return await self.native_runtime.stop_subagent(session_id, task_id)
 
     async def update_session_selections(
         self,

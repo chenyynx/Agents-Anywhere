@@ -48,6 +48,10 @@ from connector.runtimes.claude.sdk.settings import (
     remove_gateway_settings_file,
 )
 from connector.runtimes.claude.sdk.stderr import ClaudeStderrBuffer
+from connector.runtimes.claude.sdk.stop_affordance import (
+    client_declares_per_task_stop,
+    sdk_supports_stop_task,
+)
 from connector.runtimes.claude.sdk.tasks import ClaudeTaskEvent
 from connector.runtimes.claude.sdk.title_tool import build_change_title_tool
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
@@ -169,6 +173,9 @@ class ClaudeTurnRunner:
     agent_task_calls: dict[tuple[str, str], str] = field(
         default_factory=dict, init=False
     )
+    #: Lazy, cached probe of the loaded SDK's ``stop_task`` presence (the
+    #: ``session.subagent_control`` supported fact). None until first read.
+    _subagent_control_supported: bool | None = field(default=None, init=False)
     # B: terminal frames the start gate refused to settle this turn on. Read by
     # the post-deploy observation window alongside `ClaudeConnection
     # .absorbed_terminal_frames`: the two are the same leak seen at its two
@@ -817,6 +824,64 @@ class ClaudeTurnRunner:
             )
         return stopped
 
+    async def close_open_agent_cards(
+        self,
+        session: ClaudeSession,
+        *,
+        reason: str | None = None,
+    ) -> int:
+        """Judge every open Agent card the stop left without a live task.
+
+        The ghost fix (2026-10-05, `ghost-card-findings.md`): a dispatch
+        aborted inside the "dispatch window" (the tool_use frame is out, the
+        CLI never created the task) closes no card through task events — there
+        is no task — and the one frame that could close it (the aborted
+        call's tool_result) is discarded by the stop. So the stop itself is
+        the last moment that can judge the card, and this is that judgment:
+        open cards with no live agent entry fold to ``interrupted``.
+
+        Display only, and never the reason a stop fails: the projector sweep
+        is pure state, and a failure here is logged and swallowed like every
+        other fold on this path (the L1 lesson). Publication reuses the
+        fold's own no-op comparison, so a re-run (or a card a task event
+        already closed) publishes nothing.
+
+        I-G2 is the safety valve: a card whose agents map still holds a live
+        entry is skipped, and should the spared dispatch start after the
+        sweep, the next task_started fold re-opens it (the fold clamp in
+        `timeline.messages`). The sweep therefore cannot lie about a live
+        agent, and cannot strand a dead card.
+        """
+
+        try:
+            items = self.timeline.close_open_agent_cards(session)
+            published = 0
+            for item in items:
+                previous = session.timeline_items.get(item.id)
+                if (
+                    previous is not None
+                    and previous.status == item.status
+                    and dict(previous.content) == dict(item.content)
+                ):
+                    continue
+                await self.notifications.timeline_activity.timeline_item_upsert(item)
+                published += 1
+            if published:
+                logger.warning(
+                    "Claude open subagent cards closed without a task "
+                    "session_id={} cards={} reason={}",
+                    session.session_id,
+                    published,
+                    reason,
+                )
+            return published
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Claude open-agent-card sweep failed session_id={}",
+                session.session_id,
+            )
+            return 0
+
     async def project_background_frame(
         self,
         session: ClaudeSession,
@@ -911,6 +976,102 @@ class ClaudeTurnRunner:
             return parent.turn_id
         return f"turn_claude_subagent_{parent_item_id}"
 
+    async def wait_for_selection_change(
+        self,
+        session: ClaudeSession,
+        connection: ClaudeConnection,
+    ) -> None:
+        """Wait out a transport's background work instead of refusing to rebuild.
+
+        The model is a CLI launch argument, so a selection change must rebuild
+        the process; the do-not-retire invariant forbids killing live
+        background work. This used to refuse — the next turn failed with
+        `RuntimeError("Claude selection change requires background work to
+        finish")` and the user's message never ran (measured 2026-10-05 in
+        ~/aa-test/model-switch-composer-harness). Wait instead:
+
+        - the drain is event-driven — the last terminal task frame is the
+          signal (`ClaudeBackgroundTasks.drained`);
+        - both phases are bounded by `selectionChangeDrainCeilingSeconds`
+          (red team F-B): a real background task that keeps working is
+          waited for as long as its terminal frames keep coming, but an id
+          that never drains — a stale snapshot id, a lost terminal — cannot
+          pin the user's next message forever. On either ceiling the wait
+          logs and proceeds to the rebuild below, which is the explicit
+          path (the CLI's own exit ends its tasks);
+        - a second switch during the wait is seen on the next pass, and the
+          caller re-checks the selections when this returns;
+        - the wait is cancellable: a stop cancels the driving turn's task and
+          the `CancelledError` propagates into the interrupted terminal the
+          turn machinery already publishes.
+
+        State is never republished from here: the queued turn's "waiting"
+        state (published by `start_turn`) stays the honest one until the turn
+        actually runs, so no client sees a fake idle or a re-locked composer.
+        """
+
+        settle = float(self.config.values.get("selectionChangeSettleSeconds", 1.0))
+        ceiling = float(
+            self.config.values.get("selectionChangeDrainCeilingSeconds", 600.0)
+        )
+        while connection.background.active_ids:
+            if self.stopping or connection.closing:
+                raise asyncio.CancelledError
+            if not await connection.wait_background_drained(ceiling=ceiling):
+                logger.warning(
+                    "Claude selection change proceeding without drained "
+                    "background work session_id={} background_tasks={}",
+                    session.session_id,
+                    len(connection.background.active_ids),
+                )
+                return
+            if self.stopping or connection.closing:
+                raise asyncio.CancelledError
+            if not await connection.wait_settled(grace=settle, ceiling=ceiling):
+                logger.warning(
+                    "Claude selection change proceeding without a settled "
+                    "transport session_id={} background_tasks={}",
+                    session.session_id,
+                    len(connection.background.active_ids),
+                )
+                return
+            if dict(session.selections) == connection.selections:
+                # The user switched back while this waited; the caller reuses
+                # the transport.
+                return
+            # Otherwise loop: the wake turn may have dispatched fresh
+            # background work, and that new batch owns the transport too.
+
+    def subagent_control_supported(self) -> bool:
+        """Whether the loaded SDK offers the per-task stop control at all.
+
+        Probed once, lazily, fail-soft (no loader / no SDK = no support).
+        Lives on the runner because loading the SDK is a collaborator's job
+        — the architecture test keeps it out of the runtime module.
+        """
+
+        if self._subagent_control_supported is None:
+            try:
+                sdk = load_sdk(self.sdk_loader)
+            except Exception:  # noqa: BLE001 - fail-soft by contract
+                supported = False
+            else:
+                supported = sdk_supports_stop_task(sdk)
+            self._subagent_control_supported = supported
+        return self._subagent_control_supported
+
+    def has_live_connection(self, session_id: str) -> bool:
+        """Whether a live transport currently hosts this session's work.
+
+        The per-task stop rides this connection, so it is the fact behind
+        ``session.subagent_control`` availability: true while the connection
+        is open, regardless of whether a turn is running (background
+        subagents keep their transport alive through idle).
+        """
+
+        connection = self.connections.get(session_id)
+        return connection is not None and not connection.closing
+
     async def connection_for(
         self,
         session: ClaudeSession,
@@ -922,9 +1083,12 @@ class ClaudeTurnRunner:
                 existing.cancel_idle()
                 return existing
             if existing.background.active_ids:
-                raise RuntimeError(
-                    "Claude selection change requires background work to finish"
-                )
+                await self.wait_for_selection_change(session, existing)
+            if not existing.closing and existing.selections == session.selections:
+                # A second switch during the wait may land back on the
+                # selection this transport already carries.
+                existing.cancel_idle()
+                return existing
             await existing.close()
         # A transport retired out of band (the scheduled-turn circuit breaker)
         # is already gone from `connections`, so its Cron* bookkeeping arrives
@@ -1010,6 +1174,7 @@ class ClaudeTurnRunner:
             ),
             cleanup=cleanup,
             idle_timeout_seconds=self.config.values.get("idleTimeoutSeconds", 600),
+            per_task_stop_declared=client_declares_per_task_stop(client),
             selections=dict(session.selections),
             task_ids=(
                 set(existing.task_ids) | set(carried or ())

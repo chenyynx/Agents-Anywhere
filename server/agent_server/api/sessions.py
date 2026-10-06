@@ -50,6 +50,7 @@ from agent_server.core.models import (
     SessionCommandResponse,
     SessionCreateAndStartRequest,
     SessionCreateRequest,
+    SessionInterruptRequest,
     SessionPatchRequest,
     SessionResponse,
     SessionRuntimeState,
@@ -57,6 +58,7 @@ from agent_server.core.models import (
     SessionSelectionPatchRequest,
     SessionSelectionPatchResponse,
     SessionSteerRequest,
+    SessionSubagentStopRequest,
     SessionView,
     TakeoverResponse,
 )
@@ -1411,6 +1413,7 @@ async def send_message(
 @router.post("/{session_id}/runtime/interrupt", response_model=RpcResponsePayload)
 async def interrupt_session(
     session_id: str,
+    payload: SessionInterruptRequest | None = None,
     user_id: str = Depends(current_user_id),
     run_service: SessionRunService = Depends(get_session_run_service),
     db: Store = Depends(get_store),
@@ -1421,7 +1424,52 @@ async def interrupt_session(
     ),
 ) -> RpcResponsePayload:
     try:
-        result = await run_service.interrupt_session(session_id, user_id=user_id)
+        result = await run_service.interrupt_session(
+            session_id,
+            user_id=user_id,
+            preserve_background=payload.preserveBackground if payload is not None else False,
+        )
+        await _publish_session_protocol_update(
+            db,
+            broker,
+            manager,
+            runtime_state_cache,
+            session_id,
+        )
+        return result
+    except SessionRunError as exc:
+        await _best_effort_publish_session_protocol_update(
+            db,
+            broker,
+            manager,
+            runtime_state_cache,
+            session_id,
+            user_id=user_id,
+        )
+        _raise_session_run_error(exc)
+
+
+@router.post(
+    "/{session_id}/runtime/subagent/stop", response_model=RpcResponsePayload
+)
+async def stop_subagent(
+    session_id: str,
+    payload: SessionSubagentStopRequest,
+    user_id: str = Depends(current_user_id),
+    run_service: SessionRunService = Depends(get_session_run_service),
+    db: Store = Depends(get_store),
+    broker: TimelineBroker = Depends(get_timeline_broker),
+    manager: ConnectorRpcManager = Depends(get_rpc),
+    runtime_state_cache: SessionRuntimeStateCache = Depends(
+        get_session_runtime_state_cache
+    ),
+) -> RpcResponsePayload:
+    try:
+        result = await run_service.stop_subagent(
+            session_id,
+            user_id=user_id,
+            task_id=payload.taskId,
+        )
         await _publish_session_protocol_update(
             db,
             broker,

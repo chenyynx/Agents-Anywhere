@@ -24,7 +24,7 @@ from connector.runtimes.claude.runtime import ClaudeRuntime
 from connector.runtimes.custom_models import normalize_custom_models
 from connector.runtimes.model_gateway import model_gateway_from_config
 
-CLAUDE_CONFIG_SCHEMA_REVISION = 5
+CLAUDE_CONFIG_SCHEMA_REVISION = 6
 
 
 class ClaudeProvider(RuntimeProvider):
@@ -103,12 +103,18 @@ class ClaudeProvider(RuntimeProvider):
                     "environment",
                     "customModels",
                     "idleTimeoutSeconds",
+                    "perTaskStopAffordance",
                 ],
                 "modelGateway": {"component": "modelGateway"},
                 "environment": {"component": "keyValue"},
                 "customModels": {"component": "customModels"},
             },
-            defaults={"environment": {}, "customModels": [], "idleTimeoutSeconds": 600},
+            defaults={
+                "environment": {},
+                "customModels": [],
+                "idleTimeoutSeconds": 600,
+                "perTaskStopAffordance": True,
+            },
         )
 
     async def validate_config(
@@ -156,6 +162,9 @@ class ClaudeProvider(RuntimeProvider):
             "environment": dict(raw_values.get("environment") or {}),
             "customModels": normalize_custom_models(raw_values.get("customModels")),
             "idleTimeoutSeconds": raw_values.get("idleTimeoutSeconds", 600),
+            "perTaskStopAffordance": bool(
+                raw_values.get("perTaskStopAffordance", True)
+            ),
         }
         if model_gateway is not None:
             normalized_values["modelGateway"] = model_gateway.to_config_values()

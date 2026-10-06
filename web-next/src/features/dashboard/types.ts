@@ -407,7 +407,14 @@ export type AgentCallTimelineContent = {
   targetIds?: string[];
   model?: string;
   reasoningEffort?: string;
-  agents?: Record<string, { status?: string; message?: string | null }>;
+  agents?: Record<string, {
+    status?: string;
+    message?: string | null;
+    subagentType?: string;
+    isBackgrounded?: boolean;
+    spawnDepth?: number;
+    lastToolName?: string;
+  }>;
   usage?: { durationMs?: number; tokens?: number; toolCalls?: number };
   input?: unknown;
   output?: unknown;
@@ -651,6 +658,11 @@ export type FsWriteResult = {
   encoding: string;
   bytesWritten: number;
   sha256: string;
+};
+
+/** Response of the per-subagent stop endpoint (task spec v2 §7.2). */
+export type SubagentStopResult = {
+  stopped: boolean;
 };
 
 export type RpcResponse<T> = {

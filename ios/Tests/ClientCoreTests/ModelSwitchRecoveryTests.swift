@@ -14,6 +14,10 @@ import Testing
     private static let modelB = "sel_model_b"
     private static let effortHigh = "sel_effort_high"
 
+    /// The heal cadence the cadence test drives and pins: the backoff's own
+    /// delay must be the value the injected sleep is asked to serve (F6).
+    private static let healDelay: Duration = .seconds(2)
+
     private static func turnInFlight(_ status: String) -> Bool {
         ["running", "pending", "waiting", "waiting_approval", "stopping", "blocked"].contains(status)
     }
@@ -752,27 +756,60 @@ import Testing
     }
 
     /// F6 (red team): the first heal attempt actually waits out its delay —
-    /// the schedule is not folded away by a test-shaped sleep. The production
-    /// second is scaled to 100 ms; the assertion window is a fifth of that.
+    /// the cadence is a real completed wait, not one folded away by the
+    /// test's scaled sleep shape. Judged by probe order, never by a wall
+    /// clock: the old 15 ms window flaked when CI load stretched the test's
+    /// own sleep past the scaled delay and read a healthy heal as "early".
+    ///
+    /// Mutation guard (what that window used to provide):
+    /// * dropping the wait (the attempt fires immediately) leaves no
+    ///   completion that ever served the heal delay → red on the record;
+    /// * reading without waiting moves the read into what the first
+    ///   completion at/after the baseline observed — the count had grown
+    ///   before the wait was out → red;
+    /// * launching the wait without awaiting it piles waits in flight at
+    ///   the gating completion (the loop is serial: exactly one wait may be
+    ///   pending) → red on the in-flight gauge;
+    /// * folding the delay itself (e.g. to zero) changes the delay the
+    ///   probe recorded → red, since the gating completion must serve
+    ///   `healDelay`.
     @Test func healCadenceIsRespectedBeforeTheFirstAttempt() async throws {
         let http = TestHTTPTransport(), realtime = TestRealtimeAPI()
         let running = RunningSession()
+        let sleeps = HealSleepProbe()
         let (repo, session, _) = try makeSession(http, realtime, running,
-            healBackoff: V2SessionHealBackoff(initial: .seconds(2), maximum: .seconds(2)),
-            sleep: { try await Task.sleep(for: $0 / 20) })
+            healBackoff: V2SessionHealBackoff(initial: Self.healDelay, maximum: Self.healDelay),
+            sleep: { delay in
+                sleeps.recordCall(delay)
+                try await Task.sleep(for: delay / 20)
+                sleeps.recordCompletion(reads: running.liveStateReads)
+            })
         defer { repo.reset() }
         let connection = try await connect(session)
         defer { connection.cancel() }
+        // Settle the socket before the cadence is judged: the connect path's
+        // own recoveries are spent, so from the staleness mark on only the
+        // heal loop may read.
+        try await eventually { session.connection == .connected }
         running.failLiveState = true
         try await repo.setTakeover(sessionId: "session", enabled: true)
         #expect(!session.runtime.isFresh)
         let readsWhenStale = running.liveStateReads
 
-        // 2 s / 20 = 100 ms: nothing may run yet.
-        try await Task.sleep(for: .milliseconds(15))
-        #expect(running.liveStateReads == readsWhenStale)
-        // And the attempt does arrive once the delay is out.
+        // The attempt arrives once the delay is out…
         try await eventually { running.liveStateReads > readsWhenStale }
+
+        // …and the probe's record shows the attempt was gated by a real
+        // wait, in order: the heal loop's own delay was served at all (not
+        // folded into something else); the first wait that completed with
+        // the count at the baseline — the record sequence only grows, so
+        // this is the wait the attempt waited out — was the only wait in
+        // flight (the loop awaited it serially, nothing raced it).
+        #expect(sleeps.completions.contains { $0.delay == Self.healDelay })
+        let gating = try #require(sleeps.completions.first { $0.reads >= readsWhenStale })
+        #expect(gating.reads == readsWhenStale)
+        #expect(gating.delay == Self.healDelay)
+        #expect(gating.waitsInFlight == 0)
     }
 
     /// The composer matrix (D0-4 / postfix table, timing form): every status
@@ -843,4 +880,33 @@ import Testing
 private final class SleepProbe {
     private(set) var calls = 0
     func record() { calls += 1 }
+}
+
+/// Watches the injected sleep from the healing cadence's own edge: for every
+/// wait that completed, the delay it was asked to serve, the live-read count
+/// at the moment it completed, and how many waits were still in flight right
+/// after it. The list only appends and the counts inside it never shrink, so
+/// the record reads as the loop's schedule in order — the cadence test
+/// judges it without any wall clock. (The connect path shares this injected
+/// sleep, so the record starts with the readiness probes; those complete
+/// before any session read.)
+@MainActor
+private final class HealSleepProbe {
+    struct Completion {
+        let delay: Duration
+        let reads: Int
+        /// Waits in flight after this one completed (the gauge minus this
+        /// completion). A loop that never awaited its wait leaves a crowd
+        /// here; a loop that awaits serially leaves exactly zero.
+        let waitsInFlight: Int
+    }
+    private(set) var completions: [Completion] = []
+    private var pending = 0
+    private var currentDelay: Duration = .zero
+
+    func recordCall(_ delay: Duration) { currentDelay = delay; pending += 1 }
+    func recordCompletion(reads: Int) {
+        pending -= 1
+        completions.append(Completion(delay: currentDelay, reads: reads, waitsInFlight: pending))
+    }
 }

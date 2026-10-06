@@ -127,6 +127,10 @@ final class SessionNoticeModel: Identifiable {
 @MainActor @Observable
 final class SessionNoticeStore {
     private(set) var notices: [SessionNoticeModel] = []
+    /// The single source of truth for "is there anything left to show": the
+    /// notices sheet and its auto-dismiss watch emptiness through this, never
+    /// a second copy of the `isVisible` filter.
+    var visibleNotices: [SessionNoticeModel] { notices.filter(\.isVisible) }
     var hasDraft: Bool { notices.contains { $0.hasDraft } }
     func update(_ values: [V2RuntimeNotice], sessionID: String) {
         let existing = Dictionary(uniqueKeysWithValues: notices.map { ($0.id, $0) })

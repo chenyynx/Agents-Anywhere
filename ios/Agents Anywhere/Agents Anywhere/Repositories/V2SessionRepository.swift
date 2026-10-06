@@ -415,12 +415,25 @@ final class V2SessionRepository {
     /// `stop()` can supersede. On failure the optimistic turn end rolls back
     /// and the failure lands on the entry's existing error channel; on success
     /// the live facts end the prediction themselves.
+    ///
+    /// The wrapper Task itself is registered on the entry (`stop()` cancels it
+    /// with the rest of the lifecycle — review F-I): without that, a failure
+    /// landing after the entry was stopped still passed the `isCurrent` check
+    /// (a stopped entry stays registered) and wrote an error into a dead
+    /// lifecycle. Only the wrapper that still owns the slot may clear it or
+    /// write back, so a superseded or stopped wrapper can never touch a newer
+    /// lifecycle's state.
     private func launchFollowUpReconcile(_ entry: Entry) {
         let sequence = entry.recoverySequence
-        Task { [weak self] in
+        let id = UUID()
+        entry.followUpReconcileTask?.cancel()
+        entry.followUpReconcileID = id
+        entry.followUpReconcileTask = Task { [weak self] in
             guard let self else { return }
             let failure = await self.performRecovery(entry, requiringRoundAfter: sequence)
-            guard let failure, self.isCurrent(entry) else { return }
+            guard entry.followUpReconcileID == id else { return }
+            entry.followUpReconcileTask = nil
+            guard let failure, !Task.isCancelled, self.isCurrent(entry) else { return }
             entry.predictedIdleSequence = nil
             entry.model.runtime.endPredictedIdle()
             entry.error = V2ClientFailure(failure)
@@ -982,6 +995,11 @@ final class V2SessionRepository {
         entry.mismatchHealID = UUID()
         entry.mismatchHealTask?.cancel()
         entry.mismatchHealTask = nil
+        // The follow-up reconcile belongs to the lifecycle too: its write-back
+        // must not land after the stop (review F-I).
+        entry.followUpReconcileID = UUID()
+        entry.followUpReconcileTask?.cancel()
+        entry.followUpReconcileTask = nil
         // Recovery identity belongs to the lifecycle, not to a socket
         // generation: rotating it here makes an in-flight round abandon its
         // results quietly, while a later start() runs a round of its own.
@@ -1011,7 +1029,8 @@ final class V2SessionRepository {
     private func evict(protecting protected: Entry? = nil) {
         let candidates = entries.values.filter {
             $0 !== protected && $0.observers.isEmpty && $0.loadTask == nil && $0.catalogTask == nil
-                && $0.historyTask == nil && $0.recoveryTask == nil && !$0.model.hasLocalWork
+                && $0.historyTask == nil && $0.recoveryTask == nil && $0.followUpReconcileTask == nil
+                && !$0.model.hasLocalWork
         }
             .sorted { $0.lastAccess < $1.lastAccess }
         for entry in candidates where entries.count > max(1, policy.maximumSessions) {
@@ -1062,6 +1081,11 @@ private final class Entry {
     /// Debounced heal for a state/capability contradiction seen on a frame.
     var mismatchHealTask: Task<Void, Never>?
     var mismatchHealID = UUID()
+    /// The post-write follow-up reconcile wrapper (see
+    /// `launchFollowUpReconcile`). Cancelled by `stop()`; the id lets a
+    /// wrapper clear its own registration only.
+    var followUpReconcileTask: Task<Void, Never>?
+    var followUpReconcileID = UUID()
     var catalogs: V2SessionCatalogs?
     var catalogScopes: Set<String>?
     var catalogReadAt: Date?

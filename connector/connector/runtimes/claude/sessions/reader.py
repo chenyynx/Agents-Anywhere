@@ -49,7 +49,7 @@ from connector.runtimes.claude.sdk.history import (
 )
 from connector.runtimes.claude.sdk.tasks import (
     ClaudeTaskEvent,
-    task_event_from_notification_text,
+    task_events_from_notification_text,
 )
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 from connector.runtimes.claude.sessions.sync_state import ClaudeSessionSyncStateStore
@@ -60,6 +60,7 @@ from connector.runtimes.claude.timeline.agent_calls import (
 from connector.runtimes.claude.timeline.messages import (
     ClaudeMessageProjector,
     ClaudePendingToolCall,
+    ClaudeToolBlock,
     is_compact_summary_text,
     is_hidden_tool_name,
     is_synthetic_control_message,
@@ -68,6 +69,7 @@ from connector.runtimes.claude.timeline.messages import (
     message_role,
     message_text,
     message_tool_blocks,
+    receipt_agent_id,
     synthesized_agent_call_content,
 )
 
@@ -435,23 +437,23 @@ def _history_items_from_messages(
     # has not been written yet — clobber the terminal overlay with its
     # boilerplate: last writer wins, and the notice is the last true writer.
     for index in sorted(notification_folds):
-        fold = notification_folds[index]
-        items.append(
-            projector.fold_agent_task_event(
-                session,
-                tool_use_id=fold.tool_use_id,
-                overlay=fold.overlay,
-                status=fold.status,
-                base=fold.base,
-                turn_id=fold.turn_id,
+        for fold in notification_folds[index]:
+            items.append(
+                projector.fold_agent_task_event(
+                    session,
+                    tool_use_id=fold.tool_use_id,
+                    overlay=fold.overlay,
+                    status=fold.status,
+                    base=fold.base,
+                    turn_id=fold.turn_id,
+                )
             )
-        )
     return _resequence_history_items(_dedupe_history_items(items))
 
 
 @dataclass(frozen=True, slots=True)
 class _AgentTaskNotificationFold:
-    """One terminal fold an import window's notice will apply to its card."""
+    """One final history-derived state for an Agent card in this window."""
 
     tool_use_id: str
     overlay: ClaudeAgentTaskOverlay
@@ -464,110 +466,209 @@ def _agent_task_notification_folds(
     session: ClaudeSession,
     messages: tuple[Any, ...],
     tool_call_lookup: Mapping[str, ClaudePendingToolCall] | None,
-) -> dict[int, _AgentTaskNotificationFold]:
-    """Plan one terminal fold per background Agent card from the window.
+) -> dict[int, list[_AgentTaskNotificationFold]]:
+    """Resolve transcript terminal/resume events through Agent task-id lineage.
 
-    Terminal task frames never reach the transcript — only the live stream
-    carries them — so a background task's completion survives as a plain
-    ``<task-notification>`` user message. This scan turns those notices back
-    into the same normalized event the live fold consumes, and the projection
-    then closes the card the dispatch opened (import path, 2026-10-05: the
-    ten stuck cards of session aba0a291 were all notices nobody folded).
-
-    Only notices of Agent dispatches fold. A ``local_bash`` notice points at
-    a Bash call and a resumed agent's notice at the SendMessage that resumed
-    it — neither owns an Agent card. And a card whose last notice is followed
-    by more child activity was resumed after that notice, so folding it would
-    lie the card closed while its agent runs again: that notice is skipped
-    and the next stop's notice closes the card.
-
-    Returns the fold keyed by the notice's position in the window, or an
-    empty mapping when the window has none.
+    A terminal wrapper can point at the original Agent call, at a SendMessage
+    that resumes it, or contain only one or more task ids after session teardown.
+    The stable join is task id ↔ receipt agentId ↔ SendMessage input.to. Unknown
+    or conflicting links fail closed; no id is guessed from summary text.
     """
 
-    lookup = dict(tool_call_lookup or {})
-    notifications: dict[str, list[tuple[int, ClaudeTaskEvent]]] = {}
-    last_activity: dict[str, int] = {}
-    window_agent_tool_use_ids: set[str] = set()
+    calls = dict(tool_call_lookup or {})
+    window_calls, _ = _history_tool_call_context(session, messages)
+    for tool_use_id, call in window_calls.items():
+        existing = calls.get(tool_use_id)
+        if existing is None or (
+            existing.result_block is None and call.result_block is not None
+        ):
+            calls[tool_use_id] = call
+
+    root_calls = {
+        tool_use_id: call
+        for tool_use_id, call in calls.items()
+        if call.block.tool_name == "Agent"
+    }
+    task_roots: dict[str, set[str]] = {}
+    for tool_use_id, call in root_calls.items():
+        task_id = _agent_task_id_from_receipt(call)
+        if task_id is not None:
+            task_roots.setdefault(task_id, set()).add(tool_use_id)
+
+    notices: list[tuple[int, ClaudeTaskEvent]] = []
+    send_messages: list[tuple[int, str, str]] = []
+    child_activity: list[tuple[int, str]] = []
     for index, message in enumerate(messages):
-        # Child activity can hang off the message itself (a subagent frame the
-        # SDK merged into the chain) or off a tool block (an orphaned result
-        # that still names its call); either way the row belongs to that
-        # call's card, and only the latest one counts per call.
         parent_tool_use_id = _string_attr(
             message, "parent_tool_use_id", "parentToolUseId"
         )
         if parent_tool_use_id is not None:
-            last_activity[parent_tool_use_id] = index
+            child_activity.append((index, parent_tool_use_id))
         for block in message_tool_blocks(message):
             if block.parent_tool_use_id is not None:
-                last_activity[block.parent_tool_use_id] = index
-            if block.block_type == "tool_use" and block.tool_name == "Agent":
-                window_agent_tool_use_ids.add(block.tool_use_id)
-        if not is_task_notification_message(message):
-            continue
-        event = task_event_from_notification_text(
-            message_text(message),
-            timestamp_ms=_message_timestamp_ms(message),
-        )
-        if event is not None and event.tool_use_id is not None:
-            notifications.setdefault(event.tool_use_id, []).append((index, event))
+                child_activity.append((index, block.parent_tool_use_id))
+            if block.block_type == "tool_use" and block.tool_name == "SendMessage":
+                target = _send_message_target(block)
+                if target is not None:
+                    send_messages.append((index, block.tool_use_id, target))
+        if is_task_notification_message(message):
+            notices.extend(
+                (index, event)
+                for event in task_events_from_notification_text(
+                    message_text(message),
+                    timestamp_ms=_message_timestamp_ms(message),
+                )
+            )
 
-    folds: dict[int, _AgentTaskNotificationFold] = {}
-    for tool_use_id, candidates in notifications.items():
-        if not _is_agent_dispatch(
-            tool_use_id,
-            lookup,
-            window_agent_tool_use_ids,
-        ):
+    # A directly-addressed Agent notice is also a valid task-id join when an
+    # older/sidechain receipt did not carry an agentId. It must agree with any
+    # receipt identity already present, otherwise the mapping is ambiguous.
+    for _, event in notices:
+        if event.tool_use_id is None:
             continue
-        # Resume rounds notify once per stop; the last notice carries the
-        # final status, summary and usage, so it alone folds (an earlier one
-        # would only be overwritten by these same fields).
-        index, event = candidates[-1]
-        activity = last_activity.get(tool_use_id)
-        if activity is not None and activity >= index:
-            logger.debug(
-                "Claude history notification fold skipped for resumed agent "
-                "tool_use_id={} notice_index={} activity_index={}",
-                tool_use_id,
-                index,
-                activity,
+        call = calls.get(event.tool_use_id)
+        if call is None or call.block.tool_name != "Agent":
+            continue
+        receipt_task_id = _agent_task_id_from_receipt(call)
+        if receipt_task_id is not None and receipt_task_id != event.task_id:
+            logger.warning(
+                "Claude history Agent task link conflicts with receipt "
+                "tool_use_id={} notice_task_id={} receipt_task_id={}",
+                event.tool_use_id,
+                event.task_id,
+                receipt_task_id,
             )
             continue
-        call = lookup.get(tool_use_id)
-        overlay, status = agent_task_overlay_for_event(event)
-        folds[index] = _AgentTaskNotificationFold(
-            tool_use_id=tool_use_id,
-            overlay=overlay,
-            status=status,
-            base=(
-                synthesized_agent_call_content(session, call)
-                if call is not None
-                else None
-            ),
-            turn_id=call.turn_id if call is not None else None,
+        task_roots.setdefault(event.task_id, set()).add(event.tool_use_id)
+
+    # Map each SendMessage alias to its single unambiguous original Agent card.
+    send_aliases: dict[str, set[str]] = {}
+    for _, send_tool_use_id, task_id in send_messages:
+        roots = task_roots.get(task_id, set())
+        if len(roots) == 1:
+            send_aliases.setdefault(task_id, set()).add(send_tool_use_id)
+
+    task_activity: dict[str, list[int]] = {}
+    for index, send_tool_use_id, task_id in send_messages:
+        roots = task_roots.get(task_id, set())
+        if len(roots) == 1 and send_tool_use_id in send_aliases.get(task_id, set()):
+            task_activity.setdefault(task_id, []).append(index)
+
+    # Activity rows from a resumed child can name either the original Agent
+    # tool id or the SendMessage alias. Only unambiguous aliases count.
+    tool_id_tasks: dict[str, set[str]] = {}
+    for task_id, roots in task_roots.items():
+        if len(roots) == 1:
+            root_id = next(iter(roots))
+            tool_id_tasks.setdefault(root_id, set()).add(task_id)
+            for alias in send_aliases.get(task_id, set()):
+                tool_id_tasks.setdefault(alias, set()).add(task_id)
+    for index, parent_tool_use_id in child_activity:
+        for task_id in tool_id_tasks.get(parent_tool_use_id, set()):
+            task_activity.setdefault(task_id, []).append(index)
+
+    terminal_events: dict[str, list[tuple[int, ClaudeTaskEvent]]] = {}
+    for index, event in notices:
+        task_id = event.task_id
+        roots = task_roots.get(task_id, set())
+        if len(roots) != 1:
+            logger.debug(
+                "Claude history notification has no unique Agent task link "
+                "task_id={} roots={}",
+                task_id,
+                sorted(roots),
+            )
+            continue
+        root_id = next(iter(roots))
+        if event.tool_use_id is not None:
+            pointed_call = calls.get(event.tool_use_id)
+            # A tool id that resolves on the visible chain is a second address
+            # to cross-check; one that does not (trimmed or sidechain calls,
+            # other providers' id shapes) carries no addressable target and is
+            # treated like a notice without a tool id — the task-id lineage
+            # above is the join that folds it.
+            if pointed_call is not None:
+                if pointed_call.block.tool_name == "Agent":
+                    if event.tool_use_id != root_id:
+                        continue
+                    receipt_task_id = _agent_task_id_from_receipt(pointed_call)
+                    if receipt_task_id is not None and receipt_task_id != task_id:
+                        continue
+                elif pointed_call.block.tool_name == "SendMessage":
+                    target = _send_message_target(pointed_call.block)
+                    if target != task_id or event.tool_use_id not in send_aliases.get(task_id, set()):
+                        continue
+                else:
+                    # A known Bash or other tool notification must never close an Agent.
+                    continue
+        terminal_events.setdefault(task_id, []).append((index, event))
+
+    # For each task id, the last transcript signal wins: a later SendMessage
+    # or child row reopens the task; a later terminal notice closes it again.
+    latest_by_task: dict[str, tuple[int, ClaudeTaskEvent | None]] = {}
+    for task_id, events in terminal_events.items():
+        latest_by_task[task_id] = max(events, key=lambda item: item[0])
+    for task_id, indices in task_activity.items():
+        latest_activity = max(indices)
+        terminal = latest_by_task.get(task_id)
+        if terminal is None or latest_activity > terminal[0]:
+            latest_by_task[task_id] = (latest_activity, None)
+
+    states_by_root: dict[str, list[tuple[int, str, ClaudeTaskEvent | None]]] = {}
+    for task_id, (index, event) in latest_by_task.items():
+        roots = task_roots.get(task_id, set())
+        if len(roots) != 1:
+            continue
+        root_id = next(iter(roots))
+        states_by_root.setdefault(root_id, []).append((index, task_id, event))
+
+    folds: dict[int, list[_AgentTaskNotificationFold]] = {}
+    for root_id, states in states_by_root.items():
+        call = root_calls.get(root_id)
+        if call is None:
+            continue
+        overlay = ClaudeAgentTaskOverlay()
+        statuses: list[tuple[int, str | None]] = []
+        for index, task_id, event in sorted(states, key=lambda item: item[0]):
+            normalized = event or ClaudeTaskEvent(
+                kind="progress",
+                task_id=task_id,
+                status="running",
+            )
+            part, status = agent_task_overlay_for_event(normalized)
+            overlay.merge(part)
+            statuses.append((index, status))
+        status = (
+            "running"
+            if any(state is None for _, _, state in states)
+            else max(statuses, key=lambda item: item[0])[1]
+        )
+        index = max(state_index for state_index, _, _ in states)
+        folds.setdefault(index, []).append(
+            _AgentTaskNotificationFold(
+                tool_use_id=root_id,
+                overlay=overlay,
+                status=status,
+                base=synthesized_agent_call_content(session, call),
+                turn_id=call.turn_id,
+            )
         )
     return folds
 
 
-def _is_agent_dispatch(
-    tool_use_id: str,
-    lookup: Mapping[str, ClaudePendingToolCall],
-    window_agent_tool_use_ids: set[str],
-) -> bool:
-    """Whether the notice's id names an Agent dispatch that owns a card.
+def _send_message_target(block: ClaudeToolBlock) -> str | None:
+    tool_input = block.tool_input
+    if not isinstance(tool_input, Mapping):
+        return None
+    target = tool_input.get("to")
+    return target if isinstance(target, str) and target else None
 
-    The lookup covers the whole visible chain when the caller built one (the
-    sync path), so it answers for dispatches that sit outside the window; a
-    full-chain snapshot has no lookup and recognises its own dispatches from
-    the messages alone.
-    """
 
-    call = lookup.get(tool_use_id)
-    if call is not None:
-        return call.block.tool_name == "Agent"
-    return tool_use_id in window_agent_tool_use_ids
+def _agent_task_id_from_receipt(call: ClaudePendingToolCall) -> str | None:
+    receipt = call.result_block
+    if receipt is None or receipt.block_type != "tool_result":
+        return None
+    return receipt_agent_id(receipt.tool_result_metadata, None)
 
 
 def _message_timestamp_ms(message: Any) -> int | None:
@@ -641,6 +742,7 @@ def _history_tool_call_context(
     messages: tuple[Any, ...],
 ) -> tuple[dict[str, ClaudePendingToolCall], frozenset[str]]:
     calls: dict[str, ClaudePendingToolCall] = {}
+    result_blocks: dict[str, ClaudeToolBlock] = {}
     hidden_tool_use_ids: set[str] = set()
     turn_seed: str | None = None
     turn_index = 0
@@ -655,6 +757,9 @@ def _history_tool_call_context(
             turn_seed = native_id or f"{session.external_session_id}:initial"
         turn_id = _history_turn_id(session.external_session_id, turn_seed)
         for block in message_tool_blocks(message):
+            if block.block_type == "tool_result":
+                result_blocks[block.tool_use_id] = block
+                continue
             if block.block_type != "tool_use":
                 continue
             if is_hidden_tool_name(block.tool_name):
@@ -664,6 +769,10 @@ def _history_tool_call_context(
                 block=block,
                 turn_id=turn_id,
             )
+    for tool_use_id, result_block in result_blocks.items():
+        pending = calls.get(tool_use_id)
+        if pending is not None:
+            calls[tool_use_id] = replace(pending, result_block=result_block)
     return calls, frozenset(hidden_tool_use_ids)
 
 

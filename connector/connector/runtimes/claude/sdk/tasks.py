@@ -107,52 +107,71 @@ def is_task_notification_text(text: str | None) -> bool:
     )
 
 
+def task_events_from_notification_text(
+    text: str | None,
+    *,
+    timestamp_ms: int | None = None,
+) -> tuple[ClaudeTaskEvent, ...]:
+    """Normalize every task named by one persisted notification wrapper.
+
+    A normal completion names one task and a ``tool-use-id``; a session-teardown
+    wrapper can name several ``task-id`` values and omit the tool id entirely.
+    The history projector resolves each task id back to its original Agent card.
+    Live frame parsing remains on ``task_event_from_message`` and is unchanged.
+    """
+
+    if not is_task_notification_text(text):
+        return ()
+    task_ids = tuple(
+        dict.fromkeys(
+            match.group(1).strip()
+            for match in re.finditer(r"<task-id>(.*?)</task-id>", text or "", re.DOTALL)
+            if match.group(1).strip()
+        )
+    )
+    status = _notification_tag(text, "status")
+    if not task_ids or status is None:
+        logger.warning(
+            "Claude task notification skipped missing required tags "
+            "task_ids={} status={} preview={!r}",
+            task_ids,
+            status,
+            (text or "")[:120],
+        )
+        return ()
+    tool_use_id = _notification_tag(text, "tool-use-id")
+    summary = _notification_tag(text, "result") or _notification_tag(text, "summary")
+    usage = _notification_usage(text)
+    return tuple(
+        ClaudeTaskEvent(
+            kind="notification",
+            task_id=task_id,
+            tool_use_id=tool_use_id,
+            status=status,
+            summary=summary,
+            end_time=timestamp_ms,
+            usage=usage,
+        )
+        for task_id in task_ids
+    )
+
+
 def task_event_from_notification_text(
     text: str | None,
     *,
     timestamp_ms: int | None = None,
 ) -> ClaudeTaskEvent | None:
-    """Normalize one persisted ``<task-notification>`` into a task event.
+    """Compatibility helper for one directly-addressed task notification.
 
-    Terminal counterpart of ``task_event_from_message``: the text tags map
-    onto ``ClaudeTaskEvent`` exactly like the frame's fields. ``summary``
-    prefers the subagent's verbatim final reply (``<result>``) over the
-    one-line ``<summary>`` — killed/stopped notices carry no result. The
-    ``<usage>`` block is renamed into the keys ``task_usage`` consumes
-    (``subagent_tokens`` -> ``total_tokens``), and ``timestamp_ms`` (the
-    transcript message's wall clock) becomes the event's ``end_time``.
-
-    Defensive by contract: text that is not a notice returns ``None``
-    silently; a notice missing a required tag is skipped with a log and an
-    unparsable body can only leave its card running for a later notice,
-    never break a rebuild.
+    New import-path code should use ``task_events_from_notification_text`` so
+    task-id-only and batched teardown notices are not silently discarded.
+    This older singular helper intentionally keeps its stricter contract.
     """
 
-    if not is_task_notification_text(text):
+    events = task_events_from_notification_text(text, timestamp_ms=timestamp_ms)
+    if len(events) != 1 or events[0].tool_use_id is None:
         return None
-    task_id = _notification_tag(text, "task-id")
-    tool_use_id = _notification_tag(text, "tool-use-id")
-    status = _notification_tag(text, "status")
-    if task_id is None or tool_use_id is None or status is None:
-        logger.warning(
-            "Claude task notification skipped missing required tag "
-            "task_id={} tool_use_id={} status={} preview={!r}",
-            task_id,
-            tool_use_id,
-            status,
-            (text or "")[:120],
-        )
-        return None
-    summary = _notification_tag(text, "result") or _notification_tag(text, "summary")
-    return ClaudeTaskEvent(
-        kind="notification",
-        task_id=task_id,
-        tool_use_id=tool_use_id,
-        status=status,
-        summary=summary,
-        end_time=timestamp_ms,
-        usage=_notification_usage(text),
-    )
+    return events[0]
 
 
 def _notification_tag(text: str, name: str) -> str | None:
@@ -164,7 +183,22 @@ def _notification_tag(text: str, name: str) -> str | None:
 
 
 def _notification_usage(text: str) -> Mapping[str, int] | None:
-    block = _notification_tag(text, "usage")
+    # The result is user-authored subagent output and may quote a literal
+    # `<usage>` example. Only parse the outer notification usage that follows
+    # the result body; otherwise a test/report fixture can overwrite real
+    # counters (redteam evidence O, 2026-10-06).
+    result_open = re.search(r"<result>", text)
+    if result_open is None:
+        usage_region = text
+    else:
+        result_closes = tuple(
+            re.finditer(r"</result>", text[result_open.end() :])
+        )
+        if not result_closes:
+            return None
+        last_close = result_open.end() + result_closes[-1].end()
+        usage_region = text[last_close:]
+    block = _notification_tag(usage_region, "usage")
     if block is None:
         return None
     fields = {

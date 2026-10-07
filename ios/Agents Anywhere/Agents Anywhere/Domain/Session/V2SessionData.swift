@@ -63,9 +63,22 @@ struct V2SessionData: Hashable {
     }
 }
 
+/// A user-facing acknowledgement that the client rebuilt a session's data from
+/// a snapshot after the incremental recovery could not be applied. Carried on
+/// the observation so the disclosure rides the same stream as the error it
+/// replaces.
+struct V2SessionRecoveryNotice: Hashable {
+    let title: String
+    let message: String
+}
+
 struct V2SessionObservation: Hashable {
     let sessionId: V2SessionID
     let data: V2SessionData?
     let connection: V2SessionConnectionState
     let error: V2ClientFailure?
+    /// Sticky self-heal disclosure (see `V2SessionRecoveryNotice`); nil until a
+    /// rebuild has happened. Defaulted so observations without one keep
+    /// constructing exactly as before.
+    var recoveryNotice: V2SessionRecoveryNotice? = nil
 }

@@ -16,6 +16,16 @@ from connector.server.protocol import protocol_selection_id
 # Claude Code's `/model` entry that means "no --model flag".
 CLAUDE_DEFAULT_MODEL_ID = "default"
 
+# The context windows a Claude Code model entry can declare. The CLI reports
+# no window size; the only signal on the wire is the `[1m]` marker on the
+# resolved model id (Claude Code's own naming for the 1M-context variant), so
+# a Claude-family entry without it is the standard 200k. A gateway's own
+# models are unknown and get no key at all — clients hide their context
+# indicator rather than guess.
+CLAUDE_EXTENDED_CONTEXT_MARKER = "[1m]"
+CLAUDE_EXTENDED_CONTEXT_WINDOW = 1_000_000
+CLAUDE_DEFAULT_CONTEXT_WINDOW = 200_000
+
 
 @dataclass(frozen=True, slots=True)
 class ClaudeModelSelection:
@@ -207,6 +217,12 @@ def _cli_model_item(item: Mapping[str, Any]) -> RuntimeModelItem:
     for key in ("supportsFastMode", "supportsAutoMode", "supportsAdaptiveThinking"):
         if isinstance(item.get(key), bool):
             metadata[key] = item[key]
+    window = claude_context_window(
+        resolved_model if isinstance(resolved_model, str) else None,
+        model_id,
+    )
+    if window is not None:
+        metadata["contextWindow"] = window
     return RuntimeModelItem(
         id=model_id,
         title=display_name
@@ -241,6 +257,9 @@ def _model_item(item: dict[str, Any]) -> RuntimeModelItem:
     }
     if item.get("legacy") is True:
         metadata["legacy"] = True
+    window = claude_context_window(model_id)
+    if window is not None:
+        metadata["contextWindow"] = window
     return RuntimeModelItem(
         id=model_id,
         title=str(item["title"]),
@@ -253,6 +272,24 @@ def _model_item(item: dict[str, Any]) -> RuntimeModelItem:
         reasoning_items=_reasoning_items(model_id),
         metadata=metadata,
     )
+
+
+def claude_context_window(*candidates: str | None) -> int | None:
+    """The context window a Claude Code model entry declares, if known.
+
+    Derived from the entry's raw CLI fields — `resolvedModel` first, `value`
+    as the fallback. `[1m]` in any candidate means the 1M-context variant; a
+    `claude*` id otherwise is the standard window. Anything else (a gateway's
+    own models) returns None so the key is omitted from the catalog metadata
+    and the clients hide their context indicator instead of guessing.
+    """
+
+    for candidate in candidates:
+        if candidate and CLAUDE_EXTENDED_CONTEXT_MARKER in candidate:
+            return CLAUDE_EXTENDED_CONTEXT_WINDOW
+    if any(candidate and candidate.startswith("claude") for candidate in candidates):
+        return CLAUDE_DEFAULT_CONTEXT_WINDOW
+    return None
 
 
 def _reasoning_items(

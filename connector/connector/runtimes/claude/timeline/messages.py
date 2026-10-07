@@ -103,6 +103,12 @@ class ClaudeToolBlock:
     is_synthetic: bool = False
     parent_tool_use_id: str | None = None
     tool_result_metadata: Mapping[str, Any] | None = None
+    # The per-call usage of the assistant frame this `tool_use` arrived on.
+    # Carried on the block (not just the item) so the pending call keeps it:
+    # the later `tool_result` write rebuilds the item from this block, and
+    # without the carry that rewrite would strip the only usage a
+    # tool-only call left on the timeline.
+    usage: Mapping[str, int] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +160,7 @@ class ClaudeMessageProjector:
         item_id: str | None = None,
         revision: int = 1,
         attachments: tuple[Mapping[str, object], ...] = (),
+        usage: Mapping[str, int] | None = None,
     ) -> RuntimeTimelineItem:
         stable_key = native_item_id or client_message_id or text
         resolved_item_id = item_id or (
@@ -169,20 +176,22 @@ class ClaudeMessageProjector:
             )
         )
         order_seq = self.order_seq_for(resolved_item_id)
+        metadata: dict[str, Any] = {}
+        if attachments:
+            metadata["attachments"] = [
+                dict(attachment) for attachment in attachments
+            ]
+        if usage:
+            # A message's per-call usage rides its content, the one channel
+            # the server passes through, stores and replays verbatim.
+            metadata["usage"] = dict(usage)
         return MessageTimelineItem(
             id=resolved_item_id,
             type="message",
             status=status,  # type: ignore[arg-type]
             role=role,  # type: ignore[arg-type]
             turn_id=turn_id,
-            content=MarkdownMessageContent(
-                text=text,
-                metadata=(
-                    {"attachments": [dict(attachment) for attachment in attachments]}
-                    if attachments
-                    else {}
-                ),
-            ),
+            content=MarkdownMessageContent(text=text, metadata=metadata),
             source=TimelineSource(
                 runtime="claude",
                 external_session_id=session.external_session_id,
@@ -226,6 +235,13 @@ class ClaudeMessageProjector:
         message: Any,
     ) -> tuple[RuntimeTimelineItem, ...]:
         items: list[RuntimeTimelineItem] = []
+        # A tool-only API call produces no message or reasoning row, so the
+        # call's per-call usage (a pure tool_use frame's own) is stamped on
+        # the tool rows it minted — otherwise nothing on the timeline would
+        # carry the newest measurement until the next call streams text.
+        # `message_usage` returns None for user frames (tool results) and for
+        # subagent sidechain frames.
+        usage = message_usage(message)
         for block in message_tool_blocks(message):
             if block.block_type == "tool_use" and is_hidden_tool_name(block.tool_name):
                 self._hidden_tool_use_ids.add(block.tool_use_id)
@@ -235,6 +251,8 @@ class ClaudeMessageProjector:
                 and block.tool_use_id in self._hidden_tool_use_ids
             ):
                 continue
+            if block.block_type == "tool_use" and usage is not None:
+                block = replace(block, usage=usage)
             items.append(self.tool_item(session=session, turn_id=turn_id, block=block))
         return tuple(items)
 
@@ -248,6 +266,10 @@ class ClaudeMessageProjector:
     ) -> tuple[RuntimeTimelineItem, ...]:
         items: list[RuntimeTimelineItem] = []
         native_message_id = message_id(message)
+        # The frame's per-call usage for its reasoning rows: this projection
+        # republishes the row the stream already wrote (same stable id), and
+        # the later write must not strip the usage that row carries.
+        reasoning_usage = message_usage(message)
         for block in message_system_blocks(message):
             if (
                 block.block_type in REASONING_BLOCK_TYPES
@@ -276,7 +298,14 @@ class ClaudeMessageProjector:
                 order_seq = self._next_order_seq
                 self._next_order_seq += 1
                 self._order_by_id[item_id] = order_seq
-            content = _system_content(block)
+            content = _system_content(
+                block,
+                usage=(
+                    reasoning_usage
+                    if block.block_type in REASONING_BLOCK_TYPES
+                    else None
+                ),
+            )
             revision = (
                 reasoning_revision
                 if reasoning_revision is not None
@@ -315,6 +344,7 @@ class ClaudeMessageProjector:
         text: str,
         status: str,
         revision: int,
+        usage: Mapping[str, int] | None = None,
     ) -> RuntimeTimelineItem:
         """Project one streaming thinking block as a reasoning system item.
 
@@ -324,6 +354,10 @@ class ClaudeMessageProjector:
         published (the stream guard in `stream.py` answers the same question),
         and `system_items_for_message` drops the same shape on the other
         routes.
+
+        `usage` stamps the per-call usage the row's message reported, so the
+        first item a turn streams already carries the turn's measurement (a
+        thinking block precedes any text on the wire).
         """
 
         block = ClaudeSystemBlock(
@@ -338,6 +372,9 @@ class ClaudeMessageProjector:
             block=block,
         )
         order_seq = self.order_seq_for(item_id)
+        metadata: dict[str, Any] = {"blockType": "thinking"}
+        if usage:
+            metadata["usage"] = dict(usage)
         return SystemTimelineItem(
             id=item_id,
             type="system",
@@ -346,7 +383,7 @@ class ClaudeMessageProjector:
             turn_id=turn_id,
             content=ReasoningSystemContent(
                 text=text,
-                metadata={"blockType": "thinking"},
+                metadata=metadata,
             ),
             source=TimelineSource(
                 runtime="claude",
@@ -715,6 +752,72 @@ def message_text(message: Any) -> str | None:
     return result if isinstance(result, str) and result else None
 
 
+# Per-API-call token usage, the shape clients read off an assistant message's
+# `content.usage`. The API's usage dicts are snake_case; the published shape is
+# camelCase with all four keys always present — a missing count is 0, never
+# null (the server's `exclude_none` persistence would drop a null and make a
+# replayed history item differ from the live one). `ResultMessage.usage` is
+# turn-cumulative and is deliberately never read as a message's usage; only
+# per-call values (live frames, stream events, transcript messages) are.
+_USAGE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("input_tokens", "inputTokens"),
+    ("output_tokens", "outputTokens"),
+    ("cache_read_input_tokens", "cacheReadTokens"),
+    ("cache_creation_input_tokens", "cacheCreationTokens"),
+)
+
+
+def usage_counts(source: Any) -> dict[str, int] | None:
+    """Normalize one raw API usage mapping into the wire's four int keys.
+
+    Returns None when there is no usage mapping at all, or when it holds none
+    of the token counts (an object that measured nothing is not a usage —
+    publishing four zeros would read as "the context is empty" on clients). A
+    mapping with real gaps (gateways differ) still yields all four keys, gaps
+    as 0.
+    """
+
+    if not isinstance(source, Mapping):
+        return None
+    if not any(
+        _extract(source, snake, wire) is not None for snake, wire in _USAGE_FIELDS
+    ):
+        return None
+    return {wire: _usage_int(source, snake, wire) for snake, wire in _USAGE_FIELDS}
+
+
+def message_usage(message: Any) -> dict[str, int] | None:
+    """The per-call token usage one assistant frame contributes to its item.
+
+    Live SDK frames carry it top-level (``AssistantMessage.usage``); the
+    historical ``SessionMessage`` nests the raw API message, so its usage is
+    read from ``message.usage`` there. Subagent sidechain frames
+    (``parent_tool_use_id`` set) are not the main conversation and get None —
+    the clients only measure the main chain's context. None means "omit the
+    key", not "zero".
+    """
+
+    parent = _extract(message, "parent_tool_use_id", "parentToolUseId")
+    if parent is not None:
+        return None
+    raw = _extract(message, "usage")
+    if not isinstance(raw, Mapping):
+        nested = _extract(message, "message")
+        raw = _extract(nested, "usage") if isinstance(nested, Mapping) else None
+    return usage_counts(raw)
+
+
+def _usage_int(source: Mapping[str, Any], *names: str) -> int:
+    value = _extract(source, *names)
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    return 0
+
+
 def is_local_command_chrome(text: str | None) -> bool:
     """Match the CLI's own chrome around a slash command typed into the CLI.
 
@@ -1025,10 +1128,14 @@ def _summary_texts(value: Any) -> list[str]:
     return texts
 
 
-def _system_content(block: ClaudeSystemBlock) -> Any:
+def _system_content(
+    block: ClaudeSystemBlock,
+    usage: Mapping[str, int] | None = None,
+) -> Any:
     metadata = {
         "blockType": block.block_type,
         **dict(block.metadata or {}),
+        **({"usage": dict(usage)} if usage else {}),
     }
     if block.block_type in REASONING_BLOCK_TYPES:
         return ReasoningSystemContent(
@@ -1080,6 +1187,11 @@ def _tool_call_content(
         "toolUseId": block.tool_use_id,
         "toolName": tool_name,
         "input": block.tool_input,
+        # The call's per-call usage, when the frame carried one. It rides the
+        # metadata `complete_tool_content` merges forward, so the completed
+        # row keeps it too. The Agent card is deliberately excluded: its
+        # `usage` field already carries the subagent's own totals.
+        **({"usage": dict(block.usage)} if block.usage else {}),
         # L2: a frame parented to a tool call belongs to that call's card.
         # AgentCallToolContent already publishes this convention for nested
         # Agent calls; ordinary tool rows minted from subagent frames now carry

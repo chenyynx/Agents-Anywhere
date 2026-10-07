@@ -71,6 +71,7 @@ from connector.runtimes.claude.timeline.messages import (
     message_role,
     message_session_id,
     message_text,
+    message_usage,
     stable_message_item_id,
     stable_tool_item_id,
 )
@@ -1502,6 +1503,14 @@ class ClaudeTurnRunner:
                     if frame_parent_tool_use_id is not None
                     else None
                 )
+                if role == "assistant":
+                    # Keep the turn's last concrete per-call usage around: the
+                    # result-envelope fallback republishes this item id after
+                    # `reset()` and must still carry usage (see
+                    # `_publish_result_text`). `message_usage` returns None for
+                    # sidechain frames on its own, so the stash stays main-chain
+                    # only.
+                    stream_accumulator.remember_usage(message_usage(message))
                 synthetic_control = is_synthetic_control_message(message)
                 # Compaction is reported through the same events whether the CLI
                 # compacted a `/compact` prompt or its own context window, so the
@@ -1832,6 +1841,17 @@ class ClaudeTurnRunner:
                     continue
                 if not text:
                     continue
+                # The per-call usage of this reply. The final frame is
+                # authoritative when it carries one; the streamed seed is the
+                # fallback so this last write for the item id cannot strip the
+                # usage the partial items already carried. Both are per-call
+                # values — `ResultMessage.usage` is turn-cumulative and is not
+                # read here. Sidechain rows stay without usage entirely.
+                assistant_usage: dict[str, int] | None = None
+                if role == "assistant" and frame_parent_tool_use_id is None:
+                    assistant_usage = (
+                        message_usage(message) or stream_accumulator.partial_usage
+                    )
                 await self.publish_items(
                     execution,
                     (
@@ -1851,6 +1871,7 @@ class ClaudeTurnRunner:
                                 revision=stream_accumulator.next_final_revision()
                                 if role == "assistant"
                                 else 1,
+                                usage=assistant_usage,
                             ),
                             frame_parent_item_id,
                         ),
@@ -2156,6 +2177,12 @@ class ClaudeTurnRunner:
         text = message_text(message)
         if not text:
             return False
+        # The frame that carries this text (a ResultMessage envelope) reports
+        # turn-cumulative totals, not one call's usage and not this item's. The
+        # item id, though, is the streamed assistant message's — the partial
+        # items already published usage on it — so the last per-call usage the
+        # accumulator holds rides along and the fallback's later write cannot
+        # publish over the item without one.
         await self.publish_items(
             execution,
             (
@@ -2172,6 +2199,7 @@ class ClaudeTurnRunner:
                             turn_id,
                         ),
                         revision=stream_accumulator.next_final_revision(),
+                        usage=stream_accumulator.result_text_usage(),
                     ),
                     parent_item_id,
                 ),

@@ -12,7 +12,11 @@ import anyio
 import pytest
 from agent_server.api.sessions_terminal import _send_terminal_ws_error
 from agent_server.app import create_app
-from agent_server.core.models import SessionRuntimeState, TimelineItemIn
+from agent_server.core.models import (
+    ConnectorNotification,
+    SessionRuntimeState,
+    TimelineItemIn,
+)
 from agent_server.core.protocol import protocol_selection_id
 from agent_server.infra.connector_rpc import (
     ConnectorOfflineError,
@@ -21,6 +25,11 @@ from agent_server.infra.connector_rpc import (
     DuplicateConnectorConnectionError,
 )
 from agent_server.infra.fs_downloads import FsDownloadRelayManager
+from agent_server.services.connector_ingest import (
+    INGEST_REJECTION_MESSAGE_MAX_LENGTH,
+    ingest_rejection_from_exception,
+)
+from agent_server.services.connector_notifications import NotificationValidationError
 from agent_server.services.device_runtimes import DeviceRuntimeService
 from agent_server.services.effective_capabilities import (
     publish_connector_session_capabilities,
@@ -1184,8 +1193,15 @@ def test_session_state_updated_rejects_legacy_selection_fields(tmp_path):
         },
     )
 
-    assert response.status_code == 400
-    assert response.json()["detail"]["code"] == "unsupported_legacy_selection_fields"
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["accepted"] == 0
+    assert len(body["rejected"]) == 1
+    assert body["rejected"][0]["index"] == 0
+    assert body["rejected"][0]["method"] == "session.state.updated"
+    assert body["rejected"][0]["code"] == "unsupported_legacy_selection_fields"
+    assert body["rejected"][0]["errorType"] == "NotificationValidationError"
+    assert body["rejected"][0]["message"]
 
 
 def test_session_updated_rejects_legacy_selection_fields(tmp_path):
@@ -1210,8 +1226,15 @@ def test_session_updated_rejects_legacy_selection_fields(tmp_path):
         },
     )
 
-    assert response.status_code == 400
-    assert response.json()["detail"]["code"] == "unsupported_legacy_selection_fields"
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["accepted"] == 0
+    assert len(body["rejected"]) == 1
+    assert body["rejected"][0]["index"] == 0
+    assert body["rejected"][0]["method"] == "session.updated"
+    assert body["rejected"][0]["code"] == "unsupported_legacy_selection_fields"
+    assert body["rejected"][0]["errorType"] == "NotificationValidationError"
+    assert body["rejected"][0]["message"]
 
 
 def wait_for_state_items(client: TestClient, session_id: str, headers: dict[str, str], predicate):
@@ -3548,6 +3571,222 @@ def test_connector_ingest_rejects_bad_notification_without_500(tmp_path):
     assert [item["id"] for item in messages] == ["item-ok-1", "item-ok-2"]
 
 
+def _ok_timeline_item(item_id: str, session_id: str, order_seq: int) -> dict:
+    return {
+        "id": item_id,
+        "sessionId": session_id,
+        "turnId": "turn_1",
+        "type": "message",
+        "status": "done",
+        "role": "assistant",
+        "content": {"text": item_id, "format": "markdown"},
+        "source": {
+            "runtime": "codex",
+            "sessionId": "thr_1",
+            "turnId": "turn_1",
+            "itemId": item_id,
+            "itemType": "agentMessage",
+        },
+        "orderSeq": order_seq,
+        "revision": 1,
+        "contentHash": f"sha256:{item_id}",
+    }
+
+
+def test_connector_ingest_isolates_notification_validation_error_in_batch(tmp_path):
+    client = make_client(tmp_path)
+    _, access_token, session_id, headers = create_connector_and_session(client)
+
+    response = client.post(
+        "/connector/ingest",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={
+            "notifications": [
+                {
+                    "method": "timeline.itemUpsert",
+                    "params": {
+                        "sessionId": session_id,
+                        "item": _ok_timeline_item("item-ok-before", session_id, 1),
+                    },
+                },
+                {
+                    "method": "session.state.updated",
+                    "params": {
+                        "sessionId": session_id,
+                        "runtime": "codex",
+                        "status": "running",
+                        "modelSelectionId": "sel_model_legacy",
+                    },
+                },
+                {
+                    "method": "timeline.itemUpsert",
+                    "params": {
+                        "sessionId": session_id,
+                        "item": _ok_timeline_item("item-ok-after", session_id, 2),
+                    },
+                },
+            ]
+        },
+    )
+
+    # A notification-level protocol violation is isolated to its own entry:
+    # the batch still succeeds and both healthy notifications are applied.
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["accepted"] == 2
+    assert len(body["rejected"]) == 1
+    rejected = body["rejected"][0]
+    assert rejected["index"] == 1
+    assert rejected["method"] == "session.state.updated"
+    assert rejected["code"] == "unsupported_legacy_selection_fields"
+    assert rejected["errorType"] == "NotificationValidationError"
+    assert rejected["message"]
+    state = session_view_for_assertions(client, session_id, headers)
+    messages = [
+        item
+        for item in state["items"]
+        if item["id"] in {"item-ok-before", "item-ok-after"}
+    ]
+    assert [item["id"] for item in messages] == ["item-ok-before", "item-ok-after"]
+
+
+def test_connector_ingest_isolates_turn_marker_violation(tmp_path):
+    client = make_client(tmp_path)
+    _, access_token, session_id, headers = create_connector_and_session(client)
+
+    def marker(item_id: str, item_type: str, order_seq: int) -> dict:
+        item = _ok_timeline_item(item_id, session_id, order_seq)
+        item["type"] = item_type
+        return item
+
+    response = client.post(
+        "/connector/ingest",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={
+            "notifications": [
+                {
+                    "method": "timeline.itemUpsert",
+                    "params": {
+                        "sessionId": session_id,
+                        "item": marker("item-turn-start", "turn.start", 1),
+                    },
+                },
+                {
+                    "method": "timeline.itemUpsert",
+                    "params": {
+                        "sessionId": session_id,
+                        "item": _ok_timeline_item("item-marker-ok", session_id, 2),
+                    },
+                },
+                {
+                    "method": "timeline.itemUpsert",
+                    "params": {
+                        "sessionId": session_id,
+                        "item": marker("item-turn-end", "turn.end", 3),
+                    },
+                },
+            ]
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["accepted"] == 1
+    assert [entry["index"] for entry in body["rejected"]] == [0, 2]
+    for entry in body["rejected"]:
+        assert entry["method"] == "timeline.itemUpsert"
+        assert entry["code"] == "unsupported_timeline_marker"
+        assert entry["errorType"] == "NotificationValidationError"
+        assert entry["message"] == (
+            "turn lifecycle markers must use dedicated session notifications"
+        )
+    state = session_view_for_assertions(client, session_id, headers)
+    item_ids = [item["id"] for item in state["items"]]
+    assert "item-marker-ok" in item_ids
+    assert "item-turn-start" not in item_ids
+    assert "item-turn-end" not in item_ids
+
+
+def test_connector_ingest_request_level_errors_stay_transport_level(tmp_path):
+    client = make_client(tmp_path)
+    _, access_token, _, _ = create_connector_and_session(client)
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    missing_method = client.post(
+        "/connector/ingest",
+        headers=headers,
+        json={"notifications": [{"params": {"sessionId": "sess_any"}}]},
+    )
+    assert missing_method.status_code == 422, missing_method.text
+
+    empty_batch = client.post(
+        "/connector/ingest",
+        headers=headers,
+        json={"notifications": []},
+    )
+    assert empty_batch.status_code == 422, empty_batch.text
+
+    malformed = client.post(
+        "/connector/ingest",
+        headers={**headers, "Content-Type": "application/json"},
+        content=b"{not-json",
+    )
+    assert malformed.status_code == 422, malformed.text
+
+
+def test_connector_ingest_rejection_message_is_truncated_to_500_characters():
+    notification = ConnectorNotification(method="timeline.itemUpsert", params={})
+    long_error = NotificationValidationError("invalid_runtime_catalog", "x" * 900)
+    rejection = ingest_rejection_from_exception(
+        3,
+        notification,
+        long_error,
+        code=long_error.code,
+    )
+    assert rejection.index == 3
+    assert rejection.code == "invalid_runtime_catalog"
+    assert rejection.errorType == "NotificationValidationError"
+    assert rejection.message == f"{'x' * INGEST_REJECTION_MESSAGE_MAX_LENGTH}..."
+
+
+def test_connector_ingest_truncates_long_rejection_message_in_response(tmp_path):
+    client = make_client(tmp_path)
+    _, access_token, _, _ = create_connector_and_session(client)
+
+    # Every model entry is missing its required displayName, so the pydantic
+    # error text comfortably exceeds the rejection message limit.
+    response = client.post(
+        "/connector/ingest",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={
+            "notifications": [
+                {
+                    "method": "runtime.catalog.updated",
+                    "params": {
+                        "catalogType": "model",
+                        "runtime": "codex",
+                        "catalog": {
+                            "runtime": "codex",
+                            "revision": 1,
+                            "models": [
+                                {"id": f"model-{index}"} for index in range(12)
+                            ],
+                        },
+                    },
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["accepted"] == 0
+    rejected = body["rejected"][0]
+    assert rejected["code"] == "invalid_runtime_catalog"
+    assert rejected["message"].endswith("...")
+    assert len(rejected["message"]) <= INGEST_REJECTION_MESSAGE_MAX_LENGTH + 3
+
+
 def test_sessions_sort_by_latest_timeline_item_not_session_update(tmp_path):
     client = make_client(tmp_path)
     connector_id, access_token, first_session_id, headers = create_connector_and_session(client)
@@ -4425,8 +4664,15 @@ def test_protocol_capabilities_validation_is_mapped_by_transport(tmp_path):
         },
     )
 
-    assert response.status_code == 400
-    assert response.json()["detail"]["code"] == "invalid_protocol_capabilities"
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["accepted"] == 0
+    assert len(body["rejected"]) == 1
+    assert body["rejected"][0]["index"] == 0
+    assert body["rejected"][0]["method"] == "protocol.capabilitiesUpdated"
+    assert body["rejected"][0]["code"] == "invalid_protocol_capabilities"
+    assert body["rejected"][0]["errorType"] == "NotificationValidationError"
+    assert body["rejected"][0]["message"]
 
 
 def test_protocol_catalog_ingest_is_rejected(tmp_path):
@@ -4449,8 +4695,15 @@ def test_protocol_catalog_ingest_is_rejected(tmp_path):
             json={"notifications": [{"method": method, "params": params}]},
         )
 
-        assert response.status_code == 400, response.text
-        assert response.json()["detail"]["code"] == "unsupported_notification"
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["accepted"] == 0
+        assert len(body["rejected"]) == 1
+        assert body["rejected"][0]["index"] == 0
+        assert body["rejected"][0]["method"] == method
+        assert body["rejected"][0]["code"] == "unsupported_notification"
+        assert body["rejected"][0]["errorType"] == "NotificationValidationError"
+        assert body["rejected"][0]["message"]
 
 
 def test_runtime_catalog_update_ingest_publishes_session_event(tmp_path):
@@ -6953,8 +7206,15 @@ def test_legacy_approval_request_notification_is_rejected(tmp_path):
             ],
         },
     )
-    assert response.status_code == 400
-    assert response.json()["detail"]["code"] == "unsupported_notification"
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["accepted"] == 0
+    assert len(body["rejected"]) == 1
+    assert body["rejected"][0]["index"] == 0
+    assert body["rejected"][0]["method"] == "approval.requested"
+    assert body["rejected"][0]["code"] == "unsupported_notification"
+    assert body["rejected"][0]["errorType"] == "NotificationValidationError"
+    assert body["rejected"][0]["message"]
 
 
 def test_pairing_flow_returns_one_time_connector_credentials(tmp_path):

@@ -1077,13 +1077,72 @@ class ClaudeConnection:
                     # that failure (red line), and that path routes the frame
                     # into the pending response rather than casting a new turn.
                     #
-                    # Note what is deliberately NOT special-cased here: the
-                    # pending selection is left exactly as it was. A pending
+                    # Note what the pending clause here accepts. A pending
                     # with no wire uuid is a prompt submitted on this
                     # transport's first turn, before the reader has ever yielded
                     # a frame, so no earlier turn's result can be in flight to
                     # hijack it (red team could not falsify this, and proved
                     # the two rebuild entry points set `queried` explicitly).
+                    #
+                    # The terminal clause accepts `completed` and `failed` —
+                    # nothing else (ghost-user-turn fix, 2026-10-07; narrowed
+                    # by the D1 fix, below). It used to be `failed`-only,
+                    # which absorbed a bare `completed` at silence even though
+                    # a prompt was registered and waiting for it. A human turn
+                    # has no watchdog, so a turn whose whole stream is a bare
+                    # `completed` (an empty reply) would wait forever for a
+                    # frame that was just dropped: the same starvation as the
+                    # mint-cast ghost, one frame later. Routing a `completed`
+                    # into the pending does NOT hand the turn a verdict it
+                    # cannot prove: `drive_turn` declines an unowned
+                    # `completed` (records the downgrade and keeps reading,
+                    # bounded by `DECLINED_TERMINAL_GRACE_SECONDS` — F1
+                    # release protocol, §8.1), so a leftover cannot be "won"
+                    # by the wrong turn, and a genuine empty reply settles on
+                    # the downgrade instead of hanging. `failed` keeps its
+                    # visibility through this same branch, unconditionally
+                    # (the queued-prompt red line).
+                    #
+                    # `interrupted` is EXCLUDED — the D1 regression the red
+                    # team caught in the first cut of this fix, which routed
+                    # ANY terminal. A stop emits its `aborted_streaming` /
+                    # `aborted_tools` tail frames — an `interrupted`
+                    # terminal — and those stay in flight for a moment after
+                    # the stopped round settled. A user who stops a turn and
+                    # immediately re-sends registers a fresh pending UNDER
+                    # that tail, and `drive_turn`'s F1 decline guard covers
+                    # `completed` only: `interrupted` is a
+                    # settle-immediately verdict BY DESIGN, so routing the
+                    # tail would settle the fresh human turn `interrupted` on
+                    # the spot — "this round produced nothing" before it
+                    # produced anything — while the real reply landed in a
+                    # cast phantom turn behind it. Absorbed instead, the tail
+                    # is dropped (the absorb branch below): it carries no
+                    # context the CLI will not replay, and nothing here
+                    # depends on it — the pending's OWN interrupt is settled
+                    # by the stop path that produced it (`interrupt_session`
+                    # on the live execution), which never needed this clause.
+                    # Every other terminal falls to the absorb branch below,
+                    # exactly as before the ghost-user-turn fix.
+                    #
+                    # `hosts_unsolicited_work` is the session-level partition
+                    # this clause and the mint gate below are scoped by
+                    # (ghost-user-turn fix, 2026-10-07): it is true when this
+                    # transport hosts legitimate sources of turns that arrive
+                    # uninvited — cron/task notifications (`task_ids`) and
+                    # background work (`background.active_ids`). With no such
+                    # source, a silent frame can only be the pending's own, so
+                    # it is routed to the pending; with one, the pre-existing
+                    # #159 handling is kept (a silent terminal is still
+                    # absorbed, a silent wake still mints), because the frame
+                    # may be that unsolicited turn's own. Per frame the two are
+                    # indistinguishable — a ghost and a genuine uninvited wake
+                    # share the wire shape — so the cut can only ever be per
+                    # session, never per frame. It is re-derived on every frame
+                    # so both readers below see the same current duty state.
+                    hosts_unsolicited_work = bool(
+                        self.task_ids or self.background.active_ids
+                    )
                     if self.pending is not None and (
                         self.pending.user_id is None
                         or (
@@ -1092,7 +1151,20 @@ class ClaudeConnection:
                         )
                         or (
                             terminal_event is not None
-                            and terminal_event.status == "failed"
+                            and (
+                                # Red line: `failed` routes unconditionally —
+                                # a queued prompt's failure must stay visible.
+                                terminal_event.status == "failed"
+                                or (
+                                    # `completed` routes only when the
+                                    # session hosts no unsolicited work, so
+                                    # it cannot be that work's own turnaround;
+                                    # `drive_turn` then declines it if the
+                                    # turn cannot own it (F1, §8.1).
+                                    terminal_event.status == "completed"
+                                    and not hosts_unsolicited_work
+                                )
+                            )
                         )
                     ):
                         await self.select_response(self.pending)
@@ -1164,9 +1236,47 @@ class ClaudeConnection:
                         # `cast_frame` before `on_activity` spawns the turn —
                         # `drive_turn` then excludes it from the content gate
                         # (it is passive arrival, not this turn's labour).
-                        await self.select_response(
-                            ClaudeResponse(self, cast_frame=message)
-                        )
+                        #
+                        # The hard gate (ghost-user-turn fix, 2026-10-07):
+                        # minting from silence is only legal when no turn is
+                        # waiting for its frames. A registered `pending` is a
+                        # prompt this transport has accepted whose echo has not
+                        # matched here — the echo may be uuid-mismatched, late,
+                        # or never replayed at all. Casting a ghost on this
+                        # frame would take `current` for it, and every frame
+                        # behind — the pending's own echo, reply and result —
+                        # would be consumed by the ghost while the real turn
+                        # starves: human turns have no watchdog, so nothing
+                        # would ever settle it and the user's message, though
+                        # accepted by the CLI, never comes back.
+                        #
+                        # So the frame is ROUTED to the pending instead of
+                        # discarded or cast. Whether it is attributable to that
+                        # turn is not judged here — `drive_turn` is the single
+                        # authority on that, and this is exactly where the same
+                        # frame would have landed had its echo matched. A frame
+                        # that is genuinely not the pending's is declined in-turn
+                        # (F1 release protocol) rather than being given the
+                        # turn's verdict for free.
+                        #
+                        # Scoped by `hosts_unsolicited_work` (derived at the
+                        # pending clause above) — the session-level partition.
+                        # In a session that hosts unsolicited work (cron /
+                        # background), a silent frame cannot be told apart from
+                        # that work's own wake per frame: the partition says it
+                        # may be the wake, so #159's minting is kept and this
+                        # transport casts instead of routing the frame into the
+                        # pending. Only in a session with no such source is the
+                        # silence provable, and there the pending wins. Same
+                        # cut, same reason as above: the frame shapes are
+                        # identical — the session's duty state is all there is
+                        # to go on.
+                        if self.pending is not None and not hosts_unsolicited_work:
+                            await self.select_response(self.pending)
+                        else:
+                            await self.select_response(
+                                ClaudeResponse(self, cast_frame=message)
+                            )
                     else:
                         continue
                 response = self.current

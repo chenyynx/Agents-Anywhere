@@ -23,11 +23,13 @@ code-level claim — this file is where it finally gets executed.
 Two entry points, one invariant — a terminal frame settles exactly one turn,
 the one that can prove it started it:
 
-* **I1** (`sdk/connection.py`): at silence, a ``completed`` frame is absorbed.
-  It never mints, and it never becomes the pending turn's "first frame".
-  Absorbed frames are NOT parked as preamble: preamble is flushed into
-  whichever response is selected next, which would smuggle the result back in
-  as that turn's terminal — the same ghost, through the back door.
+* **I1** (`sdk/connection.py`): at silence, a ``completed`` frame never MINTS
+  a turn. With no pending registered it is absorbed; with one registered it is
+  routed to that turn, where F1's decline protocol keeps it from settling
+  anything it cannot own (ghost-user-turn fix, 2026-10-07). Absorbed frames
+  are NOT parked as preamble: preamble is flushed into whichever response is
+  selected next, which would smuggle the result back in as that turn's
+  terminal — the same ghost, through the back door.
 * **B** (`turns/lifecycle.py`): in-turn, a terminal frame that arrives before
   the turn has shown a start it owns is deferred rather than settling the turn.
 
@@ -300,7 +302,19 @@ class _ResidualFirstClient(_ScheduledClaudeClient):
 
 
 def test_success_result_does_not_become_the_pending_turns_first_frame() -> None:
-    """修前红 / 修后绿: the new turn answers, instead of completing on the old one."""
+    """修前红 / 修后绿: the new turn answers, instead of completing on the old one.
+
+    ghost-user-turn fix (2026-10-07): the reader used to ABSORB this residual
+    at silence — the pending-selection clause matched `failed` only, so a bare
+    `completed` with a prompt waiting for it was dropped. The fix routes every
+    terminal into the pending instead (`sdk/connection.py`), because the
+    dropped-at-silence shape is also what a human turn whose only frame IS its
+    own bare result looks like — and that one hung forever (no watchdog). The
+    absorption this test used to pin is therefore gone by design; what it was
+    protecting is not: the turn still must not complete on the old result. It
+    declines it (F1) and settles on its own, and those counters are asserted
+    in the old one's place, so the leak stays named instead of merely reduced.
+    """
 
     async def run() -> None:
         client = _ResidualFirstClient(BARE_SUCCESS_RESULT, from_query=2)
@@ -325,7 +339,14 @@ def test_success_result_does_not_become_the_pending_turns_first_frame() -> None:
                 for item in host.timeline_item_upserts
             ]
             assert "reply:second" in texts
-            assert connection.absorbed_terminal_frames == 1
+            # Routed, not absorbed (ghost-user-turn fix): the residual reached
+            # the pending turn, which declined it and recovered on its own
+            # result — `completed`, not a downgrade.
+            assert connection.absorbed_terminal_frames == 0
+            runner = runtime._turns.runner
+            assert runner.foreign_terminal_frames == 1
+            assert runner.stale_terminal_recoveries == 1
+            assert runner.stale_completion_downgrades == 0
         finally:
             await runtime.stop()
 

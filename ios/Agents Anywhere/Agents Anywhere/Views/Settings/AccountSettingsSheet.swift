@@ -4,6 +4,7 @@ struct AccountSettingsSheet: View {
     @ObservedObject var appState: AppState
     @Environment(\.dismiss) private var dismiss
     @AppStorage(AppAppearance.storageKey) private var appearanceValue = AppAppearance.system.rawValue
+    @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.default.rawValue
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
     @AppStorage(ProjectSidebarPreferences.compactSessionListKey) private var compactSessionList = false
     @State private var confirmsSignOut = false
@@ -49,6 +50,10 @@ struct AccountSettingsSheet: View {
                     NavigationLink { AppearanceSettingsView() } label: {
                         SettingsRow(title: String(localized: "Appearance"), symbol: "circle.lefthalf.filled",
                             value: String(localized: (AppAppearance(rawValue: appearanceValue) ?? .system).title))
+                    }
+                    NavigationLink { AccentSettingsView() } label: {
+                        SettingsRow(title: String(localized: "Accent color"), symbol: "paintpalette",
+                            value: String(localized: AppAccent.resolve(accentValue).title))
                     }
                     NavigationLink { SettingsLanguageView() } label: {
                         SettingsRow(title: String(localized: "Language"), symbol: "globe", value: SettingsLanguageView.currentLanguage)

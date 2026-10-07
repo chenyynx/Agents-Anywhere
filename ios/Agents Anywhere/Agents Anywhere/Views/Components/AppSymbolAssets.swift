@@ -74,6 +74,7 @@ enum AppSymbolAssets {
         "network": "aa-Globe",
         "network.slash": "aa-WifiOff",
         "number": "aa-Hash",
+        "paintpalette": "aa-Palette",
         "pencil": "aa-Pencil",
         "person.2": "aa-Bot",
         "person.crop.circle": "aa-CircleUserRound",

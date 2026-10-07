@@ -19,6 +19,7 @@ struct ComposerOptionsSheet: View {
     @State private var path: [Page] = []
     @State private var expandedModelID: String?
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
 
     private enum Page: Hashable { case models, permissions }
 
@@ -57,7 +58,7 @@ struct ComposerOptionsSheet: View {
                             Toggle(isOn: Binding(get: { meta.takeover }, set: { pendingTakeover = $0 })) {
                                 Label(String(localized: "接管会话"), appSymbol: "hand.raised")
                             }
-                            .toggleStyle(.switch).tint(nil).accentColor(nil)
+                            .toggleStyle(.switch).tint(AppTheme.primaryControlBackground(colorScheme))
                             .disabled(!chat.canChangeTakeover)
                             Text(meta.takeover ? String(localized: "已开启，可从 Agents Anywhere 继续操作。") : String(localized: "只读模式，开启接管后可以继续发送消息。"))
                                 .font(.footnote).foregroundStyle(.secondary)

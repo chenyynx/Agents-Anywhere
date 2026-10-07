@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from typing import Protocol
+import json
+from typing import Any, Protocol
+
+from loguru import logger
 
 from agent_server.core.events import (
     event_cursor,
@@ -19,7 +22,25 @@ from agent_server.services.effective_capabilities import (
 from agent_server.services.timeline_write_buffer import TimelineWriteBuffer
 
 DEFAULT_RECOVERY_LIMIT = 500
+DEFAULT_RECOVERY_BYTE_LIMIT = 4 * 1024 * 1024
 DEFAULT_STABILITY_ATTEMPTS = 3
+
+
+def _serialized_payload_bytes(payload: dict[str, Any]) -> int:
+    """Byte size of one event payload as the recovery response serializes it.
+
+    The response is written as UTF-8 JSON with compact separators, so the byte
+    gate measures that same encoding and cannot drift away from the wire size.
+    """
+
+    return len(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    )
 
 
 class EventRecoveryRepository(SessionCapabilityRepository, Protocol):
@@ -49,12 +70,14 @@ class EventRecoveryService:
         timeline_write_buffer: TimelineWriteBuffer | None = None,
         *,
         limit: int = DEFAULT_RECOVERY_LIMIT,
+        byte_limit: int = DEFAULT_RECOVERY_BYTE_LIMIT,
         stability_attempts: int = DEFAULT_STABILITY_ATTEMPTS,
     ) -> None:
         self._store = store
         self._presence = presence
         self._timeline_write_buffer = timeline_write_buffer
         self._limit = limit
+        self._byte_limit = byte_limit
         self._stability_attempts = stability_attempts
 
     async def recover(
@@ -155,10 +178,25 @@ class EventRecoveryService:
         if has_more:
             return self._snapshot_required(current_sequence)
 
-        events = timeline_events_from_items(
-            session_id,
-            [item.model_dump(mode="json") for item in items],
-        )
+        item_payloads: list[dict[str, Any]] = []
+        accumulated_bytes = 0
+        for item in items:
+            dumped_item = item.model_dump(mode="json")
+            accumulated_bytes += _serialized_payload_bytes({"item": dumped_item})
+            if accumulated_bytes > self._byte_limit:
+                logger.info(
+                    "recovery byte limit exceeded session_id={} items={} "
+                    "measured_items={} payload_bytes={} byte_limit={}",
+                    session_id,
+                    len(items),
+                    len(item_payloads),
+                    accumulated_bytes,
+                    self._byte_limit,
+                )
+                return self._snapshot_required(current_sequence)
+            item_payloads.append(dumped_item)
+
+        events = timeline_events_from_items(session_id, item_payloads)
         if session.updatedSeq > after_sequence:
             session_payload = session.model_dump(mode="json")
             events.append(

@@ -63,6 +63,8 @@ struct AttachmentImageViewerSheet: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .overlay(alignment: .bottom) { statusChip }
+                // Keyed by attempt only: the load runs once per presentation
+                // (and again per retry), never per geometry pass.
                 .task(id: attempt) { await loadFullResolution(container: proxy.size) }
             }
             .navigationTitle(title)

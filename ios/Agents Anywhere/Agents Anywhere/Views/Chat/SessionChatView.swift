@@ -12,10 +12,10 @@ struct SessionChatView: View, Equatable {
     let onMenu: () -> Void
     @State private var sheet: SessionSheet?
     @State private var expandedNoticeID: String?
-    /// Disk-cache + loader for the instant image viewer. One instance per view
-    /// identity; the cache is content-addressed, so even a fresh instance
-    /// serves previously-opened images straight off disk.
-    @State private var imageLoader: AttachmentImageLoader
+    /// Shared app-level loader for the instant image viewer: one disk cache and
+    /// one in-flight table per signed-in session (owned by V2ClientServices),
+    /// reused by every session view.
+    private let imageLoader: AttachmentImageLoader
     private let fileService: V2WorkspaceFilesService
     private let detailService: V2SessionDetailService
     private enum SessionSheet: Identifiable {
@@ -61,7 +61,7 @@ struct SessionChatView: View, Equatable {
         self.fallbackTitle = fallbackTitle
         self.fallbackRuntimeName = fallbackRuntimeName
         fileService = services.workspaceFiles; detailService = services.sessionDetail
-        _imageLoader = State(initialValue: AttachmentImageLoader(cache: AttachmentImageCache(), service: services.attachments))
+        imageLoader = services.attachmentImageLoader
         self.onMenu = onMenu
     }
     private var controls: ChatControlMetrics { .init(bodyLineHeight: bodyLineHeight) }

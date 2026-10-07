@@ -18,6 +18,15 @@ final class V2ClientServices {
     let sessionDetail: V2SessionDetailService
     let sessionCreation: V2SessionCreationService
     let attachments: V2AttachmentService
+    /// Disk cache for full-resolution attachment images. App-scoped like the
+    /// services that own it, so every session view shares one cache (a re-open
+    /// is served from disk); cleared on services teardown, since the only
+    /// teardowns — sign-out and account/scope switches — are account
+    /// boundaries a member's images must not outlive.
+    let attachmentImageCache: AttachmentImageCache
+    /// Shared loader for the instant image viewer: one disk cache and one
+    /// in-flight table for the whole signed-in session.
+    let attachmentImageLoader: AttachmentImageLoader
     let interactions: V2RuntimeInteractionService
     let devicePairing: V2DevicePairingService
     let agentSetup: AgentSetupCoordinator
@@ -56,6 +65,8 @@ final class V2ClientServices {
         )
         sessionCreation = V2SessionCreationService(sessionAPI: api.sessions)
         attachments = V2AttachmentService(attachmentAPI: api.attachments, transport: api.transport)
+        attachmentImageCache = AttachmentImageCache()
+        attachmentImageLoader = AttachmentImageLoader(cache: attachmentImageCache, service: attachments)
         interactions = V2RuntimeInteractionService(runtimeAPI: api.runtime)
         sessionRepository = V2SessionRepository(scope: scope, detail: sessionDetail, interactions: interactions, policy: policy, localStore: localStore)
         devicePairing = V2DevicePairingService(connectorAPI: api.connectors)
@@ -139,6 +150,11 @@ final class V2ClientServices {
     func shutdown(removingCache: Bool = false) {
         onSelectPage = nil; onCreationBound = nil
         newSession.onStaged = nil; newSession.onBound = nil; newSession.onFailed = nil; newSession.onProjectResolved = nil
+        // Both teardown paths are account boundaries — sign-out
+        // (`removingCache: true`) and an account/scope switch (`false`) — so
+        // the member's cached image originals never survive them. The online
+        // cache is re-derivable; correctness (no cross-account imagery) wins.
+        attachmentImageCache.clear()
         Task { await localStore.close(removing: removingCache) }
         agentSetup.invalidate()
         agentModels.values.forEach { $0.invalidate() }; agentModels = [:]

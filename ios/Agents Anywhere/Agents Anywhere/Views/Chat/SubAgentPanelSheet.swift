@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// L2 (§3.3): the SubAgent detail panel. Opened from the capsule or from the
 /// timeline's Agent card / SubAgent group. Each page is one turn (pp
@@ -11,7 +12,8 @@ struct SubAgentPanelSheet: View {
     let deviceName: String?
     let fallbackRuntimeName: String?
     let onFile: (String) -> Void
-    let onAttachment: (V2AttachmentContent) -> Void
+    /// The second argument is the thumbnail already decoded by the bubble.
+    let onAttachment: (V2AttachmentContent, UIImage?) -> Void
     /// The card the panel was opened from — the per-turn page's anchor
     /// (pp 2026-10-05: each turn reopens its own page).
     private let openingCardID: String?
@@ -28,7 +30,7 @@ struct SubAgentPanelSheet: View {
     private static let promptFoldThreshold = 300
 
     init(chat: SessionChatModel, deviceName: String?, fallbackRuntimeName: String?, initialCardID: String?,
-         onFile: @escaping (String) -> Void = { _ in }, onAttachment: @escaping (V2AttachmentContent) -> Void = { _ in }) {
+         onFile: @escaping (String) -> Void = { _ in }, onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void = { _, _ in }) {
         self.chat = chat
         self.deviceName = deviceName
         self.fallbackRuntimeName = fallbackRuntimeName

@@ -1,9 +1,11 @@
 import SwiftUI
+import UIKit
 
 struct SessionTimelineGroupView: View {
     let group: ChatTimelineGroup
     let chat: SessionChatModel
-    let onAttachment: (V2AttachmentContent) -> Void
+    /// The second argument is the thumbnail already decoded by the bubble.
+    let onAttachment: (V2AttachmentContent, UIImage?) -> Void
     let onFile: (String) -> Void
     var turnAction: TimelineTurnAction?
     /// L2: opens the SubAgent panel. Nil in the panel's own child rows.

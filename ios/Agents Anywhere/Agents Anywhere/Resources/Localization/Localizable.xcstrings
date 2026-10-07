@@ -5410,6 +5410,40 @@
         }
       }
     },
+    "The downloaded image could not be read.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The downloaded image could not be read."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载的图片无法读取。"
+          }
+        }
+      }
+    },
+    "The downloaded image failed its integrity check.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The downloaded image failed its integrity check."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载的图片未通过完整性校验。"
+          }
+        }
+      }
+    },
     "The file preview URL is invalid.": {
       "extractionState": "manual",
       "localizations": {
@@ -5423,6 +5457,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "文件预览地址无效。"
+          }
+        }
+      }
+    },
+    "The image could not be stored on this device.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The image could not be stored on this device."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "图片无法存储到此设备。"
           }
         }
       }
@@ -6053,6 +6104,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "此项为必填项。"
+          }
+        }
+      }
+    },
+    "This image has no download URL.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This image has no download URL."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这张图片没有可用的下载地址。"
           }
         }
       }
@@ -9351,6 +9419,23 @@
         }
       }
     },
+    "分享原图": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Share original"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "分享原图"
+          }
+        }
+      }
+    },
     "分享回复": {
       "comment": "Shared with Web: dashboard.session.share. Sync with ios/scripts/web_copy.py.",
       "extractionState": "manual",
@@ -9365,6 +9450,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "分享"
+          }
+        }
+      }
+    },
+    "分享当前图片": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Share current image"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "分享当前图片"
           }
         }
       }
@@ -12673,6 +12775,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在加载会话"
+          }
+        }
+      }
+    },
+    "正在加载原图…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading full image…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在加载原图…"
           }
         }
       }

@@ -3,7 +3,9 @@ import UIKit
 
 struct ChatMessageAttachments: View {
     let files: [ChatMessageAttachment]
-    let onOpen: (V2AttachmentContent) -> Void
+    /// Carries the thumbnail the bubble already decoded (when it has one) so
+    /// the viewer can open on it instantly instead of waiting on the network.
+    let onOpen: (V2AttachmentContent, UIImage?) -> Void
     let loadThumbnail: (V2AttachmentContent) async throws -> Data?
     var alignment: HorizontalAlignment = .trailing
     var isOutgoing = false
@@ -65,10 +67,10 @@ struct ChatMessageAttachments: View {
 
 private struct ChatMessageFileAttachment: View {
     let file: V2AttachmentContent
-    let onOpen: (V2AttachmentContent) -> Void
+    let onOpen: (V2AttachmentContent, UIImage?) -> Void
 
     var body: some View {
-        Button { onOpen(file) } label: {
+        Button { onOpen(file, nil) } label: {
             HStack(spacing: 12) {
                 AppSymbol(AppFileSymbol.name(for: file.name ?? ""), size: 24).frame(width: 30)
                 VStack(alignment: .leading, spacing: 3) {
@@ -92,7 +94,7 @@ private struct ChatMessageFileAttachment: View {
 
 private struct ChatMessageImageGrid: View {
     let files: [ChatMessageAttachment]
-    let onOpen: (V2AttachmentContent) -> Void
+    let onOpen: (V2AttachmentContent, UIImage?) -> Void
     let loadThumbnail: (V2AttachmentContent) async throws -> Data?
 
     private var columns: [GridItem] {
@@ -118,7 +120,7 @@ private enum ChatMessageImageLayout: Equatable {
 
 private struct ChatMessageImage: View {
     let file: ChatMessageAttachment
-    let onOpen: (V2AttachmentContent) -> Void
+    let onOpen: (V2AttachmentContent, UIImage?) -> Void
     let loadThumbnail: (V2AttachmentContent) async throws -> Data?
     let layout: ChatMessageImageLayout
     @State private var image: UIImage?
@@ -215,7 +217,9 @@ private struct ChatMessageImage: View {
 
     private func handleTap() {
         if failed && image == nil { failed = false; retry += 1 }
-        else { onOpen(file.content) }
+        // The decoded thumbnail rides along: the viewer opens on it instantly
+        // while the original loads behind it.
+        else { onOpen(file.content, image) }
     }
 
     private func loadPreview(maxPixelSize: Int) async {

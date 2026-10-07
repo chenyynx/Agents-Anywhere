@@ -4,7 +4,9 @@ import UIKit
 struct SessionTimelineRow: View {
     let row: ChatTimelineRowModel
     let chat: SessionChatModel
-    let onAttachment: (V2AttachmentContent) -> Void
+    /// The second argument is the thumbnail already decoded by the bubble, so
+    /// the image viewer can present it before the original loads.
+    let onAttachment: (V2AttachmentContent, UIImage?) -> Void
     var cwd: String?
     let disclosures: TimelineDisclosureState
     let onFile: (String) -> Void
@@ -58,7 +60,7 @@ struct SessionTimelineRow: View {
 struct UserMessageBubble: View {
     let text: String
     var attachments: [ChatMessageAttachment] = []
-    var onAttachment: (V2AttachmentContent) -> Void = { _ in }
+    var onAttachment: (V2AttachmentContent, UIImage?) -> Void = { _, _ in }
     var loadThumbnail: (V2AttachmentContent) async throws -> Data? = { _ in nil }
     var isPending = false
     var onDeliveryIssue: (() -> Void)?
@@ -98,7 +100,7 @@ struct UserMessageBubble: View {
 struct PendingMessageRow: View {
     let pending: V2PendingMessage
     let chat: SessionChatModel
-    let onAttachment: (V2AttachmentContent) -> Void
+    let onAttachment: (V2AttachmentContent, UIImage?) -> Void
     let onDismiss: () -> Void
     @State private var confirmsDismiss = false
     var body: some View {

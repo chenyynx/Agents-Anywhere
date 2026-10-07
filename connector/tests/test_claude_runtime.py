@@ -2806,7 +2806,7 @@ async def _test_claude_runtime_lists_models_reported_by_claude_code() -> None:
         "haiku",
         "claude-local-test",
     ]
-    assert catalog.revision == 1004
+    assert catalog.revision == 1005
     default = catalog.models[0]
     assert default.title == "Default (recommended)"
     assert default.description == "Opus 5.5 with 1M context"

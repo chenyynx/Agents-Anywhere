@@ -63,6 +63,8 @@ struct UserMessageBubble: View {
     var isPending = false
     var onDeliveryIssue: (() -> Void)?
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.default.rawValue
+    private var accent: AppAccent { AppAccent.resolve(accentValue) }
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
             Spacer(minLength: 48)
@@ -72,8 +74,9 @@ struct UserMessageBubble: View {
                 }
                 if !text.isEmpty {
                     ChatSelectableText(text: text).font(.body)
+                        .foregroundStyle(AppTheme.accentTextColor(accent, colorScheme))
                         .padding(.horizontal, 17).padding(.vertical, 12)
-                        .background(colorScheme == .dark ? Color(white: 0.13) : Color(white: 0.94), in: .rect(cornerRadius: 24))
+                        .background(AppTheme.accentBubbleBackground(accent, colorScheme), in: .rect(cornerRadius: 24))
                 }
             }
             .overlay(alignment: .bottomLeading) {

@@ -80,6 +80,8 @@ struct SubAgentStopControl: View {
     let action: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @ScaledMetric(relativeTo: .footnote) private var diameter: CGFloat = 26
+    @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.default.rawValue
+    private var accent: AppAccent { AppAccent.resolve(accentValue) }
 
     var body: some View {
         HStack(spacing: 4) {
@@ -92,9 +94,9 @@ struct SubAgentStopControl: View {
             }
             Button(action: action) {
                 AppSymbol("stop.fill", size: 12)
-                    .foregroundStyle(AppTheme.primaryControlForeground(colorScheme))
+                    .foregroundStyle(AppTheme.accentForeground(accent, colorScheme))
                     .frame(width: diameter, height: diameter)
-                    .background(AppTheme.primaryControlBackground(colorScheme).opacity(isStopping ? 0.42 : 1), in: Circle())
+                    .background(AppTheme.accentBackground(accent, colorScheme).opacity(isStopping ? 0.42 : 1), in: Circle())
                     .frame(minHeight: 32)
                     .contentShape(Circle())
             }

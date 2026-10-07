@@ -9,6 +9,9 @@ struct V2APIClient {
     let runtime: V2RuntimeAPI
     let attachments: V2AttachmentAPI
     let realtime: V2RealtimeAPI
+    /// Shared transport, surfaced for the raw byte routes (attachment images,
+    /// workspace transfers) that bypass the JSON envelope.
+    let transport: any HTTPTransport
     private let ownedURLSession: URLSession?
 
     init(
@@ -24,6 +27,7 @@ struct V2APIClient {
             urlSession: session,
             tokenProvider: tokenProvider
         )
+        self.transport = transport
         account = V2AccountAPI(transport: transport)
         connectors = V2ConnectorAPI(transport: transport)
         projects = V2ProjectAPI(transport: transport)

@@ -1,5 +1,6 @@
 import SwiftUI
 import QuickLook
+import UIKit
 
 struct SessionChatView: View, Equatable {
     @StateObject private var storage: StableViewModel<SessionChatModel>
@@ -11,11 +12,27 @@ struct SessionChatView: View, Equatable {
     let onMenu: () -> Void
     @State private var sheet: SessionSheet?
     @State private var expandedNoticeID: String?
+    /// Shared app-level loader for the instant image viewer: one disk cache and
+    /// one in-flight table per signed-in session (owned by V2ClientServices),
+    /// reused by every session view.
+    private let imageLoader: AttachmentImageLoader
     private let fileService: V2WorkspaceFilesService
     private let detailService: V2SessionDetailService
     private enum SessionSheet: Identifiable {
         case notices, details, files, subagents(String), preview(SessionFileReference, root: String? = nil)
-        var id: String { switch self { case .notices: "notices"; case .details: "details"; case .files: "files"; case .subagents(let cardID): "subagents:\(cardID)"; case .preview(let reference, let root): "file:\(root ?? ""):\(reference.id)" } }
+        /// The instant image viewer: opens on the thumbnail the bubble already
+        /// decoded (nil when it has none) while the loader serves the original.
+        case attachmentImage(V2AttachmentContent, image: UIImage?, tappedAt: Date)
+        var id: String {
+            switch self {
+            case .notices: "notices"
+            case .details: "details"
+            case .files: "files"
+            case .subagents(let cardID): "subagents:\(cardID)"
+            case .preview(let reference, let root): "file:\(root ?? ""):\(reference.id)"
+            case .attachmentImage(let file, _, _): "attachment:\(file.fileId ?? file.cacheKey)"
+            }
+        }
     }
     @State private var previewURL: URL?
     @State private var previewDirectory: URL?
@@ -44,6 +61,7 @@ struct SessionChatView: View, Equatable {
         self.fallbackTitle = fallbackTitle
         self.fallbackRuntimeName = fallbackRuntimeName
         fileService = services.workspaceFiles; detailService = services.sessionDetail
+        imageLoader = services.attachmentImageLoader
         self.onMenu = onMenu
     }
     private var controls: ChatControlMetrics { .init(bodyLineHeight: bodyLineHeight) }
@@ -185,6 +203,8 @@ struct SessionChatView: View, Equatable {
                     WorkspaceFilePreviewSheet(connectorId: meta.connectorId, root: root ?? meta.cwd ?? ".", path: reference.path,
                         service: fileService, session: session, location: reference)
                 }
+            case .attachmentImage(let file, let image, let tappedAt):
+                AttachmentImageViewerSheet(file: file, initialImage: image, tappedAt: tappedAt, loader: imageLoader)
             }
         }
         .environment(\.openURL, OpenURLAction { url in
@@ -256,8 +276,18 @@ struct SessionChatView: View, Equatable {
         sheet = .preview(SessionFileReference.parse(path))
     }
 
-    private func openAttachment(_ file: V2AttachmentContent) {
+    private func openAttachment(_ file: V2AttachmentContent, thumbnail: UIImage?) {
         if file.readsFromDevice, let path = file.devicePath { sheet = .preview(SessionFileReference(path: path), root: file.root); return }
+        // Images on the raw byte route open the instant viewer: it presents on
+        // the thumbnail already in hand (the bubble's decoded image, or the
+        // preview bytes the store kept for local sends) while the original
+        // loads behind it. Everything else — non-images, and image payloads
+        // without an `openUrl` — keeps the existing QuickLook chain unchanged.
+        if file.isImage, file.openUrl != nil {
+            let initial = thumbnail ?? session.attachmentPreviews.preview(for: file).flatMap { UIImage(data: $0) }
+            sheet = .attachmentImage(file, image: initial, tappedAt: Date())
+            return
+        }
         guard !isDownloading, let fileID = file.fileId else { return }
         isDownloading = true
         model.error = nil

@@ -1,12 +1,15 @@
 import SwiftUI
 import Observation
+import UIKit
 #if DEBUG
 import OSLog
 #endif
 
 struct ChatTimelineView: View {
     let model: SessionChatModel
-    let onAttachment: (V2AttachmentContent) -> Void
+    /// The second argument is the thumbnail the bubble already decoded, when
+    /// it has one; the image viewer opens on it before the original loads.
+    let onAttachment: (V2AttachmentContent, UIImage?) -> Void
     let onFile: (String) -> Void
     /// L2: opens the SubAgent panel from a card's 查看详情 entry.
     let onSubAgent: (String) -> Void
@@ -472,7 +475,7 @@ struct ChatTimelineView: View {
 
 private struct ChatTimelineContent: View, Equatable {
     let model: SessionChatModel
-    let onAttachment: (V2AttachmentContent) -> Void
+    let onAttachment: (V2AttachmentContent, UIImage?) -> Void
     let onFile: (String) -> Void
     let onSubAgent: (String) -> Void
     let latestPullReady: Bool

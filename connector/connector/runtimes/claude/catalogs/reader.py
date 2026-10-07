@@ -19,8 +19,8 @@ from connector.runtimes.claude.domain.models import (
 from connector.runtimes.claude.domain.permissions import claude_permission_catalog
 from connector.runtimes.claude.sdk.client import SdkLoader
 
-CLAUDE_MODEL_CATALOG_STATIC_REVISION = 4
-CLAUDE_PERMISSION_CATALOG_STATIC_REVISION = 1
+CLAUDE_MODEL_CATALOG_STATIC_REVISION = 5
+CLAUDE_PERMISSION_CATALOG_STATIC_REVISION = 2
 
 
 @dataclass(slots=True)

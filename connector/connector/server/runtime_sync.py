@@ -14,6 +14,8 @@ from connector.logging import logger
 from connector.runtime_protocol import (
     AgentRuntime,
     RuntimeHostClient,
+    RuntimeModelCatalog,
+    RuntimePermissionCatalog,
     RuntimeStatus,
     RuntimeSupervisor,
     RuntimeTimelineItem,
@@ -25,9 +27,20 @@ from connector.runtime_protocol import (
     SessionSourceObservation,
     SessionState,
 )
+from connector.runtimes.catalog_revisions import (
+    CatalogPushState,
+    catalog_content_signature,
+    catalog_push_revision,
+    catalog_push_state_from_mapping,
+    catalog_push_state_payload,
+)
 from connector.server.errors import ConnectorNetworkError
 from connector.server.runtime_host import _drop_none, _timeline_item_payload
-from connector.server.runtime_rpc_payloads import session_notice_payload
+from connector.server.runtime_rpc_payloads import (
+    model_catalog_payload,
+    permission_catalog_payload,
+    session_notice_payload,
+)
 
 NotificationSender = Callable[[str, dict[str, Any]], Awaitable[None]]
 IngestNotificationSender = Callable[[list[dict[str, Any]]], Awaitable[None]]
@@ -89,6 +102,14 @@ class RuntimeSyncRunner:
         self._session_sync_state: dict[tuple[str, str], str] = {}
         self._session_sync_dirty: set[tuple[str, str]] = set()
         self._session_sync_tasks: set[asyncio.Task[None]] = set()
+        # Catalog push continuity (catalog-revision-conflict.md): the content
+        # signature and revision of the last push per (runtime instance,
+        # catalog type). Persisted through the instance's sync state so a used
+        # revision is never handed to different content, including across
+        # restarts; the in-process copy keeps continuity when persistence
+        # itself fails.
+        self._catalog_state_hosts: dict[str, RuntimeHostClient] = {}
+        self._catalog_push_states: dict[str, CatalogPushState] = {}
         self.closing = False
 
     def _session_sync_lock(self, runtime_id: str, session_id: str) -> asyncio.Lock:
@@ -557,21 +578,155 @@ class RuntimeSyncRunner:
 
         Side effects:
         - reads model and permission catalogs from the runtime
-        - sends catalog updates through the runtime host when available
+        - publishes only catalogs whose content changed since the last push,
+          with a revision strictly above the last one this connector used
+
+        The revision a catalog carries tracks the runtime config revision, which
+        does not move when discovery output drifts (a model gateway adding a
+        route, for example). The Server rejects same-revision content changes as
+        out of order, so before this gate existed a drifted catalog was rejected
+        on every sync cycle until the next connector restart; unchanged content
+        was re-sent every cycle for nothing.
         """
 
         try:
             model_catalog = await runtime.list_model_catalog(query=None, limit=200)
-            await self.host.model_catalog_update(model_catalog)
+            await self._publish_catalog(
+                catalog=model_catalog,
+                catalog_type="model",
+                payload_builder=model_catalog_payload,
+                send=self.host.model_catalog_update,
+            )
         except RuntimeUnsupportedError:
             pass
         try:
             permission_catalog = await runtime.list_permission_catalog(
                 query=None, limit=200
             )
-            await self.host.permission_catalog_update(permission_catalog)
+            await self._publish_catalog(
+                catalog=permission_catalog,
+                catalog_type="permission",
+                payload_builder=permission_catalog_payload,
+                send=self.host.permission_catalog_update,
+            )
         except RuntimeUnsupportedError:
             pass
+
+    async def _publish_catalog(
+        self,
+        *,
+        catalog: RuntimeModelCatalog | RuntimePermissionCatalog,
+        catalog_type: str,
+        payload_builder: Callable[[Any], dict[str, Any]],
+        send: Callable[[Any], Awaitable[None]],
+    ) -> None:
+        signature = catalog_content_signature(payload_builder(catalog))
+        runtime_id = catalog.runtime_id or catalog.runtime
+        key = _catalog_push_state_key(catalog.runtime, runtime_id, catalog_type)
+        state_host = await self._catalog_state_host(runtime_id)
+        previous = await self._catalog_push_state(state_host, key)
+        if previous is not None and previous.content_signature == signature:
+            logger.debug(
+                "runtime catalog unchanged; push skipped runtime={} runtime_id={} "
+                "catalog_type={} revision={}",
+                catalog.runtime,
+                runtime_id,
+                catalog_type,
+                previous.revision,
+            )
+            return
+        revision = catalog_push_revision(catalog.revision, previous)
+        if revision != catalog.revision:
+            catalog = replace(catalog, revision=revision)
+        await send(catalog)
+        await self._record_catalog_push_state(
+            state_host,
+            key,
+            CatalogPushState(content_signature=signature, revision=revision),
+        )
+        logger.info(
+            "runtime catalog published runtime={} runtime_id={} catalog_type={} "
+            "revision={} previous_revision={}",
+            catalog.runtime,
+            runtime_id,
+            catalog_type,
+            revision,
+            previous.revision if previous is not None else None,
+        )
+
+    async def _catalog_state_host(self, runtime_id: str) -> RuntimeHostClient:
+        """Bind the host to the runtime instance whose catalog state is read.
+
+        Push state belongs to one runtime instance and lives beside that
+        instance's other state. A host that cannot bind (an older or test host)
+        keeps the shared host: the state key names the instance in either case,
+        so entries never collide.
+        """
+
+        cached = self._catalog_state_hosts.get(runtime_id)
+        if cached is not None:
+            return cached
+        host = self.host
+        prepare = getattr(host, "prepare_runtime_host", None)
+        if callable(prepare):
+            try:
+                host = await prepare(runtime_id)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "binding runtime host for catalog state failed runtime_id={}",
+                    runtime_id,
+                )
+                host = self.host
+        self._catalog_state_hosts[runtime_id] = host
+        return host
+
+    async def _catalog_push_state(
+        self,
+        host: RuntimeHostClient,
+        key: str,
+    ) -> CatalogPushState | None:
+        """Last recorded push for one catalog, from memory or the state store."""
+
+        cached = self._catalog_push_states.get(key)
+        if cached is not None:
+            return cached
+        try:
+            raw = await host.sync_state_read(key)
+        except (NotImplementedError, AttributeError):
+            logger.debug("catalog push state store unavailable key={}", key)
+            return None
+        except Exception:  # noqa: BLE001
+            logger.warning("reading catalog push state failed key={}", key)
+            return None
+        state = catalog_push_state_from_mapping(raw)
+        if state is not None:
+            self._catalog_push_states[key] = state
+        return state
+
+    async def _record_catalog_push_state(
+        self,
+        host: RuntimeHostClient,
+        key: str,
+        state: CatalogPushState,
+    ) -> None:
+        """Remember one push, memory first.
+
+        The in-process copy is the one that guarantees the next revision stays
+        above this one even when the state store cannot persist, which is what
+        keeps changed content from being re-pushed at a revision the Server has
+        already seen.
+        """
+
+        self._catalog_push_states[key] = state
+        try:
+            await host.sync_state_write(key, catalog_push_state_payload(state))
+        except (NotImplementedError, AttributeError):
+            logger.debug("catalog push state store unavailable key={}", key)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "persisting catalog push state failed key={}; keeping in-memory continuity",
+                key,
+            )
 
     async def push_preferences_if_changed(self) -> None:
         try:
@@ -620,6 +775,21 @@ def _preferences_signature(prefs: dict[str, Any]) -> tuple[tuple[str, Any], ...]
     cycle.
     """
     return tuple(sorted((k, v) for k, v in prefs.items() if k != "readAt"))
+
+
+def _catalog_push_state_key(
+    runtime: str,
+    runtime_id: str,
+    catalog_type: str,
+) -> str:
+    """State key naming one runtime instance's catalog stream.
+
+    Matches the runtime-namespaced sync state convention
+    (`claude/instances/<id>/...`), so the entry lands with the instance's other
+    state and never collides across instances or catalog types.
+    """
+
+    return f"{runtime}/instances/{runtime_id}/catalog-push/{catalog_type}"
 
 
 def session_requires_timeline_sync(session: SessionMeta) -> bool:

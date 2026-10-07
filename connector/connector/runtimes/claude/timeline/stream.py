@@ -10,6 +10,7 @@ from connector.runtimes.claude.domain.session import ClaudeSession
 from connector.runtimes.claude.timeline.messages import (
     ClaudeMessageProjector,
     stable_message_item_id,
+    usage_counts,
 )
 
 
@@ -20,6 +21,15 @@ class ClaudeStreamAccumulator:
     partial_revision: int = 0
     partial_thinking_blocks: dict[int, str] = field(default_factory=dict)
     partial_thinking_revision: int = 0
+    # Per-call usage of the message being streamed: seeded by the API's
+    # `message_start.message.usage`, kept current by `message_delta.usage`
+    # (which carries the message's cumulative output count).
+    partial_usage: dict[str, int] | None = None
+    # The last per-call usage this turn saw from a final frame. Deliberately
+    # survives `reset()`: the result-envelope fallback republishes the same
+    # item id after a reset, and its own frame only carries turn-cumulative
+    # totals, so this stash is the only per-call number left for it.
+    last_usage: dict[str, int] | None = None
 
     def item_from_stream_event(
         self,
@@ -46,6 +56,7 @@ class ClaudeStreamAccumulator:
                 self.partial_thinking_blocks.clear()
                 self.partial_thinking_revision = 0
             self.partial_message_id = message_id
+            self.partial_usage = _message_start_usage(message, payload)
             return None
         if event_type == "content_block_start":
             index = _int(event.get("index"))
@@ -59,6 +70,7 @@ class ClaudeStreamAccumulator:
                     projector,
                     index=index,
                     status="running",
+                    usage=self._stream_frame_usage(message),
                 )
             text = _text_from_stream_block(block)
             if index is not None and text is not None:
@@ -79,6 +91,7 @@ class ClaudeStreamAccumulator:
                     projector,
                     index=index,
                     status="running",
+                    usage=self._stream_frame_usage(message),
                 )
             text = _text_from_stream_block(delta)
             if index is not None and text:
@@ -101,8 +114,10 @@ class ClaudeStreamAccumulator:
                 index=index,
                 status="done",
                 text=thinking,
+                usage=self._stream_frame_usage(message),
             )
         if event_type == "message_delta":
+            self._absorb_delta_usage(message, event)
             return self._partial_item(session, turn_id, message, projector)
         return None
 
@@ -112,6 +127,56 @@ class ClaudeStreamAccumulator:
         self.partial_revision = 0
         self.partial_thinking_blocks.clear()
         self.partial_thinking_revision = 0
+        self.partial_usage = None
+
+    def remember_usage(self, usage: Mapping[str, int] | None) -> None:
+        """Keep the last concrete per-call usage this turn saw.
+
+        Called for every main-chain assistant frame, text or not: a
+        tool-only frame's call is the per-call usage a later result-envelope
+        fallback (whose own frame reports turn-cumulative totals) must carry.
+        """
+
+        if usage is not None:
+            self.last_usage = dict(usage)
+
+    def result_text_usage(self) -> dict[str, int] | None:
+        """The per-call usage to stamp on a result-envelope fallback item.
+
+        The fallback republishes the item id the streamed partial already
+        used, so it must carry usage too or its later write would erase it
+        (contentHash changes on content, so nothing else stops the clobber).
+        The partial seed names that exact message and wins when present; the
+        last remembered frame usage covers turns with no stream events.
+        """
+
+        return self._stream_frame_usage(None)
+
+    def _stream_frame_usage(self, message: Any | None) -> dict[str, int] | None:
+        """The usage a streamed row can carry right now, if any.
+
+        The live seed names the message being streamed and wins while the
+        stream is open; the last remembered frame usage covers the settle-time
+        flush of a thinking block whose stream never closed — that republishes
+        a row the message frame already wrote, so it must carry the frame's
+        usage rather than strip it. Subagent sidechain frames get None.
+        """
+
+        if message is not None and _is_sidechain(message):
+            return None
+        return self.partial_usage or self.last_usage
+
+    def _absorb_delta_usage(self, message: Any, event: Mapping[str, Any]) -> None:
+        """Fold a message_delta's cumulative output count into the seed."""
+
+        if self.partial_usage is None or _is_sidechain(message):
+            return
+        raw = event.get("usage")
+        if not isinstance(raw, Mapping):
+            return
+        output = _int(_extract(raw, "output_tokens", "outputTokens"))
+        if output is not None:
+            self.partial_usage["outputTokens"] = output
 
     def final_item_id(
         self,
@@ -164,6 +229,7 @@ class ClaudeStreamAccumulator:
             native_item_id=message_id,
             item_id=item_id,
             revision=self.partial_revision,
+            usage=None if _is_sidechain(message) else self.partial_usage,
         )
 
     def _thinking_partial_item(
@@ -175,6 +241,7 @@ class ClaudeStreamAccumulator:
         index: int,
         status: str,
         text: str | None = None,
+        usage: Mapping[str, int] | None = None,
     ) -> RuntimeTimelineItem | None:
         message_id = self.partial_message_id
         if message_id is None:
@@ -196,6 +263,7 @@ class ClaudeStreamAccumulator:
             text=text,
             status=status,
             revision=self.partial_thinking_revision,
+            usage=usage,
         )
 
     def finalize_pending_thinking(
@@ -218,6 +286,7 @@ class ClaudeStreamAccumulator:
                 index=index,
                 status="done",
                 text=text,
+                usage=self._stream_frame_usage(None),
             )
             if item is not None:
                 items.append(item)
@@ -230,6 +299,30 @@ def _stream_event(message: Any) -> Mapping[str, Any] | None:
         return None
     event = _extract(message, "event")
     return event if isinstance(event, Mapping) else None
+
+
+def _message_start_usage(message: Any, payload: Any) -> dict[str, int] | None:
+    """The usage seed a message_start carries, output pinned to 0.
+
+    The API seeds a message's usage at start; its produced-token count is
+    filled in by `message_delta`, so the seed never counts as output already
+    generated. Sidechain frames get no seed at all — a subagent call's usage
+    is not the main chain's context.
+    """
+
+    if _is_sidechain(message) or not isinstance(payload, Mapping):
+        return None
+    usage = usage_counts(payload.get("usage"))
+    if usage is None:
+        return None
+    usage["outputTokens"] = 0
+    return usage
+
+
+def _is_sidechain(message: Any) -> bool:
+    """Whether a frame belongs to a subagent sidechain (never gets usage)."""
+
+    return _extract(message, "parent_tool_use_id", "parentToolUseId") is not None
 
 
 def is_stream_event(message: Any) -> bool:

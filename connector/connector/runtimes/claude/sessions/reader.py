@@ -69,6 +69,7 @@ from connector.runtimes.claude.timeline.messages import (
     message_role,
     message_text,
     message_tool_blocks,
+    message_usage,
     receipt_agent_id,
     synthesized_agent_call_content,
 )
@@ -429,6 +430,12 @@ def _history_items_from_messages(
                 attachments=(
                     client_message.attachments if client_message is not None else ()
                 ),
+                # The transcript's assistant message carries the per-call
+                # usage; attaching it here makes a replayed item converge with
+                # the live one, which published the same numbers under the same
+                # stable id (the main chain's context stays measurable on old
+                # sessions too). Non-assistant roles never carry usage.
+                usage=message_usage(message) if role == "assistant" else None,
             )
         )
     items.extend(projector.missing_history_tool_result_items(session=session))
@@ -756,6 +763,10 @@ def _history_tool_call_context(
         if turn_seed is None:
             turn_seed = native_id or f"{session.external_session_id}:initial"
         turn_id = _history_turn_id(session.external_session_id, turn_seed)
+        # Carried onto the call block so a rebase from this lookup (a window
+        # whose tool_use frame falls outside it) rebuilds the same tool rows
+        # the full import minted — usage included — instead of stripping it.
+        usage = message_usage(message) if role == "assistant" else None
         for block in message_tool_blocks(message):
             if block.block_type == "tool_result":
                 result_blocks[block.tool_use_id] = block
@@ -766,7 +777,11 @@ def _history_tool_call_context(
                 hidden_tool_use_ids.add(block.tool_use_id)
                 continue
             calls[block.tool_use_id] = ClaudePendingToolCall(
-                block=block,
+                block=(
+                    replace(block, usage=usage)
+                    if usage is not None
+                    else block
+                ),
                 turn_id=turn_id,
             )
     for tool_use_id, result_block in result_blocks.items():

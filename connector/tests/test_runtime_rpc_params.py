@@ -51,6 +51,8 @@ def test_runtime_attachments_accepts_file_reference() -> None:
                     "mediaType": "text/plain",
                     "size": 5,
                     "sha256": "abc",
+                    "width": 640,
+                    "height": 480,
                 }
             ]
         }
@@ -62,3 +64,22 @@ def test_runtime_attachments_accepts_file_reference() -> None:
     assert attachments[0].media_type == "text/plain"
     assert attachments[0].size == 5
     assert attachments[0].sha256 == "abc"
+    assert attachments[0].width == 640
+    assert attachments[0].height == 480
+
+
+def test_runtime_attachments_without_dimensions_leaves_them_unset() -> None:
+    attachments = runtime_attachments({"attachments": [{"fileId": "file_1"}]})
+
+    assert attachments[0].width is None
+    assert attachments[0].height is None
+
+
+@pytest.mark.parametrize("width", ["640", 0, -640, 640.5, True])
+def test_runtime_attachments_drops_invalid_width(width: object) -> None:
+    attachments = runtime_attachments(
+        {"attachments": [{"fileId": "file_1", "width": width, "height": 480}]}
+    )
+
+    assert attachments[0].width is None
+    assert attachments[0].height == 480

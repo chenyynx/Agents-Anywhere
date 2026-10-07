@@ -15,15 +15,22 @@ class ClaudeTurnAttachment:
     media_type: str
     byte_size: int
     file_id: str
+    width: int | None = None
+    height: int | None = None
 
     def to_mapping(self) -> dict[str, object]:
-        return {
+        mapping: dict[str, object] = {
             "fileId": self.file_id,
             "name": self.name,
             "path": self.path,
             "mediaType": self.media_type,
             "byteSize": self.byte_size,
         }
+        if self.width is not None:
+            mapping["width"] = self.width
+        if self.height is not None:
+            mapping["height"] = self.height
+        return mapping
 
 
 async def materialize_claude_attachments(
@@ -54,6 +61,8 @@ async def materialize_claude_attachments(
                 or "application/octet-stream",
                 byte_size=len(downloaded.content),
                 file_id=attachment.file_id,
+                width=attachment.width,
+                height=attachment.height,
             )
         )
     return tuple(materialized)

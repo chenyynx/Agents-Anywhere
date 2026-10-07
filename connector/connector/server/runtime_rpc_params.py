@@ -123,6 +123,12 @@ def optional_string(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def optional_positive_int(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
 def runtime_attachments(params: dict[str, Any]) -> tuple[RuntimeAttachment, ...]:
     raw_attachments = params.get("attachments") or ()
     if not isinstance(raw_attachments, list | tuple):
@@ -151,6 +157,8 @@ def runtime_attachments(params: dict[str, Any]) -> tuple[RuntimeAttachment, ...]
                 ),
                 size=raw.get("size") if isinstance(raw.get("size"), int) else None,
                 sha256=optional_string(raw.get("sha256")),
+                width=optional_positive_int(raw.get("width")),
+                height=optional_positive_int(raw.get("height")),
             )
         )
     return tuple(attachments)

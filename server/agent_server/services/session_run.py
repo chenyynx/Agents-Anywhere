@@ -41,6 +41,7 @@ from agent_server.infra.connector_rpc import (
     ConnectorRpcManager,
 )
 from agent_server.infra.repositories.projects import _clean_workspace_path
+from agent_server.services.attachments import valid_dimension
 from agent_server.services.device_runtimes import (
     DeviceRuntimeError,
     DeviceRuntimeService,
@@ -95,6 +96,8 @@ class PersistedInlineAttachment:
     media_type: str
     size: int
     sha256: str
+    width: int | None = None
+    height: int | None = None
 
 
 class SessionRunService:
@@ -834,15 +837,19 @@ class SessionRunService:
             except ValueError as exc:
                 raise SessionRunInvalidConfigError(str(exc)) from exc
             payloads.append(
-                {
-                    "fileId": metadata.get("fileId") or file_id,
-                    "name": metadata.get("name") or file_id,
-                    "mediaType": metadata.get("mediaType") or "",
-                    "size": metadata.get("size"),
-                    "sha256": metadata.get("sha256"),
-                    "downloadUrl": api_v2_path(f"/connector/sessions/{session_id}/attachments/{file_id}/content"),
-                    "platformOpenUrl": api_v2_path(f"/sessions/{session_id}/attachments/{file_id}/open"),
-                }
+                _with_optional_dimensions(
+                    {
+                        "fileId": metadata.get("fileId") or file_id,
+                        "name": metadata.get("name") or file_id,
+                        "mediaType": metadata.get("mediaType") or "",
+                        "size": metadata.get("size"),
+                        "sha256": metadata.get("sha256"),
+                        "downloadUrl": api_v2_path(f"/connector/sessions/{session_id}/attachments/{file_id}/content"),
+                        "platformOpenUrl": api_v2_path(f"/sessions/{session_id}/attachments/{file_id}/open"),
+                    },
+                    width=metadata.get("width"),
+                    height=metadata.get("height"),
+                )
             )
         return payloads
 
@@ -869,6 +876,8 @@ class SessionRunService:
                 name=attachment.name,
                 data=data,
                 media_type=attachment.mediaType,
+                width=attachment.width,
+                height=attachment.height,
             )
             persisted.append(
                 PersistedInlineAttachment(
@@ -877,6 +886,8 @@ class SessionRunService:
                     media_type=str(saved.get("mediaType") or ""),
                     size=int(saved["size"]),
                     sha256=str(saved["sha256"]),
+                    width=valid_dimension(saved.get("width")),
+                    height=valid_dimension(saved.get("height")),
                 )
             )
         return persisted
@@ -1076,35 +1087,66 @@ def _runtime_state_from_selection_result(
 
 
 def _timeline_attachment_payload(value: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "fileId": value.get("fileId"),
-        "name": value.get("name"),
-        "mediaType": value.get("mediaType"),
-        "size": value.get("size"),
-        "sha256": value.get("sha256"),
-    }
+    return _with_optional_dimensions(
+        {
+            "fileId": value.get("fileId"),
+            "name": value.get("name"),
+            "mediaType": value.get("mediaType"),
+            "size": value.get("size"),
+            "sha256": value.get("sha256"),
+        },
+        width=value.get("width"),
+        height=value.get("height"),
+    )
 
 
 def _connector_attachment_reference_payload(attachment: PersistedInlineAttachment) -> dict[str, Any]:
-    return {
-        "fileId": attachment.file_id,
-        "name": attachment.name,
-        "mediaType": attachment.media_type,
-        "size": attachment.size,
-        "sha256": attachment.sha256,
-    }
+    return _with_optional_dimensions(
+        {
+            "fileId": attachment.file_id,
+            "name": attachment.name,
+            "mediaType": attachment.media_type,
+            "size": attachment.size,
+            "sha256": attachment.sha256,
+        },
+        width=attachment.width,
+        height=attachment.height,
+    )
 
 
 def _timeline_payload_from_persisted_inline_attachment(
     attachment: PersistedInlineAttachment,
 ) -> dict[str, Any]:
-    return {
-        "fileId": attachment.file_id,
-        "name": attachment.name,
-        "mediaType": attachment.media_type,
-        "size": attachment.size,
-        "sha256": attachment.sha256,
-    }
+    return _with_optional_dimensions(
+        {
+            "fileId": attachment.file_id,
+            "name": attachment.name,
+            "mediaType": attachment.media_type,
+            "size": attachment.size,
+            "sha256": attachment.sha256,
+        },
+        width=attachment.width,
+        height=attachment.height,
+    )
+
+
+def _with_optional_dimensions(
+    payload: dict[str, Any],
+    *,
+    width: Any,
+    height: Any,
+) -> dict[str, Any]:
+    """Add width/height to an attachment payload when they are usable.
+
+    Payloads stay byte-identical to the old shape when a sender did not
+    provide dimensions.
+    """
+
+    if valid_dimension(width) is not None:
+        payload["width"] = width
+    if valid_dimension(height) is not None:
+        payload["height"] = height
+    return payload
 
 
 def _decode_inline_attachment(attachment: InlineAttachmentRef) -> bytes:

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import mimetypes
 import urllib.parse
+from typing import Any
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import RedirectResponse, Response
 
 from agent_server.core.auth import verify_signed_token, verify_user_access_token
@@ -18,6 +20,7 @@ from agent_server.infra.repositories.facade import Store
 from agent_server.services.attachments import (
     AttachmentService,
     LOCAL_FILE_TOKEN_KIND,
+    valid_dimension,
 )
 
 
@@ -107,12 +110,19 @@ async def local_file_raw(
 async def create_attachments(
     session_id: str,
     files: list[UploadFile] = File(...),
+    dimensions: str | None = Form(None),
     user_id: str = Depends(current_user_id),
     db: Store = Depends(get_store),
     attachments: AttachmentService = Depends(get_attachment_service),
 ) -> UserUploadResponse:
     """User-driven attachment upload — files staged on the backend for the agent
-    to pick up via the connector. One blob per uploaded file."""
+    to pick up via the connector. One blob per uploaded file.
+
+    `dimensions` is an optional JSON array aligned to `files`; each entry is
+    `{"width": int, "height": int}` or `null`. It is best-effort metadata:
+    a malformed or incomplete array is ignored as a whole so the upload itself
+    never fails because of it.
+    """
     if not files:
         raise HTTPException(status_code=422, detail="no files were uploaded")
     if len(files) > MAX_UPLOAD_FILES_PER_REQUEST:
@@ -125,8 +135,9 @@ async def create_attachments(
     except KeyError:
         raise HTTPException(status_code=404, detail="session not found") from None
 
+    file_dimensions = _parse_dimensions(dimensions, len(files))
     results: list[UploadedAttachment] = []
-    for upload in files:
+    for index, upload in enumerate(files):
         data = await upload.read()
         if len(data) == 0:
             raise HTTPException(
@@ -141,6 +152,7 @@ async def create_attachments(
             )
         name = upload.filename or "attachment"
         media_type = upload.content_type or (mimetypes.guess_type(name)[0] or "")
+        width, height = file_dimensions[index] if file_dimensions else (None, None)
         try:
             saved = await attachments.save_user_upload(
                 session_id=session_id,
@@ -148,6 +160,8 @@ async def create_attachments(
                 name=name,
                 data=data,
                 media_type=media_type,
+                width=width,
+                height=height,
             )
         except KeyError:
             raise HTTPException(status_code=404, detail="session not found") from None
@@ -159,6 +173,40 @@ async def create_attachments(
             )
         )
     return UserUploadResponse(attachments=results, serverTime=utc_now())
+
+
+def _parse_dimensions(
+    raw: str | None,
+    file_count: int,
+) -> list[tuple[int | None, int | None]] | None:
+    """Best-effort parse of the `dimensions` form field.
+
+    Returns one `(width, height)` pair per file, or None when the field is
+    missing or does not describe exactly `file_count` valid entries. Callers
+    treat None as "no dimensions recorded", never as an error.
+    """
+
+    if raw is None:
+        return None
+    try:
+        value: Any = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(value, list) or len(value) != file_count:
+        return None
+    parsed: list[tuple[int | None, int | None]] = []
+    for entry in value:
+        if entry is None:
+            parsed.append((None, None))
+            continue
+        if not isinstance(entry, dict):
+            return None
+        width = valid_dimension(entry.get("width"))
+        height = valid_dimension(entry.get("height"))
+        if width is None or height is None:
+            return None
+        parsed.append((width, height))
+    return parsed
 
 
 def _content_disposition(disposition: str, filename: str) -> str:

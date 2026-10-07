@@ -529,4 +529,8 @@ def attachment_to_mapping(attachment: RuntimeAttachment) -> Mapping[str, object]
         result["size"] = attachment.size
     if attachment.sha256 is not None:
         result["sha256"] = attachment.sha256
+    if attachment.width is not None:
+        result["width"] = attachment.width
+    if attachment.height is not None:
+        result["height"] = attachment.height
     return result

@@ -5100,6 +5100,8 @@ async def _test_codex_runtime_preserves_pending_user_attachments_after_codex_ech
                 name="note.txt",
                 media_type="text/plain",
                 size=16,
+                width=1024,
+                height=768,
             ),
         ),
         client_message_id="cm_file_1",
@@ -5134,6 +5136,8 @@ async def _test_codex_runtime_preserves_pending_user_attachments_after_codex_ech
                 "name": "note.txt",
                 "mediaType": "text/plain",
                 "size": 16,
+                "width": 1024,
+                "height": 768,
             }
         ],
     }

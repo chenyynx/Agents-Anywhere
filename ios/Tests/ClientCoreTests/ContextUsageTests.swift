@@ -273,7 +273,7 @@ import Testing
         ["inputTokens": input, "outputTokens": output, "cacheReadTokens": cacheRead, "cacheCreationTokens": cacheCreation]
     }
 
-    private func timelineItem(_ id: String, order: Int, role: String? = "assistant", type: String = "message",
+    private func timelineItem(id: String, order: Int, role: String? = "assistant", type: String = "message",
                       usage: [String: Any]? = nil) throws -> V2TimelineItem {
         var content: [String: Any] = ["text": "Hi"]
         if let usage { content["usage"] = usage }

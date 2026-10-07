@@ -580,7 +580,7 @@ private struct ChatTimelineContent: View, Equatable {
             Group {
                 if let text = model.sendingPlaceholder {
                     HStack(spacing: 8) {
-                        ProgressView().controlSize(.small)
+                        ParticleMorph(size: 24)
                         Text(text).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
                         Spacer(minLength: 0)
                     }

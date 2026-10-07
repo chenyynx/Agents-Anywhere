@@ -32,6 +32,8 @@ struct V2SessionCreationService {
                 name: attachment.name,
                 mediaType: attachment.mediaType,
                 size: attachment.data.count,
+                width: attachment.pixelWidth,
+                height: attachment.pixelHeight,
                 sha256: attachment.sha256,
                 contentBase64: attachment.data.base64EncodedString()
             )

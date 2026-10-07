@@ -68,7 +68,7 @@ struct UserMessageBubble: View {
             Spacer(minLength: 48)
             VStack(alignment: .trailing, spacing: 8) {
                 if !attachments.isEmpty {
-                    ChatMessageAttachments(files: attachments, onOpen: onAttachment, loadThumbnail: loadThumbnail)
+                    ChatMessageAttachments(files: attachments, onOpen: onAttachment, loadThumbnail: loadThumbnail, isOutgoing: true)
                 }
                 if !text.isEmpty {
                     ChatSelectableText(text: text).font(.body)

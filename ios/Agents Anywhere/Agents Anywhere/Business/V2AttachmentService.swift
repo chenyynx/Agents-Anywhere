@@ -21,7 +21,9 @@ struct V2AttachmentService {
                 fieldName: "files",
                 fileName: attachment.name,
                 mediaType: attachment.mediaType,
-                data: attachment.data
+                data: attachment.data,
+                pixelWidth: attachment.pixelWidth,
+                pixelHeight: attachment.pixelHeight
             )
         }
         return try await attachmentAPI.upload(sessionId: sessionId, files: files).attachments

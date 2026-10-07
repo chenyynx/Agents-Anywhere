@@ -63,7 +63,8 @@ extension ChatAttachment {
     func archived() -> Self {
         // Uploaded bytes are retrievable by fileId. Keep the small thumbnail and
         // original local bytes only while an upload has not completed.
-        var copy = Self(id: id, name: name, data: uploaded == nil ? data : Data(), mediaType: mediaType, previewData: previewData)
+        var copy = Self(id: id, name: name, data: uploaded == nil ? data : Data(), mediaType: mediaType,
+            previewData: previewData, pixelSize: pixelSize)
         copy.uploaded = uploaded
         return copy
     }

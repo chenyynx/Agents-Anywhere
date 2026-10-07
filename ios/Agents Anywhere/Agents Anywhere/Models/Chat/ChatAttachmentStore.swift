@@ -5,6 +5,10 @@ struct ChatMessageAttachment: Identifiable, Equatable {
     let id: String
     let content: V2AttachmentContent
     let previewData: Data?
+    let previewPixelSize: CGSize?
+    /// Advances whenever this cache writes - or evicts - the preview bytes, so
+    /// an image whose load failed can re-run its task when a preview arrives.
+    let previewVersion: Int
 }
 
 /// Session/account-scoped metadata and small previews survive the optimistic
@@ -12,7 +16,16 @@ struct ChatMessageAttachment: Identifiable, Equatable {
 @MainActor @Observable final class ChatAttachmentStore {
     @Observable fileprivate final class Entry {
         var content: V2AttachmentContent?
-        var previewData: Data?
+        private(set) var previewData: Data?
+        var previewPixelSize: CGSize?
+        private(set) var previewVersion = 0
+
+        /// The one write path for preview bytes; every write advances the
+        /// version observed by the image views.
+        func setPreview(_ data: Data?) {
+            previewData = data
+            previewVersion += 1
+        }
     }
     @ObservationIgnored private var entries: [String: Entry] = [:]
     @ObservationIgnored private var order: [String] = []
@@ -29,7 +42,8 @@ struct ChatMessageAttachment: Identifiable, Equatable {
         for (attachment, content) in zip(attachments, contents) {
             let value = entry(content.cacheKey)
             value.content = content
-            value.previewData = attachment.previewData
+            value.setPreview(attachment.previewData)
+            value.previewPixelSize = attachment.previewData.flatMap(ChatImageThumbnail.imageSize(data:))
         }
         trim()
     }
@@ -42,33 +56,56 @@ struct ChatMessageAttachment: Identifiable, Equatable {
                 ?? entries[content.cacheKey]?.content ?? fallback.first { $0.fileId == content.fileId && content.fileId != nil }
             let merged = saved.map { content.fillingMissingMetadata(from: $0) } ?? content
             let value = entry(merged.cacheKey)
-            return ChatMessageAttachment(id: content.fileId ?? "attachment:\(index):\(content.cacheKey)", content: merged, previewData: value.previewData)
+            if value.previewPixelSize == nil, let data = value.previewData {
+                value.previewPixelSize = ChatImageThumbnail.imageSize(data: data)
+            }
+            return ChatMessageAttachment(id: content.fileId ?? "attachment:\(index):\(content.cacheKey)",
+                content: merged, previewData: value.previewData, previewPixelSize: value.previewPixelSize,
+                previewVersion: value.previewVersion)
         }
     }
 
     func preview(for file: V2AttachmentContent) -> Data? { entry(file.cacheKey).previewData }
     func cache(_ data: Data, for file: V2AttachmentContent) {
         guard data.count <= byteLimit else { return }
-        let value = entry(file.cacheKey); value.content = file; value.previewData = data
+        let value = entry(file.cacheKey); value.content = file; value.setPreview(data)
+        value.previewPixelSize = ChatImageThumbnail.imageSize(data: data)
         trim()
     }
     nonisolated struct Archive: Codable {
-        struct Item: Codable { let content: JSONValue?; let preview: Data?; let key: String }
+        struct Item: Codable {
+            let content: JSONValue?
+            let preview: Data?
+            let key: String
+            let previewWidth: Double?
+            let previewHeight: Double?
+        }
         let items: [Item]
         let sent: [String: [JSONValue]]
     }
     func archived() -> Archive {
-        Archive(items: order.compactMap { key in entries[key].map { Archive.Item(content: $0.content?.raw, preview: $0.previewData, key: key) } },
-            sent: sent.mapValues { $0.map(\.raw) })
+        let items: [Archive.Item] = order.compactMap { key -> Archive.Item? in
+            guard let entry = entries[key] else { return nil }
+            return Archive.Item(content: entry.content?.raw, preview: entry.previewData, key: key,
+                previewWidth: entry.previewPixelSize.map { Double($0.width) },
+                previewHeight: entry.previewPixelSize.map { Double($0.height) })
+        }
+        return Archive(items: items, sent: sent.mapValues { $0.map(\.raw) })
     }
     func restore(_ value: Archive) {
         for item in value.items {
             let content = item.content.map(V2AttachmentContent.init(rawContent:))
             let entry = entry(content?.cacheKey ?? item.key)
-            entry.content = content; entry.previewData = item.preview
+            entry.content = content; entry.setPreview(item.preview)
+            entry.previewPixelSize = item.preview.flatMap(ChatImageThumbnail.imageSize(data:))
+                ?? restoredSize(width: item.previewWidth, height: item.previewHeight)
         }
         sent = value.sent.mapValues { $0.map(V2AttachmentContent.init(rawContent:)) }
         sentOrder = Array(sent.keys); trim()
+    }
+    private func restoredSize(width: Double?, height: Double?) -> CGSize? {
+        guard let width, let height, width.isFinite, height.isFinite, width > 0, height > 0 else { return nil }
+        return CGSize(width: CGFloat(width), height: CGFloat(height))
     }
     func clear() { entries = [:]; order = []; sent = [:]; sentOrder = [] }
     private func entry(_ key: String) -> Entry {
@@ -81,7 +118,7 @@ struct ChatMessageAttachment: Identifiable, Equatable {
     private func trim() {
         var bytes = entries.values.reduce(0) { $0 + ($1.previewData?.count ?? 0) }
         for key in order where bytes > byteLimit {
-            if let value = entries[key], let data = value.previewData { bytes -= data.count; value.previewData = nil }
+            if let value = entries[key], let data = value.previewData { bytes -= data.count; value.setPreview(nil) }
         }
     }
 }
@@ -112,6 +149,12 @@ extension ChatAttachment {
             "name": .string(uploaded?.name ?? name), "mediaType": .string(uploaded?.mediaType ?? mediaType),
             "size": .number(Double(uploaded?.size ?? data.count))]
         if let uploaded { fields["openUrl"] = .string(uploaded.openUrl); fields["downloadUrl"] = .string(uploaded.downloadUrl) }
+        // Report the original pixel dimensions locally, in the same wire shape
+        // the server echoes back, so the optimistic bubble is sized before the
+        // authoritative attachment payload arrives.
+        if let dimensions = ChatImageThumbnail.pixelDimensions(for: pixelSize) {
+            fields["width"] = .number(Double(dimensions.width)); fields["height"] = .number(Double(dimensions.height))
+        }
         return V2AttachmentContent(rawContent: .object(fields))
     }
 }

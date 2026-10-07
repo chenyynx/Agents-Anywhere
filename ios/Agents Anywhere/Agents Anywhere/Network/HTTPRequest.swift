@@ -9,6 +9,11 @@ struct HTTPUploadFile: Hashable {
     let fileName: String
     let mediaType: String
     let data: Data
+    /// Original image pixel dimensions when the caller decoded them. The
+    /// multipart body reports them as the `dimensions` form field, aligned to
+    /// the files array, so the server can record them without decoding.
+    var pixelWidth: Int? = nil
+    var pixelHeight: Int? = nil
 }
 
 struct HTTPUploadRequest<Response: Decodable> {

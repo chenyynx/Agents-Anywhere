@@ -77,4 +77,9 @@ struct V2LocalAttachment: Hashable {
     let mediaType: String
     let data: Data
     let sha256: String?
+    /// Original image pixel dimensions (orientation corrected) when the picker
+    /// could decode them; sent beside the bytes so the server never decodes an
+    /// upload itself.
+    var pixelWidth: Int? = nil
+    var pixelHeight: Int? = nil
 }

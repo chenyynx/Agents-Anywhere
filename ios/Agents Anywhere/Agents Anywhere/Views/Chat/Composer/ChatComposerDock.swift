@@ -36,6 +36,7 @@ struct ChatComposerDock: View {
     @State private var isSending = false
     @State private var importCount = 0
     @State private var showsCommandMenu = false
+    @Environment(\.displayScale) private var displayScale
 
     private enum AttachmentPicker { case photos, files }
 
@@ -115,10 +116,19 @@ struct ChatComposerDock: View {
         guard draft.attachments.count < 5 else { attachmentError = String(localized: "每条消息最多添加 5 个附件。"); return }
         guard !data.isEmpty else { attachmentError = String(localized: "文件为空。"); return }
         guard data.count <= 25 * 1024 * 1024 else { attachmentError = String(localized: "单个附件请控制在 25 MiB 以内。"); return }
-        let preview = mediaType.hasPrefix("image/")
-            ? await Task.detached(priority: .utility) { ChatImageThumbnail.make(data: data) }.value : nil
+        let previewMaxPixelSize = ChatImageThumbnail.maximumPixelSize(
+            for: CGSize(width: ChatImageThumbnail.maximumBubbleWidth, height: ChatImageThumbnail.maximumBubbleHeight),
+            displayScale: displayScale)
+        // One decode pass produces both the preview and the original pixel
+        // dimensions that travel with the upload as attachment metadata.
+        let imageInfo: (preview: Data?, pixelSize: CGSize?) = mediaType.hasPrefix("image/")
+            ? await Task.detached(priority: .utility) {
+                (ChatImageThumbnail.make(data: data, maxPixelSize: previewMaxPixelSize),
+                    ChatImageThumbnail.imageSize(data: data))
+            }.value : (nil, nil)
         guard draft.isValid, draft.attachments.count < 5 else { return }
-        draft.attachments.append(ChatAttachment(name: name, data: data, mediaType: mediaType, previewData: preview))
+        draft.attachments.append(ChatAttachment(name: name, data: data, mediaType: mediaType,
+            previewData: imageInfo.preview, pixelSize: imageInfo.pixelSize))
     }
 
     private func importPhotos(_ items: [PhotosPickerItem]) {

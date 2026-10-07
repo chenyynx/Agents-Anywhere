@@ -137,6 +137,12 @@ struct URLSessionHTTPTransport: HTTPTransport {
 
     private func multipartBody(files: [HTTPUploadFile], boundary: String) -> Data {
         var body = Data()
+        if let dimensions = dimensionsField(files: files) {
+            body.append("--\(boundary)\r\n".data(using: .utf8) ?? Data())
+            body.append("Content-Disposition: form-data; name=\"dimensions\"\r\n\r\n".data(using: .utf8) ?? Data())
+            body.append(dimensions.data(using: .utf8) ?? Data())
+            body.append("\r\n".data(using: .utf8) ?? Data())
+        }
         for file in files {
             body.append("--\(boundary)\r\n".data(using: .utf8) ?? Data())
             body.append(
@@ -149,6 +155,23 @@ struct URLSessionHTTPTransport: HTTPTransport {
         }
         body.append("--\(boundary)--\r\n".data(using: .utf8) ?? Data())
         return body
+    }
+
+    /// One JSON array aligned with `files` (`{"width":w,"height":h}` or `null`),
+    /// emitted only when at least one file reports usable dimensions. The body
+    /// is built by hand so the field is deterministic for tests, and absent
+    /// entirely when no caller had dimensions (older servers tolerate either).
+    private func dimensionsField(files: [HTTPUploadFile]) -> String? {
+        func dimensions(_ file: HTTPUploadFile) -> (width: Int, height: Int)? {
+            guard let width = file.pixelWidth, let height = file.pixelHeight, width > 0, height > 0 else { return nil }
+            return (width, height)
+        }
+        guard files.contains(where: { dimensions($0) != nil }) else { return nil }
+        let entries = files.map { file -> String in
+            guard let size = dimensions(file) else { return "null" }
+            return "{\"width\":\(size.width),\"height\":\(size.height)}"
+        }
+        return "[" + entries.joined(separator: ",") + "]"
     }
 
     private func multipartQuoted(_ value: String) -> String {

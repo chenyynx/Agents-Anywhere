@@ -318,14 +318,29 @@ Semantic error and availability colors remain separate from the primary color.
   the path scoped by the token. The matching Web preview reveals the location in
   Monaco; older Web previews still open the file without positioning the editor.
 - Composer image selections use background-downsampled thumbnails. User-message
-  attachments appear above the text bubble, with image previews or filename/type/
-  size tiles, matching Web's arrangement. Only visible remote images request
+  attachments appear above the text bubble. Outgoing images are ratio-fitted within
+  240×320 points (aspect ratio clamped to 0.6...1.8); out-of-range images fill-crop,
+  with tall captures top-aligned. Their 16-point continuous clip has a subtle
+  semantic border. Consecutive image attachments use two square columns with 4-point
+  gaps and a 240-point width cap; mixed attachment order is retained. Assistant-side
+  previews retain their existing 4:3 slot. Only visible remote images request
   thumbnails: uploaded files use the session attachment API; device paths use
   `fs/read` and its binary transfer, honoring the attachment root. Tapping device
-  files/images still opens the scoped Web preview sheet. Image frames retain the
-  same size while decoding or switching from a local preview to server content.
-  The session owns a 16 MiB preview cache and bounded attachment metadata; cached
-  previews work offline and account invalidation clears them.
+  files/images still opens the scoped Web preview sheet. Cached sender preview
+  dimensions keep the local placeholder stable through decode, echo and archive
+  restore, and the composer measures the original pixel size in the same background
+  decode that builds the preview, sending it with uploads (the multipart
+  `dimensions` field, aligned to the files order) and first-message inline
+  attachments (`width`/`height`). The outgoing bubble sizes from cached sender
+  preview dimensions first, then the attachment's server-provided dimensions —
+  they take priority over the decoded image when present — and the decoded image
+  last; a first-load attachment with none of them uses a 3:4 placeholder until
+  its image size is known. A preview written to the cache after a failed load
+  re-runs that image's task by itself, and an attachment with a locally cached
+  preview loads as soon as it appears instead of waiting for scroll visibility;
+  remote fetches still wait for it. The session owns a 16 MiB preview cache and
+  bounded attachment metadata; cached previews work offline and account
+  invalidation clears them.
 - Sending moves the committed draft into a local bubble immediately after uploads
   are ready. Its only pending indicator is a spinner in the bubble's left gutter;
   delivery status never changes text width. Metadata and thumbnails survive

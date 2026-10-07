@@ -6,6 +6,10 @@ nonisolated struct V2AttachmentReference: Codable, Identifiable, Hashable {
     let name: String
     let mediaType: String
     let size: Int
+    /// Original image pixel dimensions, EXIF orientation corrected. Optional:
+    /// older servers omit them and non-image attachments may never have them.
+    var width: Int? = nil
+    var height: Int? = nil
     let sha256: String
     let createdAt: String
     let downloadUrl: String
@@ -44,6 +48,16 @@ struct V2AttachmentContent: Hashable {
         downloadUrl = rawContent["downloadUrl"]?.stringValue
         raw = rawContent
     }
+
+    /// Original image pixel dimensions reported by the server (`width`/`height`
+    /// in the attachment payload, EXIF orientation corrected) — never a display
+    /// size; each surface maps them to its own clamped layout. Only positive
+    /// whole numbers qualify; anything else falls back to local decoding.
+    var serverPixelSize: CGSize? {
+        guard let width = raw["width"]?.v2PositivePixelValue,
+              let height = raw["height"]?.v2PositivePixelValue else { return nil }
+        return CGSize(width: CGFloat(width), height: CGFloat(height))
+    }
 }
 
 struct V2AttachmentUploadResponse: Decodable, Hashable {
@@ -61,6 +75,14 @@ private extension JSONValue {
         default:
             return nil
         }
+    }
+
+    /// Positive whole number for image pixel dimensions. Strings, booleans,
+    /// fractional, zero and negative values do not qualify.
+    nonisolated var v2PositivePixelValue: Int? {
+        guard case let .number(value) = self, value.isFinite, value > 0,
+              let int = Int(exactly: value) else { return nil }
+        return int
     }
 }
 

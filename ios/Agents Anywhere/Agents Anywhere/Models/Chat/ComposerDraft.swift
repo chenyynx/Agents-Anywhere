@@ -7,16 +7,24 @@ nonisolated struct ChatAttachment: Codable, Identifiable, Equatable {
     let data: Data
     let mediaType: String
     let previewData: Data?
+    /// Original image pixel dimensions decoded when the picker produced the
+    /// preview (EXIF orientation corrected); nil for non-images and undecodable
+    /// selections.
+    let pixelSize: CGSize?
     var uploaded: V2AttachmentReference?
 
-    init(id: String = UUID().uuidString, name: String, data: Data, mediaType: String, previewData: Data? = nil) {
+    init(id: String = UUID().uuidString, name: String, data: Data, mediaType: String,
+         previewData: Data? = nil, pixelSize: CGSize? = nil) {
         self.id = id; self.name = name; self.data = data; self.mediaType = mediaType
         self.previewData = previewData
+        self.pixelSize = pixelSize
     }
 
     var isImage: Bool { mediaType.hasPrefix("image/") }
     @MainActor var local: V2LocalAttachment {
-        V2LocalAttachment(fileId: id, name: name, mediaType: mediaType, data: data, sha256: nil)
+        let dimensions = ChatImageThumbnail.pixelDimensions(for: pixelSize)
+        return V2LocalAttachment(fileId: id, name: name, mediaType: mediaType, data: data, sha256: nil,
+            pixelWidth: dimensions?.width, pixelHeight: dimensions?.height)
     }
 }
 

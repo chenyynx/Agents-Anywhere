@@ -116,6 +116,10 @@ struct V2InlineAttachment: Encodable, Hashable {
     let name: String
     let mediaType: String
     let size: Int?
+    /// Original image pixel dimensions (orientation corrected) when the picker
+    /// decoded them; omitted for non-images and older clients.
+    var width: Int? = nil
+    var height: Int? = nil
     let sha256: String?
     let contentBase64: String
 }

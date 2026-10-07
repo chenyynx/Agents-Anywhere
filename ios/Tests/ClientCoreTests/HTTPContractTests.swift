@@ -205,6 +205,44 @@ nonisolated private final class InterceptingURLProtocol: URLProtocol, @unchecked
         #expect(InterceptingURLProtocol.state.requests.count == 1)
     }
 
+    @Test func uploadMultipartCarriesDimensionsAlignedWithTheFilesOrder() async throws {
+        let session = session(); defer { session.invalidateAndCancel() }
+        let transport = URLSessionHTTPTransport(serverURL: URL(string: "https://example.test")!, urlSession: session,
+                                               tokenProvider: StaticAuthTokenProvider(token: "test-token"))
+        InterceptingURLProtocol.state.reset([.response(200, try fixtureData("upload"))])
+        _ = try await V2AttachmentAPI(transport: transport).upload(sessionId: "session", files: [
+            HTTPUploadFile(fieldName: "files", fileName: "first image.png", mediaType: "image/png",
+                data: Data([1]), pixelWidth: 1179, pixelHeight: 2556),
+            HTTPUploadFile(fieldName: "files", fileName: "notes.pdf", mediaType: "application/pdf", data: Data([2])),
+            HTTPUploadFile(fieldName: "files", fileName: "half.png", mediaType: "image/png",
+                data: Data([3]), pixelWidth: 40),
+            HTTPUploadFile(fieldName: "files", fileName: "wide.png", mediaType: "image/png",
+                data: Data([4]), pixelWidth: 300, pixelHeight: 200),
+        ])
+        let request = try #require(InterceptingURLProtocol.state.requests.first)
+        #expect(request.url?.path == "/api/v2/sessions/session/attachments")
+        #expect(request.httpMethod == "POST")
+        #expect(request.value(forHTTPHeaderField: "Content-Type")?.hasPrefix("multipart/form-data; boundary=") == true)
+        let body = String(decoding: try #require(request.httpBody), as: UTF8.self)
+        #expect(body.contains("Content-Disposition: form-data; name=\"dimensions\"\r\n\r\n"
+            + "[{\"width\":1179,\"height\":2556},null,null,{\"width\":300,\"height\":200}]\r\n"))
+        #expect(body.contains("filename=\"first image.png\""))
+    }
+
+    @Test func uploadMultipartOmitsDimensionsWhenNoFileHasPixelSizes() async throws {
+        let session = session(); defer { session.invalidateAndCancel() }
+        let transport = URLSessionHTTPTransport(serverURL: URL(string: "https://example.test")!, urlSession: session,
+                                               tokenProvider: StaticAuthTokenProvider(token: "test-token"))
+        InterceptingURLProtocol.state.reset([.response(200, try fixtureData("upload"))])
+        _ = try await V2AttachmentAPI(transport: transport).upload(sessionId: "session", files: [
+            HTTPUploadFile(fieldName: "files", fileName: "notes.pdf", mediaType: "application/pdf", data: Data([2])),
+        ])
+        let request = try #require(InterceptingURLProtocol.state.requests.first)
+        let body = String(decoding: try #require(request.httpBody), as: UTF8.self)
+        #expect(!body.contains("dimensions"))
+        #expect(body.contains("filename=\"notes.pdf\""))
+    }
+
     private func query(_ request: URLRequest) -> [String: String] {
         Dictionary(uniqueKeysWithValues: URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!.map { ($0.name, $0.value ?? "") })
     }

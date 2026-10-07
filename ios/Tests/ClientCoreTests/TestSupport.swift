@@ -58,7 +58,12 @@ func event(_ type: String, seq: Int = 10, id: String? = nil, sessionID: String =
         let query: [URLQueryItem]
         let body: JSONValue?
     }
+    struct UploadCall {
+        let path: String
+        let files: [HTTPUploadFile]
+    }
     var calls: [Call] = []
+    var uploads: [UploadCall] = []
     var respond: ((Call) async throws -> Data)?
     var onDownload: ((URL) async throws -> URL)?
 
@@ -76,7 +81,8 @@ func event(_ type: String, seq: Int = 10, id: String? = nil, sessionID: String =
     }
 
     func upload<Response: Decodable>(_ request: HTTPUploadRequest<Response>) async throws -> Response {
-        try JSONDecoder().decode(Response.self, from: fixtureData("upload"))
+        uploads.append(UploadCall(path: request.path, files: request.files))
+        return try JSONDecoder().decode(Response.self, from: fixtureData("upload"))
     }
 
     func count(_ suffix: String) -> Int { calls.filter { $0.path.hasSuffix(suffix) }.count }

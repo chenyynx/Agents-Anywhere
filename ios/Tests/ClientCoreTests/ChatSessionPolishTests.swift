@@ -4,6 +4,17 @@ import ImageIO
 import Testing
 @testable import ClientCore
 
+private func imageThumbnailFixture(width: Int, height: Int) -> Data? {
+    guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+        bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+          let image = context.makeImage() else { return nil }
+    let data = NSMutableData()
+    guard let destination = CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil) else { return nil }
+    CGImageDestinationAddImage(destination, image, nil)
+    return CGImageDestinationFinalize(destination) ? data as Data : nil
+}
+
 @Suite @MainActor struct ChatSessionPolishTests {
     private func chat(_ http: TestHTTPTransport) -> SessionChatModel {
         let repo = repository(transport: http)
@@ -16,6 +27,50 @@ import Testing
         #expect(!file.readsFromDevice)
         let device = V2AttachmentContent(rawContent: .object(["fileId": .string("device-image"), "path": .string("photo.png")]))
         #expect(device.readsFromDevice)
+    }
+
+    @Test func outgoingImageBubbleSizingClampsRatiosAndPreservesTheLongImageTop() throws {
+        let tall = try #require(ChatImageThumbnail.bubbleSize(for: CGSize(width: 1179, height: 2556)))
+        #expect(tall == CGSize(width: 192, height: 320))
+        #expect(ChatImageThumbnail.shouldAlignTop(for: CGFloat(1179) / 2556))
+
+        let portrait = try #require(ChatImageThumbnail.bubbleSize(for: CGSize(width: 3, height: 4)))
+        #expect(portrait == CGSize(width: 240, height: 320))
+        let landscape = try #require(ChatImageThumbnail.bubbleSize(forAspectRatio: 16.0 / 9.0))
+        #expect(landscape.width == 240 && abs(landscape.height - 135) < 0.001)
+        let extremeWide = try #require(ChatImageThumbnail.bubbleSize(forAspectRatio: 3))
+        #expect(extremeWide.width == 240 && abs(extremeWide.height - 133.3333) < 0.001)
+        #expect(!ChatImageThumbnail.shouldAlignTop(for: 0.6))
+        #expect(ChatImageThumbnail.bubbleSize(for: .zero) == nil)
+        #expect(ChatImageThumbnail.bubbleSize(forAspectRatio: .infinity) == nil)
+
+        #expect(ChatImageThumbnail.gridCellSize() == 118)
+        #expect(ChatImageThumbnail.maximumPixelSize(for: tall, displayScale: 3) == 960)
+        #expect(ChatImageThumbnail.maximumPixelSize(for: CGSize(width: 118, height: 118), displayScale: 3) == 354)
+    }
+
+    @Test func imageThumbnailRespectsItsDisplayPixelLimit() throws {
+        let source = try #require(imageThumbnailFixture(width: 1200, height: 800))
+        let thumbnail = try #require(ChatImageThumbnail.make(data: source, maxPixelSize: 300))
+        let size = try #require(ChatImageThumbnail.imageSize(data: thumbnail))
+        #expect(size.width == 300 && size.height == 200)
+    }
+
+    @Test func outgoingPreviewDimensionsSurviveCacheEvictionAndArchiveRestore() throws {
+        let preview = try #require(imageThumbnailFixture(width: 40, height: 80))
+        let attachment = ChatAttachment(id: "image", name: "long.png", data: Data([1]),
+            mediaType: "image/png", previewData: preview)
+        let store = ChatAttachmentStore(byteLimit: 1)
+        store.remember([attachment], clientID: "message")
+
+        let resolved = try #require(store.resolve([attachment.content], clientID: "message").first)
+        #expect(resolved.previewData == nil)
+        #expect(resolved.previewPixelSize == CGSize(width: 40, height: 80))
+
+        let restored = ChatAttachmentStore(byteLimit: 1)
+        restored.restore(store.archived())
+        let restoredImage = try #require(restored.resolve([attachment.content], clientID: "message").first)
+        #expect(restoredImage.previewPixelSize == CGSize(width: 40, height: 80))
     }
 
     @Test func openingKeepsTheLatestWindowWithoutFetchingAnEarlierUserMessage() async throws {
@@ -240,5 +295,98 @@ import Testing
         try await eventually { pending.delivery == .confirmed }
         gate.release(); _ = await send.value
         #expect(session.draft == "Same text")
+    }
+
+    @Test func attachmentServerPixelSizeRequiresPositiveWholeNumbers() {
+        let sized = V2AttachmentContent(rawContent: .object(["fileId": .string("file_uploaded"),
+            "width": .number(1179), "height": .number(2556)]))
+        #expect(sized.serverPixelSize == CGSize(width: 1179, height: 2556))
+        let absent = V2AttachmentContent(rawContent: .object(["fileId": .string("file_uploaded")]))
+        #expect(absent.serverPixelSize == nil)
+        let invalid: [[String: JSONValue]] = [
+            ["width": .number(0), "height": .number(10)],
+            ["width": .number(-3), "height": .number(10)],
+            ["width": .string("100"), "height": .number(10)],
+            ["width": .number(100.5), "height": .number(10)],
+            ["width": .number(100)],
+            ["width": .bool(true), "height": .number(10)],
+            ["width": .number(10), "height": .number(.infinity)],
+        ]
+        for raw in invalid {
+            #expect(V2AttachmentContent(rawContent: .object(raw)).serverPixelSize == nil)
+        }
+    }
+
+    @Test func optimisticAttachmentsCarryPixelDimensionsAndTheServerEchoWins() throws {
+        let attachment = ChatAttachment(id: "a", name: "photo.png", data: Data([1]), mediaType: "image/png",
+            pixelSize: CGSize(width: 40, height: 80))
+        #expect(attachment.content.serverPixelSize == CGSize(width: 40, height: 80))
+        let store = ChatAttachmentStore()
+        store.remember([attachment], clientID: "message")
+        let optimistic = try #require(store.resolve([], clientID: "message").first)
+        #expect(optimistic.content.serverPixelSize == CGSize(width: 40, height: 80))
+        let echo = V2AttachmentContent(rawContent: .object(["fileId": .string("local:a"),
+            "width": .number(1179), "height": .number(2556)]))
+        let merged = try #require(store.resolve([echo], clientID: "message").first)
+        #expect(merged.content.serverPixelSize == CGSize(width: 1179, height: 2556))
+        // An older server echo without dimensions keeps the locally decoded sizes.
+        let legacy = V2AttachmentContent(rawContent: .object(["fileId": .string("local:a"), "name": .string("photo.png")]))
+        #expect(store.resolve([legacy], clientID: "message").first?.content.serverPixelSize == CGSize(width: 40, height: 80))
+    }
+
+    @Test func attachmentUploadForwardsPickerPixelDimensions() async throws {
+        let http = TestHTTPTransport()
+        let service = V2AttachmentService(attachmentAPI: V2AttachmentAPI(transport: http))
+        let attachment = ChatAttachment(id: "a", name: "photo.png", data: Data([1]), mediaType: "image/png",
+            previewData: Data([2]), pixelSize: CGSize(width: 1179, height: 2556))
+        _ = try await service.upload(sessionId: "session", attachments: [attachment.local])
+        let upload = try #require(http.uploads.first)
+        #expect(upload.path == "/sessions/session/attachments")
+        #expect(upload.files.count == 1)
+        #expect(upload.files.first?.pixelWidth == 1179 && upload.files.first?.pixelHeight == 2556)
+        let document = ChatAttachment(name: "notes.pdf", data: Data([3]), mediaType: "application/pdf")
+        #expect(document.local.pixelWidth == nil && document.local.pixelHeight == nil)
+    }
+
+    @Test func previewVersionAdvancesWithPreviewWritesAndResolveExposesIt() throws {
+        let store = ChatAttachmentStore()
+        let attachment = ChatAttachment(id: "a", name: "photo.png", data: Data([1]), mediaType: "image/png", previewData: Data([2]))
+        store.remember([attachment], clientID: "message")
+        let remembered = try #require(store.resolve([attachment.content], clientID: "message").first)
+        #expect(remembered.previewVersion == 1 && remembered.previewData == Data([2]))
+        store.cache(Data([3]), for: attachment.content)
+        let cached = try #require(store.resolve([attachment.content], clientID: "message").first)
+        #expect(cached.previewVersion == 2 && cached.previewData == Data([3]))
+    }
+
+    @Test func inlineAttachmentEncodingCarriesPixelDimensionsOnlyWhenPresent() throws {
+        let sized = V2InlineAttachment(fileId: "file_1", name: "photo.png", mediaType: "image/png", size: 3,
+            width: 1179, height: 2556, sha256: "sha", contentBase64: "AQID")
+        let sizedJSON = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(sized))
+        #expect(sizedJSON["width"] == .number(1179) && sizedJSON["height"] == .number(2556))
+        let plain = V2InlineAttachment(fileId: "file_2", name: "notes.pdf", mediaType: "application/pdf", size: 3,
+            sha256: nil, contentBase64: "AQID")
+        let plainJSON = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(plain))
+        #expect(plainJSON["width"] == nil && plainJSON["height"] == nil)
+    }
+
+    @Test func creationCarriesPickerPixelDimensionsIntoTheInlineAttachment() async throws {
+        let http = TestHTTPTransport()
+        http.respond = { call in
+            #expect(call.path == "/sessions/create-and-start")
+            return try fixtureData("session")
+        }
+        let service = V2SessionCreationService(sessionAPI: V2SessionAPI(transport: http))
+        let attachment = V2LocalAttachment(fileId: "file_1", name: "photo.png", mediaType: "image/png",
+            data: Data([1, 2, 3]), sha256: nil, pixelWidth: 1179, pixelHeight: 2556)
+        _ = try await service.createAndStart(connectorId: "device", projectId: "project", runtime: "claude",
+            title: nil, cwd: nil, content: "看这个", selections: [:], attachments: [attachment], clientMessageId: "client")
+        let body = try #require(http.calls.first?.body)
+        guard case let .array(attachments)? = body["attachments"], let inline = attachments.first else {
+            Issue.record("The creation request must carry the inline attachment")
+            return
+        }
+        #expect(inline["fileId"] == .string("file_1"))
+        #expect(inline["width"] == .number(1179) && inline["height"] == .number(2556))
     }
 }

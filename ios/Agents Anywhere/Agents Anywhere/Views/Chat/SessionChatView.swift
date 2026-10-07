@@ -111,6 +111,7 @@ struct SessionChatView: View, Equatable {
                             isBusy: model.isWorking || !model.isOpeningReady, placeholder: requiresTakeover ? String(localized: "请先接管") : String(localized: "询问 Agents"),
                             isLoadingSettings: model.isLoadingSettings,
                             settingsError: model.settingsError, sessionChat: model,
+                            contextUsage: model.contextUsage,
                             onSend: model.send, onStop: model.interrupt, onLoadSettings: model.loadSettings,
                             onApplySettings: model.applySettings, applyError: { model.settingsError },
                             onDraftChange: { model.repository.draftDidChange() })
@@ -182,7 +183,16 @@ struct SessionChatView: View, Equatable {
             // Reattaching a loaded detail only resumes observation.
             await model.prepareOpening()
             guard !Task.isCancelled else { return }
-            await model.timeline.run(sessionID: session.id, repository: model.repository)
+            // The context ring observes the same repository stream as the
+            // timeline: both loops share this task's lifetime and stop when
+            // the view's task is cancelled.
+            let chat = model
+            let timeline = chat.timeline
+            let repository = chat.repository
+            let sessionID = session.id
+            async let timelineRun: Void = timeline.run(sessionID: sessionID, repository: repository)
+            async let usageRun: Void = chat.runContextUsage(sessionID: sessionID)
+            _ = await (timelineRun, usageRun)
         }
         .sheet(item: $sheet) { destination in
             switch destination {

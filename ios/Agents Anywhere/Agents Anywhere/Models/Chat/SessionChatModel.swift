@@ -402,6 +402,96 @@ final class SessionChatModel {
         switchFeedback = CommandFeedback(title: String(localized: "已切换到 \(title)"), message: nil)
     }
 
+    // MARK: Context usage
+
+    /// The composer ring's published value (context-usage-ring §1.2): the
+    /// newest carrier's per-call usage over the selected model's catalog
+    /// window. nil until both sides are known — the ring hides rather than
+    /// showing 0%, and codex / dsh sessions never fill it.
+    private(set) var contextUsage: ContextUsage?
+    /// Catalog windows for this page visit; nil until the (retrying) read lands.
+    @ObservationIgnored private var contextWindows: ContextWindowIndex?
+    /// Uptime of the last catalog attempt, pacing the failed-read retry.
+    @ObservationIgnored private var lastContextWindowAttempt: TimeInterval = 0
+    /// The newest recomputed value, waiting for its publish slot.
+    @ObservationIgnored private var stagedContextUsage: ContextUsage?
+    /// Uptime of the last publish — the anchor of the 4 Hz cadence.
+    @ObservationIgnored private var lastContextUsagePublish: TimeInterval = 0
+    /// Publish cap: one per 250 ms, with the final value landed afterwards.
+    private static let contextUsageInterval: TimeInterval = 0.25
+    /// A failed catalog read waits at least this long before retrying.
+    private static let contextWindowRetryInterval: TimeInterval = 5
+
+    /// The ring's pipeline. Mirrors `SessionTimelinePresentation.run`: it runs
+    /// for the page visit, recomputes on every observation, and publishes
+    /// through a coalescing loop — at most four times a second, the trailing
+    /// wake guaranteeing the newest value is never lost. The catalog is read
+    /// once up front and retried on later observations until it lands.
+    func runContextUsage(sessionID: V2SessionID) async {
+        await refreshContextWindows(sessionID: sessionID, force: true)
+        guard !Task.isCancelled else { return }
+        let signal = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        defer { signal.continuation.finish() }
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { @MainActor [weak self] in
+                guard let self else { return }
+                defer { signal.continuation.finish() }
+                for await observation in self.repository.observe(sessionId: sessionID) {
+                    guard !Task.isCancelled else { return }
+                    await self.receiveContextUsage(observation, sessionID: sessionID)
+                    signal.continuation.yield(())
+                }
+            }
+            group.addTask { @MainActor [weak self] in
+                for await _ in signal.stream {
+                    guard !Task.isCancelled, let self else { return }
+                    await self.publishContextUsage()
+                }
+            }
+            await group.waitForAll()
+        }
+    }
+
+    /// One observation's recompute. A missing catalog read is retried here —
+    /// throttled — until it lands; until then every recompute resolves nil.
+    private func receiveContextUsage(_ observation: V2SessionObservation, sessionID: V2SessionID) async {
+        if contextWindows == nil {
+            await refreshContextWindows(sessionID: sessionID)
+        }
+        guard let data = observation.data else { return }
+        stagedContextUsage = ContextUsage.resolve(items: data.items, windows: contextWindows,
+            selection: currentSelections[.model])
+    }
+
+    /// Reads the model catalog and builds the selection → window index. A
+    /// failure keeps the index nil (the ring hides) and the throttle paces the
+    /// next attempt; a success is final for the page visit.
+    private func refreshContextWindows(sessionID: V2SessionID, force: Bool = false) async {
+        let now = ProcessInfo.processInfo.systemUptime
+        if !force, now - lastContextWindowAttempt < Self.contextWindowRetryInterval { return }
+        lastContextWindowAttempt = now
+        do {
+            let catalogs = try await repository.catalogs(sessionId: sessionID, capabilities: session.runtime.capabilities)
+            guard session.isValid, !Task.isCancelled else { return }
+            contextWindows = ContextWindowIndex(catalogs)
+        } catch {
+            // The ring stays hidden; the throttle paces the next attempt.
+        }
+    }
+
+    /// The coalescing half: every wake waits out the 4 Hz slot and then lands
+    /// the newest staged value, so a burst of frames costs one publish and
+    /// still delivers its final value on the trailing wake.
+    private func publishContextUsage() async {
+        let wait = lastContextUsagePublish + Self.contextUsageInterval - ProcessInfo.processInfo.systemUptime
+        if wait > 0 {
+            do { try await Task.sleep(for: .seconds(wait)) } catch { return }
+        }
+        guard !Task.isCancelled else { return }
+        if contextUsage != stagedContextUsage { contextUsage = stagedContextUsage }
+        lastContextUsagePublish = ProcessInfo.processInfo.systemUptime
+    }
+
     func send(_ text: String) async {
         if let command = await catalogCommand(for: text) {
             session.composer.text = text

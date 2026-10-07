@@ -17,6 +17,8 @@ struct ChatComposer: View {
     var showsCommands = false
     var commandsActive = false
     var onCommands: () -> Void = {}
+    /// Live context-window usage; nil or invalid hides the ring entirely.
+    var contextUsage: ContextUsage? = nil
     /// Reports draft mutations from this subtree only. Persisting the draft
     /// must not make the page root observe the editor's text.
     var onDraftChange: () -> Void = {}
@@ -77,6 +79,10 @@ struct ChatComposer: View {
                         .accessibilityLabel(String(localized: "指令"))
                         .accessibilityAddTraits(commandsActive ? .isSelected : [])
                         .accessibilityIdentifier("chat.composer.commands")
+                    }
+
+                    if let contextUsage, contextUsage.isValid {
+                        ContextRingButton(usage: contextUsage, touchTarget: controls.touchTarget)
                     }
                 }
             }

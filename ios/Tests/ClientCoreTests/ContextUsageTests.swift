@@ -1,0 +1,312 @@
+import Foundation
+import Testing
+@testable import ClientCore
+
+/// Stage B coverage for the composer ring's arithmetic and wire parsing
+/// (context-usage-ring §3): level boundary edges, percent rounding, 万
+/// formatting, the usage block's parse, catalog windows and the pick of the
+/// newest usage-bearing item (every carrier kind).
+@Suite struct ContextUsageTests {
+    // MARK: ContextLevel
+
+    @Test func levelBoundariesIncludeExactEdges() {
+        let cases: [(fraction: Double, level: ContextLevel)] = [
+            (0, .comfortable), (0.399, .comfortable),
+            (0.40, .normal), (0.599, .normal),
+            (0.60, .elevated), (0.749, .elevated),
+            (0.75, .tight), (0.899, .tight),
+            (0.90, .critical), (1, .critical),
+        ]
+        for value in cases {
+            #expect(ContextLevel(fraction: value.fraction) == value.level)
+        }
+    }
+
+    @Test func levelEdgesFromRealCounts() {
+        // The same edges as the ring computes them: 40/100 lands on 正常,
+        // 60/100 on 偏高, 75/100 on 紧张, 90/100 on 将满 — never the level below.
+        let cases: [(used: Int, total: Int, level: ContextLevel)] = [
+            (39, 100, .comfortable), (40, 100, .normal),
+            (59, 100, .normal), (60, 100, .elevated),
+            (74, 100, .elevated), (75, 100, .tight),
+            (89, 100, .tight), (90, 100, .critical),
+        ]
+        for value in cases {
+            let fraction = ContextUsage(used: value.used, total: value.total).fraction
+            #expect(ContextLevel(fraction: fraction) == value.level)
+        }
+    }
+
+    @Test func levelsOrderForTheSensoryEdge() {
+        #expect(ContextLevel.allCases.count == 5)
+        #expect(ContextLevel.comfortable < ContextLevel.normal)
+        #expect(ContextLevel.normal < ContextLevel.elevated)
+        #expect(ContextLevel.elevated < ContextLevel.tight)
+        #expect(ContextLevel.tight < ContextLevel.critical)
+        #expect(ContextLevel.critical >= .tight)
+    }
+
+    // MARK: ContextUsage
+
+    @Test func remainingPercentRoundsToNearest() {
+        #expect(ContextUsage(used: 0, total: 100).remainingPercent == 100)
+        #expect(ContextUsage(used: 6, total: 100).remainingPercent == 94)
+        #expect(ContextUsage(used: 16, total: 100).remainingPercent == 84)
+        // 87.5 rounds away from zero.
+        #expect(ContextUsage(used: 125, total: 1000).remainingPercent == 88)
+        #expect(ContextUsage(used: 100, total: 100).remainingPercent == 0)
+    }
+
+    @Test func overspentUsageClampsToFull() {
+        let usage = ContextUsage(used: 130_000, total: 100_000)
+        #expect(usage.isValid)
+        #expect(usage.fraction == 1)
+        #expect(usage.remainingPercent == 0)
+        #expect(ContextLevel(fraction: usage.fraction) == .critical)
+    }
+
+    @Test func zeroTotalIsNotValidAndReadsAsEmpty() {
+        let usage = ContextUsage(used: 40, total: 0)
+        #expect(!usage.isValid)
+        #expect(usage.fraction == 0)
+        #expect(usage.remainingPercent == 100)
+    }
+
+    // MARK: TokenFormat
+
+    @Test func tokenFormatFollowsTheDesignRule() {
+        #expect(TokenFormat.wan(0) == "0")
+        #expect(TokenFormat.wan(999) == "999")
+        #expect(TokenFormat.wan(1000) == "0.1万")
+        #expect(TokenFormat.wan(9999) == "1万")
+        #expect(TokenFormat.wan(10000) == "1万")
+        #expect(TokenFormat.wan(16000) == "1.6万")
+        #expect(TokenFormat.wan(26000) == "2.6万")
+        #expect(TokenFormat.wan(105000) == "10.5万")
+        #expect(TokenFormat.wan(260000) == "26万")
+    }
+
+    // MARK: V2MessageUsage parsing
+
+    @Test func usageParsesTheWireCounters() {
+        let content = V2MessageContent(rawContent: .object(["usage": .object([
+            "inputTokens": .number(123), "outputTokens": .number(456),
+            "cacheReadTokens": .number(789), "cacheCreationTokens": .number(12),
+        ])]))
+        #expect(content.usage == V2MessageUsage(inputTokens: 123, outputTokens: 456,
+                                                cacheReadTokens: 789, cacheCreationTokens: 12))
+        #expect(content.usage?.contextTokens == 1380)
+    }
+
+    @Test func usageMissingKeysReadZero() {
+        let partial = V2MessageContent(rawContent: .object(["usage": .object(["inputTokens": .number(5)])]))
+        #expect(partial.usage == V2MessageUsage(inputTokens: 5, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0))
+    }
+
+    @Test func usageForeignShapesAreRejected() {
+        // The key name `usage` is not ours alone: an agent-call card carries
+        // subagent totals (`tokens` / `toolCalls` / `durationMs`) under it,
+        // and an empty object measures nothing. Neither may parse as a
+        // zeroed context — that would report an empty window as real.
+        let subagentTotals = V2MessageContent(rawContent: .object(["usage": .object([
+            "tokens": .number(1234), "toolCalls": .number(5), "durationMs": .number(60_000),
+        ])]))
+        #expect(subagentTotals.usage == nil)
+        #expect(V2MessageContent(rawContent: .object(["usage": .object([:])])).usage == nil)
+    }
+
+    @Test func usageAbsentIsNil() {
+        #expect(V2MessageContent(rawContent: .object(["text": .string("Hi")])).usage == nil)
+        #expect(V2MessageContent(rawContent: .object(["usage": .null])).usage == nil)
+        #expect(V2MessageContent(rawContent: .object(["usage": .string("123")])).usage == nil)
+        #expect(V2MessageContent(rawContent: .object(["usage": .array([])])).usage == nil)
+    }
+
+    @Test func usageNonIntegerCountersAreNil() {
+        for value in [JSONValue.number(12.5), .string("123"), .bool(true), .null, .object([:])] {
+            let content = V2MessageContent(rawContent: .object(["usage": .object(["outputTokens": value])]))
+            #expect(content.usage == nil)
+        }
+    }
+
+    @Test func usageParsesThroughTheItemDecoder() throws {
+        let item = try timelineItem(id: "a", order: 1,
+            usage: ["inputTokens": 10, "outputTokens": 20, "cacheReadTokens": 30, "cacheCreationTokens": 40])
+        let content = try #require(messageContent(item))
+        #expect(content.usage?.contextTokens == 100)
+        // The carrier-agnostic accessor reads the same block.
+        #expect(item.usage?.contextTokens == 100)
+        let reasoning = try timelineItem(id: "r", order: 2, type: "reasoning", usage: ["inputTokens": 7])
+        #expect(reasoning.usage?.contextTokens == 7)
+    }
+
+    // MARK: ContextWindowIndex
+
+    @Test func windowIndexMapsModelsAndReasoningChildren() throws {
+        let index = ContextWindowIndex(try catalogs(models: [
+            model("claude-opus", selection: "sel_opus", window: 200_000,
+                reasoning: [reasoningItem("high", selection: "sel_opus_high")]),
+            model("claude-sonnet-1m", selection: "sel_sonnet", window: 1_000_000),
+        ]))
+        #expect(index.contextWindow(forSelection: "sel_opus") == 200_000)
+        // A reasoning-item selection stands for its parent model.
+        #expect(index.contextWindow(forSelection: "sel_opus_high") == 200_000)
+        #expect(index.contextWindow(forSelection: "sel_sonnet") == 1_000_000)
+        #expect(index.contextWindow(forSelection: nil) == nil)
+        #expect(index.contextWindow(forSelection: "sel_unknown") == nil)
+    }
+
+    @Test func windowIndexHidesMissingWindowMetadata() throws {
+        let index = ContextWindowIndex(try catalogs(models: [
+            model("gateway-custom", selection: "sel_custom"),
+            model("string-window", selection: "sel_string", window: "200000"),
+            model("fractional-window", selection: "sel_fraction", window: 200_000.5),
+        ]))
+        #expect(index.contextWindow(forSelection: "sel_custom") == nil)
+        #expect(index.contextWindow(forSelection: "sel_string") == nil)
+        #expect(index.contextWindow(forSelection: "sel_fraction") == nil)
+    }
+
+    @Test func windowIndexSkipsDisabledEntries() throws {
+        // Mirrors ConversationSettings.modelID(forSelection:): a disabled
+        // model — metadata or field — is not an offered selection.
+        let index = ContextWindowIndex(try catalogs(models: [
+            model("off", selection: "sel_off", window: 200_000, enabled: false,
+                reasoning: [reasoningItem("high", selection: "sel_off_high")]),
+            model("metadata-off", selection: "sel_meta_off", window: 200_000, metadataEnabled: false),
+        ]))
+        #expect(index.contextWindow(forSelection: "sel_off") == nil)
+        #expect(index.contextWindow(forSelection: "sel_off_high") == nil)
+        #expect(index.contextWindow(forSelection: "sel_meta_off") == nil)
+    }
+
+    // MARK: newest-usage selection
+
+    @Test func usedPicksTheNewestUsageByOrder() throws {
+        let items = [
+            try timelineItem(id: "a1", order: 1, usage: counters(input: 10, cacheRead: 5)),
+            try timelineItem(id: "a2", order: 4, usage: counters(input: 20, output: 30)),
+            try timelineItem(id: "a3", order: 2, usage: counters(input: 999)),
+        ]
+        #expect(ContextUsage.used(in: items) == 50)
+        // Ordering is by `orderSeq`, not by position in the window.
+        #expect(ContextUsage.used(in: items.shuffled()) == 50)
+    }
+
+    @Test func usedTakesTheNewestCarrierWithUsage() throws {
+        // Any carrier kind counts: a reasoning item evolved by a later API
+        // call beats the earlier assistant message and tool items.
+        let items = [
+            try timelineItem(id: "message", order: 2, usage: counters(input: 300)),
+            try timelineItem(id: "tool", order: 3, type: "tool", usage: counters(input: 200)),
+            try timelineItem(id: "reasoning", order: 5, type: "reasoning", usage: counters(input: 400)),
+        ]
+        #expect(ContextUsage.used(in: items) == 400)
+        #expect(ContextUsage.used(in: items.shuffled()) == 400)
+    }
+
+    @Test func usedPicksToolCarrierWhenNewest() throws {
+        let items = [
+            try timelineItem(id: "message", order: 3, usage: counters(input: 300)),
+            try timelineItem(id: "tool", order: 9, type: "tool", usage: counters(input: 250)),
+        ]
+        #expect(ContextUsage.used(in: items) == 250)
+    }
+
+    @Test func usedSkipsCarriersWithoutUsage() throws {
+        let items = [
+            try timelineItem(id: "message", order: 9),
+            try timelineItem(id: "reasoning", order: 10, type: "reasoning"),
+            try timelineItem(id: "tool", order: 11, type: "tool"),
+            try timelineItem(id: "message2", order: 7, usage: counters(input: 300)),
+        ]
+        #expect(ContextUsage.used(in: items) == 300)
+    }
+
+    @Test func usedIsStableWhenCarriersAgree() throws {
+        // One API call stamped on carriers of the same turn: whichever item
+        // wins the pick, the value agrees, so the ring never flickers.
+        let message = try timelineItem(id: "message", order: 4, usage: counters(input: 500))
+        let reasoning = try timelineItem(id: "reasoning", order: 6, type: "reasoning", usage: counters(input: 500))
+        #expect(ContextUsage.used(in: [message, reasoning]) == 500)
+        #expect(ContextUsage.used(in: [reasoning, message]) == 500)
+        let tied = try timelineItem(id: "tied", order: 4, type: "reasoning", usage: counters(input: 500))
+        #expect(ContextUsage.used(in: [message, tied]) == 500)
+        #expect(ContextUsage.used(in: [tied, message]) == 500)
+    }
+
+    @Test func usedPrefersHistoryOverStreamingWithoutUsage() throws {
+        // A live frame that has not attached usage yet must not shadow the
+        // newest historical item that carries one.
+        let items = [
+            try timelineItem(id: "older", order: 1, usage: counters(input: 100)),
+            try timelineItem(id: "history", order: 2, usage: counters(input: 300)),
+            try timelineItem(id: "live", order: 5),
+        ]
+        #expect(ContextUsage.used(in: items) == 300)
+    }
+
+    @Test func usedIsNilWithoutAnyUsage() throws {
+        let message = try timelineItem(id: "a", order: 1)
+        let reasoning = try timelineItem(id: "r", order: 2, type: "reasoning")
+        #expect(ContextUsage.used(in: []) == nil)
+        #expect(ContextUsage.used(in: [message]) == nil)
+        #expect(ContextUsage.used(in: [reasoning]) == nil)
+    }
+
+    @Test func resolveCombinesUsageAndWindow() throws {
+        let index = ContextWindowIndex(try catalogs(models: [model("m", selection: "sel", window: 1000)]))
+        let items = [try timelineItem(id: "a", order: 1, usage: counters(input: 200, output: 150, cacheRead: 50))]
+        let resolved = ContextUsage.resolve(items: items, windows: index, selection: "sel")
+        #expect(resolved == ContextUsage(used: 400, total: 1000))
+        #expect(resolved?.fraction == 0.4)
+        #expect(resolved.map { ContextLevel(fraction: $0.fraction) } == .normal)
+        // Either side missing keeps the ring hidden.
+        #expect(ContextUsage.resolve(items: items, windows: index, selection: "other") == nil)
+        #expect(ContextUsage.resolve(items: items, windows: nil, selection: "sel") == nil)
+        #expect(ContextUsage.resolve(items: [], windows: index, selection: "sel") == nil)
+    }
+
+    // MARK: Fixtures
+
+    private func counters(input: Int = 0, output: Int = 0, cacheRead: Int = 0, cacheCreation: Int = 0) -> [String: Any] {
+        ["inputTokens": input, "outputTokens": output, "cacheReadTokens": cacheRead, "cacheCreationTokens": cacheCreation]
+    }
+
+    private func timelineItem(_ id: String, order: Int, role: String? = "assistant", type: String = "message",
+                      usage: [String: Any]? = nil) throws -> V2TimelineItem {
+        var content: [String: Any] = ["text": "Hi"]
+        if let usage { content["usage"] = usage }
+        var object: [String: Any] = ["id": id, "sessionId": "session", "type": type, "status": "done",
+                                     "content": content, "orderSeq": order, "revision": 1, "updatedSeq": order,
+                                     "contentHash": id]
+        if let role { object["role"] = role }
+        return try decode(object)
+    }
+
+    private func messageContent(_ item: V2TimelineItem) -> V2MessageContent? {
+        if case let .message(content) = item.content { return content }
+        return nil
+    }
+
+    private func model(_ id: String, selection: String, window: Any? = nil, enabled: Bool? = nil,
+                       metadataEnabled: Bool? = nil, reasoning: [[String: Any]] = []) -> [String: Any] {
+        var metadata: [String: Any] = [:]
+        if let window { metadata["contextWindow"] = window }
+        if let metadataEnabled { metadata["enabled"] = metadataEnabled }
+        var object: [String: Any] = ["id": id, "displayName": id, "default": false, "selectionId": selection,
+                                     "reasoningItems": reasoning, "metadata": metadata]
+        if let enabled { object["enabled"] = enabled }
+        return object
+    }
+
+    private func reasoningItem(_ id: String, selection: String) -> [String: Any] {
+        ["id": id, "displayName": id, "default": false, "selectionId": selection, "metadata": [:]]
+    }
+
+    private func catalogs(models: [[String: Any]]) throws -> V2SessionCatalogs {
+        let model: V2ModelCatalog = try decode(["runtime": "claude", "revision": 1, "models": models])
+        let permission: V2PermissionCatalog = try decode(["runtime": "claude", "revision": 1, "permissions": []])
+        return V2SessionCatalogs(model: model, permission: permission)
+    }
+}

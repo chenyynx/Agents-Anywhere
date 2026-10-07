@@ -20,6 +20,8 @@ struct ChatComposerDock: View {
     var isLoadingSettings = false
     var settingsError: String?
     var sessionChat: SessionChatModel?
+    /// Session context-window usage for the composer ring; nil hides it.
+    var contextUsage: ContextUsage? = nil
     let onSend: (String) async -> Void
     var onStop: () async -> Void = {}
     var onLoadSettings: () async -> Void = {}
@@ -53,6 +55,7 @@ struct ChatComposerDock: View {
                 onOptions: { showsOptions = true },
                 showsCommands: sessionChat?.offersCommands == true, commandsActive: showsCommandMenu,
                 onCommands: { showsCommandMenu.toggle() },
+                contextUsage: contextUsage,
                 onDraftChange: onDraftChange)
                 .contentShape(Rectangle())
                 // K2 (round 1.1): the composer band owns vertical drags across

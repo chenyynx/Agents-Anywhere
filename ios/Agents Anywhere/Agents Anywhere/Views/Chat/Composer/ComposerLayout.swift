@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Repositions the same three subviews, preserving the editor and its IME state.
+/// Repositions the composer's subviews, preserving the editor and its IME state.
 struct ComposerLayout: Layout {
     let expanded: Bool
     let maximumEditorHeight: CGFloat
@@ -19,10 +19,11 @@ struct ComposerLayout: Layout {
         let inset = expanded ? controls.expandedBottomInset : controls.collapsedInset
         let buttonY = expanded ? bounds.maxY - inset - button : bounds.midY - button / 2
         subviews[0].place(at: CGPoint(x: bounds.minX + inset, y: buttonY), proposal: .init(width: button, height: button))
-        subviews[2].place(at: CGPoint(x: bounds.maxX - inset - button, y: buttonY), proposal: .init(width: button, height: button))
-        // An optional fourth control (the command menu) sits just left of send.
-        if subviews.count > 3 {
-            subviews[3].place(at: CGPoint(x: bounds.maxX - inset - button * 2, y: buttonY), proposal: .init(width: button, height: button))
+        // Trailing controls stack leftward from the right edge in declaration
+        // order: send first, then the optional command menu and context ring.
+        for index in 2..<subviews.count {
+            subviews[index].place(at: CGPoint(x: bounds.maxX - inset - button * CGFloat(index - 1), y: buttonY),
+                                  proposal: .init(width: button, height: button))
         }
         let textHeight = editorHeight(width: bounds.width, subviews: subviews)
         let textX = expanded ? controls.textInset : inset + button + controls.collapsedTextGap
@@ -33,7 +34,9 @@ struct ComposerLayout: Layout {
     }
 
     private func editorWidth(in width: CGFloat, subviews: Subviews) -> CGFloat {
-        let extra = subviews.count > 3 ? controls.touchTarget : 0
+        // Every trailing control left of send narrows the collapsed editor by
+        // one touch target; the expanded editor keeps its own inset row.
+        let extra = CGFloat(max(0, subviews.count - 3)) * controls.touchTarget
         return max(1, expanded ? width - controls.textInset * 2
             : width - (controls.touchTarget + controls.collapsedInset + controls.collapsedTextGap) * 2 - extra)
     }

@@ -157,6 +157,75 @@ struct V2MessageContent: Hashable {
     }
 }
 
+/// Per-API-call token usage the connector attaches to a timeline item's
+/// content (context-usage-ring §1.1): camelCase counters, not a turn total.
+struct V2MessageUsage: Hashable {
+    let inputTokens: Int
+    let outputTokens: Int
+    let cacheReadTokens: Int
+    let cacheCreationTokens: Int
+
+    var contextTokens: Int { inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens }
+}
+
+extension V2MessageUsage {
+    /// A missing sub-key reads 0 (the wire omits absent counters); a present
+    /// value that is not a whole number invalidates the whole object, so a
+    /// malformed frame never shows a partly-guessed count. The key name
+    /// `usage` is not ours alone — an agent-call card carries subagent totals
+    /// (`tokens` / `toolCalls` / `durationMs`) under it — so the object must
+    /// hold at least one of this shape's counters; anything else is rejected
+    /// rather than read as a zeroed context.
+    init?(rawValue: JSONValue) {
+        guard let object = rawValue.objectValue else { return nil }
+        let knownKeys = ["inputTokens", "outputTokens", "cacheReadTokens", "cacheCreationTokens"]
+        guard knownKeys.contains(where: { object[$0] != nil }) else { return nil }
+        func count(_ key: String) -> Int? {
+            guard let value = object[key] else { return 0 }
+            return value.intValue
+        }
+        guard let inputTokens = count("inputTokens"), let outputTokens = count("outputTokens"),
+              let cacheReadTokens = count("cacheReadTokens"), let cacheCreationTokens = count("cacheCreationTokens")
+        else { return nil }
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.cacheReadTokens = cacheReadTokens
+        self.cacheCreationTokens = cacheCreationTokens
+    }
+}
+
+extension V2MessageContent {
+    /// The usage block, when this message carries one — other runtimes and
+    /// pre-feature history omit it.
+    var usage: V2MessageUsage? { raw["usage"].flatMap(V2MessageUsage.init(rawValue:)) }
+}
+
+extension V2TimelineItemContent {
+    /// The raw wire content of whichever carrier kind this is — the shared
+    /// source for fields the connector may stamp on any item kind.
+    var raw: JSONValue {
+        switch self {
+        case let .message(value): value.raw
+        case let .reasoning(value): value.raw
+        case let .tool(value): value.raw
+        case let .fileChange(value): value.raw
+        case let .marker(value): value.raw
+        case let .artifact(value): value.raw
+        case let .attachment(value): value.raw
+        case let .unknown(value): value
+        }
+    }
+}
+
+extension V2TimelineItem {
+    /// The per-call usage block in this item's content, wherever the
+    /// connector attached it. The ring reads the newest item that has one,
+    /// and every carrier kind qualifies: the connector stamps the latest API
+    /// call's usage on the message, reasoning and tool items of the turn
+    /// alike, so the value follows the newest item, not the newest message.
+    var usage: V2MessageUsage? { content.raw["usage"].flatMap(V2MessageUsage.init(rawValue:)) }
+}
+
 struct V2ReasoningContent: Hashable {
     let text: String
     let summary: String?

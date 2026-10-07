@@ -20,6 +20,9 @@ for language in ["en", "zh-Hans"] {
     expect(String(localized: "运行目标", bundle: bundle, locale: locale), chinese ? "设备和 Agent" : "Device and agent")
     expect(String(localized: "思考强度", bundle: bundle, locale: locale), chinese ? "推理强度" : "Reasoning effort")
     expect(String(localized: "Restore", bundle: bundle, locale: locale), chinese ? "取消归档" : "Unarchive")
+    expect(String(localized: "Accent color", bundle: bundle, locale: locale), chinese ? "强调色" : "Accent color")
+    expect(String(localized: "Green", bundle: bundle, locale: locale), chinese ? "绿色" : "Green")
+    expect(String(localized: "Magenta", bundle: bundle, locale: locale), chinese ? "洋红色" : "Magenta")
     expect(String(localized: "dashboard.new.typewriter.buildNext", bundle: bundle, locale: locale),
            chinese ? "接下来要构建什么？" : "What should we build next?")
     expect(String(localized: "dashboard.pairDevice.codeLabel", bundle: bundle, locale: locale),

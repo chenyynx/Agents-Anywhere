@@ -23,6 +23,8 @@ struct ChatComposer: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var glass
+    @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.default.rawValue
+    private var accent: AppAccent { AppAccent.resolve(accentValue) }
 
     var body: some View {
         GlassEffectContainer(spacing: 12) {
@@ -52,9 +54,9 @@ struct ChatComposer: View {
                     Button(action: isStreaming ? onStop : onSend) {
                         AppSymbol(isStreaming ? "stop.fill" : "arrow.up", size: isStreaming ? 13 : 18)
                             .contentTransition(.symbolEffect(.replace))
-                            .foregroundStyle(AppTheme.primaryControlForeground(colorScheme))
+                            .foregroundStyle(AppTheme.accentForeground(accent, colorScheme))
                             .frame(width: controls.sendDiameter, height: controls.sendDiameter)
-                            .background(AppTheme.primaryControlBackground(colorScheme).opacity((isStreaming ? canStop : canSend && draft.canAttemptSend) && !isBusy ? 1 : 0.42), in: Circle())
+                            .background(AppTheme.accentBackground(accent, colorScheme).opacity((isStreaming ? canStop : canSend && draft.canAttemptSend) && !isBusy ? 1 : 0.42), in: Circle())
                             .frame(width: controls.touchTarget, height: controls.touchTarget)
                             .contentShape(Circle())
                     }

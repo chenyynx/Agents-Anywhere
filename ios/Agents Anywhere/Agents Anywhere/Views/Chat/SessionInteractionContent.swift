@@ -190,6 +190,7 @@ private struct NoticeActionFields: View {
     let item: SessionNoticeModel
     let action: V2RuntimeNoticeAction
     let form: NoticeActionForm
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -224,7 +225,7 @@ private struct NoticeActionFields: View {
                 .keyboardType(.numbersAndPunctuation)
         case .boolean:
             Toggle(field.title, isOn: Binding(get: { value(field)?.boolValue ?? false }, set: { set(.bool($0), field: field) }))
-                .toggleStyle(.switch).tint(nil).accentColor(nil)
+                .toggleStyle(.switch).tint(AppTheme.primaryControlBackground(colorScheme))
         case let .choice(options):
             ForEach(Array(options.enumerated()), id: \.offset) { _, option in
                 Button { set(option, field: field) } label: {

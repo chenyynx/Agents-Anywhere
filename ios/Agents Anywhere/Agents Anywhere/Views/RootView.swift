@@ -3,6 +3,7 @@ import SwiftUI
 struct RootView: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.default.rawValue
     @State private var showingManualLogin = false
     @State private var showingQRCodeLogin = false
 
@@ -54,7 +55,7 @@ struct RootView: View {
                 .padding(.horizontal, 22).padding(.top, 70).frame(maxWidth: 540)
             }
         }
-        .tint(AppTheme.primaryText(colorScheme))
+        .tint(AppTheme.accentTextColor(AppAccent.resolve(accentValue), colorScheme))
         .background(AppTheme.appBackground(colorScheme))
     }
 

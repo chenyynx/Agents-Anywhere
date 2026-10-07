@@ -16,6 +16,8 @@ struct AppGlassButton: View {
     let action: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.default.rawValue
+    private var accent: AppAccent { AppAccent.resolve(accentValue) }
 
     init(
         _ title: String,
@@ -60,8 +62,8 @@ struct AppGlassButton: View {
         if style == .prominent {
             button
                 .buttonStyle(.glassProminent)
-                .tint(AppTheme.primaryControlBackground(colorScheme))
-                .foregroundStyle(AppTheme.primaryControlForeground(colorScheme))
+                .tint(AppTheme.accentBackground(accent, colorScheme))
+                .foregroundStyle(AppTheme.accentForeground(accent, colorScheme))
         } else {
             button
                 .buttonStyle(.glass)
@@ -101,6 +103,6 @@ struct AppGlassButton: View {
     }
 
     private var progressTint: Color {
-        style == .prominent ? AppTheme.primaryControlForeground(colorScheme) : .secondary
+        style == .prominent ? AppTheme.accentForeground(accent, colorScheme) : .secondary
     }
 }

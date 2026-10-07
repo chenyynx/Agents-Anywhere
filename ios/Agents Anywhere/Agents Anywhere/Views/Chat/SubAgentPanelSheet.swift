@@ -18,6 +18,8 @@ struct SubAgentPanelSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.default.rawValue
+    private var accent: AppAccent { AppAccent.resolve(accentValue) }
     @State private var selection: String?
     @State private var showsFullPrompt = false
 
@@ -120,11 +122,11 @@ struct SubAgentPanelSheet: View {
                             }
                         }
                         .foregroundStyle(card.id == selectedID
-                            ? AppTheme.primaryControlForeground(colorScheme)
+                            ? AppTheme.accentForeground(accent, colorScheme)
                             : AppTheme.primaryText(colorScheme))
                         .padding(.horizontal, 12).frame(height: 32)
                         .background(card.id == selectedID
-                            ? AppTheme.primaryControlBackground(colorScheme)
+                            ? AppTheme.accentBackground(accent, colorScheme)
                             : AppTheme.groupedFill(colorScheme), in: .capsule)
                         .frame(minHeight: 44)
                         .contentShape(Rectangle())
@@ -226,11 +228,11 @@ struct SubAgentPanelSheet: View {
                         Text(card.phase.word).font(.caption).foregroundStyle(.secondary)
                     }
                     .foregroundStyle(card.id == selectedID
-                        ? AppTheme.primaryControlForeground(colorScheme)
+                        ? AppTheme.accentForeground(accent, colorScheme)
                         : AppTheme.primaryText(colorScheme))
                     .padding(.horizontal, 12).frame(height: 32)
                     .background(card.id == selectedID
-                        ? AppTheme.primaryControlBackground(colorScheme)
+                        ? AppTheme.accentBackground(accent, colorScheme)
                         : Color.clear, in: .rect(cornerRadius: 10))
                     .frame(minHeight: 44)
                     .contentShape(Rectangle())

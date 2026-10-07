@@ -265,10 +265,17 @@ includes:
 ```
 
 `accepted` counts successfully applied notifications. `rejected` reports
-per-notification failures using the original zero-based batch index. Explicit
-protocol violations that are intentionally unsupported may still return HTTP
-400; unexpected processing failures should be logged and reported through
-`rejected` instead of surfacing as HTTP 500.
+per-notification failures using the original zero-based batch index. Every
+notification-level failure is isolated to its own entry: intentionally
+unsupported or invalid notifications are reported through `rejected` with a
+dedicated `code` (for example `unsupported_timeline_marker`,
+`unsupported_notification`, `unsupported_legacy_selection_fields`,
+`invalid_runtime_catalog`), and unexpected processing failures are reported
+through `rejected` instead of surfacing as HTTP 500. A single violating
+notification never fails the whole batch. HTTP 400 is reserved for
+request-level failures where the batch itself cannot be parsed or trusted;
+structurally invalid request bodies are rejected by request validation before
+any notification is applied.
 
 The target semantic connector notification methods are:
 

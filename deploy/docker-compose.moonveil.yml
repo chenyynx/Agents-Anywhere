@@ -52,6 +52,14 @@ services:
       AGENT_SERVER_SECRET: "${AGENT_SERVER_SECRET}"
       AGENT_SERVER_HOST: "0.0.0.0"
       AGENT_SERVER_PORT: "8000"
+      # Pin the attachment store path explicitly (it was CWD-relative default)
+      # so it keeps matching the volume mount below regardless of WORKDIR.
+      AGENT_SERVER_FILES_LOCAL_ROOT: "/app/server/agent-server-moonveil.files"
+    volumes:
+      # Persistent attachment store. Without this, every server recreate wipes
+      # all stored attachment blobs (found 2026-10-07: image tap 404'd after a
+      # redeploy). Same treatment as postgres/redis data.
+      - moonveil-server-files:/app/server/agent-server-moonveil.files
     depends_on:
       postgres:
         condition: service_healthy
@@ -82,3 +90,4 @@ services:
 volumes:
   moonveil-pg:
   moonveil-redis:
+  moonveil-server-files:

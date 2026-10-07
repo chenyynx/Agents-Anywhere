@@ -46,6 +46,8 @@ def ingest_rejection_from_exception(
     index: int,
     notification: ConnectorNotification,
     error: Exception,
+    *,
+    code: str = "notification_failed",
 ) -> ConnectorIngestRejectedNotification:
     message = str(error) or type(error).__name__
     if len(message) > INGEST_REJECTION_MESSAGE_MAX_LENGTH:
@@ -53,7 +55,7 @@ def ingest_rejection_from_exception(
     return ConnectorIngestRejectedNotification(
         index=index,
         method=notification.method,
-        code="notification_failed",
+        code=code,
         message=message,
         errorType=type(error).__name__,
     )
@@ -101,8 +103,26 @@ class ConnectorIngestService:
                     connector_id,
                     notification,
                 )
-            except NotificationValidationError:
-                raise
+            except NotificationValidationError as exc:
+                # A notification-level protocol violation is isolated to its own
+                # entry: keep the dedicated code instead of failing the batch.
+                rejected.append(
+                    ingest_rejection_from_exception(
+                        index,
+                        notification,
+                        exc,
+                        code=exc.code,
+                    )
+                )
+                logger.warning(
+                    "connector ingest notification rejected connector_id={} index={} method={} code={} error_type={}",
+                    connector_id,
+                    index,
+                    notification.method,
+                    exc.code,
+                    type(exc).__name__,
+                )
+                continue
             except Exception as exc:  # noqa: BLE001
                 rejected.append(
                     ingest_rejection_from_exception(

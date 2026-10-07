@@ -177,7 +177,12 @@ class ConnectorIngestClient:
             status = getattr(response, "status_code", 200)
             if status in {408, 429} or status >= 500:
                 raise ConnectorNetworkError(f"backend ingest temporarily unavailable: HTTP {status}")
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 400:
+                    _log_http_rejection(exc.response, notifications)
+                raise
             _raise_for_rejected_notifications(response)
         finally:
             if owned:
@@ -222,10 +227,93 @@ def _raise_for_rejected_notifications(response: httpx.Response) -> None:
         if isinstance(first.get("message"), str)
         else "backend rejected connector notification"
     )
+    logger.warning(
+        "connector ingest notifications rejected count={} codes={} first_method={} first_code={} first_message={}",
+        len(rejected),
+        _rejected_code_histogram(rejected),
+        method,
+        code,
+        message,
+    )
     raise ConnectorIngestRejectedError(
         f"backend ingest rejected {len(rejected)} notification(s); "
         f"first method={method} code={code}: {message}"
     )
+
+
+def _rejected_code_histogram(rejected: list[Any]) -> str:
+    counts: dict[str, int] = {}
+    for entry in rejected:
+        code = entry.get("code") if isinstance(entry, dict) else None
+        name = code if isinstance(code, str) and code else "notification_rejected"
+        counts[name] = counts.get(name, 0) + 1
+    return ",".join(f"{name}:{count}" for name, count in sorted(counts.items()))
+
+
+def _log_http_rejection(
+    response: httpx.Response,
+    notifications: list[dict[str, Any]],
+) -> None:
+    """Make an HTTP-level batch rejection identifiable in the log.
+
+    The poison notification is inside the batch and the server response body is
+    the only clue: report the parsed ``{"code","message"}`` detail together with
+    the batch method distribution and a first-entry summary (never the payload
+    itself, which can be megabytes for image-bearing timeline items).
+    """
+    code, message = _http_error_detail(response)
+    logger.warning(
+        "connector ingest batch rejected status={} count={} methods={} first={} code={} message={}",
+        response.status_code,
+        len(notifications),
+        _batch_method_histogram(notifications),
+        _first_notification_summary(notifications),
+        code or "unknown",
+        message or "unknown",
+    )
+
+
+def _http_error_detail(response: httpx.Response) -> tuple[str | None, str | None]:
+    json_reader = getattr(response, "json", None)
+    if not callable(json_reader):
+        return None, None
+    try:
+        payload = json_reader()
+    except ValueError:
+        return None, None
+    if not isinstance(payload, dict):
+        return None, None
+    detail = payload.get("detail")
+    if not isinstance(detail, dict):
+        return None, None
+    code = detail.get("code")
+    message = detail.get("message")
+    return (
+        code if isinstance(code, str) and code else None,
+        message if isinstance(message, str) and message else None,
+    )
+
+
+def _batch_method_histogram(notifications: list[dict[str, Any]]) -> str:
+    counts: dict[str, int] = {}
+    for notification in notifications:
+        method = notification.get("method")
+        name = method if isinstance(method, str) and method else "unknown"
+        counts[name] = counts.get(name, 0) + 1
+    return ",".join(f"{name}:{count}" for name, count in sorted(counts.items()))
+
+
+def _first_notification_summary(notifications: list[dict[str, Any]]) -> str:
+    if not notifications:
+        return "none"
+    first = notifications[0]
+    method = first.get("method")
+    method_name = method if isinstance(method, str) and method else "unknown"
+    params = first.get("params")
+    session_id = params.get("sessionId") if isinstance(params, dict) else None
+    if isinstance(session_id, str) and session_id:
+        return f"method={method_name} session_id={session_id}"
+    return f"method={method_name}"
 
 
 def coalesce_timeline_item_upserts(

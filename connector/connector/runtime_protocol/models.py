@@ -238,6 +238,9 @@ class RuntimeAttachment:
     media_type: str | None = None
     size: int | None = None
     sha256: str | None = None
+    # Original pixel size of the image when the uploading client decoded it.
+    width: int | None = None
+    height: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

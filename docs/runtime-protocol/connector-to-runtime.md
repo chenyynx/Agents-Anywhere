@@ -322,6 +322,8 @@ class RuntimeAttachment:
     media_type: str | None = None
     size: int | None = None
     sha256: str | None = None
+    width: int | None = None
+    height: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -385,6 +387,8 @@ class RuntimeOperationResult:
     message: str | None = None
     result: Mapping[str, Any] = field(default_factory=dict)
 ```
+
+`RuntimeAttachment.width` and `height` are optional: the original pixel size of an image attachment, already corrected for EXIF orientation. They describe the source image, not the display size — each client maps them to its own layout. Clients that do not decode images, or that predate these fields, simply omit them; the server records nothing and consumers fall back to their own sizing. Runtimes that carry the fields into user-message timeline attachment metadata let clients reserve aspect-correct space before the image loads.
 
 `RuntimeTimelineItem` should stay semantically aligned with the server's timeline item input model. During implementation, prefer direct conversion helpers instead of maintaining two unrelated shapes.
 

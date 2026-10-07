@@ -724,6 +724,10 @@ class InlineAttachmentRef(BaseModel):
     size: int | None = Field(default=None, ge=0)
     sha256: str | None = Field(default=None, max_length=128)
     contentBase64: str = Field(min_length=1)
+    # Original pixel size of the image, already corrected for EXIF orientation.
+    # Optional: clients that do not decode images leave it unset.
+    width: int | None = Field(default=None, ge=1)
+    height: int | None = Field(default=None, ge=1)
 
 
 class SessionCreateAndStartRequest(BaseModel):
@@ -1211,6 +1215,8 @@ class UploadedAttachment(BaseModel):
     createdAt: str
     downloadUrl: str
     openUrl: str
+    width: int | None = Field(default=None, ge=1)
+    height: int | None = Field(default=None, ge=1)
 
 
 class UserUploadResponse(BaseModel):

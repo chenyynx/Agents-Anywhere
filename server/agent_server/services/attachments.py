@@ -15,6 +15,8 @@ from agent_server.core.utc import utc_now
 LOCAL_FILE_TOKEN_KIND = "local_file"
 LOCAL_FILE_TOKEN_EXPIRES_IN = 300
 FILE_OPEN_EXPIRES_IN = 300
+# Upper bound for the optional image dimensions in attachment metadata.
+MAX_ATTACHMENT_DIMENSION = 65535
 
 
 class AttachmentService:
@@ -30,6 +32,8 @@ class AttachmentService:
         name: str,
         data: bytes,
         media_type: str | None = None,
+        width: int | None = None,
+        height: int | None = None,
     ) -> dict[str, Any]:
         async with self._store.attachment_write_fence(session_id, user_id=user_id):
             return await self._persist_file_blob(
@@ -38,6 +42,8 @@ class AttachmentService:
                 name=name,
                 media_type=media_type,
                 origin="user",
+                width=width,
+                height=height,
             )
 
     async def read_user_file(
@@ -159,6 +165,8 @@ class AttachmentService:
             createdAt=saved["createdAt"],
             downloadUrl=api_v2_path(f"/sessions/{session_id}/attachments/{saved['fileId']}"),
             openUrl=api_v2_path(f"/sessions/{session_id}/attachments/{saved['fileId']}/open"),
+            width=valid_dimension(saved.get("width")),
+            height=valid_dimension(saved.get("height")),
         )
 
     async def _persist_file_blob(
@@ -170,6 +178,8 @@ class AttachmentService:
         source_path: str | None = None,
         media_type: str | None = None,
         origin: str,
+        width: int | None = None,
+        height: int | None = None,
     ) -> dict[str, Any]:
         file_id = f"file_{secrets.token_urlsafe(12)}"
         created_at = utc_now()
@@ -184,6 +194,12 @@ class AttachmentService:
             "origin": origin,
             "createdAt": created_at,
         }
+        # Only valid dimensions reach the sidecar; anything else falls back to
+        # clients deriving the display size themselves.
+        if valid_dimension(width) is not None:
+            metadata["width"] = width
+        if valid_dimension(height) is not None:
+            metadata["height"] = height
         await self._files.write(session_id, file_id, data, metadata)
         return metadata
 
@@ -197,6 +213,22 @@ class AttachmentService:
         actual_sha256 = hashlib.sha256(data).hexdigest()
         if actual_sha256 != metadata.get("sha256") or len(data) != metadata.get("size"):
             raise ValueError("stored file metadata does not match content")
+
+
+def valid_dimension(value: Any) -> int | None:
+    """Return the value when it is a usable pixel dimension, else None.
+
+    Shared by the write path (only valid dimensions reach the sidecar) and the
+    read path (metadata written by an older server simply has no key).
+    """
+
+    if (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 1 <= value <= MAX_ATTACHMENT_DIMENSION
+    ):
+        return value
+    return None
 
 
 class AttachmentMaterializer:

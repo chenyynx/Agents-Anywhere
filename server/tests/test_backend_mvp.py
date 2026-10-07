@@ -636,6 +636,8 @@ def test_session_create_and_start_preallocates_session_and_passes_selections(tmp
                     "size": 5,
                     "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
                     "contentBase64": "aGVsbG8=",
+                    "width": 320,
+                    "height": 240,
                 }
             ],
             "clientMessageId": "cm_create_and_start",
@@ -667,12 +669,16 @@ def test_session_create_and_start_preallocates_session_and_passes_selections(tmp
     assert "contentBase64" not in attachment
     assert attachment["size"] == 5
     assert attachment["sha256"] == "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    assert attachment["width"] == 320
+    assert attachment["height"] == 240
     assert response_attachment == {
         "fileId": attachment["fileId"],
         "name": "note.txt",
         "mediaType": "text/plain",
         "size": 5,
         "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+        "width": 320,
+        "height": 240,
     }
     timeline_attachment = create_params["timelineAttachments"][0]
     assert timeline_attachment == {
@@ -681,6 +687,8 @@ def test_session_create_and_start_preallocates_session_and_passes_selections(tmp
         "mediaType": "text/plain",
         "size": 5,
         "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+        "width": 320,
+        "height": 240,
     }
     stored_attachment = client.get(
         f"/sessions/{session['id']}/attachments/{attachment['fileId']}",
@@ -5345,6 +5353,7 @@ def test_send_message_forwards_uploaded_attachment_metadata_to_connector(tmp_pat
         f"/sessions/{session_id}/attachments",
         headers=headers,
         files={"files": ("notes.md", data, "text/markdown")},
+        data={"dimensions": json.dumps([{"width": 1024, "height": 768}])},
     )
     assert upload_response.status_code == 200, upload_response.text
     attachment = upload_response.json()["attachments"][0]
@@ -5369,6 +5378,8 @@ def test_send_message_forwards_uploaded_attachment_metadata_to_connector(tmp_pat
             "sha256": hashlib.sha256(data).hexdigest(),
             "downloadUrl": f"/api/v2/connector/sessions/{session_id}/attachments/{attachment['fileId']}/content",
             "platformOpenUrl": f"/api/v2/sessions/{session_id}/attachments/{attachment['fileId']}/open",
+            "width": 1024,
+            "height": 768,
         }
     ]
     assert params["timelineAttachments"] == [
@@ -5378,6 +5389,8 @@ def test_send_message_forwards_uploaded_attachment_metadata_to_connector(tmp_pat
             "mediaType": "text/markdown",
             "size": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
+            "width": 1024,
+            "height": 768,
         }
     ]
 
@@ -11221,6 +11234,86 @@ def test_client_uploads_attachment_and_connector_downloads_by_session(tmp_path):
     assert connector_download.status_code == 200
     still_available = client.get(upload_body["downloadUrl"], headers=headers)
     assert still_available.status_code == 200
+
+
+def test_client_upload_records_attachment_dimensions_when_valid(tmp_path):
+    client = make_client(tmp_path)
+    _, _, session_id, headers = create_connector_and_session(client)
+    data = b"image bytes"
+
+    response = client.post(
+        f"/sessions/{session_id}/attachments",
+        headers=headers,
+        files={"files": ("photo.png", data, "image/png")},
+        data={"dimensions": json.dumps([{"width": 1920, "height": 1080}])},
+    )
+
+    assert response.status_code == 200, response.text
+    attachment = response.json()["attachments"][0]
+    assert attachment["width"] == 1920
+    assert attachment["height"] == 1080
+
+    without_dimensions = client.post(
+        f"/sessions/{session_id}/attachments",
+        headers=headers,
+        files={"files": ("plain.png", data, "image/png")},
+    )
+    assert without_dimensions.status_code == 200, without_dimensions.text
+    plain = without_dimensions.json()["attachments"][0]
+    assert plain.get("width") is None
+    assert plain.get("height") is None
+
+    mixed = client.post(
+        f"/sessions/{session_id}/attachments",
+        headers=headers,
+        files=[
+            ("files", ("first.png", data, "image/png")),
+            ("files", ("second.png", data, "image/png")),
+        ],
+        data={"dimensions": json.dumps([None, {"width": 320, "height": 240}])},
+    )
+    assert mixed.status_code == 200, mixed.text
+    first, second = mixed.json()["attachments"]
+    assert first.get("width") is None
+    assert first.get("height") is None
+    assert second["width"] == 320
+    assert second["height"] == 240
+
+
+@pytest.mark.parametrize(
+    "dimensions",
+    [
+        "not-json",
+        "{}",
+        '[{"width": 100, "height": 100}, {"width": 100, "height": 100}]',
+        '["100x100"]',
+        '[{"width": -1, "height": 100}]',
+        '[{"width": 0, "height": 100}]',
+        '[{"width": 100, "height": 0}]',
+        '[{"width": "100", "height": 100}]',
+        '[{"width": 100, "height": "100"}]',
+        '[{"width": 100.5, "height": 100}]',
+        '[{"width": true, "height": 100}]',
+        '[{"width": 100}]',
+        '[{"height": 100}]',
+        '[{"width": 70000, "height": 100}]',
+    ],
+)
+def test_client_upload_ignores_invalid_attachment_dimensions(tmp_path, dimensions):
+    client = make_client(tmp_path)
+    _, _, session_id, headers = create_connector_and_session(client)
+
+    response = client.post(
+        f"/sessions/{session_id}/attachments",
+        headers=headers,
+        files={"files": ("photo.png", b"image bytes", "image/png")},
+        data={"dimensions": dimensions},
+    )
+
+    assert response.status_code == 200, response.text
+    attachment = response.json()["attachments"][0]
+    assert attachment.get("width") is None
+    assert attachment.get("height") is None
 
 
 def test_reply_share_is_public_but_only_exposes_selected_items_and_files(

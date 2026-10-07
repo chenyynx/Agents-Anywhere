@@ -23,6 +23,36 @@ nonisolated struct V2SessionHealBackoff: Equatable {
     }
 }
 
+/// One recovery round that failed for a reason other than supersession.
+///
+/// The apply loop is all-or-nothing: a batch this build cannot apply leaves
+/// the cursor parked where it was, so the same failure repeats on every read
+/// (2026-10-07 stall). The record keeps the exact position of the failing
+/// event — id, type, sequence and cursor — plus the cursor the round read
+/// from, so a client-side stall is diagnosable without server logs.
+nonisolated struct V2SessionRecoveryDiagnostic: Codable, Equatable {
+    var eventId: String?
+    var eventType: String?
+    var eventSequence: Int?
+    /// The cursor the failing event carries (where the batch would have moved to).
+    var eventCursor: String?
+    /// The cursor the round read from (`after:`), or the projection's cursor
+    /// when the failure happened before any event could be touched.
+    var fromCursor: String?
+    var message: String
+    var at: Date
+}
+
+/// An event the recovery batch could not apply, with the position it holds in
+/// the batch. The round's catch classifies and reports `underlying` (the real
+/// failure) while the event itself feeds the diagnostic record.
+struct V2SessionRecoveryApplyFailure: Error {
+    let event: V2SessionEvent
+    let fromCursor: String
+    let nextCursor: String
+    let underlying: Error
+}
+
 /// One repository per authenticated server/account. Views observe values and invoke
 /// operations; this layer owns request coalescing, bounded caches and live recovery.
 @MainActor
@@ -71,6 +101,15 @@ final class V2SessionRepository {
     /// Retry delay while the path itself is not usable, instead of the longer
     /// transient backoff that a reachable server earns.
     private static let notReadyRetryDelay: Duration = .milliseconds(500)
+    /// Consecutive real recovery failures that justify a snapshot rebuild. One
+    /// failure alone can be a transient read; two in a row with a usable path
+    /// mean the batch itself is what cannot be applied.
+    private static let recoveryFailureThreshold = 2
+    /// Minimum interval between two snapshot rebuilds (the frequency gate on
+    /// attempts, so a rebuild that fails cannot be retried every round).
+    private static let recoveryRebuildInterval: TimeInterval = 300
+    /// Failures kept per session in the diagnostic ring.
+    private static let recoveryDiagnosticLimit = 8
 
     var cachedSessionIDs: Set<V2SessionID> { Set(entries.keys) }
 
@@ -84,6 +123,13 @@ final class V2SessionRepository {
         guard let entry = entries[sessionId] else { return nil }
         touch(entry)
         return entry.projection?.data
+    }
+
+    /// The recovery failures booked on one session, oldest first (a bounded
+    /// ring). The disclosure path does not read this; it exists so a stall can
+    /// be diagnosed — in tests and in the field — without server logs.
+    func recoveryDiagnostics(sessionId: V2SessionID) -> [V2SessionRecoveryDiagnostic] {
+        entries[sessionId]?.recoveryDiagnostics ?? []
     }
 
     /// Returns cached durable content immediately. Observe to keep live facts fresh.
@@ -150,6 +196,9 @@ final class V2SessionRepository {
         guard let saved, saved.session.id == id,
               let projection = try? saved.projection(maximumItems: policy.maximumTimelineItems, now: now) else { return }
         entry.projection = projection
+        // A failure that outlived the process is still on record: the ring is
+        // restored beside the projection it belongs to.
+        entry.recoveryDiagnostics = saved.recoveryDiagnostics ?? []
         entry.model.restoreLocal(saved)
         emit(entry)
     }
@@ -158,7 +207,11 @@ final class V2SessionRepository {
         persistenceTask?.cancel(); persistenceTask = nil
         guard let localStore else { return }
         let values = entries.values.sorted { $0.lastAccess < $1.lastAccess }.compactMap { entry in
-            entry.projection.map { V2SessionArchive(data: $0.data, model: entry.model) }
+            entry.projection.map { projection in
+                var archive = V2SessionArchive(data: projection.data, model: entry.model)
+                archive.recoveryDiagnostics = entry.recoveryDiagnostics.isEmpty ? nil : entry.recoveryDiagnostics
+                return archive
+            }
         }
         for value in values { await localStore.saveSession(value) }
     }
@@ -849,8 +902,10 @@ final class V2SessionRepository {
     ///   frames received during the window are never suppressed by an older
     ///   read.
     ///
-    /// The round never writes `entry.error`; it reports failure to its caller.
-    /// The socket path surfaces it, the catch-up path ignores it.
+    /// The round reports failure to its caller — the socket path surfaces it,
+    /// the catch-up path ignores it — and writes `entry.error` itself in
+    /// exactly one case: a snapshot rebuild whose own fetch failed, which must
+    /// be visible whichever path ran the round (see `handleRecoveryFailure`).
     private func runRecovery(_ entry: Entry, epoch: UUID, sequence: Int) async -> Error? {
         do {
             try requireRecoveryEpoch(entry, epoch: epoch)
@@ -884,7 +939,15 @@ final class V2SessionRepository {
                 try requireRecoveryEpoch(entry, epoch: epoch)
             } else {
                 for event in recovery.events.sorted(by: { $0.sequence < $1.sequence }) {
-                    try entry.projection?.apply(event)
+                    do {
+                        try entry.projection?.apply(event)
+                    } catch {
+                        // The batch is all-or-nothing, so this event's position
+                        // is the whole story of the stall: carry it out of the
+                        // loop instead of losing it with the throw.
+                        throw V2SessionRecoveryApplyFailure(event: event, fromCursor: cursor,
+                                                            nextCursor: recovery.nextCursor, underlying: error)
+                    }
                     confirmEchoes(event, entry: entry)
                 }
                 entry.projection?.advanceCursor(recovery.nextCursor)
@@ -918,11 +981,89 @@ final class V2SessionRepository {
                     }
                 }
             }
+            entry.recoveryFailureStreak = 0
             emit(entry)
             return nil
         } catch {
-            return isSuperseded(error) ? nil : error
+            return await handleRecoveryFailure(error, entry: entry, epoch: epoch)
         }
+    }
+
+    /// Books one real recovery failure and runs the single automatic remedy.
+    ///
+    /// The apply loop is all-or-nothing, so a batch this build cannot apply
+    /// would otherwise park the cursor forever: after
+    /// `Self.recoveryFailureThreshold` consecutive failures with a usable path
+    /// the projection is rebuilt from a fresh snapshot (`hydrate`, the same
+    /// path a cold load uses), which resets the cursor to the snapshot's
+    /// high-water mark. The rebuild is frequency-gated
+    /// (`Self.recoveryRebuildInterval`) so a persistently failing session
+    /// still costs at most one snapshot per window.
+    ///
+    /// Returns the error the round reports to its caller, or nil when the
+    /// rebuild succeeded: a rebuilt projection is recovered state, and handing
+    /// the stale batch failure to the socket path would tear the connection
+    /// down (or leave it failed) right after the data was repaired. Live facts
+    /// are re-read by the next round — the socket's or the heal loop's —
+    /// exactly as after any snapshot hydrate.
+    private func handleRecoveryFailure(_ error: Error, entry: Entry, epoch: UUID) async -> Error? {
+        let apply = error as? V2SessionRecoveryApplyFailure
+        let cause = apply?.underlying ?? error
+        guard !isSuperseded(cause) else { return nil }
+        // A path that is positively down says nothing about this batch: the
+        // offline gate refused the read, the reconnect/heal paths own the
+        // outage, and the rebuild is left to the heal retry once it returns.
+        guard network.availability != .offline else { return cause }
+        recordRecoveryDiagnostic(apply: apply, cause: cause, entry: entry)
+        entry.recoveryFailureStreak += 1
+        guard entry.recoveryFailureStreak >= Self.recoveryFailureThreshold else { return cause }
+        let now = now()
+        if let last = entry.lastSnapshotRecoveryAt, now.timeIntervalSince(last) < Self.recoveryRebuildInterval { return cause }
+        // The gate covers attempts, not only successes: a rebuild that cannot
+        // fetch either must not run on every single round.
+        entry.lastSnapshotRecoveryAt = now
+        do {
+            _ = try await hydrate(entry)
+        } catch {
+            let rebuildCause = (error as? V2SessionRecoveryApplyFailure)?.underlying ?? error
+            // A rebuild displaced by a competing read or a newer lifecycle is
+            // not a failure to report: that read owns the projection now.
+            guard !isRebuildSuperseded(rebuildCause), isCurrent(entry), entry.recoveryEpoch == epoch else { return nil }
+            // The snapshot did not come either. Say so instead of hiding it —
+            // the error channel is the visible disclosure and, unlike the
+            // round's return value, it reaches the user whichever path ran the
+            // round (the catch-up and heal paths discard round outcomes) —
+            // keep the streak, and let the heal retry after the gate.
+            entry.error = V2ClientFailure(rebuildCause)
+            emit(entry)
+            return cause
+        }
+        guard isCurrent(entry), entry.recoveryEpoch == epoch else { return nil }
+        entry.recoveryFailureStreak = 0
+        entry.snapshotRecoveryCount += 1
+        entry.recoveryNotice = V2SessionRecoveryNotice(
+            title: String(localized: "同步已自动恢复"),
+            message: String(localized: "会话数据曾多次同步失败，已重建到最新状态（第 \(entry.snapshotRecoveryCount) 次自动恢复）。"))
+        emit(entry)
+        return nil
+    }
+
+    /// Records one failed round. The failing event's position is captured
+    /// verbatim when the apply loop is where it broke; a failure before any
+    /// event (the read itself) still records the cursor it read from.
+    private func recordRecoveryDiagnostic(apply: V2SessionRecoveryApplyFailure?, cause: Error, entry: Entry) {
+        let record = V2SessionRecoveryDiagnostic(
+            eventId: apply?.event.eventId,
+            eventType: apply?.event.type,
+            eventSequence: apply?.event.sequence,
+            eventCursor: apply?.event.cursor ?? apply?.nextCursor,
+            fromCursor: apply?.fromCursor ?? entry.projection?.data.cursor,
+            message: V2ClientFailure(cause).message,
+            at: now()
+        )
+        entry.recoveryDiagnostics.append(record)
+        let excess = entry.recoveryDiagnostics.count - Self.recoveryDiagnosticLimit
+        if excess > 0 { entry.recoveryDiagnostics.removeFirst(excess) }
     }
 
     private func requireRecoveryEpoch(_ entry: Entry, epoch: UUID) throws {
@@ -933,6 +1074,15 @@ final class V2SessionRepository {
     private func isSuperseded(_ error: Error) -> Bool {
         if error is CancellationError { return true }
         if let cache = error as? CacheError, cache == .superseded { return true }
+        return false
+    }
+
+    /// A rebuild can also be displaced by a competing read of the same entry
+    /// (`CacheError.invalidated`): that is the same silence as a superseded
+    /// round, because the newer read owns the projection now.
+    private func isRebuildSuperseded(_ error: Error) -> Bool {
+        if isSuperseded(error) { return true }
+        if let cache = error as? CacheError, cache == .invalidated { return true }
         return false
     }
 
@@ -958,7 +1108,8 @@ final class V2SessionRepository {
     }
 
     private func observation(_ entry: Entry) -> V2SessionObservation {
-        V2SessionObservation(sessionId: entry.id, data: entry.projection?.data, connection: entry.connection, error: entry.error)
+        V2SessionObservation(sessionId: entry.id, data: entry.projection?.data, connection: entry.connection, error: entry.error,
+                             recoveryNotice: entry.recoveryNotice)
     }
 
     private func emit(_ entry: Entry) {
@@ -1073,6 +1224,22 @@ private final class Entry {
     /// nil with no prediction. Only a round launched after it may end the
     /// prediction (red team F4).
     var predictedIdleSequence: Int?
+    /// Consecutive real recovery failures since the last successful round or
+    /// snapshot rebuild (see `handleRecoveryFailure`).
+    var recoveryFailureStreak = 0
+    /// When the last snapshot rebuild was attempted; nil before the first. The
+    /// frequency gate measures from attempts, not successes.
+    var lastSnapshotRecoveryAt: Date?
+    /// Successful snapshot rebuilds this entry has performed. It also numbers
+    /// the disclosures, so a later rebuild is a new toast payload rather than
+    /// a repeat the store would keep dismissed.
+    var snapshotRecoveryCount = 0
+    /// Newest-last ring of the failed rounds booked on this entry.
+    var recoveryDiagnostics: [V2SessionRecoveryDiagnostic] = []
+    /// The disclosure of the last successful rebuild — a rebuilt projection is
+    /// user-visible state. Sticky: it stays until a later rebuild replaces it,
+    /// so a view that attaches later still sees the acknowledgement.
+    var recoveryNotice: V2SessionRecoveryNotice?
     var connectionTask: Task<Void, Never>?
     /// The observed-session heal loop. Cancelled by `stop()`; the id lets a
     /// round that is ending clear its own registration only.

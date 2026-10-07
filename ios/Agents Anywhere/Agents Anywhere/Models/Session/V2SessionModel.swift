@@ -151,6 +151,11 @@ final class V2SessionModel: Identifiable {
     private(set) var connection = V2SessionConnectionState.inactive
     private(set) var network = V2NetworkStatus()
     private(set) var failure: V2ClientFailure?
+    /// The last self-heal disclosure the repository published: the session's
+    /// data was rebuilt from a snapshot because the incremental recovery could
+    /// not be applied. Sticky until a later rebuild replaces it, so the toast
+    /// source it feeds never loses the acknowledgement mid-visit.
+    private(set) var recoveryNotice: V2SessionRecoveryNotice?
     private(set) var hasOlderItems = false
     private(set) var hasNewerItems = false
     /// The projection's active SubAgent cards, mirroring the same field on
@@ -288,6 +293,7 @@ final class V2SessionModel: Identifiable {
         if connection != observation.connection { connection = observation.connection }
         if self.network != network { self.network = network }
         if failure != observation.error { failure = observation.error }
+        if recoveryNotice != observation.recoveryNotice { recoveryNotice = observation.recoveryNotice }
         runtime.update(data, connection: connection)
         notices.update(runtime.notices, sessionID: id)
         if hasOlderItems != (data?.hasOlderItems ?? false) { hasOlderItems = data?.hasOlderItems ?? false }
@@ -353,7 +359,7 @@ final class V2SessionModel: Identifiable {
     func invalidate() {
         runtime.update(nil, connection: .inactive)
         metadata = nil; timeline = []; pendingMessages = []; awaitingReplyID = nil; draft = ""; draftAttachmentIDs = []
-        activeAgentCards = []
+        activeAgentCards = []; recoveryNotice = nil
         composer.invalidate()
         attachmentPreviews.clear()
         notices.clear()

@@ -30,6 +30,10 @@ nonisolated struct V2SessionArchive: Codable {
     let draftAttachments: [ChatAttachment]
     let pending: [Pending]
     var previews: ChatAttachmentStore.Archive? = nil
+    /// The recovery diagnostics the session last carried, so a failure that
+    /// outlives a relaunch is still on record. Optional: archives written
+    /// before this field existed decode without it.
+    var recoveryDiagnostics: [V2SessionRecoveryDiagnostic]? = nil
 
     @MainActor init(data: V2SessionData, model: V2SessionModel) {
         session = data.session; items = data.items.map(\.raw); cursor = data.cursor

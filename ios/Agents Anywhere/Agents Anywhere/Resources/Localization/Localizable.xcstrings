@@ -8876,6 +8876,40 @@
         }
       }
     },
+    "同步已自动恢复": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sync recovered automatically"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "同步已自动恢复"
+          }
+        }
+      }
+    },
+    "会话数据曾多次同步失败，已重建到最新状态（第 %lld 次自动恢复）。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Session data failed to sync repeatedly and was rebuilt to the latest state (automatic recovery %lld)."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "会话数据曾多次同步失败，已重建到最新状态（第 %lld 次自动恢复）。"
+          }
+        }
+      }
+    },
     "会话数据过大，请在 Web 中导出。": {
       "extractionState": "manual",
       "localizations": {

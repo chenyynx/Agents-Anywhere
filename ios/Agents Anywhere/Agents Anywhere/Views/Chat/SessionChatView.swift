@@ -239,6 +239,16 @@ struct SessionChatView: View, Equatable {
         .onChange(of: ChatRuntimeErrorNotice.make(for: session.runtime.state?.error), initial: true) { _, notice in
             toasts.update(source: "runtime", notice: notice)
         }
+        // The self-heal acknowledgement: the client rebuilt the session's data
+        // from a snapshot because the incremental recovery could not be
+        // applied. Its own source, so it never masks or inherits the session
+        // failure it resolves; the payload carries the rebuild ordinal, so a
+        // later rebuild re-opens a dismissed toast instead of staying silent.
+        .onChange(of: session.recoveryNotice, initial: true) { _, notice in
+            toasts.update(source: "sync-recovery",
+                          failure: notice.map { V2ClientFailure(kind: .transient, message: $0.message) },
+                          title: notice?.title)
+        }
     }
 
     private var openingMask: some View {

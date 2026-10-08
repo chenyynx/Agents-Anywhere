@@ -531,10 +531,10 @@ struct SubAgentCapsuleState: Equatable {
 
     var isVisible: Bool { runningCount > 0 }
 
-    /// "任务名" for one running SubAgent, "N 个任务进行中" for several.
+    /// "任务名" for one running SubAgent, "N 项任务进行中" for several.
     var title: String {
         if runningCount == 1, let singleTaskName, !singleTaskName.isEmpty { return singleTaskName }
-        return String(localized: "\(runningCount) 个任务进行中")
+        return String(localized: "\(runningCount) 项任务进行中")
     }
 
     var accessibilityText: String {

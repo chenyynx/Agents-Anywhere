@@ -214,7 +214,7 @@ import Testing
         #expect(single.title == "排查系统资源")
         #expect(single.latestRunningID == "a")
         let pair = SubAgentProgress.capsuleState([first, second])
-        #expect(pair.title == "2 个任务进行中")
+        #expect(pair.title == "2 项任务进行中")
         // All-terminal cards leave no capsule.
         let done = SubAgentProgress.capsuleState([try cardItem("done", status: "done")])
         #expect(!done.isVisible && done.latestRunningID == nil)

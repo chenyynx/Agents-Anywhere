@@ -10,7 +10,7 @@ import Foundation
 /// tool names already persisted on the timeline — no new state, no timers, no
 /// runtime branching (the same name table serves claude CamelCase, dsh
 /// lowercase and codex native names after normalisation).
-enum SubAgentGlyphPhase: Equatable {
+enum SubAgentGlyphPhase: Hashable {
     /// Reading / searching / fetching — the magnifier stage.
     case scouting
     /// Writing / editing files — the pencil stage.

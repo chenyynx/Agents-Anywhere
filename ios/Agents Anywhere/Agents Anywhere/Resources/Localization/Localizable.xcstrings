@@ -282,7 +282,7 @@
         }
       }
     },
-    "%lld 个 SubAgent": {
+    "%lld 项任务进行中": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -291,13 +291,13 @@
               "one": {
                 "stringUnit": {
                   "state": "translated",
-                  "value": "%lld SubAgent"
+                  "value": "%lld task in progress"
                 }
               },
               "other": {
                 "stringUnit": {
                   "state": "translated",
-                  "value": "%lld SubAgents"
+                  "value": "%lld tasks in progress"
                 }
               }
             }
@@ -306,7 +306,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "%lld 个 SubAgent"
+            "value": "%lld 项任务进行中"
           }
         }
       }
@@ -9240,6 +9240,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "停止子代理"
+          }
+        }
+      }
+    },
+    "子代理运行中": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subagent running"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "子代理运行中"
           }
         }
       }

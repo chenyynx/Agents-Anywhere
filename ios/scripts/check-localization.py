@@ -78,7 +78,7 @@ def main():
     plural_keys = (
         "%lld projects", "%lld workspaces", "%lld sessions", "%lld 个问题", "%lld 次 SubAgent 调用",
         "%lld 次工具调用", "%lld 段思考", "Attach no more than %lld files.", "连接重试 · %lld 次",
-        "%lld 个 SubAgent", "%lld 个工具", "SubAgent 进展 · %lld 项", "其他回合还有 %lld 个运行中",
+        "%lld 项任务进行中", "%lld 个工具", "SubAgent 进展 · %lld 项", "其他回合还有 %lld 个运行中",
     )
     for key in plural_keys:
         plural = localizable.get(key, {}).get("localizations", {}).get("en", {}).get("variations", {}).get("plural", {})

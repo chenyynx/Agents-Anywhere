@@ -17,6 +17,7 @@ for language in ["en", "zh-Hans"] {
     let chinese = language == "zh-Hans"
     expect(String(localized: "Settings", bundle: bundle, locale: locale), chinese ? "设置" : "Settings")
     expect(String(localized: "Close", bundle: bundle, locale: locale), chinese ? "关闭" : "Close")
+    expect(String(localized: "子代理运行中", bundle: bundle, locale: locale), chinese ? "子代理运行中" : "Subagent running")
     expect(String(localized: "运行目标", bundle: bundle, locale: locale), chinese ? "设备和 Agent" : "Device and agent")
     expect(String(localized: "思考强度", bundle: bundle, locale: locale), chinese ? "推理强度" : "Reasoning effort")
     expect(String(localized: "Restore", bundle: bundle, locale: locale), chinese ? "取消归档" : "Unarchive")
@@ -48,8 +49,8 @@ for language in ["en", "zh-Hans"] {
                chinese ? "\(count) 次工具调用" : "\(count) tool \(count == 1 ? "call" : "calls")")
         expect(String(localized: "\(count) 次 SubAgent 调用", bundle: bundle, locale: locale),
                chinese ? "\(count) 次 SubAgent 调用" : "\(count) subagent \(count == 1 ? "call" : "calls")")
-        expect(String(localized: "\(count) 个 SubAgent", bundle: bundle, locale: locale),
-               chinese ? "\(count) 个 SubAgent" : "\(count) SubAgent\(count == 1 ? "" : "s")")
+        expect(String(localized: "\(count) 项任务进行中", bundle: bundle, locale: locale),
+               chinese ? "\(count) 项任务进行中" : "\(count) \(count == 1 ? "task" : "tasks") in progress")
         expect(String(localized: "\(count) sessions", bundle: bundle, locale: locale),
                chinese ? "\(count) 个会话" : "\(count) \(count == 1 ? "session" : "sessions")")
         expect(String(localized: "\(count) selected", bundle: bundle, locale: locale),

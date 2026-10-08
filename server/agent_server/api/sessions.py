@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 from collections import deque
@@ -61,6 +62,7 @@ from agent_server.core.models import (
     SessionSubagentStopRequest,
     SessionView,
     TakeoverResponse,
+    TimelineItem,
 )
 from agent_server.core.protocol import (
     ProtocolCapabilitiesResponse,
@@ -882,6 +884,91 @@ async def session_timeline(
 # - new: GET /sessions/{session_id}/timeline for durable timeline reads
 # - new: GET /sessions/{session_id}/runtime/state for live runtime state
 
+# Slow-network ceiling for the initial snapshot payload (raw bytes, before nginx
+# gzip). A snapshot must stay under the mobile client's resource timeout, so the
+# timeline keeps the newest items and drops the oldest past this budget. The
+# dropped range is reachable through the timeline endpoint's history paging
+# (indicated by hasMore), so nothing is lost, only deferred. Tunable via the
+# AGENT_SERVER_SNAPSHOT_TIMELINE_BYTE_BUDGET environment variable.
+SNAPSHOT_TIMELINE_BYTE_BUDGET = 2 * 1024 * 1024
+SNAPSHOT_TIMELINE_BYTE_BUDGET_ENV = "AGENT_SERVER_SNAPSHOT_TIMELINE_BYTE_BUDGET"
+
+
+def _snapshot_timeline_byte_budget() -> int:
+    """Resolve the snapshot timeline byte budget, honouring the env override."""
+
+    return int(
+        os.environ.get(
+            SNAPSHOT_TIMELINE_BYTE_BUDGET_ENV,
+            str(SNAPSHOT_TIMELINE_BYTE_BUDGET),
+        )
+    )
+
+
+def _snapshot_timeline_item_bytes(item: TimelineItem) -> int:
+    """Byte size of one timeline item as the snapshot serializes it.
+
+    The response is written as UTF-8 JSON with compact separators, so the byte
+    budget measures that same encoding and cannot drift from the wire size.
+    Mirrors ``event_recovery._serialized_payload_bytes``.
+    """
+
+    return len(
+        json.dumps(
+            {"item": item.model_dump(mode="json")},
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    )
+
+
+def _apply_snapshot_timeline_byte_budget(
+    session_id: str,
+    items: list[TimelineItem],
+    *,
+    budget: int | None = None,
+) -> tuple[list[TimelineItem], bool]:
+    """Trim the timeline to a serialized byte budget, newest items first.
+
+    ``items`` arrive oldest-first. Walk from the newest end, accumulate the
+    compact-JSON byte size of each item and stop before the running total
+    exceeds ``budget``; the oldest items past the budget are dropped. At least
+    one item is always kept (an oversized single item is never split), and the
+    return flag reports truncation so the caller can raise ``hasMore``.
+    """
+
+    if budget is None:
+        budget = _snapshot_timeline_byte_budget()
+    if not items:
+        return list(items), False
+
+    kept_reversed: list[TimelineItem] = []
+    accumulated_bytes = 0
+    truncated = False
+    for item in reversed(items):
+        item_bytes = _snapshot_timeline_item_bytes(item)
+        if kept_reversed and accumulated_bytes + item_bytes > budget:
+            truncated = True
+            break
+        accumulated_bytes += item_bytes
+        kept_reversed.append(item)
+
+    if not truncated:
+        return list(items), False
+
+    kept = list(reversed(kept_reversed))
+    logger.info(
+        "snapshot timeline byte budget exceeded session_id={} items={} "
+        "kept={} bytes={} budget={}",
+        session_id,
+        len(items),
+        len(kept),
+        accumulated_bytes,
+        budget,
+    )
+    return kept, True
+
 
 @router.get("/{session_id}/snapshot", response_model=ProtocolSessionSnapshotResponse)
 async def session_snapshot(
@@ -986,6 +1073,10 @@ async def session_snapshot(
         session_id=session_id,
         previous_state=runtime_state,
     )
+    items, budget_has_more = _apply_snapshot_timeline_byte_budget(
+        session_id,
+        items,
+    )
     return ProtocolSessionSnapshotResponse(
         session=session.model_dump(mode="json"),
         state=(
@@ -993,7 +1084,11 @@ async def session_snapshot(
             if runtime_state is not None
             else None
         ),
-        timeline=ProtocolTimelineSnapshot(items=items, nextSeq=next_seq, hasMore=has_more),
+        timeline=ProtocolTimelineSnapshot(
+            items=items,
+            nextSeq=next_seq,
+            hasMore=has_more or budget_has_more,
+        ),
         approvals=[],
         notices=notices,
         effectiveCapabilities=effective_capabilities,

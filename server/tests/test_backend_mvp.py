@@ -3075,6 +3075,169 @@ def test_session_snapshot_and_timeline_default_to_latest_hundred_items(tmp_path)
     assert snapshot_timeline["hasMore"] is True
 
 
+def _seed_snapshot_timeline_items(
+    client: TestClient,
+    session_id: str,
+    *,
+    item_count: int,
+    text_size: int,
+) -> None:
+    from agent_server.core.models import TimelineItemIn
+
+    store = client.app.state.store
+
+    async def seed() -> None:
+        for order_seq in range(1, item_count + 1):
+            await store.upsert_timeline_item(
+                session_id=session_id,
+                item=TimelineItemIn.model_validate(
+                    {
+                        "id": f"tl_{order_seq}",
+                        "sessionId": session_id,
+                        "turnId": "turn_1",
+                        "type": "message",
+                        "status": "done",
+                        "role": "assistant",
+                        "content": {
+                            "text": f"{order_seq}:" + ("x" * text_size),
+                            "format": "markdown",
+                        },
+                        "source": {
+                            "runtime": "codex",
+                            "sessionId": "thr_1",
+                            "turnId": "turn_1",
+                            "itemId": f"item_{order_seq}",
+                            "itemType": "agentMessage",
+                        },
+                        "orderSeq": order_seq,
+                        "revision": 1,
+                        "contentHash": f"sha256:{order_seq}",
+                    },
+                ),
+            )
+
+    asyncio.run(seed())
+
+
+def _snapshot_item_bytes(item: dict) -> int:
+    import json as _json
+
+    return len(
+        _json.dumps(
+            {"item": item},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+
+
+def test_session_snapshot_keeps_all_items_within_byte_budget(tmp_path):
+    from agent_server.api.sessions import SNAPSHOT_TIMELINE_BYTE_BUDGET
+
+    client = make_client(tmp_path)
+    _, _, session_id, headers = create_connector_and_session(client)
+    _seed_snapshot_timeline_items(client, session_id, item_count=5, text_size=64)
+
+    snapshot = client.get(f"/sessions/{session_id}/snapshot", headers=headers)
+    assert snapshot.status_code == 200, snapshot.text
+    timeline = snapshot.json()["timeline"]
+    assert len(timeline["items"]) == 5
+    assert timeline["items"][0]["id"] == "tl_1"
+    assert timeline["items"][-1]["id"] == "tl_5"
+    assert timeline["hasMore"] is False
+    total = sum(_snapshot_item_bytes(item) for item in timeline["items"])
+    assert total <= SNAPSHOT_TIMELINE_BYTE_BUDGET
+
+
+def test_snapshot_timeline_byte_budget_default_and_env_override(monkeypatch):
+    from agent_server.api.sessions import (
+        SNAPSHOT_TIMELINE_BYTE_BUDGET,
+        SNAPSHOT_TIMELINE_BYTE_BUDGET_ENV,
+        _snapshot_timeline_byte_budget,
+    )
+
+    assert SNAPSHOT_TIMELINE_BYTE_BUDGET == 2 * 1024 * 1024
+    # Default when the override is absent.
+    monkeypatch.delenv(SNAPSHOT_TIMELINE_BYTE_BUDGET_ENV, raising=False)
+    assert _snapshot_timeline_byte_budget() == SNAPSHOT_TIMELINE_BYTE_BUDGET
+    # Environment override wins.
+    monkeypatch.setenv(SNAPSHOT_TIMELINE_BYTE_BUDGET_ENV, "4096")
+    assert _snapshot_timeline_byte_budget() == 4096
+
+
+def test_session_snapshot_honours_env_byte_budget_override(tmp_path, monkeypatch):
+    from agent_server.api.sessions import SNAPSHOT_TIMELINE_BYTE_BUDGET_ENV
+
+    client = make_client(tmp_path)
+    _, _, session_id, headers = create_connector_and_session(client)
+    _seed_snapshot_timeline_items(client, session_id, item_count=5, text_size=64)
+
+    # A well-within-default timeline still truncates under a tiny override.
+    monkeypatch.setenv(SNAPSHOT_TIMELINE_BYTE_BUDGET_ENV, "512")
+    snapshot = client.get(f"/sessions/{session_id}/snapshot", headers=headers)
+    assert snapshot.status_code == 200, snapshot.text
+    timeline = snapshot.json()["timeline"]
+    assert timeline["items"][-1]["id"] == "tl_5"
+    assert len(timeline["items"]) < 5
+    assert timeline["hasMore"] is True
+
+
+def test_session_snapshot_drops_oldest_items_over_byte_budget(tmp_path):
+    from agent_server.api.sessions import SNAPSHOT_TIMELINE_BYTE_BUDGET
+
+    client = make_client(tmp_path)
+    _, _, session_id, headers = create_connector_and_session(client)
+    # Each item's compact JSON is ~50KB, so 60 items exceed the 2MB budget.
+    _seed_snapshot_timeline_items(client, session_id, item_count=60, text_size=50_000)
+
+    snapshot = client.get(f"/sessions/{session_id}/snapshot", headers=headers)
+    assert snapshot.status_code == 200, snapshot.text
+    body = snapshot.json()
+    timeline = body["timeline"]
+
+    kept = timeline["items"]
+    assert 0 < len(kept) < 60
+    # Newest retained, oldest dropped, truncated to the byte budget.
+    assert kept[-1]["id"] == "tl_60"
+    assert kept[0]["id"] != "tl_1"
+    assert timeline["hasMore"] is True
+    total = sum(_snapshot_item_bytes(item) for item in kept)
+    assert total <= SNAPSHOT_TIMELINE_BYTE_BUDGET
+    # Session/nextSeq fields are unaffected by trimming.
+    assert body["session"]["id"] == session_id
+    assert timeline["nextSeq"] == int(body["eventCursor"].split(":", 1)[1])
+
+
+def test_session_snapshot_keeps_single_oversized_item(tmp_path):
+    from agent_server.api.sessions import SNAPSHOT_TIMELINE_BYTE_BUDGET
+
+    client = make_client(tmp_path)
+    _, _, session_id, headers = create_connector_and_session(client)
+    # A single item far larger than the budget must still be returned intact.
+    _seed_snapshot_timeline_items(client, session_id, item_count=1, text_size=3_000_000)
+
+    snapshot = client.get(f"/sessions/{session_id}/snapshot", headers=headers)
+    assert snapshot.status_code == 200, snapshot.text
+    timeline = snapshot.json()["timeline"]
+    assert len(timeline["items"]) == 1
+    assert timeline["items"][0]["id"] == "tl_1"
+    assert timeline["items"][0]["content"]["text"].endswith("x")
+    assert _snapshot_item_bytes(timeline["items"][0]) > SNAPSHOT_TIMELINE_BYTE_BUDGET
+    assert timeline["hasMore"] is False
+
+
+def test_session_snapshot_empty_timeline_returns_no_items(tmp_path):
+    client = make_client(tmp_path)
+    _, _, session_id, headers = create_connector_and_session(client)
+
+    snapshot = client.get(f"/sessions/{session_id}/snapshot", headers=headers)
+    assert snapshot.status_code == 200, snapshot.text
+    timeline = snapshot.json()["timeline"]
+    assert timeline["items"] == []
+    assert timeline["hasMore"] is False
+    assert isinstance(timeline["nextSeq"], int)
+
+
 def test_session_state_update_drives_runtime_status_independently_from_timeline(
     tmp_path,
 ):

@@ -71,11 +71,11 @@ struct SessionChatView: View, Equatable {
                 isLoadingSettings: model.isLoadingSettings,
                 settingsError: model.settingsError, sessionChat: model,
                 contextUsage: model.contextUsage,
-                canQueueSend: model.canQueueSend, queueEnqueueTick: model.queueEnqueueTick,
-                onQueueSend: { await model.enqueueComposer() },
                 onSend: model.send, onStop: model.interrupt, onLoadSettings: model.loadSettings,
                 onApplySettings: model.applySettings, applyError: { model.settingsError },
-                onDraftChange: { model.repository.draftDidChange() })
+                onDraftChange: { model.repository.draftDidChange() },
+                canQueueSend: model.canQueueSend, queueEnqueueTick: model.queueEnqueueTick,
+                onQueueSend: { await model.enqueueComposer() })
                 .traceChatLayout("composer-dock")
         }
         .frame(maxWidth: ChatControlMetrics.maximumContentWidth).frame(maxWidth: .infinity)

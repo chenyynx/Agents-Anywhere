@@ -322,6 +322,7 @@ class ConnectorNotificationRepository(
         items: list[TimelineItemIn],
         source_observed_at: str | None = None,
         mark_read_on_change: bool = False,
+        prune_orphan_agent_calls: bool = False,
     ) -> TimelineBatchWriteResult: ...
 
     async def resolve_connector_session_id(

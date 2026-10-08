@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from loguru import logger
@@ -746,6 +747,21 @@ class SessionTurnEndedNotificationHandler:
         )
 
 
+def _history_rebuild_prunes_orphan_agent_calls(params: Mapping[str, Any]) -> bool:
+    """Whether this sync is a full-history rebuild superseding stored cards.
+
+    The claude history syncer marks a rebased sync (window = whole transcript)
+    with ``rebased: true`` in the sync metadata. A complete snapshot needs no
+    help — it already deletes every row it does not cover — so the flag only
+    arms the narrow agent-call prune for merge-style rebuilds.
+    """
+
+    if params.get("complete") is True:
+        return False
+    metadata = params.get("metadata")
+    return isinstance(metadata, Mapping) and metadata.get("rebased") is True
+
+
 class TimelineNotificationHandler:
     METHODS: ClassVar[set[str]] = {"timeline.sync", "timeline.itemUpsert"}
 
@@ -795,6 +811,7 @@ class TimelineNotificationHandler:
             return IngestEffect()
         items = [_timeline_item_for_session(item, session_id) for item in items]
         replace_snapshot = params.get("complete") is True
+        prune_orphan_agent_calls = _history_rebuild_prunes_orphan_agent_calls(params)
         try:
             if self._timeline_write_buffer is None:
                 if replace_snapshot:
@@ -810,6 +827,7 @@ class TimelineNotificationHandler:
                         source_observed_at=params.get("sourceObservedAt"),
                         items=items,
                         mark_read_on_change=True,
+                        prune_orphan_agent_calls=prune_orphan_agent_calls,
                     )
             else:
                 async with self._timeline_write_buffer.session_fence(session_id):
@@ -826,6 +844,7 @@ class TimelineNotificationHandler:
                             source_observed_at=params.get("sourceObservedAt"),
                             items=items,
                             mark_read_on_change=True,
+                            prune_orphan_agent_calls=prune_orphan_agent_calls,
                         )
         finally:
             if self._timeline_write_buffer is not None:

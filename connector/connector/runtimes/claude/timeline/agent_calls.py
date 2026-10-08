@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -256,6 +257,84 @@ def resolve_resume_alias(
         return None
     root = next(iter(roots))
     return root if root != tool_use_id else None
+
+
+def resolve_resume_alias_from_scan(
+    tool_use_id: str,
+    *,
+    send_aliases: Mapping[str, str] | None,
+    dispatch_roots: Mapping[str, frozenset[str]] | None,
+) -> tuple[str, str] | None:
+    """Step 2 of the persistence fallback chain (T1 A-2): the scan's own join.
+
+    ``send_aliases`` / ``dispatch_roots`` are the raw transcript's persisted
+    copies of the two in-process maps ``resolve_resume_alias`` reads. This
+    applies the exact same constraints — the id must be a recorded alias, its
+    task must have exactly one dispatch root, and the root must not be the
+    alias itself — so the fallback can only ever reproduce a resolution the
+    in-process maps would have made had the process seen every frame. Anything
+    less certain returns ``None`` and the caller keeps its fail-closed
+    behaviour.
+
+    Returns ``(task_id, root)`` on a hit so the caller can warm its own maps.
+    """
+
+    if not send_aliases:
+        return None
+    task_id = send_aliases.get(tool_use_id)
+    if task_id is None:
+        return None
+    roots = dispatch_roots.get(task_id) if dispatch_roots else None
+    if roots is None or len(roots) != 1:
+        return None
+    root = next(iter(roots))
+    if root == tool_use_id:
+        return None
+    return task_id, root
+
+
+def resolve_task_card_from_timeline(
+    *,
+    task_id: str,
+    timeline_items: Mapping[str, Any],
+    alias_keys: AbstractSet[str],
+    exclude: str,
+) -> str | None:
+    """Step 3 of the persistence fallback chain (T1 A-2): ask the projected timeline.
+
+    When the scan knows the alias's task but not a usable dispatch root (its
+    receipt rows are missing, or name several), the already-projected timeline
+    can still say which card carries the task. A card qualifies when it is an
+    Agent call whose ``agents`` map names the task and whose native tool_use id
+    is **not** a known alias key — an alias-keyed twin is a resume card, not
+    the dispatch root this is looking for.
+
+    Exactly one qualifying card must exist; zero (nothing known) or several
+    (ambiguity) returns ``None`` and leaves the caller fail-closed. The
+    ``exclude`` id (the alias being folded) never qualifies, so the result can
+    never loop back onto the incoming id.
+    """
+
+    candidates: set[str] = set()
+    for item in timeline_items.values():
+        if getattr(item, "type", None) != "tool":
+            continue
+        content = getattr(item, "content", None)
+        if not isinstance(content, Mapping) or content.get("kind") != "agent_call":
+            continue
+        agents = content.get("agents")
+        if not isinstance(agents, Mapping) or task_id not in agents:
+            continue
+        source = getattr(item, "source", None)
+        native = source.get("itemId") if isinstance(source, Mapping) else None
+        if not isinstance(native, str) or not native:
+            continue
+        if native == exclude or native in alias_keys:
+            continue
+        candidates.add(native)
+    if len(candidates) != 1:
+        return None
+    return next(iter(candidates))
 
 
 def closure_rank(status: str | None) -> tuple[int, int]:

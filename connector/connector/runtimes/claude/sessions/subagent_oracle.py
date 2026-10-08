@@ -431,6 +431,21 @@ class RawTranscriptScan:
     #: view exposes no timestamps at all, which is why this comes from the raw
     #: file.
     receipt_times_ms: Mapping[str, int] = field(default_factory=dict)
+    #: SendMessage tool_use id -> the task id that call addresses. This is the
+    #: persisted copy of the live projector's in-process alias map, so a
+    #: restarted process can still route a resumed task's frames to its
+    #: original dispatch card (alias-durability-tasks T1 A). Two raw shapes
+    #: carry the join: the assistant row's own ``input.to``, and the user
+    #: row's ``tool_result`` body / ``toolUseResult`` carrying
+    #: ``resumedAgentId`` (keyed by that block's tool_use_id).
+    send_aliases: Mapping[str, str] = field(default_factory=dict)
+    #: task id -> the tool_use ids of the dispatch receipts that named it.
+    #: Read from the ``tool_result`` rows that launch an Agent call — the
+    #: line-style ``agentId: <id>`` body wording, or a structured
+    #: ``toolUseResult.agentId`` — and keyed by that block's tool_use_id. The
+    #: engine's own receipt rows therefore pin a task's dispatch roots without
+    #: any in-process memory, which is what survives a connector restart.
+    dispatch_roots: Mapping[str, frozenset[str]] = field(default_factory=dict)
 
 
 def scan_raw_transcript(
@@ -452,18 +467,31 @@ def scan_raw_transcript(
 
     ``attachment`` rows repeat the same wrapper as rendering chrome and are
     skipped. The same pass also collects each task's newest ``agentId:``
-    mention (its dispatch receipt time), so callers get both facts for one
-    read of the file.
+    mention (its dispatch receipt time) and the lineage the resume fold needs
+    (alias-durability-tasks T1 A): the SendMessage alias map and the dispatch
+    roots, so callers get every fact for one read of the file.
     """
 
     notices: list[RawTranscriptNotice] = []
     receipt_times: dict[str, int] = {}
+    send_aliases: dict[str, str] = {}
+    dispatch_roots: dict[str, set[str]] = {}
     last_anchor: str | None = None
     for line_index, line in enumerate(raw_lines):
         wants_notice = "<task-notification>" in line
         wants_receipt = "agentId:" in line
         wants_uuid = '"uuid"' in line
-        if not wants_notice and not wants_receipt and not wants_uuid:
+        wants_send = "SendMessage" in line
+        wants_resume = "resumedAgentId" in line
+        wants_agent_key = '"agentId"' in line
+        if not (
+            wants_notice
+            or wants_receipt
+            or wants_uuid
+            or wants_send
+            or wants_resume
+            or wants_agent_key
+        ):
             continue
         try:
             row = json.loads(line)
@@ -474,6 +502,20 @@ def scan_raw_transcript(
         row_uuid = _string(row.get("uuid"))
         if row_uuid is not None:
             last_anchor = row_uuid
+        if wants_receipt or wants_send or wants_resume or wants_agent_key:
+            try:
+                _extract_transcript_lineage(
+                    row,
+                    send_aliases=send_aliases,
+                    dispatch_roots=dispatch_roots,
+                )
+            except Exception:  # noqa: BLE001
+                # Lineage is best-effort: a row whose shape surprises the
+                # extractor is skipped, never allowed to sink the scan.
+                logger.debug(
+                    "Claude transcript lineage row skipped",
+                    exc_info=True,
+                )
         if not wants_notice and not wants_receipt:
             continue
         timestamp_ms = _parse_iso_ms(row.get("timestamp"))
@@ -510,10 +552,136 @@ def scan_raw_transcript(
     return RawTranscriptScan(
         notices=tuple(notices),
         receipt_times_ms=receipt_times,
+        send_aliases=send_aliases,
+        dispatch_roots={
+            task_id: frozenset(roots) for task_id, roots in dispatch_roots.items()
+        },
     )
 
 
 _AGENT_ID_RE = re.compile(r"agentId:\s*([0-9a-zA-Z]+)")
+
+
+def _extract_transcript_lineage(
+    row: Mapping[str, Any],
+    *,
+    send_aliases: dict[str, str],
+    dispatch_roots: dict[str, set[str]],
+) -> None:
+    """Learn one raw row's resume aliases and dispatch roots, in place.
+
+    Two row shapes carry lineage and both are read here (T1 A-1):
+
+    * an ``assistant`` row's ``SendMessage`` tool_use block — its
+      ``input.to`` names the task the call addresses, keyed by the block's
+      tool_use id (the id the resumed task's later frames are keyed on);
+    * a ``user`` row's ``tool_result`` blocks — a body whose JSON carries
+      ``resumedAgentId`` (or the row's own ``toolUseResult``) names the task a
+      SendMessage resumed, and a body carrying the launch receipt's
+      ``agentId`` (line-style, or structured in ``toolUseResult``) names the
+      task its tool_use id dispatched.
+
+    Every field is read defensively; a row that does not match any shape
+    contributes nothing. The row-level ``toolUseResult`` is only attributed
+    when its row holds a single ``tool_result`` block — with several blocks in
+    one row the correspondence is ambiguous, and guessing it could splice an
+    alias onto the wrong call.
+    """
+
+    row_type = row.get("type")
+    message = row.get("message")
+    content = message.get("content") if isinstance(message, Mapping) else None
+    if row_type == "assistant":
+        if not isinstance(content, list):
+            return
+        for block in content:
+            if not isinstance(block, Mapping):
+                continue
+            if block.get("type") != "tool_use" or block.get("name") != "SendMessage":
+                continue
+            tool_use_id = _string(block.get("id"))
+            tool_input = block.get("input")
+            target = (
+                tool_input.get("to") if isinstance(tool_input, Mapping) else None
+            )
+            if tool_use_id is not None and isinstance(target, str) and target:
+                send_aliases.setdefault(tool_use_id, target)
+        return
+    if row_type != "user" or not isinstance(content, list):
+        return
+    blocks = [
+        block
+        for block in content
+        if isinstance(block, Mapping) and block.get("type") == "tool_result"
+    ]
+    if not blocks:
+        return
+    row_details = row.get("toolUseResult")
+    row_details = row_details if isinstance(row_details, Mapping) else None
+    for block in blocks:
+        tool_use_id = _string(block.get("tool_use_id"))
+        if tool_use_id is None:
+            continue
+        texts = _tool_result_texts(block.get("content"))
+        parsed = _json_mapping_from_texts(texts)
+        resumed: Any = parsed.get("resumedAgentId") if parsed is not None else None
+        if not isinstance(resumed, str) or not resumed:
+            resumed = None
+        if resumed is None and row_details is not None and len(blocks) == 1:
+            candidate = row_details.get("resumedAgentId")
+            resumed = (
+                candidate if isinstance(candidate, str) and candidate else None
+            )
+        if resumed is not None:
+            send_aliases.setdefault(tool_use_id, resumed)
+        roots: set[str] = set()
+        if parsed is not None:
+            dispatched = parsed.get("agentId")
+            if isinstance(dispatched, str) and dispatched:
+                roots.add(dispatched)
+        if row_details is not None and len(blocks) == 1:
+            dispatched = row_details.get("agentId")
+            if isinstance(dispatched, str) and dispatched:
+                roots.add(dispatched)
+        for text in texts:
+            for match in _AGENT_ID_RE.finditer(text):
+                roots.add(match.group(1))
+        for agent_id in roots:
+            dispatch_roots.setdefault(agent_id, set()).add(tool_use_id)
+
+
+def _tool_result_texts(content: Any) -> tuple[str, ...]:
+    """The text bodies of one ``tool_result`` block's content, whatever shape."""
+
+    if isinstance(content, str):
+        return (content,)
+    if not isinstance(content, list):
+        return ()
+    texts: list[str] = []
+    for entry in content:
+        if isinstance(entry, str):
+            texts.append(entry)
+        elif isinstance(entry, Mapping):
+            text = entry.get("text")
+            if isinstance(text, str):
+                texts.append(text)
+    return tuple(texts)
+
+
+def _json_mapping_from_texts(texts: Sequence[str]) -> Mapping[str, Any] | None:
+    """The first text body that parses as a JSON object, else ``None``."""
+
+    for text in texts:
+        stripped = text.strip()
+        if not stripped.startswith("{"):
+            continue
+        try:
+            parsed = json.loads(stripped)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(parsed, Mapping):
+            return parsed
+    return None
 
 
 def raw_only_notices(

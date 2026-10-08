@@ -46,25 +46,19 @@ struct ContextRing: View {
 
 /// The ring's neutral stand-in for a real measurement whose window is not yet
 /// known — a gateway model before its first calibration. It is deliberately
-/// colourless and arcless so it can never be read as a percentage, but it stays
-/// on screen: pp 2026-10-08, the ring must never simply disappear. The "?" is
-/// the unmistakable unknown mark.
+/// colourless, arcless and glyphless so it can never be read as a percentage,
+/// but it stays on screen: pp 2026-10-08, the ring must never simply disappear,
+/// and pp 2026-10-08 the plain grey ring alone is the whole signal (the popover
+/// and the accessibility value say "window unknown" in words).
 struct ContextUnknownRing: View {
     var size: CGFloat = ChatControlMetrics.contextRingDiameter
     var lineWidth: CGFloat = 2.5
-    @ScaledMetric(relativeTo: .body) private var glyphSize: CGFloat = 11
 
     var body: some View {
-        ZStack {
-            Circle().stroke(Color.secondary.opacity(0.45), lineWidth: lineWidth)
-            Text(verbatim: "?")
-                // Grows with Dynamic Type, but is clamped so the glyph can never
-                // overflow the fixed 18 pt slot the composer allots the ring.
-                .font(.system(size: min(glyphSize, size * 0.8), weight: .semibold))
-                .foregroundStyle(.secondary)
-        }
-        .frame(width: size, height: size)
-        .accessibilityHidden(true)
+        Circle()
+            .stroke(Color.secondary.opacity(0.45), lineWidth: lineWidth)
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
     }
 }
 

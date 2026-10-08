@@ -114,6 +114,12 @@ struct SubAgentCard: Identifiable, Equatable {
     /// The card's live tasks, one stop control each (§A3). Empty for a
     /// dispatch with no task receipt — the shape that must not grow a button.
     let liveTasks: [SubAgentTask]
+    /// Every task id the card's `agents` map names, live and terminal alike,
+    /// sorted and deduped. The lineage join (pp 2026-10-09): a resumed task's
+    /// SendMessage-keyed twin carries the same task id, so an intersection is
+    /// what says two cards are one subagent. Empty for a dispatch whose receipt
+    /// never arrived — no id, no lineage, the defensive default.
+    let taskIDs: [String]
     /// The card's dispatch moment (item creation). The capsule's failure rule
     /// compares it against a failure's end to tell a new batch from an older one.
     let dispatchedAt: Date?
@@ -182,9 +188,22 @@ enum SubAgentProgress {
             parentItemID: parent,
             isBackgrounded: entry?["isBackgrounded"]?.boolValue ?? raw["runInBackground"]?.boolValue,
             liveTasks: liveTasks(in: item),
+            taskIDs: taskIDs(in: item),
             dispatchedAt: Self.date(item.createdAt),
             failedAt: Self.terminalDate(raw: raw, item: item)
         )
+    }
+
+    /// Every task id an Agent card's `agents` map names, whatever the entry's
+    /// status. The map key is the task id (the receipt's agentId); an entry
+    /// that names its own id wins as the same defensive reading `liveTasks`
+    /// uses. A non-card item yields nothing.
+    static func taskIDs(in item: V2TimelineItem) -> [String] {
+        guard isAgentCall(item) else { return [] }
+        let agents = item.raw["content"]?["agents"]?.objectValue ?? [:]
+        return Set(agents.map { key, entry in
+            TimelineText.first(entry["taskId"], entry["agentId"]) ?? key
+        }).sorted()
     }
 
     /// The connector's two live task statuses (`AGENT_TASK_LIVE_STATUSES`).
@@ -250,14 +269,50 @@ enum SubAgentProgress {
         items.filter { parentItemID($0) == cardID }
     }
 
+    /// The card's lineage: its own id plus every other top-level card whose
+    /// `agents` map shares a task id with it.
+    ///
+    /// The CLI keys a resumed task's later frames — and its terminal
+    /// notification — on the *SendMessage* call, so a legacy connector minted a
+    /// second card for the resumed run (原派发卡 + 恢复别名卡) while the child
+    /// rows stayed attributed to the original dispatch. Both cards carry the
+    /// same task id, which is the join (pp 2026-10-09, 真机实证: the pair
+    /// shares `a11bd2c081f4d5efe`).
+    ///
+    /// One hop only, and only by id: a card with no task ids (no receipt) is
+    /// its own lineage, so the merge can never invent a relationship from a
+    /// shared name.
+    static func lineageIDs(of card: SubAgentCard, in items: [V2TimelineItem]) -> Set<String> {
+        var ids: Set<String> = [card.id]
+        let own = Set(card.taskIDs)
+        guard !own.isEmpty else { return ids }
+        for other in topLevelCards(in: items) where other.id != card.id && !own.isDisjoint(with: other.taskIDs) {
+            ids.insert(other.id)
+        }
+        return ids
+    }
+
     /// One card's activity rows: every child row the chat would show, in
     /// timeline order — tools, reasoning and text interleaved exactly as the
     /// connector published them (pp 2026-10-05: the panel shows one
     /// chronological activity list, not per-kind sections). The same
     /// `isVisibleInChat` gate the main chat uses, so a row hidden there (an
     /// empty reasoning, a hidden status) never enters the panel either.
-    static func activityRows(of cardID: String, in items: [V2TimelineItem]) -> [V2TimelineItem] {
-        children(of: cardID, in: items).filter(\.isVisibleInChat)
+    ///
+    /// Rows are gathered across the card's whole lineage (pp 2026-10-09): a
+    /// resume-alias card owns no child rows of its own, but the original
+    /// dispatch card does, so the alias renders them instead of an empty body.
+    /// Two cards of one lineage never list a row twice, and the union is merged
+    /// back into timeline order (orderSeq) rather than dispatch order.
+    static func activityRows(of card: SubAgentCard, in items: [V2TimelineItem]) -> [V2TimelineItem] {
+        let ids = lineageIDs(of: card, in: items)
+        var seen: Set<String> = []
+        return items
+            .filter { item in
+                guard item.isVisibleInChat, let parent = parentItemID(item), ids.contains(parent) else { return false }
+                return seen.insert(item.id).inserted
+            }
+            .sorted { ($0.orderSeq, $0.id) < ($1.orderSeq, $1.id) }
     }
 
     // MARK: Flat panel (pp 2026-10-08: 不分回合)
@@ -409,12 +464,22 @@ enum SubAgentProgress {
         capsuleState(capsuleItems(inWindow: window, activeCards: activeCards, now: now))
     }
 
-    /// Whether a card's own rows are loaded, i.e. it is one of the rows this
-    /// client holds. False means the panel can still show the card's own facts
-    /// (name, phase, prompt) but has none of its tool / thinking / output rows,
-    /// and must say so rather than render an empty body or a silent "finished".
+    /// Whether the panel has content to render for the card. True when the
+    /// card's own row is loaded, or when any row of its lineage is — the
+    /// resume-alias case (pp 2026-10-09): the alias card owns no rows, but its
+    /// sibling's rows are in the window and the activity list can render them,
+    /// so the panel must not claim "内容未加载" and then show nothing.
+    ///
+    /// False means the panel can still show the card's own facts (name, phase,
+    /// prompt) but none of its tool / thinking / output rows, and must say so
+    /// rather than render an empty body or a silent "finished".
     static func isContentLoaded(_ card: SubAgentCard, in items: [V2TimelineItem]) -> Bool {
-        items.contains { $0.id == card.id }
+        if items.contains(where: { $0.id == card.id }) { return true }
+        let ids = lineageIDs(of: card, in: items)
+        return items.contains { item in
+            guard let parent = parentItemID(item) else { return false }
+            return ids.contains(parent)
+        }
     }
 
     /// The capsule's failure rule (pp 2026-10-03, option A): the capsule reds

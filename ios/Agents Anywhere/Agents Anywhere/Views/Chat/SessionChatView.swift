@@ -19,7 +19,12 @@ struct SessionChatView: View, Equatable {
     private let fileService: V2WorkspaceFilesService
     private let detailService: V2SessionDetailService
     private enum SessionSheet: Identifiable {
-        case notices, details, files, subagents(String), preview(SessionFileReference, root: String? = nil)
+        case notices, details, files
+        /// The SubAgent panel: the anchor card id plus its entry point. The
+        /// capsule (entry A) lists every active card; a timeline card (entry B)
+        /// shows that one card's detail alone (pp 2026-10-08).
+        case subagents(String, fromCapsule: Bool)
+        case preview(SessionFileReference, root: String? = nil)
         /// The instant image viewer: opens on the thumbnail the bubble already
         /// decoded (nil when it has none) while the loader serves the original.
         case attachmentImage(V2AttachmentContent, image: UIImage?, tappedAt: Date)
@@ -28,7 +33,7 @@ struct SessionChatView: View, Equatable {
             case .notices: "notices"
             case .details: "details"
             case .files: "files"
-            case .subagents(let cardID): "subagents:\(cardID)"
+            case .subagents(let cardID, let fromCapsule): "subagents:\(fromCapsule ? "capsule" : "card"):\(cardID)"
             case .preview(let reference, let root): "file:\(root ?? ""):\(reference.id)"
             case .attachmentImage(let file, _, _): "attachment:\(file.fileId ?? file.cacheKey)"
             }
@@ -79,7 +84,7 @@ struct SessionChatView: View, Equatable {
                 if hasStartedLoading {
                     ChatTimelineView(model: model,
                         onAttachment: openAttachment, onFile: openFile,
-                        onSubAgent: { sheet = .subagents($0) })
+                        onSubAgent: { sheet = .subagents($0, fromCapsule: false) })
                 } else {
                     Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -97,7 +102,7 @@ struct SessionChatView: View, Equatable {
                         // B (pp 2026-10-06): the SubAgent capsule is the dock's
                         // first row — it takes its own space above the composer
                         // instead of floating over the timeline's last row.
-                        SubAgentCapsuleSlot(model: model, onOpen: { sheet = .subagents($0) })
+                        SubAgentCapsuleSlot(model: model, onOpen: { sheet = .subagents($0, fromCapsule: true) })
                             .traceChatLayout("subagent-capsule")
                         SessionInteractionDock(chat: model,
                             onShowAll: { expandedNoticeID = $0; sheet = .notices })
@@ -198,9 +203,9 @@ struct SessionChatView: View, Equatable {
             switch destination {
             case .notices: SessionNoticesSheet(model: model, initialNoticeID: expandedNoticeID)
             case .details: SessionDetailsSheet(chat: model, service: detailService)
-            case .subagents(let cardID):
+            case .subagents(let cardID, let fromCapsule):
                 SubAgentPanelSheet(chat: model, deviceName: deviceName, fallbackRuntimeName: fallbackRuntimeName,
-                    initialCardID: cardID, onFile: openFile, onAttachment: openAttachment)
+                    initialCardID: cardID, opensFromCapsule: fromCapsule, onFile: openFile, onAttachment: openAttachment)
             case .files:
                 if let meta = session.metadata, let cwd = meta.cwd {
                     WorkspaceFilesSheet(connectorId: meta.connectorId,

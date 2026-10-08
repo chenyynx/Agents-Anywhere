@@ -282,6 +282,11 @@ import Testing
         var state = object["state"] as! [String: Any]
         state["status"] = "running"
         object["state"] = state
+        // The shipped snapshot fixture carries an open, respondable interaction
+        // notice, which correctly wins the resolver's first rule; this test
+        // targets the layers below it, so the notice is cleared here (its
+        // priority is pinned by `resolverWaitingForUserWinsFromBothEntries`).
+        object["notices"] = []
         var data = V2SessionData(snapshot: try decode(object, as: V2SessionSnapshot.self))
 
         // Fresh facts land: the runtime status is read, and a running state

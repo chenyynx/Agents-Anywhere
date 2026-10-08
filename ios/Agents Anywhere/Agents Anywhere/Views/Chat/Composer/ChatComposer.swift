@@ -13,7 +13,9 @@ struct ChatComposer: View {
     let onSend: () -> Void
     let onStop: () -> Void
     let onOptions: () -> Void
-    /// Shown beside send when the session's runtime offers slash commands.
+    /// Shown in the send cluster when the session's runtime offers slash
+    /// commands — left of the context ring when the ring is visible, left of
+    /// send when it is not.
     var showsCommands = false
     var commandsActive = false
     var onCommands: () -> Void = {}
@@ -69,6 +71,10 @@ struct ChatComposer: View {
                     .accessibilityHint(draft.isComposing ? String(localized: "请先确认输入法候选文字") : "")
                     .accessibilityIdentifier("chat.composer.send")
 
+                    if let contextUsage, contextUsage.isValid, draft.isFocused {
+                        ContextRingButton(usage: contextUsage, touchTarget: controls.touchTarget)
+                    }
+
                     if showsCommands {
                         Button(action: onCommands) {
                             AppSymbol("command", size: 18)
@@ -80,10 +86,6 @@ struct ChatComposer: View {
                         .accessibilityLabel(String(localized: "指令"))
                         .accessibilityAddTraits(commandsActive ? .isSelected : [])
                         .accessibilityIdentifier("chat.composer.commands")
-                    }
-
-                    if let contextUsage, contextUsage.isValid, draft.isFocused {
-                        ContextRingButton(usage: contextUsage, touchTarget: controls.touchTarget)
                     }
                 }
             }

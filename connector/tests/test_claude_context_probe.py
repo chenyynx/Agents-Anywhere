@@ -37,6 +37,8 @@ from connector.runtimes.claude.domain.context_report import (
     parse_context_report,
 )
 from connector.runtimes.claude.domain.session import ClaudeExecution, ClaudeSession
+from connector.runtimes.claude.history.syncer import _history_session
+from connector.runtimes.claude.sessions.reader import _history_items_from_messages
 from connector.runtimes.claude.timeline.messages import (
     ClaudeMessageProjector,
     enrich_usage,
@@ -847,3 +849,48 @@ def test_probe_is_skipped_for_sessions_hosting_scheduled_work() -> None:
             await runtime.stop()
 
     asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# History rebuilds (the last writer for every settled row)
+# ---------------------------------------------------------------------------
+
+
+def test_history_rebuild_carries_the_calibrated_window() -> None:
+    """The settled rebuild republishes the same item ids the live stream wrote.
+
+    Its projection session must carry the engine probe, or the last write for
+    every settled row drops `contextWindow` — the client's ring flashed during
+    a turn and vanished once the turn settled (live symptom, 2026-10-08).
+    """
+
+    probe = ClaudeContextProbe(model="deepseek-v4.1-flash", window=1_000_000)
+    session = _session(probe)
+    message = SimpleNamespace(
+        message={
+            "role": "assistant",
+            "model": "deepseek-v4.1-flash",
+            "usage": USAGE_RAW,
+            "content": [{"type": "text", "text": "hello"}],
+        }
+    )
+    items = _history_items_from_messages(session, (message,))
+    stamped = [
+        item
+        for item in items
+        if item.type == "message" and "usage" in item.content
+    ]
+    assert stamped, "the rebuild must stamp the assistant message"
+    assert stamped[0].content["usage"]["contextWindow"] == 1_000_000
+    assert stamped[0].content["usage"]["model"] == "deepseek-v4.1-flash"
+
+
+def test_history_projection_session_factory_carries_the_probe() -> None:
+    probe = ClaudeContextProbe(model="m", window=1_000)
+    session = _history_session(
+        "sess_probe",
+        SESSION,
+        None,
+        context_probe=probe,
+    )
+    assert session.context_probe is probe

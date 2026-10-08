@@ -13,6 +13,9 @@ from connector.runtime_protocol import (
     RuntimeUpstreamError,
 )
 from connector.runtime_protocol.host import RuntimeHostClient
+from connector.runtimes.claude.domain.context_report import (
+    ClaudeContextProbe,
+)
 from connector.runtimes.claude.domain.pending_messages import (
     ClaudePendingClientMessageRegistry,
 )
@@ -161,7 +164,15 @@ class ClaudeHistorySyncer:
         sync_messages = tuple(
             message for message in sync_messages if id(message) in visible_ids
         )
-        session = _history_session(session_id, external_session_id, info)
+        live_session = self.session_store.get(session_id, external_session_id)
+        session = _history_session(
+            session_id,
+            external_session_id,
+            info,
+            context_probe=(
+                live_session.context_probe if live_session is not None else None
+            ),
+        )
         tool_call_lookup, hidden_tool_use_ids = await asyncer.asyncify(
             _history_tool_call_context
         )(
@@ -241,7 +252,19 @@ def _history_session(
     session_id: str,
     external_session_id: str,
     info: object | None,
+    *,
+    context_probe: ClaudeContextProbe | None = None,
 ) -> ClaudeSession:
+    """The read-only projection session for one history rebuild.
+
+    `context_probe` is the live session's engine report, carried over by the
+    caller: this rebuild republishes the same item ids the live stream wrote
+    (stable ids, last write wins), so a projection session without the probe
+    would strip the calibrated `contextWindow` off every settled row — the
+    client's context ring flashed during a turn and vanished at its settle
+    (live symptom, 2026-10-08).
+    """
+
     return ClaudeSession(
         session_id=session_id,
         external_session_id=external_session_id,
@@ -250,4 +273,5 @@ def _history_session(
         ordering_time=_timestamp_from_epoch(
             _sdk_session_metadata(info).get("last_modified")
         ),
+        context_probe=context_probe,
     )

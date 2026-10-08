@@ -45,7 +45,7 @@ from connector.runtimes.claude.timeline.messages import (
     is_synthetic_control_message,
 )
 from connector.runtimes.claude.timeline.stream import ClaudeStreamAccumulator
-from connector.runtimes.claude.turns import context_probe
+from connector.runtimes.claude.turns import context_probe, lifecycle
 
 # The verified live render (2026-10-08 probe): a fresh session, with the
 # category table the CLI appends.
@@ -847,6 +847,186 @@ def test_probe_is_skipped_for_sessions_hosting_scheduled_work() -> None:
             assert session.context_probe is None
         finally:
             await runtime.stop()
+
+    asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# The background sweep (the third trigger, T1/T2/T3)
+# ---------------------------------------------------------------------------
+
+
+def test_sweep_probes_an_uncovered_idle_session() -> None:
+    """A live idle transport with no cached window is probed by the sweep.
+
+    This is the 2026-10-08 incident shape: the connector restarted, the probe
+    cache was gone, and a session that ran no new turn never recalibrated.
+    """
+
+    async def run() -> None:
+        client = _ContextReportClaudeClient()
+        runtime, _host = _streaming_runtime(client)
+        try:
+            await runtime.start_turn("sess_probe", None, "hello")
+            session = runtime._sessions["sess_probe"]
+            await asyncio.wait_for(session.active_task, 5)
+            assert _context_queries(client) == 1  # the turn-end trigger
+
+            # The restart wiped the in-memory probe; no turn has run since.
+            session.context_probe = None
+            runner = runtime._turns.runner
+            assert "sess_probe" in runner.connections
+
+            await runner._sweep_uncovered_sessions()
+
+            assert session.context_probe is not None
+            assert session.context_probe.window == 1_000_000
+            assert _context_queries(client) == 2
+            # The sweep never projects: nothing on the timeline carries the
+            # report's text.
+            assert not any(
+                "Context Usage" in str(item.content)
+                for item in _host.timeline_item_upserts
+            )
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_sweep_is_a_noop_when_covered_or_the_transport_is_absent() -> None:
+    async def run() -> None:
+        client = _ContextReportClaudeClient()
+        runtime, _host = _streaming_runtime(client)
+        try:
+            await runtime.start_turn("sess_probe", None, "hello")
+            session = runtime._sessions["sess_probe"]
+            await asyncio.wait_for(session.active_task, 5)
+            runner = runtime._turns.runner
+            assert session.context_probe.covers(session.selections.get("model"))
+
+            # Already covered: no repeat probe, however often the sweep runs.
+            for _ in range(3):
+                await runner._sweep_uncovered_sessions()
+            assert _context_queries(client) == 1
+
+            # A session with no live transport is skipped outright — the sweep
+            # must never force-create a transport just to probe.
+            idle_session = runner.session_store.ensure(
+                session_id="sess_no_transport",
+                external_session_id="claude_no_transport",
+            )
+            idle_session.selections = dict(session.selections)
+            await runner._sweep_uncovered_sessions()
+            assert idle_session.context_probe is None
+            assert "sess_no_transport" not in runner.connections
+            assert _context_queries(client) == 1
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_sweep_never_probes_while_a_turn_is_registered() -> None:
+    async def run() -> None:
+        client = _ContextReportClaudeClient()
+        client.hold_prompts = True
+        runtime, _host = _streaming_runtime(client)
+        try:
+            await runtime.start_turn("sess_probe", None, "hello")
+            session = runtime._sessions["sess_probe"]
+            assert isinstance(session.execution, ClaudeExecution)
+            # The sweep consults the same gates: a registered turn blocks it.
+            await runtime._turns.runner._sweep_uncovered_sessions()
+            assert _context_queries(client) == 0
+            assert session.context_probe is None
+        finally:
+            # The stop path interrupts the held turn.
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_sweep_never_probes_a_transport_that_can_receive_uninvited_frames() -> None:
+    """The swallow-frames red line: scheduled task ids and background work.
+
+    Both mean a frame the connector did not ask for can arrive on this
+    transport; a probe holding the reader would swallow it, so neither may be
+    probed. Regression for the safety gates the sweep must reuse, not loosen.
+    """
+
+    async def run() -> None:
+        client = _ContextReportClaudeClient()
+        runtime, _host = _streaming_runtime(client)
+        try:
+            await runtime.start_turn("sess_probe", None, "schedule")
+            session = runtime._sessions["sess_probe"]
+            await asyncio.wait_for(session.active_task, 5)
+            runner = runtime._turns.runner
+            connection = runner.connections["sess_probe"]
+            assert connection.task_ids
+            session.context_probe = None
+
+            # Scheduled task ids present: no probe, no window.
+            await runner._sweep_uncovered_sessions()
+            assert _context_queries(client) == 0
+            assert session.context_probe is None
+
+            # Same transport, task ids clear but background work live.
+            connection.task_ids.clear()
+            connection.background.active_ids.add("bg_1")
+            await runner._sweep_uncovered_sessions()
+            assert _context_queries(client) == 0
+            assert session.context_probe is None
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_start_arms_the_sweep_and_first_tick_probes_a_warm_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transport already live and idle is probed on the sweep's first tick.
+
+    Covers the connector-startup case without force-creating anything: the
+    session's transport was left warm, the window is uncovered, and `start`
+    arms the sweep which probes it on the very next tick.
+    """
+
+    async def run() -> None:
+        monkeypatch.setattr(
+            lifecycle, "CONTEXT_PROBE_SWEEP_INTERVAL_SECONDS", 0.01
+        )
+        client = _ContextReportClaudeClient()
+        runtime, _host = _streaming_runtime(client)
+        try:
+            await runtime.start_turn("sess_probe", None, "hello")
+            session = runtime._sessions["sess_probe"]
+            await asyncio.wait_for(session.active_task, 5)
+            assert _context_queries(client) == 1
+            # Simulate the restart: warm transport, wiped cache, no new turn.
+            session.context_probe = None
+
+            await runtime.start()
+            runner = runtime._turns.runner
+            assert runner.sweep_task is not None
+
+            # Real-time wait: `_wait_until` only yields, so it would not let
+            # the sweep's interval timer fire.
+            for _ in range(200):
+                if (
+                    session.context_probe is not None
+                    and session.context_probe.window == 1_000_000
+                ):
+                    break
+                await asyncio.sleep(0.01)
+            assert session.context_probe is not None
+            assert session.context_probe.window == 1_000_000
+            assert _context_queries(client) == 2
+        finally:
+            await runtime.stop()
+        assert runtime._turns.runner.sweep_task is None
 
     asyncio.run(run())
 

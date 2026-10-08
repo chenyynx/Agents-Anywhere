@@ -129,6 +129,22 @@ STALE_COMPLETION_REASON = "unowned_result_no_content"
 CONTEXT_PROBE_SETTLE_GRACE_SECONDS = 0.02
 CONTEXT_PROBE_SETTLE_CEILING_SECONDS = 0.5
 
+# Context-window calibration trigger: a low-frequency background sweep that
+# probes every session whose transport is live and idle and whose current model
+# selection has no cached window yet. The probe used to have only two triggers
+# (a settled turn, a model-selection rebuild), so a connector restart left every
+# session that ran no new turn with no window — the client's context ring had no
+# denominator and stopped rendering at all (2026-10-08 incident). The sweep is
+# the race-free shape: it never runs inside a turn's path, so it can never make a
+# starting turn wait behind a probe, and `covers()` makes it self-limiting — at
+# most one probe per (session, selection) until a window is learned, after which
+# it is a near-no-op (one dict lookup per tick). A handful of seconds: long
+# enough that a busy connector pays almost nothing, short enough that a freshly
+# restarted connector repopulates a session's ring well inside the window a user
+# would notice. A failed attempt backs off through `attempt_allowed`, so the
+# sweep never spins a tight retry loop.
+CONTEXT_PROBE_SWEEP_INTERVAL_SECONDS = 5.0
+
 WATCHDOG_REASON_ZERO_CONTENT = "zero_content_fast_kill"
 WATCHDOG_REASON_CONTENT_CEILING = "containing_turn_ceiling"
 
@@ -218,6 +234,11 @@ class ClaudeTurnRunner:
     stopping: bool = False
     markers: ClaudeTimelineMarkers = field(init=False)
     scheduled_sessions: ClaudeScheduledSessions = field(init=False)
+    #: The background context-window calibration sweep (see
+    #: `CONTEXT_PROBE_SWEEP_INTERVAL_SECONDS`). None until `start_sweep`
+    #: creates it, and cleared on `stop`; owned by the lifecycle, started and
+    #: torn down with it.
+    sweep_task: asyncio.Task[None] | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         # One allocator for the whole timeline: a compaction separator must
@@ -227,10 +248,28 @@ class ClaudeTurnRunner:
         )
         self.scheduled_sessions = ClaudeScheduledSessions(self.host)
 
+    def start_sweep(self) -> None:
+        """Start the periodic context-window calibration sweep.
+
+        Idempotent, and a no-op once `stopping` is set, so the caller may arm
+        it unconditionally at runtime start without racing `stop`.
+        """
+        if self.stopping or (
+            self.sweep_task is not None and not self.sweep_task.done()
+        ):
+            return
+        self.sweep_task = asyncio.create_task(self._context_probe_sweep())
+
     async def stop(self) -> None:
         self.stopping = True
+        sweep = self.sweep_task
+        self.sweep_task = None
+        if sweep is not None and not sweep.done():
+            sweep.cancel()
+            await asyncio.gather(sweep, return_exceptions=True)
         for connection in tuple(self.connections.values()):
             await connection.close()
+
 
     async def reconnect_sessions(self) -> None:
         """Resume only AA sessions previously observed to have scheduled tasks."""
@@ -1234,18 +1273,71 @@ class ClaudeTurnRunner:
                     metadata={"source": "claude.connection.refresh"},
                 )
 
+    async def _context_probe_sweep(self) -> None:
+        """Periodically probe every session whose window is still uncovered.
+
+        This is the third calibration trigger (T1/T2/T3), and the one that
+        survives a connector restart: on the first tick a session whose
+        transport is already live and idle is probed without any user action,
+        and a session that has never run a turn since the process came up
+        stops waiting for the turn-settle instant to happen to fire.
+
+        It runs OUTSIDE every turn's path and never touches the execution lock
+        itself — `calibrate_context_window` takes the lock only when it is
+        free — so it can never make a starting turn wait. Failures are already
+        swallowed inside `calibrate_context_window`; the only thing left to
+        guard here is the loop itself, which must survive an unexpected error
+        (one poisoned tick must not retire the sweep for the process's life).
+        """
+
+        while not self.stopping:
+            try:
+                await asyncio.sleep(CONTEXT_PROBE_SWEEP_INTERVAL_SECONDS)
+                if self.stopping:
+                    return
+                await self._sweep_uncovered_sessions()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.exception("Claude context probe sweep tick failed")
+
+    async def _sweep_uncovered_sessions(self) -> None:
+        """One sweep pass: calibrate each session whose selection is uncovered.
+
+        Cheap by construction. A session with no transport, or whose cached
+        probe already `covers` the current selection, is skipped with a dict
+        lookup and no logging — the common case on every tick. Only a session
+        that is actually a candidate for a probe wakes `calibrate_context_window`,
+        which applies the four safety gates itself.
+        """
+
+        for session in self.session_store.sessions():
+            if self.stopping:
+                return
+            connection = self.connections.get(session.session_id)
+            if connection is None:
+                # No transport: this sweep never force-creates one just to
+                # probe (a session nobody is using has nothing to calibrate).
+                continue
+            selection = session.selections.get("model")
+            probe = session.context_probe
+            if probe is not None and probe.covers(selection):
+                continue
+            await self.calibrate_context_window(session)
+
     async def calibrate_context_window(self, session: ClaudeSession) -> None:
         """Ask the engine for its own context window while the transport idles.
 
         The window a client sizes its context ring with comes from the running
         engine's `/context` self-report, never from the model name (a gateway
         serves its own models under Claude Code's `default` entry). This runs
-        at the two moments the session's transport is connected, idle and
-        known to carry the current model: after a turn settles, and after a
-        model-selection rebuild. It is an optimization for the clients — every
-        gate below skips it rather than costing the turn machinery anything,
-        and the report is cached per model selection, so a session pays for it
-        once.
+        whenever the session's transport is connected, idle and known to carry
+        the current model: after a turn settles, after a model-selection
+        rebuild, and from the periodic sweep that repopulates a session which
+        ran no turn since the connector restarted. It is an optimization for
+        the clients — every gate below skips it rather than costing the turn
+        machinery anything, and the report is cached per model selection, so a
+        session pays for it once.
 
         Serialization is the machinery that already exists: the probe runs
         under `session.execution_lock` — the lock ``start_turn`` registers a
@@ -1255,12 +1347,21 @@ class ClaudeTurnRunner:
         scheduled tasks or background work is skipped outright: its stream can
         carry an uninvited wake, and a probe holding the reader would swallow
         that reply.
+
+        Every gate that skips a calibration logs which one rejected and for
+        which session (T5). The skips used to be silent, so the 2026-10-08
+        incident's 16:42/16:49 misses could not be diagnosed from the log at
+        all; the line is DEBUG (the sweep calls this often on idle sessions,
+        where a skip is the ordinary, correct outcome) and costs nothing when
+        DEBUG is off.
         """
 
         if self.stopping:
+            self._log_calibration_skip(session.session_id, "stopping")
             return
         connection = self.connections.get(session.session_id)
         if not self._calibration_transport(session, connection):
+            self._log_calibration_skip(session.session_id, "transport")
             return
         # Keep the idle reclaim off this transport for the calibration's whole
         # window. The reclaim's gate cannot see a probe coming — it reads
@@ -1274,6 +1375,7 @@ class ClaudeTurnRunner:
         try:
             if not self._calibration_idle(session, connection):
                 if not self._calibration_settling(connection):
+                    self._log_calibration_skip(session.session_id, "settling")
                     return
                 # A turn that just ended has released the response it received
                 # its terminal on, but the reader clears that response's
@@ -1285,8 +1387,10 @@ class ClaudeTurnRunner:
                     grace=CONTEXT_PROBE_SETTLE_GRACE_SECONDS,
                     ceiling=CONTEXT_PROBE_SETTLE_CEILING_SECONDS,
                 ):
+                    self._log_calibration_skip(session.session_id, "wait_settled")
                     return
                 if not self._calibration_idle(session, connection):
+                    self._log_calibration_skip(session.session_id, "idle")
                     return
             selection = session.selections.get("model")
             state = session.context_probe
@@ -1296,10 +1400,12 @@ class ClaudeTurnRunner:
                 limit=context_probe.CONTEXT_PROBE_RETRY_LIMIT,
                 backoff_seconds=context_probe.CONTEXT_PROBE_RETRY_BACKOFF_SECONDS,
             ):
+                self._log_calibration_skip(session.session_id, "attempt_allowed")
                 return
             try:
                 async with session.execution_lock:
                     if not self._calibration_idle(session, connection):
+                        self._log_calibration_skip(session.session_id, "idle")
                         return
                     probe = session.context_probe
                     if probe is None:
@@ -1314,6 +1420,9 @@ class ClaudeTurnRunner:
                             context_probe.CONTEXT_PROBE_RETRY_BACKOFF_SECONDS
                         ),
                     ):
+                        self._log_calibration_skip(
+                            session.session_id, "attempt_allowed"
+                        )
                         return
                     probe.begin_attempt(selection, now=now)
                     report = await context_probe.probe_context_window(
@@ -1350,6 +1459,24 @@ class ClaudeTurnRunner:
                 )
         finally:
             connection.arm_idle()
+
+    @staticmethod
+    def _log_calibration_skip(session_id: str, gate: str) -> None:
+        """Name the gate that declined one calibration (T5).
+
+        DEBUG, not INFO: the sweep calls `calibrate_context_window` every few
+        seconds for every uncovered session, so on an idle connector a skip is
+        the ordinary, correct outcome and must not flood the log. The line
+        exists precisely so that when a window is *not* learned, the next
+        blackout can be read off the log — which gate declined, for which
+        session — instead of being invisible as it was on 2026-10-08.
+        """
+
+        logger.debug(
+            "Claude context calibration skipped session_id={} gate={}",
+            session_id,
+            gate,
+        )
 
     def _calibration_transport(
         self,

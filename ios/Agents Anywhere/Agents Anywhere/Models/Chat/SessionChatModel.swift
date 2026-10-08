@@ -492,6 +492,96 @@ final class SessionChatModel {
         lastContextUsagePublish = ProcessInfo.processInfo.systemUptime
     }
 
+    // MARK: Send queue
+
+    /// Whether the composer's queue key may commit the draft. An enqueue is a
+    /// purely local act — it must not wait on the turn to end, but it does need
+    /// the session to still permit a send (freshness + capability) so the
+    /// message can actually be drained when its turn comes.
+    var canQueueSend: Bool { session.permitsQueuedSend && session.isValid }
+    /// Increments once per successful enqueue. The View observes it as the
+    /// trigger for the light-impact haptic (`.sensoryFeedback`), so the message
+    /// that arrives at the editor is the same one the queue accepted.
+    private(set) var queueEnqueueTick = 0
+
+    /// Commits the editor's current draft into the queue. The draft is already
+    /// mirrored onto `session.composer` by the editor's commit; this reads it,
+    /// builds the queued message, clears the composer, and returns so the View
+    /// can play its haptic. The eager attachment upload runs in the background
+    /// so the tap never waits on the network.
+    func enqueueComposer() async {
+        // Only text opens the queue key: an attachment-only draft keeps the
+        // stop key, so it must not sneak into the queue through a keyboard
+        // commit either.
+        guard canQueueSend,
+              !session.composer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return }
+        guard let item = session.enqueueDraft() else { return }
+        queueEnqueueTick += 1
+        Task {
+            _ = await uploadQueuedAttachments(item)
+            // The upload may have been the last closed gate; give the queue its
+            // turn now instead of waiting for the next frame.
+            session.evaluateSendQueue()
+        }
+    }
+
+    /// The banner's retry: re-run any incomplete uploads, clear the explicit
+    /// pause, and let the session evaluate a drain. A retry while still offline
+    /// keeps the offline pause in force — it does not bypass reachability.
+    func retrySendQueue() async {
+        await completeQueuedUploads()
+        // `completeQueuedUploads` pauses the queue when an upload still fails;
+        // resuming here must not clear that pause. Clear and re-arm it in one
+        // step, before any evaluation, so a half-complete queue keeps the
+        // banner (and its reason) instead of flashing a drain it cannot finish.
+        let rearm = session.sendQueue.items.contains { !$0.isUploadComplete } ? session.sendQueue.explicitPause : nil
+        session.sendQueue.resume()
+        if let rearm { session.sendQueue.pause(rearm) }
+        session.localWorkDidChange()
+        session.evaluateSendQueue()
+    }
+
+    /// Uploads every queued message's remaining attachments. A failure pauses
+    /// the queue with the failure reason (the banner is the only outlet for it,
+    /// so no toast is raised here); a clean pass lets the session evaluate a
+    /// drain. Called after a connect/foreground too, to finish uploads that
+    /// began while offline.
+    func completeQueuedUploads() async {
+        for item in session.sendQueue.items where !item.isUploadComplete {
+            // A failed upload pauses the queue; stop here and leave the rest.
+            if await uploadQueuedAttachments(item) == false { return }
+        }
+        session.evaluateSendQueue()
+    }
+
+    /// Uploads one queued message's missing attachments, mirroring the send
+    /// path's upload closure. Returns whether every attachment landed; a
+    /// failure pauses the queue and reports false. Uploading never sends: the
+    /// drain is a separate, gated step.
+    @discardableResult
+    private func uploadQueuedAttachments(_ item: V2QueuedMessage) async -> Bool {
+        do {
+            for attachment in item.attachments where attachment.uploaded == nil {
+                let uploaded = try await attachments.upload(sessionId: session.id, attachments: [attachment.local])
+                guard session.isValid, !Task.isCancelled else { throw CancellationError() }
+                guard let file = uploaded.first else { throw HTTPError.invalidResponse }
+                session.bindQueueUpload(itemID: item.id, localID: attachment.id, file: file)
+                repository.draftDidChange()
+            }
+            return true
+        } catch {
+            guard session.isValid, !Task.isCancelled else { return false }
+            // A lost path reads as a connection problem, not a send failure:
+            // otherwise a retry while offline would relabel the banner with a
+            // send-failure reason the user never hit.
+            let failure = V2ClientFailure(error)
+            session.sendQueue.pause(failure.kind == .offline ? .offline : .failure(failure.message))
+            session.localWorkDidChange()
+            return false
+        }
+    }
+
     func send(_ text: String) async {
         if let command = await catalogCommand(for: text) {
             session.composer.text = text

@@ -85,7 +85,7 @@ struct SessionChatView: View, Equatable {
                 }
             }
                 .overlay {
-                    if model.isOpeningReady && model.timeline.rows.isEmpty && model.timeline.pendingMessages.isEmpty {
+                    if model.isOpeningReady && model.timeline.rows.isEmpty && model.timeline.pendingMessages.isEmpty && model.session.sendQueue.isEmpty {
                         VStack(spacing: 12) {
                             Text(String(localized: "在这里继续你的任务")).foregroundStyle(.secondary)
                         }.allowsHitTesting(false)
@@ -102,6 +102,8 @@ struct SessionChatView: View, Equatable {
                         SessionInteractionDock(chat: model,
                             onShowAll: { expandedNoticeID = $0; sheet = .notices })
                             .traceChatLayout("interaction-dock")
+                        SendQueueDock(model: model)
+                            .traceChatLayout("send-queue-dock")
                         ChatComposerDock(draft: session.composer, settings: model.settings,
                             maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)), controls: controls,
                             canSend: session.canSend, canAttach: model.canAttach,
@@ -112,6 +114,8 @@ struct SessionChatView: View, Equatable {
                             isLoadingSettings: model.isLoadingSettings,
                             settingsError: model.settingsError, sessionChat: model,
                             contextUsage: model.contextUsage,
+                            canQueueSend: model.canQueueSend, queueEnqueueTick: model.queueEnqueueTick,
+                            onQueueSend: { await model.enqueueComposer() },
                             onSend: model.send, onStop: model.interrupt, onLoadSettings: model.loadSettings,
                             onApplySettings: model.applySettings, applyError: { model.settingsError },
                             onDraftChange: { model.repository.draftDidChange() })
@@ -128,6 +132,12 @@ struct SessionChatView: View, Equatable {
                         if requiresTakeover {
                             takeoverPill.frame(maxWidth: .infinity, alignment: .center)
                         }
+                        // The queue's own failure surface: first under the takeover
+                        // pill, above the general error toasts, so a paused queue
+                        // never duplicates its reason as a toast (§7.6) and stays
+                        // the only place the queue resumes from.
+                        SendQueueBanner(model: model)
+                            .traceChatLayout("send-queue-banner")
                         ChatErrorToasts(store: toasts, isRetrying: session.isLoading, onRetry: { _ in await session.refresh() })
                         if let success = model.commandSuccess {
                             CommandSuccessToast(feedback: success) { model.commandSuccess = nil }
@@ -182,6 +192,12 @@ struct SessionChatView: View, Equatable {
             guard hasStartedLoading else { return }
             // Reattaching a loaded detail only resumes observation.
             await model.prepareOpening()
+            guard !Task.isCancelled else { return }
+            // Recover a queue restored from disk: any attachment upload the last
+            // page left in flight is finished here, and the queue re-evaluates
+            // once its messages are whole. Runs before the long-lived loops
+            // below, which only return when the view goes away.
+            await model.completeQueuedUploads()
             guard !Task.isCancelled else { return }
             // The context ring observes the same repository stream as the
             // timeline: both loops share this task's lifetime and stop when

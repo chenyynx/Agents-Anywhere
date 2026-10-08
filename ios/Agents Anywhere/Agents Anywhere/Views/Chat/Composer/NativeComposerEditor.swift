@@ -24,10 +24,21 @@ final class ComposerEditorController {
 
     /// Check native marked text before ending editing. unmarkText() only removes
     /// the mark; it cannot select the user's intended Chinese candidate.
-    func committedTextForSend() async -> String? {
+    ///
+    /// - Parameter dismissKeyboard: a send ends the editing session and drops
+    ///   the keyboard so the conversation is visible; an enqueue does not —
+    ///   the queue is fed several messages in a row, and re-tapping the field
+    ///   between each would tax the flow the queue exists for.
+    func committedTextForSend(dismissKeyboard: Bool = true) async -> String? {
         guard let textView else { return draft?.isComposing == false ? draft?.text : nil }
         guard textView.markedTextRange == nil else { synchronize(); return nil }
         let originalDraft = draft
+        guard dismissKeyboard else {
+            // Without the resign there is no turn boundary to wait for; the
+            // marked-text guard above already settled the composition state.
+            synchronize()
+            return textView.text ?? ""
+        }
         textView.resignFirstResponder()
         await Task.yield()
         guard !Task.isCancelled, draft === originalDraft, textView.markedTextRange == nil else { return nil }

@@ -87,13 +87,14 @@ struct ContextWindowIndex {
 }
 
 extension ContextUsage {
-    /// The ring's `used` side: the four-counter sum of the newest item that
-    /// carries usage, by `orderSeq` — any carrier kind counts (assistant
-    /// message, reasoning, tool, …), because the connector stamps the latest
-    /// per-call usage on whichever item it evolves. History and live items
-    /// compete in one ordering, and the newest *with* usage wins even when a
+    /// The newest item that carries usage, by `orderSeq` — the whole object,
+    /// because the window the engine self-reported travels with the counters
+    /// it belongs to (§8 v3). Any carrier kind counts (assistant message,
+    /// reasoning, tool, …), because the connector stamps the latest per-call
+    /// usage on whichever item it evolves. History and live items compete in
+    /// one ordering, and the newest *with* usage wins even when a
     /// still-streaming frame sits after it.
-    static func used(in items: [V2TimelineItem]) -> Int? {
+    static func latestUsage(in items: [V2TimelineItem]) -> V2MessageUsage? {
         var latest: V2MessageUsage?
         var latestSeq = Int.min
         for item in items {
@@ -103,12 +104,23 @@ extension ContextUsage {
                 latestSeq = item.orderSeq
             }
         }
-        return latest?.contextTokens
+        return latest
+    }
+
+    /// The ring's `used` side: the four-counter sum of `latestUsage`.
+    static func used(in items: [V2TimelineItem]) -> Int? {
+        latestUsage(in: items)?.contextTokens
     }
 
     /// `used` and `total` together; either side missing keeps the ring hidden.
+    /// `total` prefers the window the usage itself carries — measurement and
+    /// window come from the same engine report, so they always agree — and
+    /// falls back to the selected model's catalog window only for data stamped
+    /// before the connector reported windows. An older carrier's window is
+    /// never paired with a newer measurement, and windows are never inferred.
     static func resolve(items: [V2TimelineItem], windows: ContextWindowIndex?, selection: V2SelectionID?) -> ContextUsage? {
-        guard let used = used(in: items), let total = windows?.contextWindow(forSelection: selection) else { return nil }
-        return ContextUsage(used: used, total: total)
+        guard let usage = latestUsage(in: items) else { return nil }
+        guard let total = usage.contextWindow ?? windows?.contextWindow(forSelection: selection) else { return nil }
+        return ContextUsage(used: usage.contextTokens, total: total)
     }
 }

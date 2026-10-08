@@ -4,8 +4,10 @@ import Testing
 
 /// Stage B coverage for the composer ring's arithmetic and wire parsing
 /// (context-usage-ring §3): level boundary edges, percent rounding, 万
-/// formatting, the usage block's parse, catalog windows and the pick of the
-/// newest usage-bearing item (every carrier kind).
+/// formatting, the usage block's parse, catalog windows, the pick of the
+/// newest usage-bearing item (every carrier kind) and the §8 v3 window
+/// precedence — the window carried by the usage always beats the catalog
+/// fallback.
 @Suite struct ContextUsageTests {
     // MARK: ContextLevel
 
@@ -140,6 +142,78 @@ import Testing
         #expect(reasoning.usage?.contextTokens == 7)
     }
 
+    @Test func usageParsesTheEngineStampedModelAndWindow() {
+        // §8 v3: the connector stamps the engine's self-reported model and
+        // context window into the usage block, so the ring can pair them with
+        // the counters of the same report.
+        let content = V2MessageContent(rawContent: .object(["usage": .object([
+            "inputTokens": .number(10), "outputTokens": .number(20),
+            "cacheReadTokens": .number(30), "cacheCreationTokens": .number(40),
+            "model": .string("deepseek-v4.1-flash"), "contextWindow": .number(1_000_000),
+        ])]))
+        #expect(content.usage == V2MessageUsage(inputTokens: 10, outputTokens: 20,
+                                                cacheReadTokens: 30, cacheCreationTokens: 40,
+                                                model: "deepseek-v4.1-flash", contextWindow: 1_000_000))
+        #expect(content.usage?.model == "deepseek-v4.1-flash")
+        #expect(content.usage?.contextWindow == 1_000_000)
+    }
+
+    @Test func usageParsesTheEngineStampsThroughTheItemDecoder() throws {
+        let item = try timelineItem(id: "a", order: 1, usage: [
+            "inputTokens": 15_600, "model": "deepseek-v4.1-flash", "contextWindow": 1_000_000,
+        ])
+        #expect(item.usage?.model == "deepseek-v4.1-flash")
+        #expect(item.usage?.contextWindow == 1_000_000)
+        #expect(item.usage?.contextTokens == 15_600)
+    }
+
+    @Test func usageWithoutEngineMetadataReadsNilForThoseFields() {
+        // Old data (and runtimes that never report a window) omits the keys.
+        let content = V2MessageContent(rawContent: .object(["usage": .object(["inputTokens": .number(5)])]))
+        #expect(content.usage != nil)
+        #expect(content.usage?.model == nil)
+        #expect(content.usage?.contextWindow == nil)
+    }
+
+    @Test func usageMalformedEngineMetadataReadsNilForThatFieldAlone() {
+        // A malformed value must read nil for its own field but never break
+        // the counters: `model` is a strict string (stringValue would
+        // stringify numbers and bools), and `contextWindow` a strict whole
+        // number.
+        for value in [JSONValue.number(123), .bool(true), .object([:]), .array([]), .null] {
+            let content = V2MessageContent(rawContent: .object(["usage": .object([
+                "inputTokens": .number(5), "model": value,
+            ])]))
+            #expect(content.usage?.model == nil)
+            #expect(content.usage?.contextTokens == 5)
+        }
+        // An empty id names no model.
+        let emptyModel = V2MessageContent(rawContent: .object(["usage": .object([
+            "inputTokens": .number(5), "model": .string(""),
+        ])]))
+        #expect(emptyModel.usage?.model == nil)
+        for value in [JSONValue.string("1000000"), .number(999_999.5), .bool(true), .object([:]), .array([]), .null] {
+            let content = V2MessageContent(rawContent: .object(["usage": .object([
+                "inputTokens": .number(5), "contextWindow": value,
+            ])]))
+            #expect(content.usage?.contextWindow == nil)
+            #expect(content.usage?.contextTokens == 5)
+        }
+    }
+
+    @Test func usageEngineMetadataAloneDoesNotSatisfyTheShapeGate() {
+        // The four-counter shape gate stands: metadata keys never turn a
+        // foreign shape into a usage object.
+        let metadataOnly = V2MessageContent(rawContent: .object(["usage": .object([
+            "model": .string("deepseek-v4.1-flash"), "contextWindow": .number(1_000_000),
+        ])]))
+        #expect(metadataOnly.usage == nil)
+        let foreign = V2MessageContent(rawContent: .object(["usage": .object([
+            "tokens": .number(1234), "model": .string("x"), "contextWindow": .number(1000),
+        ])]))
+        #expect(foreign.usage == nil)
+    }
+
     // MARK: ContextWindowIndex
 
     @Test func windowIndexMapsModelsAndReasoningChildren() throws {
@@ -252,6 +326,82 @@ import Testing
         #expect(ContextUsage.used(in: []) == nil)
         #expect(ContextUsage.used(in: [message]) == nil)
         #expect(ContextUsage.used(in: [reasoning]) == nil)
+    }
+
+    // MARK: latestUsage and the window precedence (§8 v3)
+
+    @Test func latestUsageReturnsTheNewestCarriersWholeObject() throws {
+        // The pick is a whole-usage decision, not a per-field one: counters
+        // and the engine's window always come from the same report.
+        let items = [
+            try timelineItem(id: "old", order: 1,
+                usage: ["inputTokens": 100, "model": "old-model", "contextWindow": 200_000]),
+            try timelineItem(id: "new", order: 7,
+                usage: ["inputTokens": 200, "model": "deepseek-v4.1-flash", "contextWindow": 1_000_000]),
+        ]
+        #expect(ContextUsage.latestUsage(in: items) == V2MessageUsage(
+            inputTokens: 200, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
+            model: "deepseek-v4.1-flash", contextWindow: 1_000_000))
+        #expect(ContextUsage.latestUsage(in: items.shuffled())?.model == "deepseek-v4.1-flash")
+        // `used(in:)` stays the thin sum of the same pick.
+        #expect(ContextUsage.used(in: items) == 200)
+    }
+
+    @Test func latestUsageIsNilWithoutAnyUsage() throws {
+        #expect(ContextUsage.latestUsage(in: []) == nil)
+        #expect(ContextUsage.latestUsage(in: [try timelineItem(id: "a", order: 1)]) == nil)
+    }
+
+    @Test func resolvePrefersTheUsageCarriedWindowOverTheCatalog() throws {
+        // §8 v3: window and measurement travel together, so the stamped
+        // window wins even when the catalog names a different (nominal) one —
+        // the gateway case the catalog cannot describe.
+        let index = ContextWindowIndex(try catalogs(models: [model("nominal", selection: "sel", window: 200_000)]))
+        let items = [try timelineItem(id: "a", order: 1, usage: [
+            "inputTokens": 15_600, "model": "deepseek-v4.1-flash", "contextWindow": 1_000_000,
+        ])]
+        #expect(ContextUsage.resolve(items: items, windows: index, selection: "sel")
+            == ContextUsage(used: 15_600, total: 1_000_000))
+    }
+
+    @Test func resolveUsageWindowCoversMissingSelectionAndIndex() throws {
+        // The usage-carried window needs no catalog at all, so the empty
+        // selection — a session on its default model, possibly a gateway one —
+        // still resolves a real total.
+        let items = [try timelineItem(id: "a", order: 1, usage: [
+            "inputTokens": 10, "contextWindow": 1_000_000,
+        ])]
+        #expect(ContextUsage.resolve(items: items, windows: nil, selection: nil)
+            == ContextUsage(used: 10, total: 1_000_000))
+        let index = ContextWindowIndex(try catalogs(models: [model("m", selection: "sel", window: 200_000)]))
+        #expect(ContextUsage.resolve(items: items, windows: index, selection: nil)
+            == ContextUsage(used: 10, total: 1_000_000))
+    }
+
+    @Test func resolveFallsBackToTheCatalogOnlyWithoutAUsageWindow() throws {
+        // Data stamped before the connector reported windows keeps working
+        // through the catalog; with neither side known the ring stays hidden.
+        let index = ContextWindowIndex(try catalogs(models: [model("m", selection: "sel", window: 200_000)]))
+        let items = [try timelineItem(id: "a", order: 1, usage: counters(input: 42))]
+        #expect(ContextUsage.resolve(items: items, windows: index, selection: "sel")
+            == ContextUsage(used: 42, total: 200_000))
+        #expect(ContextUsage.resolve(items: items, windows: nil, selection: "sel") == nil)
+        #expect(ContextUsage.resolve(items: items, windows: index, selection: "other") == nil)
+        #expect(ContextUsage.resolve(items: [], windows: index, selection: "sel") == nil)
+    }
+
+    @Test func resolveNeverPairsAnOlderCarriersWindowWithTheNewestMeasurement() throws {
+        // Once the newest carrier carries no window, the fallback is the
+        // catalog — never a window from an older engine report, which would
+        // mispair a stale window with a fresh measurement.
+        let index = ContextWindowIndex(try catalogs(models: [model("m", selection: "sel", window: 200_000)]))
+        let items = [
+            try timelineItem(id: "old", order: 1, usage: ["inputTokens": 100, "contextWindow": 1_000_000]),
+            try timelineItem(id: "new", order: 2, usage: counters(input: 200)),
+        ]
+        #expect(ContextUsage.resolve(items: items, windows: index, selection: "sel")
+            == ContextUsage(used: 200, total: 200_000))
+        #expect(ContextUsage.resolve(items: items, windows: nil, selection: "sel") == nil)
     }
 
     @Test func resolveCombinesUsageAndWindow() throws {

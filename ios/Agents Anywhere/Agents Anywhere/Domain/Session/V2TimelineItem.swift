@@ -159,11 +159,29 @@ struct V2MessageContent: Hashable {
 
 /// Per-API-call token usage the connector attaches to a timeline item's
 /// content (context-usage-ring §1.1): camelCase counters, not a turn total.
+/// The engine's self-reported `model` and `contextWindow` ride along when the
+/// connector knows them (§8 v3), so the ring's window travels with the
+/// measurement that produced it instead of being inferred from the session's
+/// nominal catalog entry.
 struct V2MessageUsage: Hashable {
     let inputTokens: Int
     let outputTokens: Int
     let cacheReadTokens: Int
     let cacheCreationTokens: Int
+    /// The engine's self-reported model id — nil when unreported.
+    let model: String?
+    /// The engine's self-reported context window — nil when unreported.
+    let contextWindow: Int?
+
+    init(inputTokens: Int, outputTokens: Int, cacheReadTokens: Int, cacheCreationTokens: Int,
+         model: String? = nil, contextWindow: Int? = nil) {
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.cacheReadTokens = cacheReadTokens
+        self.cacheCreationTokens = cacheCreationTokens
+        self.model = model
+        self.contextWindow = contextWindow
+    }
 
     var contextTokens: Int { inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens }
 }
@@ -175,7 +193,9 @@ extension V2MessageUsage {
     /// `usage` is not ours alone — an agent-call card carries subagent totals
     /// (`tokens` / `toolCalls` / `durationMs`) under it — so the object must
     /// hold at least one of this shape's counters; anything else is rejected
-    /// rather than read as a zeroed context.
+    /// rather than read as a zeroed context. The engine-stamped `model` and
+    /// `contextWindow` neither satisfy that gate nor break it: a missing or
+    /// malformed value reads nil for that field alone, counters intact.
     init?(rawValue: JSONValue) {
         guard let object = rawValue.objectValue else { return nil }
         let knownKeys = ["inputTokens", "outputTokens", "cacheReadTokens", "cacheCreationTokens"]
@@ -191,6 +211,15 @@ extension V2MessageUsage {
         self.outputTokens = outputTokens
         self.cacheReadTokens = cacheReadTokens
         self.cacheCreationTokens = cacheCreationTokens
+        // Strict `.string` — `JSONValue.stringValue` also stringifies numbers
+        // and bools, and an empty id names no model — and strict `intValue`,
+        // which only accepts whole numbers.
+        if case let .string(value)? = object["model"], !value.isEmpty {
+            model = value
+        } else {
+            model = nil
+        }
+        contextWindow = object["contextWindow"]?.intValue
     }
 }
 

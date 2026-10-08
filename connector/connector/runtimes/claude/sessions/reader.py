@@ -298,6 +298,7 @@ class ClaudeSessionReader:
                 metadata={"source": "claude.session.history", "error": "read_failed"},
             )
 
+        live_session = self.session_store.get(session_id, external_session_id)
         session = ClaudeSession(
             session_id=session_id,
             external_session_id=external_session_id,
@@ -306,6 +307,14 @@ class ClaudeSessionReader:
             ordering_time=_timestamp_from_epoch(
                 _int_attr(info, "last_modified", "mtime", "updated_at")
                 or _int_attr(info, "created_at")
+            ),
+            # The projection session must enrich usage exactly like the live
+            # one: this snapshot's rows republish the same item ids the live
+            # stream wrote (stable ids, last write wins), so without the
+            # engine probe it would drop the calibrated `contextWindow` off
+            # every settled row (live symptom, 2026-10-08).
+            context_probe=(
+                live_session.context_probe if live_session is not None else None
             ),
         )
         visible_messages = _without_maintenance_messages(messages)

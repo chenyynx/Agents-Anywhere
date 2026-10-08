@@ -11,8 +11,9 @@ struct ComposerQueueAffordance: Equatable {
         /// The plain stop key: a running turn with nothing typed. There is
         /// nothing to enqueue, so the whole slot is the stop affordance.
         case stop
-        /// The split form: a running turn with text. A small outlined stop key
-        /// keeps the interrupt reachable while the accent arrow enqueues.
+        /// The queue form: a running turn with text. The single accent key
+        /// shows the arrow and enqueues; clearing the text brings the stop key
+        /// back, so one key carries both actions and no second entry exists.
         case queueSend
         /// The plain send key: no turn in flight.
         case send

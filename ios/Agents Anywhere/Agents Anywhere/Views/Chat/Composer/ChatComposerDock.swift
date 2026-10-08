@@ -66,7 +66,7 @@ struct ChatComposerDock: View {
                 CommandSuggestionPanel(chat: sessionChat, draft: draft, forced: $showsCommandMenu)
             }
             ChatComposer(draft: draft, editor: editor, isStreaming: isStreaming,
-                canSend: canSend, canStop: canStop, isBusy: isBusy || isSending || importCount > 0,
+                canSend: canSend, isBusy: isBusy || isSending || importCount > 0,
                 placeholder: placeholder,
                 maximumEditorHeight: maximumEditorHeight, controls: controls,
                 onSend: send, onStop: { Task { await onStop() } },

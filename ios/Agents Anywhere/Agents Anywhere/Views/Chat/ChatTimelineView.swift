@@ -174,6 +174,19 @@ struct ChatTimelineView: View {
             .onChange(of: model.responseRevision) { _, _ in
                 if model.isOpeningReady { scrolling.requestBottom() }
             }
+            .onChange(of: model.timeline.windowRevision) { _, _ in
+                // A wholesale window change (the opening's trim/latest-page
+                // surgery, or a recovery/snapshot replacement) can land after
+                // the opening return settled or timed out. Every content-size
+                // change is anchored to the top, so the replacement would
+                // render from the new window's top and park the reader away
+                // from the newest rows until a manual scroll (2026-10-08,
+                // sess_ps8Z29uknMTIhw). Re-arm the opening's own instant
+                // return for the landing instead of trusting the follow gates,
+                // which can all be closed at that instant. The state refuses
+                // on its own once the reader has taken over the page.
+                _ = scrolling.reassertOpeningReturn()
+            }
             .onChange(of: hasInteractions, initial: true) { _, presented in
                 scrolling.setInteractionPresented(presented)
             }
@@ -281,7 +294,7 @@ struct ChatTimelineView: View {
         guard model.session.isValid, model.session.hasOlderItems,
               !model.session.isLoadingHistory, olderLoadRequest == nil, latestLoadRequest == nil else { return }
         olderPull.cancel(); latestPull.cancel()
-        scrolling.browseHistory()
+        scrolling.browseHistory(byReader: true)
         position.isPositionedByUser = true
         let layout = historyLayout.flatMap { $0.firstRowID == model.timeline.rows.first?.id ? $0 : nil }
         historyPosition = TimelineHistoryPosition(id: scrolling.navigationGeneration, layout: layout,

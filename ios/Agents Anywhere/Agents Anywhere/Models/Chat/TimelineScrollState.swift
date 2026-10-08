@@ -35,6 +35,11 @@ nonisolated struct TimelineScrollState: Equatable {
     /// Set by `open()`, consumed by the first command it produces. A reader
     /// gesture before that command clears it, so later returns animate.
     private var openingReturnIsPending = false
+    /// The opening visit's claim on the viewport. It ends only when the reader
+    /// takes over (a drag, or an explicit history request): a window change
+    /// landing later must never move a reader who has chosen a position — but
+    /// it must still re-assert the opening for everyone else.
+    private(set) var readerTookOver = false
     /// R2 backstop: the publish-point reconcile asks at most once per
     /// displacement episode. The latch re-arms only when a published sample
     /// measurably reaches the bottom, so a failed native target cannot turn
@@ -74,13 +79,46 @@ nonisolated struct TimelineScrollState: Equatable {
         invalidateNavigation()
     }
 
-    mutating func browseHistory() {
+    /// - Parameter byReader: true for the reader's own gestures and explicit
+    ///   history requests — the first one ends the opening visit's claim on
+    ///   the viewport. A presented interaction is not the reader: it stops
+    ///   automatic following without giving up the opening's positioning
+    ///   (the notice's card lives at the tail, where the opening return
+    ///   lands), so `reassertOpeningReturn` still owns that case.
+    mutating func browseHistory(byReader: Bool = false) {
+        if byReader { readerTookOver = true }
         mode = .reading
         awaitsUserScrollSettlement = false
         // The reader took over before the opening return was issued; a later
         // explicit return is a normal animated one.
         openingReturnIsPending = false
         invalidateNavigation()
+    }
+
+    /// Re-arms the opening's instant return for a wholesale window change
+    /// (the opening's trim/latest-page surgery, a recovery or snapshot
+    /// replacement) that landed after the opening return settled or timed
+    /// out. The timeline anchors every content-size change to its top
+    /// (`.defaultScrollAnchor(.top, for: .sizeChanges)`), so a replacement
+    /// renders from the new window's top and parks the reader away from the
+    /// newest rows — blank/short list until a manual scroll (2026-10-08,
+    /// sess_ps8Z29uknMTIhw). The re-assert reuses the opening's own pipeline
+    /// (`requestBottom` → the 24 ms coalescer → an instant
+    /// `position.scrollTo(edge: .bottom)`), so it is motionless behind the
+    /// opening gate and deterministic: it does not depend on the follow
+    /// gates, whose reading/interaction/at-bottom judgements can all be
+    /// closed at the landing instant.
+    ///
+    /// Only the opening visit owns this: an unopened page refuses (there is
+    /// no opening to re-assert), a suspended drawer refuses (the native
+    /// target would be applied mid-transition), and the first reader gesture
+    /// or explicit history request releases the claim for good.
+    @discardableResult
+    mutating func reassertOpeningReturn() -> Bool {
+        guard hasOpened, !navigationIsSuspended, !readerTookOver else { return false }
+        openingReturnIsPending = true
+        requestBottom()
+        return true
     }
 
     mutating func setInteractionPresented(_ presented: Bool) {
@@ -119,7 +157,7 @@ nonisolated struct TimelineScrollState: Equatable {
         let beganGesture = next == .tracking && phase != .tracking
             || next == .interacting && phase != .tracking && phase != .interacting
         if beganGesture {
-            browseHistory()
+            browseHistory(byReader: true)
             awaitsUserScrollSettlement = true
         }
         phase = next

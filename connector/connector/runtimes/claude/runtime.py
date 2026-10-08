@@ -144,8 +144,16 @@ class ClaudeRuntime(AgentRuntime):
         )
 
     async def start(self) -> None:
-        self._turns.runner.stopping = False
-        await self._turns.runner.reconnect_sessions()
+        runner = self._turns.runner
+        runner.stopping = False
+        await runner.reconnect_sessions()
+        # The context-window calibration sweep runs for the runtime's whole
+        # life, so a session that already has a live idle transport (a
+        # reconnected scheduled session, or any session a turn left warm) is
+        # probed on its first tick without waiting for a user turn. Armed
+        # here rather than in `__post_init__` so it starts inside the same
+        # lifecycle that `stop` tears down.
+        runner.start_sweep()
 
     async def stop(self) -> None:
         await self._turns.stop()

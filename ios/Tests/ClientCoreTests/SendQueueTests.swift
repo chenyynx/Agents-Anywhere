@@ -13,9 +13,12 @@ import Testing
 /// own evaluation or a direct drain may issue the send, or by calling the drain
 /// directly when only a "nothing was sent" fact is being asserted.
 @Suite @MainActor struct SendQueueTests {
-    private func makeSession(_ http: TestHTTPTransport, realtime: TestRealtimeAPI = TestRealtimeAPI())
+    /// The realtime double is built in the body, not as a default argument: a
+    /// default is checked in a nonisolated context, and `TestRealtimeAPI` is
+    /// main-actor isolated.
+    private func makeSession(_ http: TestHTTPTransport, realtime: TestRealtimeAPI? = nil)
         -> (V2SessionRepository, V2SessionModel) {
-        let repo = repository(transport: http, realtime: realtime)
+        let repo = repository(transport: http, realtime: realtime ?? TestRealtimeAPI())
         return (repo, repo.session(id: "session"))
     }
 

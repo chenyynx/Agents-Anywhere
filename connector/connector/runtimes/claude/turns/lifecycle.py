@@ -58,6 +58,7 @@ from connector.runtimes.claude.sdk.tasks import ClaudeTaskEvent
 from connector.runtimes.claude.sdk.title_tool import build_change_title_tool
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 from connector.runtimes.claude.sessions.scheduled import ClaudeScheduledSessions
+from connector.runtimes.claude.sessions.subagent_oracle import ClaudeSubagentOracle
 from connector.runtimes.claude.timeline.agent_calls import (
     agent_task_overlay_for_event,
 )
@@ -145,6 +146,15 @@ CONTEXT_PROBE_SETTLE_CEILING_SECONDS = 0.5
 # sweep never spins a tight retry loop.
 CONTEXT_PROBE_SWEEP_INTERVAL_SECONDS = 5.0
 
+# R2: how often the engine-evidence agent-card sweep runs. The stop path and
+# the connector-startup reconciliation cover the common cases; this periodic
+# pass is the safety net for a task whose host process died while the connector
+# stayed up, or a live fold that dropped the terminal frame — every open card of
+# every known session is re-judged against the subagent transcripts. Sixty
+# seconds is far below the 15-minute staleness deadline and cheap (a stat per
+# open task), so a stranded card closes promptly without hammering the disk.
+AGENT_CARD_EVIDENCE_SWEEP_INTERVAL_SECONDS = 60.0
+
 WATCHDOG_REASON_ZERO_CONTENT = "zero_content_fast_kill"
 WATCHDOG_REASON_CONTENT_CEILING = "containing_turn_ceiling"
 
@@ -191,6 +201,9 @@ class ClaudeTurnRunner:
     catalogs: ClaudeCatalogReader
     sdk_loader: SdkLoader | None = None
     client_factory: ClaudeClientFactory | None = None
+    #: The subagent-transcript liveness oracle (R1/R2). Injectable so tests can
+    #: drive the closure decision with a fake clock and fake files.
+    oracle: ClaudeSubagentOracle | None = None
     connections: dict[str, ClaudeConnection] = field(default_factory=dict, init=False)
     # Cron* bookkeeping handed over by a transport that was retired before its
     # replacement was built. `close()` drops the retired connection from
@@ -239,6 +252,11 @@ class ClaudeTurnRunner:
     #: creates it, and cleared on `stop`; owned by the lifecycle, started and
     #: torn down with it.
     sweep_task: asyncio.Task[None] | None = field(default=None, init=False)
+    #: R2 safety-net sweep (see `AGENT_CARD_EVIDENCE_SWEEP_INTERVAL_SECONDS`).
+    #: None until `start_sweep` creates it, cleared on `stop`.
+    agent_card_sweep_task: asyncio.Task[None] | None = field(
+        default=None, init=False
+    )
 
     def __post_init__(self) -> None:
         # One allocator for the whole timeline: a compaction separator must
@@ -259,16 +277,53 @@ class ClaudeTurnRunner:
         ):
             return
         self.sweep_task = asyncio.create_task(self._context_probe_sweep())
+        if self.oracle is not None and (
+            self.agent_card_sweep_task is None
+            or self.agent_card_sweep_task.done()
+        ):
+            self.agent_card_sweep_task = asyncio.create_task(
+                self._agent_card_evidence_sweep()
+            )
 
     async def stop(self) -> None:
         self.stopping = True
         sweep = self.sweep_task
         self.sweep_task = None
+        card_sweep = self.agent_card_sweep_task
+        self.agent_card_sweep_task = None
         if sweep is not None and not sweep.done():
             sweep.cancel()
             await asyncio.gather(sweep, return_exceptions=True)
+        if card_sweep is not None and not card_sweep.done():
+            card_sweep.cancel()
+            await asyncio.gather(card_sweep, return_exceptions=True)
         for connection in tuple(self.connections.values()):
             await connection.close()
+
+    async def _agent_card_evidence_sweep(self) -> None:
+        """Periodically close Agent cards the engine proves finished (R2).
+
+        Separate from the startup reconciliation because a host process can die
+        long after the connector came up: the periodic pass is the only thing
+        that re-judges an open card whose terminal event never arrived. It runs
+        every `AGENT_CARD_EVIDENCE_SWEEP_INTERVAL_SECONDS` and never touches the
+        execution lock, so it cannot make a starting turn wait; one poisoned
+        tick must not retire the sweep for the process's life.
+        """
+
+        while not self.stopping:
+            try:
+                await asyncio.sleep(AGENT_CARD_EVIDENCE_SWEEP_INTERVAL_SECONDS)
+                if self.stopping:
+                    return
+                for session in self.session_store.sessions():
+                    if self.stopping:
+                        return
+                    await self.sweep_agent_cards_by_evidence(session)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.exception("Claude agent-card evidence sweep tick failed")
 
 
     async def reconnect_sessions(self) -> None:
@@ -884,6 +939,7 @@ class ClaudeTurnRunner:
         session: ClaudeSession,
         *,
         reason: str | None = None,
+        evidence: bool = False,
     ) -> int:
         """Judge every open Agent card the stop left without a live task.
 
@@ -894,6 +950,15 @@ class ClaudeTurnRunner:
         call's tool_result) is discarded by the stop. So the stop itself is
         the last moment that can judge the card, and this is that judgment:
         open cards with no live agent entry fold to ``interrupted``.
+
+        ``evidence=True`` switches to the R1/R2 judgment: instead of closing
+        every open card, the subagent-transcript oracle decides each one from
+        the engine's own files (a terminal notice the SDK view dropped, a task
+        killed under the process, a never-started launch, a stale transcript).
+        Only a card the oracle can justify closing is closed; anything it
+        leaves running stays put. Used by the process-exit / restart /
+        periodic sweeps, where a false close is worse than a slow one — the
+        stop keeps the unconditional ghost closure above.
 
         Display only, and never the reason a stop fails: the projector sweep
         is pure state, and a failure here is logged and swallowed like every
@@ -908,8 +973,20 @@ class ClaudeTurnRunner:
         agent, and cannot strand a dead card.
         """
 
+        if evidence and self.oracle is None:
+            # An evidence sweep without an oracle would fall back to the
+            # unconditional stop-path closure — the opposite of what it asked
+            # for. Decline instead of closing cards the engine never judged.
+            return 0
         try:
-            items = self.timeline.close_open_agent_cards(session)
+            kwargs: dict[str, Any] = {}
+            if evidence and self.oracle is not None:
+                kwargs = {
+                    "oracle": self.oracle,
+                    "attached_task_ids": self._attached_agent_task_ids(session),
+                    "live_task_ids": self.live_agent_task_ids(session),
+                }
+            items = self.timeline.close_open_agent_cards(session, **kwargs)
             published = 0
             for item in items:
                 previous = session.timeline_items.get(item.id)
@@ -936,6 +1013,85 @@ class ClaudeTurnRunner:
                 session.session_id,
             )
             return 0
+
+    def live_agent_task_ids(self, session: ClaudeSession) -> frozenset[str]:
+        """Tasks the live transport vouches for (the F2 provider).
+
+        A connection that is alive and not closing is the only qualification:
+        its ``background.active_ids`` is the transport's own set of tasks it
+        knows to be running right now. Deliberately NOT gated on
+        ``session.execution`` — a background subagent keeps running while the
+        main session sits idle, and a null execution does not mean the process
+        stopped — and deliberately not ``connection.task_ids``, the broader
+        reconciliation set that retains finished ids.
+
+        Wired to the reader/syncer as their ``live_task_ids`` provider so a
+        history rebuild never closes a card whose task the transport still
+        vouches for (red team F2), and used directly by the sweeps.
+        """
+
+        connection = self.connections.get(session.session_id)
+        if connection is None or connection.closing:
+            return frozenset()
+        return frozenset(connection.background.active_ids)
+
+    def _attached_agent_task_ids(self, session: ClaudeSession) -> frozenset[str]:
+        """The ``attached`` set the oracle exempts from the file-staleness closure.
+
+        Identical to ``live_agent_task_ids`` by design: while this connector is
+        driving the process, a long tool call writing nothing for a while must
+        not be mistaken for death. A terminal notice still closes these tasks.
+        """
+
+        return self.live_agent_task_ids(session)
+
+    async def sweep_agent_cards_by_evidence(
+        self,
+        session: ClaudeSession,
+    ) -> int:
+        """Run the evidence-only closure sweep for one session (R2).
+
+        Called on process exit, reconnect, and periodic passes: unlike the
+        stop-path sweep it closes only the cards the oracle can justify, so a
+        live task is never mistaken for a dead one. Failures are the caller's
+        to log — this mirrors ``close_open_agent_cards`` and swallows too.
+        """
+
+        return await self.close_open_agent_cards(
+            session,
+            reason="evidence",
+            evidence=True,
+        )
+
+    async def reconcile_agent_cards_from_evidence(self) -> int:
+        """Close stranded Agent cards on the runtime's first pass after restart.
+
+        A previous connector that exited without settling a background task
+        leaves its card ``running`` forever (R2): the killed process emitted no
+        terminal event, so nothing folds it. This is the connector-startup
+        reconciliation the task sheet asks for (SHOULD): every known session's
+        open cards are judged once against the subagent-transcript oracle, so a
+        card whose task actually finished or was killed is closed on the next
+        startup instead of waiting for a 6-hour client-side fuse.
+
+        Never fatal: a failure is logged and the next session continues, so one
+        bad transcript cannot stop the runtime from coming up.
+        """
+
+        if self.oracle is None:
+            return 0
+        reconciled = 0
+        for session in self.session_store.sessions():
+            if self.stopping:
+                return reconciled
+            try:
+                reconciled += await self.sweep_agent_cards_by_evidence(session)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Claude startup agent-card reconciliation failed session_id={}",
+                    session.session_id,
+                )
+        return reconciled
 
     async def project_background_frame(
         self,

@@ -177,7 +177,11 @@ def probe_agent_file(
 
     base = projects_dir / project_key / external_session_id / "subagents"
     if not base.is_dir():
-        return AgentFileInfo(exists=False, path_known=True)
+        # The whole no-notice face declines rather than guesses: a missing
+        # directory is most often a wrong project key or a session that never
+        # had a subagents tree, and reading that as "the file is gone" would
+        # manufacture a never-started closure out of a path bug (N5b).
+        return AgentFileInfo(exists=False, path_known=False)
     direct = base / f"agent-{task_id}.jsonl"
     candidates = [direct] if direct.is_file() else []
     if not candidates:
@@ -399,6 +403,11 @@ class RawTranscriptNotice:
     #: uuid of the row this notice came from, when it has one. A notice whose
     #: own row uuid the SDK already exposes is not raw-only and is dropped.
     row_uuid: str | None
+    #: The uuid that locates this notice in the transcript's uuid space: the
+    #: row's own uuid when it has one, else the nearest preceding row that
+    #: does. ``raw_only_notices`` only folds a notice whose anchor is inside
+    #: the projected window (N1).
+    anchor: str | None
     #: 0-based index of the notice's row in ``raw_lines``.
     line_index: int
 
@@ -442,16 +451,23 @@ def scan_raw_transcript(
 
     notices: list[RawTranscriptNotice] = []
     receipt_times: dict[str, int] = {}
+    last_anchor: str | None = None
     for line_index, line in enumerate(raw_lines):
         wants_notice = "<task-notification>" in line
         wants_receipt = "agentId:" in line
-        if not wants_notice and not wants_receipt:
+        wants_uuid = '"uuid"' in line
+        if not wants_notice and not wants_receipt and not wants_uuid:
             continue
         try:
             row = json.loads(line)
         except (ValueError, TypeError):
             continue
         if not isinstance(row, Mapping):
+            continue
+        row_uuid = _string(row.get("uuid"))
+        if row_uuid is not None:
+            last_anchor = row_uuid
+        if not wants_notice and not wants_receipt:
             continue
         timestamp_ms = _parse_iso_ms(row.get("timestamp"))
         if wants_receipt and timestamp_ms is not None:
@@ -461,7 +477,6 @@ def scan_raw_transcript(
                     receipt_times[task_id] = timestamp_ms
         if not wants_notice:
             continue
-        row_uuid = _string(row.get("uuid"))
         row_type = row.get("type")
         if row_type == "user":
             message = row.get("message")
@@ -481,6 +496,7 @@ def scan_raw_transcript(
                     event=event,
                     timestamp_ms=timestamp_ms,
                     row_uuid=row_uuid,
+                    anchor=row_uuid if row_uuid is not None else last_anchor,
                     line_index=line_index,
                 )
             )
@@ -503,25 +519,31 @@ def raw_only_notices(
     A notice whose own row uuid the SDK already exposes is not raw-only — the
     SDK fold already knows it, and folding it twice would double-count.
 
-    Every remaining notice is placed at index **0**, i.e. before everything the
-    window holds. That is the conservative side on purpose: the window's own
-    signals (a SendMessage resume, child activity rows, an SDK-visible notice)
-    all carry an index >= 0, so any of them beats the raw notice and re-opens
-    the task. Placing an **older-than-the-window** notice at the window's end
-    instead — the first cut's bug — let it silently outrank a later resume and
-    closed cards whose task was demonstrably running (red team F4).
+    Of the rest, only the notices whose **anchor lies inside the projected
+    window** take part, and each is placed at its anchor's index. The window is
+    the transcript range this projection covers; a notice older than it belongs
+    to an earlier projection that already folded it, and one newer than it
+    belongs to a later window that will fold it in turn. Re-injecting an
+    out-of-window notice was the round-2 regression (red team F4's residual):
+    a notice older than the window sat at a placement that outranked the
+    window's own signals, so *every* settle window after a resume re-closed a
+    card whose task was demonstrably running.
 
-    A genuinely later terminal notice is unaffected: it either arrives in this
-    window (and then is either SDK-visible, so dropped here, or enqueued beside
-    a delivered row) or it belongs to a later window, whose own projection
-    folds it at its own position. Only one signal per task is kept (the newest
-    among the raw-only ones), because they all share index 0 and a second entry
-    would only add an ambiguous tie.
+    Anchoring also removes the index-0 tie of the previous cut: a window whose
+    first row is the resume places the notice at its own, later position (or
+    drops it), so the fold's strict "latest signal wins" comparison is decided
+    by the transcript's real order. A notice with no anchor at all — no uuid on
+    its row and none before it — cannot be located and is declined.
+
+    One signal per task is kept (the newest by timestamp), since two placements
+    for one task would only add an ambiguous tie.
     """
 
     newest_by_task: dict[str, RawTranscriptNotice] = {}
     for notice in scan.notices:
         if notice.row_uuid is not None and notice.row_uuid in sdk_uuid_order:
+            continue
+        if notice.anchor is None or notice.anchor not in sdk_uuid_order:
             continue
         task_id = notice.event.task_id
         current = newest_by_task.get(task_id)
@@ -530,7 +552,9 @@ def raw_only_notices(
         ):
             newest_by_task[task_id] = notice
     return tuple(
-        (0, notice.event) for notice in newest_by_task.values()
+        (sdk_uuid_order[notice.anchor], notice.event)
+        for notice in newest_by_task.values()
+        if notice.anchor is not None
     )
 
 
@@ -538,7 +562,8 @@ def raw_only_notices(
 #: rebuilding its whole window, and the same transcript is read again on the
 #: next settle; caching the parsed scan (not the raw lines) keeps the repeated
 #: cost at one dict lookup and a few KB. Bounded because the connector serves
-#: many sessions over its life.
+#: many sessions over its life. Least-recently-used: a hit is re-inserted so a
+#: session that keeps syncing is not evicted by one-off readers (N4).
 _SCAN_CACHE: dict[tuple[str, int, int], RawTranscriptScan] = {}
 _SCAN_CACHE_LIMIT = 16
 
@@ -556,8 +581,9 @@ def scan_transcript_file(path: Path) -> RawTranscriptScan | None:
     except OSError:
         return None
     key = (str(path), stat.st_size, stat.st_mtime_ns)
-    cached = _SCAN_CACHE.get(key)
+    cached = _SCAN_CACHE.pop(key, None)
     if cached is not None:
+        _SCAN_CACHE[key] = cached  # re-insert: most recently used
         return cached
     try:
         with open(path, encoding="utf-8") as handle:
@@ -565,7 +591,7 @@ def scan_transcript_file(path: Path) -> RawTranscriptScan | None:
     except OSError:
         return None
     scan = scan_raw_transcript(lines)
-    if len(_SCAN_CACHE) >= _SCAN_CACHE_LIMIT:
+    while len(_SCAN_CACHE) >= _SCAN_CACHE_LIMIT:
         _SCAN_CACHE.pop(next(iter(_SCAN_CACHE)))
     _SCAN_CACHE[key] = scan
     return scan

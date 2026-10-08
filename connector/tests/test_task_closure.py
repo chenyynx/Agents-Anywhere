@@ -728,16 +728,142 @@ _F4_RAW_HEAD = (
                             "2026-10-08T09:00:00.000Z"),
     _raw_user_row("d2", f"Async agent launched successfully.\nagentId: {TASK_ID} (internal ID)",
                   "2026-10-08T09:00:01.000Z"),
-    # The old raw-only stopped notice: no uuid, and its row is outside the window.
-    _raw_enqueue_row(_notice_text(TASK_ID, "stopped"), "2026-10-08T09:21:00.000Z"),
+)
+
+#: The old stopped notice as a user row (uuid "n1") and as an enqueue row — the
+#: two raw shapes seen in production.
+_F4_RAW_NOTICE_USER = _raw_user_row(
+    "n1", _notice_text(TASK_ID, "stopped"), "2026-10-08T09:21:23.290Z"
+)
+_F4_RAW_NOTICE_ENQUEUE = _raw_enqueue_row(
+    _notice_text(TASK_ID, "stopped"), "2026-10-08T09:21:23.290Z"
 )
 
 _F4_RAW_TAIL = (
-    _raw_user_row("w1", "把子代理继续跑起来", "2026-10-08T10:00:00.000Z"),
+    _raw_user_row("w1", "把子代理继续跑起来", "2026-10-08T09:30:00.000Z"),
     _raw_assistant_tool_row("w2", _WINDOW_SEND, "SendMessage",
                             {"to": TASK_ID, "message": "continue"},
-                            "2026-10-08T10:00:30.000Z"),
+                            "2026-10-08T09:30:30.000Z"),
 )
+
+_F4_LATER_WINDOW_RAW = (
+    _raw_user_row("w3", "later message", "2026-10-08T10:00:00.000Z"),
+    _raw_assistant_tool_row("w4", "call_later", "Bash", {"command": "ls"},
+                            "2026-10-08T10:00:05.000Z"),
+)
+
+
+def _f4_notice_message(status: str = "stopped") -> Any:
+    """The notice as an in-window driver message (uuid "n1")."""
+
+    return SimpleNamespace(
+        type="user", uuid="n1",
+        message={"role": "user", "content": _notice_text(TASK_ID, status)},
+    )
+
+
+def _f4_later_user_message() -> Any:
+    return SimpleNamespace(
+        type="user", uuid="w3",
+        message={"role": "user", "content": "later message"},
+    )
+
+
+def test_F4_matrix_1_resume_window_with_the_notice_outside_is_running() -> None:
+    # ① The window carries the resume; the old notice's row is outside it, so
+    # it does not participate at all.
+    card = _incremental_window_card(_F4_RAW_HEAD + (_F4_RAW_NOTICE_ENQUEUE,) + _F4_RAW_TAIL)
+    assert card.status == "running"
+
+
+def test_F4_matrix_1b_user_row_notice_outside_the_window_is_dropped() -> None:
+    card = _incremental_window_card(_F4_RAW_HEAD + (_F4_RAW_NOTICE_USER,) + _F4_RAW_TAIL)
+    assert card.status == "running"
+
+
+def test_F4_matrix_2_the_window_after_the_resume_does_not_reclose() -> None:
+    # ② The N1 regression: every settle after the resume used to re-fold the
+    # old notice and republish the card as interrupted. A window that owns no
+    # signal for this task must publish no terminal card for it.
+    raw = _F4_RAW_HEAD + (_F4_RAW_NOTICE_USER,) + _F4_RAW_TAIL + _F4_LATER_WINDOW_RAW
+    items = _history_items_from_messages(
+        _session(), (_f4_later_user_message(),), tool_call_lookup=_f4_lookup(), raw_lines=raw
+    )
+    cards = [i for i in items if i.content.get("kind") == "agent_call"]
+    assert all(card.status not in {"interrupted", "done", "failed"} for card in cards)
+
+
+def test_F4_matrix_3_resume_as_the_first_window_row_is_running() -> None:
+    # ③ No index-0 tie any more: the notice is dropped (its row is outside),
+    # and the resume re-opens the task.
+    raw = _F4_RAW_HEAD + (_F4_RAW_NOTICE_USER,) + _F4_RAW_TAIL
+    card = _incremental_window_card(raw, window=(_window_send_message(),))
+    assert card.status == "running"
+
+
+def test_F4_matrix_4_a_notice_inside_the_window_still_closes() -> None:
+    # ④ The notice's own row is in the window and nothing newer follows.
+    raw = _F4_RAW_HEAD + (_F4_RAW_NOTICE_USER,)
+    card = _incremental_window_card(raw, window=(_f4_notice_message(),))
+    assert card.status == "interrupted"
+
+
+def test_F4_matrix_5_a_resume_before_an_in_window_notice_is_closed() -> None:
+    # ⑤ Both signals in one window, in transcript order: the notice is later,
+    # so it is the latest signal and wins.
+    raw = (
+        _F4_RAW_HEAD
+        + _F4_RAW_TAIL
+        + (_raw_user_row("n1", _notice_text(TASK_ID, "stopped"),
+                         "2026-10-08T09:41:00.000Z"),)
+    )
+    card = _incremental_window_card(
+        raw, window=(_window_send_message(), _f4_notice_message())
+    )
+    assert card.status == "interrupted"
+
+
+def test_F4_matrix_6_two_raw_notices_for_one_task_keep_the_newest() -> None:
+    # ⑥ Both enqueue rows anchor to the same in-window row; the newest by
+    # timestamp decides ("completed" here, at 10:13 vs 09:21).
+    raw = _F4_RAW_HEAD + _F4_LATER_WINDOW_RAW[:1] + (
+        _raw_enqueue_row(_notice_text(TASK_ID, "stopped"),
+                         "2026-10-08T09:21:00.000Z"),
+        _raw_enqueue_row(_notice_text(TASK_ID, "completed"),
+                         "2026-10-08T10:13:00.000Z"),
+    )
+    card = _incremental_window_card(raw, window=(_f4_later_user_message(),))
+    assert card.status == "done"
+
+
+def test_F4_matrix_7_a_full_rebuild_closes_the_research_shape() -> None:
+    # ⑦ The research cards' shape: one in-window notice, no later activity.
+    raw = _F4_RAW_HEAD + (
+        _raw_user_row("n1", _notice_text(TASK_ID, "completed"),
+                      "2026-10-08T10:13:00.000Z"),
+    )
+    card = _incremental_window_card(
+        raw,
+        window=(
+            _window_dispatch_message(),
+            _window_receipt_message(),
+            _f4_notice_message("completed"),
+        ),
+    )
+    assert card.status == "done"
+
+
+def _f4_lookup() -> Any:
+    from connector.runtimes.claude.sessions.reader import _history_tool_call_context
+
+    full_chain = (
+        _window_dispatch_message(),
+        _window_receipt_message(),
+        _window_user_message(),
+        _window_send_message(),
+    )
+    lookup, _ = _history_tool_call_context(_session(), full_chain)
+    return lookup
 
 
 def test_F4_variant_control_no_raw_lines_is_running() -> None:
@@ -745,36 +871,8 @@ def test_F4_variant_control_no_raw_lines_is_running() -> None:
     assert card.status == "running"
 
 
-def test_F4_variant_old_enqueue_notice_loses_to_the_in_window_resume() -> None:
-    # Variant A: the out-of-window raw-only notice must NOT outrank the resume.
-    card = _incremental_window_card(_F4_RAW_HEAD + _F4_RAW_TAIL)
-    assert card.status == "running"
-    assert card.content["agents"][TASK_ID]["status"] != "stopped"
-
-
-def test_F4_variant_old_user_row_notice_loses_to_the_in_window_resume() -> None:
-    # Variant B: same, but the old notice carries its own uuid that the SDK
-    # view does not contain (so it is raw-only too).
-    raw = _F4_RAW_HEAD[:2] + (
-        _raw_user_row("old-notice", _notice_text(TASK_ID, "stopped"),
-                      "2026-10-08T09:21:00.000Z"),
-    ) + _F4_RAW_TAIL
-    card = _incremental_window_card(raw)
-    assert card.status == "running"
-
-
-def test_F4_variant_old_notice_with_no_later_activity_still_closes() -> None:
-    # Variant D: the conservative placement must not break the real closure —
-    # a window with no newer signal leaves the notice as the latest one.
-    card = _incremental_window_card(
-        _F4_RAW_HEAD + _F4_RAW_TAIL[:1],
-        window=(_window_user_message(),),
-    )
-    assert card.status == "interrupted"
-
-
 def test_F4_repeated_projection_is_idempotent() -> None:
-    raw = _F4_RAW_HEAD + _F4_RAW_TAIL
+    raw = _F4_RAW_HEAD + (_F4_RAW_NOTICE_USER,) + _F4_RAW_TAIL
     first = _incremental_window_card(raw)
     second = _incremental_window_card(raw)
     assert first.status == second.status == "running"
@@ -1020,3 +1118,121 @@ def test_F2_a_live_id_that_is_not_on_the_card_does_not_block() -> None:
     )
     card = next(i for i in items if i.content.get("kind") == "agent_call")
     assert card.status == "interrupted"
+
+
+# --------------------------------------------------------------------------
+# N3: a status-less card is still judged (both evidence paths)
+# --------------------------------------------------------------------------
+
+
+def test_N3_a_status_less_card_is_closed_by_the_sweep() -> None:
+    # No entry claims a status, yet the card is not terminal: the sweep falls
+    # back to judging every named task instead of stranding the card.
+    projector = ClaudeMessageProjector()
+    session = _session()
+    projector.fold_agent_task_event(
+        session,
+        tool_use_id=DISPATCH_TUID,
+        overlay=ClaudeAgentTaskOverlay(agents={TASK_ID: {}}),
+        status="running",
+        base=AgentCallToolContent(kind="agent_call", title="research", agents={}),
+    )
+    now = 1_791_457_800.0
+    items = projector.close_open_agent_cards(
+        session, oracle=_oracle(now=now, files={TASK_ID: _stale_file(now)})
+    )
+    assert len(items) == 1
+    assert items[0].status == "interrupted"
+
+
+def test_N3_a_status_less_card_is_closed_by_the_history_pass() -> None:
+    from connector.runtime_protocol import RuntimeTimelineItem, timeline_content_hash
+    from connector.runtimes.claude.sessions.reader import _apply_oracle_closures
+
+    content = {"kind": "agent_call", "agents": {TASK_ID: {}}}
+    item = RuntimeTimelineItem(
+        id="card",
+        session_id=SESSION_ID,
+        type="tool",
+        status="running",
+        order_seq=1,
+        content=content,
+        content_hash=timeline_content_hash(
+            item_type="tool", status="running", role="tool", content=content
+        ),
+        role="tool",
+    )
+    now = 1_791_457_800.0
+    items = _apply_oracle_closures(
+        _session(),
+        (item,),
+        messages=(),
+        raw_notices=(),
+        oracle=_oracle(now=now, files={TASK_ID: _stale_file(now)}),
+    )
+    assert items[0].status == "interrupted"
+    assert items[0].content["closedByEvidence"] == "agentFileStale"
+
+
+# --------------------------------------------------------------------------
+# N5b: a missing subagents directory is "unknown", not "missing file"
+# --------------------------------------------------------------------------
+
+
+def test_N5b_a_missing_projects_tree_declines_to_judge(tmp_path: Any) -> None:
+    from connector.runtimes.claude.sessions.subagent_oracle import probe_agent_file
+
+    info = probe_agent_file(
+        projects_dir=tmp_path / "nonexistent-projects",
+        project_key="-home-ubuntu",
+        external_session_id=EXTERNAL_SESSION_ID,
+        task_id=TASK_ID,
+    )
+    assert info.exists is False
+    assert info.path_known is False
+    # And the oracle therefore never manufactures a closure from a path miss.
+    oracle = ClaudeSubagentOracle(
+        projects_dir=tmp_path / "nonexistent-projects", clock=_Clock(1_791_457_800.0)
+    )
+    assert (
+        oracle.evidence(
+            task_id=TASK_ID,
+            external_session_id=EXTERNAL_SESSION_ID,
+            cwd=CWD,
+            receipt_age_seconds=T_START + 600,
+        )
+        is None
+    )
+
+
+def test_N5b_an_existing_tree_without_the_task_file_still_judges(tmp_path: Any) -> None:
+    from connector.runtimes.claude.sessions.subagent_oracle import probe_agent_file
+
+    base = tmp_path / "projects" / "-home-ubuntu" / EXTERNAL_SESSION_ID / "subagents"
+    base.mkdir(parents=True)
+    info = probe_agent_file(
+        projects_dir=tmp_path / "projects",
+        project_key="-home-ubuntu",
+        external_session_id=EXTERNAL_SESSION_ID,
+        task_id=TASK_ID,
+    )
+    assert info.exists is False
+    assert info.path_known is True
+
+
+# --------------------------------------------------------------------------
+# N6: the runtime wires the live-task provider into reader + syncer
+# --------------------------------------------------------------------------
+
+
+def test_N6_the_runtime_wires_the_live_task_provider() -> None:
+    from test_claude_compact_ghost import _runtime_with
+    from test_claude_runtime import _RecordingHost
+
+    runtime = _runtime_with(_RecordingHost(), lambda *args, **kwargs: None)
+    runner = runtime._turns.runner
+    assert runtime._session_reader.live_task_ids == runner.live_agent_task_ids
+    assert runtime._history_syncer.live_task_ids == runner.live_agent_task_ids
+    # A session with no live connection answers "nothing is live", which is the
+    # conservative side the history rebuild relies on.
+    assert runner.live_agent_task_ids(_session()) == frozenset()

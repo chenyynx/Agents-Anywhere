@@ -42,6 +42,7 @@ from connector.runtimes.claude.timeline.agent_calls import (
     AGENT_CARD_TERMINAL_STATUSES,
     ClaudeAgentCallCard,
     ClaudeAgentTaskOverlay,
+    agent_task_terminal_status,
     claude_agent_call_content,
     closure_rank,
     complete_claude_agent_call_content,
@@ -823,6 +824,12 @@ class ClaudeMessageProjector:
                 # keeps a terminal status sticky — and the loser simply
                 # republishes the same state, so the race is self-healing.
                 open_task_ids = open_agent_task_ids(content.agents)
+                if not open_task_ids:
+                    # Every entry is status-less or unknown, yet the card is not
+                    # terminal: nothing vouches for liveness, so fall back to
+                    # judging the tasks nothing else would settle rather than
+                    # stranding the card forever (N3).
+                    open_task_ids = _fallback_task_ids(content.agents)
                 if not open_task_ids or open_task_ids & live:
                     continue
                 verdicts = self._card_evidence(
@@ -917,7 +924,17 @@ class ClaudeMessageProjector:
         verdicts: dict[str, Any] = {}
         if oracle is None:
             return verdicts
-        now_seconds = (now_ms / 1000.0) if now_ms is not None else self._clock()
+        # "Now" for the launch age comes from the explicit override, else the
+        # oracle's own clock — the same time domain its file probe judges
+        # mtimes in — and only then the projector's mint clock. Using the mint
+        # clock here would freeze the age whenever a caller pins it.
+        if now_ms is not None:
+            now_seconds = now_ms / 1000.0
+        else:
+            oracle_clock = getattr(oracle, "clock", None)
+            now_seconds = (
+                oracle_clock() if callable(oracle_clock) else self._clock()
+            )
         for task_id in sorted(task_ids):
             age = ages.get(task_id)
             if age is None and card.launched_at is not None:
@@ -997,6 +1014,28 @@ class ClaudeMessageProjector:
             for agent_id, entry in merged_agents.items()
         }
         return updated
+
+
+def _fallback_task_ids(agents: Mapping[str, Any]) -> frozenset[str]:
+    """Named tasks with no terminal status of their own (N3 fallback).
+
+    A card that is not terminal but has no open entry is judged on these: the
+    status-less and unknown-status entries, which nothing else would ever
+    settle. An entry that already names a terminal outcome is left alone — it
+    is the card's own record of the task's end, and re-judging it from a file
+    could only walk a finished task backwards.
+    """
+
+    return frozenset(
+        agent_id
+        for agent_id, entry in agents.items()
+        if isinstance(agent_id, str)
+        and agent_id
+        and agent_task_terminal_status(
+            _string(entry.get("status")) if isinstance(entry, Mapping) else None
+        )
+        is None
+    )
 
 
 def _closure_rank(candidate: tuple[str, str, int | None, str | None]) -> tuple[int, int]:

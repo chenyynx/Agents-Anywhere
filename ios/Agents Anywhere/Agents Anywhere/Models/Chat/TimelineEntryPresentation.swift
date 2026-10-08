@@ -33,6 +33,22 @@ struct TimelineEntryPresentation: Hashable {
     let externalURL: URL?
     let detail: JSONValue?
 
+    /// Whether this is a compact (context-compression) row — wire kind
+    /// `compact` on a system/marker item. Extracted verbatim from `init` so the
+    /// orb's activity signals share the row's single judgement.
+    static func isCompactItem(_ item: V2TimelineItem) -> Bool {
+        let raw = item.raw["content"] ?? .object([:])
+        let wireKind = TimelineText.first(raw["kind"]) ?? (item.type == .fileChange ? "file_change" : item.type.rawValue)
+        return wireKind == "compact" && [.system, .marker].contains(item.type)
+    }
+
+    /// The compact row's active flag: the raw wire state or the item status.
+    /// Extracted verbatim alongside `isCompactItem`.
+    static func isActiveCompactItem(_ item: V2TimelineItem) -> Bool {
+        let raw = item.raw["content"] ?? .object([:])
+        return ["started", "running", "inProgress"].contains(raw["state"]?.stringValue ?? "") || item.status.isActive
+    }
+
     init(item: V2TimelineItem, cwd: String?) {
         let raw = item.raw["content"] ?? .object([:])
         let wireKind = TimelineText.first(raw["kind"]) ?? (item.type == .fileChange ? "file_change" : item.type.rawValue)
@@ -51,9 +67,9 @@ struct TimelineEntryPresentation: Hashable {
             if let summary = TimelineText.inlineSummary(text), !summary.isEmpty { title = String(localized: "思考：\(summary)") }
             else { title = item.status.isActive ? String(localized: "正在思考") : String(localized: "思考过程") }
             detail = nil
-        } else if wireKind == "compact" && [.system, .marker].contains(item.type) {
+        } else if Self.isCompactItem(item) {
             kind = .compact; symbol = "line.3.horizontal.decrease"
-            let active = ["started", "running", "inProgress"].contains(raw["state"]?.stringValue ?? "") || item.status.isActive
+            let active = Self.isActiveCompactItem(item)
             title = item.status == .failed || raw["state"] == .string("failed") ? String(localized: "上下文压缩失败") : active ? String(localized: "正在压缩上下文") : String(localized: "上下文已压缩")
             detail = item.status == .failed ? raw : nil
         } else if item.type == .tool || wireKind == "file_change" || item.type == .fileChange {

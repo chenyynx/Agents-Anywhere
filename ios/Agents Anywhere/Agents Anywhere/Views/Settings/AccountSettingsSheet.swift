@@ -7,6 +7,8 @@ struct AccountSettingsSheet: View {
     @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.default.rawValue
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
     @AppStorage(ProjectSidebarPreferences.compactSessionListKey) private var compactSessionList = false
+    @AppStorage(OrbSettingsKeys.palette) private var orbPaletteValue = "kimi"
+    @AppStorage(OrbSettingsKeys.customHex) private var orbCustomHexValue = OrbSettingsKeys.encodeCustomHex(["#007CFF", "#00F6FF", "#DFC8F5"])
     @State private var confirmsSignOut = false
     @State private var signOutError: String?
     @State private var toasts = ChatToastStore()
@@ -54,6 +56,11 @@ struct AccountSettingsSheet: View {
                     NavigationLink { AccentSettingsView() } label: {
                         SettingsRow(title: String(localized: "Accent color"), symbol: "paintpalette",
                             value: String(localized: AppAccent.resolve(accentValue).title))
+                    }
+                    NavigationLink { ThinkingOrbSettingsView() } label: {
+                        SettingsRow(title: String(localized: "Thinking orb"), symbol: "sparkles",
+                            value: String(localized: OrbPalette.resolve(id: orbPaletteValue,
+                                customHex: OrbSettingsKeys.decodeCustomHex(orbCustomHexValue)).name))
                     }
                     NavigationLink { SettingsLanguageView() } label: {
                         SettingsRow(title: String(localized: "Language"), symbol: "globe", value: SettingsLanguageView.currentLanguage)

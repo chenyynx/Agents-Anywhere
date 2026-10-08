@@ -980,6 +980,23 @@
         }
       }
     },
+    "Amber": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Amber"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "琥珀"
+          }
+        }
+      }
+    },
     "Announcement": {
       "comment": "Shared with Web: announcement.title. Sync with ios/scripts/web_copy.py.",
       "extractionState": "manual",
@@ -1205,6 +1222,23 @@
         }
       }
     },
+    "Aurora": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aurora"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "极光"
+          }
+        }
+      }
+    },
     "Available": {
       "extractionState": "manual",
       "localizations": {
@@ -1218,6 +1252,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "可用"
+          }
+        }
+      }
+    },
+    "Basic spin": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Basic spin"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "基础旋转"
           }
         }
       }
@@ -1269,6 +1320,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "构建版本"
+          }
+        }
+      }
+    },
+    "Calm": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Calm"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "平静"
           }
         }
       }
@@ -2189,6 +2257,23 @@
         }
       }
     },
+    "Custom": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Custom"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自定义"
+          }
+        }
+      }
+    },
     "Custom model": {
       "comment": "Shared with Web: dashboard.new.model. Sync with ios/scripts/web_copy.py.",
       "extractionState": "manual",
@@ -2607,6 +2692,23 @@
         }
       }
     },
+    "Effects": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Effects"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "效果"
+          }
+        }
+      }
+    },
     "Effort ID": {
       "comment": "Shared with Web: dashboard.device.customEffortId. Sync with ios/scripts/web_copy.py.",
       "extractionState": "manual",
@@ -2917,6 +3019,57 @@
         }
       }
     },
+    "Flow": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Flow"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "流体"
+          }
+        }
+      }
+    },
+    "Follow status": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Follow status"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "跟随状态"
+          }
+        }
+      }
+    },
+    "Form": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Form"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "形态"
+          }
+        }
+      }
+    },
     "Gateway API key": {
       "comment": "Shared with Web: dashboard.device.modelGatewayApiKey. Sync with ios/scripts/web_copy.py.",
       "extractionState": "manual",
@@ -2949,6 +3102,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Gateway 地址"
+          }
+        }
+      }
+    },
+    "Gather": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gather"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "聚散"
           }
         }
       }
@@ -3109,6 +3279,23 @@
         }
       }
     },
+    "Kimi blue-violet": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kimi blue-violet"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kimi 蓝紫"
+          }
+        }
+      }
+    },
     "Language": {
       "comment": "Shared with Web: pages.settings.language. Sync with ios/scripts/web_copy.py.",
       "extractionState": "manual",
@@ -3123,6 +3310,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "语言"
+          }
+        }
+      }
+    },
+    "Lat-long grid": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lat-long grid"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "经纬网格"
+          }
+        }
+      }
+    },
+    "Lavender": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lavender"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "薰衣草"
           }
         }
       }
@@ -3352,6 +3573,23 @@
         }
       }
     },
+    "Low power mode (30 fps)": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Low power mode (30 fps)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "省电模式（30 帧）"
+          }
+        }
+      }
+    },
     "Magenta": {
       "extractionState": "manual",
       "localizations": {
@@ -3418,6 +3656,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "成员"
+          }
+        }
+      }
+    },
+    "Mint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mint"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "薄荷"
           }
         }
       }
@@ -3491,6 +3746,40 @@
         }
       }
     },
+    "Mono": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mono"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "单色"
+          }
+        }
+      }
+    },
+    "Motion": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Motion"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "动效"
+          }
+        }
+      }
+    },
     "Name": {
       "extractionState": "manual",
       "localizations": {
@@ -3504,6 +3793,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "名称"
+          }
+        }
+      }
+    },
+    "Neon": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Neon"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "霓虹"
           }
         }
       }
@@ -3930,6 +4236,23 @@
         }
       }
     },
+    "Orbit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Orbit"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "轨道"
+          }
+        }
+      }
+    },
     "Output": {
       "extractionState": "manual",
       "localizations": {
@@ -3961,6 +4284,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "配对设备"
+          }
+        }
+      }
+    },
+    "Palette": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Palette"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "配色"
+          }
+        }
+      }
+    },
+    "Parallel tasks": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Parallel tasks"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "并行任务"
           }
         }
       }
@@ -4106,6 +4463,23 @@
         }
       }
     },
+    "Preview": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preview"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "预览"
+          }
+        }
+      }
+    },
     "Profile photo": {
       "comment": "Shared with Web: pages.settings.changeAvatar. Sync with ios/scripts/web_copy.py.",
       "extractionState": "manual",
@@ -4243,6 +4617,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "二维码扫描输出不可用。"
+          }
+        }
+      }
+    },
+    "Random dots": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Random dots"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "随机点阵"
+          }
+        }
+      }
+    },
+    "React to incoming messages": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "React to incoming messages"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "收到消息时的反馈动效"
           }
         }
       }
@@ -4549,6 +4957,23 @@
         }
       }
     },
+    "Restore defaults": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restore defaults"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "恢复默认"
+          }
+        }
+      }
+    },
     "Restore these sessions?": {
       "comment": "Shared with Web: dashboard.device.unarchiveAllTitle. Sync with ios/scripts/web_copy.py.",
       "extractionState": "manual",
@@ -4636,6 +5061,23 @@
         }
       }
     },
+    "Ripple": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ripple"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "涟漪"
+          }
+        }
+      }
+    },
     "Rotate connector credential?": {
       "extractionState": "manual",
       "localizations": {
@@ -4705,6 +5147,23 @@
         }
       }
     },
+    "Running tools": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Running tools"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "调用工具"
+          }
+        }
+      }
+    },
     "Save": {
       "comment": "Shared with Web: common.save. Sync with ios/scripts/web_copy.py.",
       "extractionState": "manual",
@@ -4719,6 +5178,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "保存"
+          }
+        }
+      }
+    },
+    "Scan": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扫描"
           }
         }
       }
@@ -5159,6 +5635,40 @@
         }
       }
     },
+    "Simulate incoming message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Simulate incoming message"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "模拟收到消息"
+          }
+        }
+      }
+    },
+    "Soft glow": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Soft glow"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "柔光"
+          }
+        }
+      }
+    },
     "Some files are not shown.": {
       "extractionState": "manual",
       "localizations": {
@@ -5269,6 +5779,57 @@
           "stringUnit": {
             "state": "translated",
             "value": "SubAgent 进展 · %lld 项"
+          }
+        }
+      }
+    },
+    "Summarizing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Summarizing"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "整理汇总"
+          }
+        }
+      }
+    },
+    "Sunset": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sunset"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "日落"
+          }
+        }
+      }
+    },
+    "Swirl": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Swirl"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "漩涡"
           }
         }
       }
@@ -6040,6 +6601,40 @@
         }
       }
     },
+    "Thinking": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thinking"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "思考中"
+          }
+        }
+      }
+    },
+    "Thinking orb": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thinking orb"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "思考球"
+          }
+        }
+      }
+    },
     "This QR code is not a valid Agents Anywhere login code.": {
       "extractionState": "manual",
       "localizations": {
@@ -6613,6 +7208,23 @@
         }
       }
     },
+    "Waiting for you": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting for you"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "等待你"
+          }
+        }
+      }
+    },
     "Workspace": {
       "extractionState": "manual",
       "localizations": {
@@ -6626,6 +7238,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "工作区"
+          }
+        }
+      }
+    },
+    "Writing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Writing"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输出回复"
           }
         }
       }

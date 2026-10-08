@@ -1,5 +1,14 @@
 import Foundation
 
+/// One row's merge result on the live path: inserted (a genuinely new arrival)
+/// versus supersede-replaced (a streamed update of an existing row). Dropped
+/// items — window guards, non-superseding revisions — produce no outcome.
+/// Purely informational: it is only consumed by the live receive path.
+struct V2TimelineMergeOutcome {
+    let item: V2TimelineItem
+    let wasInserted: Bool
+}
+
 /// Reduces server projections without network I/O or UI state. Live projections may
 /// change A -> B -> A at the same durable sequence and must not use event-ID dedup.
 struct V2SessionProjection {
@@ -78,10 +87,15 @@ struct V2SessionProjection {
         data.state = existing.replacing(selections: state.selections)
     }
 
-    mutating func apply(_ event: V2SessionEvent) throws {
-        guard event.sessionId == data.session.id else { return }
-        guard event.sequence >= sequence else { return }
-        if !event.isLiveProjection, eventIDs.contains(event.eventId) { return }
+    /// Returns the merge outcome of a timeline item frame — the live socket
+    /// path consumes it for the orb's receive pulse; every other caller
+    /// (recovery replay included) just discards it.
+    @discardableResult
+    mutating func apply(_ event: V2SessionEvent) throws -> V2TimelineMergeOutcome? {
+        guard event.sessionId == data.session.id else { return nil }
+        guard event.sequence >= sequence else { return nil }
+        if !event.isLiveProjection, eventIDs.contains(event.eventId) { return nil }
+        var outcome: V2TimelineMergeOutcome?
         switch event.type {
         case "session.meta.updated":
             applyMeta(try payload("session", in: event))
@@ -90,7 +104,7 @@ struct V2SessionProjection {
         case "runtime.capability.updated":
             data.capabilities = try payload("capabilitySet", in: event)
         case "timeline.item_created", "timeline.item_updated":
-            merge([try payload("item", in: event)], history: false)
+            outcome = merge([try payload("item", in: event)], history: false).first
         case "timeline.snapshot":
             let items: [V2TimelineItem] = try payload("items", in: event)
             replaceTimeline(items, hasMore: false)
@@ -107,7 +121,7 @@ struct V2SessionProjection {
         case "runtime.catalog.updated":
             break // Catalog reads are independently cached and invalidated by the repository.
         case "session.subscribed", "session.refetch_required":
-            return // These are recovery signals, never cursor acknowledgements.
+            return nil // These are recovery signals, never cursor acknowledgements.
         default:
             data.lastExtensionEvent = event
         }
@@ -117,6 +131,7 @@ struct V2SessionProjection {
             eventOrder.append(event.eventId)
             if eventOrder.count > 2048 { eventIDs.remove(eventOrder.removeFirst()) }
         }
+        return outcome
     }
 
     mutating func applyHistory(_ page: V2SessionTimelinePage) {
@@ -152,11 +167,17 @@ struct V2SessionProjection {
         merge(items, history: false)
     }
 
-    private mutating func merge(_ incoming: [V2TimelineItem], history: Bool) {
+    /// Applies incoming rows and reports, per item, whether it was inserted or
+    /// supersede-replaced. The report is purely informational — the window
+    /// guards, the supersede rule, ordering and the history semantics below are
+    /// untouched.
+    @discardableResult
+    private mutating func merge(_ incoming: [V2TimelineItem], history: Bool) -> [V2TimelineMergeOutcome] {
         var byID = Dictionary(uniqueKeysWithValues: data.items.map { ($0.id, $0) })
         let start = data.items.first?.orderSeq ?? 0
         let end = data.items.last?.orderSeq ?? 0
         let confirmedAt = now()
+        var outcomes: [V2TimelineMergeOutcome] = []
         for item in incoming where item.sessionId == data.session.id {
             // The active-card sidecar is fed before the window guards, and so
             // before the version check below: a SubAgent card that later traffic
@@ -167,10 +188,13 @@ struct V2SessionProjection {
                 item, into: data.activeAgentCards, now: confirmedAt)
             if let old = byID[item.id] {
                 guard item.supersedes(old) else { continue }
+                outcomes.append(V2TimelineMergeOutcome(item: item, wasInserted: false))
             } else if !history, data.hasOlderItems, item.orderSeq < start {
                 continue // Recovery must not reinsert older rows outside the selected window.
             } else if !history, data.hasNewerItems, item.orderSeq > end {
                 continue // Preserve the history window until the caller explicitly loads latest.
+            } else {
+                outcomes.append(V2TimelineMergeOutcome(item: item, wasInserted: true))
             }
             byID[item.id] = item
         }
@@ -182,6 +206,7 @@ struct V2SessionProjection {
             data.items = Array(sorted.suffix(maximumItems))
             data.hasOlderItems = data.hasOlderItems || sorted.count > maximumItems
         }
+        return outcomes
     }
 
     private func payload<Value: Decodable>(_ key: String, in event: V2SessionEvent) throws -> Value {

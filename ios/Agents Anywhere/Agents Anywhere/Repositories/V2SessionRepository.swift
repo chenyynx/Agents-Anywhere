@@ -737,7 +737,7 @@ final class V2SessionRepository {
             entry.historyTask?.cancel()
             entry.historyTask = nil
         }
-        try entry.projection?.apply(event)
+        let mergedOutcome = try entry.projection?.apply(event)
         confirmEchoes(event, entry: entry)
         if event.type == "runtime.catalog.updated" || entry.projection?.data.session.connectorStatus != .online {
             invalidateCatalogs(entry)
@@ -746,6 +746,15 @@ final class V2SessionRepository {
             scheduleMismatchHeal(entry)
         }
         emit(entry)
+        // The orb's receive pulse: only this live path consumes a merge
+        // outcome — replay, snapshot, paging and cache restores never reach
+        // this code, so nothing else can ring the orb (§6.3).
+        if let merged = mergedOutcome {
+            let decision = OrbPulsePolicy.decide(item: merged.item, wasInserted: merged.wasInserted,
+                                                 now: event.receivedAt, lastStreamPulseAt: entry.lastStreamPulseAt)
+            entry.lastStreamPulseAt = decision.streamPulseAt
+            if let pulse = decision.pulse { entry.model.noteIncomingPulse(pulse) }
+        }
         if entry.projection?.data.session.connectorStatus == .online,
            !wasOnline || previousRuntime != entry.projection?.data.session.effectiveRuntimeId {
             try await reconcile(entry)
@@ -1205,6 +1214,9 @@ private final class Entry {
     var readVersion = 0
     var catalogVersion = 0
     var projectionBarrier = Date.distantPast
+    /// The throttle anchor of the orb's stream pulse (OrbPulsePolicy). It only
+    /// ever moves on the live receive path; recovery replay never touches it.
+    var lastStreamPulseAt: Date?
     var connectionID = UUID()
     var observers: [UUID: AsyncStream<V2SessionObservation>.Continuation] = [:]
     var loadTask: Task<V2SessionData, Error>?

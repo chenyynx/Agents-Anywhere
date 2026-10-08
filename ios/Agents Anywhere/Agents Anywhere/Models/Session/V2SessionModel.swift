@@ -162,6 +162,11 @@ final class V2SessionModel: Identifiable {
     /// `V2SessionData`. They are read beside the presented rows so the capsule
     /// does not depend on which part of the timeline the client holds.
     private(set) var activeAgentCards: [V2ActiveAgentCard] = []
+    /// The newest pulse from the live receive path (a fresh id rings once);
+    /// nil before the first arrival. The orb view drops it on its own when the
+    /// pulse setting is off or Reduce Motion is on — the model never judges
+    /// presentation.
+    private(set) var incomingPulse: OrbPulse?
     private(set) var isLoading = false
     private(set) var isLoadingHistory = false
     private(set) var isValid = true
@@ -323,6 +328,12 @@ final class V2SessionModel: Identifiable {
         pending.update(.confirmed)
         clearDraft(ifMatching: pending)
         pendingMessages.removeAll { $0.id == clientID }
+    }
+
+    /// Publishes one live receive pulse. Each call carries a fresh id, so the
+    /// orb's `onChange(of: pulse?.id)` fires exactly once per arrival.
+    func noteIncomingPulse(_ pulse: OrbPulse) {
+        incomingPulse = pulse
     }
 
     var isLocalCreation: Bool { id.hasPrefix("local:") }

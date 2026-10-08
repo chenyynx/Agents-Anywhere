@@ -583,8 +583,8 @@ private struct ChatTimelineContent: View, Equatable {
             Group {
                 if let text = model.sendingPlaceholder {
                     HStack(spacing: 8) {
-                        ParticleMorph(size: 24)
-                        Text(text).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                        ThinkingOrbView(activity: model.orbActivity, size: 30, pulse: model.session.incomingPulse)
+                        OrbStatusText(text: text).font(.footnote).lineLimit(1)
                         Spacer(minLength: 0)
                     }
                 } else { Color.clear }

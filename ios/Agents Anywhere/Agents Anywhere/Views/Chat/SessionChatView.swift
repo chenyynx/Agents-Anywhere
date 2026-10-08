@@ -37,6 +37,14 @@ struct SessionChatView: View, Equatable {
     @State private var previewURL: URL?
     @State private var previewDirectory: URL?
     @State private var isDownloading = false
+    /// The welcome line shows only for a settled, genuinely empty page — a
+    /// queued message counts as content even before its timeline rows exist.
+    /// Kept out of the overlay's ViewBuilder: the four-way conjunction inside
+    /// a builder pushes the type checker past its budget (it timed out once).
+    private var showsEmptyState: Bool {
+        model.isOpeningReady && model.timeline.rows.isEmpty
+            && model.timeline.pendingMessages.isEmpty && model.session.sendQueue.isEmpty
+    }
     @State private var toasts = ChatToastStore()
     @State private var pendingTakeover: Bool?
     @State private var hasStartedLoading = false
@@ -85,7 +93,7 @@ struct SessionChatView: View, Equatable {
                 }
             }
                 .overlay {
-                    if model.isOpeningReady && model.timeline.rows.isEmpty && model.timeline.pendingMessages.isEmpty && model.session.sendQueue.isEmpty {
+                    if showsEmptyState {
                         VStack(spacing: 12) {
                             Text(String(localized: "在这里继续你的任务")).foregroundStyle(.secondary)
                         }.allowsHitTesting(false)

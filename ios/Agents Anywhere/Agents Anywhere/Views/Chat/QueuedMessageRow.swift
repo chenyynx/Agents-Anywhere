@@ -1,16 +1,17 @@
 import SwiftUI
 import UIKit
 
-/// One message the user queued while the agent was still running. It sits in
-/// the dock above the composer, right-aligned like a user bubble (same 24 pt
-/// corner radius, same 17/12 padding). It carries its own render for the three
-/// queue states:
+/// One message the user queued while the agent was still running. It sits at
+/// the tail of the timeline, under the status line, right-aligned like a user
+/// bubble (same 24 pt corner radius, same 17/12 padding). It carries its own
+/// render for the three queue states:
 ///
-/// - `.queued` — a dashed outline with a clock in the bottom-trailing corner.
+/// - `.queued` — a plain dashed outline: no glyph, no label; order alone says
+///   "waiting" (pp 2026-10-08: the clock is gone).
 /// - `.sending` / `.awaitingEcho` — the shipped solid user bubble with a small
 ///   spinner in the corner; the state swap cross-fades in 0.25 s.
-/// - a paused queue repaints the outline and the glyph amber, so "paused" reads
-///   without a second word of text.
+/// - a paused queue repaints the outline and shows an amber pause mark, so
+///   "paused" reads without a second word of text.
 ///
 /// Order alone communicates position: the row never prints "queued" or an
 /// ordinal, and never shows a dismiss glyph. The long press is a native context
@@ -42,12 +43,16 @@ struct QueuedMessageRow: View {
                 .textSelection(.disabled)
                 .padding(.horizontal, 17)
                 .padding(.vertical, 12)
-                // Reserve the bottom-trailing glyph's lane on every line, so a
-                // long message can never run under the clock or the spinner.
-                .padding(.trailing, 16)
+                // Reserve the bottom-trailing glyph's lane only when a glyph is
+                // actually there (the pause mark or the spinner), so a plain
+                // waiting bubble hugs its text like the user bubble does. The
+                // queue keeps no clock: order alone says "waiting" (pp).
+                .padding(.trailing, hasAccessory ? 16 : 0)
                 .background { bubbleShape }
                 .overlay(alignment: .bottomTrailing) {
-                    accessory.padding(.trailing, 9).padding(.bottom, 9)
+                    if hasAccessory {
+                        accessory.padding(.trailing, 9).padding(.bottom, 9)
+                    }
                 }
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
@@ -89,12 +94,17 @@ struct QueuedMessageRow: View {
         isPaused ? AppTheme.warning(colorScheme) : AppTheme.secondaryControlStroke(colorScheme)
     }
 
+    /// Whether the corner glyph is present at all: the spinner while on the
+    /// wire, the pause mark while the queue is held. A plain waiting bubble
+    /// carries none.
+    private var hasAccessory: Bool { isOnWire || isPaused }
+
     @ViewBuilder private var accessory: some View {
         if isOnWire {
             ProgressView().progressViewStyle(.circular).controlSize(.small)
         } else {
-            AppSymbol(isPaused ? "exclamationmark.circle" : "clock", size: 13)
-                .foregroundStyle(isPaused ? AppTheme.warning(colorScheme) : AppTheme.secondaryText(colorScheme))
+            AppSymbol("exclamationmark.circle", size: 13)
+                .foregroundStyle(AppTheme.warning(colorScheme))
         }
     }
 

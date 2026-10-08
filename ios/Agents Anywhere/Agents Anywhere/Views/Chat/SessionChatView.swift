@@ -59,8 +59,6 @@ struct SessionChatView: View, Equatable {
             SessionInteractionDock(chat: model,
                 onShowAll: { expandedNoticeID = $0; sheet = .notices })
                 .traceChatLayout("interaction-dock")
-            SendQueueDock(model: model)
-                .traceChatLayout("send-queue-dock")
             ChatComposerDock(draft: session.composer, settings: model.settings,
                 maximumEditorHeight: maximumEditorHeight, controls: controls,
                 canSend: session.canSend, canAttach: model.canAttach,

@@ -60,6 +60,14 @@ final class SessionTimelinePresentation {
     private(set) var rows: [ChatTimelineRowModel] = []
     private(set) var pendingMessages: [V2PendingMessage] = []
     private(set) var hasPresentedSnapshot = false
+    /// Bumped whenever a presentation drops rows that were on screen — the
+    /// opening's trim/latest-page surgery and any wholesale recovery or
+    /// snapshot replacement. A pure append never bumps it. The timeline view
+    /// re-asserts its opening return on every bump so a replaced window can
+    /// never render from its own top: the scroll view anchors content-size
+    /// changes to the top, so without the re-assert the reader is parked
+    /// away from the newest rows until a manual scroll (2026-10-08).
+    private(set) var windowRevision = 0
     @ObservationIgnored private var pending: [V2TimelineItem]?
     @ObservationIgnored private var animatePending = false
     @ObservationIgnored private var initialized = false
@@ -94,6 +102,7 @@ final class SessionTimelinePresentation {
     func flush(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         if let pending {
             let existing = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+            let presented = Set(existing.keys)
             let previousTail = rows.last?.value.orderSeq ?? Int.min
             var started = false
             let updated = pending.map { value in
@@ -104,6 +113,12 @@ final class SessionTimelinePresentation {
             }
             if started { nextBatchAt = now + ReplyPresentation.batchInterval }
             if rows.map(\.id) != updated.map(\.id) { rows = updated }
+            // A drop of a previously presented row means the window itself
+            // moved (a trim, a latest-page swap, a recovery replacement) — the
+            // one shape that needs the viewport re-asserted. The opening's own
+            // first presentation drops nothing and keeps the claim with
+            // `open()`, and an append keeps every old id, so neither bumps.
+            if !presented.isSubset(of: Set(updated.map(\.id))) { windowRevision &+= 1 }
             if !hasPresentedSnapshot { hasPresentedSnapshot = true }
             self.pending = nil; pendingWasStaged = false
         }

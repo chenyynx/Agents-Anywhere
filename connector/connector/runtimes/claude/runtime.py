@@ -48,6 +48,7 @@ from connector.runtimes.claude.sdk.client import (
 )
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 from connector.runtimes.claude.sessions.reader import ClaudeSessionReader
+from connector.runtimes.claude.sessions.subagent_oracle import ClaudeSubagentOracle
 from connector.runtimes.claude.sessions.sync_state import ClaudeSessionSyncStateStore
 from connector.runtimes.claude.timeline.messages import ClaudeMessageProjector
 from connector.runtimes.claude.turns.controller import ClaudeTurnController
@@ -61,6 +62,10 @@ class ClaudeRuntime(AgentRuntime):
     client_factory: ClaudeClientFactory | None = None
     client_message_kv: JsonKeyValueStore | None = None
     runtime_version: str = "native-0"
+    #: The subagent-transcript liveness oracle (R1/R2). Injectable so tests can
+    #: drive the closure decision with a fake clock and fake files; defaults to
+    #: the real filesystem probe.
+    subagent_oracle: ClaudeSubagentOracle | None = None
     _sessions: dict[str, ClaudeSession] = field(default_factory=dict, init=False)
     _session_states: RuntimeSessionStateCache = field(init=False)
     _session_store: ClaudeSessionStore = field(init=False)
@@ -75,6 +80,9 @@ class ClaudeRuntime(AgentRuntime):
     _turns: ClaudeTurnController = field(init=False)
 
     def __post_init__(self) -> None:
+        if self.subagent_oracle is None:
+            # Real filesystem probe in production; tests pass their own.
+            self.subagent_oracle = ClaudeSubagentOracle()
         self._session_states = RuntimeSessionStateCache(
             "claude",
             self.host,
@@ -101,6 +109,7 @@ class ClaudeRuntime(AgentRuntime):
             sdk_loader=self.sdk_loader,
             sync_states=self._session_sync_states,
             pending_messages=self._pending_messages,
+            oracle=self.subagent_oracle,
         )
         self._history_syncer = ClaudeHistorySyncer(
             config=self.config,
@@ -110,6 +119,7 @@ class ClaudeRuntime(AgentRuntime):
             cursor_store=ClaudeHistoryCursorStore(self.host),
             sync_states=self._session_sync_states,
             pending_messages=self._pending_messages,
+            oracle=self.subagent_oracle,
         )
         self._timeline = ClaudeMessageProjector()
         self._notices = ClaudeNoticeRegistry()
@@ -133,6 +143,7 @@ class ClaudeRuntime(AgentRuntime):
             pending_messages=self._pending_messages,
             sdk_loader=self.sdk_loader,
             client_factory=self.client_factory,
+            oracle=self.subagent_oracle,
         )
 
     @property
@@ -147,6 +158,10 @@ class ClaudeRuntime(AgentRuntime):
         runner = self._turns.runner
         runner.stopping = False
         await runner.reconnect_sessions()
+        # Startup reconciliation (R2): a card left open by a previous connector
+        # that exited without settling its background task is judged once here,
+        # from the engine's own files, before the process serves any turn.
+        await runner.reconcile_agent_cards_from_evidence()
         # The context-window calibration sweep runs for the runtime's whole
         # life, so a session that already has a live idle transport (a
         # reconnected scheduled session, or any session a turn left warm) is

@@ -328,7 +328,10 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         visibility(&state, end: true)
         state.open()
         let command = try nextCommand(&state)
-        #expect(state.complete(command))
+        // The macro captures its expression immutably; take the mutating
+        // result out of it (same for the assertions below).
+        let completed = state.complete(command)
+        #expect(completed)
         #expect(state.mode == .following && state.pendingBottomRequest == nil)
         return state
     }
@@ -348,15 +351,18 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         visibility(&state, end: false)
         // The follow machinery refuses the parked page...
         #expect(state.pendingBottomRequest == nil)
-        #expect(state.reconcileToBottom() == false)
+        let reconciled = state.reconcileToBottom()
+        #expect(!reconciled)
         // ...and the opening re-assert owns it: the same instant return the
         // opening itself issues, not a new animated behaviour.
-        #expect(state.reassertOpeningReturn())
+        let reasserted = state.reassertOpeningReturn()
+        #expect(reasserted)
         let command = try nextCommand(&state)
         #expect(command.instant)
         state.geometryChanged(viewport(offset: 1920, height: 2600))
         visibility(&state, end: true)
-        #expect(state.complete(command))
+        let completed = state.complete(command)
+        #expect(completed)
         // The approval keeps following off, but the page is at the bottom
         // again: the notice's card lives at the tail.
         #expect(state.viewport.measuredAtBottom)
@@ -369,7 +375,8 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         visibility(&state, end: false)
         // Mutation guard: dropping `openingReturnIsPending = true` from the
         // re-assert issues an animated return instead, and this turns red.
-        #expect(state.reassertOpeningReturn())
+        let reasserted = state.reassertOpeningReturn()
+        #expect(reasserted)
         let command = try nextCommand(&state)
         #expect(command.instant)
     }
@@ -380,35 +387,41 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         #expect(state.readerTookOver && state.mode == .reading)
         // The reader owns the page now: a later window change must not move
         // them, and the re-assert refuses instead of yanking.
-        #expect(!state.reassertOpeningReturn())
+        let reasserted = state.reassertOpeningReturn()
+        #expect(!reasserted)
     }
 
     @Test func anExplicitHistoryRequestEndsTheOpeningClaim() throws {
         var state = try openedAtBottom()
         state.browseHistory(byReader: true)
         #expect(state.readerTookOver)
-        #expect(!state.reassertOpeningReturn())
+        let reasserted = state.reassertOpeningReturn()
+        #expect(!reasserted)
     }
 
     @Test func aPresentedInteractionDoesNotEndTheOpeningClaim() throws {
         var state = try openedAtBottom()
         state.setInteractionPresented(true)
         #expect(!state.readerTookOver)
-        #expect(state.reassertOpeningReturn())
+        let reasserted = state.reassertOpeningReturn()
+        #expect(reasserted)
     }
 
     @Test func aSuspendedDrawerRefusesTheReAssertUntilItSettles() throws {
         var state = try openedAtBottom()
         state.setNavigationSuspended(true)
-        #expect(!state.reassertOpeningReturn())
+        let suspended = state.reassertOpeningReturn()
+        #expect(!suspended)
         state.setNavigationSuspended(false)
-        #expect(state.reassertOpeningReturn())
+        let settled = state.reassertOpeningReturn()
+        #expect(settled)
     }
 
     @Test func anUnopenedPageRefusesTheReAssert() {
         var state = TimelineScrollState()
         state.geometryChanged(viewport(offset: 1320))
-        #expect(!state.reassertOpeningReturn())
+        let reasserted = state.reassertOpeningReturn()
+        #expect(!reasserted)
     }
 }
 

@@ -37,6 +37,15 @@ enum AppTheme {
         scheme == .dark ? Color.clear : Color.black.opacity(0.08)
     }
 
+    /// The single warning semantic. Matches the long-standing `.orange`
+    /// precedent (`DeviceStatusTone.warning`) so callers share one token
+    /// instead of spelling the literal in each view. It is not scheme-aware
+    /// today — orange reads on both the light and dark backgrounds — but the
+    /// `(scheme)` shape keeps it swappable without touching call sites.
+    static func warning(_ scheme: ColorScheme) -> Color {
+        .orange
+    }
+
     static func groupedFill(_ scheme: ColorScheme) -> Color {
         scheme == .dark ? Color.white.opacity(0.06) : Color.black.opacity(0.04)
     }

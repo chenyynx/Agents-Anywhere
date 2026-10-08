@@ -20,8 +20,8 @@ struct ChatComposerDock: View {
     var isLoadingSettings = false
     var settingsError: String?
     var sessionChat: SessionChatModel?
-    /// Session context-window usage for the composer ring; nil hides it.
-    var contextUsage: ContextUsage? = nil
+    /// Session context-window state for the composer ring; `.hidden` hides it.
+    var contextUsage: ContextRingState = .hidden
     let onSend: (String) async -> Void
     var onStop: () async -> Void = {}
     var onLoadSettings: () async -> Void = {}

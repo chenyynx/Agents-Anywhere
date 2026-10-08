@@ -53,6 +53,42 @@ enum TokenFormat {
     }
 }
 
+/// What the composer ring should show. `ContextUsage` only describes the
+/// complete case (a real `used` and a real `total`); the ring itself must also
+/// survive a session that has a genuine measurement but no known window yet
+/// (pp 2026-10-08: "这个圆环稳定显示，不是消失"). This three-way state keeps
+/// "no measurement" distinct from "measurement, window unknown" so the view
+/// can hide the former and render an honest unknown state for the latter.
+enum ContextRingState: Equatable {
+    /// `used` and `total` both known — the ring's normal progress arc.
+    case ready(ContextUsage)
+    /// A real (nonzero) measurement exists, but neither the usage-carried
+    /// window nor the catalog supplies a `total`. The ring stays visible with
+    /// a neutral unknown state instead of vanishing; the measurement is real
+    /// so it is carried along, never fabricated.
+    case unknownWindow(used: Int)
+    /// No real measurement at all (a fresh session, every carrier all-zero) —
+    /// the ring stays hidden, unchanged from before.
+    case hidden
+
+    /// The complete usage, when the window is known.
+    var usage: ContextUsage? {
+        if case let .ready(usage) = self { return usage }
+        return nil
+    }
+
+    /// Whether the composer should render the ring at all. `ready` needs a
+    /// positive total (`isValid`), preserving the old gate; `unknownWindow`
+    /// is visible by design; `hidden` is not.
+    var isVisible: Bool {
+        switch self {
+        case .ready(let usage): usage.isValid
+        case .unknownWindow: true
+        case .hidden: false
+        }
+    }
+}
+
 /// Selection → context window, resolved once per page from the model catalog
 /// (`metadata.contextWindow`, §1.3). The mapping mirrors
 /// `ConversationSettings.modelID(forSelection:)`: a reasoning-item selection
@@ -129,5 +165,31 @@ extension ContextUsage {
         guard let usage = latestUsage(in: items) else { return nil }
         guard let total = usage.contextWindow ?? windows?.contextWindow(forSelection: selection) else { return nil }
         return ContextUsage(used: usage.contextTokens, total: total)
+    }
+}
+
+extension ContextRingState {
+    /// The composer ring's three-way resolution. It shares `latestUsage` and
+    /// the §8 v3 window precedence with `ContextUsage.resolve`: a real
+    /// measurement carries its own window and wins; the catalog window is only
+    /// the fallback for data stamped before the connector reported windows.
+    ///
+    /// The difference is the middle state. `ContextUsage.resolve` returns nil
+    /// whenever the window is unknown — indistinguishable from "no
+    /// measurement", so the ring disappears. A gateway model
+    /// (`deepseek-v4.1-flash`) has no catalog window, so a session sits in
+    /// exactly that state between its first real report and the first window
+    /// calibration. Here that resolves to `.unknownWindow` (ring visible, no
+    /// progress arc) rather than vanishing.
+    ///
+    /// The zero-carrier skip and the measurement query are unchanged: an
+    /// all-zero seed is not a measurement, so it yields `.hidden`, never an
+    /// unknown-window state with a fabricated zero.
+    static func resolve(items: [V2TimelineItem], windows: ContextWindowIndex?, selection: V2SelectionID?) -> ContextRingState {
+        guard let usage = ContextUsage.latestUsage(in: items) else { return .hidden }
+        guard let total = usage.contextWindow ?? windows?.contextWindow(forSelection: selection) else {
+            return .unknownWindow(used: usage.contextTokens)
+        }
+        return .ready(ContextUsage(used: usage.contextTokens, total: total))
     }
 }

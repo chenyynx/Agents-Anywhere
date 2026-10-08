@@ -19,9 +19,10 @@ struct ChatComposer: View {
     var showsCommands = false
     var commandsActive = false
     var onCommands: () -> Void = {}
-    /// Live context-window usage; nil, invalid, or an unfocused editor (no
-    /// keyboard) hides the ring entirely.
-    var contextUsage: ContextUsage? = nil
+    /// Live context-window state; hidden, or an unfocused editor (no
+    /// keyboard), hides the ring entirely. A real measurement with an unknown
+    /// window shows the neutral unknown ring instead of vanishing.
+    var contextUsage: ContextRingState = .hidden
     /// Reports draft mutations from this subtree only. Persisting the draft
     /// must not make the page root observe the editor's text.
     var onDraftChange: () -> Void = {}
@@ -71,8 +72,8 @@ struct ChatComposer: View {
                     .accessibilityHint(draft.isComposing ? String(localized: "请先确认输入法候选文字") : "")
                     .accessibilityIdentifier("chat.composer.send")
 
-                    if let contextUsage, contextUsage.isValid, draft.isFocused {
-                        ContextRingButton(usage: contextUsage, touchTarget: controls.touchTarget)
+                    if contextUsage.isVisible, draft.isFocused {
+                        ContextRingButton(state: contextUsage, touchTarget: controls.touchTarget)
                     }
 
                     if showsCommands {

@@ -404,17 +404,19 @@ final class SessionChatModel {
 
     // MARK: Context usage
 
-    /// The composer ring's published value (context-usage-ring §1.2): the
-    /// newest carrier's per-call usage over the selected model's catalog
-    /// window. nil until both sides are known — the ring hides rather than
-    /// showing 0%, and codex / dsh sessions never fill it.
-    private(set) var contextUsage: ContextUsage?
+    /// The composer ring's published state (context-usage-ring §1.2): the
+    /// newest carrier's per-call usage over the selected model's window. It is
+    /// `.hidden` until a real measurement lands — the ring then shows the arc
+    /// when the window is known, or the unknown state while a gateway model's
+    /// window is still unknown, rather than vanishing. codex / dsh sessions
+    /// never fill it.
+    private(set) var contextUsage: ContextRingState = .hidden
     /// Catalog windows for this page visit; nil until the (retrying) read lands.
     @ObservationIgnored private var contextWindows: ContextWindowIndex?
     /// Uptime of the last catalog attempt, pacing the failed-read retry.
     @ObservationIgnored private var lastContextWindowAttempt: TimeInterval = 0
     /// The newest recomputed value, waiting for its publish slot.
-    @ObservationIgnored private var stagedContextUsage: ContextUsage?
+    @ObservationIgnored private var stagedContextUsage: ContextRingState = .hidden
     /// Uptime of the last publish — the anchor of the 4 Hz cadence.
     @ObservationIgnored private var lastContextUsagePublish: TimeInterval = 0
     /// Publish cap: one per 250 ms, with the final value landed afterwards.
@@ -459,7 +461,7 @@ final class SessionChatModel {
             await refreshContextWindows(sessionID: sessionID)
         }
         guard let data = observation.data else { return }
-        stagedContextUsage = ContextUsage.resolve(items: data.items, windows: contextWindows,
+        stagedContextUsage = ContextRingState.resolve(items: data.items, windows: contextWindows,
             selection: currentSelections[.model])
     }
 

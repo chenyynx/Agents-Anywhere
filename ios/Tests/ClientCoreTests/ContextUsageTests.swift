@@ -473,6 +473,84 @@ import Testing
         #expect(ContextUsage.resolve(items: [], windows: index, selection: "sel") == nil)
     }
 
+    // MARK: ContextRingState.resolve (the three-way composer state)
+
+    @Test func ringStateIsUnknownWindowWhenAMeasurementHasNoWindow() throws {
+        // pp 2026-10-08: a real measurement with no known window (a gateway
+        // model whose catalog has no window, before the first calibration)
+        // must not vanish. It resolves to the unknown state carrying the real
+        // `used` — not nil (which hid the ring) and not a fabricated 0-total.
+        let index = ContextWindowIndex(try catalogs(models: [model("gateway", selection: "sel_gateway")]))
+        let items = [try timelineItem(id: "a", order: 1, usage: counters(input: 15_600))]
+        #expect(ContextRingState.resolve(items: items, windows: index, selection: "sel_gateway")
+            == .unknownWindow(used: 15_600))
+        // Same with no catalog at all, and with a selection the catalog cannot
+        // describe — both are the pre-calibration gateway case.
+        #expect(ContextRingState.resolve(items: items, windows: nil, selection: "sel_gateway")
+            == .unknownWindow(used: 15_600))
+        #expect(ContextRingState.resolve(items: items, windows: index, selection: "other")
+            == .unknownWindow(used: 15_600))
+        // The state is visible and carries no complete usage.
+        #expect(ContextRingState.unknownWindow(used: 15_600).isVisible)
+        #expect(ContextRingState.unknownWindow(used: 15_600).usage == nil)
+    }
+
+    @Test func ringStateIsReadyWhenTheMeasurementCarriesItsWindow() throws {
+        // Regression (§8 v3): the window stamped with the usage always wins,
+        // even over a catalog that names a different (nominal) one.
+        let index = ContextWindowIndex(try catalogs(models: [model("nominal", selection: "sel", window: 200_000)]))
+        let items = [try timelineItem(id: "a", order: 1, usage: [
+            "inputTokens": 15_600, "model": "deepseek-v4.1-flash", "contextWindow": 1_000_000,
+        ])]
+        let state = ContextRingState.resolve(items: items, windows: index, selection: "sel")
+        #expect(state == .ready(ContextUsage(used: 15_600, total: 1_000_000)))
+        #expect(state.usage == ContextUsage(used: 15_600, total: 1_000_000))
+        #expect(state.isVisible)
+    }
+
+    @Test func ringStateIsReadyFromTheCatalogWindow() throws {
+        // Regression: data stamped before the connector reported windows still
+        // resolves through the catalog fallback.
+        let index = ContextWindowIndex(try catalogs(models: [model("m", selection: "sel", window: 200_000)]))
+        let items = [try timelineItem(id: "a", order: 1, usage: counters(input: 42))]
+        #expect(ContextRingState.resolve(items: items, windows: index, selection: "sel")
+            == .ready(ContextUsage(used: 42, total: 200_000)))
+    }
+
+    @Test func ringStateIsHiddenWithoutAnyMeasurement() throws {
+        // A brand-new session (no usage) stays hidden — unchanged: the ring
+        // appears only once there is something real to show.
+        let index = ContextWindowIndex(try catalogs(models: [model("m", selection: "sel", window: 200_000)]))
+        #expect(ContextRingState.resolve(items: [], windows: index, selection: "sel") == .hidden)
+        let bare = [try timelineItem(id: "a", order: 1)]
+        #expect(ContextRingState.resolve(items: bare, windows: index, selection: "sel") == .hidden)
+        #expect(!ContextRingState.hidden.isVisible)
+        #expect(ContextRingState.hidden.usage == nil)
+    }
+
+    @Test func ringStateSkipsAnAllZeroCarrier() throws {
+        // Regression of the earlier fix: an all-zero carrier is not a
+        // measurement. The newest real carrier wins, and when *every* carrier
+        // is zero the state is hidden — never an unknown state with a
+        // fabricated zero.
+        let index = ContextWindowIndex(try catalogs(models: [model("m", selection: "sel", window: 200_000)]))
+        let items = [
+            try timelineItem(id: "real", order: 2, usage: counters(input: 300)),
+            try timelineItem(id: "zero", order: 5, usage: counters()),
+        ]
+        #expect(ContextRingState.resolve(items: items, windows: index, selection: "sel")
+            == .ready(ContextUsage(used: 300, total: 200_000)))
+        // No window anywhere: the newest real (nonzero) carrier is the
+        // measurement, so the unknown state carries 300 — not the zero seed.
+        #expect(ContextRingState.resolve(items: items, windows: nil, selection: "sel")
+            == .unknownWindow(used: 300))
+        let allZero = [
+            try timelineItem(id: "seed", order: 3, usage: counters()),
+            try timelineItem(id: "live", order: 6, usage: counters()),
+        ]
+        #expect(ContextRingState.resolve(items: allZero, windows: index, selection: "sel") == .hidden)
+    }
+
     // MARK: Fixtures
 
     private func counters(input: Int = 0, output: Int = 0, cacheRead: Int = 0, cacheCreation: Int = 0) -> [String: Any] {

@@ -20,6 +20,11 @@ for language in ["en", "zh-Hans"] {
     expect(String(localized: "子代理运行中", bundle: bundle, locale: locale), chinese ? "子代理运行中" : "Subagent running")
     expect(String(localized: "运行目标", bundle: bundle, locale: locale), chinese ? "设备和 Agent" : "Device and agent")
     expect(String(localized: "思考强度", bundle: bundle, locale: locale), chinese ? "推理强度" : "Reasoning effort")
+    // The context ring's unknown-window state (pp 2026-10-08): the popover
+    // summary must never print a fabricated "0" — it names the real `used`.
+    let unknownUsed = "1.6万"
+    expect(String(localized: "已用 \(unknownUsed)，窗口未知", bundle: bundle, locale: locale),
+           chinese ? "已用 1.6万，窗口未知" : "Used 1.6万, window unknown")
     expect(String(localized: "Restore", bundle: bundle, locale: locale), chinese ? "取消归档" : "Unarchive")
     expect(String(localized: "Accent color", bundle: bundle, locale: locale), chinese ? "强调色" : "Accent color")
     expect(String(localized: "Green", bundle: bundle, locale: locale), chinese ? "绿色" : "Green")

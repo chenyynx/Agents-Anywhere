@@ -12413,6 +12413,23 @@
         }
       }
     },
+    "已用 %@，窗口未知": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Used %@, window unknown"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已用 %@，窗口未知"
+          }
+        }
+      }
+    },
     "未知文件": {
       "extractionState": "manual",
       "localizations": {

@@ -17,7 +17,8 @@ struct ChatComposer: View {
     var showsCommands = false
     var commandsActive = false
     var onCommands: () -> Void = {}
-    /// Live context-window usage; nil or invalid hides the ring entirely.
+    /// Live context-window usage; nil, invalid, or an unfocused editor (no
+    /// keyboard) hides the ring entirely.
     var contextUsage: ContextUsage? = nil
     /// Reports draft mutations from this subtree only. Persisting the draft
     /// must not make the page root observe the editor's text.
@@ -81,7 +82,7 @@ struct ChatComposer: View {
                         .accessibilityIdentifier("chat.composer.commands")
                     }
 
-                    if let contextUsage, contextUsage.isValid {
+                    if let contextUsage, contextUsage.isValid, draft.isFocused {
                         ContextRingButton(usage: contextUsage, touchTarget: controls.touchTarget)
                     }
                 }

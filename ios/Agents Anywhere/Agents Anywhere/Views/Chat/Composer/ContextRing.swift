@@ -14,11 +14,11 @@ extension ContextLevel {
     }
 }
 
-/// The 22 pt usage ring. The arc starts at 12 o'clock and grows clockwise;
+/// The 18 pt usage ring. The arc starts at 12 o'clock and grows clockwise;
 /// at critical usage it breathes unless the user reduces motion.
 struct ContextRing: View {
     let fraction: Double
-    var size: CGFloat = 22
+    var size: CGFloat = ChatControlMetrics.contextRingDiameter
     var lineWidth: CGFloat = 2.5
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var breathe = false
@@ -44,7 +44,7 @@ struct ContextRing: View {
     }
 }
 
-/// Composer control that opens the usage popover. The visual ring stays 22 pt;
+/// Composer control that opens the usage popover. The visual ring stays 18 pt;
 /// the hit slot matches the other composer controls (`controls.touchTarget`).
 struct ContextRingButton: View {
     let usage: ContextUsage

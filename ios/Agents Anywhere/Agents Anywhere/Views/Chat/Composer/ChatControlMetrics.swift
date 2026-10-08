@@ -6,6 +6,9 @@ struct ChatControlMetrics {
     static let collapsedHorizontalInset: CGFloat = 32
     static let expandedHorizontalInset: CGFloat = 12
     static let maximumContentWidth: CGFloat = 780
+    /// Visible diameter of the context-usage ring, matched to the 18 pt command
+    /// and send glyph scale; it is drawn inside a full-size touch target.
+    static let contextRingDiameter: CGFloat = 18
     let diameter: CGFloat
 
     init(bodyLineHeight: CGFloat) {

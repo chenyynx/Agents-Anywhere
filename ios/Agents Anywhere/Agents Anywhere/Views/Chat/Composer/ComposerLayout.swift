@@ -22,7 +22,17 @@ struct ComposerLayout: Layout {
         // Trailing controls stack leftward from the right edge in declaration
         // order: send first, then the optional command menu and context ring.
         for index in 2..<subviews.count {
-            subviews[index].place(at: CGPoint(x: bounds.maxX - inset - button * CGFloat(index - 1), y: buttonY),
+            // Controls past the command slot (index >= 4, today the context
+            // ring) draw a smaller circle than send, so shift them right to
+            // match the send-to-command visible gap. Derivation: send's circle
+            // is inset (button - sendDiameter)/2 from its slot edge, the ring's
+            // is inset (button - contextRingDiameter)/2, so the shift is the
+            // inset difference = (sendDiameter - contextRingDiameter)/2, which
+            // is (36/2 - 18/2) = 9 pt with the default metrics. The ring placed
+            // directly after send (4 children, no command control) is left
+            // alone: the uniform 44 pt slot already yields the same gap there.
+            let nudge = index >= 4 ? controls.sendDiameter / 2 - ChatControlMetrics.contextRingDiameter / 2 : 0
+            subviews[index].place(at: CGPoint(x: bounds.maxX - inset - button * CGFloat(index - 1) + nudge, y: buttonY),
                                   proposal: .init(width: button, height: button))
         }
         let textHeight = editorHeight(width: bounds.width, subviews: subviews)

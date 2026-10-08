@@ -87,18 +87,25 @@ struct ContextWindowIndex {
 }
 
 extension ContextUsage {
-    /// The newest item that carries usage, by `orderSeq` — the whole object,
-    /// because the window the engine self-reported travels with the counters
-    /// it belongs to (§8 v3). Any carrier kind counts (assistant message,
-    /// reasoning, tool, …), because the connector stamps the latest per-call
-    /// usage on whichever item it evolves. History and live items compete in
-    /// one ordering, and the newest *with* usage wins even when a
+    /// The newest item that carries *real* usage, by `orderSeq` — the whole
+    /// object, because the window the engine self-reported travels with the
+    /// counters it belongs to (§8 v3). Any carrier kind counts (assistant
+    /// message, reasoning, tool, …), because the connector stamps the latest
+    /// per-call usage on whichever item it evolves. History and live items
+    /// compete in one ordering, and the newest *with* usage wins even when a
     /// still-streaming frame sits after it.
+    ///
+    /// Carriers whose counters are all zero are skipped: an all-zero
+    /// measurement is not a measurement (宁缺勿假 — never show a fabricated
+    /// empty context). Live streaming rows can briefly carry an all-zero seed
+    /// that would otherwise permanently shadow the newest real measurement and
+    /// flip the ring to 0, so the pick stays on the newest genuine report. A
+    /// carrier with any nonzero counter still counts.
     static func latestUsage(in items: [V2TimelineItem]) -> V2MessageUsage? {
         var latest: V2MessageUsage?
         var latestSeq = Int.min
         for item in items {
-            guard let usage = item.usage else { continue }
+            guard let usage = item.usage, usage.contextTokens > 0 else { continue }
             if latest == nil || item.orderSeq > latestSeq {
                 latest = usage
                 latestSeq = item.orderSeq

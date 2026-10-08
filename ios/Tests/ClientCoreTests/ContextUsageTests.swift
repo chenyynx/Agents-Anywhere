@@ -352,6 +352,62 @@ import Testing
         #expect(ContextUsage.latestUsage(in: [try timelineItem(id: "a", order: 1)]) == nil)
     }
 
+    @Test func usedSkipsANewerAllZeroCarrier() throws {
+        // A live row can carry a zeroed seed after a real report; it is not a
+        // measurement, so it must not shadow the older real carrier and flip
+        // the ring to 0.
+        let items = [
+            try timelineItem(id: "real", order: 2, usage: counters(input: 300)),
+            try timelineItem(id: "zero", order: 5, usage: counters()),
+        ]
+        #expect(ContextUsage.latestUsage(in: items)?.contextTokens == 300)
+        #expect(ContextUsage.used(in: items) == 300)
+        #expect(ContextUsage.used(in: items.shuffled()) == 300)
+    }
+
+    @Test func usedIsNilWhenEveryCarrierIsZero() throws {
+        // Nothing real to measure: the ring stays hidden rather than showing a
+        // fabricated empty context.
+        let index = ContextWindowIndex(try catalogs(models: [model("m", selection: "sel", window: 200_000)]))
+        let items = [
+            try timelineItem(id: "seed", order: 3, usage: counters()),
+            try timelineItem(id: "live", order: 6, usage: counters()),
+        ]
+        #expect(ContextUsage.latestUsage(in: items) == nil)
+        #expect(ContextUsage.used(in: items) == nil)
+        #expect(ContextUsage.resolve(items: items, windows: index, selection: "sel") == nil)
+    }
+
+    @Test func resolvePrefersTheRealUsagesWindowOverTheCatalog() throws {
+        // Regression (§8 v3): a real usage that carries a `contextWindow`
+        // still beats the catalog window — skipping zero carriers changes
+        // only which carrier wins, never the window precedence.
+        let index = ContextWindowIndex(try catalogs(models: [model("nominal", selection: "sel", window: 200_000)]))
+        let items = [
+            try timelineItem(id: "real", order: 2, usage: [
+                "inputTokens": 15_600, "model": "deepseek-v4.1-flash", "contextWindow": 1_000_000,
+            ]),
+            try timelineItem(id: "zero", order: 5, usage: counters()),
+        ]
+        #expect(ContextUsage.resolve(items: items, windows: index, selection: "sel")
+            == ContextUsage(used: 15_600, total: 1_000_000))
+    }
+
+    @Test func latestUsagePicksTheNewestRealCarrierAcrossKinds() throws {
+        // Regression: every carrier kind still competes on `orderSeq` when the
+        // usages are real; a zero seed on the newest item does not stop a
+        // mixed-kind real carrier from winning.
+        let items = [
+            try timelineItem(id: "message", order: 2, usage: counters(input: 300)),
+            try timelineItem(id: "tool", order: 3, type: "tool", usage: counters(input: 200)),
+            try timelineItem(id: "reasoning", order: 5, type: "reasoning", usage: counters(input: 400)),
+            try timelineItem(id: "seed", order: 6, type: "reasoning", usage: counters()),
+        ]
+        #expect(ContextUsage.latestUsage(in: items)?.contextTokens == 400)
+        #expect(ContextUsage.used(in: items) == 400)
+    }
+
+
     @Test func resolvePrefersTheUsageCarriedWindowOverTheCatalog() throws {
         // §8 v3: window and measurement travel together, so the stamped
         // window wins even when the catalog names a different (nominal) one —

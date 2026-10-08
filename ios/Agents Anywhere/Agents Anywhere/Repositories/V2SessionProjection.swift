@@ -112,7 +112,7 @@ struct V2SessionProjection {
             data.notices = try payload("notices", in: event)
         case "runtime.notice.updated":
             let notice: V2RuntimeNotice = try payload("notice", in: event)
-            guard notice.sessionId == data.session.id else { return }
+            guard notice.sessionId == data.session.id else { return nil }
             if let index = data.notices.firstIndex(where: { $0.id == notice.id }) {
                 if notice.revision >= data.notices[index].revision { data.notices[index] = notice }
             } else {

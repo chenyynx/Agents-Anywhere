@@ -375,6 +375,12 @@ class ClaudeAgentCallCard:
     #: landed). The wire frames carry no timestamps, so this is the live path's
     #: only launch time — the input the never-started grace needs when a task
     #: has no subagent transcript at all (red team F5).
+    #:
+    #: It is a *card* stamp, not a task one: a card naming several tasks (a
+    #: fan-out, or a dispatch plus a resume) dates them all from the first
+    #: frame, so a later task's age is over-estimated. The bias only makes the
+    #: never-started closure more willing, and the subagent file — when it
+    #: exists — overrides it entirely; recorded rather than fixed (N5a).
     launched_at: float | None = None
 
 

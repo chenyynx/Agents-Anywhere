@@ -67,6 +67,7 @@ from connector.runtimes.claude.timeline.agent_calls import (
     AGENT_CARD_TERMINAL_STATUSES,
     ClaudeAgentTaskOverlay,
     agent_task_overlay_for_event,
+    agent_task_terminal_status,
     closure_rank,
     open_agent_task_ids,
     resolve_agent_card_status,
@@ -606,6 +607,21 @@ def _apply_oracle_closures(
             # open, so a running task is never hidden behind a dead sibling's
             # closure.
             open_task_ids = open_agent_task_ids(agents)
+            if not open_task_ids:
+                # Every entry is status-less or unknown while the card is not
+                # terminal: nothing vouches for liveness, so judge the tasks
+                # nothing else would settle instead of stranding the card (N3).
+                # Entries that already name a terminal outcome are left out —
+                # re-judging them from a file could only walk a finished task
+                # backwards.
+                open_task_ids = frozenset(
+                    task_id
+                    for task_id in task_ids
+                    if agent_task_terminal_status(
+                        _agent_entry_status(agents.get(task_id))
+                    )
+                    is None
+                )
             if not open_task_ids or open_task_ids & live_task_ids:
                 closed.append(item)
                 continue
@@ -709,6 +725,15 @@ def _best_closure_verdict(verdicts: Mapping[str, Any]) -> Any | None:
             )
         ),
     )
+
+
+def _agent_entry_status(entry: Any) -> str | None:
+    """The wire status of one agents-map entry, when it names one."""
+
+    if not isinstance(entry, Mapping):
+        return None
+    status = entry.get("status")
+    return status if isinstance(status, str) and status else None
 
 
 def _evidence_closed_content(

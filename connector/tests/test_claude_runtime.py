@@ -17,6 +17,9 @@ from connector.runtime_protocol import (
     RuntimeStatus,
     RuntimeTimelineItem,
 )
+from connector.runtimes.claude.domain.context_report import (
+    CLAUDE_CONTEXT_PROMPT as _CONTEXT_PROMPT,
+)
 from connector.runtimes.claude.domain.input_requests import claude_input_request
 from connector.runtimes.claude.domain.pending_messages import (
     ClaudeHistoryUserMessage,
@@ -5178,7 +5181,9 @@ def test_claude_regular_session_reuses_process_until_idle_timeout() -> None:
             await asyncio.sleep(0.05)
             await runtime.start_turn("regular", "native_regular", "again")
             await runtime._sessions["regular"].active_task
-            assert client.queries == ["hello", "again"]
+            # The context-window calibration (Stage A3) dispatches `/context`
+            # through the same idle transport; it is not a user prompt.
+            assert client.queries == ["hello", _CONTEXT_PROMPT, "again"]
             assert not client.disconnected
             await asyncio.sleep(0.05)
             assert not client.disconnected  # The new turn reset the idle clock.
@@ -5226,8 +5231,11 @@ def test_claude_reclaimed_session_resumes_with_new_process() -> None:
             client.options = options
             return client
 
+        # The idle budget covers the context-window calibration (Stage A3),
+        # which runs on the idle transport right after the turn — it extends
+        # the reclaim by its own ~50 ms, not by a policy window.
         runtime = ClaudeRuntime(
-            config=_config(idle_timeout_seconds=0.02),
+            config=_config(idle_timeout_seconds=0.2),
             host=_RecordingHost(), sdk_loader=_default_sdk, client_factory=factory,
         )
         try:
@@ -5239,7 +5247,11 @@ def test_claude_reclaimed_session_resumes_with_new_process() -> None:
             await runtime._sessions["resume"].active_task
             assert second.connected and not second.disconnected
             assert second.options.kwargs["resume"] == "native_resume"
-            assert first.queries == ["hello"]
+            assert first.queries == ["hello", _CONTEXT_PROMPT]
+            # The first probe produced no report (this fake answers `/context`
+            # like an ordinary prompt), so its generation is inside the retry
+            # backoff: the same model selection on a new process does not
+            # re-probe immediately.
             assert second.queries == ["again"]
         finally:
             await runtime.stop()

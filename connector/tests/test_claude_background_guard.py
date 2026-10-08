@@ -44,7 +44,7 @@ from connector.runtimes.claude.sdk.background import (
     is_background_activity,
 )
 from connector.runtimes.claude.sdk.connection import ClaudeResponse
-from connector.runtimes.claude.turns import lifecycle
+from connector.runtimes.claude.turns import context_probe, lifecycle
 from test_claude_compact_ghost import (
     _runtime_with,
     _single_client_factory,
@@ -382,7 +382,15 @@ def test_stuck_turn_with_live_background_work_is_not_retired() -> None:
             await runtime.start_turn("shield", "native_timer", "after")
             await asyncio.wait_for(runtime._sessions["shield"].active_task, 5)
             assert host.session_turn_ends[-1]["outcome"] == "completed"
-            assert client.queries == ["hello", "after"]
+            # The context-window calibration (Stage A3) also ran once the
+            # transport went idle — it dispatches `/context` through the same
+            # client, so it appears in the recorded queries but is not one of
+            # the user's prompts.
+            assert client.queries == [
+                "hello",
+                context_probe.CLAUDE_CONTEXT_PROMPT,
+                "after",
+            ]
             assert len(built) == 1, "the transport must be reused, not rebuilt"
         finally:
             await runtime.stop()
@@ -467,7 +475,15 @@ def test_failed_turn_with_live_background_keeps_transport() -> None:
             await runtime.start_turn("failguard", "native_timer", "after")
             await asyncio.wait_for(runtime._sessions["failguard"].active_task, 5)
             assert host.session_turn_ends[-1]["outcome"] == "completed"
-            assert client.queries == ["hello", "after"]
+            # The context-window calibration (Stage A3) also ran, at the first
+            # idle moment the transport had — after "after", because the live
+            # background work of "hello"'s turn kept the probe away. It is not
+            # one of the user's prompts.
+            assert client.queries == [
+                "hello",
+                "after",
+                context_probe.CLAUDE_CONTEXT_PROMPT,
+            ]
             assert len(built) == 1, "the transport must be reused, not rebuilt"
         finally:
             await runtime.stop()

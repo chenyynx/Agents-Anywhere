@@ -1308,9 +1308,24 @@ class ClaudeConnection:
                     # the next frame or by the transport closing, so the loop
                     # cannot stall here.
                     if await response.await_terminal_verdict():
-                        self.current = None
-                        self.selected.clear()
-                        self._notify_turn_changed()
+                        # ONLY the response that still owns the transport hands
+                        # it back. This park can resolve long after it began —
+                        # `release()` sets `released` while the reader is still
+                        # waiting to be scheduled — and by the time the reader
+                        # resumes, the response may already have been dropped
+                        # (`release()` on a declined park calls
+                        # `drop_current`) with a later claimant holding
+                        # `current`. Clearing unconditionally would strand that
+                        # claimant: its frames would reach a queue nobody is
+                        # routing to, exactly the shape the context-window
+                        # calibration (`turns/context_probe.py`) hit on real
+                        # wire (2026-10-08: the probe claimed `current`, the
+                        # reader's deferred clear released it, and the probe's
+                        # own report frame minted a cast turn from silence).
+                        if self.current is response:
+                            self.current = None
+                            self.selected.clear()
+                            self._notify_turn_changed()
                         self.arm_idle()
                         if (
                             not self.streaming

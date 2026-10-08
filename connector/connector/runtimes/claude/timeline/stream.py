@@ -189,11 +189,19 @@ class ClaudeStreamAccumulator:
         flush of a thinking block whose stream never closed — that republishes
         a row the message frame already wrote, so it must carry the frame's
         usage rather than strip it. Subagent sidechain frames get None.
+
+        An all-zero seed counts as absent: it measured nothing (the shape a
+        `message_start` emits before any call has counted tokens), and treating
+        it as a real seed would pin four zeros on the row instead of falling
+        back to the last real measurement.
         """
 
         if message is not None and _is_sidechain(message):
             return None
-        return self.partial_usage or self.last_usage
+        seed = self.partial_usage
+        if seed is not None and not any(seed.values()):
+            seed = None
+        return seed or self.last_usage
 
     def _absorb_delta_usage(self, message: Any, event: Mapping[str, Any]) -> None:
         """Fold a message_delta's cumulative output count into the seed."""

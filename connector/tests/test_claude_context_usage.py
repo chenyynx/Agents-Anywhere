@@ -33,6 +33,7 @@ from connector.runtimes.claude.timeline.messages import (
     ClaudeMessageProjector,
     message_usage,
     stable_message_item_id,
+    usage_counts,
 )
 from connector.runtimes.claude.timeline.stream import ClaudeStreamAccumulator
 
@@ -50,6 +51,14 @@ USAGE_WIRE = {
     "outputTokens": 30,
     "cacheReadTokens": 5000,
     "cacheCreationTokens": 7,
+}
+# The all-zero shape a streamed `message_start` carries before the call has
+# counted anything: every counter key is present, none measured a token.
+ZERO_RAW: dict[str, Any] = {
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation_input_tokens": 0,
 }
 
 
@@ -613,6 +622,96 @@ def test_message_usage_ignores_sidechain_frames() -> None:
         parent_tool_use_id="call_dispatch",
     )
     assert message_usage(frame) is None
+
+
+def test_usage_counts_rejects_all_zero_mapping() -> None:
+    # Four counters all present but all zero measured nothing: the mapping is
+    # not a usage, exactly like one that omitted every counter key.
+    assert usage_counts(ZERO_RAW) is None
+    # Same through the public `message_usage` reader: an all-zero live frame
+    # contributes no usage key rather than four zeros.
+    assert (
+        message_usage(SimpleNamespace(type="assistant", usage=dict(ZERO_RAW))) is None
+    )
+
+
+def test_usage_counts_keeps_gaps_when_one_count_is_real() -> None:
+    # A mapping with a single real count still yields all four keys — the
+    # all-zero gate must not misfire on genuine gaps (gateways differ).
+    usage = usage_counts({"input_tokens": 12})
+    assert usage == {
+        "inputTokens": 12,
+        "outputTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheCreationTokens": 0,
+    }
+    assert_wire_usage(usage)
+
+
+def test_stream_accumulator_all_zero_seed_carries_no_usage() -> None:
+    accumulator = ClaudeStreamAccumulator()
+    projector = ClaudeMessageProjector()
+    session = _session()
+
+    assert (
+        accumulator.item_from_stream_event(
+            session=session,
+            turn_id=TURN_ID,
+            message=_stream_event(_message_start("msg_zero", ZERO_RAW)),
+            projector=projector,
+        )
+        is None
+    )
+    # An all-zero seed is absent: with no prior real measurement the row
+    # carries no usage block at all instead of four pinned zeros.
+    assert accumulator.partial_usage is None
+
+    streamed = accumulator.item_from_stream_event(
+        session=session,
+        turn_id=TURN_ID,
+        message=_stream_event(_text_delta("Hi")),
+        projector=projector,
+    )
+    assert streamed is not None
+    assert "usage" not in streamed.content
+
+
+def test_stream_accumulator_real_seed_pins_zero_output() -> None:
+    # Regression: a real seed still lands as four keys with output pinned to 0
+    # (the produced-token count arrives later on `message_delta`).
+    accumulator = ClaudeStreamAccumulator()
+    projector = ClaudeMessageProjector()
+    session = _session()
+
+    accumulator.item_from_stream_event(
+        session=session,
+        turn_id=TURN_ID,
+        message=_stream_event(_message_start("msg_real", USAGE_RAW)),
+        projector=projector,
+    )
+
+    streamed = accumulator.item_from_stream_event(
+        session=session,
+        turn_id=TURN_ID,
+        message=_stream_event(_text_delta("Hi")),
+        projector=projector,
+    )
+    assert streamed is not None
+    assert streamed.content["usage"] == {**USAGE_WIRE, "outputTokens": 0}
+
+
+def test_stream_frame_usage_falls_back_past_all_zero_seed() -> None:
+    accumulator = ClaudeStreamAccumulator()
+    accumulator.partial_usage = {
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheCreationTokens": 0,
+    }
+    accumulator.last_usage = dict(USAGE_WIRE)
+
+    # An all-zero seed is treated as absent, so the last real measurement wins.
+    assert accumulator._stream_frame_usage(None) == USAGE_WIRE
 
 
 def test_content_hash_changes_when_usage_changes() -> None:

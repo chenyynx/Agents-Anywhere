@@ -796,11 +796,13 @@ _USAGE_FIELDS: tuple[tuple[str, str], ...] = (
 def usage_counts(source: Any) -> dict[str, int] | None:
     """Normalize one raw API usage mapping into the wire's four int keys.
 
-    Returns None when there is no usage mapping at all, or when it holds none
-    of the token counts (an object that measured nothing is not a usage —
-    publishing four zeros would read as "the context is empty" on clients). A
-    mapping with real gaps (gateways differ) still yields all four keys, gaps
-    as 0.
+    Returns None when there is no usage mapping at all, when it holds none of
+    the token counts, or when every counter it holds is zero — an object that
+    measured nothing is not a usage, whether it omitted the counts or filled
+    them with zeros (publishing four zeros would read as "the context is
+    empty" on clients, and an all-zero seed is exactly the shape a
+    `message_start` emits before a call has measured anything). A mapping with
+    at least one real count still yields all four keys, gaps as 0.
     """
 
     if not isinstance(source, Mapping):
@@ -809,7 +811,10 @@ def usage_counts(source: Any) -> dict[str, int] | None:
         _extract(source, snake, wire) is not None for snake, wire in _USAGE_FIELDS
     ):
         return None
-    return {wire: _usage_int(source, snake, wire) for snake, wire in _USAGE_FIELDS}
+    counts = {wire: _usage_int(source, snake, wire) for snake, wire in _USAGE_FIELDS}
+    if not any(counts.values()):
+        return None
+    return counts
 
 
 def enrich_usage(

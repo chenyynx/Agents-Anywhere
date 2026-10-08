@@ -984,7 +984,7 @@ class ClaudeTurnRunner:
                 kwargs = {
                     "oracle": self.oracle,
                     "attached_task_ids": self._attached_agent_task_ids(session),
-                    "live_task_ids": self._live_agent_task_ids(session),
+                    "live_task_ids": self.live_agent_task_ids(session),
                 }
             items = self.timeline.close_open_agent_cards(session, **kwargs)
             published = 0
@@ -1014,35 +1014,36 @@ class ClaudeTurnRunner:
             )
             return 0
 
-    def _live_agent_task_ids(self, session: ClaudeSession) -> frozenset[str]:
-        """Tasks the live transport still vouches for (I-G2 exemption set).
+    def live_agent_task_ids(self, session: ClaudeSession) -> frozenset[str]:
+        """Tasks the live transport vouches for (the F2 provider).
 
-        Only ``background.active_ids`` qualifies: it is the transport's own
-        set of tasks it knows to be running right now. ``task_ids`` is the
-        broader reconciliation set (it retains finished ids until the next
-        reconcile), so exempting all of it would hold dead cards open.
-        """
+        A connection that is alive and not closing is the only qualification:
+        its ``background.active_ids`` is the transport's own set of tasks it
+        knows to be running right now. Deliberately NOT gated on
+        ``session.execution`` — a background subagent keeps running while the
+        main session sits idle, and a null execution does not mean the process
+        stopped — and deliberately not ``connection.task_ids``, the broader
+        reconciliation set that retains finished ids.
 
-        connection = self.connections.get(session.session_id)
-        if connection is None:
-            return frozenset()
-        return frozenset(connection.background.active_ids)
-
-    def _attached_agent_task_ids(self, session: ClaudeSession) -> frozenset[str]:
-        """Tasks of a session whose process this connector is actively driving.
-
-        The ``attached`` set the oracle exempts from the file-staleness closure:
-        a long tool call inside a live turn writes nothing for a while, so a
-        silent transcript is not evidence of death while the process is under
-        our control. A terminal notice still closes these tasks.
+        Wired to the reader/syncer as their ``live_task_ids`` provider so a
+        history rebuild never closes a card whose task the transport still
+        vouches for (red team F2), and used directly by the sweeps.
         """
 
         connection = self.connections.get(session.session_id)
         if connection is None or connection.closing:
             return frozenset()
-        if session.execution is None:
-            return frozenset()
-        return self._live_agent_task_ids(session)
+        return frozenset(connection.background.active_ids)
+
+    def _attached_agent_task_ids(self, session: ClaudeSession) -> frozenset[str]:
+        """The ``attached`` set the oracle exempts from the file-staleness closure.
+
+        Identical to ``live_agent_task_ids`` by design: while this connector is
+        driving the process, a long tool call writing nothing for a while must
+        not be mistaken for death. A terminal notice still closes these tasks.
+        """
+
+        return self.live_agent_task_ids(session)
 
     async def sweep_agent_cards_by_evidence(
         self,

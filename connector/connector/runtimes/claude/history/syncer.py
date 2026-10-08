@@ -32,17 +32,14 @@ from connector.runtimes.claude.sessions.reader import (
     _history_items_from_messages,
     _history_tool_call_context,
     _match_history_client_messages,
+    _read_raw_transcript_scan,
     _sdk_session_metadata,
     _session_title,
     _string_attr,
     _timestamp_from_epoch,
     _without_maintenance_messages,
 )
-from connector.runtimes.claude.sessions.subagent_oracle import (
-    ClaudeSubagentOracle,
-    claude_projects_dir,
-    read_raw_transcript_lines,
-)
+from connector.runtimes.claude.sessions.subagent_oracle import ClaudeSubagentOracle
 from connector.runtimes.claude.sessions.sync_state import (
     ClaudePendingSessionSync,
     ClaudeSessionSyncStateStore,
@@ -59,6 +56,9 @@ class ClaudeHistorySyncer:
     sync_states: ClaudeSessionSyncStateStore
     pending_messages: ClaudePendingClientMessageRegistry
     oracle: ClaudeSubagentOracle | None = None
+    #: Tasks the live transport vouches for, per session (F2). See
+    #: ``ClaudeSessionReader.live_task_ids``.
+    live_task_ids: Callable[[ClaudeSession], frozenset[str]] | None = None
 
     async def sync_session_timeline(
         self,
@@ -197,12 +197,11 @@ class ClaudeHistorySyncer:
             client_message_matches=client_message_matches,
             tool_call_lookup=tool_call_lookup,
             hidden_tool_use_ids=hidden_tool_use_ids,
-            raw_lines=read_raw_transcript_lines(
-                projects_dir=claude_projects_dir(),
-                cwd=session.cwd,
-                external_session_id=session.external_session_id,
-            ),
+            raw_scan=_read_raw_transcript_scan(session),
             oracle=self.oracle,
+            live_task_ids=(
+                self.live_task_ids(session) if self.live_task_ids else frozenset()
+            ),
         )
         snapshot = RuntimeTimelineSnapshot(
             session_id=session_id,

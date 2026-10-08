@@ -35,7 +35,7 @@ import re
 import time
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -304,10 +304,14 @@ class ClaudeSubagentOracle:
                 receipt_age_seconds is not None
                 and receipt_age_seconds > self.start_grace_seconds
             ):
+                # The end time is the receipt time (F2b): the task was never
+                # seen again after its launch, so that instant is the most
+                # honest "ended at" we have. Falls back to now only when the
+                # callers could not date the receipt at all.
                 return AgentTaskEvidence(
                     closure_status="interrupted",
                     closed_by="neverStarted",
-                    end_time_ms=current_ms,
+                    end_time_ms=int(current_ms - receipt_age_seconds * 1000),
                     agent_status="interrupted",
                 )
             return None
@@ -395,27 +399,31 @@ class RawTranscriptNotice:
     #: uuid of the row this notice came from, when it has one. A notice whose
     #: own row uuid the SDK already exposes is not raw-only and is dropped.
     row_uuid: str | None
-    #: uuid of the nearest preceding row that carried one, used to order a
-    #: raw-only notice against the SDK messages. None when unknown.
-    anchor: str | None
     #: 0-based index of the notice's row in ``raw_lines``.
     line_index: int
 
 
 @dataclass(frozen=True, slots=True)
 class RawTranscriptScan:
-    """The raw terminal notices of one transcript, in file order."""
+    """What one transcript's raw lines say about Agent tasks."""
 
     notices: tuple[RawTranscriptNotice, ...]
+    #: task_id -> epoch ms of the newest ``agentId: <id>`` mention in the
+    #: transcript. The CLI writes that receipt when an Agent call is
+    #: dispatched, so it is the closest thing the transcript has to a launch
+    #: time — the input the never-started grace needs (F5). The SDK message
+    #: view exposes no timestamps at all, which is why this comes from the raw
+    #: file.
+    receipt_times_ms: Mapping[str, int] = field(default_factory=dict)
 
 
 def scan_raw_transcript(
     raw_lines: Sequence[str],
 ) -> RawTranscriptScan:
-    """Pull every terminal notice out of a transcript's raw lines.
+    """Pull every terminal notice and receipt time out of a transcript.
 
-    Two row shapes carry the wrapper, and both are read because the CLI writes
-    them at different moments and keeps them independently:
+    Two row shapes carry the notice wrapper, and both are read because the CLI
+    writes them at different moments and keeps them independently:
 
     * ``type == "user"`` — the notice as a driver message. This is what the SDK
       message view surfaces (when it surfaces it at all).
@@ -427,32 +435,31 @@ def scan_raw_transcript(
       is a delivery detail, so the notice is a completion either way.
 
     ``attachment`` rows repeat the same wrapper as rendering chrome and are
-    skipped. A notice's own row uuid and its nearest preceding uuid anchor are
-    kept so a caller can place it against the SDK's uuid-ordered messages.
+    skipped. The same pass also collects each task's newest ``agentId:``
+    mention (its dispatch receipt time), so callers get both facts for one
+    read of the file.
     """
 
     notices: list[RawTranscriptNotice] = []
-    last_anchor: str | None = None
+    receipt_times: dict[str, int] = {}
     for line_index, line in enumerate(raw_lines):
-        # The uuid is tracked on every row, not only the notice rows, so an
-        # enqueue row (which carries none) still anchors to the nearest
-        # preceding uuid the SDK view also knows.
-        if '"uuid"' in line:
-            try:
-                row = json.loads(line)
-            except (ValueError, TypeError):
-                row = None
-            if isinstance(row, Mapping):
-                row_uuid = _string(row.get("uuid"))
-                if row_uuid is not None:
-                    last_anchor = row_uuid
-        if "<task-notification>" not in line:
+        wants_notice = "<task-notification>" in line
+        wants_receipt = "agentId:" in line
+        if not wants_notice and not wants_receipt:
             continue
         try:
             row = json.loads(line)
         except (ValueError, TypeError):
             continue
         if not isinstance(row, Mapping):
+            continue
+        timestamp_ms = _parse_iso_ms(row.get("timestamp"))
+        if wants_receipt and timestamp_ms is not None:
+            for match in _AGENT_ID_RE.finditer(line):
+                task_id = match.group(1)
+                if (receipt_times.get(task_id) or -1) < timestamp_ms:
+                    receipt_times[task_id] = timestamp_ms
+        if not wants_notice:
             continue
         row_uuid = _string(row.get("uuid"))
         row_type = row.get("type")
@@ -465,7 +472,6 @@ def scan_raw_transcript(
             continue
         if not isinstance(text, str):
             continue
-        timestamp_ms = _parse_iso_ms(row.get("timestamp"))
         for event in task_events_from_notification_text(
             text,
             timestamp_ms=timestamp_ms,
@@ -475,89 +481,94 @@ def scan_raw_transcript(
                     event=event,
                     timestamp_ms=timestamp_ms,
                     row_uuid=row_uuid,
-                    anchor=last_anchor,
                     line_index=line_index,
                 )
             )
-    return RawTranscriptScan(notices=tuple(notices))
+    return RawTranscriptScan(
+        notices=tuple(notices),
+        receipt_times_ms=receipt_times,
+    )
+
+
+_AGENT_ID_RE = re.compile(r"agentId:\s*([0-9a-zA-Z]+)")
 
 
 def raw_only_notices(
-    raw_lines: Sequence[str],
+    scan: RawTranscriptScan,
     *,
     sdk_uuid_order: Mapping[str, int],
 ) -> tuple[tuple[int, ClaudeTaskEvent], ...]:
-    """The ``(placement_index, event)`` of every terminal notice the SDK dropped.
+    """The ``(placement_index, event)`` of the raw notices the SDK dropped.
 
     A notice whose own row uuid the SDK already exposes is not raw-only — the
-    SDK fold already knows it, and folding it twice would double-count. Every
-    other notice is placed at the SDK-order index of the nearest preceding row
-    that IS in the SDK view (walking back through the raw file), so it competes
-    in the fold's "latest signal wins" comparison at its true position instead
-    of being appended after the transcript.
+    SDK fold already knows it, and folding it twice would double-count.
+
+    Every remaining notice is placed at index **0**, i.e. before everything the
+    window holds. That is the conservative side on purpose: the window's own
+    signals (a SendMessage resume, child activity rows, an SDK-visible notice)
+    all carry an index >= 0, so any of them beats the raw notice and re-opens
+    the task. Placing an **older-than-the-window** notice at the window's end
+    instead — the first cut's bug — let it silently outrank a later resume and
+    closed cards whose task was demonstrably running (red team F4).
+
+    A genuinely later terminal notice is unaffected: it either arrives in this
+    window (and then is either SDK-visible, so dropped here, or enqueued beside
+    a delivered row) or it belongs to a later window, whose own projection
+    folds it at its own position. Only one signal per task is kept (the newest
+    among the raw-only ones), because they all share index 0 and a second entry
+    would only add an ambiguous tie.
     """
 
-    scanned = scan_raw_transcript(raw_lines)
-    placed: list[tuple[int, ClaudeTaskEvent]] = []
-    seen: set[tuple[str, str | None, int]] = set()
-    for notice in scanned.notices:
+    newest_by_task: dict[str, RawTranscriptNotice] = {}
+    for notice in scan.notices:
         if notice.row_uuid is not None and notice.row_uuid in sdk_uuid_order:
             continue
-        index = _raw_notice_index(raw_lines, notice, sdk_uuid_order)
-        key = (notice.event.task_id, notice.event.status, index)
-        if key in seen:
-            # The CLI stages a notice twice (enqueue + delivery) with the same
-            # task/status; the fold only needs one signal per position.
-            continue
-        seen.add(key)
-        placed.append((index, notice.event))
-    return tuple(placed)
+        task_id = notice.event.task_id
+        current = newest_by_task.get(task_id)
+        if current is None or (notice.timestamp_ms or -1) >= (
+            current.timestamp_ms or -1
+        ):
+            newest_by_task[task_id] = notice
+    return tuple(
+        (0, notice.event) for notice in newest_by_task.values()
+    )
 
 
-def _raw_notice_index(
-    raw_lines: Sequence[str],
-    notice: RawTranscriptNotice,
-    sdk_uuid_order: Mapping[str, int],
-) -> int:
-    if notice.anchor is not None and notice.anchor in sdk_uuid_order:
-        return sdk_uuid_order[notice.anchor]
-    for line in reversed(raw_lines[: notice.line_index]):
-        if '"uuid"' not in line:
-            continue
-        try:
-            row = json.loads(line)
-        except (ValueError, TypeError):
-            continue
-        if not isinstance(row, Mapping):
-            continue
-        uuid = _string(row.get("uuid"))
-        if uuid is not None and uuid in sdk_uuid_order:
-            return sdk_uuid_order[uuid]
-    return len(sdk_uuid_order)
+#: A scan cache keyed by (path, size, mtime_ns). One sync settles a session by
+#: rebuilding its whole window, and the same transcript is read again on the
+#: next settle; caching the parsed scan (not the raw lines) keeps the repeated
+#: cost at one dict lookup and a few KB. Bounded because the connector serves
+#: many sessions over its life.
+_SCAN_CACHE: dict[tuple[str, int, int], RawTranscriptScan] = {}
+_SCAN_CACHE_LIMIT = 16
 
 
-def read_raw_transcript_lines(
-    *,
-    projects_dir: Path,
-    cwd: str | None,
-    external_session_id: str | None,
-) -> tuple[str, ...]:
-    """Read the raw transcript JSONL for a session, or ``()`` when unreadable.
+def scan_transcript_file(path: Path) -> RawTranscriptScan | None:
+    """Scan a transcript file, memoized by (path, size, mtime_ns).
 
-    The file is ``<root>/<project-key>/<session-id>.jsonl``. Returns an empty
-    tuple for any normal reason it cannot be read (unknown cwd, missing file,
-    no permission) so the caller's fold simply proceeds without raw notices —
-    absence of the raw file is never evidence and must not raise.
+    Returns ``None`` when the file cannot be stat'ed or read — absence of a raw
+    transcript is never evidence and must not raise. A changed file (size or
+    mtime) inherently misses the cache, so no invalidation is needed.
     """
 
-    if not cwd or not external_session_id:
-        return ()
-    path = projects_dir / claude_project_key(cwd) / f"{external_session_id}.jsonl"
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    key = (str(path), stat.st_size, stat.st_mtime_ns)
+    cached = _SCAN_CACHE.get(key)
+    if cached is not None:
+        return cached
     try:
         with open(path, encoding="utf-8") as handle:
-            return tuple(handle.read().splitlines())
+            lines = tuple(handle.read().splitlines())
     except OSError:
-        return ()
+        return None
+    scan = scan_raw_transcript(lines)
+    if len(_SCAN_CACHE) >= _SCAN_CACHE_LIMIT:
+        _SCAN_CACHE.pop(next(iter(_SCAN_CACHE)))
+    _SCAN_CACHE[key] = scan
+    return scan
 
 
 def _parse_iso_ms(value: Any) -> int | None:

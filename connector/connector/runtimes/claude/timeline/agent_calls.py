@@ -273,6 +273,28 @@ def closure_rank(status: str | None) -> tuple[int, int]:
     )
 
 
+def open_agent_task_ids(agents: Mapping[str, Any]) -> frozenset[str]:
+    """The tasks on a card that still claim to be alive.
+
+    A task counts as open when its agents-map entry carries a live status
+    (``running`` or ``async_launched``). A card can name several tasks — a
+    dispatch plus its SendMessage resumes, or a fan-out — and a closure may
+    only be published when *every* open task has been judged, so a sibling
+    that is still running is never hidden by the closure of another (red team
+    F6). Entries already terminal, or with no status at all, are not open:
+    they neither vouch for liveness nor block a judgement.
+    """
+
+    return frozenset(
+        agent_id
+        for agent_id, entry in agents.items()
+        if isinstance(agent_id, str)
+        and agent_id
+        and isinstance(entry, Mapping)
+        and _string(entry.get("status")) in AGENT_TASK_LIVE_STATUSES
+    )
+
+
 def task_usage(raw: Mapping[str, Any] | None) -> dict[str, Any]:
     """Map task usage onto the keys the receipt path already publishes.
 
@@ -399,6 +421,11 @@ class ClaudeAgentCallCard:
     #: (content None) needs the raw id to synthesize a base.
     tool_use_id: str | None = None
     session_id: str | None = None
+    #: Wall-clock seconds when this card was first seen (its dispatch frame
+    #: landed). The wire frames carry no timestamps, so this is the live path's
+    #: only launch time — the input the never-started grace needs when a task
+    #: has no subagent transcript at all (red team F5).
+    launched_at: float | None = None
 
 
 def agent_task_overlay_for_event(

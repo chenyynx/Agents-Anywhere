@@ -145,6 +145,11 @@ class ClaudeRuntime(AgentRuntime):
             client_factory=self.client_factory,
             oracle=self.subagent_oracle,
         )
+        # F2: the reader and the syncer consult the live transport's task set
+        # before closing a card during a history rebuild. Wired here, after the
+        # runner exists, because the answer lives on the runner's connections.
+        self._session_reader.live_task_ids = self._turns.runner.live_agent_task_ids
+        self._history_syncer.live_task_ids = self._turns.runner.live_agent_task_ids
 
     @property
     def identity(self) -> RuntimeIdentity:

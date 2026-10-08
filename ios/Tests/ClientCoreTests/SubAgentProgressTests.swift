@@ -214,7 +214,7 @@ import Testing
         #expect(single.title == "排查系统资源")
         #expect(single.latestRunningID == "a")
         let pair = SubAgentProgress.capsuleState([first, second])
-        #expect(pair.title == "2 个 SubAgent")
+        #expect(pair.title == "2 个任务进行中")
         // All-terminal cards leave no capsule.
         let done = SubAgentProgress.capsuleState([try cardItem("done", status: "done")])
         #expect(!done.isVisible && done.latestRunningID == nil)
@@ -596,5 +596,117 @@ import Testing
         #expect(SessionHeaderSubtitle.text(metadata: nil, deviceName: "phone", fallbackRuntimeName: "Claude") == "Claude · phone")
         #expect(SessionHeaderSubtitle.text(metadata: nil, deviceName: nil, fallbackRuntimeName: nil)
             == String(localized: "Agent"))
+    }
+}
+
+/// ios-subagent-capsule-glyph §2/§3/§7: the glyph's tool classification and
+/// phase resolution (both pure), plus the capsule's single-card wiring.
+@Suite struct SubAgentGlyphPhaseTests {
+    private func item(_ id: String, type: String = "tool", status: String = "running", order: Int = 1,
+                      content: [String: Any]) throws -> V2TimelineItem {
+        var value = try itemObject(id: id, order: order)
+        value["type"] = type; value["status"] = status; value["content"] = content
+        return try decode(value)
+    }
+
+    private func cardItem(_ id: String = "card", order: Int = 1, status: String = "running",
+                          agents: [String: Any]? = nil) throws -> V2TimelineItem {
+        var content: [String: Any] = ["kind": "agent_call", "action": "invoke", "description": "排查服务状态"]
+        if let agents { content["agents"] = agents }
+        return try item(id, status: status, order: order, content: content)
+    }
+
+    // MARK: Classification (§2)
+
+    @Test func toolClassMapsTheNameTable() {
+        for name in ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "NotebookRead",
+                     "read", "glob", "grep", "web_search", "web_fetch", "list", "ls", "cat"] {
+            #expect(SubAgentGlyphPhase.toolClass(name) == .scouting)
+        }
+        for name in ["Write", "Edit", "MultiEdit", "NotebookEdit", "str_replace_editor", "apply_patch",
+                     "write", "edit", "create_file"] {
+            #expect(SubAgentGlyphPhase.toolClass(name) == .writing)
+        }
+        // Everything neutral or unlisted is nil (宁缺勿假 — never guess).
+        for name in ["Bash", "shell", "bash", "pwsh", "Agent", "Task", "SendMessage", "TodoWrite",
+                     "AskUserQuestion", "mcp__tools__change_title", "CronList", "SomeVendorTool", ""] {
+            #expect(SubAgentGlyphPhase.toolClass(name) == nil)
+        }
+    }
+
+    @Test func toolClassIsCaseAndWhitespaceInsensitive() {
+        #expect(SubAgentGlyphPhase.toolClass("read") == .scouting)
+        #expect(SubAgentGlyphPhase.toolClass("READ") == .scouting)
+        #expect(SubAgentGlyphPhase.toolClass("ReAd") == .scouting)
+        #expect(SubAgentGlyphPhase.toolClass("  Read  ") == .scouting)
+        #expect(SubAgentGlyphPhase.toolClass("WRITE") == .writing)
+        #expect(SubAgentGlyphPhase.toolClass("  edit ") == .writing)
+        // Case never turns a neutral into a class.
+        #expect(SubAgentGlyphPhase.toolClass("Bash") == nil)
+        #expect(SubAgentGlyphPhase.toolClass("bash") == nil)
+        #expect(SubAgentGlyphPhase.toolClass("BASH") == nil)
+    }
+
+    // MARK: Resolution (§3.2, 连续 2 次同类才切 + 保持)
+
+    @Test func resolveNeedsTwoAdjacentSameClassCalls() {
+        #expect(SubAgentGlyphPhase.resolve(toolHistory: []) == nil)
+        #expect(SubAgentGlyphPhase.resolve(toolHistory: ["Read"]) == nil)
+        #expect(SubAgentGlyphPhase.resolve(toolHistory: ["Read", "Read"]) == .scouting)
+        #expect(SubAgentGlyphPhase.resolve(toolHistory: ["Read", "Edit"]) == nil)
+        // A single trailing flip is held: the newest run of ≥2 still wins.
+        #expect(SubAgentGlyphPhase.resolve(toolHistory: ["Read", "Read", "Edit"]) == .scouting)
+        #expect(SubAgentGlyphPhase.resolve(toolHistory: ["Read", "Edit", "Edit"]) == .writing)
+        // Pure alternation has no stable phase.
+        #expect(SubAgentGlyphPhase.resolve(toolHistory: ["Read", "Edit", "Read", "Edit"]) == nil)
+        // A neutral neither classifies nor breaks a run.
+        #expect(SubAgentGlyphPhase.resolve(toolHistory: ["Read", "Read", "Bash", "Read"]) == .scouting)
+        // All-neutral / unknown history resolves to nothing.
+        #expect(SubAgentGlyphPhase.resolve(toolHistory: ["Bash", "Bash"]) == nil)
+        #expect(SubAgentGlyphPhase.resolve(toolHistory: ["mcp__x__y", "Unknown"]) == nil)
+    }
+
+    // MARK: Live phase for a card (§3.3)
+
+    @Test func livePhaseReadsChildToolRowsInOrder() throws {
+        let card = try cardItem("card", order: 1)
+        let parsed = try #require(SubAgentProgress.card(card))
+        // Children arrive unsorted in the array; orderSeq decides the history.
+        let first = try item("t1", status: "done", order: 5,
+                             content: ["kind": "command", "toolName": "Edit", "parentItemId": "card"])
+        let second = try item("t2", status: "done", order: 6,
+                             content: ["kind": "command", "name": "Edit", "parentItemId": "card"])
+        #expect(SubAgentGlyphPhase.livePhase(for: parsed, in: [card, second, first]) == .writing)
+        // With no child rows the lone lastToolName never forms a run.
+        let lonely = try #require(SubAgentProgress.card(try cardItem("lonely", order: 2,
+            agents: ["t1": ["status": "running", "lastToolName": "Read"]])))
+        #expect(SubAgentGlyphPhase.livePhase(for: lonely, in: []) == nil)
+    }
+
+    // MARK: Capsule wiring (§3)
+
+    @Test func capsuleGlyphPhaseIsSingleCardOnly() throws {
+        let card = try cardItem("card", order: 1)
+        let read1 = try item("r1", status: "done", order: 2,
+                             content: ["kind": "command", "toolName": "Read", "parentItemId": "card"])
+        let read2 = try item("r2", status: "done", order: 3,
+                             content: ["kind": "command", "toolName": "Read", "parentItemId": "card"])
+        let single = SubAgentProgress.capsuleState([card, read1, read2])
+        #expect(single.runningCount == 1 && single.glyphPhase == .scouting)
+
+        // Two running cards → nil, the icon auto-cycles.
+        let second = try cardItem("second", order: 4)
+        let pair = SubAgentProgress.capsuleState([card, read1, read2, second])
+        #expect(pair.runningCount == 2 && pair.glyphPhase == nil)
+
+        // A running card with no rows and no lastToolName → nil.
+        let empty = try cardItem("empty", order: 5)
+        #expect(SubAgentProgress.capsuleState([empty]).glyphPhase == nil)
+
+        // A running card whose only history is a single lastToolName → nil (a
+        // lone name never forms a run, so the glyph auto-cycles).
+        let lone = try cardItem("lone", order: 6,
+                                agents: ["t1": ["status": "running", "lastToolName": "Read"]])
+        #expect(SubAgentProgress.capsuleState([lone]).glyphPhase == nil)
     }
 }

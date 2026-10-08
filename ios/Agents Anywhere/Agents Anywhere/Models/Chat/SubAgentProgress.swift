@@ -298,6 +298,9 @@ enum SubAgentProgress {
             runningCount: running.count,
             hasFailure: hasLiveFailure(in: cards),
             singleTaskName: running.count == 1 ? running[0].taskName : nil,
+            // The glyph phase is known only while exactly one SubAgent runs
+            // (§3): with several the icon auto-cycles, so no card can claim it.
+            glyphPhase: running.count == 1 ? SubAgentGlyphPhase.livePhase(for: running[0], in: items) : nil,
             latestRunningID: running.last?.id,
             // The word follows the card the capsule speaks for (the newest
             // active one), so a subagent that is still starting is not read
@@ -515,6 +518,9 @@ struct SubAgentCapsuleState: Equatable {
     let runningCount: Int
     let hasFailure: Bool
     let singleTaskName: String?
+    /// The glyph's two-phase class while exactly one SubAgent runs and its rows
+    /// support it; nil with several (or unknown) — the icon then auto-cycles.
+    let glyphPhase: SubAgentGlyphPhase?
     /// The newest running card. With per-turn pages (pp 2026-10-05) the
     /// capsule opens the turn where the newest work lives, so a fresh
     /// dispatch shows its own page instead of the oldest running one's.
@@ -525,10 +531,10 @@ struct SubAgentCapsuleState: Equatable {
 
     var isVisible: Bool { runningCount > 0 }
 
-    /// "任务名" for one running SubAgent, "N 个 SubAgent" for several.
+    /// "任务名" for one running SubAgent, "N 个任务进行中" for several.
     var title: String {
         if runningCount == 1, let singleTaskName, !singleTaskName.isEmpty { return singleTaskName }
-        return String(localized: "\(runningCount) 个 SubAgent")
+        return String(localized: "\(runningCount) 个任务进行中")
     }
 
     var accessibilityText: String {

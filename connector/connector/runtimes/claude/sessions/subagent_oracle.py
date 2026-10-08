@@ -177,11 +177,18 @@ def probe_agent_file(
 
     base = projects_dir / project_key / external_session_id / "subagents"
     if not base.is_dir():
-        # The whole no-notice face declines rather than guesses: a missing
-        # directory is most often a wrong project key or a session that never
-        # had a subagents tree, and reading that as "the file is gone" would
-        # manufacture a never-started closure out of a path bug (N5b).
-        return AgentFileInfo(exists=False, path_known=False)
+        session_dir = projects_dir / project_key / external_session_id
+        if not session_dir.is_dir():
+            # Neither the session directory nor the subagents tree exists:
+            # most often a wrong project key or an unknown session, and
+            # reading that as "the file is gone" would manufacture a
+            # never-started closure out of a path bug (N5b). Decline instead.
+            return AgentFileInfo(exists=False, path_known=False)
+        # The session directory is real but has no subagents tree yet (the CLI
+        # creates it lazily on the session's first dispatch): a missing file
+        # here is genuine evidence the task never started (red-team N5b
+        # refinement).
+        return AgentFileInfo(exists=False, path_known=True)
     direct = base / f"agent-{task_id}.jsonl"
     candidates = [direct] if direct.is_file() else []
     if not candidates:

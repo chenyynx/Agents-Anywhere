@@ -1087,21 +1087,27 @@ def _raw_history_notices(
     messages: tuple[Any, ...],
     scan: RawTranscriptScan | None,
 ) -> tuple[tuple[int, ClaudeTaskEvent], ...]:
-    """Raw-only terminal notices the SDK view dropped, placed before the window.
+    """Raw-only terminal notices the SDK view dropped, placed at their anchor.
 
     Empty ``scan`` (no raw transcript) means no raw notices — the fold then
-    behaves exactly as before. Placement is index 0 by design: see
-    ``raw_only_notices`` for why the conservative side is "before everything in
-    this window".
+    behaves exactly as before. A notice participates only when its raw-file
+    anchor resolves inside this window (see ``raw_only_notices``); it is folded
+    at the anchor's index so the window's own later signals still win.
     """
 
     if scan is None or not scan.notices:
         return ()
     sdk_uuid_order: dict[str, int] = {}
     for index, message in enumerate(messages):
-        native_id = message_id(message)
-        if native_id is not None and native_id not in sdk_uuid_order:
-            sdk_uuid_order[native_id] = index
+        # Each notice's anchor is the raw transcript row's `uuid`. The SDK
+        # message view exposes that uuid under `.uuid`, while `message_id`
+        # prefers the nested Anthropic `message.id` — a *different* string on
+        # assistant rows. Key BOTH id spaces, or every notice anchored on an
+        # assistant row silently drops out of the fold (red-team P0: keying
+        # `message_id` alone placed 0 of 41 real notices).
+        for key in (message_id(message), getattr(message, "uuid", None)):
+            if isinstance(key, str) and key and key not in sdk_uuid_order:
+                sdk_uuid_order[key] = index
     try:
         return raw_only_notices(scan, sdk_uuid_order=sdk_uuid_order)
     except Exception:  # noqa: BLE001

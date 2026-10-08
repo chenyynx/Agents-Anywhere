@@ -1236,3 +1236,70 @@ def test_N6_the_runtime_wires_the_live_task_provider() -> None:
     # A session with no live connection answers "nothing is live", which is the
     # conservative side the history rebuild relies on.
     assert runner.live_agent_task_ids(_session()) == frozenset()
+
+
+def test_raw_notice_anchor_resolves_in_the_real_sdk_id_space() -> None:
+    """Red-team P0 regression: an anchor must hit the SDK view on either id.
+
+    Real SDK messages carry the Anthropic ``message.id`` nested under
+    ``.message`` while the raw row's uuid lives on ``.uuid`` — different
+    strings on assistant rows. A notice anchored on an assistant row must
+    still resolve (keying ``message_id`` alone placed 0 of 41 real notices).
+    """
+
+    from connector.runtimes.claude.sessions.reader import _raw_history_notices
+    from connector.runtimes.claude.sessions.subagent_oracle import scan_raw_transcript
+
+    raw = (
+        json.dumps(
+            {
+                "type": "assistant",
+                "uuid": "row-uuid-1",
+                "timestamp": "2026-10-08T09:30:00.000Z",
+                "message": {"id": "chatcmpl-abc", "role": "assistant", "content": []},
+            }
+        ),
+        json.dumps(
+            {
+                "type": "queue-operation",
+                "operation": "enqueue",
+                "timestamp": "2026-10-08T09:30:05.000Z",
+                "content": (
+                    "<task-notification>\n<task-id>atask1</task-id>\n"
+                    "<status>completed</status>\n</task-notification>"
+                ),
+            }
+        ),
+    )
+    scan = scan_raw_transcript(raw)
+    messages = (
+        SimpleNamespace(
+            type="assistant",
+            uuid="row-uuid-1",
+            message={"id": "chatcmpl-abc", "role": "assistant", "content": []},
+        ),
+    )
+    placed = _raw_history_notices(messages, scan)
+    assert len(placed) == 1, "anchor on the raw row uuid failed to resolve"
+    assert placed[0][0] == 0
+    assert placed[0][1].task_id == "atask1"
+
+
+def test_probe_distinguishes_missing_session_dir_from_missing_subagents(tmp_path: Any) -> None:
+    """N5b refinement: only a wrong/unknown session declines to judge."""
+
+    from connector.runtimes.claude.sessions.subagent_oracle import probe_agent_file
+
+    # Session directory exists, no subagents tree yet (lazy creation): a
+    # missing file is genuine never-started evidence.
+    (tmp_path / "proj" / "sess").mkdir(parents=True)
+    info = probe_agent_file(
+        projects_dir=tmp_path, project_key="proj", external_session_id="sess", task_id="a1"
+    )
+    assert info.exists is False and info.path_known is True
+
+    # Neither exists: a wrong project key or unknown session must decline.
+    info2 = probe_agent_file(
+        projects_dir=tmp_path, project_key="missing", external_session_id="sess", task_id="a1"
+    )
+    assert info2.exists is False and info2.path_known is False

@@ -30,6 +30,11 @@ import Testing
     /// capability shape) onto the session, exactly as a live-state frame would.
     /// Applied through the runtime model directly, so it never itself triggers
     /// a queue evaluation — the release stays the test's to perform.
+    ///
+    /// Mind the mirror image: a local write (`repository.localWorkDidChange`)
+    /// emits an observation built from this suite's empty repository entry, and
+    /// that resets these injected facts. Re-apply them after any such write that
+    /// precedes another drain.
     private func applyLive(_ model: V2SessionModel, status: V2RuntimeStatus, sendAvailable: Bool = true,
                            sendSupported: Bool = true, sendAllowed: Bool = true, fresh: Bool = true) throws {
         var raw = try fixtureObject("snapshot")
@@ -133,6 +138,10 @@ import Testing
         // session's own evaluation (as an arriving frame would run) drains it.
         model.confirmEcho(try echo(clientID: first.id))
         #expect(model.sendQueue.items.map(\.id) == [second.id])
+        // Confirming is a local write, and a local write emits an empty-data
+        // observation; the injected live facts need re-asserting before the
+        // released head can pass the idle gate.
+        try applyLive(model, status: .idle, sendAvailable: true)
         model.evaluateSendQueue()
         try await eventually { http.count("messages") == 2 }
         model.confirmEcho(try echo(clientID: second.id))
@@ -213,6 +222,9 @@ import Testing
         #expect(model.pendingMessages.first?.id == first.id)
         #expect(model.draft.isEmpty)
 
+        // The demotion is a local write whose emit resets the injected facts;
+        // re-assert them so the released head can pass the idle gate.
+        try applyLive(model, status: .idle, sendAvailable: true)
         model.evaluateSendQueue()
         try await eventually { http.count("messages") == 2 }
     }
@@ -258,7 +270,14 @@ import Testing
         #expect(model.isSendQueuePaused)
 
         http.respond = nil
+        // The retry clears the pause and re-evaluates, but its own local write
+        // emits an empty-data observation that resets the injected facts, so
+        // the drain it evaluates stands down (production emits carry the real
+        // projection and do not). Re-assert the facts and evaluate again: the
+        // pause is gone, so the held head is released.
         await chat.retrySendQueue()
+        try applyLive(model, status: .idle, sendAvailable: true)
+        model.evaluateSendQueue()
         try await eventually { http.count("messages") == 2 }
         #expect(!model.isSendQueuePaused)
         #expect(model.sendQueue.head?.state == .awaitingEcho)

@@ -109,7 +109,18 @@ POLLED_TURN_WATCHDOG_SECONDS = 30.0
 # product has ever been observed running is 223.4s (AskUserQuestion), so the
 # headroom is wide; the timing is measured from the cast, not from when the
 # content showed up.
-CONTENTING_TURN_WATCHDOG_SECONDS = 600.0
+#
+# STOPGAP (2026-10-09, pp-approved): raised 600.0 -> 1800.0. The 600s value
+# was calibrated on the longest single TOOL, not on the longest work CYCLE:
+# the autonomous wake-cycles (a subagent notification mints a turn) run
+# 10-15 minutes of continuous productive work, so the 600s knife cut live
+# turns mid-flight — 8 host-process kills in the week, 7 of them in the last
+# 30 hours across live sessions (thinking-orb, alias-lineage, ...). 1800s
+# keeps every observed real cycle inside the window while preserving the
+# absolute bound. The root fix — progress arbitration (a contenting turn is
+# killed on labour-frame STALL, not on absolute age) — is specced in
+# `.local-dev/claude-watchdog-liveness-tasks.md` and replaces this number.
+CONTENTING_TURN_WATCHDOG_SECONDS = 1800.0
 
 # G4: why the breaker fired. The two values are the whole diagnosis of a
 # watchdog log line, so they are named once and reused by the fire line, the

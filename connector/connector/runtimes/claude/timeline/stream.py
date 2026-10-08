@@ -25,11 +25,17 @@ class ClaudeStreamAccumulator:
     # `message_start.message.usage`, kept current by `message_delta.usage`
     # (which carries the message's cumulative output count).
     partial_usage: dict[str, int] | None = None
+    # The model the streamed message reports (`message_start.message.model` —
+    # for a gateway this is the engine's real id, not the catalog entry's).
+    # It rides the streamed rows as the usage block's model fallback.
+    partial_model: str | None = None
     # The last per-call usage this turn saw from a final frame. Deliberately
     # survives `reset()`: the result-envelope fallback republishes the same
     # item id after a reset, and its own frame only carries turn-cumulative
-    # totals, so this stash is the only per-call number left for it.
+    # totals, so this stash is the only per-call number left for it. The model
+    # is stashed alongside for the same reason.
     last_usage: dict[str, int] | None = None
+    last_model: str | None = None
 
     def item_from_stream_event(
         self,
@@ -57,6 +63,11 @@ class ClaudeStreamAccumulator:
                 self.partial_thinking_revision = 0
             self.partial_message_id = message_id
             self.partial_usage = _message_start_usage(message, payload)
+            self.partial_model = (
+                None
+                if self.partial_usage is None
+                else _message_start_model(payload)
+            )
             return None
         if event_type == "content_block_start":
             index = _int(event.get("index"))
@@ -128,17 +139,26 @@ class ClaudeStreamAccumulator:
         self.partial_thinking_blocks.clear()
         self.partial_thinking_revision = 0
         self.partial_usage = None
+        self.partial_model = None
 
-    def remember_usage(self, usage: Mapping[str, int] | None) -> None:
+    def remember_usage(
+        self,
+        usage: Mapping[str, int] | None,
+        model: str | None = None,
+    ) -> None:
         """Keep the last concrete per-call usage this turn saw.
 
         Called for every main-chain assistant frame, text or not: a
         tool-only frame's call is the per-call usage a later result-envelope
         fallback (whose own frame reports turn-cumulative totals) must carry.
+        The frame's model is stashed beside it so the fallback's rows can name
+        the model too.
         """
 
         if usage is not None:
             self.last_usage = dict(usage)
+        if model:
+            self.last_model = model
 
     def result_text_usage(self) -> dict[str, int] | None:
         """The per-call usage to stamp on a result-envelope fallback item.
@@ -151,6 +171,15 @@ class ClaudeStreamAccumulator:
         """
 
         return self._stream_frame_usage(None)
+
+    def result_usage_model(self) -> str | None:
+        """The model to stamp on a result-envelope fallback item.
+
+        The envelope itself names no model, so the streamed message's own id is
+        what the item can carry — the same stash the usage comes from.
+        """
+
+        return self.partial_model or self.last_model
 
     def _stream_frame_usage(self, message: Any | None) -> dict[str, int] | None:
         """The usage a streamed row can carry right now, if any.
@@ -230,6 +259,7 @@ class ClaudeStreamAccumulator:
             item_id=item_id,
             revision=self.partial_revision,
             usage=None if _is_sidechain(message) else self.partial_usage,
+            usage_model=None if _is_sidechain(message) else self.partial_model,
         )
 
     def _thinking_partial_item(
@@ -264,6 +294,7 @@ class ClaudeStreamAccumulator:
             status=status,
             revision=self.partial_thinking_revision,
             usage=usage,
+            usage_model=self.partial_model,
         )
 
     def finalize_pending_thinking(
@@ -317,6 +348,14 @@ def _message_start_usage(message: Any, payload: Any) -> dict[str, int] | None:
         return None
     usage["outputTokens"] = 0
     return usage
+
+
+def _message_start_model(payload: Any) -> str | None:
+    """The model a `message_start` reports for the message it opens."""
+
+    if not isinstance(payload, Mapping):
+        return None
+    return _string(payload.get("model"))
 
 
 def _is_sidechain(message: Any) -> bool:

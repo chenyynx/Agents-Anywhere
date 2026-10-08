@@ -61,11 +61,13 @@ from connector.runtimes.claude.timeline.messages import (
     ClaudeMessageProjector,
     ClaudePendingToolCall,
     ClaudeToolBlock,
+    enrich_usage,
     is_compact_summary_text,
     is_hidden_tool_name,
     is_synthetic_control_message,
     is_task_notification_message,
     message_id,
+    message_model,
     message_role,
     message_text,
     message_tool_blocks,
@@ -434,8 +436,11 @@ def _history_items_from_messages(
                 # usage; attaching it here makes a replayed item converge with
                 # the live one, which published the same numbers under the same
                 # stable id (the main chain's context stays measurable on old
-                # sessions too). Non-assistant roles never carry usage.
+                # sessions too). Non-assistant roles never carry usage. The
+                # transcript's own `message.model` is the model fallback; the
+                # session's engine probe, when it has landed, overrides it.
                 usage=message_usage(message) if role == "assistant" else None,
+                usage_model=message_model(message) if role == "assistant" else None,
             )
         )
     items.extend(projector.missing_history_tool_result_items(session=session))
@@ -766,7 +771,17 @@ def _history_tool_call_context(
         # Carried onto the call block so a rebase from this lookup (a window
         # whose tool_use frame falls outside it) rebuilds the same tool rows
         # the full import minted — usage included — instead of stripping it.
-        usage = message_usage(message) if role == "assistant" else None
+        # Enriched exactly like the live tool rows, so a history rebuild and
+        # the live projection publish one shape.
+        usage = (
+            enrich_usage(
+                message_usage(message),
+                model=message_model(message),
+                probe=session.context_probe,
+            )
+            if role == "assistant"
+            else None
+        )
         for block in message_tool_blocks(message):
             if block.block_type == "tool_result":
                 result_blocks[block.tool_use_id] = block

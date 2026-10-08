@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass, field
 
 from connector.runtime_protocol import RuntimeTimelineItem
+from connector.runtimes.claude.domain.context_report import ClaudeContextProbe
 from connector.runtimes.session_identity import stable_runtime_session_id
 
 
@@ -78,6 +79,13 @@ class ClaudeSession:
     execution: ClaudeExecution | None = None
     queued_execution: ClaudeExecution | None = None
     execution_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # The engine's own `/context` self-report (window calibration, 2026-10-08):
+    # what the running CLI declared this session's context window to be, keyed
+    # to the model selection it was measured for. Lives on the session — not
+    # the transport — because it describes the session's model, and every
+    # usage-stamped item reads it to carry `contextWindow`/`model` without a
+    # model-name guess. None until a probe lands.
+    context_probe: ClaudeContextProbe | None = None
 
     @property
     def active_turn_id(self) -> str | None:

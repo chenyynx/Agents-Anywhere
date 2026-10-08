@@ -220,6 +220,12 @@ class ClaudeTurnController:
             session = self.session_store.get(session_id)
             if session is not None:
                 await self.runner.refresh_idle_connection(session)
+                # A selection change rebuilds the transport with the new model,
+                # so the engine's context-window report this session cached was
+                # measured for the old one: re-calibrate on the fresh, idle
+                # transport. Skipped whenever no live transport exists (the
+                # next turn's settle calibrates instead).
+                await self.runner.calibrate_context_window(session)
         return result
 
     async def respond_interaction(

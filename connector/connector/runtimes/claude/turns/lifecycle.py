@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -15,6 +16,7 @@ from connector.runtime_protocol import (
 )
 from connector.runtime_protocol.host import RuntimeHostClient
 from connector.runtimes.claude.catalogs.reader import ClaudeCatalogReader
+from connector.runtimes.claude.domain.context_report import ClaudeContextProbe
 from connector.runtimes.claude.domain.pending_messages import (
     ClaudePendingClientMessageRegistry,
     client_message_text_matches,
@@ -68,6 +70,7 @@ from connector.runtimes.claude.timeline.messages import (
     ClaudeMessageProjector,
     is_synthetic_control_message,
     message_id,
+    message_model,
     message_role,
     message_session_id,
     message_text,
@@ -79,6 +82,7 @@ from connector.runtimes.claude.timeline.stream import (
     ClaudeStreamAccumulator,
     is_stream_event,
 )
+from connector.runtimes.claude.turns import context_probe
 from connector.runtimes.claude.turns.attachments import (
     content_with_attachment_notes,
     materialize_claude_attachments,
@@ -113,6 +117,17 @@ CONTENTING_TURN_WATCHDOG_SECONDS = 600.0
 # because the result could not be attributed to it. It reaches the client's turn
 # ledger verbatim, so the condition is visible rather than silently rewritten.
 STALE_COMPLETION_REASON = "unowned_result_no_content"
+
+# Context-window calibration: how long the probe waits for a just-settled
+# transport to hand its response back (`ClaudeConnection.wait_settled`). The
+# reader clears `current` one event-loop step after a response that received
+# its terminal is released, so the grace is scheduling slack, not a policy
+# window; the ceiling only bounds a reader that stopped running. It is never
+# paid while a turn is live, and never for an interrupted turn's response —
+# that one keeps `current` until its late terminal arrives, which is not a
+# settle the probe may wait for (a stop must not queue behind anything).
+CONTEXT_PROBE_SETTLE_GRACE_SECONDS = 0.02
+CONTEXT_PROBE_SETTLE_CEILING_SECONDS = 0.5
 
 WATCHDOG_REASON_ZERO_CONTENT = "zero_content_fast_kill"
 WATCHDOG_REASON_CONTENT_CEILING = "containing_turn_ceiling"
@@ -1219,6 +1234,184 @@ class ClaudeTurnRunner:
                     metadata={"source": "claude.connection.refresh"},
                 )
 
+    async def calibrate_context_window(self, session: ClaudeSession) -> None:
+        """Ask the engine for its own context window while the transport idles.
+
+        The window a client sizes its context ring with comes from the running
+        engine's `/context` self-report, never from the model name (a gateway
+        serves its own models under Claude Code's `default` entry). This runs
+        at the two moments the session's transport is connected, idle and
+        known to carry the current model: after a turn settles, and after a
+        model-selection rebuild. It is an optimization for the clients — every
+        gate below skips it rather than costing the turn machinery anything,
+        and the report is cached per model selection, so a session pays for it
+        once.
+
+        Serialization is the machinery that already exists: the probe runs
+        under `session.execution_lock` — the lock ``start_turn`` registers a
+        turn under — so no turn can start mid-probe, the probe never runs
+        while one is live, and the lock is only taken when free (a starting
+        turn is never made to wait behind a probe). A transport that hosts
+        scheduled tasks or background work is skipped outright: its stream can
+        carry an uninvited wake, and a probe holding the reader would swallow
+        that reply.
+        """
+
+        if self.stopping:
+            return
+        connection = self.connections.get(session.session_id)
+        if not self._calibration_transport(session, connection):
+            return
+        # Keep the idle reclaim off this transport for the calibration's whole
+        # window. The reclaim's gate cannot see a probe coming — it reads
+        # `current`, which stays None until the claim — so a timer that fires
+        # in the settle gap below would retire the very transport the probe is
+        # about to borrow (measured: idleTimeoutSeconds small enough for the
+        # tests' reclaim). Re-armed in the `finally`; the reader arms it too
+        # whenever it hands a settled response back, so the reclaim is only
+        # ever delayed by a probe, never lost.
+        connection.cancel_idle()
+        try:
+            if not self._calibration_idle(session, connection):
+                if not self._calibration_settling(connection):
+                    return
+                # A turn that just ended has released the response it received
+                # its terminal on, but the reader clears that response's
+                # `current` on its own task a step later — so a calibration
+                # asked for at the turn's end would always lose that race.
+                # Wait for the settle (bounded) instead, and do it OUTSIDE the
+                # execution lock so a starting turn never waits behind it.
+                if not await connection.wait_settled(
+                    grace=CONTEXT_PROBE_SETTLE_GRACE_SECONDS,
+                    ceiling=CONTEXT_PROBE_SETTLE_CEILING_SECONDS,
+                ):
+                    return
+                if not self._calibration_idle(session, connection):
+                    return
+            selection = session.selections.get("model")
+            state = session.context_probe
+            if state is not None and not state.attempt_allowed(
+                selection,
+                now=time.monotonic(),
+                limit=context_probe.CONTEXT_PROBE_RETRY_LIMIT,
+                backoff_seconds=context_probe.CONTEXT_PROBE_RETRY_BACKOFF_SECONDS,
+            ):
+                return
+            try:
+                async with session.execution_lock:
+                    if not self._calibration_idle(session, connection):
+                        return
+                    probe = session.context_probe
+                    if probe is None:
+                        probe = ClaudeContextProbe()
+                        session.context_probe = probe
+                    now = time.monotonic()
+                    if not probe.attempt_allowed(
+                        selection,
+                        now=now,
+                        limit=context_probe.CONTEXT_PROBE_RETRY_LIMIT,
+                        backoff_seconds=(
+                            context_probe.CONTEXT_PROBE_RETRY_BACKOFF_SECONDS
+                        ),
+                    ):
+                        return
+                    probe.begin_attempt(selection, now=now)
+                    report = await context_probe.probe_context_window(
+                        connection,
+                        session_id=session.session_id,
+                        timeout_seconds=(
+                            context_probe.CONTEXT_PROBE_TIMEOUT_SECONDS
+                        ),
+                    )
+                    if report is None:
+                        logger.warning(
+                            "Claude context probe produced no report "
+                            "session_id={} attempts={}",
+                            session.session_id,
+                            probe.attempts,
+                        )
+                        return
+                    model, window, used = report
+                    probe.record(model, window, used)
+                    logger.info(
+                        "Claude context window calibrated session_id={} "
+                        "model={} window={} used={}",
+                        session.session_id,
+                        model,
+                        window,
+                        used,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Claude context calibration failed session_id={}",
+                    session.session_id,
+                )
+        finally:
+            connection.arm_idle()
+
+    def _calibration_transport(
+        self,
+        session: ClaudeSession,
+        connection: ClaudeConnection | None,
+    ) -> bool:
+        """The gate's session-level half: this transport may be borrowed.
+
+        The reader must be live (`streaming` + `queried`, or its stream is not
+        being read at all), no turn may be registered, and no source that can
+        send this session a frame nobody invited — background work or a
+        scheduled task — may exist. A probe taken under any of those would
+        hold the reader while their frames arrived, and those frames would be
+        swallowed with it.
+        """
+
+        return bool(
+            connection is not None
+            and not connection.closing
+            and connection.streaming
+            and connection.queried.is_set()
+            and session.execution is None
+            and session.queued_execution is None
+            and not connection.background.active_ids
+            and not connection.task_ids
+        )
+
+    def _calibration_settling(self, connection: ClaudeConnection) -> bool:
+        """The one not-yet-idle shape worth waiting for: a settled response.
+
+        `current` is released and kept its terminal (`discard` false), so the
+        reader is merely a scheduling step away from handing the transport
+        back. Two other non-idle shapes are deliberately NOT waited for: a
+        response still owned by a live turn (nothing to do but return), and an
+        interrupted turn's response, which holds `current` until its late
+        terminal arrives — that wait would put a user's stop behind the probe,
+        which the drain-after-interrupt red line forbids.
+        """
+
+        current = connection.current
+        return (
+            current is not None
+            and current.released.is_set()
+            and not current.discard
+            and connection.pending is None
+            and not connection.reconciling
+        )
+
+    def _calibration_idle(
+        self,
+        session: ClaudeSession,
+        connection: ClaudeConnection | None,
+    ) -> bool:
+        """The gate's moment-level half: the transport is idle right now."""
+
+        return self._calibration_transport(session, connection) and bool(
+            connection is not None
+            and connection.current is None
+            and connection.pending is None
+            and not connection.reconciling
+        )
+
     async def drive_turn(
         self,
         session: ClaudeSession,
@@ -1509,8 +1702,12 @@ class ClaudeTurnRunner:
                     # `reset()` and must still carry usage (see
                     # `_publish_result_text`). `message_usage` returns None for
                     # sidechain frames on its own, so the stash stays main-chain
-                    # only.
-                    stream_accumulator.remember_usage(message_usage(message))
+                    # only. The frame's model is stashed beside it, so the
+                    # fallback's rows can name the model too.
+                    stream_accumulator.remember_usage(
+                        message_usage(message),
+                        message_model(message),
+                    )
                 synthetic_control = is_synthetic_control_message(message)
                 # Compaction is reported through the same events whether the CLI
                 # compacted a `/compact` prompt or its own context window, so the
@@ -1848,9 +2045,13 @@ class ClaudeTurnRunner:
                 # values — `ResultMessage.usage` is turn-cumulative and is not
                 # read here. Sidechain rows stay without usage entirely.
                 assistant_usage: dict[str, int] | None = None
+                assistant_usage_model: str | None = None
                 if role == "assistant" and frame_parent_tool_use_id is None:
                     assistant_usage = (
                         message_usage(message) or stream_accumulator.partial_usage
+                    )
+                    assistant_usage_model = (
+                        message_model(message) or stream_accumulator.partial_model
                     )
                 await self.publish_items(
                     execution,
@@ -1872,6 +2073,7 @@ class ClaudeTurnRunner:
                                 if role == "assistant"
                                 else 1,
                                 usage=assistant_usage,
+                                usage_model=assistant_usage_model,
                             ),
                             frame_parent_item_id,
                         ),
@@ -2061,6 +2263,14 @@ class ClaudeTurnRunner:
                 # a batch: a turn that published nothing extra must not pay for
                 # a second transcript read.
                 await self._request_settled_session_sync(session)
+            if connection is not None:
+                # The turn is fully settled (terminal state published, rows
+                # flushed), and the transport that just ran it is idle: the
+                # natural moment to calibrate the context window. Runs last so
+                # it can never delay anything the turn owed its user, and it
+                # swallows its own failures (a turn must never fail over a
+                # probe).
+                await self.calibrate_context_window(session)
 
     def _verdict_for_terminal(
         self,
@@ -2200,6 +2410,7 @@ class ClaudeTurnRunner:
                         ),
                         revision=stream_accumulator.next_final_revision(),
                         usage=stream_accumulator.result_text_usage(),
+                        usage_model=stream_accumulator.result_usage_model(),
                     ),
                     parent_item_id,
                 ),

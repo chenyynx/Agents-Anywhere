@@ -20,6 +20,7 @@ from test_claude_runtime import (
 from connector.runtime_protocol import RuntimeConfig, RuntimeInvalidRequestError
 from connector.runtimes.claude.domain.models import model_selection_from_selection_id
 from connector.runtimes.claude.runtime import ClaudeRuntime
+from connector.runtimes.claude.turns import context_probe
 from connector.server.protocol import protocol_selection_id
 
 
@@ -65,7 +66,13 @@ def test_cli_model_survives_connection_reuse_and_idle_recreation() -> None:
             assert first.options.kwargs["effort"] == "max"
             await runtime.start_turn("models", "native_timer", "again")
             await asyncio.wait_for(runtime._sessions["models"].active_task, 1)
-            assert first.queries == ["hello", "again"]
+            # The context-window calibration (Stage A3) also dispatches once
+            # the transport is idle; it is not one of the user's prompts.
+            assert first.queries == [
+                "hello",
+                context_probe.CLAUDE_CONTEXT_PROMPT,
+                "again",
+            ]
             assert not second.connected
             await asyncio.wait_for(_wait_for_disconnection(first), 1)
             await runtime.start_turn("models", "native_timer", "schedule")

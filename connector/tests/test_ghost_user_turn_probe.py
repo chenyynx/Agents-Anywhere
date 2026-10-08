@@ -86,7 +86,15 @@ class _SelectSpy:
         return [e for e in self.events if not e["maintenance"]]
 
     def promotions(self) -> list[dict[str, Any]]:
-        return [e for e in self.events if e["execution"] is not None and not e["cast"]]
+        # Turn promotions only. The connector's own maintenance responses
+        # (the context-window calibration, task reconciliation) are registered
+        # through `response_for` too — one event each, `maintenance` true and
+        # no execution — and they are not promotions of a user's prompt.
+        return [
+            e
+            for e in self.events
+            if e["execution"] is True and not e["cast"]
+        ]
 
     def mints(self) -> list[dict[str, Any]]:
         return [e for e in self.events if e["cast"]]

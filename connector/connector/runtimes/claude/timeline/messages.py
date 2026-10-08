@@ -29,6 +29,11 @@ from connector.runtime_protocol import (
     WebSearchToolContent,
     complete_tool_content,
 )
+from connector.runtimes.claude.domain.context_report import (
+    ClaudeContextProbe,
+    is_context_report_text,
+)
+from connector.runtimes.claude.domain.models import claude_context_window
 from connector.runtimes.claude.domain.session import ClaudeSession
 from connector.runtimes.claude.sdk.tasks import is_task_notification_text
 from connector.runtimes.claude.sdk.title_tool import is_title_tool_name
@@ -103,12 +108,13 @@ class ClaudeToolBlock:
     is_synthetic: bool = False
     parent_tool_use_id: str | None = None
     tool_result_metadata: Mapping[str, Any] | None = None
-    # The per-call usage of the assistant frame this `tool_use` arrived on.
-    # Carried on the block (not just the item) so the pending call keeps it:
-    # the later `tool_result` write rebuilds the item from this block, and
-    # without the carry that rewrite would strip the only usage a
-    # tool-only call left on the timeline.
-    usage: Mapping[str, int] | None = None
+    # The per-call usage of the assistant frame this `tool_use` arrived on,
+    # already enriched with the model/window keys (`enrich_usage`). Carried on
+    # the block (not just the item) so the pending call keeps it: the later
+    # `tool_result` write rebuilds the item from this block, and without the
+    # carry that rewrite would strip the only usage a tool-only call left on
+    # the timeline.
+    usage: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,7 +166,8 @@ class ClaudeMessageProjector:
         item_id: str | None = None,
         revision: int = 1,
         attachments: tuple[Mapping[str, object], ...] = (),
-        usage: Mapping[str, int] | None = None,
+        usage: Mapping[str, Any] | None = None,
+        usage_model: str | None = None,
     ) -> RuntimeTimelineItem:
         stable_key = native_item_id or client_message_id or text
         resolved_item_id = item_id or (
@@ -183,8 +190,14 @@ class ClaudeMessageProjector:
             ]
         if usage:
             # A message's per-call usage rides its content, the one channel
-            # the server passes through, stores and replays verbatim.
-            metadata["usage"] = dict(usage)
+            # the server passes through, stores and replays verbatim. The
+            # engine's own window declaration (the session probe) names the
+            # model and the window the measurement belongs to.
+            metadata["usage"] = enrich_usage(
+                usage,
+                model=usage_model,
+                probe=session.context_probe,
+            )
         return MessageTimelineItem(
             id=resolved_item_id,
             type="message",
@@ -241,7 +254,11 @@ class ClaudeMessageProjector:
         # carry the newest measurement until the next call streams text.
         # `message_usage` returns None for user frames (tool results) and for
         # subagent sidechain frames.
-        usage = message_usage(message)
+        usage = enrich_usage(
+            message_usage(message),
+            model=message_model(message),
+            probe=session.context_probe,
+        )
         for block in message_tool_blocks(message):
             if block.block_type == "tool_use" and is_hidden_tool_name(block.tool_name):
                 self._hidden_tool_use_ids.add(block.tool_use_id)
@@ -269,7 +286,11 @@ class ClaudeMessageProjector:
         # The frame's per-call usage for its reasoning rows: this projection
         # republishes the row the stream already wrote (same stable id), and
         # the later write must not strip the usage that row carries.
-        reasoning_usage = message_usage(message)
+        reasoning_usage = enrich_usage(
+            message_usage(message),
+            model=message_model(message),
+            probe=session.context_probe,
+        )
         for block in message_system_blocks(message):
             if (
                 block.block_type in REASONING_BLOCK_TYPES
@@ -344,7 +365,8 @@ class ClaudeMessageProjector:
         text: str,
         status: str,
         revision: int,
-        usage: Mapping[str, int] | None = None,
+        usage: Mapping[str, Any] | None = None,
+        usage_model: str | None = None,
     ) -> RuntimeTimelineItem:
         """Project one streaming thinking block as a reasoning system item.
 
@@ -374,7 +396,11 @@ class ClaudeMessageProjector:
         order_seq = self.order_seq_for(item_id)
         metadata: dict[str, Any] = {"blockType": "thinking"}
         if usage:
-            metadata["usage"] = dict(usage)
+            metadata["usage"] = enrich_usage(
+                usage,
+                model=usage_model,
+                probe=session.context_probe,
+            )
         return SystemTimelineItem(
             id=item_id,
             type="system",
@@ -786,6 +812,43 @@ def usage_counts(source: Any) -> dict[str, int] | None:
     return {wire: _usage_int(source, snake, wire) for snake, wire in _USAGE_FIELDS}
 
 
+def enrich_usage(
+    usage: Mapping[str, int] | None,
+    *,
+    model: str | None = None,
+    probe: ClaudeContextProbe | None = None,
+) -> dict[str, Any] | None:
+    """The published `content.usage` block for one per-call measurement.
+
+    `usage_counts` stays a pure normalizer; this is the single enrichment step
+    every stamping site goes through, adding what measured the call:
+
+    * `model` — the engine's own report wins (it names what actually ran, which
+      a gateway makes differ from the catalog's id); the frame's own
+      `message.model` is the fallback.
+    * `contextWindow` — the engine's reported window, or the id rules
+      (`claude_context_window`) while no probe has landed. A model neither
+      source can size omits the key; clients then hide their indicator instead
+      of guessing.
+
+    Never null: unknown keys are omitted, exactly like the counters' contract.
+    """
+
+    if not usage:
+        return None
+    probed_model = probe.model if probe is not None else None
+    resolved_model = probed_model or model
+    window = probe.window if probe is not None else None
+    if window is None:
+        window = claude_context_window(probed_model, model)
+    enriched: dict[str, Any] = dict(usage)
+    if resolved_model:
+        enriched["model"] = resolved_model
+    if window is not None:
+        enriched["contextWindow"] = int(window)
+    return enriched
+
+
 def message_usage(message: Any) -> dict[str, int] | None:
     """The per-call token usage one assistant frame contributes to its item.
 
@@ -877,6 +940,13 @@ def is_synthetic_control_message(message: Any) -> bool:
     if role == "user" and is_compact_summary_text(normalized):
         return True
     if role == "user" and is_local_command_chrome(normalized):
+        return True
+    if role == "assistant" and is_context_report_text(normalized):
+        # The connector's own `/context` calibration is a local command whose
+        # assistant frame is CLI output, not an answer: if a probe's frames
+        # outlive the probe (timeout, transport drop), the reader must buffer
+        # them as chrome rather than mint a scheduled turn — and a turn that
+        # inherits one must not publish it as a bubble.
         return True
     return (
         role == "assistant"
@@ -1130,7 +1200,7 @@ def _summary_texts(value: Any) -> list[str]:
 
 def _system_content(
     block: ClaudeSystemBlock,
-    usage: Mapping[str, int] | None = None,
+    usage: Mapping[str, Any] | None = None,
 ) -> Any:
     metadata = {
         "blockType": block.block_type,

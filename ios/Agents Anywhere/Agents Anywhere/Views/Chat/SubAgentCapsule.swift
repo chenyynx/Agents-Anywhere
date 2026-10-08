@@ -26,8 +26,8 @@ struct SubAgentCapsule: View {
                 // pops. Reduce Motion keeps the hard swap (no animation).
                 ZStack {
                     SubAgentGlyph(phase: state.glyphPhase,
-                                  overrideColor: state.hasFailure ? SubAgentPalette.failure : nil,
-                                  size: glyphSize)
+                                  size: glyphSize,
+                                  overrideColor: state.hasFailure ? SubAgentPalette.failure : nil)
                         .id(state.glyphPhase)
                         .transition(.opacity)
                 }

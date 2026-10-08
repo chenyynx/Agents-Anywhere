@@ -234,10 +234,12 @@ struct SubAgentPanelSheet: View {
 
     @ViewBuilder private func sections(_ card: SubAgentCard) -> some View {
         VStack(alignment: .leading, spacing: 20) {
-            // §3.3 honesty: a card the window has moved past (the sidecar still
-            // holds it, the window does not) has its own name, phase and prompt,
-            // but none of its rows. Say so instead of rendering a blank body
-            // that reads as "nothing happened".
+            // §3.3 honesty: a card with no loaded row anywhere in its lineage —
+            // its own row gone from the window (the sidecar still holds the
+            // card) and no sibling's rows either — has its own name, phase and
+            // prompt but none of its activity. Say so instead of rendering a
+            // blank body that reads as "nothing happened". A resume-alias card
+            // passes this gate through its sibling's rows (pp 2026-10-09).
             if !SubAgentProgress.isContentLoaded(card, in: window) {
                 notLoadedNotice
             }
@@ -290,10 +292,11 @@ struct SubAgentPanelSheet: View {
     /// the connector published them, the way the main chat reads. The
     /// per-kind 「工具调用」/「深度思考」 section headers are deliberately
     /// gone; prompt and final output stay at the ends. Which rows qualify is
-    /// `SubAgentProgress.activityRows` (the same `isVisibleInChat` gate the
-    /// chat applies, so hidden rows and empty reasoning never enter the
-    /// panel); the row component itself is unchanged and gets no `onSubAgent`
-    /// (v1 renders one nested layer).
+    /// `SubAgentProgress.activityRows` — its lineage merge means a resume-alias
+    /// card shows the original dispatch card's rows — through the same
+    /// `isVisibleInChat` gate the chat applies, so hidden rows and empty
+    /// reasoning never enter the panel; the row component itself is unchanged
+    /// and gets no `onSubAgent` (v1 renders one nested layer).
     @ViewBuilder private func activitySection(_ card: SubAgentCard) -> some View {
         let rows = activityRows(of: card)
         if !rows.isEmpty {
@@ -317,12 +320,13 @@ struct SubAgentPanelSheet: View {
 
     /// The card's visible activity rows, as the row models the chat already
     /// holds. Membership and order come from the ClientCore rule
-    /// (`SubAgentProgress.activityRows`); the lookup only swaps item ids for
-    /// those live models, so the panel renders the chat's own reveal state.
+    /// (`SubAgentProgress.activityRows`, which merges a resume alias with its
+    /// original dispatch card); the lookup only swaps item ids for those live
+    /// models, so the panel renders the chat's own reveal state.
     private func activityRows(of card: SubAgentCard) -> [ChatTimelineRowModel] {
         let rowsByID = Dictionary(chat.timeline.rows.map { ($0.id, $0) },
                                   uniquingKeysWith: { first, _ in first })
-        return SubAgentProgress.activityRows(of: card.id, in: chat.timeline.rows.map(\.value))
+        return SubAgentProgress.activityRows(of: card, in: chat.timeline.rows.map(\.value))
             .compactMap { rowsByID[$0.id] }
     }
 

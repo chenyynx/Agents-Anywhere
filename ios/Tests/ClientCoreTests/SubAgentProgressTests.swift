@@ -413,7 +413,7 @@ import Testing
     /// activity rows keep the connector's publication order — reasoning, tool,
     /// reasoning, text — and nothing re-groups or re-orders them.
     @Test func panelActivityRowsInterleaveInTimelineOrder() throws {
-        let card = try cardItem("card", order: 1, status: "done")
+        let parent = try cardItem("card", order: 1, status: "done")
         let firstThought = try item("r1", type: "system", status: "done", order: 2,
                                     content: ["kind": "reasoning", "text": "first thought", "parentItemId": "card"])
         let tool = try item("t1", status: "done", order: 3,
@@ -422,8 +422,8 @@ import Testing
                                      content: ["text": "second thought", "parentItemId": "card"])
         let reply = try item("m1", type: "message", status: "done", order: 5, role: "assistant",
                              content: ["text": "Step 1.", "parentItemId": "card"])
-        let items = [card, firstThought, tool, secondThought, reply]
-        #expect(SubAgentProgress.activityRows(of: "card", in: items).map(\.id)
+        let items = [parent, firstThought, tool, secondThought, reply]
+        #expect(SubAgentProgress.activityRows(of: try card(parent), in: items).map(\.id)
             == ["r1", "t1", "r2", "m1"])
     }
 
@@ -431,7 +431,7 @@ import Testing
     /// hides never enter the activity list: the empty reasoning dead row
     /// (2026-10-05) and a hidden status. Main-agent rows stay out entirely.
     @Test func panelActivityRowsDropWhatTheChatHides() throws {
-        let card = try cardItem("card", order: 1, status: "done")
+        let parent = try cardItem("card", order: 1, status: "done")
         let deadRow = try item("r-empty", type: "system", status: "done", order: 2,
                                content: ["kind": "reasoning", "text": "", "signature": "sig", "parentItemId": "card"])
         let hiddenTool = try item("t-hidden", status: "hidden", order: 3,
@@ -440,7 +440,8 @@ import Testing
                             content: ["kind": "command", "command": "pwd", "parentItemId": "card"])
         let mainRow = try item("m-main", type: "message", status: "done", order: 5, role: "assistant",
                                content: ["text": "outside"])
-        #expect(SubAgentProgress.activityRows(of: "card", in: [card, deadRow, hiddenTool, tool, mainRow]).map(\.id)
+        #expect(SubAgentProgress.activityRows(of: try card(parent),
+                                              in: [parent, deadRow, hiddenTool, tool, mainRow]).map(\.id)
             == ["t1"])
     }
 
@@ -449,13 +450,99 @@ import Testing
     /// its own facts still render, but there is no activity to list).
     @Test func panelActivityRowsAreEmptyWithoutRowsOrBeforeTheCardLoads() throws {
         let parentCard = try cardItem("card", order: 1)
-        #expect(SubAgentProgress.activityRows(of: "card", in: [parentCard]).isEmpty)
+        #expect(SubAgentProgress.activityRows(of: try card(parentCard), in: [parentCard]).isEmpty)
         let other = try cardItem("other", order: 1, status: "done")
         let otherTool = try item("t1", status: "done", order: 2,
                                  content: ["kind": "command", "command": "ls", "parentItemId": "other"])
         let items = [other, otherTool]
         #expect(!SubAgentProgress.isContentLoaded(try card(parentCard), in: items))
-        #expect(SubAgentProgress.activityRows(of: "card", in: items).isEmpty)
+        #expect(SubAgentProgress.activityRows(of: try card(parentCard), in: items).isEmpty)
+    }
+
+    // MARK: Lineage merge (pp 2026-10-09: 恢复别名卡)
+
+    /// The two-card shape a legacy connector minted for a resumed task: the
+    /// original dispatch card (whose child rows hang off it) and the
+    /// SendMessage-keyed alias, which shares the task id in its `agents` map —
+    /// the real 88a21126 pair and its join (`a11bd2c081f4d5efe`).
+    private func resumeAliasItems() throws -> [V2TimelineItem] {
+        try [
+            cardItem("dispatch", order: 1, status: "running", description: "排查日志",
+                     agents: ["t-resumed": ["status": "running"]]),
+            item("r1", type: "system", status: "done", order: 2,
+                 content: ["kind": "reasoning", "text": "thinking", "parentItemId": "dispatch"]),
+            item("t1", status: "done", order: 3,
+                 content: ["kind": "command", "command": "ls", "parentItemId": "dispatch"]),
+            cardItem("alias", order: 4, status: "done", description: "排查日志",
+                     agents: ["t-resumed": ["status": "completed"]], summary: "DONE"),
+            item("m1", type: "message", status: "done", order: 5, role: "assistant",
+                 content: ["text": "Step 1.", "parentItemId": "dispatch"]),
+        ]
+    }
+
+    @Test func theAliasCardRendersTheDispatchCardsRows() throws {
+        let items = try resumeAliasItems()
+        let alias = try card(items[3])
+        #expect(alias.taskIDs == ["t-resumed"])
+        // The alias owns no rows of its own — the whole 真机 failure.
+        #expect(SubAgentProgress.children(of: "alias", in: items).isEmpty)
+        // The lineage merge renders the dispatch card's rows, in timeline order.
+        #expect(SubAgentProgress.activityRows(of: alias, in: items).map(\.id) == ["r1", "t1", "m1"])
+        // Symmetric: the dispatch card renders the same union.
+        #expect(SubAgentProgress.activityRows(of: try card(items[0]), in: items).map(\.id) == ["r1", "t1", "m1"])
+        // Lineage is the pair, one hop, by task id.
+        #expect(SubAgentProgress.lineageIDs(of: alias, in: items) == ["alias", "dispatch"])
+    }
+
+    @Test func twoLineageCardsNeverListARowTwice() throws {
+        let items = try resumeAliasItems()
+        let merged = SubAgentProgress.activityRows(of: try card(items[3]), in: items)
+        #expect(merged.count == Set(merged.map(\.id)).count)
+        #expect(merged.count == 3)
+    }
+
+    @Test func aCardWithoutTaskIdsKeepsItsOwnRowsOnly() throws {
+        // No `agents` map (a dispatch whose receipt never arrived): there is
+        // nothing to join on, so the merge must not invent a lineage — even
+        // when a same-named card sits right beside it.
+        let bare = try cardItem("bare", order: 1, description: "同名任务")
+        let twin = try cardItem("twin", order: 2, description: "同名任务",
+                                agents: ["t-other": ["status": "running"]])
+        let own = try item("own", status: "done", order: 3,
+                           content: ["kind": "command", "command": "ls", "parentItemId": "bare"])
+        let other = try item("other", status: "done", order: 4,
+                             content: ["kind": "command", "command": "pwd", "parentItemId": "twin"])
+        let items = [bare, twin, own, other]
+        let parsed = try card(bare)
+        #expect(parsed.taskIDs.isEmpty)
+        #expect(SubAgentProgress.lineageIDs(of: parsed, in: items) == ["bare"])
+        #expect(SubAgentProgress.activityRows(of: parsed, in: items).map(\.id) == ["own"])
+    }
+
+    @Test func twoDispatchesSharingOneTaskIDMerge() throws {
+        // The other half of the join: a task id claimed by two cards merges
+        // them, however the entries are spelled (map key vs named id).
+        let first = try cardItem("first", order: 1, agents: ["shared-task": ["status": "running"]])
+        let second = try cardItem("second", order: 2, agents: ["key": ["taskId": "shared-task", "status": "running"]])
+        let row = try item("row", status: "done", order: 3,
+                           content: ["kind": "command", "command": "ls", "parentItemId": "second"])
+        let items = [first, second, row]
+        #expect(try card(second).taskIDs == ["shared-task"])
+        #expect(SubAgentProgress.lineageIDs(of: try card(first), in: items) == ["first", "second"])
+        #expect(SubAgentProgress.activityRows(of: try card(first), in: items).map(\.id) == ["row"])
+    }
+
+    @Test func theLoadedGateFollowsTheLineage() throws {
+        let items = try resumeAliasItems()
+        let alias = try card(items[3])
+        // 1. The alias card's own row is in the window.
+        #expect(SubAgentProgress.isContentLoaded(alias, in: items))
+        // 2. Only the lineage is in the window — the activity area renders, so
+        //    the panel must not claim 「内容未加载」.
+        let withoutAlias = items.filter { $0.id != "alias" }
+        #expect(SubAgentProgress.isContentLoaded(alias, in: withoutAlias))
+        // 3. Neither: no card, no rows — the neutral notice is honest.
+        #expect(!SubAgentProgress.isContentLoaded(alias, in: withoutAlias.filter { $0.id != "dispatch" }))
     }
 
     // MARK: Main timeline filter (L2.1: keep only the dispatch card)

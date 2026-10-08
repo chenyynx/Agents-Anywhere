@@ -518,8 +518,9 @@ final class V2SessionModel: Identifiable {
         }
     }
 
-    /// Publishes one live receive pulse. Each call carries a fresh id, so the
-    /// orb's `onChange(of: pulse?.id)` fires exactly once per arrival.
+    /// Publishes one live receive pulse. Every call carries a fresh id; two
+    /// calls in the same render cycle may coalesce, so the orb sees the newest
+    /// pulse of the batch rather than one animation per arrival.
     func noteIncomingPulse(_ pulse: OrbPulse) {
         incomingPulse = pulse
     }

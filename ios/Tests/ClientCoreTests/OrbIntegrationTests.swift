@@ -34,6 +34,24 @@ import Testing
         return try decode(object, as: V2TimelineItem.self)
     }
 
+    /// The Codex file-read/write carrier: an artifact row whose wire kind is
+    /// `file_change` (connector/runtimes/codex/timeline/items.py:98-99).
+    private func fileChangeArtifactItem(status: String) throws -> V2TimelineItem {
+        var object = try itemObject(id: "file-change")
+        object["type"] = "artifact"
+        object["status"] = status
+        object["content"] = ["kind": "file_change", "path": "Sources/App.swift", "action": "modify"]
+        return try decode(object, as: V2TimelineItem.self)
+    }
+
+    /// A running assistant message payload for the socket harness.
+    private func liveItemObject(id: String = "item", order: Int = 1, revision: Int = 1,
+                                seq: Int = 10, status: String = "running") throws -> [String: Any] {
+        var object = try itemObject(id: id, order: order, revision: revision, seq: seq)
+        object["status"] = status
+        return object
+    }
+
     // MARK: - Resolver priority
 
     @Test func resolverWaitingForUserWinsFromBothEntries() {
@@ -183,6 +201,42 @@ import Testing
         #expect(!TimelineEntryPresentation.isCompactItem(message))
     }
 
+    // MARK: - Tool-kind predicate extraction
+
+    @Test func toolKindPredicateMatchesTheRowPresentationRule() throws {
+        let tool = try orbItem(type: "tool", role: nil, status: "running")
+        #expect(TimelineEntryPresentation.isToolKindItem(tool))
+        #expect(TimelineEntryPresentation(item: tool, cwd: nil).kind == .tool)
+
+        // Codex stamps file changes on artifact rows; the row still renders as
+        // a tool row, so the predicate must accept it.
+        let fileChange = try fileChangeArtifactItem(status: "running")
+        #expect(TimelineEntryPresentation.isToolKindItem(fileChange))
+        #expect(TimelineEntryPresentation(item: fileChange, cwd: nil).kind == .tool)
+
+        let plainArtifact = try orbItem(type: "artifact", role: nil, status: "running")
+        #expect(!TimelineEntryPresentation.isToolKindItem(plainArtifact))
+
+        let message = try orbItem(status: "running")
+        #expect(!TimelineEntryPresentation.isToolKindItem(message))
+    }
+
+    @Test func orbActivityTreatsCodexFileChangeRowsAsToolWork() throws {
+        let http = TestHTTPTransport()
+        let repo = repository(transport: http)
+        let model = SessionChatModel(session: repo.session(id: "session"), repository: repo,
+            attachments: .init(attachmentAPI: V2AttachmentAPI(transport: http)))
+        model.timeline.presentOpening([
+            try fileChangeArtifactItem(status: "running"),
+            try orbItem(type: "reasoning", role: nil, status: "running"),
+        ], pendingMessages: [])
+        #expect(model.orbActivitySignals.hasActiveToolItem)
+        #expect(model.orbActivitySignals.hasActiveReasoningItem)
+        // The tool layer sits above the thinking layer: a live file change must
+        // read as tool work even while reasoning rows are also running.
+        #expect(model.orbActivity == .toolRunning)
+    }
+
     // MARK: - Projection merge outcomes
 
     @Test func projectionMergeOutcomesReportInsertReplaceAndDrop() throws {
@@ -251,5 +305,71 @@ import Testing
         #expect(!model.session.runtime.isFresh)
         #expect(model.session.runtime.state?.status == .running)
         #expect(model.orbActivitySignals.status == nil)
+    }
+
+    // MARK: - Live receive-pulse wiring
+
+    @Test func socketFrameRingsTheOrbPulse() async throws {
+        let http = TestHTTPTransport(); let realtime = TestRealtimeAPI()
+        let repo = repository(transport: http, realtime: realtime)
+        defer { repo.reset() }
+        let model = repo.session(id: "session")
+        let connection = Task { await model.connect() }
+        defer { connection.cancel() }
+        try await eventually { model.connection == .connected }
+        #expect(model.incomingPulse == nil)
+
+        realtime.yield(try event("timeline.item_created", seq: 11,
+            payload: ["item": liveItemObject(id: "reply", order: 2, seq: 11)]))
+        try await eventually { model.incomingPulse != nil }
+        #expect(model.incomingPulse?.strength == 1.0)
+        try await eventually { model.timeline.count == 2 }
+    }
+
+    @Test func recoveryReplayNeverRingsTheOrbPulse() async throws {
+        let http = TestHTTPTransport(); let realtime = TestRealtimeAPI()
+        let replay = try event("timeline.item_created", seq: 11,
+            payload: ["item": liveItemObject(id: "replayed", order: 2, seq: 11)])
+        realtime.onRecover = {
+            V2EventRecoveryResponse(events: [replay], nextCursor: "seq:11", snapshotRequired: false, serverTime: "")
+        }
+        let repo = repository(transport: http, realtime: realtime)
+        defer { repo.reset() }
+        let model = repo.session(id: "session")
+        let connection = Task { await model.connect() }
+        defer { connection.cancel() }
+        try await eventually { model.connection == .connected }
+        // The replayed row landed through the recovery path…
+        try await eventually { model.timeline.count == 2 }
+        // …and that path never touches the pulse.
+        #expect(model.incomingPulse == nil)
+    }
+
+    @Test func pulseThrottleHoldsAcrossLiveFrames() async throws {
+        let http = TestHTTPTransport(); let realtime = TestRealtimeAPI()
+        let repo = repository(transport: http, realtime: realtime)
+        defer { repo.reset() }
+        let model = repo.session(id: "session")
+        let connection = Task { await model.connect() }
+        defer { connection.cancel() }
+        try await eventually { model.connection == .connected }
+
+        let anchor = Date(timeIntervalSinceReferenceDate: 9_000_000)
+        var first = try event("timeline.item_updated", seq: 11,
+            payload: ["item": liveItemObject(revision: 2, seq: 11)])
+        first.receivedAt = anchor
+        realtime.yield(first)
+        try await eventually { model.incomingPulse != nil && model.timeline.first?.value.revision == 2 }
+        let ring = try #require(model.incomingPulse)
+        #expect(ring.strength == 0.3)
+
+        var second = try event("timeline.item_updated", seq: 12,
+            payload: ["item": liveItemObject(revision: 3, seq: 12)])
+        second.receivedAt = anchor.addingTimeInterval(0.1)
+        realtime.yield(second)
+        try await eventually { model.timeline.first?.value.revision == 3 }
+        // Inside the 250 ms window the update lands without a fresh pulse.
+        #expect(model.incomingPulse?.id == ring.id)
+        #expect(model.incomingPulse?.strength == 0.3)
     }
 }

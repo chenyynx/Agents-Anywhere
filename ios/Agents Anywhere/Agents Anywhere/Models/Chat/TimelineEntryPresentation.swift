@@ -49,6 +49,16 @@ struct TimelineEntryPresentation: Hashable {
         return ["started", "running", "inProgress"].contains(raw["state"]?.stringValue ?? "") || item.status.isActive
     }
 
+    /// Whether this row renders as a tool row — a tool item, or the file-change
+    /// carrier: a `file_change` wire kind riding any type (Codex stamps it on
+    /// artifact rows). Extracted verbatim from `init` so the orb's activity
+    /// signals share the row's single judgement.
+    static func isToolKindItem(_ item: V2TimelineItem) -> Bool {
+        let raw = item.raw["content"] ?? .object([:])
+        let wireKind = TimelineText.first(raw["kind"]) ?? (item.type == .fileChange ? "file_change" : item.type.rawValue)
+        return item.type == .tool || wireKind == "file_change" || item.type == .fileChange
+    }
+
     init(item: V2TimelineItem, cwd: String?) {
         let raw = item.raw["content"] ?? .object([:])
         let wireKind = TimelineText.first(raw["kind"]) ?? (item.type == .fileChange ? "file_change" : item.type.rawValue)
@@ -72,7 +82,7 @@ struct TimelineEntryPresentation: Hashable {
             let active = Self.isActiveCompactItem(item)
             title = item.status == .failed || raw["state"] == .string("failed") ? String(localized: "上下文压缩失败") : active ? String(localized: "正在压缩上下文") : String(localized: "上下文已压缩")
             detail = item.status == .failed ? raw : nil
-        } else if item.type == .tool || wireKind == "file_change" || item.type == .fileChange {
+        } else if Self.isToolKindItem(item) {
             kind = .tool
             symbol = ["command": "terminal", "file_change": "doc.badge.gearshape", "agent_call": "person.2", "web_search": "magnifyingglass", "mcp": "puzzlepiece.extension"][wireKind] ?? "hammer"
             let targetPath = filePath ?? TimelineText.first(toolInput?["file_path"], toolInput?["notebook_path"], toolInput?["path"])

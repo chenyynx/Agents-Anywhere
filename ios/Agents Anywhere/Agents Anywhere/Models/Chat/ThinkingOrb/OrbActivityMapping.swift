@@ -46,7 +46,7 @@ extension SessionChatModel {
             hasRespondableNotice: session.notices.visibleNotices.contains { $0.canRespond(fresh: fresh) },
             runningSubagentCount: SubAgentProgress.capsuleState(
                 inWindow: items, activeCards: session.activeAgentCards).runningCount,
-            hasActiveToolItem: items.contains { $0.type == .tool && $0.status.isActive },
+            hasActiveToolItem: items.contains { TimelineEntryPresentation.isToolKindItem($0) && $0.status.isActive },
             hasActiveCompactItem: items.contains {
                 TimelineEntryPresentation.isCompactItem($0) && TimelineEntryPresentation.isActiveCompactItem($0)
             },

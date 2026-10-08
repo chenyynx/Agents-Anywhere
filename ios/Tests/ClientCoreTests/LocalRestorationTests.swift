@@ -98,6 +98,61 @@ import Testing
         #expect(model.pendingMessages.isEmpty && http.calls.isEmpty)
         restored.reset()
     }
+    @Test func restoredQueueReArmsWhatWasWaitingAndDemotesWhatWasInFlight() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        let local = V2LocalStore(directory: url); let first = repo(TestHTTPTransport(), local: local)
+        _ = try await first.load(sessionId: "session")
+        let session = first.session(id: "session")
+        session.draft = "still waiting"
+        let waiting = try #require(session.enqueueDraft())
+        session.draft = "on the wire"
+        let flying = try #require(session.enqueueDraft())
+        // Simulate a send that left the client but whose echo never landed.
+        flying.update(.awaitingEcho)
+        await first.flushCache(); first.reset()
+
+        let http = TestHTTPTransport(); let restored = repo(http, local: V2LocalStore(directory: url))
+        restored.updateConnectivity(.init(availability: .offline)); _ = try await restored.load(sessionId: "session")
+        let model = restored.session(id: "session")
+        // A never-sent message is safe to re-arm and waits its turn.
+        #expect(model.sendQueue.items.map(\.id) == [waiting.id])
+        #expect(model.sendQueue.head?.state == .queued)
+        #expect(model.sendQueue.head?.isUploadComplete == true)
+        // The in-flight one may already have reached the server, so it is
+        // demoted to an uncertain pending and never re-sent automatically.
+        guard case .uncertain = model.pendingMessages.first?.delivery else {
+            Issue.record("An in-flight queued message must restore as an uncertain pending"); return
+        }
+        #expect(model.pendingMessages.first?.id == flying.id)
+        // Zero replay: restoring a queue issues no send.
+        #expect(http.calls.isEmpty)
+        restored.reset()
+    }
+
+    @Test func restoredQueuedAttachmentKeepsItsUploadedReference() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        let local = V2LocalStore(directory: url); let first = repo(TestHTTPTransport(), local: local)
+        _ = try await first.load(sessionId: "session")
+        let session = first.session(id: "session")
+        session.composer.attachments = [ChatAttachment(id: "local-1", name: "note.txt", data: Data([1]), mediaType: "text/plain")]
+        let item = try #require(session.enqueueDraft())
+        let uploaded: V2AttachmentUploadResponse = try fixture("upload")
+        let reference = try #require(uploaded.attachments.first)
+        session.bindQueueUpload(itemID: item.id, localID: "local-1", file: reference)
+        await first.flushCache(); first.reset()
+
+        let http = TestHTTPTransport(); let restored = repo(http, local: V2LocalStore(directory: url))
+        restored.updateConnectivity(.init(availability: .offline)); _ = try await restored.load(sessionId: "session")
+        let model = restored.session(id: "session")
+        #expect(model.sendQueue.count == 1)
+        // The uploaded bytes travel as their reference; nothing is re-uploaded
+        // and nothing is sent on restore.
+        #expect(model.sendQueue.head?.attachmentIDs == [reference.fileId])
+        #expect(model.sendQueue.head?.isUploadComplete == true)
+        #expect(http.calls.isEmpty)
+        restored.reset()
+    }
+
     @Test func restoredDashboardStaysReadableUntilTheCompleteInventoryReplacesIt() async throws {
         let url = location(); defer { try? FileManager.default.removeItem(at: url) }
         let local = V2LocalStore(directory: url); let http = TestHTTPTransport()

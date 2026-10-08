@@ -173,6 +173,16 @@ final class V2SessionModel: Identifiable {
     var isPerformingAction = false
     private(set) var pendingMessages: [V2PendingMessage] = []
     private(set) var awaitingReplyID: String?
+    /// The session's outbound queue: messages the user committed while a turn
+    /// was running. Session-scoped like `pendingMessages`, so navigating away
+    /// and back keeps it, and persisted with the archive so it survives a
+    /// relaunch.
+    let sendQueue = V2SendQueue()
+    @ObservationIgnored private var queueDrainTask: Task<Void, Never>?
+    /// When the current head entered `.awaitingEcho`. A drained message waits
+    /// this long for its authoritative echo before the queue stops trusting the
+    /// HTTP accept alone; see `awaitingEchoTimeout`.
+    @ObservationIgnored private(set) var awaitingEchoSince: Date?
     let composer = ComposerDraft()
     let attachmentPreviews = ChatAttachmentStore()
     var draft: String {
@@ -187,7 +197,173 @@ final class V2SessionModel: Identifiable {
     }
 
     var canSend: Bool { isValid && runtime.allows("session.send_message") && !notices.notices.contains { $0.blocks(id) } }
-    var hasLocalWork: Bool { !draft.isEmpty || !composer.attachments.isEmpty || !draftAttachmentIDs.isEmpty || !pendingMessages.isEmpty || notices.hasDraft }
+    var hasLocalWork: Bool { !draft.isEmpty || !composer.attachments.isEmpty || !draftAttachmentIDs.isEmpty || !pendingMessages.isEmpty || notices.hasDraft || !sendQueue.items.isEmpty }
+
+    // MARK: Send queue
+
+    /// Whether the session may commit a draft to the queue at all. Unlike
+    /// `canSend` this reads the capability's *support* and *permission*, not
+    /// its availability: enqueuing is legal precisely when a *send* is not —
+    /// that is the whole point of the queue.
+    var permitsQueuedSend: Bool {
+        guard runtime.isFresh, let send = runtime.capabilities?.capability(id: "session.send_message") else { return false }
+        return send.supported && send.allowed
+    }
+    /// The queue is held when it was explicitly paused (a drain/retry failure)
+    /// or when the network is down and there is something waiting.
+    var isSendQueuePaused: Bool {
+        sendQueue.explicitPause != nil || (network.availability == .offline && !sendQueue.isEmpty)
+    }
+    /// What the paused banner prints. An explicit failure wins over the derived
+    /// offline reason, so a send that failed while the path was up still names
+    /// its failure; a purely offline pause reads as a connection problem.
+    var queuePauseForDisplay: V2SendQueuePause? {
+        if let explicit = sendQueue.explicitPause { return explicit }
+        if network.availability == .offline && !sendQueue.isEmpty { return .offline }
+        return nil
+    }
+
+    /// Reads the composer (text + attachments) into a queued message, clears
+    /// the composer, and flags the local work. Returns nil when there is
+    /// nothing to queue. Attachments travel with the message; the eager upload
+    /// is the caller's to start.
+    @discardableResult func enqueueDraft() -> V2QueuedMessage? {
+        guard isValid else { return nil }
+        let content = draft
+        let attachments = composer.attachments
+        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty else { return nil }
+        let item = V2QueuedMessage(content: content, attachments: attachments)
+        attachmentPreviews.remember(attachments, clientID: item.id)
+        sendQueue.enqueue(item)
+        composer.clear(); draftAttachmentIDs = []
+        repository?.localWorkDidChange(sessionID: id)
+        // A message committed as the turn ends must not wait for the next frame:
+        // if every gate already stands open, the queue drains from here.
+        evaluateSendQueue()
+        return item
+    }
+
+    /// Drops a waiting message. A message already on the wire is past the point
+    /// of a safe local withdrawal, so it is left alone (the UI greys the item).
+    func withdrawQueuedMessage(id: String) {
+        guard let item = sendQueue.items.first(where: { $0.id == id }), item.state == .queued else { return }
+        sendQueue.remove(id: id)
+        repository?.localWorkDidChange(sessionID: id)
+        evaluateSendQueue()
+    }
+
+    /// Moves a waiting message back into the composer so it can be rewritten:
+    /// the message leaves the queue and its text is appended to any draft
+    /// already present (a fresh line), never overwriting it. Attachments merge
+    /// in too. As with withdraw, only a still-`queued` item may be edited.
+    func editQueuedMessage(id: String) {
+        guard let item = sendQueue.items.first(where: { $0.id == id }), item.state == .queued else { return }
+        sendQueue.remove(id: id)
+        if composer.text.isEmpty {
+            draft = item.content
+        } else {
+            draft = composer.text + "\n" + item.content
+        }
+        composer.attachments.append(contentsOf: item.attachments)
+        draftAttachmentIDs = composer.attachments.compactMap { $0.uploaded?.fileId }
+        repository?.draftDidChange()
+        repository?.localWorkDidChange(sessionID: id)
+        evaluateSendQueue()
+    }
+
+    /// Binds one eager upload to its queued message. Kept on the session so the
+    /// chat layer never reaches into the message's storage directly.
+    func bindQueueUpload(itemID: String, localID: String, file: V2AttachmentReference) {
+        sendQueue.items.first { $0.id == itemID }?.bindUpload(file, localID: localID)
+    }
+
+    func localWorkDidChange() { repository?.localWorkDidChange(sessionID: id) }
+
+    /// Cheap gate before spawning a drain: nothing to do, or still paused, and
+    /// no task is started. Otherwise a single-flight drain runs in the
+    /// background; `drainSendQueueIfPossible` is the testable core it calls.
+    func evaluateSendQueue() {
+        // A head whose echo never landed must not pin the queue forever, so the
+        // staleness check runs before any guard that a stuck head would satisfy.
+        demoteStaleAwaitingEcho(now: Date())
+        guard isValid, !sendQueue.items.isEmpty, !isSendQueuePaused, queueDrainTask == nil else { return }
+        // Only a waiting head is drainable; while one is on the wire the queue
+        // is holding by design, so there is nothing to evaluate.
+        guard sendQueue.head?.state == .queued else { return }
+        queueDrainTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.queueDrainTask = nil }
+            _ = await self.drainSendQueueIfPossible()
+        }
+    }
+
+    /// A drained message waits this long for its echo. HTTP accepted the write,
+    /// but only the echo proves the message reached the timeline; past the
+    /// window the client stops waiting and hands the record to the existing
+    /// uncertain-pending path (same shape a relaunch would produce), which
+    /// keeps it visible and releasable instead of pinning the queue's head.
+    static let awaitingEchoTimeout: TimeInterval = 60
+
+    /// Demotes the head out of `.awaitingEcho` once its echo window has lapsed.
+    /// - Parameter now: injectable so tests can drive the window without waiting.
+    func demoteStaleAwaitingEcho(now: Date) {
+        guard let since = awaitingEchoSince, now.timeIntervalSince(since) >= Self.awaitingEchoTimeout,
+              let head = sendQueue.head, head.state == .awaitingEcho else { return }
+        let pending = V2PendingMessage(id: head.id, content: head.content, attachmentIDs: head.attachmentIDs,
+            localAttachmentIDs: head.attachments.map(\.id), attachments: head.attachments)
+        // Same construction as a restored uncertain record, so the bubble, its
+        // duplicate warning and the late-echo reconciliation all behave alike.
+        let failure = V2ClientFailure(kind: .unavailable, message: String(localized: "上次发送的结果尚未确认，正在同步记录。请确认后再重试。"))
+        pending.update(.uncertain(failure))
+        attachmentPreviews.remember(head.attachments, clientID: head.id)
+        pendingMessages.append(pending)
+        awaitingEchoSince = nil
+        if awaitingReplyID == head.id { awaitingReplyID = nil }
+        sendQueue.remove(id: head.id)
+        localWorkDidChange()
+        evaluateSendQueue()
+    }
+
+    /// Sends the queue's head when every gate is open, then stops — the next
+    /// message waits for this one's echo. Returns whether a send was issued.
+    /// Deliberately avoids `sendDraft`: the queue row stands in for the pending
+    /// bubble, and a failure must *not* refill the composer (the content is
+    /// still in the queue), so this calls `repository.send` directly.
+    @discardableResult func drainSendQueueIfPossible() async -> Bool {
+        guard let repository, isValid, !Task.isCancelled else { return false }
+        guard !sendQueue.items.isEmpty, !isSendQueuePaused else { return false }
+        guard network.availability != .offline else { return false }
+        guard runtime.isFresh, let status = runtime.state?.status, status == .idle || status == .error else { return false }
+        guard canSend else { return false }
+        guard let head = sendQueue.head, head.state == .queued, head.isUploadComplete else { return false }
+        head.update(.sending)
+        do {
+            await repository.flushCache()
+            guard isValid, head.state == .sending else { return false }
+            // A cancelled drain (the session went away mid-flush) must not leave
+            // the head marked as on-the-wire, or the queue would hold forever.
+            guard !Task.isCancelled else { head.update(.queued); return false }
+            // Set the placeholder link immediately before the write, so a frame
+            // arriving during the flush cannot clear a promise not yet made.
+            awaitingReplyID = head.id
+            _ = try await repository.send(sessionId: id, content: head.content, attachmentIDs: head.attachmentIDs, clientMessageID: head.id)
+            guard isValid else { return true }
+            // The send is on the wire; the echo removes the row. Until then no
+            // further message is drained, and this stamp arms the echo window.
+            head.update(.awaitingEcho)
+            awaitingEchoSince = Date()
+            return true
+        } catch {
+            guard isValid else { return false }
+            // A failure leaves the message queued and pauses the whole queue:
+            // the banner is the only notice, and the only way back is retry.
+            head.update(.queued)
+            if awaitingReplyID == head.id { awaitingReplyID = nil }
+            sendQueue.pause(.failure(V2ClientFailure(error).message))
+            repository.localWorkDidChange(sessionID: id)
+            return false
+        }
+    }
 
     func connect() async {
         guard let repository, isValid else { return }
@@ -319,15 +495,27 @@ final class V2SessionModel: Identifiable {
             let hasReply = user.map { user in data.items.contains { $0.orderSeq > user.orderSeq && $0.role != .user && $0.type != .turnStart } } ?? false
             if agentStarted || hasReply { awaitingReplyID = nil }
         }
+        // Live facts or a fresh timeline may have opened every drain gate; the
+        // queue takes its turn here rather than on a timer.
+        evaluateSendQueue()
     }
 
     func confirmEcho(_ item: V2TimelineItem) {
         guard item.sessionId == id, item.type == .message, item.role == .user,
-              let clientID = item.source["clientMessageId"]?.stringValue,
-              let pending = pendingMessages.first(where: { $0.id == clientID }) else { return }
-        pending.update(.confirmed)
-        clearDraft(ifMatching: pending)
-        pendingMessages.removeAll { $0.id == clientID }
+              let clientID = item.source["clientMessageId"]?.stringValue else { return }
+        if let pending = pendingMessages.first(where: { $0.id == clientID }) {
+            pending.update(.confirmed)
+            clearDraft(ifMatching: pending)
+            pendingMessages.removeAll { $0.id == clientID }
+        }
+        // A queued message reconciles the same way: the authoritative echo
+        // removes its row (the rest slide up) and releases the next message.
+        if sendQueue.items.contains(where: { $0.id == clientID }) {
+            sendQueue.remove(id: clientID)
+            awaitingEchoSince = nil
+            if awaitingReplyID == clientID { awaitingReplyID = nil }
+            localWorkDidChange()
+        }
     }
 
     /// Publishes one live receive pulse. Each call carries a fresh id, so the
@@ -365,10 +553,23 @@ final class V2SessionModel: Identifiable {
             attachmentPreviews.remember(value.attachments, clientID: value.id)
             return pending
         }
+        // Only never-submitted messages are stored as `queued` (see the archive
+        // assembly): restoring them re-arms the queue, which is legal because a
+        // queued item was never sent, so no unconfirmed write is being replayed.
+        if let queued = archive.queued {
+            for value in queued { attachmentPreviews.remember(value.attachments, clientID: value.id) }
+            sendQueue.replaceAll(queued.map { value in
+                V2QueuedMessage(id: value.id, content: value.content,
+                    attachments: value.attachments, state: .queued)
+            })
+        }
     }
 
     func invalidate() {
         runtime.update(nil, connection: .inactive)
+        queueDrainTask?.cancel(); queueDrainTask = nil
+        awaitingEchoSince = nil
+        sendQueue.replaceAll([])
         metadata = nil; timeline = []; pendingMessages = []; awaitingReplyID = nil; draft = ""; draftAttachmentIDs = []
         activeAgentCards = []; recoveryNotice = nil
         composer.invalidate()

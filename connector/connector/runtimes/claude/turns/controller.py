@@ -25,6 +25,7 @@ from connector.runtimes.claude.notifications.projector import (
 from connector.runtimes.claude.sdk.client import ClaudeClientFactory, SdkLoader
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 from connector.runtimes.claude.sessions.reader import ClaudeSessionReader
+from connector.runtimes.claude.sessions.subagent_oracle import ClaudeSubagentOracle
 from connector.runtimes.claude.timeline.messages import ClaudeMessageProjector
 from connector.runtimes.claude.turns.actions import ClaudeTurnActionHandler
 from connector.runtimes.claude.turns.commands import ClaudeCommandController
@@ -49,6 +50,7 @@ class ClaudeTurnController:
     pending_messages: ClaudePendingClientMessageRegistry
     sdk_loader: SdkLoader | None = None
     client_factory: ClaudeClientFactory | None = None
+    oracle: ClaudeSubagentOracle | None = None
     interactions: ClaudeInteractionController = field(init=False)
     selections: ClaudeSelectionController = field(init=False)
     runner: ClaudeTurnRunner = field(init=False)
@@ -80,6 +82,7 @@ class ClaudeTurnController:
             catalogs=self.catalogs,
             sdk_loader=self.sdk_loader,
             client_factory=self.client_factory,
+            oracle=self.oracle,
         )
         self.actions = ClaudeTurnActionHandler(
             session_states=self.session_states,

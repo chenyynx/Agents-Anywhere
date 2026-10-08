@@ -218,7 +218,7 @@ import Testing
         // All-terminal cards leave no capsule.
         let done = SubAgentProgress.capsuleState([try cardItem("done", status: "done")])
         #expect(!done.isVisible && done.latestRunningID == nil)
-        // The newest running card is the capsule's default tab (per-turn pages).
+        // The newest running card is the capsule's default chip in the flat panel.
         let mixed = SubAgentProgress.capsuleState([try cardItem("old", order: 1, status: "done"),
                                                    try cardItem("new", order: 2)])
         #expect(mixed.latestRunningID == "new" && mixed.runningCount == 1)
@@ -338,90 +338,56 @@ import Testing
         #expect(SubAgentProgress.statsAccessibilityLabel(for: failed) == "失败")
     }
 
-    // MARK: Panel data
+    // MARK: Panel data (flat, pp 2026-10-08: 不分回合)
 
-    @Test func panelTabsKeepDispatchOrderAndPickTheRunningDefault() throws {
+    @Test func panelListsOnlyActiveCardsInDispatchOrder() throws {
         let finished = try cardItem("a", order: 1, status: "done", description: "First")
         let running = try cardItem("b", order: 2, description: "Second")
         let later = try cardItem("c", order: 3)
-        let cards = SubAgentProgress.topLevelCards(in: [later, finished, running])
-        #expect(cards.map(\.id) == ["a", "b", "c"])
-        #expect(SubAgentProgress.defaultSelection(cards, requested: nil) == "b")
-        #expect(SubAgentProgress.defaultSelection(cards, requested: "a") == "a")
-        #expect(SubAgentProgress.defaultSelection(cards, requested: "missing") == "b")
-        let allDone = SubAgentProgress.topLevelCards(in: [finished])
-        #expect(SubAgentProgress.defaultSelection(allDone, requested: nil) == "a")
-        // A subagent still launching is active, so it opens the panel exactly like a
-        // running one — otherwise the dispatch lands on an older, closed tab.
-        let launched = try cardItem("d", order: 4, agents: asyncEntry())
-        let withLaunch = SubAgentProgress.topLevelCards(in: [finished, running, launched])
-        #expect(withLaunch.map(\.id) == ["a", "b", "d"])
-        #expect(SubAgentProgress.defaultSelection(withLaunch, requested: nil) == "b")
-        let onlyLaunch = SubAgentProgress.topLevelCards(in: [finished, launched])
-        #expect(SubAgentProgress.defaultSelection(onlyLaunch, requested: nil) == "d")
-        #expect(SubAgentProgress.defaultSelection(onlyLaunch, requested: "a") == "a")
+        let items = [later, finished, running]
+        // The session list keeps every top-level card, in dispatch order…
+        let all = SubAgentProgress.sessionCards(inWindow: items, activeCards: [])
+        #expect(all.map(\.id) == ["a", "b", "c"])
+        // …while the flat strip is the active subset: the finished card exits (退场).
+        #expect(SubAgentProgress.activeCards(inWindow: items, activeCards: []).map(\.id) == ["b", "c"])
     }
 
-    // MARK: Per-turn pages (pp 2026-10-05: 每轮都是新的页)
-    //
-    // The boundary is the app's own visible-turn rule (`startsVisibleTurn`):
-    // the wire carries no turn id — the server strips the runtime ones before
-    // publishing — so a turn is the span between real user messages.
-
-    @Test func panelPageScopesToTheOpeningCardsTurn() throws {
-        let question = try item("q1", type: "message", status: "done", order: 1, role: "user",
-                                content: ["text": "开工"])
-        let old = try cardItem("old", order: 2, status: "done")
-        let oldChild = try item("old-child", status: "done", order: 3,
-                                content: ["kind": "command", "command": "ls", "parentItemId": "old"])
-        let second = try item("q2", type: "message", status: "done", order: 4, role: "user",
-                              content: ["text": "再来一轮"])
-        let fresh = try cardItem("fresh", order: 5)
-        let twin = try cardItem("twin", order: 6)
-        let items = [question, old, oldChild, second, fresh, twin]
-        // An older dispatch point reopens its own turn's page…
-        #expect(SubAgentProgress.turnScopedTopLevelCards(in: items, containing: "old").map(\.id) == ["old"])
-        // …and the new dispatch shows the new page, with its same-turn sibling.
-        #expect(SubAgentProgress.turnScopedTopLevelCards(in: items, containing: "fresh").map(\.id) == ["fresh", "twin"])
-        // A nested card anchors its own turn too (selection falls to the top-level tab).
-        #expect(SubAgentProgress.turnScopedTopLevelCards(in: items, containing: "old-child").map(\.id) == ["old"])
+    @Test func activeStripCountsALaunchingCardAndAgesOutTheTerminalOne() throws {
+        // A subagent still launching (async receipt) is active, exactly like a
+        // running one — otherwise the dispatch would never earn a chip.
+        let finished = try cardItem("a", order: 1, status: "done")
+        let launched = try cardItem("b", order: 2, agents: asyncEntry())
+        #expect(SubAgentProgress.activeCards(inWindow: [finished, launched], activeCards: []).map(\.id) == ["b"])
+        // All-terminal sessions leave an empty strip (the capsule is gone too).
+        #expect(SubAgentProgress.activeCards(inWindow: [finished], activeCards: []).isEmpty)
+        #expect(SubAgentProgress.sessionCards(inWindow: [finished], activeCards: []).map(\.id) == ["a"])
     }
 
-    @Test func steeringAndInterruptRowsNeverSplitATurn() throws {
-        let question = try item("q1", type: "message", status: "done", order: 1, role: "user",
-                                content: ["text": "开工"])
-        let first = try cardItem("first", order: 2, status: "done")
-        let steering = try item("steer", type: "message", status: "done", order: 3, role: "user",
-                                source: ["itemType": "steeringUserMessage"], content: ["text": "顺带看看"])
-        let second = try cardItem("second", order: 4)
-        let interrupt = try item("interrupt", type: "message", status: "done", order: 5, role: "user",
-                                 source: ["runtime": "claude"], content: ["text": "[Request interrupted by user]"])
-        let third = try cardItem("third", order: 6)
-        let items = [question, first, steering, second, interrupt, third]
-        // Steering and the interrupt placeholder belong to the running turn —
-        // only a real user message opens a new page.
-        #expect(SubAgentProgress.turnScopedTopLevelCards(in: items, containing: "second").map(\.id) == ["first", "second", "third"])
-        #expect(SubAgentProgress.turnScopedTopLevelCards(in: items, containing: "first").map(\.id) == ["first", "second", "third"])
-    }
-
-    @Test func panelPageFallsBackWhenTheAnchorIsUnknown() throws {
-        let question = try item("q1", type: "message", status: "done", order: 1, role: "user",
-                                content: ["text": "开工"])
-        let card = try cardItem("a", order: 2)
-        let items = [question, card]
-        // No anchor at all: the whole window (the pre-scope behaviour).
-        #expect(SubAgentProgress.turnScopedTopLevelCards(in: items, containing: nil).map(\.id) == ["a"])
-        // Anchor gone from the window: the whole window.
-        #expect(SubAgentProgress.turnScopedTopLevelCards(in: items, containing: "ghost").map(\.id) == ["a"])
-    }
-
-    @Test func panelPageWithoutAnyTurnStartKeepsTheWindow() throws {
-        let a = try cardItem("a", order: 1, status: "done")
+    @Test func selectionPrefersTheRequestedCardThenTheNewest() throws {
+        let a = try cardItem("a", order: 1)
         let b = try cardItem("b", order: 2)
-        #expect(SubAgentProgress.turnScopedTopLevelCards(in: [a, b], containing: "b").map(\.id) == ["a", "b"])
+        let cards = SubAgentProgress.sessionCards(inWindow: [b, a], activeCards: [])
+        #expect(cards.map(\.id) == ["a", "b"])
+        #expect(SubAgentProgress.resolveSelection(cards, requested: "a")?.id == "a")
+        // A request naming a card the session no longer holds falls to the newest.
+        #expect(SubAgentProgress.resolveSelection(cards, requested: "missing")?.id == "b")
+        #expect(SubAgentProgress.resolveSelection(cards, requested: nil)?.id == "b")
+        // Nothing to show: no selection.
+        #expect(SubAgentProgress.resolveSelection([], requested: "a") == nil)
     }
 
-    @Test func capsuleOpensTheNewestRunningCardsTurn() throws {
+    @Test func selectionKeepsACompletedCardThatTheUserIsReading() throws {
+        // The user opened a timeline card that has since finished: the session
+        // list still holds it, so the id resolves and the final output stays
+        // readable while the chip strip has already dropped it.
+        let done = try cardItem("a", order: 1, status: "done")
+        let running = try cardItem("b", order: 2)
+        let cards = SubAgentProgress.sessionCards(inWindow: [done, running], activeCards: [])
+        #expect(SubAgentProgress.resolveSelection(cards, requested: "a")?.id == "a")
+        #expect(SubAgentProgress.activeCards(inWindow: [done, running], activeCards: []).map(\.id) == ["b"])
+    }
+
+    @Test func capsuleOpensTheNewestRunningCard() throws {
         let old = try cardItem("old", order: 1)
         let fresh = try cardItem("fresh", order: 2)
         let state = SubAgentProgress.capsuleState([old, fresh])
@@ -447,7 +413,7 @@ import Testing
     /// activity rows keep the connector's publication order — reasoning, tool,
     /// reasoning, text — and nothing re-groups or re-orders them.
     @Test func panelActivityRowsInterleaveInTimelineOrder() throws {
-        let card = try cardItem("card", order: 1, status: "done")
+        let parent = try cardItem("card", order: 1, status: "done")
         let firstThought = try item("r1", type: "system", status: "done", order: 2,
                                     content: ["kind": "reasoning", "text": "first thought", "parentItemId": "card"])
         let tool = try item("t1", status: "done", order: 3,
@@ -456,8 +422,8 @@ import Testing
                                      content: ["text": "second thought", "parentItemId": "card"])
         let reply = try item("m1", type: "message", status: "done", order: 5, role: "assistant",
                              content: ["text": "Step 1.", "parentItemId": "card"])
-        let items = [card, firstThought, tool, secondThought, reply]
-        #expect(SubAgentProgress.activityRows(of: "card", in: items).map(\.id)
+        let items = [parent, firstThought, tool, secondThought, reply]
+        #expect(SubAgentProgress.activityRows(of: try card(parent), in: items).map(\.id)
             == ["r1", "t1", "r2", "m1"])
     }
 
@@ -465,7 +431,7 @@ import Testing
     /// hides never enter the activity list: the empty reasoning dead row
     /// (2026-10-05) and a hidden status. Main-agent rows stay out entirely.
     @Test func panelActivityRowsDropWhatTheChatHides() throws {
-        let card = try cardItem("card", order: 1, status: "done")
+        let parent = try cardItem("card", order: 1, status: "done")
         let deadRow = try item("r-empty", type: "system", status: "done", order: 2,
                                content: ["kind": "reasoning", "text": "", "signature": "sig", "parentItemId": "card"])
         let hiddenTool = try item("t-hidden", status: "hidden", order: 3,
@@ -474,7 +440,8 @@ import Testing
                             content: ["kind": "command", "command": "pwd", "parentItemId": "card"])
         let mainRow = try item("m-main", type: "message", status: "done", order: 5, role: "assistant",
                                content: ["text": "outside"])
-        #expect(SubAgentProgress.activityRows(of: "card", in: [card, deadRow, hiddenTool, tool, mainRow]).map(\.id)
+        #expect(SubAgentProgress.activityRows(of: try card(parent),
+                                              in: [parent, deadRow, hiddenTool, tool, mainRow]).map(\.id)
             == ["t1"])
     }
 
@@ -483,13 +450,99 @@ import Testing
     /// its own facts still render, but there is no activity to list).
     @Test func panelActivityRowsAreEmptyWithoutRowsOrBeforeTheCardLoads() throws {
         let parentCard = try cardItem("card", order: 1)
-        #expect(SubAgentProgress.activityRows(of: "card", in: [parentCard]).isEmpty)
+        #expect(SubAgentProgress.activityRows(of: try card(parentCard), in: [parentCard]).isEmpty)
         let other = try cardItem("other", order: 1, status: "done")
         let otherTool = try item("t1", status: "done", order: 2,
                                  content: ["kind": "command", "command": "ls", "parentItemId": "other"])
         let items = [other, otherTool]
         #expect(!SubAgentProgress.isContentLoaded(try card(parentCard), in: items))
-        #expect(SubAgentProgress.activityRows(of: "card", in: items).isEmpty)
+        #expect(SubAgentProgress.activityRows(of: try card(parentCard), in: items).isEmpty)
+    }
+
+    // MARK: Lineage merge (pp 2026-10-09: 恢复别名卡)
+
+    /// The two-card shape a legacy connector minted for a resumed task: the
+    /// original dispatch card (whose child rows hang off it) and the
+    /// SendMessage-keyed alias, which shares the task id in its `agents` map —
+    /// the real 88a21126 pair and its join (`a11bd2c081f4d5efe`).
+    private func resumeAliasItems() throws -> [V2TimelineItem] {
+        try [
+            cardItem("dispatch", order: 1, status: "running", description: "排查日志",
+                     agents: ["t-resumed": ["status": "running"]]),
+            item("r1", type: "system", status: "done", order: 2,
+                 content: ["kind": "reasoning", "text": "thinking", "parentItemId": "dispatch"]),
+            item("t1", status: "done", order: 3,
+                 content: ["kind": "command", "command": "ls", "parentItemId": "dispatch"]),
+            cardItem("alias", order: 4, status: "done", description: "排查日志",
+                     agents: ["t-resumed": ["status": "completed"]], summary: "DONE"),
+            item("m1", type: "message", status: "done", order: 5, role: "assistant",
+                 content: ["text": "Step 1.", "parentItemId": "dispatch"]),
+        ]
+    }
+
+    @Test func theAliasCardRendersTheDispatchCardsRows() throws {
+        let items = try resumeAliasItems()
+        let alias = try card(items[3])
+        #expect(alias.taskIDs == ["t-resumed"])
+        // The alias owns no rows of its own — the whole 真机 failure.
+        #expect(SubAgentProgress.children(of: "alias", in: items).isEmpty)
+        // The lineage merge renders the dispatch card's rows, in timeline order.
+        #expect(SubAgentProgress.activityRows(of: alias, in: items).map(\.id) == ["r1", "t1", "m1"])
+        // Symmetric: the dispatch card renders the same union.
+        #expect(SubAgentProgress.activityRows(of: try card(items[0]), in: items).map(\.id) == ["r1", "t1", "m1"])
+        // Lineage is the pair, one hop, by task id.
+        #expect(SubAgentProgress.lineageIDs(of: alias, in: items) == ["alias", "dispatch"])
+    }
+
+    @Test func twoLineageCardsNeverListARowTwice() throws {
+        let items = try resumeAliasItems()
+        let merged = SubAgentProgress.activityRows(of: try card(items[3]), in: items)
+        #expect(merged.count == Set(merged.map(\.id)).count)
+        #expect(merged.count == 3)
+    }
+
+    @Test func aCardWithoutTaskIdsKeepsItsOwnRowsOnly() throws {
+        // No `agents` map (a dispatch whose receipt never arrived): there is
+        // nothing to join on, so the merge must not invent a lineage — even
+        // when a same-named card sits right beside it.
+        let bare = try cardItem("bare", order: 1, description: "同名任务")
+        let twin = try cardItem("twin", order: 2, description: "同名任务",
+                                agents: ["t-other": ["status": "running"]])
+        let own = try item("own", status: "done", order: 3,
+                           content: ["kind": "command", "command": "ls", "parentItemId": "bare"])
+        let other = try item("other", status: "done", order: 4,
+                             content: ["kind": "command", "command": "pwd", "parentItemId": "twin"])
+        let items = [bare, twin, own, other]
+        let parsed = try card(bare)
+        #expect(parsed.taskIDs.isEmpty)
+        #expect(SubAgentProgress.lineageIDs(of: parsed, in: items) == ["bare"])
+        #expect(SubAgentProgress.activityRows(of: parsed, in: items).map(\.id) == ["own"])
+    }
+
+    @Test func twoDispatchesSharingOneTaskIDMerge() throws {
+        // The other half of the join: a task id claimed by two cards merges
+        // them, however the entries are spelled (map key vs named id).
+        let first = try cardItem("first", order: 1, agents: ["shared-task": ["status": "running"]])
+        let second = try cardItem("second", order: 2, agents: ["key": ["taskId": "shared-task", "status": "running"]])
+        let row = try item("row", status: "done", order: 3,
+                           content: ["kind": "command", "command": "ls", "parentItemId": "second"])
+        let items = [first, second, row]
+        #expect(try card(second).taskIDs == ["shared-task"])
+        #expect(SubAgentProgress.lineageIDs(of: try card(first), in: items) == ["first", "second"])
+        #expect(SubAgentProgress.activityRows(of: try card(first), in: items).map(\.id) == ["row"])
+    }
+
+    @Test func theLoadedGateFollowsTheLineage() throws {
+        let items = try resumeAliasItems()
+        let alias = try card(items[3])
+        // 1. The alias card's own row is in the window.
+        #expect(SubAgentProgress.isContentLoaded(alias, in: items))
+        // 2. Only the lineage is in the window — the activity area renders, so
+        //    the panel must not claim 「内容未加载」.
+        let withoutAlias = items.filter { $0.id != "alias" }
+        #expect(SubAgentProgress.isContentLoaded(alias, in: withoutAlias))
+        // 3. Neither: no card, no rows — the neutral notice is honest.
+        #expect(!SubAgentProgress.isContentLoaded(alias, in: withoutAlias.filter { $0.id != "dispatch" }))
     }
 
     // MARK: Main timeline filter (L2.1: keep only the dispatch card)

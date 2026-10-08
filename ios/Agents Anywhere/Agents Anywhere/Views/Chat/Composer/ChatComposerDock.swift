@@ -28,6 +28,11 @@ struct ChatComposerDock: View {
     var onApplySettings: () async -> Bool = { true }
     var applyError: () -> String? = { nil }
     var onDraftChange: () -> Void = {}
+    /// Whether a running turn's send key may enqueue (queue capability).
+    var canQueueSend = true
+    /// Increments once per successful enqueue; drives the light-impact haptic.
+    var queueEnqueueTick = 0
+    var onQueueSend: () async -> Void = {}
 
     @State private var editor = ComposerEditorController()
     @State private var showsOptions = false
@@ -42,13 +47,26 @@ struct ChatComposerDock: View {
 
     private enum AttachmentPicker { case photos, files }
 
+    /// Which control the trailing slot shows, and whether it is live. Resolved
+    /// by the shared pure function (`ComposerQueueAffordance`) so the branch —
+    /// queueing implies streaming, which the earlier inline order got wrong —
+    /// is owned by one tested source instead of a view-local re-derivation.
+    private var affordance: ComposerQueueAffordance {
+        ComposerQueueAffordance.resolve(
+            isStreaming: isStreaming,
+            hasText: !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            canQueue: canQueueSend,
+            canStop: canStop,
+            canSend: canSend && draft.canAttemptSend)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if let sessionChat {
                 CommandSuggestionPanel(chat: sessionChat, draft: draft, forced: $showsCommandMenu)
             }
             ChatComposer(draft: draft, editor: editor, isStreaming: isStreaming,
-                canSend: canSend, canStop: canStop, isBusy: isBusy || isSending || importCount > 0,
+                canSend: canSend, isBusy: isBusy || isSending || importCount > 0,
                 placeholder: placeholder,
                 maximumEditorHeight: maximumEditorHeight, controls: controls,
                 onSend: send, onStop: { Task { await onStop() } },
@@ -56,7 +74,8 @@ struct ChatComposerDock: View {
                 showsCommands: sessionChat?.offersCommands == true, commandsActive: showsCommandMenu,
                 onCommands: { showsCommandMenu.toggle() },
                 contextUsage: contextUsage,
-                onDraftChange: onDraftChange)
+                onDraftChange: onDraftChange,
+                affordance: affordance, onQueueSend: send)
                 .contentShape(Rectangle())
                 // K2 (round 1.1): the composer band owns vertical drags across
                 // its whole frame — including the transparent margins around
@@ -90,18 +109,30 @@ struct ChatComposerDock: View {
             editor.finishEditing()
             draft.isFocused = false
         }
+        // One light impact per successful enqueue, accounted by the caller.
+        .sensoryFeedback(.impact(weight: .light, intensity: 1), trigger: queueEnqueueTick)
         .alert(String(localized: "无法添加附件"), isPresented: Binding(get: { attachmentError != nil }, set: { if !$0 { attachmentError = nil } })) {
             Button(String(localized: "好"), role: .cancel) { attachmentError = nil }
         } message: { Text(attachmentError ?? "") }
     }
 
+    /// Commit the editor's text, then route it: a running turn enqueues, an idle
+    /// turn sends. The single entry point keeps a mid-commit frame from
+    /// straddling the boundary — whichever turn state the commit settled into
+    /// decides the action.
     private func send() {
-        guard !isSending, !isBusy, importCount == 0, canSend, !isStreaming else { return }
+        guard !isSending, !isBusy, importCount == 0 else { return }
+        // Commit follows the affordance the bar is showing: the textless stop
+        // form has nothing to commit, and each live form carries its own gate.
+        guard affordance.shape != .stop, affordance.isActionEnabled else { return }
         isSending = true
+        // A send ends the editing session (the keyboard drops so the reply is
+        // visible); an enqueue keeps it, because the queue is fed in a row.
+        let dismissKeyboard = affordance.shape != .queueSend
         Task { @MainActor in
             defer { isSending = false }
-            guard let text = await editor.committedTextForSend() else { return }
-            await onSend(text)
+            guard let text = await editor.committedTextForSend(dismissKeyboard: dismissKeyboard) else { return }
+            if isStreaming { await onQueueSend() } else { await onSend(text) }
         }
     }
 

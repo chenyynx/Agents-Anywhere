@@ -208,6 +208,93 @@ def agent_task_terminal_status(status: str | None) -> str | None:
     return AGENT_TASK_TERMINAL_STATUSES.get(status)
 
 
+def send_message_target(tool_name: str | None, tool_input: Any) -> str | None:
+    """The background task a SendMessage tool call resumes (``input.to``).
+
+    The live resume path (R4): a SendMessage call carries the task id it
+    addresses in ``input.to`` (the CLI also mirrors it as ``recipient``). That
+    id is the join key back to the original Agent dispatch, and reading it is
+    the only thing this does — SendMessage visibility is untouched.
+    """
+
+    if tool_name != "SendMessage" or not isinstance(tool_input, Mapping):
+        return None
+    target = tool_input.get("to")
+    return target if isinstance(target, str) and target else None
+
+
+def resolve_resume_alias(
+    tool_use_id: str,
+    *,
+    send_to_task: Mapping[str, str],
+    task_roots: Mapping[str, set[str]],
+) -> str | None:
+    """Resolve a SendMessage tool_use id to the Agent card it belongs to.
+
+    R4 (``.local-dev/subagent-status-truth-tasks.md``): a task resumed through
+    SendMessage has its lifecycle frames and terminal notification keyed by the
+    *SendMessage* tool_use id, so the live fold would mint a second card and
+    the original dispatch card would never receive the terminal state. This
+    folds the alias back onto the original card.
+
+    The join is intentionally strict and fail-closed — an unresolved id is
+    returned as ``None`` and the caller keeps the id it came with:
+
+    * the id must be a recorded SendMessage alias (``send_to_task``);
+    * its task must resolve to exactly one dispatch root (``task_roots``) — a
+      task with no root (dispatch not seen) or several roots (ambiguity) is
+      not touchable;
+    * the resolved root must not be the alias itself, so the two mappings can
+      never loop.
+    """
+
+    task_id = send_to_task.get(tool_use_id)
+    if task_id is None:
+        return None
+    roots = task_roots.get(task_id)
+    if roots is None or len(roots) != 1:
+        return None
+    root = next(iter(roots))
+    return root if root != tool_use_id else None
+
+
+def closure_rank(status: str | None) -> tuple[int, int]:
+    """Order two candidate closures so the most final, most honest one wins.
+
+    Terminal beats running; among equals ``interrupted`` beats ``done`` because
+    a card the engine cut short must never be shown as completed. Shared by the
+    live sweep and the history rebuild so both pick the same verdict when a card
+    names more than one task.
+    """
+
+    return (
+        0 if status in AGENT_CARD_TERMINAL_STATUSES else -1,
+        1 if status == "interrupted" else 0,
+    )
+
+
+def open_agent_task_ids(agents: Mapping[str, Any]) -> frozenset[str]:
+    """The tasks on a card that still claim to be alive.
+
+    A task counts as open when its agents-map entry carries a live status
+    (``running`` or ``async_launched``). A card can name several tasks — a
+    dispatch plus its SendMessage resumes, or a fan-out — and a closure may
+    only be published when *every* open task has been judged, so a sibling
+    that is still running is never hidden by the closure of another (red team
+    F6). Entries already terminal, or with no status at all, are not open:
+    they neither vouch for liveness nor block a judgement.
+    """
+
+    return frozenset(
+        agent_id
+        for agent_id, entry in agents.items()
+        if isinstance(agent_id, str)
+        and agent_id
+        and isinstance(entry, Mapping)
+        and _string(entry.get("status")) in AGENT_TASK_LIVE_STATUSES
+    )
+
+
 def task_usage(raw: Mapping[str, Any] | None) -> dict[str, Any]:
     """Map task usage onto the keys the receipt path already publishes.
 
@@ -334,6 +421,17 @@ class ClaudeAgentCallCard:
     #: (content None) needs the raw id to synthesize a base.
     tool_use_id: str | None = None
     session_id: str | None = None
+    #: Wall-clock seconds when this card was first seen (its dispatch frame
+    #: landed). The wire frames carry no timestamps, so this is the live path's
+    #: only launch time — the input the never-started grace needs when a task
+    #: has no subagent transcript at all (red team F5).
+    #:
+    #: It is a *card* stamp, not a task one: a card naming several tasks (a
+    #: fan-out, or a dispatch plus a resume) dates them all from the first
+    #: frame, so a later task's age is over-estimated. The bias only makes the
+    #: never-started closure more willing, and the subagent file — when it
+    #: exists — overrides it entirely; recorded rather than fixed (N5a).
+    launched_at: float | None = None
 
 
 def agent_task_overlay_for_event(

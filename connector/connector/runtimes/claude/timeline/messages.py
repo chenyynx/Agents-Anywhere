@@ -3,7 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -41,11 +42,16 @@ from connector.runtimes.claude.timeline.agent_calls import (
     AGENT_CARD_TERMINAL_STATUSES,
     ClaudeAgentCallCard,
     ClaudeAgentTaskOverlay,
+    agent_task_terminal_status,
     claude_agent_call_content,
+    closure_rank,
     complete_claude_agent_call_content,
     has_running_agent_tasks,
     is_async_agent_receipt,
+    open_agent_task_ids,
     resolve_agent_card_status,
+    resolve_resume_alias,
+    send_message_target,
 )
 
 CLAUDE_INTERRUPTED_REQUEST_MARKERS = frozenset(
@@ -141,17 +147,33 @@ class ClaudeMessageProjector:
         self,
         tool_call_lookup: Mapping[str, ClaudePendingToolCall] | None = None,
         hidden_tool_use_ids: frozenset[str] | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self._order_by_id: dict[str, int] = {}
         self._next_order_seq = 1
         self._tool_calls: dict[str, ClaudePendingToolCall] = {}
         self._tool_call_lookup = dict(tool_call_lookup or {})
         self._hidden_tool_use_ids: set[str] = set(hidden_tool_use_ids or ())
+        # Wall-clock seam for the launch stamp on Agent cards (F5): the
+        # never-started grace needs an age, and the wire frames carry none.
+        # Injectable so tests can drive it; wall clock (not monotonic) because
+        # it is compared against file mtimes, which are wall-clock.
+        self._clock = clock if clock is not None else time.time
         # L2 subagent progress: live state of every Agent call card this
         # projector has minted, keyed by the card's stable item id. The card
         # carries the wire-projected content and the task-event overlay
         # separately so either writer can land first (see agent_calls.py).
         self._agent_cards: dict[str, ClaudeAgentCallCard] = {}
+        # R4 resume-alias lineage (subagent-status-truth-tasks §3.3): a task
+        # resumed through SendMessage keys its later frames on the SendMessage
+        # tool_use id, so the live fold must route them back onto the original
+        # dispatch card instead of minting a second one. The two maps are the
+        # join: a task id learned from an Agent receipt (or an Agent call's own
+        # agentId) -> the dispatch tool_use id(s) that produced it, and a
+        # SendMessage tool_use id -> the task id it addresses. Both are read
+        # only for lineage; SendMessage's own visibility is untouched.
+        self._task_roots: dict[str, set[str]] = {}
+        self._send_to_task: dict[str, str] = {}
 
     def message_item(
         self,
@@ -263,6 +285,11 @@ class ClaudeMessageProjector:
             if block.block_type == "tool_use" and is_hidden_tool_name(block.tool_name):
                 self._hidden_tool_use_ids.add(block.tool_use_id)
                 continue
+            if block.block_type == "tool_use":
+                # The resume lineage is recorded before visibility is decided,
+                # so a hidden SendMessage still contributes its alias while its
+                # own row stays exactly as visible (or hidden) as before.
+                self._record_send_message(block)
             if (
                 block.block_type == "tool_result"
                 and block.tool_use_id in self._hidden_tool_use_ids
@@ -499,6 +526,7 @@ class ClaudeMessageProjector:
                 session_id=session.session_id,
                 tool_use_id=block.tool_use_id,
             )
+            self._learn_agent_lineage(content, tool_use_id=block.tool_use_id)
             if status in AGENT_CARD_TERMINAL_STATUSES and has_running_agent_tasks(
                 content
             ):
@@ -556,13 +584,63 @@ class ClaudeMessageProjector:
         one (the terminal closure is idempotent).
         """
 
-        card = self._agent_cards.setdefault(item_id, ClaudeAgentCallCard())
+        card = self._agent_card(item_id)
         card.turn_id = turn_id
         card.content = content
         card.session_id = session_id
         card.tool_use_id = tool_use_id
         card.status = resolve_agent_card_status(card.status, status)
         return card.status, card.overlay.apply(content)
+
+    def _agent_card(self, item_id: str) -> ClaudeAgentCallCard:
+        """The card for one item id, minted with its launch stamp when new.
+
+        The stamp is the wall clock at first sight — the dispatch frame — and
+        is only ever set once, so a later fold or projection cannot move a
+        card's launch time (F5).
+        """
+
+        card = self._agent_cards.get(item_id)
+        if card is None:
+            card = ClaudeAgentCallCard(launched_at=self._clock())
+            self._agent_cards[item_id] = card
+        return card
+
+    def _learn_agent_lineage(
+        self,
+        content: AgentCallToolContent,
+        *,
+        tool_use_id: str,
+    ) -> None:
+        """Record the task id(s) an Agent call card is bound to (R4 join).
+
+        An Agent card learns its task ids two ways: from the dispatch input
+        (nothing) and from whoever writes the receipt — the launch receipt
+        stamps ``content.agentId`` and the terminal overlay carries the
+        ``agents`` map keyed by task id. Learning them here, beside the one
+        place the card is minted, means the alias resolver has the same map the
+        card itself is keyed by, whichever event landed first.
+        """
+
+        if content.agent_id:
+            self._task_roots.setdefault(content.agent_id, set()).add(tool_use_id)
+        for agent_id in content.agents:
+            if isinstance(agent_id, str) and agent_id:
+                self._task_roots.setdefault(agent_id, set()).add(tool_use_id)
+
+    def _record_send_message(self, block: ClaudeToolBlock) -> None:
+        """Learn one SendMessage resume alias without minting a visible card.
+
+        The SendMessage tool_use frame is bookkeeping for the resume lineage,
+        not a card of its own: its ``input.to`` names the task it resumes, and
+        the tool_use id is the alias later frames key on. The frame itself is
+        returned to the caller to project (visibility unchanged) — this only
+        keeps a note of the join, and never publishes anything.
+        """
+
+        target = send_message_target(block.tool_name, block.tool_input)
+        if target is not None:
+            self._send_to_task[block.tool_use_id] = target
 
     def fold_agent_task_event(
         self,
@@ -585,11 +663,27 @@ class ClaudeMessageProjector:
         it. A card already minted in-window always wins; otherwise the fold
         publishes the dispatch shape its caller rebuilt from the history
         lookup, so a dispatch-less window still opens the right card.
+
+        A ``tool_use_id`` that is a SendMessage resume alias is redirected to
+        the task's original dispatch card (R4, subagent-status-truth-tasks
+        §3.3): the resumed task's lifecycle frames and notification arrive
+        keyed on the SendMessage call, and folding them onto the dispatch card
+        keeps one card per task. The id only moves when the lineage resolves
+        to a single root; otherwise it is left exactly as it came
+        (fail-closed), so an unlearned alias behaves as it does today.
         """
 
+        tool_use_id = (
+            resolve_resume_alias(
+                tool_use_id,
+                send_to_task=self._send_to_task,
+                task_roots=self._task_roots,
+            )
+            or tool_use_id
+        )
         item_id = stable_tool_item_id(session, tool_use_id)
         order_seq = self.order_seq_for(item_id)
-        card = self._agent_cards.setdefault(item_id, ClaudeAgentCallCard())
+        card = self._agent_card(item_id)
         if card.turn_id is None and turn_id is not None:
             card.turn_id = turn_id
         card.overlay.merge(overlay)
@@ -632,27 +726,48 @@ class ClaudeMessageProjector:
     def close_open_agent_cards(
         self,
         session: ClaudeSession,
+        *,
+        oracle: Any | None = None,
+        terminal_events: Mapping[str, Sequence[tuple[int | None, Any]]] | None = None,
+        receipt_ages: Mapping[str, float] | None = None,
+        attached_task_ids: frozenset[str] | None = None,
+        live_task_ids: frozenset[str] | None = None,
+        now_ms: int | None = None,
     ) -> tuple[RuntimeTimelineItem, ...]:
-        """Judge every open Agent card of this session that has no live task.
+        """Judge every open Agent card of this session against engine evidence.
 
-        The stop-path sweep (I-G1, `ghost-card-findings.md` §5.1): a dispatch
-        aborted inside its dispatch window has no task to close it — the CLI
-        never created one — and the single frame that could (the aborted
-        call's tool_result) is discarded by the stop's own release. Nothing
-        else ever re-projects that card, so the stop is the last moment that
-        can judge it; this returns the items that do.
+        Two closures live here and they are deliberately different.
 
-        Open cards backed by a *started* task (a ``running`` entry) are left
-        alone (I-G2), and a card whose task starts after this ran is re-opened
-        by the fold clamp in ``fold_agent_task_event`` — the sweep cannot lie
-        about a live agent, and cannot strand a dead card. The exemption is
-        deliberately narrow (red team F-D): the ``async_launched`` receipt
-        marks a launch report, not a task, so a receipt-only card is still a
-        dispatch-window ghost and is judged here; the per-task stop control
-        covers it if the task turns out to be real. Terminal cards are
-        untouched.
+        The dispatch-window ghost (I-G1, `ghost-card-findings.md` §5.1): a
+        dispatch aborted inside its dispatch window has no task to close it —
+        the CLI never created one — and the single frame that could (the
+        aborted call's tool_result) is discarded by the stop's own release.
+        Nothing else ever re-projects that card, so the stop is the last moment
+        that can judge it; open cards with no live task fold to ``interrupted``.
+
+        The evidence closure (R1/R2, `subagent-status-truth-tasks.md`): a task
+        whose terminal notice the SDK message view never carried (R1), or one
+        the host process was killed under so the CLI emitted no terminal event
+        at all (R2), has no wire frame left to close it. When an ``oracle`` is
+        supplied it is asked for the task's true state from its subagent
+        transcript (terminal notice + silent file, a never-started launch, or a
+        stale file) and its verdict is folded in, marked with the closure's
+        provenance on ``content.metadata``.
+
+        Open cards backed by a *started* task (a ``running`` entry, or an id the
+        caller vouches for in ``live_task_ids``) are left alone (I-G2), and a
+        card whose task starts after this ran is re-opened by the fold clamp in
+        ``fold_agent_task_event`` — the sweep cannot lie about a live agent, and
+        cannot strand a dead card. ``attached_task_ids`` names the tasks of a
+        session whose process this connector is actively driving; those are
+        exempt from the file-staleness closure (a long tool call writes nothing
+        for a while) though a terminal notice still closes them.
         """
 
+        events = terminal_events or {}
+        ages = receipt_ages or {}
+        attached = attached_task_ids or frozenset()
+        live = live_task_ids or frozenset()
         items: list[RuntimeTimelineItem] = []
         for item_id, card in tuple(self._agent_cards.items()):
             if card.session_id != session.session_id:
@@ -669,9 +784,92 @@ class ClaudeMessageProjector:
                     continue
                 base = card.overlay.synthesized_call(card.tool_use_id)
             content = card.overlay.apply(base)
-            if has_running_agent_tasks(content):
-                continue
-            card.status = resolve_agent_card_status(card.status, "interrupted")
+            if oracle is None:
+                # Stop-path ghost judgment (I-G1): the caller is a stop, and
+                # every open card it left without a started task folds to
+                # interrupted. Unchanged from the original sweep — including
+                # its `has_running_agent_tasks` exemption.
+                if has_running_agent_tasks(content):
+                    continue
+                card.status = resolve_agent_card_status(card.status, "interrupted")
+                closed_content = replace(
+                    content,
+                    metadata={
+                        **dict(content.metadata),
+                        "stoppedWithoutTask": True,
+                    },
+                )
+                event = "claude.agent.stopped"
+            else:
+                # Engine-evidence judgment (R1/R2): the caller is a process
+                # exit, a restart, or a periodic pass, where a false close is
+                # worse than a slow one. Every *open* task (a `running` or
+                # `async_launched` entry) must be judged before the card may be
+                # closed; a task the transport still lists in `live`, or one
+                # the oracle cannot justify closing, keeps the whole card open
+                # (red team F1/F6) — a running sibling must never be hidden by
+                # the closure of another task on the same card.
+                #
+                # Known boundary (red team F7): no caller passes
+                # `terminal_events` today, so this path only ever closes on
+                # file evidence or a transcript notice already folded by the
+                # live fold. A terminal notice that reached neither the live
+                # frame nor the history rebuild is out of this sweep's reach
+                # by design (it is not a file fact); the history post-pass is
+                # the surface for those.
+                #
+                # Known boundary (red team F9): this runs without the
+                # execution lock, so a live fold can land concurrently. Both
+                # writers are idempotent upserts — `resolve_agent_card_status`
+                # keeps a terminal status sticky — and the loser simply
+                # republishes the same state, so the race is self-healing.
+                open_task_ids = open_agent_task_ids(content.agents)
+                if not open_task_ids:
+                    # Every entry is status-less or unknown, yet the card is not
+                    # terminal: nothing vouches for liveness, so fall back to
+                    # judging the tasks nothing else would settle rather than
+                    # stranding the card forever (N3).
+                    open_task_ids = _fallback_task_ids(content.agents)
+                if not open_task_ids or open_task_ids & live:
+                    continue
+                verdicts = self._card_evidence(
+                    oracle,
+                    card=card,
+                    task_ids=open_task_ids,
+                    session=session,
+                    events=events,
+                    ages=ages,
+                    attached=attached,
+                    now_ms=now_ms,
+                )
+                if len(verdicts) != len(open_task_ids):
+                    continue
+                _, best = max(
+                    verdicts.items(),
+                    key=lambda item: (
+                        _closure_rank(
+                            (
+                                item[1].closure_status,
+                                item[1].closed_by,
+                                item[1].end_time_ms,
+                                None,
+                            )
+                        )
+                    ),
+                )
+                card.status = resolve_agent_card_status(
+                    card.status, best.closure_status
+                )
+                if best.end_time_ms is not None:
+                    card.overlay.end_time = best.end_time_ms
+                closed_content = self._apply_evidence_closure(
+                    content=content,
+                    card=card,
+                    agents=self._evidence_agents(content, verdicts),
+                    closed_by=best.closed_by,
+                    end_time_ms=best.end_time_ms,
+                )
+                event = "claude.agent.closed"
             items.append(
                 ToolTimelineItem(
                     id=item_id,
@@ -682,17 +880,14 @@ class ClaudeMessageProjector:
                     # The marker keeps the judgment observable in the
                     # timeline (free JSON), next to the terminal status the
                     # client renders from the status field alone.
-                    content=replace(
-                        content,
-                        metadata={**dict(content.metadata), "stoppedWithoutTask": True},
-                    ),
+                    content=closed_content,
                     source=TimelineSource(
                         runtime="claude",
                         external_session_id=session.external_session_id,
                         turn_id=card.turn_id,
                         native_item_id=card.tool_use_id,
                         native_item_type="tool_use",
-                        event="claude.agent.stopped",
+                        event=event,
                     ),
                 ).to_platform_item(
                     session_id=session.session_id,
@@ -700,6 +895,151 @@ class ClaudeMessageProjector:
                 )
             )
         return tuple(items)
+
+    def _card_evidence(
+        self,
+        oracle: Any | None,
+        *,
+        card: ClaudeAgentCallCard,
+        task_ids: frozenset[str],
+        session: ClaudeSession,
+        events: Mapping[str, Sequence[tuple[int | None, Any]]],
+        ages: Mapping[str, float],
+        attached: frozenset[str],
+        now_ms: int | None,
+    ) -> dict[str, Any]:
+        """The per-task evidence verdicts for one card.
+
+        Returns one entry per task the oracle could judge; a task it declined
+        (a fresh file, an attached process, a launch inside the grace) is
+        simply absent, and the caller must then leave the whole card open.
+        Evidence is never guessed.
+
+        The receipt age comes from an explicit ``ages`` entry when the caller
+        derived one (the history path reads it from the raw transcript); on the
+        live path there is none, so the card's own launch stamp supplies it
+        (F5) — without that, a never-started task could never be judged.
+        """
+
+        verdicts: dict[str, Any] = {}
+        if oracle is None:
+            return verdicts
+        # "Now" for the launch age comes from the explicit override, else the
+        # oracle's own clock — the same time domain its file probe judges
+        # mtimes in — and only then the projector's mint clock. Using the mint
+        # clock here would freeze the age whenever a caller pins it.
+        if now_ms is not None:
+            now_seconds = now_ms / 1000.0
+        else:
+            oracle_clock = getattr(oracle, "clock", None)
+            now_seconds = (
+                oracle_clock() if callable(oracle_clock) else self._clock()
+            )
+        for task_id in sorted(task_ids):
+            age = ages.get(task_id)
+            if age is None and card.launched_at is not None:
+                age = max(now_seconds - card.launched_at, 0.0)
+            verdict = oracle.evidence(
+                task_id=task_id,
+                external_session_id=session.external_session_id,
+                cwd=session.cwd,
+                terminal_events=events.get(task_id, ()),
+                receipt_age_seconds=age,
+                attached_live=task_id in attached,
+                now_ms=now_ms,
+            )
+            if verdict is not None:
+                verdicts[task_id] = verdict
+        return verdicts
+
+    def _evidence_agents(
+        self,
+        content: AgentCallToolContent,
+        verdicts: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Per-task entries for the tasks an evidence closure judged.
+
+        The agents map is what the panel reads for per-task state, so a judged
+        task must not keep its old ``running``/``async_launched`` entry. Only
+        the judged tasks are rewritten; every other entry — a sibling that was
+        already terminal, say — rides through untouched (red team F6).
+        """
+
+        entries: dict[str, Any] = {}
+        for task_id, verdict in verdicts.items():
+            existing = content.agents.get(task_id)
+            entry = dict(existing) if isinstance(existing, Mapping) else {}
+            status = verdict.agent_status or verdict.closure_status
+            if status is not None:
+                entry["status"] = status
+            entries[task_id] = entry
+        return entries
+
+    def _apply_evidence_closure(
+        self,
+        *,
+        content: AgentCallToolContent,
+        card: ClaudeAgentCallCard,
+        agents: Mapping[str, Any],
+        closed_by: str,
+        end_time_ms: int | None,
+    ) -> AgentCallToolContent:
+        """Publish the evidence verdict onto the card's content.
+
+        The agents map carries the terminal status per task, an ``endTime``
+        rides the metadata (the panel's final-output timestamp), and the
+        ``closedByEvidence`` provenance is stamped beside ``stoppedWithoutTask``
+        with the same semantics — free JSON the client may surface.
+        """
+
+        merged_agents: dict[str, Any] = {
+            agent_id: dict(entry) if isinstance(entry, Mapping) else entry
+            for agent_id, entry in content.agents.items()
+        }
+        for agent_id, entry in agents.items():
+            if not isinstance(entry, Mapping):
+                continue
+            existing = merged_agents.get(agent_id)
+            merged_agents[agent_id] = (
+                {**existing, **entry} if isinstance(existing, Mapping) else dict(entry)
+            )
+        metadata = {**dict(content.metadata), "closedByEvidence": closed_by}
+        if end_time_ms is not None:
+            metadata["endTime"] = end_time_ms
+        updated = replace(content, agents=merged_agents, metadata=metadata)
+        card.overlay.agents = {
+            agent_id: (
+                dict(entry) if isinstance(entry, Mapping) else entry
+            )
+            for agent_id, entry in merged_agents.items()
+        }
+        return updated
+
+
+def _fallback_task_ids(agents: Mapping[str, Any]) -> frozenset[str]:
+    """Named tasks with no terminal status of their own (N3 fallback).
+
+    A card that is not terminal but has no open entry is judged on these: the
+    status-less and unknown-status entries, which nothing else would ever
+    settle. An entry that already names a terminal outcome is left alone — it
+    is the card's own record of the task's end, and re-judging it from a file
+    could only walk a finished task backwards.
+    """
+
+    return frozenset(
+        agent_id
+        for agent_id, entry in agents.items()
+        if isinstance(agent_id, str)
+        and agent_id
+        and agent_task_terminal_status(
+            _string(entry.get("status")) if isinstance(entry, Mapping) else None
+        )
+        is None
+    )
+
+
+def _closure_rank(candidate: tuple[str, str, int | None, str | None]) -> tuple[int, int]:
+    return closure_rank(candidate[0])
 
 
 def synthesized_agent_call_content(

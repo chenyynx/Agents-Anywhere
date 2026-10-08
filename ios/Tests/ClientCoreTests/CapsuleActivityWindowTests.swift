@@ -183,10 +183,11 @@ import Testing
         #expect(stored.isEmpty)
     }
 
-    // MARK: §8 panel reachability
+    // MARK: Flat panel (pp 2026-10-08: 不分回合)
 
-    /// Two running cards dispatched in different turns: the device case where the
-    /// capsule says "2" and the turn page held one.
+    /// Two active cards dispatched in different turns — the case that used to
+    /// split into a per-turn page plus an "其他回合还有 N 个运行中" list. The
+    /// flat strip holds both, with no grouping.
     private func twoTurnItems() throws -> [V2TimelineItem] {
         try decodeItems([
             try userRow("ask-1", order: 1),
@@ -196,38 +197,36 @@ import Testing
         ])
     }
 
-    @Test func aCardFromAnotherTurnStaysReachableFromThePanel() throws {
+    @Test func theFlatStripListsEveryActiveCardRegardlessOfTurn() throws {
         let window = try twoTurnItems()
-        let page = SubAgentProgress.turnScopedTopLevelCards(in: window, containing: "card-b")
-        #expect(page.map(\.id) == ["card-b"])
-        // The per-turn page is untouched; the other turn's card is offered beside it.
-        let others = SubAgentProgress.otherActiveCards(inWindow: window, activeCards: [], page: page)
-        #expect(others.map(\.id) == ["card-a"])
-        #expect(others.first?.taskName == "@621 胶囊修复实施")
-        #expect(others.first?.phase == .running)
-        // Both cards are reachable, and the capsule's count matches what the panel offers.
-        #expect(Set(page.map(\.id)).union(others.map(\.id)) == ["card-a", "card-b"])
+        let active = SubAgentProgress.activeCards(inWindow: window, activeCards: [])
+        #expect(active.map(\.id) == ["card-a", "card-b"])
+        #expect(active.first?.taskName == "@621 胶囊修复实施")
+        #expect(active.first?.phase == .running)
+        // The strip and the capsule share one source: same count, same phases.
         #expect(SubAgentProgress.capsuleState(inWindow: window, activeCards: []).runningCount == 2)
-        // The entry renders from the card itself: a name and a live phase, never blank.
-        #expect(SubAgentProgress.card(try decode(agentCard("card-a", order: 2), as: V2TimelineItem.self))?.phase.isActive == true)
     }
 
-    @Test func theOtherTurnsEntryEmptiesWhenThoseCardsReachATerminalPhase() throws {
+    @Test func aCardLeavesTheStripWhenItReachesATerminalPhase() throws {
         let window = try twoTurnItems()
-        let page = SubAgentProgress.turnScopedTopLevelCards(in: window, containing: "card-b")
         var stored: [V2ActiveAgentCard] = []
         stored = SubAgentProgress.absorbingActiveCards(try decode(agentCard("card-a", order: 2)),
                                                         into: stored, now: Self.now)
-        #expect(SubAgentProgress.otherActiveCards(inWindow: window, activeCards: stored, page: page)
-            .map(\.id) == ["card-a"])
+        #expect(SubAgentProgress.activeCards(inWindow: window, activeCards: stored).map(\.id) == ["card-a", "card-b"])
 
         // The window's own copy of card-a finishes: no terminal update frame can
         // reach the sidecar for a card that is already out of the window, so the
         // window's version has to win the union as well.
         var settled = window
         settled[1] = try decode(agentCard("card-a", order: 2, status: "done", revision: 2, seq: 20))
-        #expect(SubAgentProgress.otherActiveCards(inWindow: settled, activeCards: stored, page: page).isEmpty)
+        #expect(SubAgentProgress.activeCards(inWindow: settled, activeCards: stored).map(\.id) == ["card-b"])
+        // The card has 退场'd from the strip, but the session list still holds it
+        // so a reader's detail stays resolvable by id.
+        let session = SubAgentProgress.sessionCards(inWindow: settled, activeCards: stored)
+        #expect(session.map(\.id) == ["card-a", "card-b"])
+        #expect(SubAgentProgress.resolveSelection(session, requested: "card-a")?.id == "card-a")
         #expect(SubAgentProgress.capsuleState(inWindow: settled, activeCards: stored, now: Self.now).runningCount == 1)
+
         // And the frame the window drops still retires the sidecar entry.
         var projection = V2SessionProjection(snapshot: try snapshot(items: [try agentCard("card-a", order: 2)]),
                                              maximumItems: 10, now: { Self.now })
@@ -244,34 +243,33 @@ import Testing
         #expect(capsule(projection).latestRunningID == "card-b")
     }
 
-    @Test func anOutOfWindowCardIsReportedAsNotLoadedRatherThanBlank() throws {
+    @Test func anOutOfWindowCardIsListedAndReportedAsNotLoaded() throws {
         let outside = try decode(agentCard("far", order: 2, description: "更早的回合"), as: V2TimelineItem.self)
         let entry = V2ActiveAgentCard(item: outside, confirmedAt: Self.now)
-        let others = SubAgentProgress.otherActiveCards(inWindow: [], activeCards: [entry], page: [])
-        #expect(others.map(\.id) == ["far"])
-        // No row, so the panel cannot offer tool/thinking/output rows — and must say so.
-        #expect(!SubAgentProgress.isContentLoaded(others[0], in: []))
+        // Sidecar-only: it is active, so it earns a chip, and the panel must say
+        // its rows are not loaded rather than render a blank body.
+        #expect(SubAgentProgress.activeCards(inWindow: [], activeCards: [entry]).map(\.id) == ["far"])
+        #expect(SubAgentProgress.sessionCards(inWindow: [], activeCards: [entry]).map(\.id) == ["far"])
+        #expect(!SubAgentProgress.isContentLoaded(SubAgentProgress.card(outside)!, in: []))
         #expect(SubAgentProgress.card(outside)?.taskName == "更早的回合")
-        #expect(others[0].phase == .running)
+        #expect(SubAgentProgress.card(outside)?.phase == .running)
         // A card the window still holds needs no such notice.
         #expect(SubAgentProgress.isContentLoaded(SubAgentProgress.card(outside)!, in: [outside]))
     }
 
-    @Test func thePanelReachAndTheCapsuleShareOneSource() throws {
-        // Same union, same phases: whatever the capsule counts, the panel can offer.
+    @Test func theStripAndTheCapsuleShareOneSource() throws {
+        // Same window ∪ sidecar union: whatever the capsule counts, the strip lists.
         var stored: [V2ActiveAgentCard] = []
         for order in [220, 400] {
             stored = SubAgentProgress.absorbingActiveCards(try decode(agentCard("card-\(order)", order: order)),
                                                             into: stored, now: Self.now)
         }
         let window = try decodeItems([try agentCard("card-400", order: 400)])
-        let page = SubAgentProgress.turnScopedTopLevelCards(in: window, containing: "card-400")
         let state = SubAgentProgress.capsuleState(inWindow: window, activeCards: stored, now: Self.now)
-        let reachable = page.map(\.id) + SubAgentProgress.otherActiveCards(inWindow: window, activeCards: stored,
-                                                                        page: page).map(\.id)
+        let active = SubAgentProgress.activeCards(inWindow: window, activeCards: stored, now: Self.now)
         #expect(state.runningCount == 2)
-        #expect(Set(reachable) == ["card-220", "card-400"])
-        // A card present in both layers is offered once.
-        #expect(reachable.count == 2)
+        #expect(active.map(\.id) == ["card-220", "card-400"])
+        // A card present in both layers is listed once.
+        #expect(active.count == 2)
     }
 }

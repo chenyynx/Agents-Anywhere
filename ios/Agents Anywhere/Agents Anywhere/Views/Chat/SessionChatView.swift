@@ -19,7 +19,12 @@ struct SessionChatView: View, Equatable {
     private let fileService: V2WorkspaceFilesService
     private let detailService: V2SessionDetailService
     private enum SessionSheet: Identifiable {
-        case notices, details, files, subagents(String), preview(SessionFileReference, root: String? = nil)
+        case notices, details, files
+        /// The SubAgent panel: the anchor card id plus its entry point. The
+        /// capsule (entry A) lists every active card; a timeline card (entry B)
+        /// shows that one card's detail alone (pp 2026-10-08).
+        case subagents(String, fromCapsule: Bool)
+        case preview(SessionFileReference, root: String? = nil)
         /// The instant image viewer: opens on the thumbnail the bubble already
         /// decoded (nil when it has none) while the loader serves the original.
         case attachmentImage(V2AttachmentContent, image: UIImage?, tappedAt: Date)
@@ -28,7 +33,7 @@ struct SessionChatView: View, Equatable {
             case .notices: "notices"
             case .details: "details"
             case .files: "files"
-            case .subagents(let cardID): "subagents:\(cardID)"
+            case .subagents(let cardID, let fromCapsule): "subagents:\(fromCapsule ? "capsule" : "card"):\(cardID)"
             case .preview(let reference, let root): "file:\(root ?? ""):\(reference.id)"
             case .attachmentImage(let file, _, _): "attachment:\(file.fileId ?? file.cacheKey)"
             }
@@ -37,6 +42,76 @@ struct SessionChatView: View, Equatable {
     @State private var previewURL: URL?
     @State private var previewDirectory: URL?
     @State private var isDownloading = false
+    /// The welcome line shows only for a settled, genuinely empty page — a
+    /// queued message counts as content even before its timeline rows exist.
+    /// Kept out of the overlay's ViewBuilder: the four-way conjunction inside
+    /// a builder pushes the type checker past its budget (it timed out once).
+    private var showsEmptyState: Bool {
+        model.isOpeningReady && model.timeline.rows.isEmpty
+            && model.timeline.pendingMessages.isEmpty && model.session.sendQueue.isEmpty
+    }
+
+    /// The bottom dock stack, in its own method: the composer's initializer and
+    /// this chain's other closures together exceed the type checker's budget
+    /// (the chain has timed it out more than once).
+    private func composerDockArea(maximumEditorHeight: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            // B (pp 2026-10-06): the SubAgent capsule is the dock's
+            // first row — it takes its own space above the composer
+            // instead of floating over the timeline's last row.
+            SubAgentCapsuleSlot(model: model, onOpen: { sheet = .subagents($0, fromCapsule: true) })
+                .traceChatLayout("subagent-capsule")
+            SessionInteractionDock(chat: model,
+                onShowAll: { expandedNoticeID = $0; sheet = .notices })
+                .traceChatLayout("interaction-dock")
+            ChatComposerDock(draft: session.composer, settings: model.settings,
+                maximumEditorHeight: maximumEditorHeight, controls: controls,
+                canSend: session.canSend, canAttach: model.canAttach,
+                canSelectModel: session.runtime.allows("catalog.model"),
+                canSelectPermission: session.runtime.allows("catalog.permission"),
+                isStreaming: model.isComposerStreaming, canStop: session.runtime.permitsInterruptAttempt(),
+                isBusy: model.isWorking || !model.isOpeningReady, placeholder: requiresTakeover ? String(localized: "请先接管") : String(localized: "询问 Agents"),
+                isLoadingSettings: model.isLoadingSettings,
+                settingsError: model.settingsError, sessionChat: model,
+                contextUsage: model.contextUsage,
+                onSend: model.send, onStop: model.interrupt, onLoadSettings: model.loadSettings,
+                onApplySettings: model.applySettings, applyError: { model.settingsError },
+                onDraftChange: { model.repository.draftDidChange() },
+                canQueueSend: model.canQueueSend, queueEnqueueTick: model.queueEnqueueTick,
+                onQueueSend: { await model.enqueueComposer() })
+                .traceChatLayout("composer-dock")
+        }
+        .frame(maxWidth: ChatControlMetrics.maximumContentWidth).frame(maxWidth: .infinity)
+        // Native safe-area layout owns both the visible scroll
+        // region and the dock's space; do not add a second margin.
+    }
+
+    /// The sheet bodies live in their own method: the same switch inline in the
+    /// modifier chain is what timed the type checker out (adding the queue's
+    /// task call above it tipped the enclosing chain over its budget).
+    @ViewBuilder private func sheetContent(for destination: SessionSheet) -> some View {
+        switch destination {
+        case .notices: SessionNoticesSheet(model: model, initialNoticeID: expandedNoticeID)
+        case .details: SessionDetailsSheet(chat: model, service: detailService)
+        case .subagents(let cardID, let fromCapsule):
+            SubAgentPanelSheet(chat: model, deviceName: deviceName, fallbackRuntimeName: fallbackRuntimeName,
+                initialCardID: cardID, opensFromCapsule: fromCapsule, onFile: openFile, onAttachment: openAttachment)
+        case .files:
+            if let meta = session.metadata, let cwd = meta.cwd {
+                WorkspaceFilesSheet(connectorId: meta.connectorId,
+                    deviceName: deviceName ?? meta.connectorId,
+                    workspace: V2DeviceWorkspace(path: cwd, name: String(localized: "会话文件"), sessionCount: 1, lastActiveAt: nil),
+                    service: fileService, session: session)
+            }
+        case .preview(let reference, let root):
+            if let meta = session.metadata {
+                WorkspaceFilePreviewSheet(connectorId: meta.connectorId, root: root ?? meta.cwd ?? ".", path: reference.path,
+                    service: fileService, session: session, location: reference)
+            }
+        case .attachmentImage(let file, let image, let tappedAt):
+            AttachmentImageViewerSheet(file: file, initialImage: image, tappedAt: tappedAt, loader: imageLoader)
+        }
+    }
     @State private var toasts = ChatToastStore()
     @State private var pendingTakeover: Bool?
     @State private var hasStartedLoading = false
@@ -79,13 +154,13 @@ struct SessionChatView: View, Equatable {
                 if hasStartedLoading {
                     ChatTimelineView(model: model,
                         onAttachment: openAttachment, onFile: openFile,
-                        onSubAgent: { sheet = .subagents($0) })
+                        onSubAgent: { sheet = .subagents($0, fromCapsule: false) })
                 } else {
                     Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
                 .overlay {
-                    if model.isOpeningReady && model.timeline.rows.isEmpty && model.timeline.pendingMessages.isEmpty {
+                    if showsEmptyState {
                         VStack(spacing: 12) {
                             Text(String(localized: "在这里继续你的任务")).foregroundStyle(.secondary)
                         }.allowsHitTesting(false)
@@ -93,33 +168,7 @@ struct SessionChatView: View, Equatable {
                 }
                 .overlay { if model.showsOpeningMask { openingMask } }
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    VStack(spacing: 0) {
-                        // B (pp 2026-10-06): the SubAgent capsule is the dock's
-                        // first row — it takes its own space above the composer
-                        // instead of floating over the timeline's last row.
-                        SubAgentCapsuleSlot(model: model, onOpen: { sheet = .subagents($0) })
-                            .traceChatLayout("subagent-capsule")
-                        SessionInteractionDock(chat: model,
-                            onShowAll: { expandedNoticeID = $0; sheet = .notices })
-                            .traceChatLayout("interaction-dock")
-                        ChatComposerDock(draft: session.composer, settings: model.settings,
-                            maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)), controls: controls,
-                            canSend: session.canSend, canAttach: model.canAttach,
-                            canSelectModel: session.runtime.allows("catalog.model"),
-                            canSelectPermission: session.runtime.allows("catalog.permission"),
-                            isStreaming: model.isComposerStreaming, canStop: session.runtime.permitsInterruptAttempt(),
-                            isBusy: model.isWorking || !model.isOpeningReady, placeholder: requiresTakeover ? String(localized: "请先接管") : String(localized: "询问 Agents"),
-                            isLoadingSettings: model.isLoadingSettings,
-                            settingsError: model.settingsError, sessionChat: model,
-                            contextUsage: model.contextUsage,
-                            onSend: model.send, onStop: model.interrupt, onLoadSettings: model.loadSettings,
-                            onApplySettings: model.applySettings, applyError: { model.settingsError },
-                            onDraftChange: { model.repository.draftDidChange() })
-                            .traceChatLayout("composer-dock")
-                    }
-                    .frame(maxWidth: ChatControlMetrics.maximumContentWidth).frame(maxWidth: .infinity)
-                    // Native safe-area layout owns both the visible scroll
-                    // region and the dock's space; do not add a second margin.
+                    composerDockArea(maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)))
                 }
                 .overlay(alignment: .topLeading) {
                     VStack(alignment: .leading, spacing: 4) {
@@ -128,6 +177,12 @@ struct SessionChatView: View, Equatable {
                         if requiresTakeover {
                             takeoverPill.frame(maxWidth: .infinity, alignment: .center)
                         }
+                        // The queue's own failure surface: first under the takeover
+                        // pill, above the general error toasts, so a paused queue
+                        // never duplicates its reason as a toast (§7.6) and stays
+                        // the only place the queue resumes from.
+                        SendQueueBanner(model: model)
+                            .traceChatLayout("send-queue-banner")
                         ChatErrorToasts(store: toasts, isRetrying: session.isLoading, onRetry: { _ in await session.refresh() })
                         if let success = model.commandSuccess {
                             CommandSuccessToast(feedback: success) { model.commandSuccess = nil }
@@ -183,6 +238,12 @@ struct SessionChatView: View, Equatable {
             // Reattaching a loaded detail only resumes observation.
             await model.prepareOpening()
             guard !Task.isCancelled else { return }
+            // Recover a queue restored from disk: any attachment upload the last
+            // page left in flight is finished here, and the queue re-evaluates
+            // once its messages are whole. Runs before the long-lived loops
+            // below, which only return when the view goes away.
+            await model.completeQueuedUploads()
+            guard !Task.isCancelled else { return }
             // The context ring observes the same repository stream as the
             // timeline: both loops share this task's lifetime and stop when
             // the view's task is cancelled.
@@ -195,27 +256,7 @@ struct SessionChatView: View, Equatable {
             _ = await (timelineRun, usageRun)
         }
         .sheet(item: $sheet) { destination in
-            switch destination {
-            case .notices: SessionNoticesSheet(model: model, initialNoticeID: expandedNoticeID)
-            case .details: SessionDetailsSheet(chat: model, service: detailService)
-            case .subagents(let cardID):
-                SubAgentPanelSheet(chat: model, deviceName: deviceName, fallbackRuntimeName: fallbackRuntimeName,
-                    initialCardID: cardID, onFile: openFile, onAttachment: openAttachment)
-            case .files:
-                if let meta = session.metadata, let cwd = meta.cwd {
-                    WorkspaceFilesSheet(connectorId: meta.connectorId,
-                        deviceName: deviceName ?? meta.connectorId,
-                        workspace: V2DeviceWorkspace(path: cwd, name: String(localized: "会话文件"), sessionCount: 1, lastActiveAt: nil),
-                        service: fileService, session: session)
-                }
-            case .preview(let reference, let root):
-                if let meta = session.metadata {
-                    WorkspaceFilePreviewSheet(connectorId: meta.connectorId, root: root ?? meta.cwd ?? ".", path: reference.path,
-                        service: fileService, session: session, location: reference)
-                }
-            case .attachmentImage(let file, let image, let tappedAt):
-                AttachmentImageViewerSheet(file: file, initialImage: image, tappedAt: tappedAt, loader: imageLoader)
-            }
+            sheetContent(for: destination)
         }
         .environment(\.openURL, OpenURLAction { url in
             if let reference = SessionFileReference.reference(from: url) {

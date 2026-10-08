@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
@@ -52,10 +53,24 @@ from connector.runtimes.claude.sdk.tasks import (
     task_events_from_notification_text,
 )
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
+from connector.runtimes.claude.sessions.subagent_oracle import (
+    ClaudeSubagentOracle,
+    RawTranscriptScan,
+    claude_project_key,
+    claude_projects_dir,
+    raw_only_notices,
+    scan_raw_transcript,
+    scan_transcript_file,
+)
 from connector.runtimes.claude.sessions.sync_state import ClaudeSessionSyncStateStore
 from connector.runtimes.claude.timeline.agent_calls import (
+    AGENT_CARD_TERMINAL_STATUSES,
     ClaudeAgentTaskOverlay,
     agent_task_overlay_for_event,
+    agent_task_terminal_status,
+    closure_rank,
+    open_agent_task_ids,
+    resolve_agent_card_status,
 )
 from connector.runtimes.claude.timeline.messages import (
     ClaudeMessageProjector,
@@ -87,6 +102,13 @@ class ClaudeSessionReader:
     sdk_loader: SdkLoader | None
     sync_states: ClaudeSessionSyncStateStore
     pending_messages: ClaudePendingClientMessageRegistry
+    oracle: ClaudeSubagentOracle | None = None
+    #: Tasks the live transport vouches for, per session (F2). A session whose
+    #: process the connector is actively driving must not have its cards closed
+    #: by file staleness during a history rebuild — a long tool call writes
+    #: nothing for a while. Wired to the runner at runtime assembly; None (e.g.
+    #: in tests) means "nothing is live", so the staleness logic runs as before.
+    live_task_ids: Callable[[ClaudeSession], frozenset[str]] | None = None
 
     async def list_sessions(
         self,
@@ -327,10 +349,14 @@ class ClaudeSessionReader:
             pending_messages=self.pending_messages,
             prefer_latest=True,
         )
+        raw_scan = _read_raw_transcript_scan(session)
         items = await asyncer.asyncify(_history_items_from_messages)(
             session,
             visible_messages,
             client_message_matches=client_message_matches,
+            raw_scan=raw_scan,
+            oracle=self.oracle,
+            live_task_ids=self.live_task_ids(session) if self.live_task_ids else frozenset(),
         )
         if limit is not None:
             items = items[-limit:] if limit > 0 else ()
@@ -365,15 +391,30 @@ def _history_items_from_messages(
     client_message_matches: Mapping[str, ClaudeClientMessageBinding] | None = None,
     tool_call_lookup: Mapping[str, ClaudePendingToolCall] | None = None,
     hidden_tool_use_ids: frozenset[str] | None = None,
+    raw_lines: tuple[str, ...] = (),
+    raw_scan: RawTranscriptScan | None = None,
+    oracle: ClaudeSubagentOracle | None = None,
+    live_task_ids: frozenset[str] = frozenset(),
 ) -> tuple[RuntimeTimelineItem, ...]:
+    """Project one transcript window into timeline items.
+
+    ``raw_lines`` (tests) and ``raw_scan`` (production, already cached) are
+    alternative ways to supply the raw transcript facts; ``raw_scan`` wins when
+    both are given.
+    """
+
     projector = ClaudeMessageProjector(
         tool_call_lookup=tool_call_lookup,
         hidden_tool_use_ids=hidden_tool_use_ids,
     )
+    if raw_scan is None and raw_lines:
+        raw_scan = scan_raw_transcript(raw_lines)
+    raw_notices = _raw_history_notices(messages, raw_scan)
     notification_folds = _agent_task_notification_folds(
         session,
         messages,
         tool_call_lookup,
+        raw_notices=raw_notices,
     )
     items: list[RuntimeTimelineItem] = []
     matches = client_message_matches or {}
@@ -469,7 +510,339 @@ def _history_items_from_messages(
                     turn_id=fold.turn_id,
                 )
             )
-    return _resequence_history_items(_dedupe_history_items(items))
+    resequenced = _resequence_history_items(_dedupe_history_items(items))
+    if oracle is None:
+        return resequenced
+    return _apply_oracle_closures(
+        session,
+        resequenced,
+        messages=messages,
+        raw_notices=raw_notices,
+        raw_receipt_times=(raw_scan.receipt_times_ms if raw_scan else {}),
+        oracle=oracle,
+        live_task_ids=live_task_ids,
+    )
+
+
+def _apply_oracle_closures(
+    session: ClaudeSession,
+    items: tuple[RuntimeTimelineItem, ...],
+    *,
+    messages: tuple[Any, ...],
+    raw_notices: tuple[tuple[int, ClaudeTaskEvent], ...],
+    raw_receipt_times: Mapping[str, int] | None = None,
+    oracle: ClaudeSubagentOracle,
+    now_ms: int | None = None,
+    live_task_ids: frozenset[str] = frozenset(),
+) -> tuple[RuntimeTimelineItem, ...]:
+    """Close every still-open card the engine can prove finished (R1/R2).
+
+    The history fold is the last writer for a rebuild: it republishes each card
+    with the state the transcript names. Where the transcript says nothing —
+    a completion the SDK view dropped, or a task killed under the process — the
+    card stays running, and this pass consults the subagent-transcript oracle to
+    finish it. Only a justified closure is published; a card the oracle leaves
+    running is returned untouched (idempotent with the history sync's own
+    no-change comparison).
+    """
+
+    resolved_now_ms = now_ms if now_ms is not None else int(oracle.clock() * 1000)
+    terminal_by_task = _history_terminal_events(messages, raw_notices)
+    receipt_age_by_task = _history_receipt_ages(
+        messages,
+        now_ms=resolved_now_ms,
+        raw_receipt_times=raw_receipt_times,
+    )
+    closed: list[RuntimeTimelineItem] = []
+    for item in items:
+        content = item.content
+        if item.type != "tool" or content.get("kind") != "agent_call":
+            closed.append(item)
+            continue
+        already_terminal = item.status in AGENT_CARD_TERMINAL_STATUSES
+        agents = content.get("agents")
+        if not isinstance(agents, Mapping):
+            closed.append(item)
+            continue
+        task_ids = tuple(
+            str(agent_id)
+            for agent_id in agents
+            if isinstance(agent_id, str) and agent_id
+        )
+        if not task_ids:
+            closed.append(item)
+            continue
+        if already_terminal:
+            # A card the transcript already closed (a live/wire outcome) must
+            # never be walked back by a file-staleness judgement; only a
+            # terminal notice may annotate a closed card, and it does not
+            # change the status. This is the provenance pass, not a closure.
+            verdicts = {
+                task_id: verdict
+                for task_id, verdict in _card_oracle_verdicts(
+                    oracle,
+                    task_ids=task_ids,
+                    session=session,
+                    terminal_by_task=terminal_by_task,
+                    receipt_age_by_task=receipt_age_by_task,
+                    now_ms=resolved_now_ms,
+                    live_task_ids=live_task_ids,
+                ).items()
+                if verdict.closed_by == "terminalNotice"
+            }
+            if not verdicts:
+                closed.append(item)
+                continue
+            best = _best_closure_verdict(verdicts)
+            new_content = _evidence_closed_content(
+                content,
+                verdicts=verdicts,
+                closed_by=best.closed_by,
+                end_time_ms=best.end_time_ms,
+            )
+            new_status = item.status
+        else:
+            # A closure needs EVERY open task judged (F1/F6): a sibling the
+            # oracle declines (a fresh file, a live task) keeps the whole card
+            # open, so a running task is never hidden behind a dead sibling's
+            # closure.
+            open_task_ids = open_agent_task_ids(agents)
+            if not open_task_ids:
+                # Every entry is status-less or unknown while the card is not
+                # terminal: nothing vouches for liveness, so judge the tasks
+                # nothing else would settle instead of stranding the card (N3).
+                # Entries that already name a terminal outcome are left out —
+                # re-judging them from a file could only walk a finished task
+                # backwards.
+                open_task_ids = frozenset(
+                    task_id
+                    for task_id in task_ids
+                    if agent_task_terminal_status(
+                        _agent_entry_status(agents.get(task_id))
+                    )
+                    is None
+                )
+            if not open_task_ids or open_task_ids & live_task_ids:
+                closed.append(item)
+                continue
+            verdicts = _card_oracle_verdicts(
+                oracle,
+                task_ids=tuple(open_task_ids),
+                session=session,
+                terminal_by_task=terminal_by_task,
+                receipt_age_by_task=receipt_age_by_task,
+                now_ms=resolved_now_ms,
+                live_task_ids=live_task_ids,
+            )
+            if len(verdicts) != len(open_task_ids):
+                closed.append(item)
+                continue
+            best = _best_closure_verdict(verdicts)
+            if best is None:
+                closed.append(item)
+                continue
+            new_content = _evidence_closed_content(
+                content,
+                verdicts=verdicts,
+                closed_by=best.closed_by,
+                end_time_ms=best.end_time_ms,
+            )
+            new_status = resolve_agent_card_status(item.status, best.closure_status)
+        # Provenance rides flat on the content, exactly like the live fold's
+        # own metadata (`closedByEvidence`/`endTime` are free JSON keys the
+        # client reads beside `kind`), so a history rebuild and the live
+        # projection publish one content shape. The per-task agents map is
+        # rewritten too — judged tasks only — so a card judged finished stops
+        # claiming `running` while an untouched sibling keeps its state.
+        if new_status == item.status and dict(new_content) == dict(content):
+            closed.append(item)
+            continue
+        closed.append(
+            replace(
+                item,
+                status=new_status,
+                content=new_content,
+                content_hash=timeline_content_hash(
+                    item_type="tool",
+                    status=new_status,
+                    role=item.role,
+                    content=new_content,
+                ),
+            )
+        )
+    return tuple(closed)
+
+
+def _card_oracle_verdicts(
+    oracle: ClaudeSubagentOracle,
+    *,
+    task_ids: Sequence[str],
+    session: ClaudeSession,
+    terminal_by_task: Mapping[str, tuple[int | None, ClaudeTaskEvent]],
+    receipt_age_by_task: Mapping[str, float],
+    now_ms: int | None,
+    live_task_ids: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    """One evidence verdict per judged task; declined tasks are absent.
+
+    ``live_task_ids`` are the tasks the live transport still vouches for (F2):
+    they are never judged, so a card with a live task can never be closed by a
+    stale sibling's verdict. A task in that set is `attached` as well — the
+    connector is driving its process — so even its own file silence cannot
+    close it (a terminal notice still can).
+    """
+
+    verdicts: dict[str, Any] = {}
+    for task_id in sorted(task_ids):
+        if task_id in live_task_ids:
+            continue
+        terminal = terminal_by_task.get(task_id)
+        verdict = oracle.evidence(
+            task_id=task_id,
+            external_session_id=session.external_session_id,
+            cwd=session.cwd,
+            terminal_events=(terminal,) if terminal is not None else (),
+            receipt_age_seconds=receipt_age_by_task.get(task_id),
+            attached_live=task_id in live_task_ids,
+            now_ms=now_ms,
+        )
+        if verdict is not None:
+            verdicts[task_id] = verdict
+    return verdicts
+
+
+def _best_closure_verdict(verdicts: Mapping[str, Any]) -> Any | None:
+    if not verdicts:
+        return None
+    return max(
+        verdicts.values(),
+        key=lambda verdict: _closure_rank(
+            (
+                verdict.closure_status,
+                verdict.closed_by,
+                verdict.end_time_ms,
+                None,
+            )
+        ),
+    )
+
+
+def _agent_entry_status(entry: Any) -> str | None:
+    """The wire status of one agents-map entry, when it names one."""
+
+    if not isinstance(entry, Mapping):
+        return None
+    status = entry.get("status")
+    return status if isinstance(status, str) and status else None
+
+
+def _evidence_closed_content(
+    content: Mapping[str, Any],
+    *,
+    verdicts: Mapping[str, Any],
+    closed_by: str,
+    end_time_ms: int | None,
+) -> dict[str, Any]:
+    """Rewrite a history card's content for an evidence closure.
+
+    Mirrors the live sweep's ``_apply_evidence_closure``: the judged tasks'
+    agents entries carry their own closure status so the panel stops showing
+    ``running``, while any *unjudged* sibling entry rides through untouched
+    (F6). ``closedByEvidence``/``endTime`` ride flat beside ``kind``.
+    """
+
+    new_content = {**dict(content), "closedByEvidence": closed_by}
+    if end_time_ms is not None:
+        new_content["endTime"] = end_time_ms
+    agents = content.get("agents")
+    if isinstance(agents, Mapping):
+        merged: dict[str, Any] = {
+            agent_id: dict(entry) if isinstance(entry, Mapping) else entry
+            for agent_id, entry in agents.items()
+        }
+        for task_id, verdict in verdicts.items():
+            existing = merged.get(task_id)
+            entry = dict(existing) if isinstance(existing, Mapping) else {}
+            status = verdict.agent_status or verdict.closure_status
+            if status is not None:
+                entry["status"] = status
+            merged[task_id] = entry
+        new_content["agents"] = merged
+    return new_content
+
+
+def _history_terminal_events(
+    messages: tuple[Any, ...],
+    raw_notices: tuple[tuple[int, ClaudeTaskEvent], ...],
+) -> dict[str, tuple[int | None, ClaudeTaskEvent]]:
+    """The latest terminal notice per task id, SDK-visible and raw alike."""
+
+    best: dict[str, tuple[int | None, ClaudeTaskEvent]] = {}
+
+    def consider(task_id: str, time_ms: int | None, event: ClaudeTaskEvent) -> None:
+        current = best.get(task_id)
+        if current is None or (time_ms or -1) >= (current[0] or -1):
+            best[task_id] = (time_ms, event)
+
+    for message in messages:
+        if not is_task_notification_message(message):
+            continue
+        time_ms = _message_timestamp_ms(message)
+        for event in task_events_from_notification_text(
+            message_text(message), timestamp_ms=time_ms
+        ):
+            consider(event.task_id, event.end_time, event)
+    for _, event in raw_notices:
+        consider(event.task_id, event.end_time, event)
+    return best
+
+
+_AGENT_ID_RE = re.compile(r"agentId:\s*([0-9a-zA-Z]+)")
+
+
+def _history_receipt_ages(
+    messages: tuple[Any, ...],
+    *,
+    now_ms: float,
+    raw_receipt_times: Mapping[str, int] | None = None,
+) -> dict[str, float]:
+    """The age (in seconds) of a task's newest agentId mention in the transcript.
+
+    The CLI writes the receipt — with the task's ``agentId`` — into the
+    transcript when the Agent call is dispatched (an ``async_launched`` launch
+    records the id immediately). Its wall-clock stamp is the closest thing the
+    transcript has to a launch time, so the age of the newest such row feeds the
+    never-started grace. ``now_ms`` is supplied by the caller (the oracle's own
+    clock) so the age stays injectable.
+
+    The raw transcript's receipt times are the primary source and the SDK
+    message view is the supplement (F5): the SDK's messages carry no timestamps
+    at all, so before this the age was unknowable and the never-started closure
+    unreachable on real data.
+    """
+
+    newest_ms: dict[str, int] = {
+        task_id: time_ms for task_id, time_ms in (raw_receipt_times or {}).items()
+    }
+    for message in messages:
+        text = message_text(message)
+        if not text or "agentId" not in text:
+            continue
+        time_ms = _message_timestamp_ms(message)
+        if time_ms is None:
+            continue
+        for match in _AGENT_ID_RE.finditer(text):
+            task_id = match.group(1)
+            if (newest_ms.get(task_id) or -1) < time_ms:
+                newest_ms[task_id] = time_ms
+    return {
+        task_id: max((now_ms - time_ms) / 1000.0, 0.0)
+        for task_id, time_ms in newest_ms.items()
+    }
+
+
+def _closure_rank(candidate: tuple[str, str, int | None, str | None]) -> tuple[int, int]:
+    return closure_rank(candidate[0])
 
 
 @dataclass(frozen=True, slots=True)
@@ -487,6 +860,8 @@ def _agent_task_notification_folds(
     session: ClaudeSession,
     messages: tuple[Any, ...],
     tool_call_lookup: Mapping[str, ClaudePendingToolCall] | None,
+    *,
+    raw_notices: tuple[tuple[int, ClaudeTaskEvent], ...] = (),
 ) -> dict[int, list[_AgentTaskNotificationFold]]:
     """Resolve transcript terminal/resume events through Agent task-id lineage.
 
@@ -494,6 +869,11 @@ def _agent_task_notification_folds(
     that resumes it, or contain only one or more task ids after session teardown.
     The stable join is task id ↔ receipt agentId ↔ SendMessage input.to. Unknown
     or conflicting links fail closed; no id is guessed from summary text.
+
+    ``raw_notices`` are terminal notices the SDK message view dropped (R1): the
+    CLI persists some completions only as ``queue-operation`` rows, so they are
+    read from the raw transcript and merged here at their true position. A task
+    whose notice reached the fold from either surface closes the same way.
     """
 
     calls = dict(tool_call_lookup or {})
@@ -516,7 +896,7 @@ def _agent_task_notification_folds(
         if task_id is not None:
             task_roots.setdefault(task_id, set()).add(tool_use_id)
 
-    notices: list[tuple[int, ClaudeTaskEvent]] = []
+    notices: list[tuple[int, ClaudeTaskEvent]] = list(raw_notices)
     send_messages: list[tuple[int, str, str]] = []
     child_activity: list[tuple[int, str]] = []
     for index, message in enumerate(messages):
@@ -675,6 +1055,64 @@ def _agent_task_notification_folds(
             )
         )
     return folds
+
+
+def _read_raw_transcript_scan(session: ClaudeSession) -> RawTranscriptScan | None:
+    """Scan this session's raw transcript JSONL, or ``None`` when unreadable.
+
+    The SDK message view drops some persisted rows (R1); the raw file is where
+    the dropped terminal notices — and the only launch timestamps (F5) —
+    survive. The scan is cached by (path, size, mtime) so the settle sync's
+    repeated reads of an unchanged file cost one dict lookup (F8).
+    """
+
+    if not session.cwd or not session.external_session_id:
+        return None
+    path = (
+        claude_projects_dir()
+        / claude_project_key(session.cwd)
+        / f"{session.external_session_id}.jsonl"
+    )
+    try:
+        return scan_transcript_file(path)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Claude raw transcript read failed external_session_id={}",
+            session.external_session_id,
+        )
+        return None
+
+
+def _raw_history_notices(
+    messages: tuple[Any, ...],
+    scan: RawTranscriptScan | None,
+) -> tuple[tuple[int, ClaudeTaskEvent], ...]:
+    """Raw-only terminal notices the SDK view dropped, placed at their anchor.
+
+    Empty ``scan`` (no raw transcript) means no raw notices — the fold then
+    behaves exactly as before. A notice participates only when its raw-file
+    anchor resolves inside this window (see ``raw_only_notices``); it is folded
+    at the anchor's index so the window's own later signals still win.
+    """
+
+    if scan is None or not scan.notices:
+        return ()
+    sdk_uuid_order: dict[str, int] = {}
+    for index, message in enumerate(messages):
+        # Each notice's anchor is the raw transcript row's `uuid`. The SDK
+        # message view exposes that uuid under `.uuid`, while `message_id`
+        # prefers the nested Anthropic `message.id` — a *different* string on
+        # assistant rows. Key BOTH id spaces, or every notice anchored on an
+        # assistant row silently drops out of the fold (red-team P0: keying
+        # `message_id` alone placed 0 of 41 real notices).
+        for key in (message_id(message), getattr(message, "uuid", None)):
+            if isinstance(key, str) and key and key not in sdk_uuid_order:
+                sdk_uuid_order[key] = index
+    try:
+        return raw_only_notices(scan, sdk_uuid_order=sdk_uuid_order)
+    except Exception:  # noqa: BLE001
+        logger.exception("Claude raw transcript notification scan failed")
+        return ()
 
 
 def _send_message_target(block: ClaudeToolBlock) -> str | None:

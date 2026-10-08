@@ -21,6 +21,16 @@ nonisolated struct V2SessionArchive: Codable {
         let error: String?
         let rejected: Bool
     }
+    /// A queued message that was never put on the wire. Only never-sent items
+    /// are stored as `queued`: an item mid-send (`sending`/`awaitingEcho`) may
+    /// already have reached the server, so it is demoted to a `Pending` record
+    /// instead (see `init`) and never auto-replayed.
+    struct Queued: Codable {
+        let id: String
+        let content: String
+        let attachmentIDs: [V2AttachmentID]
+        let attachments: [ChatAttachment]
+    }
     let session: V2SessionMeta
     let items: [JSONValue]
     let cursor: String
@@ -29,6 +39,9 @@ nonisolated struct V2SessionArchive: Codable {
     let draft: String
     let draftAttachments: [ChatAttachment]
     let pending: [Pending]
+    /// The outbound queue, if any. Optional: archives written before this field
+    /// existed decode without it.
+    var queued: [Queued]? = nil
     var previews: ChatAttachmentStore.Archive? = nil
     /// The recovery diagnostics the session last carried, so a failure that
     /// outlives a relaunch is still on record. Optional: archives written
@@ -40,7 +53,7 @@ nonisolated struct V2SessionArchive: Codable {
         hasOlderItems = data.hasOlderItems; hasNewerItems = data.hasNewerItems
         previews = model.attachmentPreviews.archived()
         draft = model.draft; draftAttachments = model.composer.attachments.map { $0.archived() }
-        pending = model.pendingMessages.filter { $0.delivery != .confirmed }.map { value in
+        var storedPending = model.pendingMessages.filter { $0.delivery != .confirmed }.map { value in
             let error: String?; let rejected: Bool
             switch value.delivery {
             case .rejected(let failure): error = failure.message; rejected = true
@@ -50,6 +63,24 @@ nonisolated struct V2SessionArchive: Codable {
             return Pending(id: value.id, content: value.content, attachmentIDs: value.attachmentIDs,
                 attachments: value.attachments.map { $0.archived() }, error: error, rejected: rejected)
         }
+        // Split the queue by certainty. A waiting, fully-uploaded message never
+        // left the client, so it is safe to re-arm on restore. Anything already
+        // on the wire — mid-send, awaiting its echo, or still uploading — may
+        // have reached the server, so it is demoted to an uncertain Pending
+        // record and is never sent again automatically.
+        var storedQueued: [Queued] = []
+        for item in model.sendQueue.items {
+            if item.state == .queued, item.isUploadComplete {
+                storedQueued.append(Queued(id: item.id, content: item.content,
+                    attachmentIDs: item.attachmentIDs, attachments: item.attachments.map { $0.archived() }))
+            } else {
+                storedPending.append(Pending(id: item.id, content: item.content,
+                    attachmentIDs: item.attachmentIDs, attachments: item.attachments.map { $0.archived() },
+                    error: nil, rejected: false))
+            }
+        }
+        pending = storedPending
+        queued = storedQueued.isEmpty ? nil : storedQueued
     }
 
     @MainActor func projection(maximumItems: Int, now: @escaping () -> Date = Date.init) throws -> V2SessionProjection {

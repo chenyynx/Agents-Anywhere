@@ -296,3 +296,171 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
     }
 
 }
+
+/// 2026-10-08 — the parked-viewport fix (sess_ps8Z29uknMTIhw: a switch into a
+/// running heavy session rendered blank/only a few rows until a manual
+/// scroll). The opening lands through one instant return; every later
+/// wholesale window change (the opening's trim/latest-page surgery, a
+/// recovery or snapshot replacement) anchors to the top of the new content,
+/// so the page can rest at the window top instead of the newest rows. The
+/// follow machinery is not a guarantee there: its gates judge
+/// reading/interaction/at-bottom from the instant's state. The opening visit
+/// therefore re-arms its own instant return for each window change, and only
+/// the reader can end that claim.
+@Suite struct OpeningWindowReassertTests {
+    private func viewport(offset: CGFloat = 0, height: CGFloat = 2000, container: CGFloat = 800) -> TimelineViewport {
+        TimelineViewport(contentHeight: height, containerHeight: container, topInset: 80, bottomInset: 120, offsetY: offset)
+    }
+    private func nextCommand(_ state: inout TimelineScrollState) throws -> TimelineScrollState.BottomCommand {
+        let request = try #require(state.pendingBottomRequest)
+        let command = state.begin(request)
+        return try #require(command)
+    }
+    private func visibility(_ state: inout TimelineScrollState, end: Bool) {
+        state.tailVisibilityChanged(.near, visible: end)
+        state.tailVisibilityChanged(.end, visible: end)
+    }
+    /// The opening return already landed at the bottom of the presented
+    /// window: the state follows and has nothing pending.
+    private func openedAtBottom() throws -> TimelineScrollState {
+        var state = TimelineScrollState()
+        state.geometryChanged(viewport(offset: 1320))
+        visibility(&state, end: true)
+        state.open()
+        let command = try nextCommand(&state)
+        // The macro captures its expression immutably; take the mutating
+        // result out of it (same for the assertions below).
+        let completed = state.complete(command)
+        #expect(completed)
+        #expect(state.mode == .following && state.pendingBottomRequest == nil)
+        return state
+    }
+
+    @Test func anApprovalParkedPageStillReassertsTheOpeningReturn() throws {
+        var state = try openedAtBottom()
+        // An approval arrives: automatic following stops (the reader may be
+        // looking at the card), so the mode turns reading and every follow
+        // gate closes — including the R2 backstop, which requires following.
+        state.setInteractionPresented(true)
+        #expect(state.mode == .reading)
+        // The window is then replaced wholesale (the opening's latest-page
+        // surgery, or a recovery snapshot that dropped the presented rows).
+        // The content anchors to the top, so the page now rests at the top of
+        // the new window.
+        state.geometryChanged(viewport(offset: 0, height: 2600))
+        visibility(&state, end: false)
+        // The follow machinery refuses the parked page...
+        #expect(state.pendingBottomRequest == nil)
+        let reconciled = state.reconcileToBottom()
+        #expect(!reconciled)
+        // ...and the opening re-assert owns it: the same instant return the
+        // opening itself issues, not a new animated behaviour.
+        let reasserted = state.reassertOpeningReturn()
+        #expect(reasserted)
+        let command = try nextCommand(&state)
+        #expect(command.instant)
+        state.geometryChanged(viewport(offset: 1920, height: 2600))
+        visibility(&state, end: true)
+        let completed = state.complete(command)
+        #expect(completed)
+        // The approval keeps following off, but the page is at the bottom
+        // again: the notice's card lives at the tail.
+        #expect(state.viewport.measuredAtBottom)
+        #expect(state.mode == .reading)
+    }
+
+    @Test func aWindowChangeWhileFollowingReissuesTheInstantReturn() throws {
+        var state = try openedAtBottom()
+        state.geometryChanged(viewport(offset: 0, height: 2600))
+        visibility(&state, end: false)
+        // Mutation guard: dropping `openingReturnIsPending = true` from the
+        // re-assert issues an animated return instead, and this turns red.
+        let reasserted = state.reassertOpeningReturn()
+        #expect(reasserted)
+        let command = try nextCommand(&state)
+        #expect(command.instant)
+    }
+
+    @Test func aReaderGestureEndsTheOpeningClaim() throws {
+        var state = try openedAtBottom()
+        state.phaseChanged(.tracking, viewport: viewport(offset: 900, height: 2600))
+        #expect(state.readerTookOver && state.mode == .reading)
+        // The reader owns the page now: a later window change must not move
+        // them, and the re-assert refuses instead of yanking.
+        let reasserted = state.reassertOpeningReturn()
+        #expect(!reasserted)
+    }
+
+    @Test func anExplicitHistoryRequestEndsTheOpeningClaim() throws {
+        var state = try openedAtBottom()
+        state.browseHistory(byReader: true)
+        #expect(state.readerTookOver)
+        let reasserted = state.reassertOpeningReturn()
+        #expect(!reasserted)
+    }
+
+    @Test func aPresentedInteractionDoesNotEndTheOpeningClaim() throws {
+        var state = try openedAtBottom()
+        state.setInteractionPresented(true)
+        #expect(!state.readerTookOver)
+        let reasserted = state.reassertOpeningReturn()
+        #expect(reasserted)
+    }
+
+    @Test func aSuspendedDrawerRefusesTheReAssertUntilItSettles() throws {
+        var state = try openedAtBottom()
+        state.setNavigationSuspended(true)
+        let suspended = state.reassertOpeningReturn()
+        #expect(!suspended)
+        state.setNavigationSuspended(false)
+        let settled = state.reassertOpeningReturn()
+        #expect(settled)
+    }
+
+    @Test func anUnopenedPageRefusesTheReAssert() {
+        var state = TimelineScrollState()
+        state.geometryChanged(viewport(offset: 1320))
+        let reasserted = state.reassertOpeningReturn()
+        #expect(!reasserted)
+    }
+}
+
+/// The presentation-side signal behind the re-assert: a window that drops a
+/// row it had presented is a replacement (the trim/latest-page surgery, a
+/// recovery snapshot); an append keeps every presented row and must not move
+/// the reader.
+@Suite @MainActor struct OpeningWindowRevisionTests {
+    private func items(_ orders: ClosedRange<Int>) throws -> [V2TimelineItem] {
+        try orders.map { try decode(itemObject(id: "reply-\($0)", order: $0), as: V2TimelineItem.self) }
+    }
+
+    @Test func aReplacedWindowBumpsTheRevisionButAnAppendDoesNot() throws {
+        let timeline = SessionTimelinePresentation()
+        // The opening's own first presentation has no claim to re-assert: the
+        // opening return is already armed by `open()`.
+        timeline.presentOpening(try items(1...3), pendingMessages: [])
+        #expect(timeline.rows.map(\.id) == ["reply-1", "reply-2", "reply-3"])
+        #expect(timeline.windowRevision == 0)
+        // The post-surgery window (the newest page) drops rows that were on
+        // screen: the reader must be re-anchored to the new bottom.
+        timeline.presentOpening(try items(2...4), pendingMessages: [])
+        #expect(timeline.windowRevision == 1)
+        // A live append keeps every presented row: nothing to re-assert.
+        timeline.stage(try items(2...5), animate: false)
+        timeline.flush(now: 1)
+        #expect(timeline.rows.map(\.id) == ["reply-2", "reply-3", "reply-4", "reply-5"])
+        #expect(timeline.windowRevision == 1)
+        // A recovery/snapshot replacement is the same shape as the surgery.
+        timeline.stage(try items(51...53), animate: false)
+        timeline.flush(now: 2)
+        #expect(timeline.rows.map(\.id) == ["reply-51", "reply-52", "reply-53"])
+        #expect(timeline.windowRevision == 2)
+    }
+
+    @Test func rePresentingTheSameWindowDoesNotBumpTheRevision() throws {
+        let timeline = SessionTimelinePresentation()
+        timeline.presentOpening(try items(1...3), pendingMessages: [])
+        timeline.presentOpening(try items(1...3), pendingMessages: [])
+        #expect(timeline.windowRevision == 0)
+    }
+}

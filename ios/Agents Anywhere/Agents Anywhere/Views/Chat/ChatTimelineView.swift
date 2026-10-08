@@ -53,6 +53,7 @@ struct ChatTimelineView: View {
                     latestPullReady: latestPull.isReady, isLoadingLatest: latestLoadRequest != nil,
                     olderPullReady: olderPull.isReady, isLoadingOlder: olderLoadRequest != nil,
                     keepsOlderPrompt: hasRequestedOlder, historyAnchor: historyPosition?.origin,
+                    queueRoster: model.session.sendQueue.renderRoster,
                     onLoadOlder: loadOlder, onLoadLatest: loadLatest,
                     onHistoryLayout: historyDidLayOut,
                     onPromptVisibility: { latestPromptVisible = $0 },
@@ -165,8 +166,26 @@ struct ChatTimelineView: View {
             .onChange(of: model.session.pendingMessages.last?.id) { _, id in
                 if model.isOpeningReady, id != nil && !hasInteractions { scrolling.requestBottom() }
             }
+            .onChange(of: model.session.sendQueue.items.map(\.id)) { _, ids in
+                // A newly queued message must land in view when the reader is
+                // already at the bottom; removals never yank them back.
+                if model.isOpeningReady, !ids.isEmpty, !hasInteractions { scrolling.requestBottom() }
+            }
             .onChange(of: model.responseRevision) { _, _ in
                 if model.isOpeningReady { scrolling.requestBottom() }
+            }
+            .onChange(of: model.timeline.windowRevision) { _, _ in
+                // A wholesale window change (the opening's trim/latest-page
+                // surgery, or a recovery/snapshot replacement) can land after
+                // the opening return settled or timed out. Every content-size
+                // change is anchored to the top, so the replacement would
+                // render from the new window's top and park the reader away
+                // from the newest rows until a manual scroll (2026-10-08,
+                // sess_ps8Z29uknMTIhw). Re-arm the opening's own instant
+                // return for the landing instead of trusting the follow gates,
+                // which can all be closed at that instant. The state refuses
+                // on its own once the reader has taken over the page.
+                _ = scrolling.reassertOpeningReturn()
             }
             .onChange(of: hasInteractions, initial: true) { _, presented in
                 scrolling.setInteractionPresented(presented)
@@ -275,7 +294,7 @@ struct ChatTimelineView: View {
         guard model.session.isValid, model.session.hasOlderItems,
               !model.session.isLoadingHistory, olderLoadRequest == nil, latestLoadRequest == nil else { return }
         olderPull.cancel(); latestPull.cancel()
-        scrolling.browseHistory()
+        scrolling.browseHistory(byReader: true)
         position.isPositionedByUser = true
         let layout = historyLayout.flatMap { $0.firstRowID == model.timeline.rows.first?.id ? $0 : nil }
         historyPosition = TimelineHistoryPosition(id: scrolling.navigationGeneration, layout: layout,
@@ -484,6 +503,10 @@ private struct ChatTimelineContent: View, Equatable {
     let isLoadingOlder: Bool
     let keepsOlderPrompt: Bool
     let historyAnchor: TimelineHistoryLayout?
+    /// The queue's ids and states, captured by the parent so the equatable
+    /// seam (and the queue section's animation) notice roster and state
+    /// changes; the rows themselves read the live model.
+    let queueRoster: String
     let onLoadOlder: () -> Void
     let onLoadLatest: () -> Void
     let onHistoryLayout: (TimelineHistoryLayout) -> Void
@@ -503,6 +526,7 @@ private struct ChatTimelineContent: View, Equatable {
         lhs.model === rhs.model && lhs.latestPullReady == rhs.latestPullReady && lhs.isLoadingLatest == rhs.isLoadingLatest
             && lhs.olderPullReady == rhs.olderPullReady && lhs.isLoadingOlder == rhs.isLoadingOlder
             && lhs.keepsOlderPrompt == rhs.keepsOlderPrompt && lhs.historyAnchor == rhs.historyAnchor
+            && lhs.queueRoster == rhs.queueRoster
     }
     var body: some View {
         let groups = TimelineGrouping.groups(model.timeline.rows, interactionTargets: Set(model.session.notices.notices
@@ -580,28 +604,48 @@ private struct ChatTimelineContent: View, Equatable {
             // still cannot change this spacer or create a spurious follow
             // request. Only the top edge condenses — the content's bottom edge
             // and both bottom-anchored probes stay put.
-            Group {
-                if let text = model.sendingPlaceholder {
-                    HStack(spacing: 8) {
-                        ThinkingOrbView(activity: model.orbActivity, size: 30, pulse: model.session.incomingPulse)
-                        OrbStatusText(text: text).font(.footnote).lineLimit(1)
-                        Spacer(minLength: 0)
+            //
+            // The queue's waiting messages ride at this block's bottom — below
+            // the status line, still inside the list (pp 2026-10-08: the queue
+            // belongs to the timeline, not to a dock pinned over the composer).
+            // Both probes stay anchored to the block's own bottom edge, which
+            // remains the content's true end.
+            VStack(alignment: .leading, spacing: 8) {
+                Group {
+                    if let text = model.sendingPlaceholder {
+                        HStack(spacing: 8) {
+                            ThinkingOrbView(activity: model.orbActivity, size: 30, pulse: model.session.incomingPulse)
+                            OrbStatusText(text: text).font(.footnote).lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                    } else { Color.clear }
+                }.frame(height: hasStatusLine ? 32 : Self.idleTailHeight)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: hasStatusLine)
+                    .traceChatLayout("tail-spacer")
+
+                if !model.session.sendQueue.items.isEmpty {
+                    VStack(spacing: 6) {
+                        ForEach(model.session.sendQueue.items) { item in
+                            QueuedMessageRow(item: item, model: model)
+                                .id(item.id)
+                                .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        }
                     }
-                } else { Color.clear }
-            }.frame(height: hasStatusLine ? 32 : Self.idleTailHeight)
-                .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: hasStatusLine)
-                .traceChatLayout("tail-spacer")
-                .overlay(alignment: .bottom) {
-                    Color.clear.frame(height: 96)
-                        .onScrollVisibilityChange(threshold: 0.01) { onTailVisibility(.near, $0) }
-                        .allowsHitTesting(false).accessibilityHidden(true)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: queueRoster)
                 }
-                .overlay(alignment: .bottom) {
-                    Color.clear.frame(height: 2)
-                        .onScrollVisibilityChange(threshold: 0.5) { onTailVisibility(.end, $0) }
-                        .allowsHitTesting(false).accessibilityHidden(true)
-                }
-                .id("tail")
+            }
+            .traceChatLayout("tail-block")
+            .overlay(alignment: .bottom) {
+                Color.clear.frame(height: 96)
+                    .onScrollVisibilityChange(threshold: 0.01) { onTailVisibility(.near, $0) }
+                    .allowsHitTesting(false).accessibilityHidden(true)
+            }
+            .overlay(alignment: .bottom) {
+                Color.clear.frame(height: 2)
+                    .onScrollVisibilityChange(threshold: 0.5) { onTailVisibility(.end, $0) }
+                    .allowsHitTesting(false).accessibilityHidden(true)
+            }
+            .id("tail")
         }
         .modifier(ChatPageContentColumn(horizontalInset: nil))
         .coordinateSpace(name: "chat.timeline.content")
@@ -724,5 +768,14 @@ private struct TimelineKeyboardDismissLayer: ViewModifier {
         guard token == transitionToken, transitionActive else { return false }
         transitionActive = false
         return true
+    }
+}
+
+/// The queue's render signature: ids with their states. Captured by the
+/// timeline content's parent so equality and the queue section's animation
+/// both notice a roster or state change; rows read the live model directly.
+private extension V2SendQueue {
+    var renderRoster: String {
+        items.map { "\($0.id):\($0.state)" }.joined(separator: ",")
     }
 }

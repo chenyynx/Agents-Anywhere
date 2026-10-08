@@ -184,7 +184,7 @@ def test_scan_reads_a_user_row_notice() -> None:
 
 def test_scan_reads_an_enqueue_row_notice_without_a_user_row() -> None:
     # The real shape for both research cards: only the queue-operation row
-    # exists, and it carries no uuid, so the anchor is the preceding row's.
+    # exists, and it carries no uuid of its own.
     lines = (
         _raw_user_row("u1", "hello", "2026-10-08T08:00:00.000Z"),
         _raw_enqueue_row(_notice_text(TASK_ID, "completed", DISPATCH_TUID),
@@ -194,7 +194,30 @@ def test_scan_reads_an_enqueue_row_notice_without_a_user_row() -> None:
     assert len(scan.notices) == 1
     assert scan.notices[0].event.status == "completed"
     assert scan.notices[0].row_uuid is None
-    assert scan.notices[0].anchor == "u1"
+
+
+def test_scan_collects_receipt_times_with_and_without_timestamps() -> None:
+    # F5: the launch time comes from the raw receipt rows. A row with a
+    # timestamp contributes; one without contributes nothing (never guessed).
+    lines = (
+        _raw_user_row(
+            "r1",
+            f"Async agent launched successfully.\nagentId: {TASK_ID} (internal ID)",
+            "2026-10-08T09:00:01.000Z",
+        ),
+        json.dumps(
+            {
+                "type": "user",
+                "uuid": "r2",
+                "message": {
+                    "role": "user",
+                    "content": f"quoted later: agentId: {SECOND_TASK_ID} (internal ID)",
+                },
+            }
+        ),
+    )
+    scan = scan_raw_transcript(lines)
+    assert scan.receipt_times_ms == {TASK_ID: 1_791_450_001_000}
 
 
 def test_scan_ignores_attachment_rendering_rows() -> None:
@@ -584,3 +607,416 @@ def test_scenario_2_restart_reconcile_closes_a_card() -> None:
     items = projector.close_open_agent_cards(session, oracle=oracle)
     assert [item.id for item in items] == [card_id]
     assert items[0].status == "interrupted"
+
+
+# --------------------------------------------------------------------------
+# F4: a raw notice older than the window must never beat in-window activity
+# --------------------------------------------------------------------------
+
+_WINDOW_DISPATCH = "call_dispatch_1"
+_WINDOW_SEND = "call_send_1"
+
+
+def _window_dispatch_message() -> Any:
+    return SimpleNamespace(
+        type="assistant",
+        uuid="d1",
+        message={
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": _WINDOW_DISPATCH,
+                    "name": "Agent",
+                    "input": {"description": "bytegate", "prompt": "p",
+                              "run_in_background": True},
+                }
+            ],
+        },
+    )
+
+
+def _window_receipt_message() -> Any:
+    return SimpleNamespace(
+        type="user",
+        uuid="d2",
+        message={
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": _WINDOW_DISPATCH,
+                    "content": [
+                        {"type": "text",
+                         "text": f"Async agent launched successfully.\nagentId: {TASK_ID} (internal ID)"}
+                    ],
+                }
+            ],
+        },
+    )
+
+
+def _window_send_message() -> Any:
+    return SimpleNamespace(
+        type="assistant",
+        uuid="w2",
+        message={
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": _WINDOW_SEND,
+                    "name": "SendMessage",
+                    "input": {"to": TASK_ID, "message": "continue"},
+                }
+            ],
+        },
+    )
+
+
+def _window_user_message() -> Any:
+    return SimpleNamespace(
+        type="user", uuid="w1",
+        message={"role": "user", "content": "把子代理继续跑起来"},
+    )
+
+
+def _incremental_window_card(
+    raw_lines: tuple[str, ...],
+    window: tuple[Any, ...] | None = None,
+) -> Any:
+    """Project one settle window with optional raw transcript rows.
+
+    The dispatch and its receipt are outside the window but present in the
+    full-chain lookup, exactly like a real settle sync. The default window is
+    the resume turn; a caller can pass a resume-free window to model a settle
+    that carries no new activity at all.
+    """
+
+    from connector.runtimes.claude.sessions.reader import _history_tool_call_context
+
+    session = _session()
+    full_chain = (
+        _window_dispatch_message(),
+        _window_receipt_message(),
+        _window_user_message(),
+        _window_send_message(),
+    )
+    lookup, _ = _history_tool_call_context(session, full_chain)
+    resolved_window = (
+        window if window is not None else (_window_user_message(), _window_send_message())
+    )
+    items = _history_items_from_messages(
+        session, resolved_window, tool_call_lookup=lookup, raw_lines=raw_lines
+    )
+    return next(i for i in items if i.content.get("kind") == "agent_call")
+
+
+def _raw_assistant_tool_row(uuid: str, tool_use_id: str, name: str, tool_input: Any, ts: str) -> str:
+    return json.dumps({
+        "type": "assistant", "uuid": uuid, "timestamp": ts,
+        "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": tool_use_id, "name": name, "input": tool_input},
+        ]},
+    })
+
+
+_F4_RAW_HEAD = (
+    _raw_assistant_tool_row("d1", _WINDOW_DISPATCH, "Agent",
+                            {"description": "bytegate", "prompt": "p",
+                             "run_in_background": True},
+                            "2026-10-08T09:00:00.000Z"),
+    _raw_user_row("d2", f"Async agent launched successfully.\nagentId: {TASK_ID} (internal ID)",
+                  "2026-10-08T09:00:01.000Z"),
+    # The old raw-only stopped notice: no uuid, and its row is outside the window.
+    _raw_enqueue_row(_notice_text(TASK_ID, "stopped"), "2026-10-08T09:21:00.000Z"),
+)
+
+_F4_RAW_TAIL = (
+    _raw_user_row("w1", "把子代理继续跑起来", "2026-10-08T10:00:00.000Z"),
+    _raw_assistant_tool_row("w2", _WINDOW_SEND, "SendMessage",
+                            {"to": TASK_ID, "message": "continue"},
+                            "2026-10-08T10:00:30.000Z"),
+)
+
+
+def test_F4_variant_control_no_raw_lines_is_running() -> None:
+    card = _incremental_window_card(())
+    assert card.status == "running"
+
+
+def test_F4_variant_old_enqueue_notice_loses_to_the_in_window_resume() -> None:
+    # Variant A: the out-of-window raw-only notice must NOT outrank the resume.
+    card = _incremental_window_card(_F4_RAW_HEAD + _F4_RAW_TAIL)
+    assert card.status == "running"
+    assert card.content["agents"][TASK_ID]["status"] != "stopped"
+
+
+def test_F4_variant_old_user_row_notice_loses_to_the_in_window_resume() -> None:
+    # Variant B: same, but the old notice carries its own uuid that the SDK
+    # view does not contain (so it is raw-only too).
+    raw = _F4_RAW_HEAD[:2] + (
+        _raw_user_row("old-notice", _notice_text(TASK_ID, "stopped"),
+                      "2026-10-08T09:21:00.000Z"),
+    ) + _F4_RAW_TAIL
+    card = _incremental_window_card(raw)
+    assert card.status == "running"
+
+
+def test_F4_variant_old_notice_with_no_later_activity_still_closes() -> None:
+    # Variant D: the conservative placement must not break the real closure —
+    # a window with no newer signal leaves the notice as the latest one.
+    card = _incremental_window_card(
+        _F4_RAW_HEAD + _F4_RAW_TAIL[:1],
+        window=(_window_user_message(),),
+    )
+    assert card.status == "interrupted"
+
+
+def test_F4_repeated_projection_is_idempotent() -> None:
+    raw = _F4_RAW_HEAD + _F4_RAW_TAIL
+    first = _incremental_window_card(raw)
+    second = _incremental_window_card(raw)
+    assert first.status == second.status == "running"
+    assert dict(first.content) == dict(second.content)
+
+
+# --------------------------------------------------------------------------
+# F1/F6: the evidence sweep judges every open task, and only judged ones
+# --------------------------------------------------------------------------
+
+
+def _stale_file(now: float) -> AgentFileInfo:
+    return AgentFileInfo(exists=True, mtime_ms=int((now - T_STALE - 1) * 1000))
+
+
+def _fresh_file(now: float) -> AgentFileInfo:
+    return AgentFileInfo(exists=True, mtime_ms=int(now * 1000))
+
+
+def _card_with_tasks(
+    projector: ClaudeMessageProjector,
+    statuses: dict[str, str],
+) -> str:
+    session = _session()
+    projector.fold_agent_task_event(
+        session,
+        tool_use_id=DISPATCH_TUID,
+        overlay=ClaudeAgentTaskOverlay(
+            agents={task_id: {"status": status} for task_id, status in statuses.items()}
+        ),
+        status="running",
+        base=AgentCallToolContent(kind="agent_call", title="research", agents={}),
+    )
+    return stable_tool_item_id(session, DISPATCH_TUID)
+
+
+def test_F1_a_running_entry_with_a_stale_file_is_closed() -> None:
+    # The new coverage F1 asks for: a *started* task whose transcript went
+    # silent is dead, and the evidence sweep closes it.
+    projector = ClaudeMessageProjector()
+    card_id = _card_with_tasks(projector, {TASK_ID: "running"})
+    session = _session()
+    now = 1_791_457_800.0
+    items = projector.close_open_agent_cards(
+        session, oracle=_oracle(now=now, files={TASK_ID: _stale_file(now)})
+    )
+    assert [item.id for item in items] == [card_id]
+    assert items[0].status == "interrupted"
+    assert items[0].content["agents"][TASK_ID]["status"] == "interrupted"
+
+
+def test_F1_a_running_entry_with_a_fresh_file_stays_open() -> None:
+    projector = ClaudeMessageProjector()
+    _card_with_tasks(projector, {TASK_ID: "running"})
+    session = _session()
+    now = 1_791_457_800.0
+    assert (
+        projector.close_open_agent_cards(
+            session, oracle=_oracle(now=now, files={TASK_ID: _fresh_file(now)})
+        )
+        == ()
+    )
+
+
+def test_F6_partial_verdicts_leave_the_whole_card_open() -> None:
+    # One stale task (a verdict) and one fresh sibling (none): the card must
+    # stay open AND neither agents entry may be rewritten.
+    projector = ClaudeMessageProjector()
+    _card_with_tasks(projector, {TASK_ID: "running", SECOND_TASK_ID: "running"})
+    session = _session()
+    now = 1_791_457_800.0
+    items = projector.close_open_agent_cards(
+        session,
+        oracle=_oracle(
+            now=now,
+            files={TASK_ID: _stale_file(now), SECOND_TASK_ID: _fresh_file(now)},
+        ),
+    )
+    assert items == ()
+
+
+def test_F6_only_the_judged_task_entry_is_rewritten() -> None:
+    # Two stale tasks: both are judged, so the card may close — and both
+    # entries carry the closure status (no stale `running` left behind).
+    projector = ClaudeMessageProjector()
+    card_id = _card_with_tasks(
+        projector, {TASK_ID: "running", SECOND_TASK_ID: "async_launched"}
+    )
+    session = _session()
+    now = 1_791_457_800.0
+    items = projector.close_open_agent_cards(
+        session,
+        oracle=_oracle(
+            now=now,
+            files={TASK_ID: _stale_file(now), SECOND_TASK_ID: _stale_file(now)},
+        ),
+    )
+    assert [item.id for item in items] == [card_id]
+    agents = items[0].content["agents"]
+    assert agents[TASK_ID]["status"] == "interrupted"
+    assert agents[SECOND_TASK_ID]["status"] == "interrupted"
+
+
+def test_F6_a_live_task_keeps_the_card_open() -> None:
+    projector = ClaudeMessageProjector()
+    _card_with_tasks(projector, {TASK_ID: "running", SECOND_TASK_ID: "running"})
+    session = _session()
+    now = 1_791_457_800.0
+    assert (
+        projector.close_open_agent_cards(
+            session,
+            oracle=_oracle(
+                now=now,
+                files={TASK_ID: _stale_file(now), SECOND_TASK_ID: _stale_file(now)},
+            ),
+            live_task_ids=frozenset({SECOND_TASK_ID}),
+        )
+        == ()
+    )
+
+
+def test_F1_an_attached_task_is_not_killed_by_file_silence() -> None:
+    projector = ClaudeMessageProjector()
+    _card_with_tasks(projector, {TASK_ID: "running"})
+    session = _session()
+    now = 1_791_457_800.0
+    assert (
+        projector.close_open_agent_cards(
+            session,
+            oracle=_oracle(now=now, files={TASK_ID: _stale_file(now)}),
+            attached_task_ids=frozenset({TASK_ID}),
+        )
+        == ()
+    )
+
+
+# --------------------------------------------------------------------------
+# F5: the never-started grace reaches production (receipt ages)
+# --------------------------------------------------------------------------
+
+
+def test_F5_sweep_uses_the_cards_launch_stamp_for_never_started() -> None:
+    # No explicit ages: the card's own launch stamp supplies the receipt age,
+    # so a task with no subagent transcript at all is judged after T_start.
+    now = 1_791_457_800.0
+    projector = ClaudeMessageProjector(clock=lambda: now - (T_START + 30))
+    _card_with_tasks(projector, {TASK_ID: "async_launched"})
+    session = _session()
+    expected_receipt_ms = int((now - (T_START + 30)) * 1000)
+    items = projector.close_open_agent_cards(
+        session,
+        oracle=_oracle(now=now, files={}),
+        now_ms=int(now * 1000),
+    )
+    assert len(items) == 1
+    assert items[0].status == "interrupted"
+    assert items[0].content["closedByEvidence"] == "neverStarted"
+    # F2b: the end time is the receipt time, not "now".
+    assert items[0].content["endTime"] == expected_receipt_ms
+
+
+def test_F5_never_started_stays_open_inside_the_grace() -> None:
+    now = 1_791_457_800.0
+    projector = ClaudeMessageProjector(clock=lambda: now - (T_START - 30))
+    _card_with_tasks(projector, {TASK_ID: "async_launched"})
+    session = _session()
+    assert (
+        projector.close_open_agent_cards(
+            session, oracle=_oracle(now=now, files={}), now_ms=int(now * 1000)
+        )
+        == ()
+    )
+
+
+def test_F5_history_receipt_age_comes_from_the_raw_transcript() -> None:
+    # The SDK view carries no timestamps, so without the raw receipt the age
+    # is unknown; the raw scan supplies it and the never-started closure fires.
+    from connector.runtimes.claude.sessions.reader import _history_receipt_ages
+
+    messages = (_dispatch_message(), _receipt_message())
+    raw_lines = (
+        json.dumps(
+            {
+                "type": "user",
+                "uuid": "receipt-native",
+                "timestamp": "2026-10-08T09:00:01.000Z",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": DISPATCH_TUID,
+                         "content": [{"type": "text",
+                                      "text": f"Async agent launched successfully.\nagentId: {TASK_ID} (internal ID)"}]},
+                    ],
+                },
+            }
+        ),
+    )
+    receipt_ms = scan_raw_transcript(raw_lines).receipt_times_ms[TASK_ID]
+    now_ms = float(receipt_ms + int((T_START + 60) * 1000))
+    ages = _history_receipt_ages(
+        messages, now_ms=now_ms, raw_receipt_times={TASK_ID: receipt_ms}
+    )
+    assert ages[TASK_ID] == T_START + 60
+    oracle = _oracle(now=now_ms / 1000.0, files={})
+    verdict = oracle.evidence(
+        task_id=TASK_ID,
+        external_session_id=EXTERNAL_SESSION_ID,
+        cwd=CWD,
+        receipt_age_seconds=ages[TASK_ID],
+        now_ms=int(now_ms),
+    )
+    assert verdict is not None
+    assert verdict.closed_by == "neverStarted"
+    # F2b: the end time is the receipt time, not "now".
+    assert verdict.end_time_ms == receipt_ms
+
+
+# --------------------------------------------------------------------------
+# F2: the history rebuild respects the live transport's task set
+# --------------------------------------------------------------------------
+
+
+def test_F2_live_task_keeps_a_history_card_open() -> None:
+    messages = (_dispatch_message(), _receipt_message())
+    now = 1_791_457_800.0
+    oracle = _oracle(now=now, files={TASK_ID: _stale_file(now)})
+    items = _history_items_from_messages(
+        _session(), messages, oracle=oracle, live_task_ids=frozenset({TASK_ID})
+    )
+    card = next(i for i in items if i.content.get("kind") == "agent_call")
+    assert card.status == "running"
+    assert "closedByEvidence" not in card.content
+
+
+def test_F2_a_live_id_that_is_not_on_the_card_does_not_block() -> None:
+    # The exemption is per named task: a live id the card does not carry must
+    # not hold an unrelated card open.
+    messages = (_dispatch_message(), _receipt_message(TASK_ID))
+    now = 1_791_457_800.0
+    oracle = _oracle(now=now, files={TASK_ID: _stale_file(now)})
+    items = _history_items_from_messages(
+        _session(), messages, oracle=oracle, live_task_ids=frozenset({SECOND_TASK_ID})
+    )
+    card = next(i for i in items if i.content.get("kind") == "agent_call")
+    assert card.status == "interrupted"

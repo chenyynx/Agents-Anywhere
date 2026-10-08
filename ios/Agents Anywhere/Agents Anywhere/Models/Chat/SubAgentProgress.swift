@@ -44,7 +44,7 @@ enum SubAgentPhase: Equatable {
     }
 
     /// Starting counts as active everywhere "still working" is asked
-    /// (capsule, default tab, the final-output gate).
+    /// (capsule, the panel's default chip, the final-output gate).
     var isActive: Bool { self == .running || self == .starting }
     var isFailure: Bool { self == .failed || self == .interrupted }
 
@@ -124,7 +124,7 @@ struct SubAgentCard: Identifiable, Equatable {
 
     var isTopLevel: Bool { parentItemID == nil }
 
-    /// The tab chip badge: only non-default agent types earn one.
+    /// The panel chip badge: only non-default agent types earn one.
     var badge: String? {
         guard let agentType, !agentType.isEmpty, agentType != SubAgentProgress.defaultAgentType else { return nil }
         return agentType
@@ -238,31 +238,10 @@ enum SubAgentProgress {
         items.compactMap(card).sorted { $0.orderSeq < $1.orderSeq }
     }
 
-    /// The cards the capsule and the panel tabs surface: v1 renders one layer,
+    /// The cards the capsule and the panel chips surface: v1 renders one layer,
     /// so nested cards (child rows of another card) stay inside the parent.
     static func topLevelCards(in items: [V2TimelineItem]) -> [SubAgentCard] {
         cards(in: items).filter(\.isTopLevel)
-    }
-
-    /// One turn's page (pp 2026-10-05: 每轮都是新的页): the top-level cards
-    /// sharing the opening card's turn, so a dispatch point on an older turn
-    /// reopens that turn's page and a new dispatch opens the new one.
-    ///
-    /// The wire carries no turn id — `turnId` is a runtime field the server
-    /// strips before publishing (`_without_runtime_turn_ids`), so the model's
-    /// `turnId` decodes to nil in production and cannot anchor a page. The
-    /// turn is bounded by the app's own visible-turn rule instead: from the
-    /// last `startsVisibleTurn` user row at or before the anchor to the next
-    /// one after it (steering messages and interrupt placeholders never split
-    /// a turn). Falls back to the whole presented window when the anchor is
-    /// gone — the pre-scope behaviour, kept deliberately.
-    static func turnScopedTopLevelCards(in items: [V2TimelineItem], containing cardID: String?) -> [SubAgentCard] {
-        let all = topLevelCards(in: items)
-        guard let cardID, let anchor = items.firstIndex(where: { $0.id == cardID }) else { return all }
-        let start = items[0...anchor].lastIndex(where: { $0.startsVisibleTurn }) ?? 0
-        let end = items[(anchor + 1)...].firstIndex(where: { $0.startsVisibleTurn }) ?? items.count
-        let scoped = topLevelCards(in: Array(items[start..<end]))
-        return scoped.isEmpty ? all : scoped
     }
 
     /// The card's child rows, in timeline order (tool, thinking and text rows
@@ -281,11 +260,41 @@ enum SubAgentProgress {
         children(of: cardID, in: items).filter(\.isVisibleInChat)
     }
 
-    /// Opening rule (§3.2/§3.3): an explicitly requested card wins; otherwise
-    /// the first running tab, else the first card.
-    static func defaultSelection(_ cards: [SubAgentCard], requested: String?) -> String? {
-        if let requested, cards.contains(where: { $0.id == requested }) { return requested }
-        return cards.first(where: { $0.phase.isActive })?.id ?? cards.first?.id
+    // MARK: Flat panel (pp 2026-10-08: 不分回合)
+
+    /// Every top-level card the session holds, from the same window ∪ sidecar
+    /// union as the capsule and in dispatch order — terminal cards included,
+    /// so a card that just finished is still readable by id. This is the flat
+    /// panel's whole source: the chip strip is its active subset and the detail
+    /// resolves against the full list (pp 2026-10-08: 不分回合).
+    static func sessionCards(
+        inWindow window: [V2TimelineItem],
+        activeCards: [V2ActiveAgentCard],
+        now: Date = Date()
+    ) -> [SubAgentCard] {
+        topLevelCards(in: capsuleItems(inWindow: window, activeCards: activeCards, now: now))
+    }
+
+    /// The chip strip's set: the session's active subset (still running or
+    /// starting). A card that reaches a terminal phase leaves on the next
+    /// redraw — 结束退场 — so a chip never outlives its run and never repeats.
+    static func activeCards(
+        inWindow window: [V2TimelineItem],
+        activeCards: [V2ActiveAgentCard],
+        now: Date = Date()
+    ) -> [SubAgentCard] {
+        sessionCards(inWindow: window, activeCards: activeCards, now: now).filter { $0.phase.isActive }
+    }
+
+    /// Selection (pp 2026-10-08: 请求卡优先 → 最近活跃 → 首个). The requested
+    /// card wins whenever it is in the list; otherwise the newest one, so a
+    /// just-dispatched SubAgent shows its own detail instead of an older one.
+    /// (The panel first tries the *whole* session list by id — a card the user
+    /// is reading stays put once it completes — and falls back here only when
+    /// the request names a card the session no longer holds.)
+    static func resolveSelection(_ cards: [SubAgentCard], requested: String?) -> SubAgentCard? {
+        if let requested, let match = cards.first(where: { $0.id == requested }) { return match }
+        return cards.last
     }
 
     /// The capsule: visible exactly while a top-level SubAgent runs or is still
@@ -400,23 +409,6 @@ enum SubAgentProgress {
         capsuleState(capsuleItems(inWindow: window, activeCards: activeCards, now: now))
     }
 
-    /// The panel's reach for the capsule's count
-    /// (ios-capsule-activity-window §8): every active card the capsule counts
-    /// that the opening turn's page does not already list — a dispatch from an
-    /// earlier turn, or one the loaded window has moved past. Read from the same
-    /// window ∪ sidecar union as the capsule, so the panel can never show fewer
-    /// cards than the capsule promises.
-    static func otherActiveCards(
-        inWindow window: [V2TimelineItem],
-        activeCards: [V2ActiveAgentCard],
-        page: [SubAgentCard],
-        now: Date = Date()
-    ) -> [SubAgentCard] {
-        let listed = Set(page.map(\.id))
-        return topLevelCards(in: capsuleItems(inWindow: window, activeCards: activeCards, now: now))
-            .filter { $0.phase.isActive && !listed.contains($0.id) }
-    }
-
     /// Whether a card's own rows are loaded, i.e. it is one of the rows this
     /// client holds. False means the panel can still show the card's own facts
     /// (name, phase, prompt) but has none of its tool / thinking / output rows,
@@ -521,9 +513,9 @@ struct SubAgentCapsuleState: Equatable {
     /// The glyph's two-phase class while exactly one SubAgent runs and its rows
     /// support it; nil with several (or unknown) — the icon then auto-cycles.
     let glyphPhase: SubAgentGlyphPhase?
-    /// The newest running card. With per-turn pages (pp 2026-10-05) the
-    /// capsule opens the turn where the newest work lives, so a fresh
-    /// dispatch shows its own page instead of the oldest running one's.
+    /// The newest running card. The capsule opens the flat panel on it, so a
+    /// fresh dispatch shows its own detail (and its own chip) instead of the
+    /// oldest running one's.
     let latestRunningID: String?
     /// The newest active card's phase word, so a subagent that is still
     /// starting is announced as 启动中 rather than 运行中.

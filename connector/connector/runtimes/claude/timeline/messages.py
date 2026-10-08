@@ -46,6 +46,8 @@ from connector.runtimes.claude.timeline.agent_calls import (
     has_running_agent_tasks,
     is_async_agent_receipt,
     resolve_agent_card_status,
+    resolve_resume_alias,
+    send_message_target,
 )
 
 CLAUDE_INTERRUPTED_REQUEST_MARKERS = frozenset(
@@ -152,6 +154,16 @@ class ClaudeMessageProjector:
         # carries the wire-projected content and the task-event overlay
         # separately so either writer can land first (see agent_calls.py).
         self._agent_cards: dict[str, ClaudeAgentCallCard] = {}
+        # R4 resume-alias lineage (subagent-status-truth-tasks §3.3): a task
+        # resumed through SendMessage keys its later frames on the SendMessage
+        # tool_use id, so the live fold must route them back onto the original
+        # dispatch card instead of minting a second one. The two maps are the
+        # join: a task id learned from an Agent receipt (or an Agent call's own
+        # agentId) -> the dispatch tool_use id(s) that produced it, and a
+        # SendMessage tool_use id -> the task id it addresses. Both are read
+        # only for lineage; SendMessage's own visibility is untouched.
+        self._task_roots: dict[str, set[str]] = {}
+        self._send_to_task: dict[str, str] = {}
 
     def message_item(
         self,
@@ -263,6 +275,11 @@ class ClaudeMessageProjector:
             if block.block_type == "tool_use" and is_hidden_tool_name(block.tool_name):
                 self._hidden_tool_use_ids.add(block.tool_use_id)
                 continue
+            if block.block_type == "tool_use":
+                # The resume lineage is recorded before visibility is decided,
+                # so a hidden SendMessage still contributes its alias while its
+                # own row stays exactly as visible (or hidden) as before.
+                self._record_send_message(block)
             if (
                 block.block_type == "tool_result"
                 and block.tool_use_id in self._hidden_tool_use_ids
@@ -499,6 +516,7 @@ class ClaudeMessageProjector:
                 session_id=session.session_id,
                 tool_use_id=block.tool_use_id,
             )
+            self._learn_agent_lineage(content, tool_use_id=block.tool_use_id)
             if status in AGENT_CARD_TERMINAL_STATUSES and has_running_agent_tasks(
                 content
             ):
@@ -564,6 +582,42 @@ class ClaudeMessageProjector:
         card.status = resolve_agent_card_status(card.status, status)
         return card.status, card.overlay.apply(content)
 
+    def _learn_agent_lineage(
+        self,
+        content: AgentCallToolContent,
+        *,
+        tool_use_id: str,
+    ) -> None:
+        """Record the task id(s) an Agent call card is bound to (R4 join).
+
+        An Agent card learns its task ids two ways: from the dispatch input
+        (nothing) and from whoever writes the receipt — the launch receipt
+        stamps ``content.agentId`` and the terminal overlay carries the
+        ``agents`` map keyed by task id. Learning them here, beside the one
+        place the card is minted, means the alias resolver has the same map the
+        card itself is keyed by, whichever event landed first.
+        """
+
+        if content.agent_id:
+            self._task_roots.setdefault(content.agent_id, set()).add(tool_use_id)
+        for agent_id in content.agents:
+            if isinstance(agent_id, str) and agent_id:
+                self._task_roots.setdefault(agent_id, set()).add(tool_use_id)
+
+    def _record_send_message(self, block: ClaudeToolBlock) -> None:
+        """Learn one SendMessage resume alias without minting a visible card.
+
+        The SendMessage tool_use frame is bookkeeping for the resume lineage,
+        not a card of its own: its ``input.to`` names the task it resumes, and
+        the tool_use id is the alias later frames key on. The frame itself is
+        returned to the caller to project (visibility unchanged) — this only
+        keeps a note of the join, and never publishes anything.
+        """
+
+        target = send_message_target(block.tool_name, block.tool_input)
+        if target is not None:
+            self._send_to_task[block.tool_use_id] = target
+
     def fold_agent_task_event(
         self,
         session: ClaudeSession,
@@ -585,8 +639,24 @@ class ClaudeMessageProjector:
         it. A card already minted in-window always wins; otherwise the fold
         publishes the dispatch shape its caller rebuilt from the history
         lookup, so a dispatch-less window still opens the right card.
+
+        A ``tool_use_id`` that is a SendMessage resume alias is redirected to
+        the task's original dispatch card (R4, subagent-status-truth-tasks
+        §3.3): the resumed task's lifecycle frames and notification arrive
+        keyed on the SendMessage call, and folding them onto the dispatch card
+        keeps one card per task. The id only moves when the lineage resolves
+        to a single root; otherwise it is left exactly as it came
+        (fail-closed), so an unlearned alias behaves as it does today.
         """
 
+        tool_use_id = (
+            resolve_resume_alias(
+                tool_use_id,
+                send_to_task=self._send_to_task,
+                task_roots=self._task_roots,
+            )
+            or tool_use_id
+        )
         item_id = stable_tool_item_id(session, tool_use_id)
         order_seq = self.order_seq_for(item_id)
         card = self._agent_cards.setdefault(item_id, ClaudeAgentCallCard())

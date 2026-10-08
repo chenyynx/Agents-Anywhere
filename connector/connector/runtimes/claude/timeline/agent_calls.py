@@ -208,6 +208,56 @@ def agent_task_terminal_status(status: str | None) -> str | None:
     return AGENT_TASK_TERMINAL_STATUSES.get(status)
 
 
+def send_message_target(tool_name: str | None, tool_input: Any) -> str | None:
+    """The background task a SendMessage tool call resumes (``input.to``).
+
+    The live resume path (R4): a SendMessage call carries the task id it
+    addresses in ``input.to`` (the CLI also mirrors it as ``recipient``). That
+    id is the join key back to the original Agent dispatch, and reading it is
+    the only thing this does — SendMessage visibility is untouched.
+    """
+
+    if tool_name != "SendMessage" or not isinstance(tool_input, Mapping):
+        return None
+    target = tool_input.get("to")
+    return target if isinstance(target, str) and target else None
+
+
+def resolve_resume_alias(
+    tool_use_id: str,
+    *,
+    send_to_task: Mapping[str, str],
+    task_roots: Mapping[str, set[str]],
+) -> str | None:
+    """Resolve a SendMessage tool_use id to the Agent card it belongs to.
+
+    R4 (``.local-dev/subagent-status-truth-tasks.md``): a task resumed through
+    SendMessage has its lifecycle frames and terminal notification keyed by the
+    *SendMessage* tool_use id, so the live fold would mint a second card and
+    the original dispatch card would never receive the terminal state. This
+    folds the alias back onto the original card.
+
+    The join is intentionally strict and fail-closed — an unresolved id is
+    returned as ``None`` and the caller keeps the id it came with:
+
+    * the id must be a recorded SendMessage alias (``send_to_task``);
+    * its task must resolve to exactly one dispatch root (``task_roots``) — a
+      task with no root (dispatch not seen) or several roots (ambiguity) is
+      not touchable;
+    * the resolved root must not be the alias itself, so the two mappings can
+      never loop.
+    """
+
+    task_id = send_to_task.get(tool_use_id)
+    if task_id is None:
+        return None
+    roots = task_roots.get(task_id)
+    if roots is None or len(roots) != 1:
+        return None
+    root = next(iter(roots))
+    return root if root != tool_use_id else None
+
+
 def task_usage(raw: Mapping[str, Any] | None) -> dict[str, Any]:
     """Map task usage onto the keys the receipt path already publishes.
 

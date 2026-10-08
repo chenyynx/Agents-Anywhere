@@ -208,6 +208,21 @@ def agent_task_terminal_status(status: str | None) -> str | None:
     return AGENT_TASK_TERMINAL_STATUSES.get(status)
 
 
+def closure_rank(status: str | None) -> tuple[int, int]:
+    """Order two candidate closures so the most final, most honest one wins.
+
+    Terminal beats running; among equals ``interrupted`` beats ``done`` because
+    a card the engine cut short must never be shown as completed. Shared by the
+    live sweep and the history rebuild so both pick the same verdict when a card
+    names more than one task.
+    """
+
+    return (
+        0 if status in AGENT_CARD_TERMINAL_STATUSES else -1,
+        1 if status == "interrupted" else 0,
+    )
+
+
 def task_usage(raw: Mapping[str, Any] | None) -> dict[str, Any]:
     """Map task usage onto the keys the receipt path already publishes.
 

@@ -11,7 +11,12 @@ from typing import Any
 # 2026-10-05 terminal-task fold was the first such fix: its notices sit behind
 # the cursors of every stuck session). Increment for any projection change
 # that must be re-applied to existing transcripts.
-HISTORY_PROJECTION_VERSION = 3
+#
+# v4 (2026-10-08): raw-notice ingestion + engine-evidence closure (R1/R2). A
+# notice the SDK view dropped now folds from the raw transcript, and a stranded
+# card closes from the subagent-transcript oracle. Both reach transcripts whose
+# cursors are already past them, so every stored v3 cursor must rebuild once.
+HISTORY_PROJECTION_VERSION = 4
 
 
 @dataclass(frozen=True, slots=True)

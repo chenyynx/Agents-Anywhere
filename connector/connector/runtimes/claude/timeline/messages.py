@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -42,6 +42,7 @@ from connector.runtimes.claude.timeline.agent_calls import (
     ClaudeAgentCallCard,
     ClaudeAgentTaskOverlay,
     claude_agent_call_content,
+    closure_rank,
     complete_claude_agent_call_content,
     has_running_agent_tasks,
     is_async_agent_receipt,
@@ -632,27 +633,48 @@ class ClaudeMessageProjector:
     def close_open_agent_cards(
         self,
         session: ClaudeSession,
+        *,
+        oracle: Any | None = None,
+        terminal_events: Mapping[str, Sequence[tuple[int | None, Any]]] | None = None,
+        receipt_ages: Mapping[str, float] | None = None,
+        attached_task_ids: frozenset[str] | None = None,
+        live_task_ids: frozenset[str] | None = None,
+        now_ms: int | None = None,
     ) -> tuple[RuntimeTimelineItem, ...]:
-        """Judge every open Agent card of this session that has no live task.
+        """Judge every open Agent card of this session against engine evidence.
 
-        The stop-path sweep (I-G1, `ghost-card-findings.md` §5.1): a dispatch
-        aborted inside its dispatch window has no task to close it — the CLI
-        never created one — and the single frame that could (the aborted
-        call's tool_result) is discarded by the stop's own release. Nothing
-        else ever re-projects that card, so the stop is the last moment that
-        can judge it; this returns the items that do.
+        Two closures live here and they are deliberately different.
 
-        Open cards backed by a *started* task (a ``running`` entry) are left
-        alone (I-G2), and a card whose task starts after this ran is re-opened
-        by the fold clamp in ``fold_agent_task_event`` — the sweep cannot lie
-        about a live agent, and cannot strand a dead card. The exemption is
-        deliberately narrow (red team F-D): the ``async_launched`` receipt
-        marks a launch report, not a task, so a receipt-only card is still a
-        dispatch-window ghost and is judged here; the per-task stop control
-        covers it if the task turns out to be real. Terminal cards are
-        untouched.
+        The dispatch-window ghost (I-G1, `ghost-card-findings.md` §5.1): a
+        dispatch aborted inside its dispatch window has no task to close it —
+        the CLI never created one — and the single frame that could (the
+        aborted call's tool_result) is discarded by the stop's own release.
+        Nothing else ever re-projects that card, so the stop is the last moment
+        that can judge it; open cards with no live task fold to ``interrupted``.
+
+        The evidence closure (R1/R2, `subagent-status-truth-tasks.md`): a task
+        whose terminal notice the SDK message view never carried (R1), or one
+        the host process was killed under so the CLI emitted no terminal event
+        at all (R2), has no wire frame left to close it. When an ``oracle`` is
+        supplied it is asked for the task's true state from its subagent
+        transcript (terminal notice + silent file, a never-started launch, or a
+        stale file) and its verdict is folded in, marked with the closure's
+        provenance on ``content.metadata``.
+
+        Open cards backed by a *started* task (a ``running`` entry, or an id the
+        caller vouches for in ``live_task_ids``) are left alone (I-G2), and a
+        card whose task starts after this ran is re-opened by the fold clamp in
+        ``fold_agent_task_event`` — the sweep cannot lie about a live agent, and
+        cannot strand a dead card. ``attached_task_ids`` names the tasks of a
+        session whose process this connector is actively driving; those are
+        exempt from the file-staleness closure (a long tool call writes nothing
+        for a while) though a terminal notice still closes them.
         """
 
+        events = terminal_events or {}
+        ages = receipt_ages or {}
+        attached = attached_task_ids or frozenset()
+        live = live_task_ids or frozenset()
         items: list[RuntimeTimelineItem] = []
         for item_id, card in tuple(self._agent_cards.items()):
             if card.session_id != session.session_id:
@@ -671,7 +693,50 @@ class ClaudeMessageProjector:
             content = card.overlay.apply(base)
             if has_running_agent_tasks(content):
                 continue
-            card.status = resolve_agent_card_status(card.status, "interrupted")
+            task_ids = _open_task_ids(content)
+            if task_ids & live:
+                continue
+            if oracle is None:
+                # Stop-path ghost judgment (I-G1): the caller is a stop, and
+                # every open card it left without a live task folds to
+                # interrupted. Unchanged from the original sweep.
+                card.status = resolve_agent_card_status(card.status, "interrupted")
+                closed_content = replace(
+                    content,
+                    metadata={
+                        **dict(content.metadata),
+                        "stoppedWithoutTask": True,
+                    },
+                )
+                event = "claude.agent.stopped"
+            else:
+                # Engine-evidence judgment (R1/R2): the caller is a process
+                # exit, a restart, or a periodic pass, where a false close is
+                # worse than a slow one. Only a task the oracle can justify
+                # closing is closed; anything it leaves running stays put.
+                evidence = self._card_evidence(
+                    oracle,
+                    task_ids=task_ids,
+                    session=session,
+                    events=events,
+                    ages=ages,
+                    attached=attached,
+                    now_ms=now_ms,
+                )
+                if evidence is None:
+                    continue
+                closure_status, closed_by, end_time_ms, agent_status = evidence
+                card.status = resolve_agent_card_status(card.status, closure_status)
+                if end_time_ms is not None:
+                    card.overlay.end_time = end_time_ms
+                closed_content = self._apply_evidence_closure(
+                    content=content,
+                    card=card,
+                    agents=self._evidence_agents(content, task_ids, agent_status),
+                    closed_by=closed_by,
+                    end_time_ms=end_time_ms,
+                )
+                event = "claude.agent.closed"
             items.append(
                 ToolTimelineItem(
                     id=item_id,
@@ -682,17 +747,14 @@ class ClaudeMessageProjector:
                     # The marker keeps the judgment observable in the
                     # timeline (free JSON), next to the terminal status the
                     # client renders from the status field alone.
-                    content=replace(
-                        content,
-                        metadata={**dict(content.metadata), "stoppedWithoutTask": True},
-                    ),
+                    content=closed_content,
                     source=TimelineSource(
                         runtime="claude",
                         external_session_id=session.external_session_id,
                         turn_id=card.turn_id,
                         native_item_id=card.tool_use_id,
                         native_item_type="tool_use",
-                        event="claude.agent.stopped",
+                        event=event,
                     ),
                 ).to_platform_item(
                     session_id=session.session_id,
@@ -700,6 +762,135 @@ class ClaudeMessageProjector:
                 )
             )
         return tuple(items)
+
+    def _card_evidence(
+        self,
+        oracle: Any | None,
+        *,
+        task_ids: frozenset[str],
+        session: ClaudeSession,
+        events: Mapping[str, Sequence[tuple[int | None, Any]]],
+        ages: Mapping[str, float],
+        attached: frozenset[str],
+        now_ms: int | None,
+    ) -> tuple[str, str, int | None, str | None] | None:
+        """The evidence verdict for one card, or ``None`` when there is none.
+
+        A card can name more than one task (a dispatch plus its SendMessage
+        resumes); the most final verdict wins, and ``interrupted`` breaks ties
+        so a card that was cut short never reads as still running. Evidence is
+        never guessed: an oracle that declines ``None`` for every task leaves
+        the card to the ghost judgment.
+
+        The fourth element is the per-task status the closure writes into the
+        agents map (the notice's own wire status, or the closure status).
+        """
+
+        if oracle is None or not task_ids:
+            return None
+        best: tuple[str, str, int | None, str | None] | None = None
+        for task_id in sorted(task_ids):
+            verdict = oracle.evidence(
+                task_id=task_id,
+                external_session_id=session.external_session_id,
+                cwd=session.cwd,
+                terminal_events=events.get(task_id, ()),
+                receipt_age_seconds=ages.get(task_id),
+                attached_live=task_id in attached,
+                now_ms=now_ms,
+            )
+            if verdict is None:
+                continue
+            candidate = (
+                verdict.closure_status,
+                verdict.closed_by,
+                verdict.end_time_ms,
+                verdict.agent_status or verdict.closure_status,
+            )
+            if best is None or _closure_rank(candidate) > _closure_rank(best):
+                best = candidate
+        return best
+
+    def _evidence_agents(
+        self,
+        content: AgentCallToolContent,
+        task_ids: frozenset[str],
+        agent_status: str | None,
+    ) -> dict[str, Any]:
+        """Per-task entries for a card the oracle closed.
+
+        The agents map is what the panel reads for per-task state, so a card
+        judged finished must not keep its old ``running``/``async_launched``
+        entry. Only the tasks the card still names are rewritten; every other
+        entry rides through untouched.
+        """
+
+        entries: dict[str, Any] = {}
+        for task_id in task_ids:
+            existing = content.agents.get(task_id)
+            entry = dict(existing) if isinstance(existing, Mapping) else {}
+            if agent_status is not None:
+                entry["status"] = agent_status
+            entries[task_id] = entry
+        return entries
+
+    def _apply_evidence_closure(
+        self,
+        *,
+        content: AgentCallToolContent,
+        card: ClaudeAgentCallCard,
+        agents: Mapping[str, Any],
+        closed_by: str,
+        end_time_ms: int | None,
+    ) -> AgentCallToolContent:
+        """Publish the evidence verdict onto the card's content.
+
+        The agents map carries the terminal status per task, an ``endTime``
+        rides the metadata (the panel's final-output timestamp), and the
+        ``closedByEvidence`` provenance is stamped beside ``stoppedWithoutTask``
+        with the same semantics — free JSON the client may surface.
+        """
+
+        merged_agents: dict[str, Any] = {
+            agent_id: dict(entry) if isinstance(entry, Mapping) else entry
+            for agent_id, entry in content.agents.items()
+        }
+        for agent_id, entry in agents.items():
+            if not isinstance(entry, Mapping):
+                continue
+            existing = merged_agents.get(agent_id)
+            merged_agents[agent_id] = (
+                {**existing, **entry} if isinstance(existing, Mapping) else dict(entry)
+            )
+        metadata = {**dict(content.metadata), "closedByEvidence": closed_by}
+        if end_time_ms is not None:
+            metadata["endTime"] = end_time_ms
+        updated = replace(content, agents=merged_agents, metadata=metadata)
+        card.overlay.agents = {
+            agent_id: (
+                dict(entry) if isinstance(entry, Mapping) else entry
+            )
+            for agent_id, entry in merged_agents.items()
+        }
+        return updated
+
+
+def _open_task_ids(content: AgentCallToolContent) -> frozenset[str]:
+    """Every task id this card still names, in the agents map.
+
+    The dispatch's task id is the card's agents key; a card that never reached a
+    task event carries an empty map and simply has no evidence to judge.
+    """
+
+    return frozenset(
+        agent_id
+        for agent_id in content.agents
+        if isinstance(agent_id, str) and agent_id
+    )
+
+
+def _closure_rank(candidate: tuple[str, str, int | None]) -> tuple[int, int]:
+    return closure_rank(candidate[0])
 
 
 def synthesized_agent_call_content(

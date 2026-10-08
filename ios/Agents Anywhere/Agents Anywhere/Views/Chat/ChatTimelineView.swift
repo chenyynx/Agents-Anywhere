@@ -605,12 +605,24 @@ private struct ChatTimelineContent: View, Equatable {
             // request. Only the top edge condenses — the content's bottom edge
             // and both bottom-anchored probes stay put.
             //
-            // The queue's waiting messages ride at this block's bottom — below
-            // the status line, still inside the list (pp 2026-10-08: the queue
-            // belongs to the timeline, not to a dock pinned over the composer).
-            // Both probes stay anchored to the block's own bottom edge, which
-            // remains the content's true end.
+            // The queue's waiting messages ride above the status line, still
+            // inside the list (pp 2026-10-08: the queue belongs to the
+            // timeline, not to a dock pinned over the composer; pp 2026-10-09:
+            // it seats above the status line so the status line keeps the
+            // block's own bottom edge). Both probes stay anchored to the
+            // block's own bottom edge, which remains the content's true end.
             VStack(alignment: .leading, spacing: 8) {
+                if !model.session.sendQueue.items.isEmpty {
+                    VStack(spacing: 6) {
+                        ForEach(model.session.sendQueue.items) { item in
+                            QueuedMessageRow(item: item, model: model)
+                                .id(item.id)
+                                .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        }
+                    }
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: queueRoster)
+                }
+
                 Group {
                     if let text = model.sendingPlaceholder {
                         HStack(spacing: 8) {
@@ -622,17 +634,6 @@ private struct ChatTimelineContent: View, Equatable {
                 }.frame(height: hasStatusLine ? 32 : Self.idleTailHeight)
                     .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: hasStatusLine)
                     .traceChatLayout("tail-spacer")
-
-                if !model.session.sendQueue.items.isEmpty {
-                    VStack(spacing: 6) {
-                        ForEach(model.session.sendQueue.items) { item in
-                            QueuedMessageRow(item: item, model: model)
-                                .id(item.id)
-                                .transition(.opacity.combined(with: .move(edge: .bottom)))
-                        }
-                    }
-                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: queueRoster)
-                }
             }
             .traceChatLayout("tail-block")
             .overlay(alignment: .bottom) {

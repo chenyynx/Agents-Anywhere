@@ -250,16 +250,18 @@ async def _cast_with_labour(
 
 
 def test_watchdog_deadlines_are_the_adjudicated_product_budgets() -> None:
-    """30s fast kill, 600s absolute ceiling (pp verdict, §2 G2/G3).
+    """30s fast kill, 1800s absolute ceiling (pp verdict, §2 G2/G3; ceiling
+    raised 600->1800 as the 2026-10-09 stopgap, see lifecycle.py).
 
     Both magnitudes are load-bearing and neither is derivable from the code:
-    the fast kill is the C1 budget for the ghost class, the ceiling is aligned
-    to the CLI's own tool timeouts (600s/420s) and sits well above the longest
-    tool this product has ever been seen running (223.4s, AskUserQuestion).
+    the fast kill is the C1 budget for the ghost class; the ceiling bounds a
+    contenting turn that never settles, and 1800s (stopgap) now also keeps
+    every observed real wake-cycle (10-15 min of continuous work) inside the
+    window. The root fix replaces the number with progress arbitration.
     """
 
     assert lifecycle.POLLED_TURN_WATCHDOG_SECONDS == 30.0
-    assert lifecycle.CONTENTING_TURN_WATCHDOG_SECONDS == 600.0
+    assert lifecycle.CONTENTING_TURN_WATCHDOG_SECONDS == 1800.0
 
 
 # --------------------------------------------------------------------------

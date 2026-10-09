@@ -435,3 +435,48 @@ def test_complete_snapshot_sync_removes_orphan_agent_cards(tmp_path) -> None:
 
     ids = _session_item_ids(client, session_id, headers)
     assert ids == {"claude_tool_card_a"}
+
+
+@pytest.mark.anyio
+async def test_rebuild_prune_bump_does_not_mark_session_read(tmp_path) -> None:
+    """A prune-only bump advances the session for refetch without consuming
+    the unread badge (R2, red-team review): a deletion is not content the
+    user has now seen, so ``mark_read_on_change`` must not leak into the
+    prune-only bump."""
+    store, session = await _store_with_session(tmp_path)
+    try:
+        canonical = agent_card_input(
+            "card_task_a",
+            tasks={"task_a": {"status": "completed"}},
+            order_seq=1,
+            session_id=session.id,
+        )
+        twin = agent_card_input(
+            "card_task_a_resume",
+            tasks={"task_a": {"status": "completed"}},
+            order_seq=2,
+            session_id=session.id,
+        )
+        await store.sync_timeline_items(session_id=session.id, items=[canonical, twin])
+        await store.record_session_turn_end(session_id=session.id)
+
+        # Precondition: a settled turn the user has not acknowledged.
+        assert (await store.get_session(session.id)).unread is True
+        seq_before = await store.get_session_seq(session.id)
+
+        result = await store.sync_timeline_items(
+            session_id=session.id,
+            items=[canonical],
+            mark_read_on_change=True,
+            prune_orphan_agent_calls=True,
+        )
+
+        assert result.changed is False
+        rows = {item.id for item in await store.timeline.read(session.id)}
+        assert rows == {"card_task_a"}
+        # The refetch bump still happened...
+        assert await store.get_session_seq(session.id) > seq_before
+        # ...but the unread badge was not consumed by the deletion.
+        assert (await store.get_session(session.id)).unread is True
+    finally:
+        await store.close()

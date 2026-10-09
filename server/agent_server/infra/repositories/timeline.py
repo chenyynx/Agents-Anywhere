@@ -243,11 +243,14 @@ class TimelineRepositoryMixin:
                         if pruned:
                             # Deletions with no item write of their own must
                             # still advance the session so a refetch reaches
-                            # clients that already hold the removed rows.
+                            # clients that already hold the removed rows. The
+                            # bump is for the refetch only: a deletion is not
+                            # content the user has now seen, so it must never
+                            # consume the unread badge (R2, red-team review).
                             await self._bump_session(
                                 conn,
                                 session_id,
-                                mark_read=mark_read_on_change,
+                                mark_read=False,
                             )
                 else:
                     await self._update_source_observed_at(

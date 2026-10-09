@@ -53,8 +53,11 @@ from connector.runtimes.claude.timeline.agent_calls import (
 
 #: How a card was closed from engine evidence. Carried on the item's
 #: ``content.metadata`` so a closure is auditable next to the status the client
-#: renders.
-ClosedByEvidence = Literal["terminalNotice", "agentFileStale", "neverStarted"]
+#: renders. All values are free JSON keys (no contract enum); clients read
+#: them beside ``kind`` and must tolerate new ones.
+ClosedByEvidence = Literal[
+    "terminalNotice", "agentFileStale", "neverStarted", "ageBounded"
+]
 
 #: An ``async_launched`` dispatch with no subagent transcript at all is judged
 #: dead once its launch receipt is older than this. Long enough that an ordinary
@@ -69,6 +72,43 @@ SUBAGENT_START_GRACE_SECONDS: float = 120.0
 #: default (宁长勿短但有界); it is deliberately generous because a false close
 #: is worse than a slow one, and the value is overridable at construction.
 SUBAGENT_STALE_SECONDS: float = 900.0
+
+#: The hard age ceiling (T2, ``.local-dev/stale-residue-selfheal-tasks.md``,
+#: 2026-10-09): a task whose newest launch/survival evidence is older than
+#: this — with no terminal notice and no live signal — closes as
+#: ``interrupted`` even while its transcript file still *looks* fresh (the
+#: mtime a restore or a copy re-stamped, a writer gone without ever emitting
+#: a terminal event). No legitimate subagent runs anywhere near this long
+#: (measured background work sits in the ~30-minute range), so the value is
+#: far above every honest silence and a false close is impossible for any
+#: task the transport still vouches for — ``attached``/live tasks are exempt
+#: entirely. Overridable at construction; the environment variable below
+#: supplies the default and a value ``<= 0`` disables the judgement.
+SUBAGENT_AGE_BOUND_SECONDS: float = 24 * 60 * 60.0
+
+#: Environment override for :data:`SUBAGENT_AGE_BOUND_SECONDS`, in seconds.
+#: Unset or unparsable keeps the default; values ``<= 0`` clamp to 0, the
+#: documented "disabled" value (the kill switch).
+SUBAGENT_AGE_BOUND_ENV: str = "AA_SUBAGENT_AGE_BOUND_SECONDS"
+
+
+def _age_bound_seconds_from_env() -> float:
+    """The age-ceiling default, honouring ``SUBAGENT_AGE_BOUND_ENV``.
+
+    Read once per oracle construction (not at import) so the deployed
+    process environment and the tests drive the same code path. Same
+    conventions as the connector's other float knobs: an unset or unparsable
+    value keeps the default, negatives clamp to 0 (disabled).
+    """
+
+    raw = os.environ.get(SUBAGENT_AGE_BOUND_ENV)
+    if raw is None:
+        return SUBAGENT_AGE_BOUND_SECONDS
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return SUBAGENT_AGE_BOUND_SECONDS
+
 
 #: Tolerance around a terminal notice's own timestamp when comparing it to the
 #: file mtime. The notice is written a beat after the last transcript append, so
@@ -228,6 +268,10 @@ class ClaudeSubagentOracle:
     file_probe: FileProbe = probe_agent_file
     start_grace_seconds: float = SUBAGENT_START_GRACE_SECONDS
     stale_seconds: float = SUBAGENT_STALE_SECONDS
+    #: The age-bounded closure's hard ceiling (T2): see
+    #: `SUBAGENT_AGE_BOUND_SECONDS`. Defaulted from the environment at
+    #: construction (``SUBAGENT_AGE_BOUND_ENV``); ``<= 0`` disables the rule.
+    age_bound_seconds: float = field(default_factory=_age_bound_seconds_from_env)
     mtime_tolerance_seconds: float = SUBAGENT_MTIME_TOLERANCE_SECONDS
 
     def _resolve_projects_dir(self) -> Path:
@@ -277,11 +321,17 @@ class ClaudeSubagentOracle:
            evidence beyond the mtime tolerance (F4 arbitration, below).
         2. Otherwise, an ``attached`` task (a live turn is driving the process)
            is never closed on file silence alone — a long tool call writes
-           nothing for a while and must not be mistaken for dead.
+           nothing for a while and must not be mistaken for dead. The
+           exemption is hard for the age ceiling too: no clock judgement
+           closes a task the transport still vouches for.
         3. No terminal notice: a missing transcript past the start grace closes
            as ``interrupted`` (never started); a transcript silent past the
            stale deadline closes as ``interrupted``; a fresh transcript stays
-           running.
+           running — except past the hard age ceiling (T2, ``ageBounded``):
+           when the newest launch/survival evidence is older than
+           ``age_bound_seconds`` and no live signal vouches for the task, the
+           card closes as ``interrupted`` and the freshness of the file is
+           precisely what that rule declines to trust.
 
         F4 arbitration (``.local-dev/subagent-alias-durability-tasks.md`` rt2,
         red team CONFIRMED): the D3 sweep lets a terminal notice close a task
@@ -381,6 +431,28 @@ class ClaudeSubagentOracle:
                 closure_status="interrupted",
                 closed_by="agentFileStale",
                 end_time_ms=info.mtime_ms,
+                agent_status="interrupted",
+            )
+        # T2 (stale-residue-selfheal): the age ceiling. The file still looks
+        # fresh, but the task's newest launch/survival evidence is older than
+        # any legitimate run — with no live signal, the file's freshness is
+        # what this rule declines to trust, and the card closes. `attached`
+        # has already returned above; the explicit guard is kept so the hard
+        # exemption holds even if this branch is ever re-ordered.
+        if (
+            not attached_live
+            and self.age_bound_seconds > 0
+            and receipt_age_seconds is not None
+            and receipt_age_seconds > self.age_bound_seconds
+        ):
+            return AgentTaskEvidence(
+                closure_status="interrupted",
+                closed_by="ageBounded",
+                # The newest survival evidence is the anchor (the same one
+                # the never-started rule ends on, F2b): the file's freshness
+                # is exactly what this branch distrusts, so the mtime is not
+                # the honest "ended at".
+                end_time_ms=int(current_ms - receipt_age_seconds * 1000),
                 agent_status="interrupted",
             )
         return None

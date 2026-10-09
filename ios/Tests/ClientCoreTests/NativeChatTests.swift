@@ -155,13 +155,21 @@ import Testing
         #expect(TextPhraseSequence.chunks(in: "选择设备和 Agent，把想做的事交给它。").count > 1)
     }
 
-    @Test func composerWhitespaceExpandsButMarkedTextNeverSends() {
+    @Test func composerWhitespaceCollapsesButMarkedTextNeverSends() {
         let draft = ComposerDraft()
         #expect(!draft.isExpanded)
+        // Whitespace/newlines alone are empty: they must not force the expanded
+        // bar or leave the send key grey over a blank-looking field (the stuck
+        // expansion this pins against). A single line stays compact too.
         draft.text = "\n  "
-        #expect(draft.isExpanded)
+        #expect(!draft.isExpanded)
         #expect(!draft.canAttemptSend)
+        draft.text = "one line"
+        #expect(!draft.isExpanded)
+        #expect(draft.canAttemptSend)
+        // Two lines expand; an active composition still cannot send.
         draft.text = "中文\n下一行"
+        #expect(draft.isExpanded)
         draft.isComposing = true
         #expect(!draft.canAttemptSend)
         draft.isComposing = false

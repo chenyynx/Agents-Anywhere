@@ -112,7 +112,8 @@ import Testing
     /// The regression P1 exists for: no cached card, the card outside the
     /// window, and the subagent silent — the capsule used to be missing.
     @Test func aColdOpenProjectionBuildsTheCapsuleBeforeAnyFrame() throws {
-        let snapshot = try decode(try snapshotObject(activeAgents: [try agentCard(order: 900)]))
+        let snapshot = try decode(try snapshotObject(activeAgents: [try agentCard(order: 900)]),
+                                  as: V2SessionSnapshot.self)
         let projection = V2SessionProjection(snapshot: snapshot, maximumItems: 100)
         #expect(projection.data.items.isEmpty)
         #expect(projection.data.activeAgentCards.map(\.item.id) == ["card"])

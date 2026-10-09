@@ -1344,6 +1344,9 @@ class SessionRepositoryMixin:
             selections={},
             updatedSeq=int(row["updated_seq"] or 0),
             createdAt=row["created_at"],
+            # NOTE: updated_at is the "someone wrote here" stamp — it does not
+            # include timeline-janitor closures (those pass
+            # touch_updated_at=False), so never use it as a freshness signal.
             updatedAt=row["updated_at"],
         )
 

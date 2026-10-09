@@ -51,9 +51,11 @@ ENV_INTERVAL_SECONDS = "AGENT_SERVER_TIMELINE_JANITOR_INTERVAL_SECONDS"
 def _env_seconds(name: str, default: float) -> float | None:
     """Read one janitor env var; ``None`` when it is present but unusable.
 
-    Unset (or absent) falls back to the default; present-but-malformed and
-    non-finite values (``nan``/``inf`` would also make the bound arithmetic
-    explode) are refused so the caller can stand the janitor down.
+    Unset (or absent) falls back to the default; present-but-malformed,
+    non-finite, or ``timedelta``-unrepresentable values are refused so the
+    caller can stand the janitor down — ``nan``/``inf`` and huge-but-finite
+    values like ``1e15`` would otherwise explode inside every sweep's bound
+    arithmetic (silent janitor death, R2 round-2 P2).
     """
 
     raw = os.environ.get(name)
@@ -63,7 +65,16 @@ def _env_seconds(name: str, default: float) -> float | None:
         value = float(raw)
     except (TypeError, ValueError):
         return None
-    return value if math.isfinite(value) else None
+    if not math.isfinite(value):
+        return None
+    # Finite is not enough: ``timedelta`` (the bound arithmetic's type) has a
+    # smaller range than float, so values like 1e15 survive ``isfinite`` and
+    # then raise OverflowError on every sweep. Refuse them at parse time.
+    try:
+        timedelta(seconds=value)
+    except OverflowError:
+        return None
+    return value
 
 
 class TimelineJanitor:

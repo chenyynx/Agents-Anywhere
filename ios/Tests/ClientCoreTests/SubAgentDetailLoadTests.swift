@@ -41,6 +41,17 @@ import Testing
         try decode(childObject(id: id, order: order, parent: parent))
     }
 
+    /// A more patient sibling of `eventually` for the socket and drain hops;
+    /// the suite runs in parallel with every other suite, and the shared
+    /// one-second budget has produced scheduler-starvation flakes.
+    private func waitForCoverage(_ predicate: () -> Bool) async throws {
+        for _ in 0..<5000 {
+            if predicate() { return }
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        Issue.record("Coverage condition never became true")
+    }
+
     @Test func onDemandChildrenMergeIntoTheSidecarAndLeaveTheWindowAlone() async throws {
         let http = TestHTTPTransport()
         let pages = Mutex(0)
@@ -67,6 +78,7 @@ import Testing
         await repo.loadSubAgentDetail(sessionId: "session", parentIDs: ["card"])
         let after = try #require(repo.cached(sessionId: "session"))
         #expect(after.subAgentChildren.map(\.id) == ["child-c", "child-d", "child-a", "child-b"])
+        #expect(after.detailLoadedParents == ["card"], "A finished drain records the coverage")
         #expect(after.items == before.items, "Detail rows never join the window")
         #expect(after.hasOlderItems == before.hasOlderItems)
         #expect(after.hasNewerItems == before.hasNewerItems)
@@ -131,7 +143,53 @@ import Testing
         await repo.loadSubAgentDetail(sessionId: "session", parentIDs: ["card"])
         let after = try #require(repo.cached(sessionId: "session"))
         #expect(after.subAgentChildren.isEmpty)
+        #expect(after.detailLoadedParents.isEmpty, "A failed drain never lights the coverage gate")
         #expect(after.items == before.items)
+    }
+
+    @Test func onlyAFinishedDrainLightsTheDetailCoverageGate() async throws {
+        let http = TestHTTPTransport()
+        let realtime = TestRealtimeAPI()
+        http.respond = { call in
+            if call.path.hasSuffix("snapshot") {
+                return try self.snapshotData(items: [try self.cardObject(id: "card", order: 1)], hasMore: false)
+            }
+            if call.path.hasSuffix("timeline") {
+                // The drain's page: one more child, then exhausted.
+                return try self.pageData([try self.childObject(id: "child-b", order: 4, parent: "card")], hasMore: false)
+            }
+            return try http.defaultResponse(call)
+        }
+        let repo = repository(transport: http, realtime: realtime)
+        defer { repo.reset() }
+        let model = repo.session(id: "session")
+        let connection = Task { await model.connect() }
+        defer { connection.cancel() }
+        _ = try await repo.open(sessionId: "session")
+        try await waitForCoverage { !realtime.streams.isEmpty && model.connection == .connected }
+
+        // A live frame delivers one child row on its own (the excluded
+        // window's real-time channel): rows exist, but nothing about this
+        // card's coverage is finished — the gate must stay cold so the panel
+        // still fetches the rest (red team F2).
+        realtime.yield(try event("timeline.item_created", seq: 11,
+            payload: ["item": try childObject(id: "child-a", order: 2, parent: "card")]))
+        try await waitForCoverage { model.timeline.contains { $0.id == "child-a" } }
+        let cardItem = try #require(model.timeline.first { $0.id == "card" }?.value)
+        let card = try #require(SubAgentProgress.card(cardItem))
+        let partial = model.timeline.map(\.value) + model.subAgentChildren
+        #expect(SubAgentProgress.hasDetailRows(card, in: partial))
+        #expect(model.detailLoadedParents.isEmpty)
+        #expect(!SubAgentProgress.isDetailCoverageComplete(card, in: partial, drainedParents: model.detailLoadedParents))
+
+        // The on-demand drain finishes: now — and only now — the coverage is
+        // complete, and the live-delivered row is deduped by id.
+        await repo.loadSubAgentDetail(sessionId: "session", parentIDs: ["card"])
+        #expect(model.detailLoadedParents == ["card"])
+        let complete = model.timeline.map(\.value) + model.subAgentChildren
+        #expect(SubAgentProgress.isDetailCoverageComplete(card, in: complete, drainedParents: model.detailLoadedParents))
+        #expect(model.subAgentChildren.map(\.id) == ["child-b"])
+        #expect(complete.filter { $0.id == "child-b" }.count == 1)
     }
 
     @Test func thePanelUnionSeesTheDetailRowsWithoutDuplicatingThem() throws {
@@ -142,12 +200,19 @@ import Testing
 
         // The card's own row makes the panel "loaded" while its activity rows
         // may still be missing entirely — that shape is the lazy load's state
-        // bit (`hasDetailRows`), and the union turns it true.
+        // bit, and the union turns the row bit true.
         #expect(SubAgentProgress.isContentLoaded(card, in: window))
         #expect(!SubAgentProgress.hasDetailRows(card, in: window))
         #expect(SubAgentProgress.hasDetailRows(card, in: window + children))
         #expect(SubAgentProgress.isContentLoaded(card, in: window + children))
         #expect(SubAgentProgress.activityRows(of: card, in: window + children).map(\.id) == ["child-a", "child-b"])
+        // The coverage bit (red team F2) is narrower than row existence:
+        // rows without a finished drain stay owed, a drained parent with its
+        // rows present reads complete, and a parent whose rows the sidecar
+        // caps squeezed out reads owed again rather than loaded.
+        #expect(!SubAgentProgress.isDetailCoverageComplete(card, in: window + children, drainedParents: []))
+        #expect(SubAgentProgress.isDetailCoverageComplete(card, in: window + children, drainedParents: ["card"]))
+        #expect(!SubAgentProgress.isDetailCoverageComplete(card, in: window, drainedParents: ["card"]))
         // A card the sidecar holds and the window does not is the other miss:
         // nothing at all is loaded, and the union still satisfies both bits.
         #expect(!SubAgentProgress.isContentLoaded(card, in: []))

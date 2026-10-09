@@ -334,6 +334,9 @@ def test_content_gate_is_the_or_of_both_counters(
             100.0,  # hard cap: never in play on either branch
             0.01,  # tick
             "turn_gate",
+            # This read of the gate is about the content counters alone; no
+            # wheel is waiting on anything.
+            pending_await=lambda: lifecycle.PendingAwait.NONE,
         )
         assert verdict is not None
         assert verdict.reason == expected
@@ -347,7 +350,14 @@ def test_a_finished_turn_never_fires_a_deadline() -> None:
 
     async def run() -> None:
         verdict = await lifecycle.ClaudeTurnRunner._await_watchdog_deadlines(
-            execution, 5.0, 600.0, 300.0, 3600.0, 5.0, "turn_done"
+            execution,
+            5.0,
+            600.0,
+            300.0,
+            3600.0,
+            5.0,
+            "turn_done",
+            pending_await=lambda: lifecycle.PendingAwait.NONE,
         )
         assert verdict is None
 
@@ -1855,3 +1865,419 @@ def test_content_gate_counts_every_shape_that_projects_something(
             await runtime.stop()
 
     _run_case(label, run)
+
+
+# --------------------------------------------------------------------------
+# 10. B2: a pending call suspends the stall clock; a visible prompt suspends
+#     the hard cap as well
+# --------------------------------------------------------------------------
+#
+# `_stall_clock_suspended` used to be a constant-False hook; the adjudication
+# now reads two live facts per tick (`ClaudeTurnRunner._pending_await`): the
+# projection's open tool calls for THIS turn and the interaction notices
+# awaiting an answer. The four cases below are the four verdict shapes D2
+# creates, each driven through the real runtime — real reader, real mint
+# branch, real `drive_turn`, real projector, real watchdog, real retirement.
+#
+# The wire payloads are the census corpus's own shapes (`assistant/tool_use-
+# only`, `user/tool_result`), one frame later: parsed by the SDK's own
+# `parse_message`, never hand-built lookalikes.
+
+# A long execution call — the shape D2 rules "legal silence": the tool runs
+# for as long as it runs, and only a result frame may restart the stall clock.
+TOOL_USE_BASH_FRAME = {
+    "type": "assistant",
+    "message": {
+        "role": "assistant",
+        "model": "claude-opus-5",
+        "content": [
+            {
+                "type": "tool_use",
+                "id": "toolu_b2_sleep",
+                "name": "Bash",
+                "input": {"command": "sleep 400"},
+            }
+        ],
+    },
+    "uuid": "b2-tool-use-bash",
+}
+TOOL_RESULT_BASH_FRAME = {
+    "type": "user",
+    "message": {
+        "role": "user",
+        "content": [
+            {
+                "type": "tool_result",
+                "tool_use_id": "toolu_b2_sleep",
+                "content": "done",
+            }
+        ],
+    },
+    "uuid": "b2-tool-result-bash",
+}
+
+# The question shape: an open call the users sees as a card. Its card is a
+# visible "waiting for you" state, so no timer — stall clock or hard cap —
+# may kill the turn while it is unanswered.
+TOOL_USE_QUESTION_FRAME = {
+    "type": "assistant",
+    "message": {
+        "role": "assistant",
+        "model": "claude-opus-5",
+        "content": [
+            {
+                "type": "tool_use",
+                "id": "toolu_b2_ask",
+                "name": "AskUserQuestion",
+                "input": {
+                    "questions": [
+                        {
+                            "header": "Format",
+                            "question": "How should I format the output?",
+                            "multiSelect": False,
+                            "options": [
+                                {"label": "Summary", "description": "Brief"},
+                            ],
+                        }
+                    ]
+                },
+            }
+        ],
+    },
+    "uuid": "b2-tool-use-question",
+}
+TOOL_RESULT_QUESTION_FRAME = {
+    "type": "user",
+    "message": {
+        "role": "user",
+        "content": [
+            {
+                "type": "tool_result",
+                "tool_use_id": "toolu_b2_ask",
+                "content": "Summary",
+            }
+        ],
+    },
+    "uuid": "b2-tool-result-question",
+}
+
+
+def test_pending_execution_call_pauses_the_stall_clock_until_its_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D2: any unanswered tool_use suspends the stall clock; the result resumes it.
+
+    修前红 (B1 behaviour): the tool frame is itself labour, so the stall clock
+    restarts on it — and 0.3s later, with the turn past its floor, the stall
+    verdict fires and retires the transport mid-`sleep 400`. That is the
+    "long tool" class the D2 rationale names (223.4s Bash measured in
+    production). With the pause the turn is untouched, and the second half
+    pins that the pause is a PAUSE, not an exemption: once the result closes
+    the call, the very next stretch of silence past STALL is a normal stall
+    verdict again.
+    """
+
+    _budgets(monkeypatch, cap=3.0)
+
+    async def run() -> None:
+        client = _ScheduledClaudeClient()
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            await runtime.start_turn("pendingtool", None, "hello")
+            session = await _settled_session(runtime, "pendingtool")
+            execution = await _cast_with_labour(client, session)
+            runner = runtime._turns.runner
+
+            # The capture opens BEFORE the call is injected, so a loaded
+            # machine that delays the injection past the floor cannot push
+            # the once-per-turn pause line out of the test's window — the
+            # window is the turn's whole contenting life, not a phase.
+            with _CapturedWarnings() as captured:
+                await client.incoming.put(
+                    _with_session(TOOL_USE_BASH_FRAME, client.native_id)
+                )
+                await _wait_until(
+                    lambda: bool(runner.timeline.open_tool_calls(execution.turn_id))
+                )
+
+                # Well past floor + stall: without the pause the verdict was
+                # due seconds ago (compressed) and the transport would be
+                # retired. The cap carries headroom so a loaded machine
+                # cannot turn this phase into a cap fire by being slow.
+                await asyncio.sleep(FLOOR + STALL * 2)
+                assert session.execution is execution, (
+                    "an unanswered tool call is legal silence; the turn must "
+                    "survive the stall budget behind it"
+                )
+                assert not _turn_ends(host, execution.turn_id)
+                assert client.disconnected is False
+                paused_log = captured.joined()
+                assert "stall clock paused by a pending await" in paused_log, (
+                    paused_log
+                )
+                assert (
+                    f"pending={lifecycle.PendingAwait.EXECUTION.value}"
+                    in paused_log
+                ), paused_log
+                assert "watchdog fired" not in paused_log, paused_log
+
+                # The result closes the call and is itself labour: the stall
+                # clock is live again, and the next silence past STALL fires
+                # the normal stall verdict.
+                await client.incoming.put(
+                    _with_session(TOOL_RESULT_BASH_FRAME, client.native_id)
+                )
+                await _wait_until(
+                    lambda: bool(_turn_ends(host, execution.turn_id))
+                )
+            ended = _turn_ends(host, execution.turn_id)[-1]
+            assert ended["outcome"] == "failed"
+            log = captured.joined()
+            assert f"reason={lifecycle.WATCHDOG_REASON_CONTENT_STALL}" in log, log
+            assert "pending=none" in log, log
+            assert session.execution is None
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_pending_execution_call_does_not_exempt_the_hard_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D3: the cap is the one bound left on a turn wedged on a tool that never returns.
+
+    The over-exemption shape this guards against: suspending BOTH timers for
+    every pending call. The turn below keeps producing frames (that is the
+    degenerate-loop class D3 also names) AND holds an unanswered call — if
+    the cap were withheld it would never settle, the `_reach` deadline turns
+    that into a named failure instead of a hang.
+    """
+
+    _budgets(monkeypatch)
+
+    async def run() -> None:
+        client = _ScheduledClaudeClient()
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            await runtime.start_turn("pendingcap", None, "hello")
+            session = await _settled_session(runtime, "pendingcap")
+            execution = await _cast_with_labour(client, session)
+            runner = runtime._turns.runner
+
+            await client.incoming.put(
+                _with_session(TOOL_USE_BASH_FRAME, client.native_id)
+            )
+            await _wait_until(
+                lambda: bool(runner.timeline.open_tool_calls(execution.turn_id))
+            )
+
+            async def flow_frames() -> None:
+                index = 0
+                while True:
+                    index += 1
+                    await client.incoming.put(
+                        _with_session(
+                            {**POST_CAST_WORK_FRAME, "uuid": f"b2-flow-{index}"},
+                            client.native_id,
+                        )
+                    )
+                    await asyncio.sleep(TICK * 4)
+
+            flow = asyncio.create_task(flow_frames())
+            try:
+                with _CapturedWarnings() as captured:
+                    await _reach(
+                        "pending-cap/fire",
+                        lambda: bool(_turn_ends(host, execution.turn_id)),
+                        timeout=6.0,
+                    )
+            finally:
+                flow.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await flow
+
+            ended = _turn_ends(host, execution.turn_id)[-1]
+            assert ended["outcome"] == "failed"
+            log = captured.joined()
+            assert (
+                f"reason={lifecycle.WATCHDOG_REASON_CONTENT_HARD_CAP}" in log
+            ), log
+            assert (
+                f"pending={lifecycle.PendingAwait.EXECUTION.value}" in log
+            ), log
+            assert f"reason={lifecycle.WATCHDOG_REASON_CONTENT_STALL}" not in log
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_pending_question_exempts_even_the_hard_cap_until_answered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D2: through the PROJECTION — an open AskUserQuestion call is a card on screen.
+
+    修前红: with B1 behaviour (or with an execution-only exemption) the hard
+    cap fires at HARD_CAP and destroys the question; the sleep below crosses
+    it and asserts the turn, the process and the silence all survive. When the
+    question is answered the deadlines apply again — the turn is past its cap
+    by then, so the cap is the verdict that fires (the exemption was the wait,
+    not the turn).
+    """
+
+    _budgets(monkeypatch, cap=4.0)
+
+    async def run() -> None:
+        client = _ScheduledClaudeClient()
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            await runtime.start_turn("pendingask", None, "hello")
+            session = await _settled_session(runtime, "pendingask")
+            execution = await _cast_with_labour(client, session)
+            runner = runtime._turns.runner
+
+            # The capture opens BEFORE the call is injected (a loaded machine
+            # delaying the injection past the floor must not push the
+            # once-per-turn pause line out of the window), and the cap carries
+            # headroom over the injection so this phase cannot become a cap
+            # fire by scheduling alone.
+            with _CapturedWarnings() as captured:
+                await client.incoming.put(
+                    _with_session(TOOL_USE_QUESTION_FRAME, client.native_id)
+                )
+                await _wait_until(
+                    lambda: bool(runner.timeline.open_tool_calls(execution.turn_id))
+                )
+
+                # Across and well past the hard cap: nothing may fire.
+                await asyncio.sleep(4.0 + STALL * 3)
+                assert session.execution is execution, (
+                    "an on-screen question is a visible waiting state; no "
+                    "timer may kill the turn that is showing it"
+                )
+                assert not _turn_ends(host, execution.turn_id)
+                assert client.disconnected is False
+                paused_log = captured.joined()
+                assert "stall clock paused by a pending await" in paused_log, (
+                    paused_log
+                )
+                assert (
+                    f"pending={lifecycle.PendingAwait.INTERACTION.value}"
+                    in paused_log
+                ), paused_log
+                assert "watchdog fired" not in paused_log, paused_log
+
+                # Answered: the card is gone and the deadlines are back on
+                # duty.
+                await client.incoming.put(
+                    _with_session(TOOL_RESULT_QUESTION_FRAME, client.native_id)
+                )
+                await _wait_until(
+                    lambda: bool(_turn_ends(host, execution.turn_id))
+                )
+            ended = _turn_ends(host, execution.turn_id)[-1]
+            assert ended["outcome"] == "failed"
+            log = captured.joined()
+            assert (
+                f"reason={lifecycle.WATCHDOG_REASON_CONTENT_HARD_CAP}" in log
+            ), log
+            assert "pending=none" in log, log
+            assert session.execution is None
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_pending_approval_exempts_even_the_hard_cap_until_answered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D2: through the NOTICES — an approval holds ANY tool name.
+
+    Driven through the real `ClaudeInteractionController.request_tool_approval`,
+    which is the only place a `can_use_tool` hold exists: the approval is not
+    a tool_use frame at all (unknown #1 of the B2 recon: the callback may fire
+    before the frame ever reaches the connector), so name-classification
+    could never see it. Same red line as the question case: across the cap,
+    nothing fires until the card is answered.
+    """
+
+    _budgets(monkeypatch, cap=4.0)
+
+    async def run() -> None:
+        client = _ScheduledClaudeClient()
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            await runtime.start_turn("pendingapproval", None, "hello")
+            session = await _settled_session(runtime, "pendingapproval")
+            execution = await _cast_with_labour(client, session)
+            runner = runtime._turns.runner
+
+            # The capture opens BEFORE the approval is requested (a loaded
+            # machine delaying the notice past the floor must not push the
+            # once-per-turn pause line out of the window), and the cap carries
+            # headroom over the request so this phase cannot become a cap fire
+            # by scheduling alone.
+            with _CapturedWarnings() as captured:
+                approval = asyncio.create_task(
+                    runner.interactions.request_tool_approval(
+                        session=session,
+                        turn_id=execution.turn_id,
+                        tool_name="Bash",
+                        tool_input={"command": "rm -rf /tmp/b2"},
+                        context=SimpleNamespace(session_id=session.session_id),
+                    )
+                )
+                await _wait_until(
+                    lambda: bool(
+                        runner.interactions.pending_for_session(session.session_id)
+                    )
+                )
+
+                await asyncio.sleep(4.0 + STALL * 3)
+                assert session.execution is execution, (
+                    "an unanswered approval is a visible waiting state; no "
+                    "timer may kill the turn that is showing it"
+                )
+                assert not _turn_ends(host, execution.turn_id)
+                assert client.disconnected is False
+                paused_log = captured.joined()
+                assert "stall clock paused by a pending await" in paused_log, (
+                    paused_log
+                )
+                assert (
+                    f"pending={lifecycle.PendingAwait.INTERACTION.value}"
+                    in paused_log
+                ), paused_log
+                assert "watchdog fired" not in paused_log, paused_log
+
+                pending = runner.interactions.pending_for_session(
+                    session.session_id
+                )
+                result = await runner.interactions.respond_interaction(
+                    session.session_id, pending[0].notice_id, "approve"
+                )
+                assert result.ok is True
+                decision = await asyncio.wait_for(approval, 2.0)
+                assert decision.allowed is True
+
+                await _wait_until(
+                    lambda: bool(_turn_ends(host, execution.turn_id))
+                )
+            ended = _turn_ends(host, execution.turn_id)[-1]
+            assert ended["outcome"] == "failed"
+            log = captured.joined()
+            assert (
+                f"reason={lifecycle.WATCHDOG_REASON_CONTENT_HARD_CAP}" in log
+            ), log
+            assert "pending=none" in log, log
+            assert session.execution is None
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())

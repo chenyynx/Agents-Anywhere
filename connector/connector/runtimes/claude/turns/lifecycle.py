@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import secrets
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from typing import Any
 
 from connector.logging import logger
@@ -69,6 +70,7 @@ from connector.runtimes.claude.timeline.markers import (
 )
 from connector.runtimes.claude.timeline.messages import (
     ClaudeMessageProjector,
+    is_interactive_tool_name,
     is_synthetic_control_message,
     message_id,
     message_model,
@@ -155,6 +157,43 @@ WATCHDOG_REASON_CONTENT_STALL = "contenting_turn_stall"
 WATCHDOG_REASON_CONTENT_HARD_CAP = "contenting_turn_hard_cap"
 
 
+class PendingAwait(Enum):
+    """What a contenting turn is visibly waiting on (B2, §3 D2).
+
+    The two signals the exemption is built from:
+
+    * `stall_suspended` — ANY unanswered tool_use call suspends the stall
+      clock. The call is running somewhere and its silence is legal: a
+      223.4s Bash, a pytest run, a subagent wait are all real production
+      shapes, and the CLI's own tool timeout is the backstop. The clock is
+      PAUSED, not merely gated — the pending stretch does not accumulate as
+      silence, because D2 rules it legal; gating alone would fire the verdict
+      the instant a long wait cleared.
+    * `cap_exempt` — the INTERACTION class additionally turns off the hard
+      cap. An unanswered `AskUserQuestion` or approval is a card on the
+      user's screen ("waiting for you"), and killing the turn destroys the
+      question, not just the turn. A pending EXECUTION call does not stop the
+      cap (D3): that is the one bound left on a turn wedged on a tool that
+      never returns.
+
+    Approvals are never classified by tool name — any tool can be held by
+    `can_use_tool` — so their pending signal comes from the interaction
+    notices; the interactive tool NAME only covers the question shape.
+    """
+
+    NONE = "none"
+    EXECUTION = "execution"
+    INTERACTION = "interaction"
+
+    @property
+    def stall_suspended(self) -> bool:
+        return self is not PendingAwait.NONE
+
+    @property
+    def cap_exempt(self) -> bool:
+        return self is PendingAwait.INTERACTION
+
+
 @dataclass(frozen=True, slots=True)
 class ScheduledWatchdogVerdict:
     """Why (and with which numbers) the scheduled-turn breaker has to fire.
@@ -162,14 +201,21 @@ class ScheduledWatchdogVerdict:
     `reason` is one of the three constants above. `age_seconds` and
     `stall_seconds` are the two timers the fire line and the retirement
     disclosure report: how old the turn was at the verdict, and how long its
-    labour counters had stood still. For the zero-content class the two are
-    the same number — no labour was ever observed, so the turn's whole life is
-    the silence.
+    labour counters had stood still (on the pausable stall clock — B2 pushes
+    its anchor forward while a call is pending). For the zero-content class
+    the two are the same number — no labour was ever observed, so the turn's
+    whole life is the silence.
     """
 
     reason: str
     age_seconds: float
     stall_seconds: float
+    # B2: what the turn was waiting on when the verdict was reached. NONE for
+    # every verdict that deserved killing without a pending call; a hard-cap
+    # fire can still carry EXECUTION (the stall clock was paused, the absolute
+    # bound was not), and the fire line reports it so "why did the cap kill a
+    # waiting turn" is answerable from the log alone.
+    pending: PendingAwait = PendingAwait.NONE
 
 
 # F1: the `terminalReason` a turn carries when its `completed` was downgraded
@@ -511,6 +557,7 @@ class ClaudeTurnRunner:
         hard_cap: float,
         tick: float,
         session_id: str,
+        pending_await: Callable[[], PendingAwait],
     ) -> ScheduledWatchdogVerdict | None:
         """Wait out the adjudicated deadlines; return why the breaker must fire.
 
@@ -548,6 +595,18 @@ class ClaudeTurnRunner:
         and with product numbers the floor (600s) always exceeds that window
         (30s) plus the stall budget (300s), so the verdict itself never
         changes: the first permissible fire is still `max(floor, stall)`.
+
+        B2 (§3 D2) suspends both timers while the turn is visibly waiting on
+        something (`pending_await`, sampled per tick, never cached): a stall
+        verdict is withheld whenever ANY tool call is unanswered, and the hard
+        cap is withheld as well for the interaction class (an on-screen
+        question or approval). Zero-content turns never reach any of this —
+        the fast kill above returns before the pending state is ever
+        consulted, which is the ordering B2 is required to preserve (a ghost
+        with no frames has nothing to wait on anyway). The pending callable
+        is a parameter, not a method call, so this stays a static adjudicator
+        whose only contact with the live runner is the tick-by-tick fact it
+        is handed.
         """
 
         try:
@@ -567,18 +626,27 @@ class ClaudeTurnRunner:
         observed = (execution.published_items, execution.consumed_frames)
         last_labour_at = execution.started_at_monotonic
         deferral_logged = False
+        pause_logged = False
         while True:
             if execution.finished.is_set():
                 return None
             now = time.monotonic()
             age = now - execution.started_at_monotonic
-            if age >= hard_cap:
+            pending = pending_await()
+            if age >= hard_cap and not pending.cap_exempt:
                 # The absolute bound, checked first: when it and the stall
-                # verdict are both due, the hard cap is the truer name.
+                # verdict are both due, the hard cap is the truer name. It is
+                # withheld only for a pending INTERACTION (B2): an on-screen
+                # question or approval is a visible "waiting for you" state,
+                # and killing the turn answers it with a process death. A
+                # pending EXECUTION call does not stop it — D3 keeps the cap
+                # as the one bound on a turn wedged on a tool that never
+                # returns.
                 return ScheduledWatchdogVerdict(
                     reason=WATCHDOG_REASON_CONTENT_HARD_CAP,
                     age_seconds=age,
                     stall_seconds=now - last_labour_at,
+                    pending=pending,
                 )
             counts = (execution.published_items, execution.consumed_frames)
             if counts != observed:
@@ -606,39 +674,78 @@ class ClaudeTurnRunner:
                             execution.consumed_frames,
                             execution.watchdog_progress_deferrals,
                         )
-            stall_elapsed = now - last_labour_at
-            if (
-                age >= floor
-                and stall_elapsed >= stall
-                and not ClaudeTurnRunner._stall_clock_suspended(execution)
-            ):
-                return ScheduledWatchdogVerdict(
-                    reason=WATCHDOG_REASON_CONTENT_STALL,
-                    age_seconds=age,
-                    stall_seconds=stall_elapsed,
-                )
+            if pending.stall_suspended:
+                # B2: the clock is PAUSED, not merely gated — the pending
+                # stretch is legal silence and does not accumulate. When the
+                # call is answered, its result frame is labour and re-anchors
+                # the clock anyway; when the pending clears without a frame
+                # (an approval resolved), the silence only starts counting
+                # from the clearing tick. Gating alone would instead fire the
+                # verdict the instant a long wait cleared.
+                if not pause_logged and age >= floor:
+                    # The observation surface for B2: a turn that outlived
+                    # the floor while waiting on something. Told once per
+                    # turn; deliberately not counted as a progress deferral —
+                    # waiting is not work.
+                    pause_logged = True
+                    logger.warning(
+                        "Claude watchdog stall clock paused by a pending await "
+                        "session_id={} turn_id={} pending={} age_seconds={:.1f} "
+                        "stall_seconds={:.1f}",
+                        session_id,
+                        execution.turn_id,
+                        pending.value,
+                        age,
+                        now - last_labour_at,
+                    )
+                last_labour_at = now
+            else:
+                stall_elapsed = now - last_labour_at
+                if age >= floor and stall_elapsed >= stall:
+                    return ScheduledWatchdogVerdict(
+                        reason=WATCHDOG_REASON_CONTENT_STALL,
+                        age_seconds=age,
+                        stall_seconds=stall_elapsed,
+                    )
             try:
                 await asyncio.wait_for(execution.finished.wait(), tick)
             except TimeoutError:
                 continue
             return None
 
-    @staticmethod
-    def _stall_clock_suspended(execution: ClaudeExecution) -> bool:
-        """# B2 hook: whether a pending interaction pauses the stall clock.
+    def _pending_await(
+        self, session: ClaudeSession, execution: ClaudeExecution
+    ) -> PendingAwait:
+        """Classify what this turn is visibly waiting on (B2, §3 D2).
 
-        B2 (`.local-dev/claude-watchdog-liveness-tasks.md` §3 D2, in
-        reconnaissance while B1 lands) will suspend the stall clock whenever
-        the turn's last labour frame is a tool_use with no matching
-        tool_result — a long tool call is legal silence, and the CLI's own
-        timeout is the backstop — and exempt question/approval-shaped
-        interactions from the hard cap entirely. The adjudication above is
-        deliberately routed through this one predicate so B2 only has to give
-        it a real body: until then it is constant False and every verdict
-        fires exactly as B1 adjudicated.
+        Three sources, read live at every watchdog tick and never cached:
+
+        * the interaction notices — an approval (`can_use_tool` holds ANY
+          tool name, so this cannot be classified by name) or a question
+          still open for this session;
+        * the projection's open tool calls for THIS turn — a tool_use whose
+          `tool_result` has not arrived;
+        * within those, `is_interactive_tool_name` separates the question
+          shape (whose card is a visible "waiting for you" state) from the
+          execution class (a long tool's legal silence).
+
+        Both sources are read-only snapshots; nothing here writes projector
+        or controller state. The `_tool_calls` registry is filtered by turn
+        id (see `open_tool_calls`) so dead turns' leftovers cannot excuse
+        this one; the notices are session-scoped because they die with their
+        turn (`close_open_interaction_notices` runs on every terminal path).
         """
 
-        return False
+        if self.interactions.pending_for_session(session.session_id):
+            return PendingAwait.INTERACTION
+        open_calls = self.timeline.open_tool_calls(execution.turn_id)
+        if not open_calls:
+            return PendingAwait.NONE
+        if any(
+            is_interactive_tool_name(call.block.tool_name) for call in open_calls
+        ):
+            return PendingAwait.INTERACTION
+        return PendingAwait.EXECUTION
 
     async def _scheduled_watchdog(
         self,
@@ -667,6 +774,11 @@ class ClaudeTurnRunner:
             hard_cap,
             tick,
             session_id=session.session_id,
+            # Sampled per tick, never cached: the turn may answer its own
+            # question, be waiting when the cap arrives, or clear the wait
+            # mid-flight, and the verdict must be read off the state that
+            # exists at that tick.
+            pending_await=lambda: self._pending_await(session, execution),
         )
         if verdict is None:
             return
@@ -685,11 +797,12 @@ class ClaudeTurnRunner:
         connection = response.connection
         active_tasks = len(connection.background.active_ids)
         logger.warning(
-            "Claude scheduled turn watchdog fired reason={} "
+            "Claude scheduled turn watchdog fired reason={} pending={} "
             "published_items={} consumed_frames={} active_tasks={} "
             "age_seconds={:.1f} stall_seconds={:.1f} budget_seconds={:.1f} "
             "forcing failed terminal session_id={} turn_id={}",
             reason,
+            verdict.pending.value,
             execution.published_items,
             execution.consumed_frames,
             active_tasks,

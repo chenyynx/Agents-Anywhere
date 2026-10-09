@@ -8,6 +8,7 @@ from typing import Any
 from connector.runtime_protocol import (
     InputRequestValidationError,
     RuntimeOperationResult,
+    SessionNotice,
 )
 from connector.runtimes.claude.domain.approvals import (
     ClaudeApprovalDecision,
@@ -27,7 +28,19 @@ from connector.runtimes.claude.notifications.projector import (
     ClaudeNotificationProjector,
 )
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
-from connector.runtimes.claude.timeline.messages import stable_tool_item_id
+from connector.runtimes.claude.timeline.messages import (
+    is_interactive_tool_name,
+    stable_tool_item_id,
+)
+
+# The notice interaction types that mean "the user was asked and has not
+# answered yet": a tool-approval card or a question card. B2
+# (`.local-dev/claude-watchdog-liveness-tasks.md` §3 D2) gives a turn in this
+# state complete deadline exemption — the card is on the user's screen, and
+# killing the turn answers it with a process death instead of a reply. The
+# same set is what `close_open_interaction_notices` has always meant; naming
+# it keeps the two readers from drifting apart.
+_INTERACTION_NOTICE_TYPES = frozenset({"approval", "input_request"})
 
 
 @dataclass(slots=True)
@@ -143,7 +156,7 @@ class ClaudeInteractionController:
             tool_input: dict[str, Any],
             context: Any,
         ) -> Any:
-            if tool_name == "AskUserQuestion":
+            if is_interactive_tool_name(tool_name):
                 decision = await self.request_user_input(
                     session=session,
                     turn_id=turn_id,
@@ -256,6 +269,35 @@ class ClaudeInteractionController:
             self._interaction_futures.pop(notice.notice_id, None)
             self._input_requests.pop(notice.notice_id, None)
 
+    def pending_for_session(self, session_id: str) -> tuple[SessionNotice, ...]:
+        """Read-only snapshot of the session's unanswered interaction notices.
+
+        `current_for_session` already drops terminal statuses; this narrows to
+        the two interaction types the user is expected to answer. The
+        scheduled-turn watchdog reads THIS for its approval exemption, not the
+        private `_interaction_futures`: a pending `can_use_tool` call is the
+        fact that matters, and the notice registry is the public record of
+        it. The future bookkeeping pops too early to be read from outside
+        (its `finally` runs while the notice is still mid-transition).
+
+        Deliberately session-scoped, not turn-scoped: notices die with their
+        turn (`close_open_interaction_notices` runs on every terminal path),
+        so a live notice can only belong to the live turn — and if one ever
+        leaked, the failure direction is the cheap one (a later turn is
+        excused a few deadlines) rather than the expensive one (a visible
+        question killed because the classification missed). `response_required`
+        is deliberately not consulted either: a notice already in "responding"
+        (decision made, resolved upsert in flight) is a sub-tick window, and
+        reading it as still pending is the conservative side for a deadline
+        that must never kill a visible prompt.
+        """
+
+        return tuple(
+            notice
+            for notice in self.notices.current_for_session(session_id)
+            if notice.interaction_type in _INTERACTION_NOTICE_TYPES
+        )
+
     async def close_open_interaction_notices(
         self,
         session: ClaudeSession,
@@ -268,7 +310,7 @@ class ClaudeInteractionController:
             message=f"Approval closed: {reason}",
         )
         for notice in self.notices.current_for_session(session.session_id):
-            if notice.interaction_type not in {"approval", "input_request"}:
+            if notice.interaction_type not in _INTERACTION_NOTICE_TYPES:
                 continue
             future = self._interaction_futures.get(notice.notice_id)
             if future is not None and not future.done():

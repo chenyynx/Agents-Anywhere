@@ -34,6 +34,7 @@ What is pinned
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -44,6 +45,8 @@ from connector.runtimes.claude.sessions.reader import (
     _history_items_from_messages,
 )
 from connector.runtimes.claude.sessions.subagent_oracle import (
+    SUBAGENT_AGE_BOUND_ENV,
+    SUBAGENT_AGE_BOUND_SECONDS,
     AgentFileInfo,
     ClaudeSubagentOracle,
     scan_raw_transcript,
@@ -67,6 +70,7 @@ PROJECTS_DIR = "/tmp/fake-claude-projects"
 # loudly here and the tests use the same numbers producers do.
 T_START = 120.0
 T_STALE = 900.0
+T_AGE_BOUND = 86_400.0  # 24h — the T2 hard age ceiling
 
 
 # --------------------------------------------------------------------------
@@ -100,13 +104,20 @@ def _oracle(
     files: dict[str, AgentFileInfo],
     start_grace: float = T_START,
     stale: float = T_STALE,
+    age_bound: float | None = None,
 ) -> ClaudeSubagentOracle:
+    # `age_bound=None` leaves the field on its construction-time default
+    # (the environment-aware one); the T2 env tests exercise that seam.
+    extras: dict[str, Any] = (
+        {"age_bound_seconds": age_bound} if age_bound is not None else {}
+    )
     return ClaudeSubagentOracle(
         projects_dir=__import__("pathlib").Path(PROJECTS_DIR),
         clock=_Clock(now),
         file_probe=_file_table(*files.items()),
         start_grace_seconds=start_grace,
         stale_seconds=stale,
+        **extras,
     )
 
 
@@ -1303,3 +1314,348 @@ def test_probe_distinguishes_missing_session_dir_from_missing_subagents(tmp_path
         projects_dir=tmp_path, project_key="missing", external_session_id="sess", task_id="a1"
     )
     assert info2.exists is False and info2.path_known is False
+
+
+# --------------------------------------------------------------------------
+# T2: the hard age ceiling (stale-residue-selfheal, 2026-10-09)
+# --------------------------------------------------------------------------
+#
+# The corner the ceiling exists for: a card whose transcript file still looks
+# fresh — an mtime a restore or copy re-stamped, a writer gone without ever
+# emitting a terminal event — long after its last launch/survival evidence.
+# The file cannot judge it and no notice ever will; the clock alone cannot
+# lie. The live/attached exemption stays hard in the same breath: a task the
+# transport still vouches for is never closed by a clock, and the older
+# closures (a notice, file silence, a never-started launch) keep their own
+# labels and end times.
+
+
+def test_T2_the_default_age_ceiling_is_24h() -> None:
+    assert SUBAGENT_AGE_BOUND_SECONDS == T_AGE_BOUND
+
+
+def test_T2_a_fresh_file_past_the_ceiling_closes_as_age_bounded() -> None:
+    now = 1_791_457_800.0
+    receipt_age = T_AGE_BOUND + 1
+    oracle = _oracle(
+        now=now, files={TASK_ID: _fresh_file(now)}, age_bound=T_AGE_BOUND
+    )
+    verdict = oracle.evidence(
+        task_id=TASK_ID,
+        external_session_id=EXTERNAL_SESSION_ID,
+        cwd=CWD,
+        receipt_age_seconds=receipt_age,
+    )
+    assert verdict is not None
+    assert verdict.closure_status == "interrupted"
+    assert verdict.closed_by == "ageBounded"
+    assert verdict.agent_status == "interrupted"
+    # The end time is the newest survival evidence (the receipt), not the
+    # distrusted mtime and not "now" (the never-started rule's own anchor).
+    assert verdict.end_time_ms == int((now - receipt_age) * 1000)
+
+
+def test_T2_a_fresh_file_inside_the_ceiling_stays_open() -> None:
+    now = 1_791_457_800.0
+    oracle = _oracle(
+        now=now, files={TASK_ID: _fresh_file(now)}, age_bound=T_AGE_BOUND
+    )
+    assert (
+        oracle.evidence(
+            task_id=TASK_ID,
+            external_session_id=EXTERNAL_SESSION_ID,
+            cwd=CWD,
+            receipt_age_seconds=T_AGE_BOUND - 1,
+        )
+        is None
+    )
+
+
+def test_T2_the_ceiling_is_exclusive() -> None:
+    # The rule is "older than the ceiling", strictly: exactly at the bound is
+    # still inside it.
+    now = 1_791_457_800.0
+    oracle = _oracle(
+        now=now, files={TASK_ID: _fresh_file(now)}, age_bound=T_AGE_BOUND
+    )
+    assert (
+        oracle.evidence(
+            task_id=TASK_ID,
+            external_session_id=EXTERNAL_SESSION_ID,
+            cwd=CWD,
+            receipt_age_seconds=T_AGE_BOUND,
+        )
+        is None
+    )
+
+
+def test_T2_attached_is_never_closed_by_the_ceiling() -> None:
+    # The hard exemption: a live turn is driving the process — no clock
+    # judgement may close the task, however old its evidence looks.
+    now = 1_791_457_800.0
+    oracle = _oracle(
+        now=now, files={TASK_ID: _fresh_file(now)}, age_bound=T_AGE_BOUND
+    )
+    assert (
+        oracle.evidence(
+            task_id=TASK_ID,
+            external_session_id=EXTERNAL_SESSION_ID,
+            cwd=CWD,
+            receipt_age_seconds=T_AGE_BOUND * 10,
+            attached_live=True,
+        )
+        is None
+    )
+
+
+def test_T2_no_receipt_age_cannot_be_judged() -> None:
+    # No anchor, no judgement: the ceiling never fires on a guessed age.
+    now = 1_791_457_800.0
+    oracle = _oracle(
+        now=now, files={TASK_ID: _fresh_file(now)}, age_bound=T_AGE_BOUND
+    )
+    assert (
+        oracle.evidence(
+            task_id=TASK_ID,
+            external_session_id=EXTERNAL_SESSION_ID,
+            cwd=CWD,
+        )
+        is None
+    )
+
+
+def test_T2_a_terminal_notice_still_wins_past_the_ceiling() -> None:
+    # Terminal states are untouched: the notice branch returns first, with
+    # the notice's own status and provenance.
+    notice_ms = 1_791_446_535_015
+    oracle = _oracle(
+        now=notice_ms / 1000.0 + 3600,
+        files={TASK_ID: AgentFileInfo(exists=True, mtime_ms=notice_ms)},
+        age_bound=T_AGE_BOUND,
+    )
+    verdict = oracle.evidence(
+        task_id=TASK_ID,
+        external_session_id=EXTERNAL_SESSION_ID,
+        cwd=CWD,
+        terminal_events=((notice_ms, _notice_event("completed", end_ms=notice_ms)),),
+        receipt_age_seconds=T_AGE_BOUND * 10,
+    )
+    assert verdict is not None
+    assert verdict.closure_status == "done"
+    assert verdict.closed_by == "terminalNotice"
+
+
+def test_T2_the_stale_file_closure_keeps_precedence() -> None:
+    # File silence is the more precise evidence and keeps its own label and
+    # end time; the ceiling only owns the fresh-file corner.
+    now = 1_791_457_800.0
+    oracle = _oracle(now=now, files={TASK_ID: _stale_file(now)}, age_bound=T_AGE_BOUND)
+    verdict = oracle.evidence(
+        task_id=TASK_ID,
+        external_session_id=EXTERNAL_SESSION_ID,
+        cwd=CWD,
+        receipt_age_seconds=T_AGE_BOUND * 10,
+    )
+    assert verdict is not None
+    assert verdict.closed_by == "agentFileStale"
+    assert verdict.end_time_ms == int((now - T_STALE - 1) * 1000)
+
+
+def test_T2_the_never_started_closure_keeps_precedence() -> None:
+    now = 1_791_457_800.0
+    receipt_age = T_AGE_BOUND * 10
+    oracle = _oracle(now=now, files={}, age_bound=T_AGE_BOUND)
+    verdict = oracle.evidence(
+        task_id=TASK_ID,
+        external_session_id=EXTERNAL_SESSION_ID,
+        cwd=CWD,
+        receipt_age_seconds=receipt_age,
+    )
+    assert verdict is not None
+    assert verdict.closed_by == "neverStarted"
+    assert verdict.end_time_ms == int((now - receipt_age) * 1000)
+
+
+def test_T2_env_zero_disables_the_ceiling(monkeypatch: Any) -> None:
+    monkeypatch.setenv(SUBAGENT_AGE_BOUND_ENV, "0")
+    now = 1_791_457_800.0
+    oracle = _oracle(now=now, files={TASK_ID: _fresh_file(now)})
+    assert oracle.age_bound_seconds == 0.0
+    assert (
+        oracle.evidence(
+            task_id=TASK_ID,
+            external_session_id=EXTERNAL_SESSION_ID,
+            cwd=CWD,
+            receipt_age_seconds=T_AGE_BOUND * 10,
+        )
+        is None
+    )
+
+
+def test_T2_env_negative_disables_the_ceiling(monkeypatch: Any) -> None:
+    monkeypatch.setenv(SUBAGENT_AGE_BOUND_ENV, "-5")
+    now = 1_791_457_800.0
+    oracle = _oracle(now=now, files={TASK_ID: _fresh_file(now)})
+    assert oracle.age_bound_seconds == 0.0
+    assert (
+        oracle.evidence(
+            task_id=TASK_ID,
+            external_session_id=EXTERNAL_SESSION_ID,
+            cwd=CWD,
+            receipt_age_seconds=T_AGE_BOUND * 10,
+        )
+        is None
+    )
+
+
+def test_T2_env_overrides_the_ceiling(monkeypatch: Any) -> None:
+    monkeypatch.setenv(SUBAGENT_AGE_BOUND_ENV, "3600")
+    now = 1_791_457_800.0
+    oracle = _oracle(now=now, files={TASK_ID: _fresh_file(now)})
+    assert oracle.age_bound_seconds == 3600.0
+    verdict = oracle.evidence(
+        task_id=TASK_ID,
+        external_session_id=EXTERNAL_SESSION_ID,
+        cwd=CWD,
+        receipt_age_seconds=3601.0,
+    )
+    assert verdict is not None
+    assert verdict.closed_by == "ageBounded"
+
+
+def test_T2_env_garbage_keeps_the_default(monkeypatch: Any) -> None:
+    monkeypatch.setenv(SUBAGENT_AGE_BOUND_ENV, "not-a-number")
+    now = 1_791_457_800.0
+    oracle = _oracle(now=now, files={TASK_ID: _fresh_file(now)})
+    assert oracle.age_bound_seconds == T_AGE_BOUND
+
+
+def test_T2_sweep_closes_a_fresh_file_card_past_the_ceiling() -> None:
+    # The periodic sweep inherits the rule through the shared oracle — no
+    # sweep-side change needed.
+    projector = ClaudeMessageProjector()
+    # The fixture's session id and cwd are the real incident's, so the
+    # default raw-scan provider finds this machine's own transcript and its
+    # participation would re-anchor the age; neutralize the seam so the
+    # caller's receipt age is the only survival evidence (the same idiom as
+    # test_terminal_time_order's projector fixture).
+    projector._raw_scan_provider = lambda _s: None
+    card_id = _async_card(projector)
+    session = _session()
+    now = 1_791_457_800.0
+    receipt_age = T_AGE_BOUND + 60
+    items = projector.close_open_agent_cards(
+        session,
+        oracle=_oracle(
+            now=now, files={TASK_ID: _fresh_file(now)}, age_bound=T_AGE_BOUND
+        ),
+        receipt_ages={TASK_ID: receipt_age},
+        now_ms=int(now * 1000),
+    )
+    assert [item.id for item in items] == [card_id]
+    assert items[0].status == "interrupted"
+    assert items[0].content["closedByEvidence"] == "ageBounded"
+    assert items[0].content["agents"][TASK_ID]["status"] == "interrupted"
+    assert items[0].content["endTime"] == int((now - receipt_age) * 1000)
+
+
+def test_T2_sweep_a_live_task_is_never_closed_by_the_ceiling() -> None:
+    projector = ClaudeMessageProjector()
+    projector._raw_scan_provider = lambda _s: None
+    _async_card(projector)
+    session = _session()
+    now = 1_791_457_800.0
+    assert (
+        projector.close_open_agent_cards(
+            session,
+            oracle=_oracle(
+                now=now, files={TASK_ID: _fresh_file(now)}, age_bound=T_AGE_BOUND
+            ),
+            receipt_ages={TASK_ID: T_AGE_BOUND * 10},
+            live_task_ids=frozenset({TASK_ID}),
+            now_ms=int(now * 1000),
+        )
+        == ()
+    )
+
+
+def _iso_ms(value: int) -> str:
+    return (
+        datetime.fromtimestamp(value / 1000, tz=UTC)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def _old_receipt_raw_lines(receipt_ms: int) -> tuple[str, ...]:
+    """One raw receipt row whose timestamp is the task's launch evidence."""
+
+    return (
+        json.dumps(
+            {
+                "type": "user",
+                "uuid": "receipt-native",
+                "timestamp": _iso_ms(receipt_ms),
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": DISPATCH_TUID,
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": (
+                                        "Async agent launched successfully.\n"
+                                        f"agentId: {TASK_ID} (internal ID)"
+                                    ),
+                                }
+                            ],
+                        }
+                    ],
+                },
+            }
+        ),
+    )
+
+
+def test_T2_history_closes_a_fresh_file_card_past_the_ceiling() -> None:
+    # The history rebuild inherits the rule too: the raw receipt row dates
+    # the launch, the file still looks fresh, and the rebuild publishes the
+    # age-bounded closure.
+    messages = (_dispatch_message(), _receipt_message())
+    now = 1_791_457_800.0
+    receipt_ms = int((now - (T_AGE_BOUND + 60)) * 1000)
+    oracle = _oracle(
+        now=now, files={TASK_ID: _fresh_file(now)}, age_bound=T_AGE_BOUND
+    )
+    items = _history_items_from_messages(
+        _session(),
+        messages,
+        raw_lines=_old_receipt_raw_lines(receipt_ms),
+        oracle=oracle,
+    )
+    card = next(i for i in items if i.content.get("kind") == "agent_call")
+    assert card.status == "interrupted"
+    assert card.content["closedByEvidence"] == "ageBounded"
+    assert card.content["agents"][TASK_ID]["status"] == "interrupted"
+    assert card.content["endTime"] == receipt_ms
+
+
+def test_T2_history_a_live_task_is_never_closed_by_the_ceiling() -> None:
+    messages = (_dispatch_message(), _receipt_message())
+    now = 1_791_457_800.0
+    receipt_ms = int((now - (T_AGE_BOUND + 60)) * 1000)
+    oracle = _oracle(
+        now=now, files={TASK_ID: _fresh_file(now)}, age_bound=T_AGE_BOUND
+    )
+    items = _history_items_from_messages(
+        _session(),
+        messages,
+        raw_lines=_old_receipt_raw_lines(receipt_ms),
+        oracle=oracle,
+        live_task_ids=frozenset({TASK_ID}),
+    )
+    card = next(i for i in items if i.content.get("kind") == "agent_call")
+    assert card.status == "running"
+    assert "closedByEvidence" not in card.content

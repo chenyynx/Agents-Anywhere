@@ -39,6 +39,26 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def _agent_child_payload_needle(parent_item_id: str) -> str:
+    """The compact-JSON pair every child row of ``parent_item_id`` carries.
+
+    Stored payloads are always serialized by ``_json_dumps`` (compact
+    separators, ``ensure_ascii=False``), so a row whose parsed
+    ``content.parentItemId`` equals the ID contains this exact
+    ``"parentItemId":"<id>"`` text verbatim — the substring the existence
+    probe matches without parsing any JSON. Serializing the pair with the
+    same json options guarantees the needle's escaping matches the stored
+    payload byte for byte.
+    """
+
+    pair = json.dumps(
+        {"parentItemId": parent_item_id},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return pair[1:-1]
+
+
 class SqlTimelineStore:
     def __init__(self, engine: AsyncEngine, *, backend: str = SQLITE_BACKEND) -> None:
         self._engine = engine
@@ -350,7 +370,15 @@ class SqlTimelineStore:
         newest row). Rows of any other card — and every non-child row — are
         never returned; rows of other sessions cannot match because the scan
         is session-scoped.
+
+        A cheap existence probe runs first: a parent with no child rows at
+        all — the common case for the client only when it asks about a card
+        that has none — returns an empty exhausted page without paying for
+        the filtered full scan.
         """
+
+        if not await self._agent_children_exist(session_id, parent_item_id):
+            return [], False
 
         def include(item: TimelineItem) -> bool:
             return agent_child_parent_item_id(item) == parent_item_id
@@ -362,6 +390,42 @@ class SqlTimelineStore:
             before_order_seq=before_order_seq,
             include=include,
         )
+
+    async def _agent_children_exist(
+        self, session_id: str, parent_item_id: str
+    ) -> bool:
+        """Whether any stored row looks like a child of ``parent_item_id``.
+
+        One ``LIMIT 1`` substring match over ``payload_json`` — no payload is
+        JSON-parsed, so a miss costs a fraction of the filtered scan. The
+        LIKE pattern is escaped (``%``/``_``/``\\`` match literally), so the
+        probe only widens at worst: a false positive (the needle happens to
+        appear in unrelated payload text, e.g. inside some tool output) sends
+        the caller through the scan it would have run anyway and cannot
+        change the result; a false negative cannot occur for rows this store
+        writes, because every payload is serialized compactly with the
+        literal pair inlined (see ``_agent_child_payload_needle``), so a
+        parent that does have children always probes positive.
+        """
+
+        needle = _agent_child_payload_needle(parent_item_id)
+        escaped = (
+            needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        async with self._engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    select(timeline_items.c.id)
+                    .where(
+                        timeline_items.c.session_id == session_id,
+                        timeline_items.c.payload_json.like(
+                            f"%{escaped}%", escape="\\"
+                        ),
+                    )
+                    .limit(1)
+                )
+            ).first()
+        return row is not None
 
     async def _scan_page(
         self,

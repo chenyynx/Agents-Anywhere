@@ -573,6 +573,77 @@ def test_children_mode_returns_only_one_parents_rows(tmp_path) -> None:
     assert unknown["hasMore"] is False
 
 
+def _spy_on_scan(monkeypatch: Any, client: Any) -> list[str]:
+    """Count entries into the filtered full scan (what the probe bypasses)."""
+
+    store = client.app.state.store
+    scanned: list[str] = []
+    original = store.timeline._scan_page
+
+    async def spy(*args: Any, **kwargs: Any):
+        scanned.append("scan")
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(store.timeline, "_scan_page", spy)
+    return scanned
+
+
+def test_children_mode_unknown_parent_short_circuits_the_scan(
+    tmp_path, monkeypatch
+) -> None:
+    """A parent with no child rows never pays for the filtered full scan.
+
+    The session does hold child rows (for other parents), so before the
+    existence probe this request walked every row and parsed every payload
+    (the red-team-measured ~1.8s path). The probe answers it with one
+    payload substring match and no JSON parsing.
+    """
+
+    client = make_client(tmp_path)
+    _, _, session_id, headers = create_connector_and_session(client, runtime="claude")
+    _seed_timeline(client, session_id, _children_dataset())
+    scanned = _spy_on_scan(monkeypatch, client)
+
+    body = _read_timeline(
+        client,
+        session_id,
+        headers,
+        mode="children",
+        parentId="tl_not_a_card",
+        limit=100,
+    )
+    assert body["items"] == []
+    assert body["hasMore"] is False
+    assert scanned == []
+
+
+def test_children_mode_known_parent_still_scans(tmp_path, monkeypatch) -> None:
+    """The probe is an optimization only: a real parent scans and pages.
+
+    The probed ID contains underscores, so this also pins the probe's
+    LIKE-pattern escaping: an over-escaped or unescaped pattern would either
+    miss the parent (short-circuiting away real children) or the assertions
+    below would fail.
+    """
+
+    client = make_client(tmp_path)
+    _, _, session_id, headers = create_connector_and_session(client, runtime="claude")
+    _seed_timeline(client, session_id, _children_dataset())
+    scanned = _spy_on_scan(monkeypatch, client)
+
+    body = _read_timeline(
+        client,
+        session_id,
+        headers,
+        mode="children",
+        parentId="tl_card_a",
+        limit=100,
+    )
+    assert _ids(body) == [f"tl_a{index:02d}" for index in range(1, 26)]
+    assert body["hasMore"] is False
+    assert scanned  # the existence probe hit; the normal scan ran
+
+
 def test_children_mode_pages_newest_to_oldest(tmp_path) -> None:
     client = make_client(tmp_path)
     _, _, session_id, headers = create_connector_and_session(client, runtime="claude")

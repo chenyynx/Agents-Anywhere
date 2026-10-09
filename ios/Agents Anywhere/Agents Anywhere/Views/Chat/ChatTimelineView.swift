@@ -206,6 +206,21 @@ struct ChatTimelineView: View {
             .onChange(of: model.isOpeningReady, initial: true) { _, ready in
                 if ready { scrolling.open(interactionPresented: hasInteractions) }
             }
+            .task(id: model.openingPositionSettled) {
+                // P2: the automatic full-history backfill starts strictly
+                // post-paint — the opening return has landed (or its bounded
+                // fallback expired), so the first frame is on screen and its
+                // position is settled. Nothing here touches the opening path.
+                guard model.openingPositionSettled else { return }
+                model.session.beginHistoryBackfill()
+            }
+            .onChange(of: scrolling.userIsScrolling, initial: true) { _, isScrolling in
+                // P2 throttle: the reader signal is the existing scroll state
+                // machine's own `userIsScrolling`, so a page the backfill has
+                // waiting is not merged under an active scroll; the loop
+                // resumes once the page goes quiet.
+                model.session.setBackfillReaderScrolling(isScrolling)
+            }
             .onChange(of: scrolling.navigationGeneration) { _, _ in
                 releaseScrollPosition()
             }

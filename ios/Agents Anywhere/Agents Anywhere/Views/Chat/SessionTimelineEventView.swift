@@ -85,6 +85,20 @@ struct SessionTimelineEventView: View {
         return { taskID in Task { await chat.stopSubagent(taskID: taskID) } }
     }
 
+    /// P3: expanding a top-level card's fold is the earliest moment its
+    /// lazily-fetched detail rows can be wanted — the panel's 查看详情 hangs
+    /// off the same header — so the expansion warms them through the
+    /// repository's on-demand `mode=children` read. One shot: rows already
+    /// local (window or detail sidecar), or a load already running, cost
+    /// nothing here, and the panel's own open path stays the authority.
+    private func requestSubAgentDetail() {
+        guard let card = SubAgentProgress.card(row.value) else { return }
+        let loaded = chat.timeline.rows.map(\.value) + chat.session.subAgentChildren
+        guard !SubAgentProgress.isContentLoaded(card, in: loaded) else { return }
+        let parents = SubAgentProgress.lineageIDs(of: card, in: loaded)
+        Task { await chat.session.loadSubAgentDetail(parentIDs: parents) }
+    }
+
     var body: some View {
         let value = entry
         switch value.kind {
@@ -110,6 +124,7 @@ struct SessionTimelineEventView: View {
             if value.hasToolDetails {
                 TimelineFold(id: row.id, title: value.title, symbol: value.symbol, status: row.value.status,
                     disclosures: disclosures, detailsAction: agentCardDetailsAction,
+                    onExpand: agentCardDetailsAction == nil ? nil : { requestSubAgentDetail() },
                     stopTasks: stopTasks, stoppingTaskIDs: chat.stoppingSubagentTaskIDs, onStopTask: stopTask) {
                     TimelineToolDetails(row: row, cwd: cwd, onFile: onFile)
                 }
@@ -192,6 +207,9 @@ private struct TimelineFold<Content: View>: View {
     /// SubAgent progress group). It is a sibling button, not a tap on the
     /// disclosure row, so the existing expand gesture is never intercepted.
     var detailsAction: (() -> Void)?
+    /// P3: fired when the reader expands the fold (never on collapse). The
+    /// Agent card uses it to warm its lazily-fetched detail rows.
+    var onExpand: (() -> Void)?
     /// §A3: the card's live SubAgent tasks whose own stop control renders in
     /// the header row — one control per task, each bound to exactly one task
     /// id (a multi-task card renders one named control each; 能唯一确定目标
@@ -206,6 +224,7 @@ private struct TimelineFold<Content: View>: View {
             HStack(spacing: 8) {
                 Button {
                     withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { disclosures.toggle(id) }
+                    if disclosures.isExpanded(id) { onExpand?() }
                 } label: { TimelineMarkerRow(title: title, symbol: symbol, status: status, expanded: disclosures.isExpanded(id)) }
                 .buttonStyle(.plain).accessibilityValue(disclosures.isExpanded(id) ? String(localized: "已展开") : String(localized: "已折叠"))
                 if let detailsAction {

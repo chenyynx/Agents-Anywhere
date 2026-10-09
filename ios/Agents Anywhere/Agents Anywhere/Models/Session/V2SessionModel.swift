@@ -162,6 +162,10 @@ final class V2SessionModel: Identifiable {
     /// `V2SessionData`. They are read beside the presented rows so the capsule
     /// does not depend on which part of the timeline the client holds.
     private(set) var activeAgentCards: [V2ActiveAgentCard] = []
+    /// The projection's lazily-fetched SubAgent detail rows (P3), mirroring
+    /// `V2SessionData.subAgentChildren`: the card panel's union source beside
+    /// the loaded window. Never part of `timeline`.
+    private(set) var subAgentChildren: [V2TimelineItem] = []
     /// The newest pulse from the live receive path (a fresh id rings once);
     /// nil before the first arrival. The orb view drops it on its own when the
     /// pulse setting is off or Reduce Motion is on — the model never judges
@@ -404,6 +408,29 @@ final class V2SessionModel: Identifiable {
         catch { if isValid { failure = V2ClientFailure(error) } }
     }
 
+    /// Starts the post-paint automatic full-history backfill (P2). Called by
+    /// the chat page once the opening positioning settled — strictly after
+    /// the first frame; idempotent while a fill is already running.
+    func beginHistoryBackfill() {
+        guard isValid else { return }
+        repository?.beginHistoryBackfill(sessionId: id)
+    }
+
+    /// The chat page forwards its scroll state machine's reader signal, so
+    /// the backfill defers its merges while the reader is moving (or typing).
+    func setBackfillReaderScrolling(_ scrolling: Bool) {
+        guard isValid else { return }
+        repository?.setBackfillReaderScrolling(scrolling, sessionId: id)
+    }
+
+    /// Loads one SubAgent card's detail rows on demand (P3). Best effort: a
+    /// failure leaves the projection's detail sidecar as it was, and the
+    /// caller's "not loaded" state stays honest.
+    func loadSubAgentDetail(parentIDs: Set<String>) async {
+        guard let repository, isValid, !parentIDs.isEmpty else { return }
+        await repository.loadSubAgentDetail(sessionId: id, parentIDs: parentIDs)
+    }
+
     /// Explicit user action only. No outbox replay: clientMessageId correlates an echo
     /// but is not a promise of backend idempotency.
     @discardableResult func sendDraft(upload: ((V2PendingMessage) async throws -> Void)? = nil) async -> V2PendingMessage? {
@@ -481,6 +508,8 @@ final class V2SessionModel: Identifiable {
         if hasNewerItems != (data?.hasNewerItems ?? false) { hasNewerItems = data?.hasNewerItems ?? false }
         let activeCards = data?.activeAgentCards ?? []
         if activeAgentCards != activeCards { activeAgentCards = activeCards }
+        let children = data?.subAgentChildren ?? []
+        if subAgentChildren != children { subAgentChildren = children }
         let existing = Dictionary(uniqueKeysWithValues: timeline.map { ($0.id, $0) })
         let rows = (data?.items ?? []).map { item in
             let row = existing[item.id] ?? V2TimelineItemModel(item)
@@ -572,7 +601,7 @@ final class V2SessionModel: Identifiable {
         awaitingEchoSince = nil
         sendQueue.replaceAll([])
         metadata = nil; timeline = []; pendingMessages = []; awaitingReplyID = nil; draft = ""; draftAttachmentIDs = []
-        activeAgentCards = []; recoveryNotice = nil
+        activeAgentCards = []; subAgentChildren = []; recoveryNotice = nil
         composer.invalidate()
         attachmentPreviews.clear()
         notices.clear()

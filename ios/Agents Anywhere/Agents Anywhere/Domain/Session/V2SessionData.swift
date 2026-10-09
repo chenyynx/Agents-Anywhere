@@ -51,6 +51,13 @@ struct V2SessionData: Hashable {
     /// it. Fed by every merge, window guards included, so a card that has been
     /// pushed out of the window by later traffic still drives the capsule.
     var activeAgentCards: [V2ActiveAgentCard] = []
+    /// SubAgent child rows (payload `content.parentItemId` non-empty), fetched
+    /// on demand through the timeline's `mode=children` read (session-open
+    /// coverage P3). Kept beside the window exactly like the active-card
+    /// sidecar and never written into `items`: the window's paging cursor,
+    /// history flags and trims are untouched by detail loading. Merged by id
+    /// with the supersedes rule, bounded by `V2SessionProjection.maximumDetail*`.
+    var subAgentChildren: [V2TimelineItem] = []
 
     init(snapshot: V2SessionSnapshot, now: Date = Date()) {
         session = snapshot.session

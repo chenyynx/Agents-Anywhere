@@ -58,6 +58,12 @@ final class ChatTimelineRowModel: Identifiable {
 @MainActor @Observable
 final class SessionTimelinePresentation {
     private(set) var rows: [ChatTimelineRowModel] = []
+    /// The SubAgent detail sidecar's rows (P3), as row models — the window's
+    /// rows plus these are the union the SubAgent panel reads. Deliberately a
+    /// separate array: these rows never join `rows`, so the timeline's
+    /// grouping, counts, history anchors and the window-revision bookkeeping
+    /// are untouched by detail loading (L2.1 keeps them out of the main chat).
+    private(set) var detailRows: [ChatTimelineRowModel] = []
     private(set) var pendingMessages: [V2PendingMessage] = []
     private(set) var hasPresentedSnapshot = false
     /// Bumped whenever a presentation drops rows that were on screen — the
@@ -85,12 +91,16 @@ final class SessionTimelinePresentation {
     func receive(_ observation: V2SessionObservation) {
         defer { lastConnection = observation.connection }
         guard let data = observation.data else { return }
-        stage(data.items, animate: initialized && lastConnection == .connected && observation.connection == .connected)
+        stage(data.items, detailItems: data.subAgentChildren,
+            animate: initialized && lastConnection == .connected && observation.connection == .connected)
         initialized = true
     }
 
-    func stage(_ items: [V2TimelineItem], animate: Bool) {
+    func stage(_ items: [V2TimelineItem], detailItems: [V2TimelineItem]? = nil, animate: Bool) {
         pending = items.filter(\.isVisibleInChat)
+        // nil keeps the detail sidecar as staged by the previous call; the
+        // observation path always passes the projection's current sidecar.
+        if let detailItems { pendingDetail = detailItems.filter(\.isVisibleInChat) }
         // Once a recovery snapshot is staged, preserve its snap semantics until
         // that tick even if a live event arrives immediately afterwards.
         animatePending = pendingWasStaged ? animatePending && animate : animate
@@ -98,6 +108,7 @@ final class SessionTimelinePresentation {
         wake?.yield(())
     }
     @ObservationIgnored private var pendingWasStaged = false
+    @ObservationIgnored private var pendingDetail: [V2TimelineItem]?
 
     func flush(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         if let pending {
@@ -112,15 +123,32 @@ final class SessionTimelinePresentation {
                 return row
             }
             if started { nextBatchAt = now + ReplyPresentation.batchInterval }
+            // A row added above everything the reader has seen is a prepend:
+            // the backfill's history pages arrive this way, and prepending
+            // shifts the viewport's content whether the reader is following
+            // or parked. It is the same class of change as a drop — the window
+            // moved under the reader — so it re-arms the same re-assert. The
+            // opening's own first presentation has no rows yet, and an append
+            // keeps the first id, so neither bumps.
+            let prepended = !rows.isEmpty && updated.first?.id != rows.first?.id
+            let dropped = !presented.isSubset(of: Set(updated.map(\.id)))
             if rows.map(\.id) != updated.map(\.id) { rows = updated }
             // A drop of a previously presented row means the window itself
-            // moved (a trim, a latest-page swap, a recovery replacement) — the
-            // one shape that needs the viewport re-asserted. The opening's own
-            // first presentation drops nothing and keeps the claim with
-            // `open()`, and an append keeps every old id, so neither bumps.
-            if !presented.isSubset(of: Set(updated.map(\.id))) { windowRevision &+= 1 }
+            // moved (a trim, a latest-page swap, a recovery replacement) — one
+            // of the shapes that needs the viewport re-asserted.
+            if prepended || dropped { windowRevision &+= 1 }
             if !hasPresentedSnapshot { hasPresentedSnapshot = true }
             self.pending = nil; pendingWasStaged = false
+        }
+        if let pendingDetail {
+            let existing = Dictionary(uniqueKeysWithValues: detailRows.map { ($0.id, $0) })
+            let updated = pendingDetail.map { value in
+                let row = existing[value.id] ?? ChatTimelineRowModel(value)
+                row.flush(value, animate: false, now: now)
+                return row
+            }
+            if detailRows.map(\.id) != updated.map(\.id) { detailRows = updated }
+            self.pendingDetail = nil
         }
         for row in rows where row.isRevealing { row.settle(now: now) }
     }

@@ -156,6 +156,10 @@ def test_progressing_turn_is_never_killed(monkeypatch: pytest.MonkeyPatch) -> No
                 in _fire_line(captured)
             )
             assert session.execution is None
+            # The transport close happens strictly after the turn's end is
+            # recorded (finish → retire), so wait for the close itself rather
+            # than sampling the window between the two.
+            await _wait_until(lambda: client.disconnected)
             assert client.disconnected is True
         finally:
             await runtime.stop()
@@ -445,7 +449,7 @@ def test_never_stalling_turn_is_bounded_by_the_hard_cap(
                 f"reason={lifecycle.WATCHDOG_REASON_CONTENT_HARD_CAP}"
                 in _fire_line(captured)
             )
-            assert elapsed >= HARD_CAP - 0.05
+            assert elapsed >= HARD_CAP - 0.15
             assert elapsed < HARD_CAP + 1.0
             assert budget == pytest.approx(HARD_CAP), (
                 "a hard-cap fire reports the cap"

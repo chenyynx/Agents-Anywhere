@@ -66,13 +66,15 @@ final class SessionTimelinePresentation {
     private(set) var detailRows: [ChatTimelineRowModel] = []
     private(set) var pendingMessages: [V2PendingMessage] = []
     private(set) var hasPresentedSnapshot = false
-    /// Bumped whenever a presentation drops rows that were on screen — the
-    /// opening's trim/latest-page surgery and any wholesale recovery or
-    /// snapshot replacement. A pure append never bumps it. The timeline view
-    /// re-asserts its opening return on every bump so a replaced window can
-    /// never render from its own top: the scroll view anchors content-size
-    /// changes to the top, so without the re-assert the reader is parked
-    /// away from the newest rows until a manual scroll (2026-10-08).
+    /// Bumped whenever a presentation moves the window under the reader: it
+    /// drops rows that were on screen (the opening's trim/latest-page
+    /// surgery, any wholesale recovery or snapshot replacement) or prepends
+    /// new rows above everything presented (the backfill's history pages —
+    /// a prepend shifts the viewport's content even though every old row
+    /// survives). A pure append never bumps it. The timeline view re-asserts
+    /// its opening return on every bump, so a moved window can never render
+    /// from its own top: without the re-assert the reader is parked away
+    /// from the newest rows until a manual scroll (2026-10-08).
     private(set) var windowRevision = 0
     @ObservationIgnored private var pending: [V2TimelineItem]?
     @ObservationIgnored private var animatePending = false

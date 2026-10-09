@@ -157,6 +157,12 @@ final class V2SessionRepository {
         _ = try await load(sessionId: sessionId)
         try Task.checkCancellation()
         try requireCurrent(entry)
+        // A re-open invalidates the in-flight history read (the version bump
+        // cancels it), which would also end a running backfill. Opening is a
+        // visit, not a choice to abandon the fill, so it is re-armed against
+        // the fresh window — the same contract `refresh()` follows (red team
+        // F6).
+        let backfillWasRunning = entry.backfillTask != nil
         entry.readVersion += 1
         entry.historyTask?.cancel()
         entry.historyTask = nil
@@ -164,8 +170,11 @@ final class V2SessionRepository {
         // also stays bounded and cannot remount the entire cached history.
         if entry.projection?.limitToLatest(100) == true { emit(entry) }
         if entry.projection?.data.hasNewerItems == true {
-            return try await loadLatest(sessionId: sessionId, limit: 100)
+            let data = try await loadLatest(sessionId: sessionId, limit: 100)
+            if backfillWasRunning { rearmBackfill(entry) }
+            return data
         }
+        if backfillWasRunning { rearmBackfill(entry) }
         return entry.projection!.data
     }
 
@@ -337,7 +346,10 @@ final class V2SessionRepository {
     /// one runs is ignored, and a later open resumes from wherever the last
     /// one stopped.
     func beginHistoryBackfill(sessionId: V2SessionID) {
-        let entry = entry(for: sessionId)
+        beginBackfill(entry(for: sessionId))
+    }
+
+    private func beginBackfill(_ entry: Entry) {
         guard entry.backfillTask == nil else { return }
         let id = UUID()
         entry.backfillID = id
@@ -348,14 +360,31 @@ final class V2SessionRepository {
         }
     }
 
-    /// The chat page reports its reader signal — the existing scroll state
-    /// machine's `userIsScrolling` — so the backfill defers merging history
-    /// rows while the reader is on the move (inserting history rows under an
-    /// active scroll fights the reader). Input is read from the composer
-    /// directly by the loop; together they are the "暂停合并、停顿后续传"
-    /// throttle. Clearing the flag resumes the loop on its next check.
-    func setBackfillReaderScrolling(_ scrolling: Bool, sessionId: V2SessionID) {
+    /// Ends the running backfill's claim and starts a fresh one. `open()` and
+    /// `refresh()` use it: their version bumps cancel the in-flight page —
+    /// and with it the loop — so the fill is continued against the rebuilt
+    /// window instead of being silently abandoned.
+    private func rearmBackfill(_ entry: Entry) {
+        entry.backfillID = UUID()
+        entry.backfillTask?.cancel()
+        entry.backfillTask = nil
+        beginBackfill(entry)
+    }
+
+    /// The chat page reports the reader's state from its own scroll state
+    /// machine (`TimelineScrollState`). Two level-triggered flags join the
+    /// composer read below as the backfill's "暂停合并、停顿后续传" throttle:
+    ///
+    /// - `scrolling` is `userIsScrolling`: inserting history rows under an
+    ///   active scroll fights the reader.
+    /// - `parkedInHistory` is the reader having taken over and resting away
+    ///   from the bottom (outside the top's pull region, B11): a prepend
+    ///   there has no anchor machinery to absorb it and would jump the page
+    ///   once per fill. Reaching the bottom (following) or the top's older
+    ///   pull region clears it, and the loop resumes on its next check.
+    func setBackfillReaderState(scrolling: Bool, parkedInHistory: Bool, sessionId: V2SessionID) {
         entries[sessionId]?.backfillReaderIsScrolling = scrolling
+        entries[sessionId]?.backfillReaderIsParked = parkedInHistory
     }
 
     /// One backfill loop, owned by the entry's lifecycle (`stop()` cancels
@@ -396,7 +425,7 @@ final class V2SessionRepository {
     }
 
     private func backfillReaderIsActive(_ entry: Entry) -> Bool {
-        if entry.backfillReaderIsScrolling { return true }
+        if entry.backfillReaderIsScrolling || entry.backfillReaderIsParked { return true }
         // 输入中: the keyboard being up counts as active input.
         return entry.model.composer.isFocused || entry.model.composer.isComposing
     }
@@ -439,22 +468,35 @@ final class V2SessionRepository {
                     limit: Self.subAgentDetailPageLimit
                 )
             } catch {
+                // A failure leaves the coverage owed: the panel discloses it,
+                // and the next gesture asks again (red team F2/F8).
                 return
             }
             guard isCurrent(entry), entry.projection != nil else { return }
             entry.projection?.applyChildren(page, parents: [parentID])
             emit(entry)
-            guard page.hasMore else { return }
+            guard page.hasMore else { markDetailDrained(entry, parentID: parentID); return }
             // The cursor is the oldest row of the page, whatever order the
             // server returned the page in; an empty page cannot advance it and
-            // ends this card's load.
-            guard let oldest = page.items.map(\.orderSeq).min() else { return }
+            // is the server's exhausted answer (contract: empty ⇒ no more
+            // rows), so it completes the coverage too.
+            guard let oldest = page.items.map(\.orderSeq).min() else { markDetailDrained(entry, parentID: parentID); return }
             loadedRows += page.items.count
             loadedBytes += page.items.reduce(0) { $0 + V2SessionProjection.approximateWireBytes($1) }
             guard loadedRows < V2SessionProjection.maximumDetailItems,
-                  loadedBytes < V2SessionProjection.maximumDetailBytes else { return }
+                  loadedBytes < V2SessionProjection.maximumDetailBytes else { markDetailDrained(entry, parentID: parentID); return }
             before = oldest
         }
+    }
+
+    /// One parent's drain ran to a legitimate end (exhausted, cap-limited or
+    /// the server's empty exhausted page). This — never mere row arrival — is
+    /// what lights the lazy-load coverage gate. A cancelled or failed drain
+    /// never reaches here.
+    private func markDetailDrained(_ entry: Entry, parentID: String) {
+        guard isCurrent(entry) else { return }
+        entry.projection?.markDetailDrained(parent: parentID)
+        emit(entry)
     }
 
     func catalogs(sessionId: V2SessionID, force: Bool = false, capabilities: V2RuntimeCapabilitySnapshot? = nil) async throws -> V2SessionCatalogs {
@@ -1393,9 +1435,11 @@ private final class Entry {
     /// the id lets a loop that is ending clear its own registration only.
     var backfillTask: Task<Void, Never>?
     var backfillID = UUID()
-    /// The chat page's scroll state machine's reader signal, forwarded by the
-    /// view; the backfill's quiet gate reads it.
+    /// The chat page's scroll state machine's reader signals, forwarded by
+    /// the view; the backfill's quiet gate reads both.
     var backfillReaderIsScrolling = false
+    /// The reader took over and is resting away from the bottom (B11).
+    var backfillReaderIsParked = false
     var catalogTask: Task<V2SessionCatalogs, Error>?
     /// Single-flight recovery round. It returns its outcome instead of
     /// throwing, so joining callers can choose to surface or ignore failure.

@@ -254,6 +254,15 @@ struct V2SessionProjection {
         data.subAgentChildren = Array(kept.reversed())
     }
 
+    /// Records that one parent's on-demand detail drain finished: the server
+    /// reported no more rows, or the per-card cap ended the walk (red team
+    /// F2). Only the repository's drain loop writes this — row arrival
+    /// (`applyChildren`, a live frame) never does, so a partially delivered
+    /// card keeps reading as "still owed" and the panel fetches the rest.
+    mutating func markDetailDrained(parent: String) {
+        data.detailLoadedParents.insert(parent)
+    }
+
     mutating func applyLatest(_ page: V2SessionTimelinePage) {
         guard page.sessionId == data.session.id else { return }
         // A GET can finish after newer socket frames. Its high watermark bounds

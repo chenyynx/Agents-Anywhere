@@ -58,6 +58,13 @@ struct V2SessionData: Hashable {
     /// history flags and trims are untouched by detail loading. Merged by id
     /// with the supersedes rule, bounded by `V2SessionProjection.maximumDetail*`.
     var subAgentChildren: [V2TimelineItem] = []
+    /// The parents whose on-demand detail drain finished — the server ran out
+    /// of rows, or the per-card cap ended it (red team F2). Written only by
+    /// the drain's own completion; row arrival (live frames, a partial drain)
+    /// never writes it. The lazy-load gates read it together with
+    /// `subAgentChildren`, so half-covered cards keep reading as "still owed"
+    /// and a card squeezed out of the sidecar is never presented as loaded.
+    var detailLoadedParents: Set<String> = []
 
     init(snapshot: V2SessionSnapshot, now: Date = Date()) {
         session = snapshot.session

@@ -166,6 +166,10 @@ final class V2SessionModel: Identifiable {
     /// `V2SessionData.subAgentChildren`: the card panel's union source beside
     /// the loaded window. Never part of `timeline`.
     private(set) var subAgentChildren: [V2TimelineItem] = []
+    /// The parents whose detail drain finished (red team F2), mirroring
+    /// `V2SessionData.detailLoadedParents`: the lazy-load gates' coverage bit
+    /// beside `subAgentChildren`.
+    private(set) var detailLoadedParents: Set<String> = []
     /// The newest pulse from the live receive path (a fresh id rings once);
     /// nil before the first arrival. The orb view drops it on its own when the
     /// pulse setting is off or Reduce Motion is on — the model never judges
@@ -416,11 +420,12 @@ final class V2SessionModel: Identifiable {
         repository?.beginHistoryBackfill(sessionId: id)
     }
 
-    /// The chat page forwards its scroll state machine's reader signal, so
-    /// the backfill defers its merges while the reader is moving (or typing).
-    func setBackfillReaderScrolling(_ scrolling: Bool) {
+    /// The chat page forwards its scroll state machine's reader signals, so
+    /// the backfill defers its merges while the reader is moving, parked
+    /// mid-history under their own control (B11), or typing.
+    func setBackfillReaderState(scrolling: Bool, parkedInHistory: Bool) {
         guard isValid else { return }
-        repository?.setBackfillReaderScrolling(scrolling, sessionId: id)
+        repository?.setBackfillReaderState(scrolling: scrolling, parkedInHistory: parkedInHistory, sessionId: id)
     }
 
     /// Loads one SubAgent card's detail rows on demand (P3). Best effort: a
@@ -510,6 +515,8 @@ final class V2SessionModel: Identifiable {
         if activeAgentCards != activeCards { activeAgentCards = activeCards }
         let children = data?.subAgentChildren ?? []
         if subAgentChildren != children { subAgentChildren = children }
+        let drainedParents = data?.detailLoadedParents ?? []
+        if detailLoadedParents != drainedParents { detailLoadedParents = drainedParents }
         let existing = Dictionary(uniqueKeysWithValues: timeline.map { ($0.id, $0) })
         let rows = (data?.items ?? []).map { item in
             let row = existing[item.id] ?? V2TimelineItemModel(item)
@@ -601,7 +608,7 @@ final class V2SessionModel: Identifiable {
         awaitingEchoSince = nil
         sendQueue.replaceAll([])
         metadata = nil; timeline = []; pendingMessages = []; awaitingReplyID = nil; draft = ""; draftAttachmentIDs = []
-        activeAgentCards = []; subAgentChildren = []; recoveryNotice = nil
+        activeAgentCards = []; subAgentChildren = []; detailLoadedParents = []; recoveryNotice = nil
         composer.invalidate()
         attachmentPreviews.clear()
         notices.clear()

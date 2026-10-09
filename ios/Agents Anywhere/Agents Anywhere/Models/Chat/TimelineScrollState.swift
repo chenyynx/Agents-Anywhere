@@ -69,6 +69,19 @@ nonisolated struct TimelineScrollState: Equatable {
 
     var userIsScrolling: Bool { [.tracking, .interacting, .decelerating].contains(phase) }
     var returningToBottom: Bool { mode == .returning }
+
+    /// B11: whether the reader is parked mid-history — they have taken over
+    /// the viewport and are resting away from the bottom, outside the top's
+    /// older-pull region. A backfill prepend in this state has no anchor
+    /// machinery to absorb it (the page is not following, and the opening's
+    /// claim is released), so it would jump the reader once per page; the
+    /// automatic fill holds its merges while this is true. Reaching the
+    /// bottom (mode `.following`) or the top's older-pull region — where
+    /// older rows are exactly what the reader is there for — clears it.
+    func backfillReaderIsParked(atOlderPrompt: Bool) -> Bool {
+        guard readerTookOver, mode != .following else { return false }
+        return !atOlderPrompt
+    }
     var needsUserScrollSettlement: Bool {
         awaitsUserScrollSettlement && phase == .idle && tail.isMeasured && !navigationIsSuspended
     }
@@ -105,11 +118,13 @@ nonisolated struct TimelineScrollState: Equatable {
 
     /// Re-arms the opening's instant return for a wholesale window change
     /// (the opening's trim/latest-page surgery, a recovery or snapshot
-    /// replacement) that landed after the opening return settled or timed
-    /// out. The timeline anchors every content-size change to its top
-    /// (`.defaultScrollAnchor(.top, for: .sizeChanges)`), so a replacement
-    /// renders from the new window's top and parks the reader away from the
-    /// newest rows — blank/short list until a manual scroll (2026-10-08,
+    /// replacement, or a backfill prepend) that landed after the opening
+    /// return settled or timed out. The timeline's own anchors cover the
+    /// opening (`top` for the initial offset and alignment) and container
+    /// size changes (`bottom` — the keyboard and the growing composer); a
+    /// replacement is neither, so its content change has no anchor of its
+    /// own and can land with the reader parked away from the newest rows —
+    /// blank/short list until a manual scroll (2026-10-08,
     /// sess_ps8Z29uknMTIhw). The re-assert reuses the opening's own pipeline
     /// (`requestBottom` → the 24 ms coalescer → an instant
     /// `position.scrollTo(edge: .bottom)`), so it is motionless behind the

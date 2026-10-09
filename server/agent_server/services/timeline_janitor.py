@@ -19,11 +19,19 @@ Configuration (read by ``from_environment``):
   A value ``<= 0`` disables the janitor entirely (kill-switch).
 - ``AGENT_SERVER_TIMELINE_JANITOR_INTERVAL_SECONDS`` — sweep period,
   default 600s; a non-positive value falls back to the default.
+
+A value that cannot be read as a finite number (``""``, ``"  "``, ``"abc"``,
+``"48h"``, ``"nan"``, ``"inf"``) is malformed configuration, not a crash: it
+disables the janitor and is logged. ``from_environment`` runs inside
+``create_app``, so an unparsed float there would take the whole server down
+instead of one sweep, and a janitor that cannot read its own bound must not
+guess — bad configuration does nothing rather than doing something wrong.
 """
 
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 from datetime import UTC, datetime, timedelta
 
@@ -38,6 +46,24 @@ DEFAULT_CANDIDATE_LIMIT = 500
 
 ENV_MAX_AGE_SECONDS = "AGENT_SERVER_TIMELINE_JANITOR_MAX_AGE_SECONDS"
 ENV_INTERVAL_SECONDS = "AGENT_SERVER_TIMELINE_JANITOR_INTERVAL_SECONDS"
+
+
+def _env_seconds(name: str, default: float) -> float | None:
+    """Read one janitor env var; ``None`` when it is present but unusable.
+
+    Unset (or absent) falls back to the default; present-but-malformed and
+    non-finite values (``nan``/``inf`` would also make the bound arithmetic
+    explode) are refused so the caller can stand the janitor down.
+    """
+
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
 
 
 class TimelineJanitor:
@@ -66,13 +92,33 @@ class TimelineJanitor:
         cls,
         store: TimelineJanitorRepository,
     ) -> TimelineJanitor:
+        raw_age = os.environ.get(ENV_MAX_AGE_SECONDS)
+        raw_interval = os.environ.get(ENV_INTERVAL_SECONDS)
+        max_age = _env_seconds(ENV_MAX_AGE_SECONDS, DEFAULT_MAX_AGE_SECONDS)
+        interval = _env_seconds(ENV_INTERVAL_SECONDS, DEFAULT_INTERVAL_SECONDS)
+        malformed = [
+            name
+            for name, parsed in (
+                (ENV_MAX_AGE_SECONDS, max_age),
+                (ENV_INTERVAL_SECONDS, interval),
+            )
+            if parsed is None
+        ]
+        if malformed:
+            logger.warning(
+                "timeline age janitor disabled by malformed configuration "
+                "variables={} values={}; unset the variable to use its default",
+                malformed,
+                {ENV_MAX_AGE_SECONDS: raw_age, ENV_INTERVAL_SECONDS: raw_interval},
+            )
         return cls(
             store,
-            max_age_seconds=float(
-                os.environ.get(ENV_MAX_AGE_SECONDS, str(DEFAULT_MAX_AGE_SECONDS))
+            enabled=not malformed,
+            max_age_seconds=(
+                DEFAULT_MAX_AGE_SECONDS if max_age is None else max_age
             ),
-            interval_seconds=float(
-                os.environ.get(ENV_INTERVAL_SECONDS, str(DEFAULT_INTERVAL_SECONDS))
+            interval_seconds=(
+                DEFAULT_INTERVAL_SECONDS if interval is None else interval
             ),
         )
 
@@ -92,14 +138,13 @@ class TimelineJanitor:
         closed: list[str] = []
         for session_id, item_ids in by_session.items():
             try:
-                closed.extend(
-                    await self._store.close_stale_running_tool_items(
-                        session_id=session_id,
-                        item_ids=item_ids,
-                        older_than=older_than,
-                        closed_by_evidence=CLOSED_BY_EVIDENCE,
-                    )
+                result = await self._store.close_stale_running_tool_items(
+                    session_id=session_id,
+                    item_ids=item_ids,
+                    older_than=older_than,
+                    closed_by_evidence=CLOSED_BY_EVIDENCE,
                 )
+                closed.extend(item.id for item in result.items)
             except KeyError:
                 continue  # The session vanished between the probe and the close.
             except Exception as exc:  # noqa: BLE001 - keep sweeping other sessions

@@ -218,7 +218,7 @@ class TimelineJanitorRepository(Protocol):
         item_ids: list[str],
         older_than: datetime,
         closed_by_evidence: str,
-    ) -> list[str]: ...
+    ) -> TimelineBatchWriteResult: ...
 
 class InteractionResolutionRepository(
     SessionLookupRepository,

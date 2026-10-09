@@ -9,12 +9,13 @@ in-fence re-validation, and spelling robustness for stored timestamps.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import pytest
 from session_fixtures import create_session_with_project
-from sqlalchemy import update
+from sqlalchemy import select, update
 from test_backend_mvp import make_client
 
 from agent_server.core.models import TimelineItemIn
@@ -398,7 +399,7 @@ async def test_close_revalidates_the_active_run_inside_the_fence(tmp_path) -> No
             closed_by_evidence=CLOSED_BY_EVIDENCE,
         )
 
-        assert closed == []
+        assert list(closed.items) == []
         (item,) = await store.timeline.read_many(session.id, {"tool_old"})
         assert item.status == "running"
     finally:
@@ -509,3 +510,124 @@ def test_create_app_wires_the_janitor(tmp_path) -> None:
     janitor = client.app.state.timeline_janitor
     assert isinstance(janitor, TimelineJanitor)
     assert janitor.enabled is True
+
+
+# ---------------------------------------------------------------------------
+# Malformed configuration stands the janitor down instead of the server
+# ---------------------------------------------------------------------------
+
+
+def test_malformed_env_never_takes_the_server_down(monkeypatch) -> None:
+    """A value that is not a finite number is not a crash, it is a config error.
+
+    ``from_environment`` runs inside ``create_app``, so the old bare
+    ``float(...)`` turned one bad env var into a server that cannot start.
+    """
+
+    for raw in ("", "   ", "abc", "48h", "nan", "inf", "-inf"):
+        monkeypatch.setenv("AGENT_SERVER_TIMELINE_JANITOR_MAX_AGE_SECONDS", raw)
+        janitor = TimelineJanitor.from_environment(object())
+        assert janitor.enabled is False, raw
+
+    # A malformed period disables it too: same posture, both variables.
+    monkeypatch.setenv("AGENT_SERVER_TIMELINE_JANITOR_MAX_AGE_SECONDS", "172800")
+    monkeypatch.setenv("AGENT_SERVER_TIMELINE_JANITOR_INTERVAL_SECONDS", "10m")
+    janitor = TimelineJanitor.from_environment(object())
+    assert janitor.enabled is False
+    # ...while the values it could not read fall back to the defaults, so a
+    # later repair (unset the variable) is all it takes to come back.
+    assert janitor._max_age_seconds == 48 * 60 * 60.0
+    assert janitor._interval_seconds == 600.0
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "abc", "48h"])
+def test_create_app_survives_a_malformed_janitor_env(monkeypatch, tmp_path, raw) -> None:
+    monkeypatch.setenv("AGENT_SERVER_TIMELINE_JANITOR_MAX_AGE_SECONDS", raw)
+    client = make_client(tmp_path)
+    janitor = client.app.state.timeline_janitor
+    assert isinstance(janitor, TimelineJanitor)
+    assert janitor.enabled is False
+
+
+@pytest.mark.anyio
+async def test_a_disabled_janitor_does_not_run(monkeypatch) -> None:
+    """``run()`` returns instead of entering the sweep loop.
+
+    The enabled path sleeps forever, so this also pins that the lifespan
+    wiring skips a malformed janitor rather than starting a doomed task.
+    """
+
+    monkeypatch.setenv("AGENT_SERVER_TIMELINE_JANITOR_INTERVAL_SECONDS", "forever")
+    janitor = TimelineJanitor.from_environment(object())
+    assert await asyncio.wait_for(janitor.run(), timeout=5.0) is None
+    assert await janitor.run_once() == []
+
+
+# ---------------------------------------------------------------------------
+# The closure must not re-arm the session it just healed
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_a_healed_session_stays_eligible_for_the_next_sweep(tmp_path) -> None:
+    """The revision bump must not stamp the columns the silence guard reads.
+
+    This method writes ``sessions.updated_at`` through the shared
+    ``_reserve_session_revisions``; a janitor that stamped it with its own
+    clock would re-arm every session it healed and strand the tail of any
+    session whose rows exceed one sweep's candidate cap.
+    """
+
+    store, session = await _store_with_session(tmp_path)
+    try:
+        await store.sync_timeline_items(
+            session_id=session.id,
+            items=[
+                tool_row(f"tool{index}", session_id=session.id, order_seq=index + 1)
+                for index in range(5)
+            ],
+        )
+        await _age_session(store, session.id, updated_at_hours=50)
+
+        capped = TimelineJanitor(
+            store, max_age_seconds=MAX_AGE_SECONDS, candidate_limit=2
+        )
+        first = await capped.run_once()
+        assert len(first) == 2
+
+        async with store.engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    select(
+                        sessions_t.c.updated_at,
+                        sessions_t.c.last_activity_at,
+                        sessions_t.c.seq,
+                    ).where(sessions_t.c.id == session.id)
+                )
+            ).first()
+        assert row is not None
+        # Silence columns untouched by the janitor's own write...
+        assert _is_roughly_now(row.updated_at), row.updated_at
+        assert row.last_activity_at is None
+        # ...but the revision really did advance, so clients still learn.
+        assert int(row.seq) >= 2
+
+        # The next sweeps drain the rest with no operator intervention.
+        second = await capped.run_once()
+        third = await capped.run_once()
+        assert len(second) == 2
+        assert len(third) == 1
+        assert await capped.run_once() == []
+        items = {item.id: item for item in await store.timeline.read(session.id)}
+        assert {item.status for item in items.values()} == {"interrupted"}
+    finally:
+        await store.close()
+
+
+def _is_roughly_now(value: str | None) -> bool:
+    """True when a stored timestamp is hours old, not just now."""
+
+    assert value
+    parsed = datetime.fromisoformat(value)
+    delta = datetime.now(UTC) - parsed
+    return timedelta(hours=49) < delta < timedelta(hours=51)

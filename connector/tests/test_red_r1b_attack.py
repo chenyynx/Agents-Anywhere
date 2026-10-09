@@ -233,6 +233,13 @@ def test_R1b_P0_a_failed_window_through_the_wrapper_does_not_end_the_sweep(
     used to complete the circle and disarm the sweep, leaving the residue
     window unread. The wrapper now reports the failed read, so the ladder
     steps over the window and keeps climbing.
+
+    T1b shape note: this guard used to run against a four-session library —
+    which is exactly the shape whose page 1 now proves it covers the whole
+    library, so the sweep correctly never walks windows there and the failed
+    windows are legitimately past the end. The library is multi-page here so
+    the guard keeps testing what it tests: a failed window read must never be
+    read as the end of the library.
     """
 
     monkeypatch.setenv(SESSION_ROTATION_ENV, "on")
@@ -246,7 +253,7 @@ def test_R1b_P0_a_failed_window_through_the_wrapper_does_not_end_the_sweep(
                 file_size=123,
                 cwd="/repo",
             )
-            for index in range(4)
+            for index in range(130)
         ]
     )
     native = _runtime(host=host, sdk=sdk)
@@ -270,10 +277,10 @@ def test_R1b_P0_a_failed_window_through_the_wrapper_does_not_end_the_sweep(
     assert _page_history_scanned(failing) == 0
 
     # ...and running the real sweep on the bound runtime walks past the failed
-    # window instead of concluding the library on it. Page 1 reports a seam of
-    # 4 (it exposed all four library sessions), so the ladder starts there.
+    # window instead of concluding the library on it. Page 1 exposed a full
+    # window of the 130 sessions, so the ladder starts at the fixed boundary.
     first_offset = _first_rotation_offset(page_one)
-    assert first_offset == 4
+    assert first_offset == SESSION_ROTATION_FIRST_OFFSET
     for _cycle in range(6):
         asyncio.run(runner.sync_existing_once())
 

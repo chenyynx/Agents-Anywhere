@@ -83,9 +83,13 @@ SESSION_ROTATION_PAGE_SIZE = 100
 # starts one window in — unless page 1 says it exposed fewer history sessions
 # than that (local-only sessions displaced the tail of `history[0:limit]`), in
 # which case the ladder starts at the seam so nothing falls between the two
-# (R1 P2-6). The floor for a persisted offset is therefore 1, not a page
-# boundary: any offset below 1 is corruption, while a seam of 97 is a real
-# position.
+# (R1 P2-6). A seam of 0 backed by a readable, non-empty history list is that
+# same displacement covering the whole first window, so the ladder starts at
+# 0 there (T1b) — those sessions are in no page and in no window otherwise.
+# A persisted offset is therefore anything from 0 up; this constant is the
+# lowest SEAM that is a real position (any higher seam is a real position
+# too, while a seam below 1 only means what the readable-history rule above
+# says it means).
 SESSION_ROTATION_FIRST_OFFSET = SESSION_ROTATION_PAGE_SIZE
 SESSION_ROTATION_MIN_OFFSET = 1
 # Rebuilds on rotation windows are capped per cycle (task card §3 T1.4: 5~10),
@@ -709,6 +713,15 @@ class RuntimeSyncRunner:
         held a session re-seeks on the position alone — a sweep whose reader
         fails, or whose library shrank under a persisted offset, used to climb
         away from the residue for the life of the process.
+
+        And (T1b) it does not walk a library that fits inside page 1 at all: a
+        page whose own read proves it covers the whole library is the only
+        proof such a library can ever give — every rotation window past it is
+        legitimately empty, and an empty window is not proof (R1 P1-2/P1-3) —
+        so a sweep opened (or left armed) there is closed at once, without a
+        single window read. Without that verdict the sweep read one empty
+        window per cycle forever, one whole-library scan each, exactly the
+        steady-state load the on-demand design exists to avoid.
         """
 
         mode = session_rotation_mode()
@@ -726,6 +739,22 @@ class RuntimeSyncRunner:
             )
             if outdated == 0:
                 return
+            if _page_one_complete(page_one_page):
+                # T1b: the whole library fits inside page 1, so there is no
+                # window to walk and nothing a window could ever prove — an
+                # empty window is not the end of a library this short (R1
+                # P1-2/P1-3), and a sweep opened here would read one empty
+                # window per cycle for the life of the process. Page 1 is
+                # compared in full and rebuilt uncapped every cycle, so an
+                # outdated session it shows needs no rotation; the page that
+                # covers the library is its own reason not to open a sweep.
+                logger.info(
+                    "session rotation sweep not needed; page one covers the library "
+                    "runtime={} outdated_page_one_sessions={}",
+                    runtime_id,
+                    outdated,
+                )
+                return
             state = SessionRotationState(active=True, offset=first_offset)
             logger.info(
                 "session rotation sweep activated runtime={} outdated_page_one_sessions={} first_offset={}",
@@ -737,6 +766,31 @@ class RuntimeSyncRunner:
             # activation must survive the cycle — the page-1 signal that opened
             # the sweep may already be rebuilt by the time the next cycle runs.
             await self._record_rotation_state(scoped_runtime_id, runtime_type, state)
+        elif _page_one_complete(page_one_page):
+            # T1b, the armed side: an already-active sweep whose page 1 now
+            # proves it covers the whole library has nothing left to walk.
+            # Every window past the seam is legitimately empty and empty is
+            # not proof (R1 P1-2/P1-3), so staying armed would read one empty
+            # window per cycle forever — the very load this sweep exists to
+            # avoid. The circle is as complete as it can ever be proved: page
+            # 1 itself was compared in full (and rebuilt uncapped) this very
+            # cycle. Close it and sleep, keeping the extent the sweep learned.
+            logger.info(
+                "session rotation sweep completed; page one covers the library "
+                "runtime={} offset={} circles={}",
+                runtime_id,
+                state.offset,
+                state.circles + 1,
+            )
+            await self._record_rotation_state(
+                scoped_runtime_id,
+                runtime_type,
+                replace(
+                    SessionRotationState(),
+                    library_extent=state.library_extent,
+                ),
+            )
+            return
         if state.rest_cycles > 0 and state.circles > 0:
             # P2-5: this sweep has read windows without progress for a while
             # (an activation signal that keeps being re-lit but never consumed).
@@ -1504,9 +1558,14 @@ def session_rotation_state_from_mapping(
     offset = _optional_int(value.get("offset"))
     return SessionRotationState(
         active=value.get("active") is True,
+        # 0 is a legitimate position since T1b: it is the seam-0 start, where
+        # page 1 displaced its whole exposed history and the ladder must read
+        # the first window. Anything below 0 is corruption and falls back to
+        # the fixed first window (a ladder there re-seeks to the seam anyway,
+        # so the fallback costs a bounded run of unproven empties, not a hole).
         offset=(
             offset
-            if offset is not None and offset >= SESSION_ROTATION_MIN_OFFSET
+            if offset is not None and offset >= 0
             else SESSION_ROTATION_FIRST_OFFSET
         ),
         circle_candidates=_optional_int(value.get("circleCandidates")) or 0,
@@ -1598,23 +1657,53 @@ def _page_reported_seam(page_one_page: Any) -> int | None:
     return scanned
 
 
+def _page_one_complete(page_one_page: Any) -> bool:
+    """Whether page 1 itself proved it covers the entire library (T1b).
+
+    Only the Claude reader reports this (`SessionListPage.page_one_complete`):
+    the history list read whole — fewer rows than the page size, every one
+    keyed, every session it would compare represented on the merged page. For
+    every other runtime the answer is False, which keeps the sweep walking
+    windows exactly as it did before the verdict existed.
+    """
+
+    return getattr(page_one_page, "page_one_complete", False) is True
+
+
 def _first_rotation_offset(page_one_page: Any) -> int:
-    """Where a starting or wrapping ladder should aim (R1 P2-6).
+    """Where a starting or wrapping ladder should aim (R1 P2-6, T1b).
 
     Page 1 is the local overlay merged over `history[0:limit]` and then
     truncated, so local-only sessions push the tail of that history range off
     the page; those sessions are in no rotation window either. A reader that
-    reports its seam (how many history sessions page 1 really exposed) is
-    believed, and the ladder starts there, which is inside the usual first
-    window when there was displacement and exactly the first window when there
-    was not. A reader that reports nothing (or reports a failed read, seam 0)
-    keeps the fixed page boundary.
+    reports its seam (how many history sessions page 1 really exposed — its
+    `history_scanned` field) is believed, and the ladder starts there, which
+    is inside the usual first window when there was displacement and exactly
+    the first window when there was not. A reader that reports nothing keeps
+    the fixed page boundary, and so does one whose read failed — a seam of 0
+    from a failed read says nothing about displacement.
+
+    A seam of 0 with a successful read says exactly one thing (T1b): page 1
+    exposed no history session under its own identity, so whatever readable
+    history it left uncovered is the first thing the ladder must walk. The
+    reader's coverage verdict sharpens that: a page whose history list was
+    fully represented anyway (every row merged under its local identity)
+    reports itself complete, and page 1 is the wrong thing to re-read — the
+    sweep returns before the ladder in that case. What is left here is a
+    seam-0 page that does not cover the library, which means readable rows
+    exist that it did not show; they start at 0, and the fixed boundary
+    would step straight over them — with every window past them legitimately
+    empty, the sweep would never look back.
     """
 
     seam = _page_reported_seam(page_one_page)
-    if seam is None or seam < SESSION_ROTATION_MIN_OFFSET:
+    if seam is None or _page_read_failed(page_one_page):
         return SESSION_ROTATION_FIRST_OFFSET
-    return seam
+    if seam >= SESSION_ROTATION_MIN_OFFSET:
+        return seam
+    if _page_one_complete(page_one_page):
+        return SESSION_ROTATION_FIRST_OFFSET
+    return 0
 
 
 def _optional_int(value: Any) -> int | None:

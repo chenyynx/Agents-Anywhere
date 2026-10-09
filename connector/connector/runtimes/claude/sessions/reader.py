@@ -119,6 +119,16 @@ class SessionListPage(tuple):
     `history[0:limit]` out of the page entirely; those displaced sessions are
     in no window either, which is a coverage hole the ladder starts after the
     seam instead of at a fixed page boundary.
+
+    `page_one_complete` is the first page's own verdict that it covers the
+    ENTIRE library (task sheet §3 T1b): the history list read whole (fewer
+    rows than the page size, so the SDK hit the end of the list rather than a
+    page boundary) with every session it named represented on the merged
+    page. A library that small can never prove its end from a window — every
+    window past the seam is legitimately empty and an empty window is not
+    proof (R1 P1-2/P1-3) — so without this verdict the sweep would read one
+    empty window per cycle forever. Only the first page can report it; a
+    paged window always leaves it False.
     """
 
     # No `__slots__`: a variable-length builtin like tuple refuses them, and a
@@ -129,12 +139,14 @@ class SessionListPage(tuple):
         *,
         history_scanned: int | None = None,
         read_failed: bool = False,
+        page_one_complete: bool = False,
     ) -> Self:
         page = super().__new__(cls, sessions)
         page.history_scanned = (
             len(page) if history_scanned is None else history_scanned
         )
         page.read_failed = read_failed
+        page.page_one_complete = page_one_complete
         return page
 
     def rescanned(self, sessions: tuple[SessionMeta, ...]) -> SessionListPage:
@@ -151,6 +163,7 @@ class SessionListPage(tuple):
             sessions,
             history_scanned=self.history_scanned,
             read_failed=self.read_failed,
+            page_one_complete=self.page_one_complete,
         )
 
 
@@ -176,7 +189,6 @@ class ClaudeSessionReader:
         cursor: str | None = None,
         force: bool = False,
     ) -> SessionListPage:
-        offset = _cursor_offset(cursor)
         # Kept separate from the filtered list below: the page's flags
         # describe the READ, and the filters must not erase them.
         history_page = await self._list_history_sessions(
@@ -193,16 +205,18 @@ class ClaudeSessionReader:
             runtime_sessions=self.session_store.sessions(),
             history_sessions=history_sessions,
         )
-        if offset > 0:
-            # Pages past the first are the library-coverage window (the rotating
-            # scan that reaches sessions beyond the first page). The local
-            # overlay is liveness freshness and belongs to page 1, which is
-            # fetched unchanged every cycle: merging it into a paged window
-            # would pull page-1 sessions up and then `[:limit]` would cut the
-            # tail of the window — dropping exactly the sessions a coverage
-            # sweep exists to reach. A paged window is therefore the raw history
-            # window, still guarded by the live/active filters above so an
-            # actively driven session is never rebuilt behind the live writer.
+        if cursor is not None:
+            # A paged window — any explicit cursor, including 0, where the
+            # ladder starts when page 1 displaced its whole exposed range
+            # (T1b) — is the library-coverage window (the rotating scan that
+            # reaches sessions beyond the first page). The local overlay is
+            # liveness freshness and belongs to page 1, which is fetched
+            # unchanged every cycle: merging it into a paged window would pull
+            # page-1 sessions up and then `[:limit]` would cut the tail of the
+            # window — dropping exactly the sessions a coverage sweep exists to
+            # reach. A paged window is therefore the raw history window, still
+            # guarded by the live/active filters above so an actively driven
+            # session is never rebuilt behind the live writer.
             return history_page.rescanned(history_sessions[:limit])
         local_sessions = self.session_store.list_sessions(limit=limit)
         merged = _merge_session_metas(local_sessions, history_sessions)[:limit]
@@ -214,6 +228,18 @@ class ClaudeSessionReader:
             history_scanned=_history_seam_for_page_one(
                 merged,
                 local_sessions=local_sessions,
+            ),
+            # A failed history read must reach the page-1 result too: the
+            # merged page then holds local-only sessions (or nothing), and
+            # without this flag a seam of 0 would be indistinguishable from
+            # "the whole exposed history was displaced" (T1b) — which starts
+            # the ladder at a position the failed read never proved.
+            read_failed=history_page.read_failed,
+            page_one_complete=_page_one_covers_library(
+                merged_page=merged,
+                history_page=history_page,
+                history_sessions=history_sessions,
+                limit=limit,
             ),
         )
 
@@ -1545,6 +1571,67 @@ def _history_seam_for_page_one(
             session.external_session_id is None
             or session.external_session_id not in local_ids
         )
+    )
+
+
+def _page_one_covers_library(
+    *,
+    merged_page: tuple[SessionMeta, ...],
+    history_page: SessionListPage,
+    history_sessions: tuple[SessionMeta, ...],
+    limit: int,
+) -> bool:
+    """Whether page 1 provably covers the entire library (T1b).
+
+    The rotation ladder walks window after window until a read proves where
+    the library ends. A library whose whole list fits inside the first page
+    can never prove that from a window — every window past the seam is
+    legitimately empty, and an empty window is not proof (R1 P1-2/P1-3) — so
+    the sweep would read one empty window per cycle forever. The page that
+    DOES cover such a library says so instead, on three conditions that
+    together make the claim sound:
+
+    * the history read succeeded (`read_failed` is False);
+    * the SDK returned fewer rows than the page size, so this read reached
+      the end of the list rather than a page boundary (a full window is
+      unprovable either way: the library may be exactly one page, or longer
+      — the residual the ladder still has to walk);
+    * every row the read returned was keyed (a row without an id cannot be
+      found on the page either) and every session this page would have
+      compared is on the merged page, claimed by session id or external id
+      — so a session merged with its local overlay counts as covered.
+
+    The checked list is the FILTERED history list. Sessions the live/active
+    filters dropped are excluded on purpose: a paged window applies the same
+    filters, so the sweep could never rebuild them either, and their own
+    sync paths (or page 1, once they settle) own them. Any session that was
+    displaced off the merged page is still checked — none of the conditions
+    above may be skipped, so the flag stays False exactly when the ladder
+    still has something to walk.
+    """
+
+    if history_page.read_failed:
+        return False
+    if history_page.history_scanned >= limit:
+        # The SDK filled the window: a full page is a page boundary, not the
+        # end of the library.
+        return False
+    if len(history_page) != history_page.history_scanned:
+        # Rows the reader could not key on are rows it cannot vouch for.
+        return False
+    covered = {
+        identifier
+        for session in merged_page
+        for identifier in (session.session_id, session.external_session_id)
+        if identifier
+    }
+    return all(
+        session.session_id in covered
+        or (
+            session.external_session_id is not None
+            and session.external_session_id in covered
+        )
+        for session in history_sessions
     )
 
 

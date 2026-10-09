@@ -200,6 +200,20 @@ import Testing
         #expect(!draft.hasContent && !draft.isExpanded && !draft.canAttemptSend)
     }
 
+    /// Only the expanding transition animates. The bar's height is a layout
+    /// input to the page's bottom inset, so a plain focus write grows it one
+    /// frame before the keyboard's own animation and the list snaps — the
+    /// jolt the device reports with an empty composer, and only with an empty
+    /// one: a draft holding text is already expanded, so focus changes nothing.
+    /// Collapsing keeps its existing path, and reduce motion keeps it still.
+    @Test func onlyTheComposerExpansionAnimates() {
+        #expect(ComposerFocusTransition.animates(previous: false, next: true, reduceMotion: false))
+        #expect(!ComposerFocusTransition.animates(previous: true, next: true, reduceMotion: false))
+        #expect(!ComposerFocusTransition.animates(previous: true, next: false, reduceMotion: false))
+        #expect(!ComposerFocusTransition.animates(previous: false, next: false, reduceMotion: false))
+        #expect(!ComposerFocusTransition.animates(previous: false, next: true, reduceMotion: true))
+    }
+
     @Test func catalogRespectsTopLevelAvailabilityAndOpaqueModelReasoningIDs() throws {
         var modelCatalog = try fixtureObject("modelCatalog")
         var catalog = modelCatalog["catalog"] as! [String: Any]

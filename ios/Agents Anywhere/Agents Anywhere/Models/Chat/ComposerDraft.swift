@@ -28,6 +28,18 @@ nonisolated struct ChatAttachment: Codable, Identifiable, Equatable {
     }
 }
 
+/// Whether a focus write must carry an animation. Only the expanding
+/// transition does: the bar's height is a layout input to the page's bottom
+/// inset, so a plain write grows that inset one frame — and one transaction —
+/// before the keyboard's own animation starts, and the list answers with a
+/// snap. Collapsing keeps its existing path: the keyboard's animation already
+/// carries it, and the field reports it as smooth.
+nonisolated enum ComposerFocusTransition {
+    static func animates(previous: Bool, next: Bool, reduceMotion: Bool) -> Bool {
+        next && !previous && !reduceMotion
+    }
+}
+
 /// The editor owns marked-text state; the account/session owns the draft lifetime.
 @MainActor @Observable
 final class ComposerDraft {

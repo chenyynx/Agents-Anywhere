@@ -38,6 +38,10 @@ struct SubAgentPanelSheet: View {
     private var accent: AppAccent { AppAccent.resolve(accentValue) }
     @State private var selection: String?
     @State private var showsFullPrompt = false
+    /// P3: whether the selected card's lazily-fetched detail rows are being
+    /// loaded. Reuses `isContentLoaded` as the state bit — this only picks
+    /// between the skeleton and the honest "not loaded" line.
+    @State private var isLoadingDetail = false
 
     private static let collapsedPromptLimit = 8
     /// Below this the prompt renders whole; no fold affordance for short text.
@@ -59,6 +63,11 @@ struct SubAgentPanelSheet: View {
     }
 
     private var window: [V2TimelineItem] { chat.timeline.rows.map(\.value) }
+    /// The loaded window plus the lazily-fetched SubAgent detail sidecar
+    /// (P3): what the activity section can render right now. The card list
+    /// itself still reads the window ∪ active-card sidecar — detail rows only
+    /// feed the per-card content.
+    private var detailWindow: [V2TimelineItem] { window + chat.timeline.detailRows.map(\.value) }
     private var sidecar: [V2ActiveAgentCard] { chat.session.activeAgentCards }
     /// The panel's whole source: every top-level card the session holds, from
     /// the same union the capsule counts (pp 2026-10-08: 不分回合).
@@ -119,6 +128,28 @@ struct SubAgentPanelSheet: View {
         }
         .appSheetPresentation(.compact)
         .onChange(of: selection) { _, _ in showsFullPrompt = false }
+        .task(id: detailRequest) { await loadDetailIfNeeded() }
+    }
+
+    /// The card whose detail rows this screen wants right now: the selection
+    /// while its content is missing locally, nil otherwise (nothing to load,
+    /// or the rows are already here). Driving `.task(id:)` from it keeps the
+    /// load one-shot per card — a failed load is not retried until a new
+    /// selection, and a card the panel never shows produces no request.
+    private var detailRequest: String? {
+        guard let card = selectedCard, !SubAgentProgress.isContentLoaded(card, in: detailWindow) else { return nil }
+        return card.id
+    }
+
+    /// P3: fetches the missing rows through the repository's on-demand
+    /// `mode=children` read (lineage-wide, so a resume-alias card pulls its
+    /// dispatch sibling's rows too). The skeleton shows while it runs; the
+    /// merged rows arrive through the projection like every other update.
+    private func loadDetailIfNeeded() async {
+        guard let card = selectedCard, !SubAgentProgress.isContentLoaded(card, in: detailWindow) else { return }
+        isLoadingDetail = true
+        defer { isLoadingDetail = false }
+        await chat.session.loadSubAgentDetail(parentIDs: SubAgentProgress.lineageIDs(of: card, in: detailWindow))
     }
 
     // MARK: Header controls
@@ -240,8 +271,10 @@ struct SubAgentPanelSheet: View {
             // prompt but none of its activity. Say so instead of rendering a
             // blank body that reads as "nothing happened". A resume-alias card
             // passes this gate through its sibling's rows (pp 2026-10-09).
-            if !SubAgentProgress.isContentLoaded(card, in: window) {
-                notLoadedNotice
+            // P3: while those rows are being fetched on demand, the skeleton
+            // stands in; only a settled miss keeps the honest notice.
+            if !SubAgentProgress.isContentLoaded(card, in: detailWindow) {
+                if isLoadingDetail { SubAgentDetailLoadingSkeleton() } else { notLoadedNotice }
             }
             promptSection(card)
             activitySection(card)
@@ -321,18 +354,48 @@ struct SubAgentPanelSheet: View {
     /// The card's visible activity rows, as the row models the chat already
     /// holds. Membership and order come from the ClientCore rule
     /// (`SubAgentProgress.activityRows`, which merges a resume alias with its
-    /// original dispatch card); the lookup only swaps item ids for those live
-    /// models, so the panel renders the chat's own reveal state.
+    /// original dispatch card); the lookup swaps item ids for those live
+    /// models — the window's rows first, the detail sidecar's rows (P3) for
+    /// the ones the window no longer holds — so the panel renders the chat's
+    /// own reveal state and never duplicates a row.
     private func activityRows(of card: SubAgentCard) -> [ChatTimelineRowModel] {
-        let rowsByID = Dictionary(chat.timeline.rows.map { ($0.id, $0) },
+        let rowsByID = Dictionary((chat.timeline.rows + chat.timeline.detailRows).map { ($0.id, $0) },
                                   uniquingKeysWith: { first, _ in first })
-        return SubAgentProgress.activityRows(of: card, in: chat.timeline.rows.map(\.value))
+        return SubAgentProgress.activityRows(of: card, in: detailWindow)
             .compactMap { rowsByID[$0.id] }
     }
 
     private func sectionLabel(_ text: String) -> some View {
         Text(text).font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
             .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// P3: the loading placeholder for one card's lazily-paged detail rows —
+/// shown while the on-demand `mode=children` load runs, in place of the
+/// "内容未加载" notice. Reuses the existing loading copy; the geometry mirrors
+/// the activity list's rounded panel so the swap does not jump.
+private struct SubAgentDetailLoadingSkeleton: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(0..<3, id: \.self) { index in
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(.quaternary)
+                    .frame(height: 13)
+                    .frame(maxWidth: index == 2 ? 180 : .infinity, alignment: .leading)
+                    .opacity([0.9, 0.65, 0.45][index])
+            }
+            HStack(spacing: 8) {
+                ProgressView().progressViewStyle(.circular).controlSize(.small)
+                Text(String(localized: "正在加载较早的消息…"))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(uiColor: .secondarySystemBackground), in: .rect(cornerRadius: 14))
+        .accessibilityElement(children: .combine)
     }
 }
 

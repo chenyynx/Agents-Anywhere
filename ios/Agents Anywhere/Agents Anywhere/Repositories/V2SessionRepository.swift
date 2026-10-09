@@ -6,7 +6,15 @@ nonisolated struct V2SessionCachePolicy {
     /// cache instead of the network. The local store's per-file (64MB) and
     /// total (128MB) budgets plus the LRU eviction below still bound disk use.
     var maximumSessions = 20
-    var maximumTimelineItems = 1000
+    /// The in-memory window's row cap (session-open-coverage P2: raised from
+    /// the single 1000 gate to the backfill's 3000 budget — every session in
+    /// production fits inside it once SubAgent child rows are excluded).
+    var maximumTimelineItems = 3000
+    /// The window's second gate: approximate serialized bytes, so a session
+    /// of few-but-huge rows (tool output, card payloads) cannot blow past the
+    /// row count's implied size. 32MB covers the largest observed session's
+    /// raw JSON (25MB) with headroom.
+    var maximumTimelineBytes = 32 * 1024 * 1024
     var catalogLifetime: TimeInterval = 30
 }
 
@@ -163,7 +171,7 @@ final class V2SessionRepository {
 
     func stageCreation(_ submission: NewSessionSubmission) {
         let entry = entry(for: submission.session.id)
-        entry.projection = V2SessionProjection.placeholder(submission.session, maximumItems: policy.maximumTimelineItems, now: now)
+        entry.projection = V2SessionProjection.placeholder(submission.session, maximumItems: policy.maximumTimelineItems, maximumBytes: policy.maximumTimelineBytes, now: now)
         entry.model.stage(submission.pending)
         emit(entry)
     }
@@ -171,7 +179,7 @@ final class V2SessionRepository {
     func bindCreation(_ submission: NewSessionSubmission, response: V2SessionCreateResponse) {
         let entry = entry(for: response.session.id)
         if entry.projection == nil {
-            entry.projection = V2SessionProjection.placeholder(response.session, maximumItems: policy.maximumTimelineItems, now: now)
+            entry.projection = V2SessionProjection.placeholder(response.session, maximumItems: policy.maximumTimelineItems, maximumBytes: policy.maximumTimelineBytes, now: now)
             entry.needsSnapshot = true
         }
         for (attachment, uploaded) in zip(submission.pending.attachments, response.attachments ?? []) {
@@ -194,7 +202,7 @@ final class V2SessionRepository {
         guard isCurrent(entry), entry.projection == nil, !entry.hasReadLocal else { return }
         entry.hasReadLocal = true; entry.localReadTask = nil
         guard let saved, saved.session.id == id,
-              let projection = try? saved.projection(maximumItems: policy.maximumTimelineItems, now: now) else { return }
+              let projection = try? saved.projection(maximumItems: policy.maximumTimelineItems, maximumBytes: policy.maximumTimelineBytes, now: now) else { return }
         entry.projection = projection
         // A failure that outlived the process is still on record: the ring is
         // restored beside the projection it belongs to.
@@ -249,13 +257,22 @@ final class V2SessionRepository {
     func refresh(sessionId: V2SessionID) async throws -> V2SessionData {
         try requireNetwork()
         let entry = entry(for: sessionId)
+        // The rebuild cancels the lifecycle's tasks (stop cancels the
+        // backfill too); an explicit refresh is not a choice to abandon the
+        // fill, so it is re-armed against the fresh window.
+        let backfillWasRunning = entry.backfillTask != nil
         stop(entry)
         entry.loadTask?.cancel()
         entry.loadTask = nil
         entry.readVersion += 1
         entry.historyTask?.cancel()
         entry.historyTask = nil
-        defer { if isCurrent(entry) { start(entry) } }
+        defer {
+            if isCurrent(entry) {
+                start(entry)
+                if backfillWasRunning { beginHistoryBackfill(sessionId: sessionId) }
+            }
+        }
         return try await hydrate(entry)
     }
 
@@ -294,6 +311,150 @@ final class V2SessionRepository {
         entry.projection?.applyLatest(page)
         emit(entry)
         return entry.projection!.data
+    }
+
+    // MARK: - Automatic full-history backfill (session-open-coverage P2)
+
+    /// How long the backfill waits between checks while the reader is active.
+    /// The gate is level-triggered (a bool and the composer's own focus), not
+    /// edge-triggered, so no signal can be lost by a missed notification.
+    private static let backfillQuietPollInterval: Duration = .milliseconds(200)
+    /// Consecutive rounds that make no progress before the backfill gives up.
+    /// A page the server answers empty while `hasMore` still holds cannot
+    /// advance the cursor (`loadOlder` pages from the oldest loaded row), and
+    /// the contract expects hasMore to be computed over the filtered set, so
+    /// one empty page is tolerated and continued past; a second identical
+    /// round proves the loop cannot progress and stops instead of spinning.
+    private static let backfillStallLimit = 2
+
+    /// Arms the post-paint automatic backfill: after the opening frame has
+    /// rendered and its position settled, the session loads its whole history
+    /// through the same `loadOlder` path the reader's own swipes use (same
+    /// merge, same coalescing — an in-flight manual page is joined, never
+    /// duplicated), until the session's start, the window budget or an error
+    /// stops it. Deliberately not part of `open()`: nothing here may touch the
+    /// first frame's critical path. Idempotent per entry; a second call while
+    /// one runs is ignored, and a later open resumes from wherever the last
+    /// one stopped.
+    func beginHistoryBackfill(sessionId: V2SessionID) {
+        let entry = entry(for: sessionId)
+        guard entry.backfillTask == nil else { return }
+        let id = UUID()
+        entry.backfillID = id
+        entry.backfillTask = Task { [weak self] in
+            defer { if entry.backfillID == id { entry.backfillTask = nil } }
+            guard let self else { return }
+            await self.runHistoryBackfill(entry)
+        }
+    }
+
+    /// The chat page reports its reader signal — the existing scroll state
+    /// machine's `userIsScrolling` — so the backfill defers merging history
+    /// rows while the reader is on the move (inserting history rows under an
+    /// active scroll fights the reader). Input is read from the composer
+    /// directly by the loop; together they are the "暂停合并、停顿后续传"
+    /// throttle. Clearing the flag resumes the loop on its next check.
+    func setBackfillReaderScrolling(_ scrolling: Bool, sessionId: V2SessionID) {
+        entries[sessionId]?.backfillReaderIsScrolling = scrolling
+    }
+
+    /// One backfill loop, owned by the entry's lifecycle (`stop()` cancels
+    /// it). Each round: stop checks, the reader-quiet gate, then one page
+    /// through `loadOlder`. A failure stops the loop (the next open resumes);
+    /// so does a round that cannot move the window's oldest row.
+    private func runHistoryBackfill(_ entry: Entry) async {
+        var stalledRounds = 0
+        while !Task.isCancelled {
+            guard isCurrent(entry) else { return }
+            guard let projection = entry.projection, projection.data.hasOlderItems else { return } // session start
+            guard !projection.windowIsAtCapacity else { return }                                   // budget
+            guard await waitForBackfillQuiet(entry) else { return }                                // pause / lifecycle end
+            let before = entry.projection?.data.items.first?.orderSeq
+            do { _ = try await loadOlder(sessionId: entry.id) }
+            catch { return } // error → stop; next open resumes
+            guard isCurrent(entry) else { return }
+            let after = entry.projection?.data.items.first?.orderSeq
+            if after == before {
+                stalledRounds += 1
+                if stalledRounds >= Self.backfillStallLimit { return }
+            } else {
+                stalledRounds = 0
+            }
+        }
+    }
+
+    /// Waits until neither the reader nor the composer is active. Returns
+    /// false when the entry's lifecycle ended (stop/evict/offline), which the
+    /// loop treats exactly like a stop.
+    private func waitForBackfillQuiet(_ entry: Entry) async -> Bool {
+        while !Task.isCancelled, isCurrent(entry) {
+            if !backfillReaderIsActive(entry) { return true }
+            do { try await sleep(Self.backfillQuietPollInterval) }
+            catch { return false }
+        }
+        return false
+    }
+
+    private func backfillReaderIsActive(_ entry: Entry) -> Bool {
+        if entry.backfillReaderIsScrolling { return true }
+        // 输入中: the keyboard being up counts as active input.
+        return entry.model.composer.isFocused || entry.model.composer.isComposing
+    }
+
+    // MARK: - On-demand SubAgent detail (session-open-coverage P3)
+
+    /// How many rows one request asks for — the timeline endpoint's own page
+    /// size, so a card's span arrives at the same cadence as any history read.
+    private static let subAgentDetailPageLimit = 100
+
+    /// Loads the given SubAgent cards' own rows (timeline `mode=children`)
+    /// into the projection's detail sidecar, newest → oldest until the card's
+    /// span is exhausted or the per-card caps are reached. Best effort by
+    /// design: a failure leaves the panel's own "not loaded" state in place
+    /// and the next open of the card retries. Never touches the window, its
+    /// history flags or its cursor — see `V2SessionProjection.applyChildren`.
+    func loadSubAgentDetail(sessionId: V2SessionID, parentIDs: Set<String>) async {
+        guard !parentIDs.isEmpty else { return }
+        let entry = entry(for: sessionId)
+        guard (try? requireNetwork()) != nil else { return }
+        _ = try? await load(sessionId: sessionId)
+        guard isCurrent(entry), entry.projection != nil else { return }
+        for parentID in parentIDs.sorted() {
+            guard isCurrent(entry), !Task.isCancelled else { return }
+            await loadChildren(entry, parentID: parentID)
+        }
+    }
+
+    private func loadChildren(_ entry: Entry, parentID: String) async {
+        var before: Int?
+        var loadedRows = 0
+        var loadedBytes = 0
+        while !Task.isCancelled, isCurrent(entry) {
+            let page: V2SessionTimelinePage
+            do {
+                page = try await detail.loadChildrenItems(
+                    sessionId: entry.id,
+                    parentId: parentID,
+                    beforeOrderSeq: before,
+                    limit: Self.subAgentDetailPageLimit
+                )
+            } catch {
+                return
+            }
+            guard isCurrent(entry), let projection = entry.projection else { return }
+            projection.applyChildren(page, parents: [parentID])
+            emit(entry)
+            guard page.hasMore else { return }
+            // The cursor is the oldest row of the page, whatever order the
+            // server returned the page in; an empty page cannot advance it and
+            // ends this card's load.
+            guard let oldest = page.items.map(\.orderSeq).min() else { return }
+            loadedRows += page.items.count
+            loadedBytes += page.items.reduce(0) { $0 + V2SessionProjection.approximateWireBytes($1) }
+            guard loadedRows < V2SessionProjection.maximumDetailItems,
+                  loadedBytes < V2SessionProjection.maximumDetailBytes else { return }
+            before = oldest
+        }
     }
 
     func catalogs(sessionId: V2SessionID, force: Bool = false, capabilities: V2RuntimeCapabilitySnapshot? = nil) async throws -> V2SessionCatalogs {
@@ -603,7 +764,7 @@ final class V2SessionRepository {
             let snapshot = try await detail.load(sessionId: entry.id)
             try requireCurrent(entry, version: version)
             guard snapshot.session.id == entry.id else { throw CacheError.invalidated }
-            entry.projection = V2SessionProjection(snapshot: snapshot, maximumItems: policy.maximumTimelineItems, now: now)
+            entry.projection = V2SessionProjection(snapshot: snapshot, maximumItems: policy.maximumTimelineItems, maximumBytes: policy.maximumTimelineBytes, now: now)
             invalidateCatalogs(entry)
             entry.error = nil
             emit(entry)
@@ -1149,6 +1310,12 @@ final class V2SessionRepository {
         entry.connectionID = UUID()
         entry.connectionTask?.cancel()
         entry.connectionTask = nil
+        // The automatic backfill belongs to the observed lifecycle: it exists
+        // to fill a window someone is looking at. A canceled loop stops
+        // quietly (a later open resumes from wherever it got to).
+        entry.backfillID = UUID()
+        entry.backfillTask?.cancel()
+        entry.backfillTask = nil
         entry.healID = UUID()
         entry.healTask?.cancel()
         entry.healTask = nil
@@ -1190,6 +1357,7 @@ final class V2SessionRepository {
         let candidates = entries.values.filter {
             $0 !== protected && $0.observers.isEmpty && $0.loadTask == nil && $0.catalogTask == nil
                 && $0.historyTask == nil && $0.recoveryTask == nil && $0.followUpReconcileTask == nil
+                && $0.backfillTask == nil
                 && !$0.model.hasLocalWork
         }
             .sorted { $0.lastAccess < $1.lastAccess }
@@ -1221,6 +1389,13 @@ private final class Entry {
     var observers: [UUID: AsyncStream<V2SessionObservation>.Continuation] = [:]
     var loadTask: Task<V2SessionData, Error>?
     var historyTask: Task<V2SessionData, Error>?
+    /// The automatic full-history backfill loop (P2). Cancelled by `stop()`;
+    /// the id lets a loop that is ending clear its own registration only.
+    var backfillTask: Task<Void, Never>?
+    var backfillID = UUID()
+    /// The chat page's scroll state machine's reader signal, forwarded by the
+    /// view; the backfill's quiet gate reads it.
+    var backfillReaderIsScrolling = false
     var catalogTask: Task<V2SessionCatalogs, Error>?
     /// Single-flight recovery round. It returns its outcome instead of
     /// throwing, so joining callers can choose to surface or ignore failure.

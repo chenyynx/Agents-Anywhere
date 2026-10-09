@@ -314,6 +314,7 @@ def _classify(
 def test_pending_await_classification_table() -> None:
     projector = ClaudeMessageProjector()
     session = _session()
+    ask_notice = SimpleNamespace(interaction_type="input_request")
 
     assert _classify(projector, []) is lifecycle.PendingAwait.NONE
 
@@ -325,10 +326,14 @@ def test_pending_await_classification_table() -> None:
     assert lifecycle.PendingAwait.EXECUTION.cap_exempt is False
 
     _project_tool_use(projector, session, TURN_NEW, "toolu_ask", "AskUserQuestion")
-    assert _classify(projector, []) is lifecycle.PendingAwait.INTERACTION, (
-        "a question call exempts the hard cap as well"
+    assert _classify(projector, [ask_notice]) is lifecycle.PendingAwait.INTERACTION, (
+        "a live question notice exempts the hard cap as well"
     )
     assert lifecycle.PendingAwait.INTERACTION.cap_exempt is True
+    assert _classify(projector, []) is lifecycle.PendingAwait.EXECUTION, (
+        "B5/F1: the same question call without a live notice is a stale "
+        "leftover — the stall clock pauses, the hard cap stays armed"
+    )
 
 
 def test_pending_await_ignores_other_turns_leftovers() -> None:
@@ -350,3 +355,38 @@ def test_pending_await_reads_the_notice_path_for_approvals() -> None:
     assert _classify(projector, [notice]) is lifecycle.PendingAwait.INTERACTION, (
         "a pending approval exempts the cap even with no open call projected"
     )
+
+
+def test_interaction_needs_a_live_notice_not_a_tool_name() -> None:
+    """B5/F1: INTERACTION is gated on the notice registry alone.
+
+    The red-team finding (`.local-dev/watchdog-liveness-b4-report.md` §1): a
+    stale `AskUserQuestion` open entry — its result lost to a scope-drift
+    pop-miss, its notice long closed — classified INTERACTION by name, which
+    turned OFF the hard cap and PAUSED the stall clock, so the turn could sit
+    on the execution lock at any age with no timer able to collect it. The
+    real CLI routes AskUserQuestion through `can_use_tool` in every
+    permission mode (B4 §2a), so a legitimate question always HAS a notice.
+    The three states pinned here: stale entry without a notice -> EXECUTION
+    (cap armed), live notice -> INTERACTION (cap exempt), and the name alone,
+    with no notice, is never enough.
+    """
+
+    projector = ClaudeMessageProjector()
+    session = _session()
+    _project_tool_use(projector, session, TURN_NEW, "toolu_ask", "AskUserQuestion")
+
+    stale = _classify(projector, [])
+    assert stale is lifecycle.PendingAwait.EXECUTION
+    assert stale.cap_exempt is False, "the hard cap must stay armed (F1)"
+    assert stale.stall_suspended is True, "the call's silence is still legal"
+
+    live = _classify(projector, [SimpleNamespace(interaction_type="input_request")])
+    assert live is lifecycle.PendingAwait.INTERACTION
+    assert live.cap_exempt is True
+
+    # The name carries no signal of its own: an execution-class entry with
+    # the same empty registry classifies identically.
+    projector_b = ClaudeMessageProjector()
+    _project_tool_use(projector_b, session, TURN_NEW, "toolu_bash_2", "Bash")
+    assert _classify(projector_b, []) is lifecycle.PendingAwait.EXECUTION

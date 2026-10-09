@@ -281,6 +281,19 @@ def test_watchdog_deadlines_are_the_adjudicated_product_budgets() -> None:
     assert lifecycle.CONTENTING_TURN_FLOOR_SECONDS == 600.0
     assert lifecycle.CONTENTING_TURN_STALL_SECONDS == 300.0
     assert lifecycle.CONTENTING_TURN_HARD_CAP_SECONDS == 3600.0
+    # B3 §3 leftover: the floor must cover the fast-kill window PLUS the
+    # stall budget. Labour inside the fast-kill window is not yet observable
+    # by the polling loop, so the stall clock can only be anchored at the
+    # turn's cast; floor >= fast + stall makes the cast-anchored reading and
+    # the exact reading agree on the first permissible fire (≤1 tick late,
+    # never early). B3's first scaling broke this (floor=12 < 30+8) and
+    # murdered a mid-work turn at age 30 — this pins the contract against
+    # future re-tuning in either direction.
+    assert (
+        lifecycle.CONTENTING_TURN_FLOOR_SECONDS
+        >= lifecycle.POLLED_TURN_WATCHDOG_SECONDS
+        + lifecycle.CONTENTING_TURN_STALL_SECONDS
+    )
 
 
 # --------------------------------------------------------------------------
@@ -360,6 +373,51 @@ def test_a_finished_turn_never_fires_a_deadline() -> None:
             pending_await=lambda: lifecycle.PendingAwait.NONE,
         )
         assert verdict is None
+
+    asyncio.run(run())
+
+
+def test_a_raising_pending_sampler_is_contained_and_the_stall_still_fires() -> None:
+    """F3 (B4 §1): a per-tick accessor raise must not decapitate the watchdog.
+
+    B4's micro-probe: the sampler is a composite of two live accessors with
+    no guard, so one raise killed the adjudication task on the first tick —
+    no verdict, no fire, no terminal, the lock held, and no log until task-GC
+    time. The guard treats a raising sampler as NONE for that tick — the
+    strictest reading, both timers keep running — and logs it once per turn.
+    """
+
+    execution = ClaudeExecution(turn_id="turn_boom", published_items=5)
+    calls = 0
+
+    def boom() -> lifecycle.PendingAwait:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("pending accessor blew up")
+
+    async def run() -> None:
+        with _CapturedWarnings() as captured:
+            task = asyncio.create_task(
+                lifecycle.ClaudeTurnRunner._await_watchdog_deadlines(
+                    execution,
+                    0.02,  # fast kill
+                    0.1,  # floor: the stall verdict below is due at ~0.1s
+                    0.05,  # stall
+                    5.0,  # hard cap: must NOT be what collects this turn
+                    0.01,  # tick
+                    "turn_boom",
+                    pending_await=boom,
+                )
+            )
+            verdict = await asyncio.wait_for(task, 2.0)
+        assert verdict is not None, "a sampler raise must not kill the verdict loop"
+        assert verdict.reason == lifecycle.WATCHDOG_REASON_CONTENT_STALL
+        assert verdict.pending is lifecycle.PendingAwait.NONE
+        assert calls > 1, "the loop must keep polling after a failed sample"
+        log = captured.joined()
+        assert log.count("pending await sampler raised") == 1, (
+            log + "\n(a failing sampler is announced once per turn, not per tick)"
+        )
 
     asyncio.run(run())
 
@@ -1916,9 +1974,12 @@ TOOL_RESULT_BASH_FRAME = {
     "uuid": "b2-tool-result-bash",
 }
 
-# The question shape: an open call the users sees as a card. Its card is a
-# visible "waiting for you" state, so no timer — stall clock or hard cap —
-# may kill the turn while it is unanswered.
+# The question shape: the CLI emits this tool_use AND holds `can_use_tool`
+# (the live notice, created via `request_user_input` in the tests below) —
+# that pair is the card the user sees, a visible "waiting for you" state, so
+# no timer — stall clock or hard cap — may kill the turn while it is
+# unanswered. The bare frame alone is no longer proof of a live question
+# (B5/F1): without a notice it is a stale leftover and the cap stays armed.
 TOOL_USE_QUESTION_FRAME = {
     "type": "assistant",
     "message": {
@@ -2118,7 +2179,13 @@ def test_pending_execution_call_does_not_exempt_the_hard_cap(
 def test_pending_question_exempts_even_the_hard_cap_until_answered(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """D2: through the PROJECTION — an open AskUserQuestion call is a card on screen.
+    """D2: a LIVE question notice holds every deadline until it is answered.
+
+    B5/F1 update: the exemption is driven by the interaction notice — the
+    healthy question shape is the frame (projected card) PLUS the
+    `can_use_tool` hold (the notice), exactly as the real CLI produces it in
+    every permission mode; the bare frame no longer exempts (its stale shape
+    is pinned by `test_a_stale_question_entry_is_closed_by_the_hard_cap`).
 
     修前红: with B1 behaviour (or with an execution-only exemption) the hard
     cap fires at HARD_CAP and destroys the question; the sleep below crosses
@@ -2139,13 +2206,29 @@ def test_pending_question_exempts_even_the_hard_cap_until_answered(
             session = await _settled_session(runtime, "pendingask")
             execution = await _cast_with_labour(client, session)
             runner = runtime._turns.runner
+            question_input = TOOL_USE_QUESTION_FRAME["message"]["content"][0][
+                "input"
+            ]
 
-            # The capture opens BEFORE the call is injected (a loaded machine
-            # delaying the injection past the floor must not push the
+            # The capture opens BEFORE the question is raised (a loaded
+            # machine delaying the injection past the floor must not push the
             # once-per-turn pause line out of the window), and the cap carries
-            # headroom over the injection so this phase cannot become a cap
+            # headroom over the request so this phase cannot become a cap
             # fire by scheduling alone.
             with _CapturedWarnings() as captured:
+                question = asyncio.create_task(
+                    runner.interactions.request_user_input(
+                        session=session,
+                        turn_id=execution.turn_id,
+                        tool_input=question_input,
+                        context=SimpleNamespace(tool_use_id="toolu_b2_ask"),
+                    )
+                )
+                await _wait_until(
+                    lambda: bool(
+                        runner.interactions.pending_for_session(session.session_id)
+                    )
+                )
                 await client.incoming.put(
                     _with_session(TOOL_USE_QUESTION_FRAME, client.native_id)
                 )
@@ -2156,8 +2239,8 @@ def test_pending_question_exempts_even_the_hard_cap_until_answered(
                 # Across and well past the hard cap: nothing may fire.
                 await asyncio.sleep(4.0 + STALL * 3)
                 assert session.execution is execution, (
-                    "an on-screen question is a visible waiting state; no "
-                    "timer may kill the turn that is showing it"
+                    "a live question is a visible waiting state; no timer "
+                    "may kill the turn that is showing it"
                 )
                 assert not _turn_ends(host, execution.turn_id)
                 assert client.disconnected is False
@@ -2171,11 +2254,27 @@ def test_pending_question_exempts_even_the_hard_cap_until_answered(
                 ), paused_log
                 assert "watchdog fired" not in paused_log, paused_log
 
-                # Answered: the card is gone and the deadlines are back on
-                # duty.
+                # Answered: the frame's result lands first (the projection
+                # pair closes while the notice still holds the deadlines),
+                # then the notice closes. Both halves of the wait are gone and
+                # the deadlines are back on duty; the turn — past its cap by
+                # now — is collected by the cap.
                 await client.incoming.put(
                     _with_session(TOOL_RESULT_QUESTION_FRAME, client.native_id)
                 )
+                await _wait_until(
+                    lambda: not runner.timeline.open_tool_calls(execution.turn_id)
+                )
+                pending = runner.interactions.pending_for_session(
+                    session.session_id
+                )
+                assert pending, "the notice must still be live until answered"
+                result = await runner.interactions.respond_interaction(
+                    session.session_id, pending[0].notice_id, "cancel"
+                )
+                assert result.ok is True
+                decision = await asyncio.wait_for(question, 2.0)
+                assert decision.allowed is False
                 await _wait_until(
                     lambda: bool(_turn_ends(host, execution.turn_id))
                 )
@@ -2186,6 +2285,64 @@ def test_pending_question_exempts_even_the_hard_cap_until_answered(
                 f"reason={lifecycle.WATCHDOG_REASON_CONTENT_HARD_CAP}" in log
             ), log
             assert "pending=none" in log, log
+            assert session.execution is None
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_a_stale_question_entry_is_closed_by_the_hard_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B5/F1: an open `AskUserQuestion` entry with NO notice is a stale leftover.
+
+    The red-team attack shape (`.local-dev/watchdog-liveness-b4-report.md` §1):
+    the question's result was lost (scope-drift pop-miss, compaction) and no
+    live notice exists, but the projection entry still looks like a question.
+    Before B5 the name alone granted `cap_exempt` at any age, so the turn sat
+    on the execution lock with no timer able to collect it. Now the stale
+    entry is EXECUTION: the stall clock pauses (the call's silence is legal)
+    but the hard cap stays armed and is the verdict that fires.
+    """
+
+    _budgets(monkeypatch)
+
+    async def run() -> None:
+        client = _ScheduledClaudeClient()
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            await runtime.start_turn("staleask", None, "hello")
+            session = await _settled_session(runtime, "staleask")
+            execution = await _cast_with_labour(client, session)
+            runner = runtime._turns.runner
+
+            with _CapturedWarnings() as captured:
+                await client.incoming.put(
+                    _with_session(TOOL_USE_QUESTION_FRAME, client.native_id)
+                )
+                await _wait_until(
+                    lambda: bool(runner.timeline.open_tool_calls(execution.turn_id))
+                )
+                assert (
+                    runner.interactions.pending_for_session(session.session_id) == ()
+                ), "the stale shape has no notice — that is the attack's premise"
+                await _reach(
+                    "stale-question/cap-fire",
+                    lambda: bool(_turn_ends(host, execution.turn_id)),
+                    timeout=6.0,
+                )
+            ended = _turn_ends(host, execution.turn_id)[-1]
+            assert ended["outcome"] == "failed"
+            log = captured.joined()
+            assert (
+                f"reason={lifecycle.WATCHDOG_REASON_CONTENT_HARD_CAP}" in log
+            ), log
+            assert (
+                f"pending={lifecycle.PendingAwait.EXECUTION.value}" in log
+            ), log
+            assert f"reason={lifecycle.WATCHDOG_REASON_CONTENT_STALL}" not in log
             assert session.execution is None
         finally:
             await runtime.stop()

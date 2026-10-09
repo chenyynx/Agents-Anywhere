@@ -126,6 +126,29 @@ import Testing
                 "A child of the wrong parent must not enter the sidecar")
     }
 
+    @Test func anEmptyExhaustedDrainStillRecordsTheCoverage() async throws {
+        let http = TestHTTPTransport()
+        http.respond = { call in
+            if call.path.hasSuffix("snapshot") {
+                return try self.snapshotData(items: [try self.cardObject(id: "card", order: 1)], hasMore: false)
+            }
+            if call.path.hasSuffix("timeline") {
+                // A card that never spawned activity: the server's exhausted
+                // empty answer (the short-circuit probe).
+                return try self.pageData([], hasMore: false)
+            }
+            return try http.defaultResponse(call)
+        }
+        let repo = repository(transport: http)
+        defer { repo.reset() }
+        _ = try await repo.open(sessionId: "session")
+
+        await repo.loadSubAgentDetail(sessionId: "session", parentIDs: ["card"])
+        let data = try #require(repo.cached(sessionId: "session"))
+        #expect(data.detailLoadedParents == ["card"], "An empty exhausted page completes the drain")
+        #expect(data.subAgentChildren.isEmpty)
+    }
+
     @Test func aFailedDetailLoadLeavesTheSidecarAndTheWindowAlone() async throws {
         let http = TestHTTPTransport()
         http.respond = { call in
@@ -219,6 +242,15 @@ import Testing
         #expect(!SubAgentProgress.hasDetailRows(card, in: []))
         #expect(SubAgentProgress.isContentLoaded(card, in: children))
         #expect(SubAgentProgress.hasDetailRows(card, in: children))
+
+        // The disclosure's bit (red team follow-up): empty because nothing is
+        // owed yet reads as owed (the panel discloses when no load runs);
+        // empty because the drain finished — a card that never spawned
+        // activity — reads as finished, so the panel stays quiet instead of
+        // claiming "内容未加载".
+        #expect(!SubAgentProgress.isDetailDrainFinished(card, in: window, drainedParents: []))
+        #expect(!SubAgentProgress.isDetailDrainFinished(card, in: window, drainedParents: ["other-card"]))
+        #expect(SubAgentProgress.isDetailDrainFinished(card, in: window, drainedParents: ["card"]))
 
         // A row present in both sets is listed once, the window's copy first.
         let duplicate = SubAgentProgress.activityRows(of: card, in: window + children + children)

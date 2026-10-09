@@ -276,14 +276,19 @@ struct SubAgentPanelSheet: View {
     @ViewBuilder private func sections(_ card: SubAgentCard) -> some View {
         VStack(alignment: .leading, spacing: 20) {
             // P3 §3.3 honesty, extended by red team F8: while the missing
-            // detail rows are being fetched on demand the skeleton stands in,
-            // and once that settles without rows — the load failed, the
-            // device is offline, the sidecar caps squeezed the rows out, or
-            // the card's rows are gone from the window entirely — the notice
-            // says so instead of leaving the activity silently blank (a blank
-            // body reads as "nothing happened").
+            // detail rows are being fetched on demand the skeleton stands in;
+            // once that settles without rows the panel either discloses the
+            // miss (the load failed, the device is offline, the sidecar caps
+            // squeezed the rows out — still owed) or stays quiet when the
+            // drain itself is on record with nothing to show: a card that
+            // never spawned activity must not falsely claim "内容未加载".
             if !SubAgentProgress.hasDetailRows(card, in: detailWindow) {
-                if isLoadingDetail { SubAgentDetailLoadingSkeleton() } else { notLoadedNotice }
+                if isLoadingDetail {
+                    SubAgentDetailLoadingSkeleton()
+                } else if !SubAgentProgress.isDetailDrainFinished(card, in: detailWindow,
+                    drainedParents: chat.session.detailLoadedParents) {
+                    notLoadedNotice
+                }
             }
             promptSection(card)
             activitySection(card)

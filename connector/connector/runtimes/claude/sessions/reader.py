@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Self
 
 import asyncer
 
@@ -58,6 +58,7 @@ from connector.runtimes.claude.sessions.subagent_oracle import (
     RawTranscriptScan,
     claude_project_key,
     claude_projects_dir,
+    participation_times_ms,
     raw_only_notices,
     scan_raw_transcript,
     scan_transcript_file,
@@ -94,6 +95,57 @@ from connector.runtimes.claude.timeline.messages import (
 UNRESOLVED_LIVE_HISTORY_IMPORT_TTL_SECONDS = 120.0
 
 
+class SessionListPage(tuple):
+    """A `list_sessions` result that also says what it really read.
+
+    A plain tuple subclass, so every consumer that already iterates, indexes,
+    counts or unpacks these results is untouched — what changes is that an
+    empty result can finally be *interpreted*. The library rotation sweep
+    (task sheet §3 T1) walks the library one window per cycle and used to
+    read "empty window" as "end of the library", which is two different
+    things wearing the same value (R1 P1-2):
+
+    * a window the SDK never returned, because the read raised — reported
+      here as `read_failed`, so the ladder can skip and retry it later
+      instead of ending the sweep on it;
+    * a window whose sessions were all dropped by the live/active filters —
+      reported here as `history_scanned` larger than the page length, so the
+      ladder knows the library continues past it.
+
+    `history_scanned` also carries the page-one seam: how many history
+    sessions the first page actually exposed. Page 1 is merged with the
+    local overlay and then truncated, so local-only sessions push the tail of
+    `history[0:limit]` out of the page entirely; those displaced sessions are
+    in no window either, which is a coverage hole the ladder starts after the
+    seam instead of at a fixed page boundary.
+    """
+
+    # No `__slots__`: a variable-length builtin like tuple refuses them, and a
+    # per-page dict costs nothing at one page per cycle.
+    def __new__(
+        cls,
+        sessions: tuple[SessionMeta, ...] = (),
+        *,
+        history_scanned: int | None = None,
+        read_failed: bool = False,
+    ) -> Self:
+        page = super().__new__(cls, sessions)
+        page.history_scanned = (
+            len(page) if history_scanned is None else history_scanned
+        )
+        page.read_failed = read_failed
+        return page
+
+    def rescanned(self, sessions: tuple[SessionMeta, ...]) -> SessionListPage:
+        """The same read's sessions after filtering/truncation, flags intact."""
+
+        return SessionListPage(
+            sessions,
+            history_scanned=self.history_scanned,
+            read_failed=self.read_failed,
+        )
+
+
 @dataclass(slots=True)
 class ClaudeSessionReader:
     config: RuntimeConfig
@@ -115,9 +167,11 @@ class ClaudeSessionReader:
         limit: int = 100,
         cursor: str | None = None,
         force: bool = False,
-    ) -> tuple[SessionMeta, ...]:
+    ) -> SessionListPage:
         offset = _cursor_offset(cursor)
-        history_sessions = await self._list_history_sessions(
+        # Kept separate from the filtered list below: the page's flags
+        # describe the READ, and the filters must not erase them.
+        history_page = await self._list_history_sessions(
             limit=limit,
             cursor=cursor,
             force=force,
@@ -125,7 +179,7 @@ class ClaudeSessionReader:
         history_sessions = _filter_history_sessions_for_unresolved_live_sessions(
             runtime_sessions=self.session_store.sessions(),
             local_sessions=self.session_store.list_sessions(limit=limit),
-            history_sessions=history_sessions,
+            history_sessions=history_page,
         )
         history_sessions = _filter_history_sessions_for_active_local_sessions(
             runtime_sessions=self.session_store.sessions(),
@@ -141,9 +195,19 @@ class ClaudeSessionReader:
             # sweep exists to reach. A paged window is therefore the raw history
             # window, still guarded by the live/active filters above so an
             # actively driven session is never rebuilt behind the live writer.
-            return history_sessions[:limit]
+            return history_page.rescanned(history_sessions[:limit])
         local_sessions = self.session_store.list_sessions(limit=limit)
-        return _merge_session_metas(local_sessions, history_sessions)[:limit]
+        merged = _merge_session_metas(local_sessions, history_sessions)[:limit]
+        # Page 1's seam: the merged prefix is sorted by ordering time, so the
+        # history sessions that survived truncation are exactly a prefix of the
+        # history list. Count them so the rotation ladder can start past them.
+        return SessionListPage(
+            merged,
+            history_scanned=_history_seam_for_page_one(
+                merged,
+                local_sessions=local_sessions,
+            ),
+        )
 
     async def get_session_state(
         self,
@@ -205,7 +269,7 @@ class ClaudeSessionReader:
         limit: int,
         cursor: str | None,
         force: bool,
-    ) -> tuple[SessionMeta, ...]:
+    ) -> SessionListPage:
         try:
             sdk = load_sdk(self.sdk_loader)
             sdk_sessions = await list_sdk_sessions(
@@ -214,8 +278,11 @@ class ClaudeSessionReader:
                 offset=_cursor_offset(cursor),
             )
         except Exception:  # noqa: BLE001
+            # The read did not happen. Say so (R1 P1-2): returning a bare `()`
+            # here is indistinguishable from an empty library, and a caller
+            # that walks windows would read a failed read as "past the end".
             logger.exception("Claude history session list failed")
-            return ()
+            return SessionListPage((), history_scanned=0, read_failed=True)
 
         metas: list[SessionMeta] = []
         for sdk_session in sdk_sessions:
@@ -229,7 +296,9 @@ class ClaudeSessionReader:
                     force=force,
                 )
             )
-        return tuple(metas)
+        # `history_scanned` is the count BEFORE the live/active filters below,
+        # which is what makes "this window was emptied by filtering" visible.
+        return SessionListPage(tuple(metas), history_scanned=len(metas))
 
     async def _session_meta_from_sdk_session(
         self,
@@ -536,7 +605,17 @@ def _history_items_from_messages(
         resequenced,
         messages=messages,
         raw_notices=raw_notices,
-        raw_receipt_times=(raw_scan.receipt_times_ms if raw_scan else {}),
+        # R1 P1-1: the newest survival evidence, not the dispatch receipt alone.
+        # A SendMessage resume leaves the receipt sitting at the original
+        # dispatch, so anchoring there makes the history rebuild close a task
+        # that was re-driven five minutes ago (the P9 false close the live
+        # sweep already avoids). `participation_times_ms` is the live side's
+        # own helper, so both sides now judge the same engine facts the same
+        # way, and the anchor only ever moves newer — the conservative
+        # direction for a ceiling.
+        raw_receipt_times=(
+            participation_times_ms(raw_scan) if raw_scan else {}
+        ),
         oracle=oracle,
         live_task_ids=live_task_ids,
     )
@@ -1349,6 +1428,46 @@ def _merge_duplicate_history_item(
             role=incoming.role,  # type: ignore[arg-type]
             content=content,
         ),
+    )
+
+
+def _history_seam_for_page_one(
+    merged_page: tuple[SessionMeta, ...],
+    *,
+    local_sessions: tuple[SessionMeta, ...],
+) -> int:
+    """How many history sessions page 1 actually exposed (R1 P2-6).
+
+    Page 1 is `(_merge(local, history))[:limit]`, and the merge sorts by
+    ordering time, so the history entries that survived truncation are the
+    first N of the history list. Every local-only session in the page pushes
+    one history entry off the end, and those displaced entries are in no
+    rotation window either — the sweep would step over them at every page
+    boundary. The ladder therefore starts at the seam (the first index page 1
+    did not expose) rather than at a fixed page multiple.
+
+    An entry counts as history-derived when no local session carries its id:
+    a session present in both was merged into one entry, which page 1
+    already covers under its local identity, so counting it as covered is
+    the conservative choice (the ladder may re-read it; it may not skip it).
+    """
+
+    if not local_sessions:
+        return len(merged_page)
+    local_ids = {
+        identifier
+        for session in local_sessions
+        for identifier in (session.session_id, session.external_session_id)
+        if identifier
+    }
+    return sum(
+        1
+        for session in merged_page
+        if session.session_id not in local_ids
+        and (
+            session.external_session_id is None
+            or session.external_session_id not in local_ids
+        )
     )
 
 

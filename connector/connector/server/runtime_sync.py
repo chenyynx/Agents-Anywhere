@@ -80,8 +80,14 @@ _SESSION_ROTATION_MODES = frozenset(
 # One window per cycle, the same bound page 1 uses.
 SESSION_ROTATION_PAGE_SIZE = 100
 # Page 1 (offset 0) is fetched every cycle anyway, so the rotation ladder
-# starts one window in.
+# starts one window in — unless page 1 says it exposed fewer history sessions
+# than that (local-only sessions displaced the tail of `history[0:limit]`), in
+# which case the ladder starts at the seam so nothing falls between the two
+# (R1 P2-6). The floor for a persisted offset is therefore 1, not a page
+# boundary: any offset below 1 is corruption, while a seam of 97 is a real
+# position.
 SESSION_ROTATION_FIRST_OFFSET = SESSION_ROTATION_PAGE_SIZE
+SESSION_ROTATION_MIN_OFFSET = 1
 # Rebuilds on rotation windows are capped per cycle (task card §3 T1.4: 5~10),
 # so a library-wide projection bump spreads over hours instead of spiking
 # CPU/IO/ingest in minutes. Page 1 is never capped — freshness is its job.
@@ -90,6 +96,35 @@ SESSION_ROTATION_REBUILD_BUDGET = 8
 # before the sweep gives up and sleeps (a poison session must not keep the
 # whole sweep awake).
 SESSION_ROTATION_STALL_CIRCLES = 3
+# How many empty windows in a row may go unproven before the sweep is allowed
+# to believe them (R1 P1-2/P1-3). An empty window is only proof of "past the
+# end of the library" once this circle has actually read a non-empty window;
+# the very first window of a circle can come back empty for reasons that have
+# nothing to do with the library ending — the read failed, every session in it
+# was filtered out as live/active, the list shifted under the ladder because a
+# session was updated between two reads — and believing it there ends the
+# sweep with the whole tail unread. Bounded, because a position that returns
+# nothing forever (a library that shrank under a persisted offset) must still
+# be able to conclude and re-seek.
+SESSION_ROTATION_UNPROVEN_EMPTY_LIMIT = 3
+# Rest cycles the sweep inserts after consecutive window reads that rebuilt
+# nothing, capped (R1 P2-5). The activation signal is a page-1 edge that only a
+# page-1 rebuild consumes, so a page-1 session whose rebuild keeps failing
+# re-lights the sweep every cycle forever, and every window read is a
+# whole-library scan inside the SDK. The backoff is what makes "never sleeps"
+# a bounded cost; it starts only after the first full circle so the sweep that
+# a version bump just opened still walks its windows at full speed.
+SESSION_ROTATION_IDLE_SLEEP_MAX = 8
+# One window that rebuilt nothing is free, because it is the ordinary case:
+# most windows of a large library hold nothing to rebuild, and a sweep that
+# crawled from its second window on would be slower at finding residue than
+# the scan it is trying to save. Each further consecutive no-progress read
+# doubles the rest it buys — a sweep that is idle for many windows in a row is
+# the pathological one, and it should reach the cap in a few windows, not in
+# a dozen. The cap bounds the other end: residue that appears in the tail is
+# still noticed within MAX rest cycles (8 cycles ≈ 4 minutes at the 30s
+# default), so the backoff can never become "never look again".
+SESSION_ROTATION_IDLE_FREE_READS = 1
 SESSION_ROTATION_STATE_VERSION = 1
 
 
@@ -433,7 +468,7 @@ class RuntimeSyncRunner:
                             runtime_id=runtime_id,
                             scoped_runtime_id=scoped_runtime_id,
                             runtime_type=runtime_type,
-                            page_one_sessions=sessions,
+                            page_one_page=sessions,
                         )
                     except Exception:  # noqa: BLE001
                         logger.exception(
@@ -623,7 +658,7 @@ class RuntimeSyncRunner:
         runtime_id: str,
         scoped_runtime_id: str,
         runtime_type: str,
-        page_one_sessions: tuple[SessionMeta, ...],
+        page_one_page: tuple[SessionMeta, ...],
     ) -> None:
         """One cycle of the library-scan rotation (T1, stale-residue-selfheal).
 
@@ -653,30 +688,57 @@ class RuntimeSyncRunner:
         Mode `report` walks exactly one circle and logs what it would rebuild,
         publishing nothing; mode `off` (the default) returns before any state is
         touched or read.
+
+        What the sweep refuses to do (R1): conclude the library on an empty
+        window it cannot vouch for (P1-2), sleep for good on a circle it never
+        proved (P1-3), or re-read a whole library every cycle for a signal that
+        will not be consumed (P2-5).
         """
 
         mode = session_rotation_mode()
         if mode == SESSION_ROTATION_OFF:
             return
         state = await self._rotation_state(scoped_runtime_id, runtime_type)
+        # Where the ladder starts when it wraps: page 1's seam when page 1
+        # reports one, the first window otherwise.
+        first_offset = _first_rotation_offset(page_one_page)
         if not state.active:
             outdated = sum(
                 1
-                for session in page_one_sessions
+                for session in page_one_page
                 if session_projection_outdated(session)
             )
             if outdated == 0:
                 return
-            state = SessionRotationState(active=True)
+            state = SessionRotationState(active=True, offset=first_offset)
             logger.info(
-                "session rotation sweep activated runtime={} outdated_page_one_sessions={}",
+                "session rotation sweep activated runtime={} outdated_page_one_sessions={} first_offset={}",
                 runtime_id,
                 outdated,
+                first_offset,
             )
             # Persist before the first window read: if that read fails, the
             # activation must survive the cycle — the page-1 signal that opened
             # the sweep may already be rebuilt by the time the next cycle runs.
             await self._record_rotation_state(scoped_runtime_id, runtime_type, state)
+        if state.rest_cycles > 0 and state.circles > 0:
+            # P2-5: this sweep has read windows without progress for a while
+            # (an activation signal that keeps being re-lit but never consumed).
+            # Every window read is a whole-library scan inside the SDK, so the
+            # sweep rests instead of paying that price again next cycle.
+            logger.debug(
+                "session rotation sweep resting runtime={} offset={} rest_cycles={} idle_reads={}",
+                runtime_id,
+                state.offset,
+                state.rest_cycles,
+                state.idle_reads,
+            )
+            await self._record_rotation_state(
+                scoped_runtime_id,
+                runtime_type,
+                replace(state, rest_cycles=state.rest_cycles - 1),
+            )
+            return
         try:
             page = await runtime.list_sessions(
                 limit=SESSION_ROTATION_PAGE_SIZE,
@@ -693,14 +755,59 @@ class RuntimeSyncRunner:
             )
             return
         if not page:
+            read_failed = _page_read_failed(page)
+            scanned = _page_history_scanned(page)
+            # An empty page is proof of "past the end of the library" only when
+            # the read itself vouches for the emptiness and this circle has
+            # already read a real window (R1 P1-2/P1-3). A read that raised, or
+            # a window the live/active filters emptied, says the opposite; and
+            # neither can vouch for the emptiness until a non-empty window
+            # proves the circle — the ladder may have stepped into a hole (a
+            # session updated between two reads shifts every index after it) or
+            # been pointed past a library that shrank.
+            unverified = read_failed or scanned > 0
+            unproven = min(
+                state.unproven_empties + 1,
+                SESSION_ROTATION_UNPROVEN_EMPTY_LIMIT,
+            )
+            end_of_library = (
+                state.circle_windows > 0 and not unverified
+            ) or unproven >= SESSION_ROTATION_UNPROVEN_EMPTY_LIMIT
+            if not end_of_library:
+                # Step over it and keep the sweep armed; the skipped window is
+                # picked up again on the next circle. The limit is what stops a
+                # reader that fails on EVERY window from walking offsets
+                # forever: spent patience concludes and re-seeks.
+                logger.warning(
+                    "session rotation window is not proof of the end of the "
+                    "library runtime={} offset={} read_failed={} scanned={} "
+                    "unproven_empties={} circle_windows={}",
+                    runtime_id,
+                    state.offset,
+                    read_failed,
+                    scanned,
+                    unproven,
+                    state.circle_windows,
+                )
+                await self._record_rotation_state(
+                    scoped_runtime_id,
+                    runtime_type,
+                    replace(
+                        state,
+                        offset=state.offset + SESSION_ROTATION_PAGE_SIZE,
+                        unproven_empties=unproven,
+                    ),
+                )
+                return
             # End of the library: the circle is complete (page 1 plus every
             # rotation window has been compared).
             if mode == SESSION_ROTATION_REPORT or state.circle_candidates == 0:
                 logger.info(
-                    "session rotation sweep completed runtime={} offset={} candidates_this_circle={}",
+                    "session rotation sweep completed runtime={} offset={} candidates_this_circle={} circles={}",
                     runtime_id,
                     state.offset,
                     state.circle_candidates,
+                    state.circles + 1,
                 )
                 await self._record_rotation_state(
                     scoped_runtime_id, runtime_type, SessionRotationState()
@@ -729,11 +836,26 @@ class RuntimeSyncRunner:
                 await self._record_rotation_state(
                     scoped_runtime_id,
                     runtime_type,
-                    SessionRotationState(active=True, stall_circles=stall),
+                    SessionRotationState(
+                        active=True,
+                        offset=first_offset,
+                        stall_circles=stall,
+                        circles=state.circles + 1,
+                    ),
                 )
                 return
+            # The circle closed with progress: start the next one, and count it
+            # so the idle backoff applies from here on (P2-5) — the sweep is now
+            # in the regime where it keeps being re-armed without the tail
+            # giving it anything to do.
             await self._record_rotation_state(
-                scoped_runtime_id, runtime_type, SessionRotationState(active=True)
+                scoped_runtime_id,
+                runtime_type,
+                SessionRotationState(
+                    active=True,
+                    offset=first_offset,
+                    circles=state.circles + 1,
+                ),
             )
             return
         candidates = [
@@ -759,6 +881,8 @@ class RuntimeSyncRunner:
                     state,
                     offset=state.offset + SESSION_ROTATION_PAGE_SIZE,
                     circle_candidates=circle_candidates,
+                    circle_windows=state.circle_windows + 1,
+                    unproven_empties=0,
                 ),
             )
             return
@@ -788,13 +912,38 @@ class RuntimeSyncRunner:
                 continue
             if completed is True:
                 rebuilt += 1
+        # P2-5: a window that rebuilt nothing is the only evidence the idle
+        # backoff has. The first circle after activation never rests — it is
+        # the one the version bump paid for, and it may be the only pass that
+        # ever finds the residue.
+        idle_reads = (
+            0
+            if rebuilt
+            else min(
+                state.idle_reads + 1,
+                SESSION_ROTATION_IDLE_SLEEP_MAX + SESSION_ROTATION_IDLE_FREE_READS,
+            )
+        )
+        rest_cycles = (
+            (
+                0
+                if idle_reads <= SESSION_ROTATION_IDLE_FREE_READS
+                else min(
+                    2 ** (idle_reads - SESSION_ROTATION_IDLE_FREE_READS - 1),
+                    SESSION_ROTATION_IDLE_SLEEP_MAX,
+                )
+            )
+            if state.circles > 0
+            else 0
+        )
         logger.info(
-            "session rotation window runtime={} offset={} sessions={} candidates={} rebuilt={}",
+            "session rotation window runtime={} offset={} sessions={} candidates={} rebuilt={} rest_cycles={}",
             runtime_id,
             state.offset,
             len(page),
             len(candidates),
             rebuilt,
+            rest_cycles,
         )
         await self._record_rotation_state(
             scoped_runtime_id,
@@ -804,6 +953,10 @@ class RuntimeSyncRunner:
                 offset=state.offset + SESSION_ROTATION_PAGE_SIZE,
                 circle_candidates=circle_candidates,
                 circle_rebuilt=state.circle_rebuilt + rebuilt,
+                circle_windows=state.circle_windows + 1,
+                unproven_empties=0,
+                idle_reads=idle_reads,
+                rest_cycles=rest_cycles,
             ),
         )
 
@@ -1152,12 +1305,27 @@ class SessionRotationState:
     """Durable scan position of one runtime's library rotation.
 
     `offset` is the NEXT rotation window; page 1 (offset 0) is fetched by every
-    cycle already, so the ladder starts one window in. `circle_candidates` and
-    `circle_rebuilt` accumulate over the circle currently being scanned: a
-    circle that ends with no candidates compared clean and puts the sweep to
-    sleep; a circle that ends with candidates but zero successful rebuilds
-    counts as stalled, and the stall limit stops one poison session from
-    keeping the sweep awake forever.
+    cycle already, so the ladder starts one window in — or at page 1's seam when
+    page 1 reports one (R1 P2-6). `circle_candidates` and `circle_rebuilt`
+    accumulate over the circle currently being scanned: a circle that ends with
+    no candidates compared clean and puts the sweep to sleep; a circle that ends
+    with candidates but zero successful rebuilds counts as stalled, and the
+    stall limit stops one poison session from keeping the sweep awake forever.
+
+    The rest is about not believing a sweep that cannot prove itself (R1
+    P1-2/P1-3/P2-5):
+
+    * `circle_windows` — non-empty windows read in this circle. Until there is
+      one, an empty window is not evidence that the library ended.
+    * `unproven_empties` — empty windows read so far in a circle that has no
+      proof; `SESSION_ROTATION_UNPROVEN_EMPTY_LIMIT` of them ends the wait so a
+      position that returns nothing forever can still conclude.
+    * `circles` — circles concluded since activation. The first one always
+      runs flat out (it is the one a version bump just paid for); the idle
+      backoff only applies past it.
+    * `idle_reads` / `rest_cycles` — consecutive window reads that rebuilt
+      nothing, and the countdown of cycles the sweep rests before its next
+      read. A read that rebuilds something clears both.
     """
 
     active: bool = False
@@ -1165,6 +1333,11 @@ class SessionRotationState:
     circle_candidates: int = 0
     circle_rebuilt: int = 0
     stall_circles: int = 0
+    circle_windows: int = 0
+    unproven_empties: int = 0
+    circles: int = 0
+    idle_reads: int = 0
+    rest_cycles: int = 0
 
 
 def session_rotation_state_from_mapping(
@@ -1180,12 +1353,17 @@ def session_rotation_state_from_mapping(
         active=value.get("active") is True,
         offset=(
             offset
-            if offset is not None and offset >= SESSION_ROTATION_FIRST_OFFSET
+            if offset is not None and offset >= SESSION_ROTATION_MIN_OFFSET
             else SESSION_ROTATION_FIRST_OFFSET
         ),
         circle_candidates=_optional_int(value.get("circleCandidates")) or 0,
         circle_rebuilt=_optional_int(value.get("circleRebuilt")) or 0,
         stall_circles=_optional_int(value.get("stallCircles")) or 0,
+        circle_windows=_optional_int(value.get("circleWindows")) or 0,
+        unproven_empties=_optional_int(value.get("unprovenEmpties")) or 0,
+        circles=_optional_int(value.get("circles")) or 0,
+        idle_reads=_optional_int(value.get("idleReads")) or 0,
+        rest_cycles=_optional_int(value.get("restCycles")) or 0,
     )
 
 
@@ -1197,6 +1375,11 @@ def session_rotation_state_payload(state: SessionRotationState) -> dict[str, Any
         "circleCandidates": state.circle_candidates,
         "circleRebuilt": state.circle_rebuilt,
         "stallCircles": state.stall_circles,
+        "circleWindows": state.circle_windows,
+        "unprovenEmpties": state.unproven_empties,
+        "circles": state.circles,
+        "idleReads": state.idle_reads,
+        "restCycles": state.rest_cycles,
     }
 
 
@@ -1212,6 +1395,65 @@ def session_rotation_mode() -> str:
         return SESSION_ROTATION_OFF
     value = raw.strip().lower()
     return value if value in _SESSION_ROTATION_MODES else SESSION_ROTATION_OFF
+
+
+def _page_read_failed(page: Any) -> bool:
+    """Whether a session page is empty because its read raised (R1 P1-2).
+
+    Only the Claude reader reports this (`SessionListPage.read_failed`); for
+    every other runtime an empty page keeps its old meaning, which is the
+    conservative one here: a sweep that ends early is what the repair exists
+    to stop, and a runtime that cannot say "my read failed" has never claimed
+    otherwise.
+    """
+
+    return getattr(page, "read_failed", False) is True
+
+
+def _page_history_scanned(page: Any) -> int:
+    """How many library sessions the page read before filtering/truncation.
+
+    Larger than the page length exactly when the reader's live/active filters
+    emptied the window, which means the library continues past it.
+    """
+
+    scanned = getattr(page, "history_scanned", None)
+    if isinstance(scanned, bool) or not isinstance(scanned, int):
+        return len(page)
+    return scanned
+
+
+def _page_reported_seam(page_one_page: Any) -> int | None:
+    """Page 1's own report of how many history sessions it exposed, if any.
+
+    Only an explicit marker counts. `len(page)` is NOT the seam — page 1 is
+    the local overlay merged over history, so its length says nothing about
+    how far into the history list the page reached.
+    """
+
+    scanned = getattr(page_one_page, "history_scanned", None)
+    if isinstance(scanned, bool) or not isinstance(scanned, int):
+        return None
+    return scanned
+
+
+def _first_rotation_offset(page_one_page: Any) -> int:
+    """Where a starting or wrapping ladder should aim (R1 P2-6).
+
+    Page 1 is the local overlay merged over `history[0:limit]` and then
+    truncated, so local-only sessions push the tail of that history range off
+    the page; those sessions are in no rotation window either. A reader that
+    reports its seam (how many history sessions page 1 really exposed) is
+    believed, and the ladder starts there, which is inside the usual first
+    window when there was displacement and exactly the first window when there
+    was not. A reader that reports nothing (or reports a failed read, seam 0)
+    keeps the fixed page boundary.
+    """
+
+    seam = _page_reported_seam(page_one_page)
+    if seam is None or seam < SESSION_ROTATION_MIN_OFFSET:
+        return SESSION_ROTATION_FIRST_OFFSET
+    return seam
 
 
 def _optional_int(value: Any) -> int | None:

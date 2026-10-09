@@ -1523,11 +1523,96 @@ def test_T2_env_overrides_the_ceiling(monkeypatch: Any) -> None:
     assert verdict.closed_by == "ageBounded"
 
 
-def test_T2_env_garbage_keeps_the_default(monkeypatch: Any) -> None:
-    monkeypatch.setenv(SUBAGENT_AGE_BOUND_ENV, "not-a-number")
+def test_T2_env_unset_keeps_the_default(monkeypatch: Any) -> None:
+    monkeypatch.delenv(SUBAGENT_AGE_BOUND_ENV, raising=False)
     now = 1_791_457_800.0
     oracle = _oracle(now=now, files={TASK_ID: _fresh_file(now)})
     assert oracle.age_bound_seconds == T_AGE_BOUND
+
+
+def test_T2_env_garbage_refuses_rather_than_defaulting(monkeypatch: Any) -> None:
+    """R1 P2-4: an unusable value must not silently become the default.
+
+    The old reading ("unparsable keeps the default") looks harmless and is
+    the wrong direction for this knob: the operator's intent is discarded
+    either way, but "default" reads as a working ceiling in the logs while an
+    off-by-a-decade typo must not quietly arm a reaper. Unusable now means
+    unusable — the judgement is off, and the warning says which value was
+    refused.
+    """
+
+    for raw in ("not-a-number", "", "   ", "nan", "inf", "-inf", "24 hours"):
+        monkeypatch.setenv(SUBAGENT_AGE_BOUND_ENV, raw)
+        now = 1_791_457_800.0
+        oracle = _oracle(now=now, files={TASK_ID: _fresh_file(now)})
+        assert oracle.age_bound_seconds == 0.0, raw
+        # Off means off: nothing is closed, however old it claims to be.
+        assert (
+            oracle.evidence(
+                task_id=TASK_ID,
+                external_session_id=EXTERNAL_SESSION_ID,
+                cwd=CWD,
+                receipt_age_seconds=T_AGE_BOUND * 10,
+            )
+            is None
+        ), raw
+
+
+def test_T2_env_below_the_floor_is_refused(monkeypatch: Any) -> None:
+    """The reaper case. `0.5` means half a second, which is below the
+    dispatch-to-receipt gap of every task in the library: a ceiling that small
+    closes live work in a sweep. It is refused (judgement off), not clamped up
+    to the default — clamping would hide the typo behind a number the operator
+    never wrote."""
+
+    for raw in ("0.5", "30", "59"):
+        monkeypatch.setenv(SUBAGENT_AGE_BOUND_ENV, raw)
+        now = 1_791_457_800.0
+        oracle = _oracle(now=now, files={TASK_ID: _fresh_file(now)})
+        assert oracle.age_bound_seconds == 0.0, raw
+        assert (
+            oracle.evidence(
+                task_id=TASK_ID,
+                external_session_id=EXTERNAL_SESSION_ID,
+                cwd=CWD,
+                receipt_age_seconds=T_AGE_BOUND * 10,
+            )
+            is None
+        ), raw
+
+
+def test_T2_env_at_or_above_the_floor_is_honoured(monkeypatch: Any) -> None:
+    monkeypatch.setenv(SUBAGENT_AGE_BOUND_ENV, "60")
+    now = 1_791_457_800.0
+    oracle = _oracle(now=now, files={TASK_ID: _fresh_file(now)})
+    assert oracle.age_bound_seconds == 60.0
+    verdict = oracle.evidence(
+        task_id=TASK_ID,
+        external_session_id=EXTERNAL_SESSION_ID,
+        cwd=CWD,
+        receipt_age_seconds=61.0,
+    )
+    assert verdict is not None
+    assert verdict.closed_by == "ageBounded"
+
+
+def test_T2_env_duration_suffixes_are_accepted(monkeypatch: Any) -> None:
+    """`24h` is the natural spelling of a day, and after the fail-safe change
+    an unparsable value means OFF rather than the default — so the suffix has
+    to parse, or the fix would turn a harmless typo into a dead safety net."""
+
+    for raw, seconds in (
+        ("24h", 86400.0),
+        ("30m", 1800.0),
+        ("90s", 90.0),
+        ("1.5h", 5400.0),
+        ("2d", 172800.0),
+        (" 12H ", 43200.0),
+    ):
+        monkeypatch.setenv(SUBAGENT_AGE_BOUND_ENV, raw)
+        now = 1_791_457_800.0
+        oracle = _oracle(now=now, files={TASK_ID: _fresh_file(now)})
+        assert oracle.age_bound_seconds == seconds, raw
 
 
 def test_T2_sweep_closes_a_fresh_file_card_past_the_ceiling() -> None:

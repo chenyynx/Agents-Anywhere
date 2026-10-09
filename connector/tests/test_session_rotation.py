@@ -27,11 +27,14 @@ from test_connector_runtime import (
 
 from connector.core.config import ConnectorConfig
 from connector.runtime_protocol import SessionMeta
+from connector.runtimes.claude.sessions.reader import SessionListPage
 from connector.server.runtime_sync import (
     SESSION_ROTATION_ENV,
     SESSION_ROTATION_FIRST_OFFSET,
+    SESSION_ROTATION_IDLE_SLEEP_MAX,
     SESSION_ROTATION_PAGE_SIZE,
     SESSION_ROTATION_REBUILD_BUDGET,
+    SESSION_ROTATION_UNPROVEN_EMPTY_LIMIT,
     RuntimeSyncRunner,
     _session_rotation_state_key,
 )
@@ -113,6 +116,55 @@ class PagedRuntime(FakeAgentRuntime):
         return await super().get_session_snapshot(
             session_id, external_session_id, limit
         )
+
+
+class MarkedPagedRuntime(PagedRuntime):
+    """A paged runtime whose window reads can say WHY they came back empty.
+
+    A read that raised and a window whose sessions were all filtered out as
+    live/active both reach the ladder as `()` unless the reader says otherwise
+    (R1 P1-2); this fake is how a test produces those two shapes.
+    """
+
+    def __init__(
+        self,
+        *,
+        runtime_id: str = "claude",
+        failed: tuple[int, ...] = (),
+        filtered: tuple[int, ...] = (),
+    ) -> None:
+        super().__init__(runtime_id=runtime_id)
+        self._failed = set(failed)
+        self._filtered = set(filtered)
+
+    async def list_sessions(
+        self,
+        limit: int = 100,
+        cursor: str | None = None,
+        force: bool = False,
+    ) -> tuple[Any, ...]:
+        self.calls.append(
+            ("session.discover", {"limit": limit, "cursor": cursor, "force": force})
+        )
+        self.cursors.append(cursor)
+        if cursor is None:
+            page_one = self.page_one[:limit]
+            # Slicing a tuple subclass yields a plain tuple, so the flags have
+            # to be carried over exactly as the real reader carries them.
+            return (
+                self.page_one.rescanned(page_one)
+                if isinstance(self.page_one, SessionListPage)
+                else page_one
+            )
+        offset = int(cursor)
+        page = self.rotation_pages.get(offset, ())[:limit]
+        if offset in self._failed:
+            return SessionListPage(page, history_scanned=0, read_failed=True)
+        if offset in self._filtered:
+            # The SDK returned rows; the reader's live/active filters dropped
+            # every one of them, so the page is empty but the window was not.
+            return SessionListPage(page, history_scanned=max(len(page), 1))
+        return page
 
 
 def _runner(
@@ -482,3 +534,321 @@ async def _exercise_rotation_reaches_claude_sessions(monkeypatch) -> None:
     assert state["circleRebuilt"] == SESSION_ROTATION_REBUILD_BUDGET
 
 
+
+
+# --- R1 P1-2/P1-3: an empty window is only the end of the library when
+# something in this circle has proved it. ------------------------------------
+
+
+def test_rotation_does_not_sleep_on_an_unproven_empty_window(monkeypatch) -> None:
+    """The first window of a circle coming back empty proves nothing.
+
+    The activation signal is a page-1 edge that only a page-1 rebuild
+    consumes, and page 1 is rebuilt earlier in the same cycle — so believing
+    that empty window disarmed a sweep that could never be re-armed, with the
+    whole tail unread (R1 P1-3).
+    """
+
+    monkeypatch.setenv(SESSION_ROTATION_ENV, "on")
+    runtime = PagedRuntime()
+    runtime.page_one = (_meta(0, requires_sync=True, projection_outdated=True),)
+    runtime.rotation_pages = {200: (_meta(201, requires_sync=True),)}
+    host = StatefulRecordingHost()
+    runner, notifications = _runner(runtime, host)
+
+    # Cycle 1: the first window is empty, and the sweep stays armed.
+    asyncio.run(runner.sync_existing_once())
+    state = host.state[ROTATION_STATE_KEY]
+    assert state["active"] is True
+    assert state["offset"] == SESSION_ROTATION_FIRST_OFFSET + SESSION_ROTATION_PAGE_SIZE
+
+    # Cycle 2: the ladder walks on to the residue it would otherwise have lost.
+    runtime.page_one = (_meta(0, requires_sync=False),)
+    asyncio.run(runner.sync_existing_once())
+    assert "sess_201" in _all_session_ids(notifications)
+
+
+def test_rotation_sleeps_after_a_proved_empty_window(monkeypatch) -> None:
+    """The other side: once the circle has read a real window, the next empty
+    one IS the end of the library, and the sweep must be allowed to say so —
+    otherwise the repair above would just trade "sleeps too early" for "never
+    sleeps", at one full-library scan per cycle."""
+
+    monkeypatch.setenv(SESSION_ROTATION_ENV, "on")
+    runtime = PagedRuntime()
+    runtime.page_one = (_meta(0, projection_outdated=True),)
+    runtime.rotation_pages = {SESSION_ROTATION_FIRST_OFFSET: (_meta(101),)}
+    host = StatefulRecordingHost()
+    runner, _notifications = _runner(runtime, host)
+
+    asyncio.run(runner.sync_existing_once())
+    assert host.state[ROTATION_STATE_KEY]["active"] is True
+    asyncio.run(runner.sync_existing_once())
+
+    assert host.state[ROTATION_STATE_KEY]["active"] is False
+
+
+def test_rotation_bounds_a_run_of_unproven_empty_windows(monkeypatch) -> None:
+    """A position that returns nothing forever must still be able to conclude.
+
+    A library that shrank under a persisted offset leaves the ladder reading
+    past the end indefinitely; without a bound the sweep would never conclude
+    and would read a window every cycle for the life of the process.
+    """
+
+    monkeypatch.setenv(SESSION_ROTATION_ENV, "on")
+    runtime = PagedRuntime()
+    runtime.page_one = (_meta(0, projection_outdated=True),)
+    runtime.rotation_pages = {
+        SESSION_ROTATION_FIRST_OFFSET: (_meta(101, requires_sync=True),)
+    }
+    host = StatefulRecordingHost()
+    host.state[ROTATION_STATE_KEY] = {
+        "version": 1,
+        "active": True,
+        "offset": 10**9,
+        "circleCandidates": 4,
+        "circleRebuilt": 1,
+    }
+    runner, notifications = _runner(runtime, host)
+
+    for _cycle in range(SESSION_ROTATION_UNPROVEN_EMPTY_LIMIT):
+        asyncio.run(runner.sync_existing_once())
+
+    # Concluded, and re-seeked to a position that is really in the library —
+    # so the window it was hiding is compared after all.
+    assert host.state[ROTATION_STATE_KEY]["offset"] == SESSION_ROTATION_FIRST_OFFSET
+    assert host.state[ROTATION_STATE_KEY]["active"] is True
+    asyncio.run(runner.sync_existing_once())
+    assert "sess_101" in _all_session_ids(notifications)
+
+
+def test_rotation_skips_a_window_the_reader_says_emptied_by_filtering(
+    monkeypatch,
+) -> None:
+    """A window whose sessions were all dropped as live/active is not the end
+    of the library, and the reader now says so (R1 P1-2)."""
+
+    monkeypatch.setenv(SESSION_ROTATION_ENV, "on")
+    runtime = MarkedPagedRuntime(filtered=(SESSION_ROTATION_FIRST_OFFSET,))
+    runtime.page_one = (_meta(0, projection_outdated=True),)
+    runtime.rotation_pages = {200: (_meta(201, requires_sync=True),)}
+    host = StatefulRecordingHost()
+    runner, notifications = _runner(runtime, host)
+
+    asyncio.run(runner.sync_existing_once())
+    assert host.state[ROTATION_STATE_KEY]["active"] is True
+    asyncio.run(runner.sync_existing_once())
+
+    assert "sess_201" in _all_session_ids(notifications)
+
+
+# --- R1 P2-5: a signal that is never consumed must not cost a scan a cycle.
+
+
+def test_rotation_backs_off_while_its_candidates_never_rebuild(monkeypatch) -> None:
+    """A sweep that keeps finding candidates it cannot rebuild is the case that
+    costs: it stays awake (a candidate pins it), and every window read is a
+    whole-library scan inside the SDK. No-progress reads must buy rest cycles
+    instead (R1 P2-5), and the longer the idle run the more they buy — an idle
+    streak is bounded by the library's window count, so the saving grows
+    exactly where the scan is most expensive."""
+
+    monkeypatch.setenv(SESSION_ROTATION_ENV, "on")
+    runtime = PagedRuntime()
+    runtime.page_one = (_meta(0, projection_outdated=True),)
+    runtime.rotation_pages = {
+        SESSION_ROTATION_FIRST_OFFSET + SESSION_ROTATION_PAGE_SIZE * window: (
+            _meta(100 + window, requires_sync=window in (0, 1)),
+        )
+        for window in range(8)
+    }
+    runtime.snapshot_failures = {"sess_100", "sess_101"}
+    host = StatefulRecordingHost()
+    runner, _notifications = _runner(runtime, host)
+
+    async def drive() -> tuple[int, list[int]]:
+        rests: list[int] = []
+        for _cycle in range(40):
+            await runner.sync_existing_once()
+            rests.append(host.state[ROTATION_STATE_KEY].get("restCycles", 0))
+        reads = len([cursor for cursor in runtime.cursors if cursor is not None])
+        return reads, rests
+
+    reads, rests = asyncio.run(drive())
+
+    # Without the backoff this is one window read per cycle (40); the ramp
+    # (1, 2, 4, 8 …) reaches its cap and holds the sweep to 16.
+    assert reads <= 20, f"sweep still scans every cycle: {reads} window reads"
+    # ...and it reaches the cap rather than creeping: an idle sweep still
+    # re-reads a window every few cycles, so it cannot back off into never
+    # noticing new residue.
+    assert max(rests) == SESSION_ROTATION_IDLE_SLEEP_MAX
+
+
+def test_rotation_a_rebuild_clears_the_backoff(monkeypatch) -> None:
+    """The backoff must not make a productive sweep slow: a read that rebuilds
+    something resets the idle streak, so such a sweep reads every cycle."""
+
+    monkeypatch.setenv(SESSION_ROTATION_ENV, "on")
+    runtime = PagedRuntime()
+    runtime.page_one = (_meta(0, projection_outdated=True),)
+    runtime.rotation_pages = {
+        offset: (_meta(offset // 100, requires_sync=True),)
+        for offset in range(
+            SESSION_ROTATION_FIRST_OFFSET,
+            3 * SESSION_ROTATION_PAGE_SIZE,
+            SESSION_ROTATION_PAGE_SIZE,
+        )
+    }
+    host = StatefulRecordingHost()
+    runner, _notifications = _runner(runtime, host)
+
+    async def drive() -> int:
+        for _cycle in range(6):
+            await runner.sync_existing_once()
+        return len([cursor for cursor in runtime.cursors if cursor is not None])
+
+    reads = asyncio.run(drive())
+
+    assert reads == 6
+    assert host.state[ROTATION_STATE_KEY]["restCycles"] == 0
+
+
+def test_rotation_a_clean_window_costs_nothing_on_its_own(monkeypatch) -> None:
+    """Most windows of a large library hold nothing to rebuild, so the FIRST
+    no-progress read must not buy a rest cycle — a sweep that crawled from its
+    second window on would be slower at finding residue than the scan it saves.
+    """
+
+    monkeypatch.setenv(SESSION_ROTATION_ENV, "on")
+    runtime = PagedRuntime()
+    runtime.page_one = (_meta(0, projection_outdated=True),)
+    runtime.rotation_pages = {
+        SESSION_ROTATION_FIRST_OFFSET: (_meta(101),),
+        SESSION_ROTATION_FIRST_OFFSET + SESSION_ROTATION_PAGE_SIZE: (_meta(201),),
+    }
+    host = StatefulRecordingHost()
+    runner, _notifications = _runner(runtime, host)
+
+    async def drive() -> int:
+        for _cycle in range(3):
+            await runner.sync_existing_once()
+        return len([cursor for cursor in runtime.cursors if cursor is not None])
+
+    # Cycle 1 walks window 100, cycle 2 window 200, cycle 3 reads the empty
+    # tail and puts the sweep to sleep. No rest cycle anywhere.
+    assert asyncio.run(drive()) == 3
+
+
+# --- R1 P2-6: the seam between page 1 and the first rotation window. -------
+
+
+def test_rotation_uses_the_page_one_seam(monkeypatch) -> None:
+    """Page 1 is the local overlay merged over history and then truncated, so
+    local-only sessions push the tail of `history[0:100]` off the page. Those
+    displaced sessions are in no rotation window either when the ladder starts
+    at a fixed page boundary — the ladder starts at the seam instead."""
+
+    monkeypatch.setenv(SESSION_ROTATION_ENV, "on")
+    runtime = MarkedPagedRuntime()
+    runtime.page_one = SessionListPage(
+        (_meta(0, projection_outdated=True),),
+        history_scanned=SESSION_ROTATION_FIRST_OFFSET - 3,
+    )
+    runtime.rotation_pages = {
+        SESSION_ROTATION_FIRST_OFFSET - 3: (_meta(97, requires_sync=True),),
+    }
+    host = StatefulRecordingHost()
+    runner, notifications = _runner(runtime, host)
+
+    asyncio.run(runner.sync_existing_once())
+
+    assert runtime.cursors[-1] == str(SESSION_ROTATION_FIRST_OFFSET - 3)
+    assert "sess_097" in _all_session_ids(notifications)
+
+
+def test_rotation_keeps_the_page_boundary_without_a_reported_seam(
+    monkeypatch,
+) -> None:
+    """A reader that says nothing about its seam keeps the old ladder: page 1's
+    length is NOT a seam (it is the merge of local and history), so falling
+    back to `len(page)` would drag the ladder into page 1's own range."""
+
+    monkeypatch.setenv(SESSION_ROTATION_ENV, "on")
+    runtime = PagedRuntime()
+    runtime.page_one = (_meta(0, projection_outdated=True),)
+    runtime.rotation_pages = {SESSION_ROTATION_FIRST_OFFSET: (_meta(101),)}
+    host = StatefulRecordingHost()
+    runner, _notifications = _runner(runtime, host)
+
+    asyncio.run(runner.sync_existing_once())
+
+    assert runtime.cursors == [None, str(SESSION_ROTATION_FIRST_OFFSET)]
+    assert host.state[ROTATION_STATE_KEY]["offset"] == (
+        SESSION_ROTATION_FIRST_OFFSET + SESSION_ROTATION_PAGE_SIZE
+    )
+
+
+def test_rotation_reaches_the_sessions_page_one_displaced(monkeypatch) -> None:
+    asyncio.run(_exercise_rotation_reaches_displaced_sessions(monkeypatch))
+
+
+async def _exercise_rotation_reaches_displaced_sessions(monkeypatch) -> None:
+    """End to end through the real Claude reader.
+
+    Three local-only sessions sort ahead of the history, so page 1 exposes 97
+    history sessions of the 130 on disk. The ladder must start at 97, which is
+    the only window that ever compares `claude_rot_097..099`.
+    """
+
+    from test_claude_runtime import _HistorySdk, _RecordingHost, _runtime
+
+    monkeypatch.setenv(SESSION_ROTATION_ENV, "on")
+    host = _RecordingHost()
+    sdk = _HistorySdk(
+        sessions=[
+            SimpleNamespace(
+                session_id=f"claude_rot_{index:03d}",
+                summary=f"Rotation {index}",
+                last_modified=1_789_000_000_000 - index,
+                file_size=123 + index,
+                cwd="/repo",
+            )
+            for index in range(130)
+        ]
+    )
+    runtime = _runtime(host=host, sdk=sdk)
+    for index in range(3):
+        runtime._session_reader.session_store.ensure(
+            f"local_only_{index}",
+            cwd="/repo",
+            title=f"Local {index}",
+        )
+
+    async def no_catalogs(_runtime_: Any) -> None:
+        return None
+
+    runner, notifications = _runner(runtime, host)
+    monkeypatch.setattr(runner, "push_runtime_catalogs", no_catalogs)
+
+    page_one = await runtime.list_sessions(limit=100)
+    # 3 local + 97 history, and the reader reports the history part as its seam.
+    assert len(page_one) == 100
+    assert page_one.history_scanned == 97
+    assert page_one.read_failed is False
+
+    await runner.sync_existing_once()
+
+    rotation_ids = {
+        notification["params"]["externalSessionId"]
+        for notification in notifications
+        if notification["method"] == "timeline.sync"
+    }
+    # The displaced tail is inside the first rotation window's budget, so at
+    # least one of the three sessions no page-1 read would ever reach is
+    # compared and rebuilt.
+    assert any(
+        str(session_id) in {"claude_rot_097", "claude_rot_098", "claude_rot_099"}
+        for session_id in rotation_ids
+    )

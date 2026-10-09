@@ -30,6 +30,7 @@ and never touch the real disk or wall time.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
@@ -87,27 +88,103 @@ SUBAGENT_STALE_SECONDS: float = 900.0
 SUBAGENT_AGE_BOUND_SECONDS: float = 24 * 60 * 60.0
 
 #: Environment override for :data:`SUBAGENT_AGE_BOUND_SECONDS`, in seconds.
-#: Unset or unparsable keeps the default; values ``<= 0`` clamp to 0, the
-#: documented "disabled" value (the kill switch).
+#: Unset keeps the default; an unparsable value or one under
+#: :data:`SUBAGENT_AGE_BOUND_FLOOR_SECONDS` is REFUSED, which means 0 (the
+#: judgement is off) — never the default, and never the value that was typed.
+#: Values ``<= 0`` clamp to 0, the documented "disabled" value (the kill
+#: switch). ``24h`` / ``90m`` / ``1.5h`` / ``30s`` are accepted.
 SUBAGENT_AGE_BOUND_ENV: str = "AA_SUBAGENT_AGE_BOUND_SECONDS"
+
+#: The smallest ceiling this judgement may be given. A ceiling this low stops
+#: being a backstop and becomes a reaper: the seconds between one dispatch row
+#: and its own launch receipt already exceed it, so it would close every open
+#: card in the library. Refused rather than clamped, because silently raising
+#: an operator's 0.5 back to 24h would hide the typo; the fix is the log line
+#: and a value they meant.
+SUBAGENT_AGE_BOUND_FLOOR_SECONDS: float = 60.0
+
+#: Duration suffixes accepted after the number. Bare numbers are seconds,
+#: which is what the variable name says; the suffixes are there so the natural
+#: spelling of a day (``24h``) cannot land on "unparsable" — and, now that an
+#: unparsable value means "off" rather than "the default", that distinction
+#: matters.
+_AGE_BOUND_SUFFIX_SECONDS: dict[str, float] = {
+    "s": 1.0,
+    "m": 60.0,
+    "h": 60 * 60.0,
+    "d": 24 * 60 * 60.0,
+}
+
+
+def _parse_age_bound_seconds(raw: str) -> float | None:
+    """Seconds named by ``raw``, or ``None`` when the value is not usable."""
+
+    text = raw.strip().lower()
+    if not text:
+        return None
+    multiplier = 1.0
+    if text[-1].isalpha():
+        multiplier = _AGE_BOUND_SUFFIX_SECONDS.get(text[-1])
+        if multiplier is None:
+            return None
+        text = text[:-1].strip()
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+    # `nan` compares false against everything, so it would sail through the
+    # floor check below and reach the oracle as a ceiling that never fires.
+    # `inf` parses fine and is just as useless. Both are rejected here.
+    if not math.isfinite(value):
+        return None
+    return value * multiplier
 
 
 def _age_bound_seconds_from_env() -> float:
     """The age-ceiling default, honouring ``SUBAGENT_AGE_BOUND_ENV``.
 
     Read once per oracle construction (not at import) so the deployed
-    process environment and the tests drive the same code path. Same
-    conventions as the connector's other float knobs: an unset or unparsable
-    value keeps the default, negatives clamp to 0 (disabled).
+    process environment and the tests drive the same code path.
+
+    Unlike the connector's other float knobs this one fails SAFE, and the
+    asymmetry is the point (R1 P2-4). A ceiling that comes out too small
+    closes live work — ``0.5`` means half a second, which is below the
+    dispatch-to-receipt gap of every task in the library, so the sweep and
+    every rebuild would sweep the floor and close all of them. A ceiling that
+    comes out too large merely does nothing until the next projection bump
+    reaches the residue. So: unset keeps the documented default; anything
+    unusable (unparsable, ``nan``, ``inf``, empty, below the floor) is refused
+    and means 0, the kill switch, with a warning that names the rejected text.
+    A too-large ceiling is not worth a second opinion — it is inert.
     """
 
     raw = os.environ.get(SUBAGENT_AGE_BOUND_ENV)
     if raw is None:
         return SUBAGENT_AGE_BOUND_SECONDS
-    try:
-        return max(0.0, float(raw))
-    except ValueError:
-        return SUBAGENT_AGE_BOUND_SECONDS
+    value = _parse_age_bound_seconds(raw)
+    if value is None:
+        logger.warning(
+            "subagent age bound unusable; the judgement is disabled "
+            "env={} value={} default_seconds={}",
+            SUBAGENT_AGE_BOUND_ENV,
+            raw,
+            SUBAGENT_AGE_BOUND_SECONDS,
+        )
+        return 0.0
+    if value <= 0:
+        # The documented kill switch, and the same posture as a refused value:
+        # no ceiling, no closures.
+        return 0.0
+    if value < SUBAGENT_AGE_BOUND_FLOOR_SECONDS:
+        logger.warning(
+            "subagent age bound below the floor; the judgement is disabled "
+            "env={} value={} floor_seconds={}",
+            SUBAGENT_AGE_BOUND_ENV,
+            raw,
+            SUBAGENT_AGE_BOUND_FLOOR_SECONDS,
+        )
+        return 0.0
+    return value
 
 
 #: Tolerance around a terminal notice's own timestamp when comparing it to the

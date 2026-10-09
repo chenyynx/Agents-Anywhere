@@ -223,15 +223,111 @@ import Testing
         defer { repo.reset() }
         _ = try await repo.open(sessionId: "session")
 
-        repo.setBackfillReaderScrolling(true, sessionId: "session")
+        repo.setBackfillReaderState(scrolling: true, parkedInHistory: false, sessionId: "session")
         repo.beginHistoryBackfill(sessionId: "session")
         try await Task.sleep(for: .milliseconds(60))
         #expect(http.count("timeline") == 0, "Pages wait while the reader is scrolling")
         #expect(repo.cached(sessionId: "session")?.hasOlderItems == true)
 
-        repo.setBackfillReaderScrolling(false, sessionId: "session")
+        repo.setBackfillReaderState(scrolling: false, parkedInHistory: false, sessionId: "session")
         try await waitForCoverage { repo.cached(sessionId: "session")?.hasOlderItems == false }
         #expect(http.count("timeline") >= 1)
+    }
+
+    @Test func aReaderParkedMidHistoryHoldsTheBackfillUntilTheyReturn() async throws {
+        let http = TestHTTPTransport()
+        http.respond = { call in
+            if call.path.hasSuffix("snapshot") {
+                return try self.snapshotResponse(orders: 201...300, hasMore: true)
+            }
+            if self.isTimeline(call) {
+                return try self.historyResponse(before: self.ordered(call))
+            }
+            return try http.defaultResponse(call)
+        }
+        let repo = repository(transport: http)
+        defer { repo.reset() }
+        _ = try await repo.open(sessionId: "session")
+
+        // B11: the reader took over and is resting mid-history. A merge now
+        // would prepend above them with nothing to anchor it, so the fill
+        // holds outright — not merely defers the apply.
+        repo.setBackfillReaderState(scrolling: false, parkedInHistory: true, sessionId: "session")
+        repo.beginHistoryBackfill(sessionId: "session")
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(http.count("timeline") == 0, "Pages wait while the reader is parked mid-history")
+        #expect(repo.cached(sessionId: "session")?.hasOlderItems == true)
+
+        // Back at the bottom (following) — or at the top's older-pull region,
+        // which the view folds into the same clear — the fill resumes.
+        repo.setBackfillReaderState(scrolling: false, parkedInHistory: false, sessionId: "session")
+        try await waitForCoverage { repo.cached(sessionId: "session")?.hasOlderItems == false }
+        #expect(http.count("timeline") >= 1)
+    }
+
+    @Test func reopeningTheSessionReArmsAnInterruptedBackfill() async throws {
+        let http = TestHTTPTransport()
+        let gate = TestGate()
+        http.respond = { call in
+            if call.path.hasSuffix("snapshot") {
+                return try self.snapshotResponse(orders: 201...300, hasMore: true)
+            }
+            if self.isTimeline(call) {
+                await gate.wait()
+                return try self.historyResponse(before: self.ordered(call))
+            }
+            return try http.defaultResponse(call)
+        }
+        let repo = repository(transport: http)
+        defer { repo.reset() }
+        _ = try await repo.open(sessionId: "session")
+        repo.beginHistoryBackfill(sessionId: "session")
+        try await waitForCoverage { http.count("timeline") == 1 } // the first page is in flight
+
+        // The re-open's version bump cancels the in-flight read — and with it
+        // the loop. F6: the visit must re-arm the fill, not abandon it.
+        _ = try await repo.open(sessionId: "session")
+        gate.release()
+        try await waitForCoverage { repo.cached(sessionId: "session")?.hasOlderItems == false }
+        #expect(repo.cached(sessionId: "session")?.items.count == 300)
+        #expect(http.count("timeline") >= 3, "The interrupted page is re-issued by the re-armed loop")
+    }
+
+    /// The view's mapping from the scroll state machine onto its two reader
+    /// signals, pinned at its source (red team F1): parked mid-history holds;
+    /// the bottom (following) and the top's older-pull region resume.
+    @Test func theBackfillHoldsOnlyForAParkedReader() throws {
+        func viewport(offset: CGFloat, height: CGFloat = 2000, container: CGFloat = 800) -> TimelineViewport {
+            TimelineViewport(contentHeight: height, containerHeight: container, topInset: 80, bottomInset: 120, offsetY: offset)
+        }
+        var state = TimelineScrollState()
+        state.geometryChanged(viewport(offset: 1320))
+        state.tailVisibilityChanged(.near, visible: true)
+        state.tailVisibilityChanged(.end, visible: true)
+        state.open()
+        let request = try #require(state.pendingBottomRequest)
+        let began = state.begin(request)
+        let command = try #require(began)
+        _ = state.complete(command)
+        // A fresh opening is not parked: the fill runs while the claim holds.
+        #expect(state.mode == .following)
+        #expect(!state.backfillReaderIsParked(atOlderPrompt: false))
+
+        // The reader takes over and stops away from the bottom.
+        state.phaseChanged(.tracking, viewport: viewport(offset: 500))
+        state.phaseChanged(.idle, viewport: viewport(offset: 500))
+        state.settleUserScroll()
+        #expect(state.mode == .reading)
+        #expect(state.backfillReaderIsParked(atOlderPrompt: false))
+        // At the top's older-pull region the merge is what they are there for.
+        #expect(!state.backfillReaderIsParked(atOlderPrompt: true))
+
+        // Returning to the bottom settles into following: not parked.
+        state.phaseChanged(.tracking, viewport: viewport(offset: 500))
+        state.phaseChanged(.idle, viewport: viewport(offset: 1320))
+        state.settleUserScroll()
+        #expect(state.mode == .following)
+        #expect(!state.backfillReaderIsParked(atOlderPrompt: false))
     }
 
     @Test func theComposerHoldsTheBackfillWhileTyping() async throws {

@@ -48,13 +48,21 @@ final class ComposerDraft {
     private(set) var focusIntent = false
     private(set) var focusToken = 0
 
+    /// True only between a focus starting and the keyboard appearing (or the
+    /// wait giving up). While set, focus does not expand the bar, so a tap
+    /// cannot grow the composer a frame before the keyboard animation begins.
+    /// Cleared the moment focus ends, and never persisted — a stuck value can
+    /// only ever delay one expansion, never leave a stale shape behind.
+    var awaitingKeyboard = false
+
     var hasContent: Bool { ComposerExpansion.hasContent(text) }
     var hasSendableContent: Bool { hasContent || !attachments.isEmpty }
     var canAttemptSend: Bool { !isComposing && hasSendableContent }
 
     /// Derived from the live draft every time it is read; never stored.
     var isExpanded: Bool {
-        ComposerExpansion.isExpanded(isFocused: isFocused, attachmentCount: attachments.count, text: text)
+        ComposerExpansion.isExpanded(isFocused: isFocused, awaitingKeyboard: awaitingKeyboard,
+            attachmentCount: attachments.count, text: text)
     }
 
     /// Records the desired focus. The token advances on every change so a

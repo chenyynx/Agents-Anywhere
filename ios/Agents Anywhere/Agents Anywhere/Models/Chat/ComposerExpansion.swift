@@ -25,8 +25,16 @@ nonisolated enum ComposerExpansion {
 
     /// Expanded while focused, while holding attachments, or while the draft
     /// has more than one line. A blank draft and a single-line draft collapse.
-    static func isExpanded(isFocused: Bool, attachmentCount: Int, text: String) -> Bool {
-        if isFocused || attachmentCount > 0 { return true }
+    ///
+    /// `awaitingKeyboard` holds back only the *focus* term: while a tap is
+    /// waiting for its keyboard, the bar keeps its current shape instead of
+    /// growing a frame before the keyboard animation starts (that jolt is the
+    /// regression this exists to remove). Content that expands on its own —
+    /// attachments, multiple lines — is never held back.
+    static func isExpanded(isFocused: Bool, awaitingKeyboard: Bool = false,
+                           attachmentCount: Int, text: String) -> Bool {
+        if isFocused && !awaitingKeyboard { return true }
+        if attachmentCount > 0 { return true }
         return hasContent(text) && isMultiline(text)
     }
 }

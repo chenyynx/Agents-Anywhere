@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 struct ChatComposer: View {
     @Bindable var draft: ComposerDraft
@@ -36,6 +39,8 @@ struct ChatComposer: View {
     @Namespace private var glass
     @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.default.rawValue
     private var accent: AppAccent { AppAccent.resolve(accentValue) }
+    @State private var keyboardHoldToken = 0
+    private var keyboardExpansionAnimation: Animation { .easeInOut(duration: 0.25) }
 
     var body: some View {
         GlassEffectContainer(spacing: 12) {
@@ -107,6 +112,44 @@ struct ChatComposer: View {
         // the draft from the page root re-evaluated the whole conversation.
         .onChange(of: draft.text) { _, _ in onDraftChange() }
         .onChange(of: draft.attachments) { _, _ in onDraftChange() }
+        .onChange(of: draft.isFocused, initial: true) { _, focused in
+            if focused { holdExpansionUntilKeyboard() } else { finishKeyboardHold() }
+        }
+#if canImport(UIKit)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            finishKeyboardHold()
+        }
+#endif
+    }
+
+    /// A tap makes the editor first responder several frames before the
+    /// keyboard animation begins. Holding the expansion through that gap keeps
+    /// the composer's height in the keyboard's own transaction instead of
+    /// growing a frame early. The hold gives up after a short window so a
+    /// hardware keyboard, an iPad, or a keyboard that never animates still
+    /// expands the bar.
+    private func holdExpansionUntilKeyboard() {
+        draft.awaitingKeyboard = true
+        keyboardHoldToken &+= 1
+        let token = keyboardHoldToken
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard keyboardHoldToken == token else { return }
+            finishKeyboardHold()
+        }
+    }
+
+    /// Ends the hold and, when focus is still held, brings the expansion in on
+    /// the keyboard's own animation — so the bar grows with the keyboard rather
+    /// than jumping ahead of it. Collapses are left to the bar's own animation.
+    private func finishKeyboardHold() {
+        keyboardHoldToken &+= 1
+        guard draft.awaitingKeyboard else { return }
+        // The mutation itself is inside the transaction, so the layout change
+        // it causes animates; a plain flag write would not.
+        withAnimation(reduceMotion ? nil : keyboardExpansionAnimation) {
+            draft.awaitingKeyboard = false
+        }
     }
 
     /// The queue form: the single accent key shows the arrow and enqueues.

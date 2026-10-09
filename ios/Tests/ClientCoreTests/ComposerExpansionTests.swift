@@ -125,3 +125,94 @@ import Testing
         #expect(!draft.isFocused)
     }
 }
+
+/// The keyboard hold gates only the focus term, and every path — a tap, a
+/// missed notification, an out-of-order pair, rapid toggling — must resolve.
+@Suite struct ComposerKeyboardHoldTests {
+    /// Mirrors what the view does on focus: intent + a hold.
+    private func tap(_ draft: ComposerDraft) {
+        let token = draft.setFocusIntent(true)
+        draft.awaitingKeyboard = true
+        draft.reportFocus(true, token: token)
+    }
+    /// Mirrors a blur: end focus and drop the hold unconditionally.
+    private func blur(_ draft: ComposerDraft) {
+        draft.setFocusIntent(false)
+        draft.reportFocus(false, token: draft.focusToken)
+        draft.awaitingKeyboard = false
+    }
+    /// Mirrors the keyboard-will-show release.
+    private func willShow(_ draft: ComposerDraft) { draft.awaitingKeyboard = false }
+
+    @Test func focusedTapWaitsForTheKeyboardBeforeExpanding() {
+        let draft = ComposerDraft()
+        tap(draft)
+        #expect(draft.isFocused)
+        #expect(draft.awaitingKeyboard)
+        #expect(!draft.isExpanded) // held: bar stays put until the keyboard moves
+        willShow(draft)
+        #expect(draft.isExpanded) // released with the keyboard
+    }
+
+    @Test func blurAlwaysCollapsesImmediately() {
+        let draft = ComposerDraft()
+        tap(draft)
+        blur(draft)
+        #expect(!draft.awaitingKeyboard)
+        #expect(!draft.isExpanded)
+    }
+
+    @Test func focusBlurRefocusResolves() {
+        let draft = ComposerDraft()
+        tap(draft); willShow(draft); #expect(draft.isExpanded)
+        blur(draft); #expect(!draft.isExpanded)
+        tap(draft); #expect(!draft.isExpanded) // held again
+        willShow(draft); #expect(draft.isExpanded)
+    }
+
+    @Test func timeoutReleaseExpandsWhenStillFocused() {
+        let draft = ComposerDraft()
+        tap(draft)
+        willShow(draft) // also covers the timer fire path — same release
+        #expect(draft.isExpanded)
+        // A release after blur must not expand.
+        blur(draft)
+        willShow(draft)
+        #expect(!draft.isExpanded)
+    }
+
+    @Test func outOfOrderKeyboardNotificationsStaySafe() {
+        let draft = ComposerDraft()
+        // A stray willShow before any tap is a no-op (hold is already false).
+        willShow(draft)
+        #expect(!draft.awaitingKeyboard)
+        tap(draft); willShow(draft)
+        #expect(draft.isExpanded)
+        // willHide without a blur leaves focus in place; the bar stays expanded.
+        draft.awaitingKeyboard = false
+        #expect(draft.isExpanded)
+        blur(draft)
+        #expect(!draft.isExpanded)
+    }
+
+    @Test func rapidTogglingEndsCollapsed() {
+        let draft = ComposerDraft()
+        for _ in 0..<30 {
+            tap(draft)
+            blur(draft)
+        }
+        #expect(!draft.isExpanded)
+        #expect(!draft.isFocused)
+        #expect(!draft.awaitingKeyboard)
+    }
+
+    @Test func contentExpansionIsNeverHeldBack() {
+        let draft = ComposerDraft()
+        // A multi-line draft expands even with no keyboard at all.
+        draft.text = "one\ntwo"
+        #expect(draft.isExpanded)
+        // Focus with a pending hold does not disturb that.
+        tap(draft)
+        #expect(draft.isExpanded)
+    }
+}

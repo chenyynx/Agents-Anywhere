@@ -102,29 +102,76 @@ from connector.runtimes.claude.turns.interactions import ClaudeInteractionContro
 # transport, killed the host CLI and every subagent in it, and lost the reply.
 POLLED_TURN_WATCHDOG_SECONDS = 30.0
 
-# The absolute ceiling for a turn that left the zero-content class. It exists
-# so the content gate cannot become "long turns never settle" — the red line
-# in §5 — and it is deliberately on the same magnitude as the CLI's own tool
-# timeouts (Bash 600s, 420s; `idleTimeoutSeconds=600`). The longest tool this
-# product has ever been observed running is 223.4s (AskUserQuestion), so the
-# headroom is wide; the timing is measured from the cast, not from when the
-# content showed up.
+# The adjudicated death sentence for a turn that left the zero-content class
+# (§2/§3 of `.local-dev/claude-watchdog-liveness-tasks.md`, which supersedes
+# the B-batch absolute ceiling this constant used to be). It is not one number
+# any more: a contenting turn is judged by PROGRESS and killed only when its
+# labour frames have stood still while the turn is old enough for the
+# stillness to mean something.
 #
-# STOPGAP (2026-10-09, pp-approved): raised 600.0 -> 1800.0. The 600s value
-# was calibrated on the longest single TOOL, not on the longest work CYCLE:
-# the autonomous wake-cycles (a subagent notification mints a turn) run
-# 10-15 minutes of continuous productive work, so the 600s knife cut live
-# turns mid-flight — 8 host-process kills in the week, 7 of them in the last
-# 30 hours across live sessions (thinking-orb, alias-lineage, ...). 1800s
-# keeps every observed real cycle inside the window while preserving the
-# absolute bound. The root fix — progress arbitration (a contenting turn is
-# killed on labour-frame STALL, not on absolute age) — is specced in
-# `.local-dev/claude-watchdog-liveness-tasks.md` and replaces this number.
-CONTENTING_TURN_WATCHDOG_SECONDS = 1800.0
+# * FLOOR — the age floor, measured from the cast. No contenting kill is
+#   permitted before it, so a turn whose legal silence happens to cross the
+#   stall budget early in its life is not executed on a technicality.
+# * STALL — the labour stall budget: how long `published_items` and
+#   `consumed_frames` may both stand still before the turn is judged a ghost
+#   that is merely holding the lock. Chrome frames move neither counter
+#   (the content gate's own exclusion), so chrome alone can never buy time.
+# * HARD_CAP — the one timer still measured from the cast, and the only
+#   verdict an always-progressing turn can meet. It exists so this cannot
+#   become "long turns never settle" (the B-batch §5 red line): the
+#   degenerate generation loop whose frames flow forever but never finish is
+#   still bounded.
+#
+# Why the floor/stall pair, not one number: the old absolute ceiling was
+# calibrated on the longest single TOOL (223.4s), not on the longest work
+# CYCLE. The autonomous wake-cycles (a subagent notification mints a turn)
+# run 10-15 minutes of continuous productive work, so the fixed knife cut
+# live turns mid-flight — 8 host-process kills in the week of 2026-10-05,
+# each knife landing seconds to tens of seconds after the turn's last
+# productive frame (§1 autopsy). The 2026-10-09 stopgap (600 -> 1800) only
+# bought time until work cycles caught up again. A turn whose frames keep
+# advancing is never judged dead now, however long it runs; only stillness
+# past the floor is.
+CONTENTING_TURN_FLOOR_SECONDS = 600.0
+CONTENTING_TURN_STALL_SECONDS = 300.0
+CONTENTING_TURN_HARD_CAP_SECONDS = 3600.0
 
-# G4: why the breaker fired. The two values are the whole diagnosis of a
+# The stall arbitration's poll quantum (§3 micro-verdict). The watchdog
+# samples both content counters on its own clock and compares samples; it
+# never touches `drive_turn`'s hot path and adds no per-frame bookkeeping to
+# it. Five seconds is one order of magnitude below the smallest budget it
+# arbitrates (STALL), so the fire can never be late by a meaningful share of
+# any deadline it enforces.
+WATCHDOG_STALL_POLL_SECONDS = 5.0
+
+# G4: why the breaker fired. These values are the whole diagnosis of a
 # watchdog log line, so they are named once and reused by the fire line, the
 # retirement-skip line and the fatal-close line.
+WATCHDOG_REASON_ZERO_CONTENT = "zero_content_fast_kill"
+# The two contenting verdicts (2026-10-09 micro-verdict §3), replacing the
+# deprecated `containing_turn_ceiling` absolute-age reason: a stalled turn and
+# a turn that never stalls but never finishes.
+WATCHDOG_REASON_CONTENT_STALL = "contenting_turn_stall"
+WATCHDOG_REASON_CONTENT_HARD_CAP = "contenting_turn_hard_cap"
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduledWatchdogVerdict:
+    """Why (and with which numbers) the scheduled-turn breaker has to fire.
+
+    `reason` is one of the three constants above. `age_seconds` and
+    `stall_seconds` are the two timers the fire line and the retirement
+    disclosure report: how old the turn was at the verdict, and how long its
+    labour counters had stood still. For the zero-content class the two are
+    the same number — no labour was ever observed, so the turn's whole life is
+    the silence.
+    """
+
+    reason: str
+    age_seconds: float
+    stall_seconds: float
+
+
 # F1: the `terminalReason` a turn carries when its `completed` was downgraded
 # because the result could not be attributed to it. It reaches the client's turn
 # ledger verbatim, so the condition is visible rather than silently rewritten.
@@ -165,9 +212,6 @@ CONTEXT_PROBE_SWEEP_INTERVAL_SECONDS = 5.0
 # seconds is far below the 15-minute staleness deadline and cheap (a stat per
 # open task), so a stranded card closes promptly without hammering the disk.
 AGENT_CARD_EVIDENCE_SWEEP_INTERVAL_SECONDS = 60.0
-
-WATCHDOG_REASON_ZERO_CONTENT = "zero_content_fast_kill"
-WATCHDOG_REASON_CONTENT_CEILING = "containing_turn_ceiling"
 
 # G4's client-visible half (pp verdict, 2026-10-04, product-level —
 # .local-dev/ratelimit-fatal-retirement-notice-order.md §2 A). A killed process
@@ -425,18 +469,22 @@ class ClaudeTurnRunner:
         possible user experience is capped at one failed bubble instead of a
         session that is permanently running with the composer disabled.
 
-        The deadline this used to apply unconditionally is now two-stage
-        (§2 G1–G3 of claude-watchdog-longrun-tasks.md). The zero-content class
-        keeps the original budget, so the P0 above is untouched; a turn that
+        The deadline this used to apply unconditionally is now a three-part
+        adjudication (§2/§3 of claude-watchdog-liveness-tasks.md, superseding
+        the B-batch absolute ceiling). The zero-content class keeps the
+        original 30s budget, so the P0 above is untouched. A turn that
         published items or consumed non-chrome frames leaves the fast kill and
-        is only bounded by an absolute ceiling. Both counts exclude everything
-        the queue held up to and including the cast frame — preamble flush +
-        cast, by position, because passive arrival is not labour — so a
-        re-cast's lone residue frame (B5: in-flight `tool_result`,
-        StreamEvent), with or without stale preamble in front of it, still
-        lands in the fast kill it had before B3a instead of buying the ghost
-        ten minutes of held lock. The exemption is on the FAST KILL only — a
-        long turn can never become "never settled".
+        is judged by progress instead of age: it is killed only when both
+        labour counters have stood still for CONTENTING_TURN_STALL_SECONDS
+        while the turn is at least CONTENTING_TURN_FLOOR_SECONDS old — a turn
+        whose frames keep advancing is never judged dead, however long it runs
+        — with CONTENTING_TURN_HARD_CAP_SECONDS as the one absolute bound left
+        over it (so "long turns never settle" still cannot happen). Both
+        counts exclude everything the queue held up to and including the cast
+        frame — preamble flush + cast, by position, because passive arrival is
+        not labour — so a re-cast's lone residue frame (B5: in-flight
+        `tool_result`, StreamEvent), with or without stale preamble in front of
+        it, still lands in the fast kill it had before B3a.
         """
 
         execution.watchdog_task = asyncio.create_task(
@@ -458,17 +506,48 @@ class ClaudeTurnRunner:
     async def _await_watchdog_deadlines(
         execution: ClaudeExecution,
         timeout: float,
-        ceiling: float,
-    ) -> str | None:
-        """Wait out both deadlines; return why the breaker has to fire.
+        floor: float,
+        stall: float,
+        hard_cap: float,
+        tick: float,
+        session_id: str,
+    ) -> ScheduledWatchdogVerdict | None:
+        """Wait out the adjudicated deadlines; return why the breaker must fire.
 
         `None` means the turn settled on its own and there is nothing to do.
 
-        The two deadlines are sequential rather than concurrent, which is what
-        "absolute ceiling" means: the fast kill is measured from the cast, and
-        the ceiling is a second wait covering only the time the first one left.
-        A turn that produces content at t=1s is re-armed for the remaining
-        570s; one that produces it at t=599s still has to settle by t=600s.
+        Three timers, three shapes (`.local-dev/claude-watchdog-liveness-
+        tasks.md` §2/§3, which supersedes the batched absolute ceiling):
+
+        * `timeout` — the zero-content fast kill, one `wait_for` measured from
+          the cast. A turn that reaches its end with both counters still at
+          zero is the ghost this breaker exists for and is judged on the spot;
+          neither the floor nor the cap is consulted for it.
+        * `floor`/`stall` — the contenting class is judged by PROGRESS, not by
+          age. From here the watchdog polls (one `tick` between samples) and
+          compares the labour counters with its previous sample: a sample that
+          moved resets the stall clock, and a kill requires the clock to have
+          stood still for `stall` seconds while the turn is at least `floor`
+          seconds old. A turn whose frames keep advancing is therefore never
+          judged dead, however long it runs.
+        * `hard_cap` — the one timer still measured from the cast, and the
+          only verdict a never-stalling turn can meet. It exists so progress
+          arbitration cannot become "long turns never settle": the degenerate
+          loop whose counters move forever but never finish is still bounded.
+
+        The counters are read, never written, so `drive_turn`'s hot path is
+        untouched — the watchdog observes on its own clock, and no per-frame
+        bookkeeping was added anywhere. Chrome frames move neither counter
+        (the content gate's own exclusion), so chrome alone can never push the
+        kill out.
+
+        The stall clock's zero point is the cast. Any progress the polling
+        loop actually observes moves it, so the clock is exact from phase two
+        on; a turn whose last labour happened during the fast-kill window is
+        measured from its cast instead, which can only overstate the silence —
+        and with product numbers the floor (600s) always exceeds that window
+        (30s) plus the stall budget (300s), so the verdict itself never
+        changes: the first permissible fire is still `max(floor, stall)`.
         """
 
         try:
@@ -477,14 +556,89 @@ class ClaudeTurnRunner:
         except TimeoutError:
             pass
         if not execution.has_turn_content:
-            return WATCHDOG_REASON_ZERO_CONTENT
-        try:
-            await asyncio.wait_for(
-                execution.finished.wait(), max(0.0, ceiling - timeout)
+            age = time.monotonic() - execution.started_at_monotonic
+            # No labour was ever observed, so this turn's whole life is the
+            # silence: both timers report the same number.
+            return ScheduledWatchdogVerdict(
+                reason=WATCHDOG_REASON_ZERO_CONTENT,
+                age_seconds=age,
+                stall_seconds=age,
             )
+        observed = (execution.published_items, execution.consumed_frames)
+        last_labour_at = execution.started_at_monotonic
+        deferral_logged = False
+        while True:
+            if execution.finished.is_set():
+                return None
+            now = time.monotonic()
+            age = now - execution.started_at_monotonic
+            if age >= hard_cap:
+                # The absolute bound, checked first: when it and the stall
+                # verdict are both due, the hard cap is the truer name.
+                return ScheduledWatchdogVerdict(
+                    reason=WATCHDOG_REASON_CONTENT_HARD_CAP,
+                    age_seconds=age,
+                    stall_seconds=now - last_labour_at,
+                )
+            counts = (execution.published_items, execution.consumed_frames)
+            if counts != observed:
+                silence_broken = now - last_labour_at
+                observed = counts
+                last_labour_at = now
+                if age >= floor:
+                    # The observation surface (B1 §4): this sample pushed a
+                    # kill out — without it the stall clock kept running and
+                    # the turn would have been judged dead on schedule. Counted
+                    # on the execution, told once per turn in the log.
+                    execution.watchdog_progress_deferrals += 1
+                    if not deferral_logged:
+                        deferral_logged = True
+                        logger.warning(
+                            "Claude watchdog stall verdict deferred by labour "
+                            "progress session_id={} turn_id={} age_seconds={:.1f} "
+                            "silence_broken_seconds={:.1f} published_items={} "
+                            "consumed_frames={} deferrals={}",
+                            session_id,
+                            execution.turn_id,
+                            age,
+                            silence_broken,
+                            execution.published_items,
+                            execution.consumed_frames,
+                            execution.watchdog_progress_deferrals,
+                        )
+            stall_elapsed = now - last_labour_at
+            if (
+                age >= floor
+                and stall_elapsed >= stall
+                and not ClaudeTurnRunner._stall_clock_suspended(execution)
+            ):
+                return ScheduledWatchdogVerdict(
+                    reason=WATCHDOG_REASON_CONTENT_STALL,
+                    age_seconds=age,
+                    stall_seconds=stall_elapsed,
+                )
+            try:
+                await asyncio.wait_for(execution.finished.wait(), tick)
+            except TimeoutError:
+                continue
             return None
-        except TimeoutError:
-            return WATCHDOG_REASON_CONTENT_CEILING
+
+    @staticmethod
+    def _stall_clock_suspended(execution: ClaudeExecution) -> bool:
+        """# B2 hook: whether a pending interaction pauses the stall clock.
+
+        B2 (`.local-dev/claude-watchdog-liveness-tasks.md` §3 D2, in
+        reconnaissance while B1 lands) will suspend the stall clock whenever
+        the turn's last labour frame is a tool_use with no matching
+        tool_result — a long tool call is legal silence, and the CLI's own
+        timeout is the backstop — and exempt question/approval-shaped
+        interactions from the hard cap entirely. The adjudication above is
+        deliberately routed through this one predicate so B2 only has to give
+        it a real body: until then it is constant False and every verdict
+        fires exactly as B1 adjudicated.
+        """
+
+        return False
 
     async def _scheduled_watchdog(
         self,
@@ -492,26 +646,56 @@ class ClaudeTurnRunner:
         execution: ClaudeExecution,
         response: ClaudeResponse,
         timeout: float,
-        ceiling: float | None = None,
+        floor: float | None = None,
+        stall: float | None = None,
+        hard_cap: float | None = None,
+        tick: float | None = None,
     ) -> None:
-        if ceiling is None:
-            ceiling = CONTENTING_TURN_WATCHDOG_SECONDS
-        reason = await self._await_watchdog_deadlines(execution, timeout, ceiling)
-        if reason is None:
+        if floor is None:
+            floor = CONTENTING_TURN_FLOOR_SECONDS
+        if stall is None:
+            stall = CONTENTING_TURN_STALL_SECONDS
+        if hard_cap is None:
+            hard_cap = CONTENTING_TURN_HARD_CAP_SECONDS
+        if tick is None:
+            tick = WATCHDOG_STALL_POLL_SECONDS
+        verdict = await self._await_watchdog_deadlines(
+            execution,
+            timeout,
+            floor,
+            stall,
+            hard_cap,
+            tick,
+            session_id=session.session_id,
+        )
+        if verdict is None:
             return
+        reason = verdict.reason
+        # The budget the turn actually ran out of. Named once because three
+        # consumers depend on it agreeing: the failed terminal's text, the fire
+        # line, and the process-retirement disclosure's `stuckSeconds`. A stall
+        # fire reports the stall budget (what stood still), a hard-cap fire the
+        # cap (the absolute bound), the ghost the fast kill.
+        if reason == WATCHDOG_REASON_CONTENT_STALL:
+            stuck_budget = stall
+        elif reason == WATCHDOG_REASON_CONTENT_HARD_CAP:
+            stuck_budget = hard_cap
+        else:
+            stuck_budget = timeout
         connection = response.connection
         active_tasks = len(connection.background.active_ids)
         logger.warning(
             "Claude scheduled turn watchdog fired reason={} "
             "published_items={} consumed_frames={} active_tasks={} "
-            "no terminal within {}s (absolute ceiling {}s), "
+            "age_seconds={:.1f} stall_seconds={:.1f} budget_seconds={:.1f} "
             "forcing failed terminal session_id={} turn_id={}",
             reason,
             execution.published_items,
             execution.consumed_frames,
             active_tasks,
-            timeout if reason == WATCHDOG_REASON_ZERO_CONTENT else ceiling,
-            ceiling,
+            verdict.age_seconds,
+            verdict.stall_seconds,
+            stuck_budget,
             session.session_id,
             execution.turn_id,
         )
@@ -527,10 +711,6 @@ class ClaudeTurnRunner:
                 async with connection.stuck_report_lock:
                     connection.stuck_timeout_reports -= 1
 
-        # The budget the turn actually ran out of. Named once because three
-        # consumers depend on it agreeing: the failed terminal's text, the fire
-        # line, and the process-retirement disclosure's `stuckSeconds`.
-        stuck_budget = timeout if reason == WATCHDOG_REASON_ZERO_CONTENT else ceiling
         try:
             settled = await self.finish_execution(
                 session=session,
@@ -1869,8 +2049,9 @@ class ClaudeTurnRunner:
             # `tool_result` or a StreamEvent — with or without stale preamble
             # in front of it — then nothing ever → stays (0, 0) → 30s fast
             # kill) from a wake that keeps working (13:49: 248.6s, 155
-            # timeline items → leaves the fast kill, bounded only by the
-            # ceiling). Human/pending turns are never stamped
+            # timeline items → leaves the fast kill for the progress
+            # arbitration, never killed while its frames keep advancing).
+            # Human/pending turns are never stamped
             # (`cast_frame is None`) so `cast_reached` starts True and every
             # post-cast frame is judged by the single `_is_wire_chrome`
             # authority, exactly as a scheduled turn's are.
@@ -2203,7 +2384,8 @@ class ClaudeTurnRunner:
                 # shorter and looks like the obvious cleanup; it is wrong. It
                 # exempts any turn that receives a single non-chrome frame after the
                 # cast, which pushes a zero-content ghost out of the 30s fast kill
-                # and into the 600s ceiling — and a held execution lock refuses
+                # and into the contenting arbitration — where a silent turn lives
+                # until the 600s floor — and a held execution lock refuses
                 # user messages outright (`turns/actions.py`:
                 # `claude_turn_already_running`), so that is ten minutes of an
                 # unusable session, bought to remove a hypothetical.
@@ -2219,7 +2401,8 @@ class ClaudeTurnRunner:
                 # the apparent duplication with `drive_turn` below — and it is
                 # wrong: it exempts any turn that receives one non-chrome frame
                 # after the cast, which pushes a zero-content ghost from the 30s
-                # fast kill out to the 600s ceiling. A held execution lock refuses
+                # fast kill out to the contenting arbitration (600s floor before
+                # any verdict). A held execution lock refuses
                 # user messages outright (`turns/actions.py`: `claude_turn_already_running`),
                 # so that is ten minutes of an unusable session, bought to remove a
                 # hypothetical. The duplication is instead pinned from the outside

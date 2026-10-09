@@ -27,7 +27,9 @@ class ClaudeExecution:
     # signature the scheduled-turn breaker exists to reap quickly. A turn that
     # published a timeline item, or consumed a non-chrome wire frame even when
     # every one of those frames was dropped before publication, has left the
-    # fast kill and is bounded only by the absolute ceiling.
+    # fast kill for the progress arbitration: it is never judged dead while
+    # these counters keep advancing, and only a stall (past the age floor) or
+    # the absolute hard cap can end it (claude-watchdog-liveness-tasks.md §2).
     #
     # What NEVER counts is everything the queue already held when the turn
     # was born: the reader's preamble flush and then the frame that cast the
@@ -51,6 +53,14 @@ class ClaudeExecution:
     # lives on the per-turn dataclass, so nothing leaks across turns.
     published_items: int = 0
     consumed_frames: int = 0
+    # Lightweight observation surface for the stall arbitration (B1,
+    # `.local-dev/claude-watchdog-liveness-tasks.md` §4): how many progress
+    # samples the watchdog observed after the turn's age floor was met — i.e.
+    # how many times this turn's kill was pushed out by its own work. Moved
+    # only by the watchdog's polling loop, never by `drive_turn`; a non-zero
+    # value on a turn that then settled is the field evidence that the old
+    # absolute ceiling would have killed a turn that was still working.
+    watchdog_progress_deferrals: int = 0
 
     @property
     def has_turn_content(self) -> bool:
@@ -58,8 +68,9 @@ class ClaudeExecution:
 
         The content gate of the scheduled-turn watchdog: labour the turn did
         after its own cast, counted only from frames other than the casting
-        frame. Read at the fast-kill deadline only; the absolute ceiling is
-        unaffected either way.
+        frame. Read at the fast-kill deadline to decide which adjudication
+        applies (zero-content fast kill vs the progress arbitration), and by
+        nothing else.
         """
 
         return self.published_items > 0 or self.consumed_frames > 0

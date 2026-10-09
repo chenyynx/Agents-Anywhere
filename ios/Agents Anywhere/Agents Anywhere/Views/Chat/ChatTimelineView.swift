@@ -78,7 +78,16 @@ struct ChatTimelineView: View {
             // first layout invisible until the position lands.
             .defaultScrollAnchor(.top, for: .initialOffset)
             .defaultScrollAnchor(.top, for: .alignment)
-            .defaultScrollAnchor(.top, for: .sizeChanges)
+            // Container-size changes are the keyboard (the phone drawer folds
+            // the keyboard's height into the page's inset) and the composer
+            // growing. Anchoring those to the bottom keeps the newest row at
+            // the input bar and moves it in the same layout pass the system
+            // animates, instead of leaving the follow to the 24 ms-coalesced
+            // programmatic return. Only the container role is bottom: the
+            // opening offsets stay top-anchored so the opening positioning
+            // keeps owning its own first layout (see the note above). This is
+            // the system's own follow; no keyboard-height arithmetic.
+            .defaultScrollAnchor(.bottom, for: .sizeChanges)
             .allowsHitTesting(model.isOpeningReady)
             .accessibilityHidden(!model.isOpeningReady)
             .onScrollPhaseChange { _, phase, context in

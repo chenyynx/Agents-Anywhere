@@ -297,8 +297,15 @@ class ClaudeSessionReader:
                 )
             )
         # `history_scanned` is the count BEFORE the live/active filters below,
-        # which is what makes "this window was emptied by filtering" visible.
-        return SessionListPage(tuple(metas), history_scanned=len(metas))
+        # which is what makes "this window was emptied by filtering" visible —
+        # and before the id-extraction skip above, which is what makes "the SDK
+        # filled this window but not one row carried an id we can key on"
+        # visible. Counting `metas` here reported the *survivors* of both
+        # filters, so a window the SDK really filled could reach the ladder as
+        # `history_scanned == 0`: byte-identical to "a clean read proved the
+        # library ends here", with a hundred unreadable sessions sitting past
+        # it (R1b R2-3).
+        return SessionListPage(tuple(metas), history_scanned=len(sdk_sessions))
 
     async def _session_meta_from_sdk_session(
         self,
@@ -916,6 +923,20 @@ def _history_receipt_ages(
     message view is the supplement (F5): the SDK's messages carry no timestamps
     at all, so before this the age was unknowable and the never-started closure
     unreachable on real data.
+
+    The supplement may only PLACE an anchor, never move one (R1b R2-5). A
+    message is free text: an assistant can quote `agentId: <task>` in a
+    sentence about an old run without the task being alive, and the fold used
+    to take the newest mention per task, so one stray sentence re-stamped the
+    clock of a task that died a day ago. That was survivable while the anchor
+    only fed notice arbitration and the never-started grace, where a newer
+    anchor merely defers a judgement some other rule still reaches. T2 makes it
+    load-bearing for a HARD ceiling, and then the same sentence defers the
+    closure without bound — while the session keeps writing, the file mtime
+    stays fresh and `agentFileStale` never fires either, so nothing else can
+    reach the card. The scanner's own receipt is the evidence this rule is
+    supposed to rest on, so a task the scanner already placed keeps the
+    scanner's answer.
     """
 
     newest_ms: dict[str, int] = {
@@ -930,8 +951,10 @@ def _history_receipt_ages(
             continue
         for match in _AGENT_ID_RE.finditer(text):
             task_id = match.group(1)
-            if (newest_ms.get(task_id) or -1) < time_ms:
-                newest_ms[task_id] = time_ms
+            if task_id in newest_ms:
+                # Already anchored by the scanner: free text outranks nothing.
+                continue
+            newest_ms[task_id] = time_ms
     return {
         task_id: max((now_ms - time_ms) / 1000.0, 0.0)
         for task_id, time_ms in newest_ms.items()

@@ -114,6 +114,36 @@ def session_meta_for_instance(
     )
 
 
+def _repage_sessions(
+    page: Any,
+    sessions: tuple[SessionMeta, ...],
+) -> tuple[SessionMeta, ...]:
+    """Re-wrap a runtime's session page in ITS OWN page type, flags intact.
+
+    The supervisor registers a bound `RuntimeInstance` as the entry's runtime
+    and `resolve_runtime` hands that wrapper back, so the library rotation
+    sweep reads the WRAPPED page — not the native reader's. Rebuilding the page
+    with a bare `tuple(...)` here therefore silently discarded everything the
+    reader reported about its read: `read_failed` (this window's list call
+    raised), `history_scanned` (this window was emptied by the live/active
+    filters) and page 1's seam. Every consumer above this layer then saw a
+    plain empty tuple, which is indistinguishable from "the library ends
+    here" — the round-1 P1-2 repair was live in unit tests, whose fake runtime
+    returns the real page, and inert on the production path (R1b P0).
+
+    Duck-typed on purpose. A page that knows how to re-wrap itself does so
+    (`rescanned` keeps the same flags); one that does not — every runtime that
+    has nothing to say about its read, including a bare tuple — is left as the
+    plain tuple it always was. That keeps `runtime_protocol` free of any
+    import of a specific runtime's session reader.
+    """
+
+    repage = getattr(page, "rescanned", None)
+    if callable(repage):
+        return repage(sessions)
+    return sessions
+
+
 def session_state_for_instance(
     value: SessionState,
     instance: RuntimeInstanceSpec,
@@ -517,27 +547,29 @@ class RuntimeInstance(AgentRuntime):
         cursor: str | None = None,
         force: bool = False,
     ) -> tuple[SessionMeta, ...]:
-        sessions = await self.native_runtime.list_sessions(
+        page = await self.native_runtime.list_sessions(
             limit=limit,
             cursor=cursor,
             force=force,
         )
-        return tuple(
-            session_meta_for_instance(session, self.instance) for session in sessions
+        sessions = tuple(
+            session_meta_for_instance(session, self.instance) for session in page
         )
+        return _repage_sessions(page, sessions)
 
     async def list_complete_session_inventory(
         self,
         page_size: int = 100,
         force: bool = False,
     ) -> tuple[SessionMeta, ...]:
-        sessions = await self.native_runtime.list_complete_session_inventory(
+        page = await self.native_runtime.list_complete_session_inventory(
             page_size=page_size,
             force=force,
         )
-        return tuple(
-            session_meta_for_instance(session, self.instance) for session in sessions
+        sessions = tuple(
+            session_meta_for_instance(session, self.instance) for session in page
         )
+        return _repage_sessions(page, sessions)
 
     def supports_complete_session_inventory(self) -> bool:
         return self.native_runtime.supports_complete_session_inventory()

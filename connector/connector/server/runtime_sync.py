@@ -770,24 +770,61 @@ class RuntimeSyncRunner:
                 state.unproven_empties + 1,
                 SESSION_ROTATION_UNPROVEN_EMPTY_LIMIT,
             )
-            end_of_library = (
-                state.circle_windows > 0 and not unverified
-            ) or unproven >= SESSION_ROTATION_UNPROVEN_EMPTY_LIMIT
-            if not end_of_library:
+            proven_end_of_library = state.circle_windows > 0 and not unverified
+            patience_spent = unproven >= SESSION_ROTATION_UNPROVEN_EMPTY_LIMIT
+            if not proven_end_of_library:
+                if patience_spent and state.circle_stalls == 0:
+                    # Spent the circle's patience without ever proving an end,
+                    # so the sweep must NOT disarm: the activation signal is a
+                    # page-1 edge that only a page-1 rebuild consumes, so
+                    # disarming here and being re-armed by that same unconsumed
+                    # edge is an oscillation that never climbs the ladder and
+                    # never reaches the tail (R1b R2-2). Wrap to a position
+                    # that is really in the library instead: this is what
+                    # recovers a ladder left pointing past a library that
+                    # shrank under a persisted offset.
+                    logger.warning(
+                        "session rotation re-seeking after an unproven run of "
+                        "empty windows runtime={} offset={} read_failed={} "
+                        "scanned={} unproven_empties={}",
+                        runtime_id,
+                        state.offset,
+                        read_failed,
+                        scanned,
+                        unproven,
+                    )
+                    await self._record_rotation_state(
+                        scoped_runtime_id,
+                        runtime_type,
+                        replace(
+                            state,
+                            offset=first_offset,
+                            circle_candidates=0,
+                            circle_rebuilt=0,
+                            circle_windows=0,
+                            unproven_empties=0,
+                            circle_stalls=state.circle_stalls + 1,
+                        ),
+                    )
+                    return
                 # Step over it and keep the sweep armed; the skipped window is
-                # picked up again on the next circle. The limit is what stops a
-                # reader that fails on EVERY window from walking offsets
-                # forever: spent patience concludes and re-seeks.
+                # picked up again on the next circle. The patience counter is
+                # what stops a reader that fails on EVERY window from walking
+                # offsets inside one run: after the first re-seek, a spent
+                # counter resets here so the ladder commits FORWARD past the
+                # region that keeps failing instead of wrapping back into it
+                # and re-reading the same windows forever.
                 logger.warning(
                     "session rotation window is not proof of the end of the "
                     "library runtime={} offset={} read_failed={} scanned={} "
-                    "unproven_empties={} circle_windows={}",
+                    "unproven_empties={} circle_windows={} circle_stalls={}",
                     runtime_id,
                     state.offset,
                     read_failed,
                     scanned,
                     unproven,
                     state.circle_windows,
+                    state.circle_stalls,
                 )
                 await self._record_rotation_state(
                     scoped_runtime_id,
@@ -795,7 +832,7 @@ class RuntimeSyncRunner:
                     replace(
                         state,
                         offset=state.offset + SESSION_ROTATION_PAGE_SIZE,
-                        unproven_empties=unproven,
+                        unproven_empties=0 if patience_spent else unproven,
                     ),
                 )
                 return
@@ -1318,8 +1355,13 @@ class SessionRotationState:
     * `circle_windows` — non-empty windows read in this circle. Until there is
       one, an empty window is not evidence that the library ended.
     * `unproven_empties` — empty windows read so far in a circle that has no
-      proof; `SESSION_ROTATION_UNPROVEN_EMPTY_LIMIT` of them ends the wait so a
-      position that returns nothing forever can still conclude.
+      proof; `SESSION_ROTATION_UNPROVEN_EMPTY_LIMIT` of them spends the
+      circle's patience.
+    * `circle_stalls` — how many times this circle has already spent that
+      patience and re-seeked. One re-seek is what recovers a ladder left
+      pointing past a library that shrank under a persisted offset; a second
+      one would wrap the ladder back into the windows that just failed, so the
+      next spend commits forward instead (R1b R2-2).
     * `circles` — circles concluded since activation. The first one always
       runs flat out (it is the one a version bump just paid for); the idle
       backoff only applies past it.
@@ -1335,6 +1377,7 @@ class SessionRotationState:
     stall_circles: int = 0
     circle_windows: int = 0
     unproven_empties: int = 0
+    circle_stalls: int = 0
     circles: int = 0
     idle_reads: int = 0
     rest_cycles: int = 0
@@ -1361,6 +1404,7 @@ def session_rotation_state_from_mapping(
         stall_circles=_optional_int(value.get("stallCircles")) or 0,
         circle_windows=_optional_int(value.get("circleWindows")) or 0,
         unproven_empties=_optional_int(value.get("unprovenEmpties")) or 0,
+        circle_stalls=_optional_int(value.get("circleStalls")) or 0,
         circles=_optional_int(value.get("circles")) or 0,
         idle_reads=_optional_int(value.get("idleReads")) or 0,
         rest_cycles=_optional_int(value.get("restCycles")) or 0,
@@ -1377,6 +1421,7 @@ def session_rotation_state_payload(state: SessionRotationState) -> dict[str, Any
         "stallCircles": state.stall_circles,
         "circleWindows": state.circle_windows,
         "unprovenEmpties": state.unproven_empties,
+        "circleStalls": state.circle_stalls,
         "circles": state.circles,
         "idleReads": state.idle_reads,
         "restCycles": state.rest_cycles,

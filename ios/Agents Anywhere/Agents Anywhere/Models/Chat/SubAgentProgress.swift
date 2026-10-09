@@ -506,6 +506,19 @@ enum SubAgentProgress {
         return detailRowsPresent(in: items, parents: ids)
     }
 
+    /// Whether every parent the card's activity list reads from finished its
+    /// drain — regardless of whether rows turned up.
+    ///
+    /// The panel's disclosure reads this (red team follow-up): a drained
+    /// parent with zero rows is a definitive "nothing to show" — a card that
+    /// never spawned activity, answered by the server's empty exhausted page
+    /// — and the panel stays quiet instead of claiming "内容未加载". An
+    /// undrained one is still owed, which the panel discloses whenever no
+    /// load is running.
+    static func isDetailDrainFinished(_ card: SubAgentCard, in items: [V2TimelineItem], drainedParents: Set<String>) -> Bool {
+        lineageIDs(of: card, in: items).allSatisfy { drainedParents.contains($0) }
+    }
+
     private static func detailRowsPresent(in items: [V2TimelineItem], parents: Set<String>) -> Bool {
         items.contains { item in
             guard let parent = parentItemID(item) else { return false }

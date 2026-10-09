@@ -66,6 +66,7 @@ from agent_server.services.effective_capabilities import (
 from agent_server.services.session_runtime_state_cache import SessionRuntimeStateCache
 from agent_server.services.setup_tokens import SetupTokenService
 from agent_server.services.shell_tasks import ShellTaskManager
+from agent_server.services.timeline_janitor import TimelineJanitor
 from agent_server.services.timeline_write_buffer import TimelineWriteBuffer
 from agent_server.services.workspace import WorkspaceServiceError
 
@@ -119,6 +120,7 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         presence_task: asyncio.Task[None] | None = None
         deletion_task: asyncio.Task[None] | None = None
+        janitor_task: asyncio.Task[None] | None = None
         try:
             logger.info(
                 "server concurrency pid={} workers={} event_workers={}",
@@ -136,11 +138,18 @@ def create_app(
             await app.state.rpc.start()
             presence_task = asyncio.create_task(_connector_presence_watchdog(app))
             deletion_task = asyncio.create_task(app.state.connector_deletion_recovery.run())
+            if app.state.timeline_janitor.enabled:
+                janitor_task = asyncio.create_task(app.state.timeline_janitor.run())
+            else:
+                logger.info("timeline age janitor disabled by configuration")
             # Generate the bootstrap token early so operators see it in logs.
             if await app.state.store.count_users() == 0:
                 await SetupTokenService(app.state.setup_token, app.state.redis).snapshot()
             yield
         finally:
+            if janitor_task is not None:
+                janitor_task.cancel()
+                await asyncio.gather(janitor_task, return_exceptions=True)
             if deletion_task is not None:
                 deletion_task.cancel()
                 await asyncio.gather(deletion_task, return_exceptions=True)
@@ -265,6 +274,7 @@ def create_app(
         app.state.store, app.state.rpc, app.state.terminal_broker,
         app.state.timeline_write_buffer, app.state.session_runtime_state_cache, app.state.timeline_broker,
     )
+    app.state.timeline_janitor = TimelineJanitor.from_environment(app.state.store)
     app.state.ws_tickets = ClientWsTicketManager(app.state.redis)
     app.state.setup_token = SetupToken()
     app.state.started_at_iso = utc_now()

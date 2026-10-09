@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import AbstractAsyncContextManager
+from datetime import datetime
 from typing import Any, Protocol
 
 from agent_server.core.catalogs import CatalogType, CatalogUpdateOutcome
@@ -198,6 +199,26 @@ class TimelineEffectRepository(Protocol):
         source_observed_at: str | None = None,
         mark_read_on_change: bool = False,
     ) -> TimelineItemWriteResult: ...
+
+
+class TimelineJanitorRepository(Protocol):
+    """Age-bounded residue closure ports (server janitor, T3)."""
+
+    async def stale_running_tool_candidates(
+        self,
+        *,
+        older_than: datetime,
+        limit: int,
+    ) -> list[tuple[str, str]]: ...
+
+    async def close_stale_running_tool_items(
+        self,
+        *,
+        session_id: str,
+        item_ids: list[str],
+        older_than: datetime,
+        closed_by_evidence: str,
+    ) -> list[str]: ...
 
 class InteractionResolutionRepository(
     SessionLookupRepository,

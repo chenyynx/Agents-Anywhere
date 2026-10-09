@@ -205,7 +205,7 @@ final class SessionChatModel {
         let prose = SlashIntent(draft.text) == nil ? draft.text : ""
         if command.takesArguments {
             draft.text = current == "/\(command.id)" ? current + " " + prose : current
-            draft.setFocusIntent(true)
+            draft.isFocused = true
             repository.draftDidChange()
             return
         }

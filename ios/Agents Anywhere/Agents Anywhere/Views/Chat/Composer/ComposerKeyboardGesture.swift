@@ -78,9 +78,10 @@ struct ComposerKeyboardPanGesture: UIGestureRecognizerRepresentable {
                 // mirrors the real focus into the draft.
                 editor.beginEditing()
             case .resign:
-                // Resigns and mirrors the result; `finishEditing` also clears
-                // the focus intent, so no separate flag write is needed.
+                // Same path as the composer's own dismissal: resign the text
+                // view, then mirror the resulting focus into the draft.
                 editor.finishEditing()
+                draft.isFocused = false
             case .none:
                 break
             }

@@ -107,7 +107,7 @@ struct ChatComposerDock: View {
         .onChange(of: photos) { _, items in importPhotos(items) }
         .onDisappear {
             editor.finishEditing()
-            draft.setFocusIntent(false)
+            draft.isFocused = false
         }
         // One light impact per successful enqueue, accounted by the caller.
         .sensoryFeedback(.impact(weight: .light, intensity: 1), trigger: queueEnqueueTick)

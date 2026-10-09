@@ -167,7 +167,7 @@ struct NewSessionView: View, Equatable {
     }
 
     private func chooseTarget() {
-        model.draft.setFocusIntent(false)
+        model.draft.isFocused = false
         showsTarget = true
     }
 

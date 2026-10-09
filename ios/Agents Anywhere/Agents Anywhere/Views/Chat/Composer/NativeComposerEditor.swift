@@ -10,18 +10,16 @@ final class ComposerEditorController {
 
     func finishEditing() {
         guard let textView else { return }
-        let token = draft?.setFocusIntent(false) ?? 0
         textView.resignFirstResponder()
-        synchronize(token: token)
+        synchronize()
     }
 
     /// Focus mirror of `finishEditing`: driven straight from the keyboard
     /// gesture, so the pop never waits on a SwiftUI re-render hop.
     func beginEditing() {
         guard let textView else { return }
-        let token = draft?.setFocusIntent(true) ?? 0
         textView.becomeFirstResponder()
-        synchronize(token: token)
+        synchronize()
     }
 
     /// Check native marked text before ending editing. unmarkText() only removes
@@ -41,28 +39,18 @@ final class ComposerEditorController {
             synchronize()
             return textView.text ?? ""
         }
-        let token = draft?.setFocusIntent(false) ?? 0
         textView.resignFirstResponder()
         await Task.yield()
         guard !Task.isCancelled, draft === originalDraft, textView.markedTextRange == nil else { return nil }
-        synchronize(token: token)
+        synchronize()
         return textView.text ?? ""
     }
 
-    /// Mirrors native truth into the draft. The reported focus always comes
-    /// from the live first-responder fact, so a callback that arrives after the
-    /// field already resigned cannot report it as focused. When the change was
-    /// user-driven (`token == nil`, a tap or an interactive dismissal) the
-    /// intent re-aligns to that fact; an app-driven change carries its own
-    /// token, and a superseded one is ignored rather than reviving a stale
-    /// intent.
-    func synchronize(token: Int? = nil) {
+    func synchronize() {
         guard let textView, let draft, draft.isValid else { return }
         if draft.text != textView.text { draft.text = textView.text ?? "" }
         draft.isComposing = textView.markedTextRange != nil
-        let responder = textView.isFirstResponder
-        if token == nil { draft.setFocusIntent(responder) }
-        draft.reportFocus(responder, token: token ?? draft.focusToken)
+        draft.isFocused = textView.isFirstResponder
     }
 }
 
@@ -125,11 +113,9 @@ struct NativeComposerEditor: UIViewRepresentable {
             let end = (draft.text as NSString).length
             view.selectedRange = NSRange(location: min(selection.location, end), length: 0)
         }
-        // Drive toward the intent, never the observed focus: a stale callback
-        // that reported `isFocused` cannot make this re-assert the responder.
-        if draft.focusIntent, !view.isFirstResponder {
+        if draft.isFocused, !view.isFirstResponder {
             view.becomeFirstResponder()
-        } else if !draft.focusIntent, view.isFirstResponder {
+        } else if !draft.isFocused, view.isFirstResponder {
             view.resignFirstResponder()
         }
     }

@@ -88,13 +88,16 @@ struct SessionTimelineEventView: View {
     /// P3: expanding a top-level card's fold is the earliest moment its
     /// lazily-fetched detail rows can be wanted — the panel's 查看详情 hangs
     /// off the same header — so the expansion warms them through the
-    /// repository's on-demand `mode=children` read. One shot: rows already
-    /// local (window or detail sidecar) cost nothing here, and the panel's
-    /// own open path stays the authority.
+    /// repository's on-demand `mode=children` read. The gate is the coverage
+    /// bit (red team F2): only a finished drain's rows count as loaded, so
+    /// rows streamed live or half-pulled still earn the fetch here. One
+    /// shot: a covered card costs nothing, and the panel's own open path
+    /// stays the authority.
     private func requestSubAgentDetail() {
         guard let card = SubAgentProgress.card(row.value) else { return }
         let loaded = chat.timeline.rows.map(\.value) + chat.session.subAgentChildren
-        guard !SubAgentProgress.hasDetailRows(card, in: loaded) else { return }
+        guard !SubAgentProgress.isDetailCoverageComplete(card, in: loaded,
+            drainedParents: chat.session.detailLoadedParents) else { return }
         let parents = SubAgentProgress.lineageIDs(of: card, in: loaded)
         Task { await chat.session.loadSubAgentDetail(parentIDs: parents) }
     }

@@ -5,6 +5,13 @@ import UIKit
 import OSLog
 #endif
 
+/// The reader signals the backfill reads, taken from the existing scroll
+/// state machine. Equatable so `.onChange` fires on either half.
+private struct BackfillReaderSignals: Equatable {
+    let scrolling: Bool
+    let parkedInHistory: Bool
+}
+
 struct ChatTimelineView: View {
     let model: SessionChatModel
     /// The second argument is the thumbnail the bubble already decoded, when
@@ -214,12 +221,19 @@ struct ChatTimelineView: View {
                 guard model.openingPositionSettled else { return }
                 model.session.beginHistoryBackfill()
             }
-            .onChange(of: scrolling.userIsScrolling, initial: true) { _, isScrolling in
-                // P2 throttle: the reader signal is the existing scroll state
-                // machine's own `userIsScrolling`, so a page the backfill has
-                // waiting is not merged under an active scroll; the loop
-                // resumes once the page goes quiet.
-                model.session.setBackfillReaderScrolling(isScrolling)
+            .onChange(of: BackfillReaderSignals(
+                scrolling: scrolling.userIsScrolling,
+                parkedInHistory: scrolling.backfillReaderIsParked(atOlderPrompt: olderPromptVisible)
+            ), initial: true) { _, signals in
+                // P2 throttle, both halves taken from the existing scroll
+                // state machine: a page the backfill has waiting is not
+                // merged under an active scroll, and not under a reader
+                // parked mid-history under their own control (B11 — a
+                // prepend there has no anchor and would jump the page). The
+                // loop resumes once both clear, or the reader reaches the
+                // top's older-pull region.
+                model.session.setBackfillReaderState(scrolling: signals.scrolling,
+                    parkedInHistory: signals.parkedInHistory)
             }
             .onChange(of: scrolling.navigationGeneration) { _, _ in
                 releaseScrollPosition()

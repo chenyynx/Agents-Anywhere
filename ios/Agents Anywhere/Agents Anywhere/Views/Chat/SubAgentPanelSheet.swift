@@ -40,7 +40,7 @@ struct SubAgentPanelSheet: View {
     @State private var showsFullPrompt = false
     /// P3: whether the selected card's lazily-fetched detail rows are being
     /// loaded. The state bits come from the ClientCore rules above
-    /// (`hasDetailRows` / `isContentLoaded`); this only rides beside them so
+    /// (`hasDetailRows` and the coverage bit); this only rides beside them so
     /// the body can pick the skeleton over the honest "not loaded" line.
     @State private var isLoadingDetail = false
 
@@ -133,24 +133,30 @@ struct SubAgentPanelSheet: View {
     }
 
     /// The card whose detail rows this screen wants right now: the selection
-    /// while its own rows are missing locally, nil otherwise (nothing to
-    /// load, or the rows are already here). Keyed on `hasDetailRows`, not
-    /// `isContentLoaded`: a card the window still holds reads as "loaded"
-    /// while its activity rows may be missing entirely — the normal shape
-    /// once the coverage reads exclude them. Driving `.task(id:)` from it
-    /// keeps the load one-shot per card — a failed load is not retried until
-    /// a new selection, and a card the panel never shows produces no request.
+    /// while its coverage is incomplete, nil otherwise (nothing to load, or
+    /// a finished drain's rows are here). The bit is `isDetailCoverageComplete`
+    /// (red team F2), not row existence: live frames and partial drains
+    /// deliver some rows without finishing the card, and those must still
+    /// read as "owed" or the panel would present a half-filled activity list
+    /// as final. Driving `.task(id:)` from it keeps the load one-shot per
+    /// card — a failed load is not retried until a new selection, and a card
+    /// the panel never shows produces no request.
     private var detailRequest: String? {
-        guard let card = selectedCard, !SubAgentProgress.hasDetailRows(card, in: detailWindow) else { return nil }
+        guard let card = selectedCard,
+              !SubAgentProgress.isDetailCoverageComplete(card, in: detailWindow,
+                  drainedParents: chat.session.detailLoadedParents) else { return nil }
         return card.id
     }
 
     /// P3: fetches the missing rows through the repository's on-demand
     /// `mode=children` read (lineage-wide, so a resume-alias card pulls its
     /// dispatch sibling's rows too). The skeleton shows while it runs; the
-    /// merged rows arrive through the projection like every other update.
+    /// merged rows arrive through the projection like every other update,
+    /// and the coverage bit flips only when the drain itself finishes.
     private func loadDetailIfNeeded() async {
-        guard let card = selectedCard, !SubAgentProgress.hasDetailRows(card, in: detailWindow) else { return }
+        guard let card = selectedCard,
+              !SubAgentProgress.isDetailCoverageComplete(card, in: detailWindow,
+                  drainedParents: chat.session.detailLoadedParents) else { return }
         isLoadingDetail = true
         defer { isLoadingDetail = false }
         await chat.session.loadSubAgentDetail(parentIDs: SubAgentProgress.lineageIDs(of: card, in: detailWindow))
@@ -269,20 +275,15 @@ struct SubAgentPanelSheet: View {
 
     @ViewBuilder private func sections(_ card: SubAgentCard) -> some View {
         VStack(alignment: .leading, spacing: 20) {
-            // §3.3 honesty: a card with no loaded row anywhere in its lineage —
-            // its own row gone from the window (the sidecar still holds the
-            // card) and no sibling's rows either — has its own name, phase and
-            // prompt but none of its activity. Say so instead of rendering a
-            // blank body that reads as "nothing happened". A resume-alias card
-            // passes this gate through its sibling's rows (pp 2026-10-09).
-            // P3: while the missing detail rows are being fetched on demand,
-            // the skeleton stands in. The notice itself stays bound to
-            // `isContentLoaded` (the pre-P3 honesty rule) — a card whose row
-            // is present but whose activity is still in flight must not
-            // falsely claim nothing is loaded.
+            // P3 §3.3 honesty, extended by red team F8: while the missing
+            // detail rows are being fetched on demand the skeleton stands in,
+            // and once that settles without rows — the load failed, the
+            // device is offline, the sidecar caps squeezed the rows out, or
+            // the card's rows are gone from the window entirely — the notice
+            // says so instead of leaving the activity silently blank (a blank
+            // body reads as "nothing happened").
             if !SubAgentProgress.hasDetailRows(card, in: detailWindow) {
-                if isLoadingDetail { SubAgentDetailLoadingSkeleton() }
-                else if !SubAgentProgress.isContentLoaded(card, in: detailWindow) { notLoadedNotice }
+                if isLoadingDetail { SubAgentDetailLoadingSkeleton() } else { notLoadedNotice }
             }
             promptSection(card)
             activitySection(card)

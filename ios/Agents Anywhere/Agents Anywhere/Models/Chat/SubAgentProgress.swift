@@ -482,17 +482,34 @@ enum SubAgentProgress {
     /// `parentItemId` in the card's lineage, the same membership rule the
     /// activity list renders by (session-open-coverage P3).
     ///
-    /// This is the lazy-load trigger's state bit, deliberately narrower than
-    /// `isContentLoaded`: the card's own row being present makes the panel
-    /// "loaded" while its activity may still be missing entirely, and that
-    /// exact shape is the normal one once the coverage reads exclude detail
-    /// rows. The panel and the card fold ask this to decide whether their
-    /// on-demand `mode=children` load still owes rows.
+    /// Deliberately narrower than `isContentLoaded`: the card's own row being
+    /// present makes the panel "loaded" while its activity may still be
+    /// missing entirely, and that exact shape is the normal one once the
+    /// coverage reads exclude detail rows.
     static func hasDetailRows(_ card: SubAgentCard, in items: [V2TimelineItem]) -> Bool {
+        detailRowsPresent(in: items, parents: lineageIDs(of: card, in: items))
+    }
+
+    /// Whether the card's detail coverage is complete (red team F2): every
+    /// parent its activity list reads from finished its on-demand drain (or
+    /// stopped at the per-card cap), and its rows are still present locally.
+    ///
+    /// This is the lazy-load gates' state bit. Row arrival alone — live
+    /// frames, a partial drain — never satisfies it, so a half-delivered card
+    /// keeps reading as "still owed" and the panel fetches the rest instead
+    /// of presenting an incomplete list as final. The rows-present half keeps
+    /// a card the sidecar caps squeezed out from reading as loaded: its drain
+    /// is on record, but there is nothing to show, so it stays owed too.
+    static func isDetailCoverageComplete(_ card: SubAgentCard, in items: [V2TimelineItem], drainedParents: Set<String>) -> Bool {
         let ids = lineageIDs(of: card, in: items)
-        return items.contains { item in
+        guard ids.allSatisfy({ drainedParents.contains($0) }) else { return false }
+        return detailRowsPresent(in: items, parents: ids)
+    }
+
+    private static func detailRowsPresent(in items: [V2TimelineItem], parents: Set<String>) -> Bool {
+        items.contains { item in
             guard let parent = parentItemID(item) else { return false }
-            return ids.contains(parent)
+            return parents.contains(parent)
         }
     }
 

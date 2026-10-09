@@ -4,6 +4,19 @@ enum V2TimelineMode: String {
     case latest
     case changes
     case history
+    /// One SubAgent card's own rows, read on demand (session-open-coverage P3).
+    /// Newest → oldest pagination through `beforeOrderSeq`, the same page
+    /// shape as every other timeline read.
+    case children
+}
+
+/// The `exclude` filter the coverage reads accept (session-open-coverage P2).
+/// Absent (nil) means the request is byte-for-byte what it was before the
+/// parameter existed; the server applies the filter, never the client.
+enum V2TimelineExclude: String {
+    /// Drops every SubAgent child row — a row whose payload carries a
+    /// non-empty `content.parentItemId` (the server's rule, contract #2).
+    case agentChildren = "agent_children"
 }
 
 struct V2SessionTimelinePage: Decodable, Hashable {

@@ -12,10 +12,15 @@ protocol V2SessionAPIProtocol {
     func markRead(sessionIds: [V2SessionID]) async throws -> V2SessionBulkActionResponse
     func archive(sessionIds: [V2SessionID]) async throws -> V2SessionBulkActionResponse
     func unarchive(sessionIds: [V2SessionID]) async throws -> V2SessionBulkActionResponse
-    func snapshot(sessionId: V2SessionID, limit: Int) async throws -> V2SessionSnapshot
-    func latestTimeline(sessionId: V2SessionID, limit: Int) async throws -> V2SessionTimelinePage
+    func snapshot(sessionId: V2SessionID, limit: Int, exclude: V2TimelineExclude?) async throws -> V2SessionSnapshot
+    func latestTimeline(sessionId: V2SessionID, limit: Int, exclude: V2TimelineExclude?) async throws -> V2SessionTimelinePage
     func timelineChanges(sessionId: V2SessionID, afterSeq: Int, limit: Int) async throws -> V2SessionTimelinePage
-    func timelineHistory(sessionId: V2SessionID, beforeOrderSeq: Int, limit: Int) async throws -> V2SessionTimelinePage
+    func timelineHistory(sessionId: V2SessionID, beforeOrderSeq: Int, limit: Int, exclude: V2TimelineExclude?) async throws -> V2SessionTimelinePage
+    /// One SubAgent card's own rows (P3), newest → oldest. `beforeOrderSeq`
+    /// nil reads the card's newest rows; later pages continue below the oldest
+    /// row the previous page returned. Never carries `exclude` — the child
+    /// rows are the point of this read.
+    func timelineChildren(sessionId: V2SessionID, parentId: String, beforeOrderSeq: Int?, limit: Int) async throws -> V2SessionTimelinePage
 }
 
 struct V2SessionAPI: V2SessionAPIProtocol {
@@ -82,17 +87,19 @@ struct V2SessionAPI: V2SessionAPIProtocol {
         try await bulkAction(path: "/sessions/unarchive", sessionIds: sessionIds)
     }
 
-    func snapshot(sessionId: V2SessionID, limit: Int) async throws -> V2SessionSnapshot {
+    func snapshot(sessionId: V2SessionID, limit: Int, exclude: V2TimelineExclude? = nil) async throws -> V2SessionSnapshot {
+        var queryItems = [URLQueryItem(name: "limit", value: String(limit))]
+        if let exclude { queryItems.append(URLQueryItem(name: "exclude", value: exclude.rawValue)) }
         let request = HTTPRequest<EmptyRequestBody, V2SessionSnapshot>(
             method: .get,
             path: sessionPath(sessionId, suffix: "snapshot"),
-            queryItems: [URLQueryItem(name: "limit", value: String(limit))]
+            queryItems: queryItems
         )
         return try await transport.send(request)
     }
 
-    func latestTimeline(sessionId: V2SessionID, limit: Int) async throws -> V2SessionTimelinePage {
-        try await timeline(sessionId: sessionId, mode: .latest, limit: limit)
+    func latestTimeline(sessionId: V2SessionID, limit: Int, exclude: V2TimelineExclude? = nil) async throws -> V2SessionTimelinePage {
+        try await timeline(sessionId: sessionId, mode: .latest, exclude: exclude, limit: limit)
     }
 
     func timelineChanges(sessionId: V2SessionID, afterSeq: Int, limit: Int) async throws -> V2SessionTimelinePage {
@@ -102,12 +109,29 @@ struct V2SessionAPI: V2SessionAPIProtocol {
     func timelineHistory(
         sessionId: V2SessionID,
         beforeOrderSeq: Int,
-        limit: Int
+        limit: Int,
+        exclude: V2TimelineExclude? = nil
     ) async throws -> V2SessionTimelinePage {
         try await timeline(
             sessionId: sessionId,
             mode: .history,
             beforeOrderSeq: beforeOrderSeq,
+            exclude: exclude,
+            limit: limit
+        )
+    }
+
+    func timelineChildren(
+        sessionId: V2SessionID,
+        parentId: String,
+        beforeOrderSeq: Int?,
+        limit: Int
+    ) async throws -> V2SessionTimelinePage {
+        try await timeline(
+            sessionId: sessionId,
+            mode: .children,
+            beforeOrderSeq: beforeOrderSeq,
+            parentId: parentId,
             limit: limit
         )
     }
@@ -138,6 +162,8 @@ struct V2SessionAPI: V2SessionAPIProtocol {
         mode: V2TimelineMode,
         afterSeq: Int? = nil,
         beforeOrderSeq: Int? = nil,
+        parentId: String? = nil,
+        exclude: V2TimelineExclude? = nil,
         limit: Int
     ) async throws -> V2SessionTimelinePage {
         var queryItems = [
@@ -149,6 +175,12 @@ struct V2SessionAPI: V2SessionAPIProtocol {
         }
         if let beforeOrderSeq {
             queryItems.append(URLQueryItem(name: "beforeOrderSeq", value: String(beforeOrderSeq)))
+        }
+        if let parentId {
+            queryItems.append(URLQueryItem(name: "parentId", value: parentId))
+        }
+        if let exclude {
+            queryItems.append(URLQueryItem(name: "exclude", value: exclude.rawValue))
         }
         let request = HTTPRequest<EmptyRequestBody, V2SessionTimelinePage>(
             method: .get,

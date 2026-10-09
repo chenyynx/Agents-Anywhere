@@ -5,9 +5,14 @@ struct V2SessionDetailService {
     let runtimeAPI: any V2RuntimeAPIProtocol
     let realtimeAPI: any V2RealtimeAPIProtocol
 
+    /// The opening snapshot and every history page exclude SubAgent child
+    /// rows (session-open-coverage P2): the 100-record first page and the
+    /// automatic backfill both spend their budget on conversation content,
+    /// and the excluded rows are reachable on demand through
+    /// `loadChildrenItems`. Live frames and recovery stay unfiltered.
     func load(sessionId: V2SessionID, itemLimit: Int = 100) async throws -> V2SessionSnapshot {
         try validatePageSize(itemLimit)
-        return try await sessionAPI.snapshot(sessionId: sessionId, limit: itemLimit)
+        return try await sessionAPI.snapshot(sessionId: sessionId, limit: itemLimit, exclude: .agentChildren)
     }
 
     func loadOlderItems(
@@ -19,13 +24,32 @@ struct V2SessionDetailService {
         return try await sessionAPI.timelineHistory(
             sessionId: sessionId,
             beforeOrderSeq: beforeOrderSeq,
-            limit: limit
+            limit: limit,
+            exclude: .agentChildren
         )
     }
 
     func latestItems(sessionId: V2SessionID, limit: Int = 100) async throws -> V2SessionTimelinePage {
         try validatePageSize(limit)
-        return try await sessionAPI.latestTimeline(sessionId: sessionId, limit: limit)
+        return try await sessionAPI.latestTimeline(sessionId: sessionId, limit: limit, exclude: .agentChildren)
+    }
+
+    /// One SubAgent card's own rows, newest → oldest (P3). `beforeOrderSeq`
+    /// nil reads the card's newest rows; a later page continues below the
+    /// oldest row the previous page returned.
+    func loadChildrenItems(
+        sessionId: V2SessionID,
+        parentId: String,
+        beforeOrderSeq: Int?,
+        limit: Int = 100
+    ) async throws -> V2SessionTimelinePage {
+        try validatePageSize(limit)
+        return try await sessionAPI.timelineChildren(
+            sessionId: sessionId,
+            parentId: parentId,
+            beforeOrderSeq: beforeOrderSeq,
+            limit: limit
+        )
     }
 
     func refreshRuntimeState(sessionId: V2SessionID) async throws -> V2RuntimeState {

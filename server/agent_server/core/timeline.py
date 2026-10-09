@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
+from typing import Any
 
 from agent_server.core.models import TimelineItem, TimelineItemIn
 
@@ -100,3 +103,37 @@ def next_timeline_item_revision(
     if existing is None:
         return item.revision
     return max(item.revision, existing.revision + 1)
+
+
+def timeline_item_content_hash(
+    *,
+    item_type: str,
+    status: str,
+    role: str | None,
+    content: Any,
+) -> str:
+    """Canonical state hash for one timeline item.
+
+    Mirrors the Runtime protocol's ``timeline_content_hash`` (connector
+    ``runtime_protocol/timeline.py``): a deterministic digest over the item's
+    own state. Any writer that derives a new state for an existing row (an
+    approval resolution, the age janitor) must recompute the hash, otherwise
+    the row carries a hash that no longer describes it and a later Runtime
+    push of the previous state would look unchanged on the no-op fast path
+    instead of superseding the derived state.
+    """
+
+    payload = {
+        "type": item_type,
+        "status": status,
+        "role": role,
+        "content": content,
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()

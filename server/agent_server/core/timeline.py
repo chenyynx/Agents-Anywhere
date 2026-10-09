@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from agent_server.core.models import TimelineItem, TimelineItemIn
@@ -100,3 +102,45 @@ def next_timeline_item_revision(
     if existing is None:
         return item.revision
     return max(item.revision, existing.revision + 1)
+
+
+def agent_child_parent_item_id(item: TimelineItem) -> str | None:
+    """The card ID a row belongs to when it is a subagent-internal row.
+
+    The connector tags every subagent-internal row — tool, reasoning or text —
+    with ``content.parentItemId`` pointing at the item ID of the Agent card
+    row that owns it (the client folds those rows under the card). The
+    judgment is content-based, never based on the row's ``type``: a row is a
+    child exactly when its free-JSON ``content`` carries a non-empty
+    ``parentItemId`` string. Total by construction: a payload whose content
+    is not a mapping, or whose ``parentItemId`` is not a non-empty string, is
+    not a child row.
+    """
+
+    content = item.content
+    if not isinstance(content, Mapping):
+        return None
+    parent_item_id = content.get("parentItemId")
+    if isinstance(parent_item_id, str) and parent_item_id:
+        return parent_item_id
+    return None
+
+
+def timeline_item_json_bytes(item: TimelineItem) -> int:
+    """Byte size of one timeline item as protocol responses serialize it.
+
+    Byte-budget gates (the snapshot's 2MB ceiling and the timeline page
+    budget) measure this same encoding — compact UTF-8 JSON, the wrapped
+    ``{"item": ...}`` envelope kept byte-identical with the snapshot gate's
+    historical metric — so the gates cannot drift away from the wire size.
+    Mirrors ``event_recovery._serialized_payload_bytes``.
+    """
+
+    return len(
+        json.dumps(
+            {"item": item.model_dump(mode="json")},
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    )

@@ -542,6 +542,64 @@ class TimelineRepositoryMixin:
             limit=limit,
         )
 
+    async def list_timeline_latest_excluding_agent_children(
+        self,
+        *,
+        session_id: str,
+        limit: int,
+    ) -> tuple[list[TimelineItem], bool]:
+        """The newest conversation-view page (subagent-internal rows excluded).
+
+        Count-limited only: the snapshot applies its own aggregate byte
+        budget to the returned page, so the reader leaves page trimming to
+        the caller.
+        """
+
+        return await self.timeline.list_latest_excluding_agent_children(
+            session_id,
+            limit=limit,
+        )
+
+    async def list_timeline_before_order_seq_excluding_agent_children(
+        self,
+        *,
+        session_id: str,
+        before_order_seq: int,
+        limit: int,
+        byte_budget: int | None = None,
+    ) -> tuple[list[TimelineItem], bool]:
+        """One conversation-view history page: subagent-internal rows are
+        excluded and the page is count- and byte-gated. ``byte_budget=None``
+        keeps the count gate only (store-level callers apply their own
+        budget); the API always passes the resolved page budget."""
+
+        return await self.timeline.list_before_order_seq_excluding_agent_children(
+            session_id,
+            before_order_seq=before_order_seq,
+            limit=limit,
+            byte_budget=byte_budget,
+        )
+
+    async def list_timeline_agent_children(
+        self,
+        *,
+        session_id: str,
+        parent_item_id: str,
+        before_order_seq: int | None,
+        limit: int,
+        byte_budget: int | None = None,
+    ) -> tuple[list[TimelineItem], bool]:
+        """One page of a card's own subagent-internal rows, newest→oldest
+        paging (``before_order_seq`` cursor) with count and byte gates."""
+
+        return await self.timeline.list_agent_children(
+            session_id,
+            parent_item_id=parent_item_id,
+            before_order_seq=before_order_seq,
+            limit=limit,
+            byte_budget=byte_budget,
+        )
+
     async def list_active_agent_cards(
         self,
         *,

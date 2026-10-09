@@ -96,12 +96,22 @@ SUBAGENT_AGE_BOUND_SECONDS: float = 24 * 60 * 60.0
 SUBAGENT_AGE_BOUND_ENV: str = "AA_SUBAGENT_AGE_BOUND_SECONDS"
 
 #: The smallest ceiling this judgement may be given. A ceiling this low stops
-#: being a backstop and becomes a reaper: the seconds between one dispatch row
-#: and its own launch receipt already exceed it, so it would close every open
-#: card in the library. Refused rather than clamped, because silently raising
-#: an operator's 0.5 back to 24h would hide the typo; the fix is the log line
-#: and a value they meant.
-SUBAGENT_AGE_BOUND_FLOOR_SECONDS: float = 60.0
+#: being a backstop and becomes a reaper: it fires on work that is demonstrably
+#: still running. 60s was not low enough for that to be unreachable — a
+#: background subagent dispatched 61s ago whose transcript was written 2s ago
+#: is alive, and a 60s ceiling closed it as ``ageBounded`` with no transport
+#: vouch required (R1b R2-4). The floor now sits an order of magnitude above
+#: the longest legitimate background run (~30min measured, task sheet §3 T3),
+#: so the only ceilings this judgement can be given are ones no live task can
+#: reach. Refused rather than clamped, because silently raising an operator's
+#: 60 back to 24h would hide the typo; the fix is the log line and a value
+#: they meant.
+#:
+#: Note what this floor deliberately does NOT require: file silence. The
+#: re-stamped-mtime residue T2 exists to close is precisely the case where the
+#: session transcript is still being written while the task is dead, so
+#: demanding a stale file here would disarm the rule against its own target.
+SUBAGENT_AGE_BOUND_FLOOR_SECONDS: float = 60.0 * 60.0
 
 #: Duration suffixes accepted after the number. Bare numbers are seconds,
 #: which is what the variable name says; the suffixes are there so the natural

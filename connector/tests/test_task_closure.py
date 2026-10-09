@@ -1563,9 +1563,15 @@ def test_T2_env_below_the_floor_is_refused(monkeypatch: Any) -> None:
     dispatch-to-receipt gap of every task in the library: a ceiling that small
     closes live work in a sweep. It is refused (judgement off), not clamped up
     to the default — clamping would hide the typo behind a number the operator
-    never wrote."""
+    never wrote.
 
-    for raw in ("0.5", "30", "59"):
+    `60` and `30m` are the same case wearing a plausible-looking number (R1b
+    R2-4): 60s was inside the window in which a background subagent is alive
+    and writing, so the ceiling closed demonstrably live work. The floor now
+    sits above the longest legitimate background run, and these spellings are
+    refused with it."""
+
+    for raw in ("0.5", "30", "59", "60", "30m", "90s", "1m", "59m59s"):
         monkeypatch.setenv(SUBAGENT_AGE_BOUND_ENV, raw)
         now = 1_791_457_800.0
         oracle = _oracle(now=now, files={TASK_ID: _fresh_file(now)})
@@ -1582,15 +1588,15 @@ def test_T2_env_below_the_floor_is_refused(monkeypatch: Any) -> None:
 
 
 def test_T2_env_at_or_above_the_floor_is_honoured(monkeypatch: Any) -> None:
-    monkeypatch.setenv(SUBAGENT_AGE_BOUND_ENV, "60")
+    monkeypatch.setenv(SUBAGENT_AGE_BOUND_ENV, "3600")
     now = 1_791_457_800.0
     oracle = _oracle(now=now, files={TASK_ID: _fresh_file(now)})
-    assert oracle.age_bound_seconds == 60.0
+    assert oracle.age_bound_seconds == 3600.0
     verdict = oracle.evidence(
         task_id=TASK_ID,
         external_session_id=EXTERNAL_SESSION_ID,
         cwd=CWD,
-        receipt_age_seconds=61.0,
+        receipt_age_seconds=3601.0,
     )
     assert verdict is not None
     assert verdict.closed_by == "ageBounded"
@@ -1599,12 +1605,15 @@ def test_T2_env_at_or_above_the_floor_is_honoured(monkeypatch: Any) -> None:
 def test_T2_env_duration_suffixes_are_accepted(monkeypatch: Any) -> None:
     """`24h` is the natural spelling of a day, and after the fail-safe change
     an unparsable value means OFF rather than the default — so the suffix has
-    to parse, or the fix would turn a harmless typo into a dead safety net."""
+    to parse, or the fix would turn a harmless typo into a dead safety net.
+
+    Sub-floor spellings (`90s`, `30m`) parse fine and are then refused by the
+    floor, which is the other test's assertion."""
 
     for raw, seconds in (
         ("24h", 86400.0),
-        ("30m", 1800.0),
-        ("90s", 90.0),
+        ("90m", 5400.0),
+        ("3600s", 3600.0),
         ("1.5h", 5400.0),
         ("2d", 172800.0),
         (" 12H ", 43200.0),

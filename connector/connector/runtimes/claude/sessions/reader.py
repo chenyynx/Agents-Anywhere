@@ -500,8 +500,8 @@ def _history_items_from_messages(
     # boilerplate: last writer wins, and the notice is the last true writer.
     for index in sorted(notification_folds):
         for fold in notification_folds[index]:
-            items.append(
-                projector.fold_agent_task_event(
+            items.extend(
+                projector.fold_agent_task_items(
                     session,
                     tool_use_id=fold.tool_use_id,
                     overlay=fold.overlay,

@@ -45,7 +45,11 @@ from connector.runtimes.claude.sdk.tasks import (
     ClaudeTaskEvent,
     task_events_from_notification_text,
 )
-from connector.runtimes.claude.timeline.agent_calls import agent_task_terminal_status
+from connector.runtimes.claude.timeline.agent_calls import (
+    DISPATCH_TOOL_NAME,
+    SEND_MESSAGE_TOOL_NAME,
+    agent_task_terminal_status,
+)
 
 #: How a card was closed from engine evidence. Carried on the item's
 #: ``content.metadata`` so a closure is auditable next to the status the client
@@ -268,7 +272,9 @@ class ClaudeSubagentOracle:
         Decision order (``tasks.md`` §3.1):
 
         1. A terminal notice whose task had no writes after it (file silent, or
-           no file) closes the card with that notice's status.
+           no file) closes the card with that notice's status — for an
+           ``attached`` task only when the notice post-dates the latest launch
+           evidence beyond the mtime tolerance (F4 arbitration, below).
         2. Otherwise, an ``attached`` task (a live turn is driving the process)
            is never closed on file silence alone — a long tool call writes
            nothing for a while and must not be mistaken for dead.
@@ -276,6 +282,37 @@ class ClaudeSubagentOracle:
            as ``interrupted`` (never started); a transcript silent past the
            stale deadline closes as ``interrupted``; a fresh transcript stays
            running.
+
+        F4 arbitration (``.local-dev/subagent-alias-durability-tasks.md`` rt2,
+        red team CONFIRMED): the D3 sweep lets a terminal notice close a task
+        the transport still vouches for, and a *stale* notice — one written
+        before the resume that re-launched the task — would then close a live
+        task that later completes honestly, with the terminal stickiness
+        refusing to undo it. For attached tasks the notice is therefore
+        attributed to the current incarnation only when it strictly post-dates
+        the task's latest launch evidence (``receipt_time = now -
+        receipt_age``) by more than the tolerance; a notice at or before the
+        receipt is a death the resume superseded and is treated as absent, so
+        the attached branch simply declines. One clock rule, both directions of
+        skew covered: the receipt may be a hair newer than the true launch
+        without making a current notice stale (the band), and a notice a hair
+        newer than the receipt is still read as superseded rather than trusted
+        on sub-tolerance noise.
+
+        The receipt age comes from the newest ``agentId:`` mention, which later
+        transcript text can *pollute* to be newer than the true launch; that
+        bias shrinks the age, pushes ``receipt_time`` later, and so errs toward
+        *superseding* notices — keeping attached tasks open. The bias is
+        therefore conservative in the one direction that cannot lie about a
+        live agent. With no receipt age, or a notice with no time, there is
+        nothing to arbitrate and rule 1 stands exactly as before, as it does
+        for non-attached tasks.
+
+        Time order is the OUTER arbitration for one task's own notice
+        sequence; ``closure_rank`` remains the INNER arbiter among verdicts of
+        one adjudication (a card's several tasks) and is not consulted here —
+        the two cannot disagree, because a superseded notice never becomes a
+        verdict at all.
         """
 
         current_ms = now_ms if now_ms is not None else int(self.clock() * 1000)
@@ -289,6 +326,16 @@ class ClaudeSubagentOracle:
         tolerance_ms = int(self.mtime_tolerance_seconds * 1000)
 
         terminal = _latest_terminal(terminal_events)
+        if terminal is not None and attached_live:
+            terminal = _attribute_notice_to_incarnation(
+                terminal,
+                receipt_time_ms=(
+                    None
+                    if receipt_age_seconds is None
+                    else int(current_ms - receipt_age_seconds * 1000)
+                ),
+                tolerance_ms=tolerance_ms,
+            )
         if terminal is not None:
             notice_time_ms, event = terminal
             status = agent_task_terminal_status(event.status)
@@ -355,6 +402,32 @@ def _latest_terminal(
         terminal,
         key=lambda item: (item[0] if item[0] is not None else -1),
     )
+
+
+def _attribute_notice_to_incarnation(
+    terminal: tuple[int | None, ClaudeTaskEvent],
+    *,
+    receipt_time_ms: int | None,
+    tolerance_ms: int,
+) -> tuple[int | None, ClaudeTaskEvent] | None:
+    """Attribute a terminal notice to the task's current incarnation (F4).
+
+    Returns the notice when it may close an attached task, or ``None`` when it
+    is superseded. A notice stands only when it strictly post-dates the latest
+    launch evidence by more than the tolerance
+    (``notice_time_ms >= receipt_time_ms + tolerance_ms``): anything at or
+    before the receipt describes a death the later launch already superseded,
+    and trusting it would strand a live task as ``interrupted`` (the red team's
+    F4). A notice with no time, or a task with no receipt evidence, cannot be
+    arbitrated and stands unchanged.
+    """
+
+    notice_time_ms, _ = terminal
+    if notice_time_ms is None or receipt_time_ms is None:
+        return terminal
+    if notice_time_ms < receipt_time_ms + tolerance_ms:
+        return None
+    return terminal
 
 
 def _file_silent_after(
@@ -431,6 +504,45 @@ class RawTranscriptScan:
     #: view exposes no timestamps at all, which is why this comes from the raw
     #: file.
     receipt_times_ms: Mapping[str, int] = field(default_factory=dict)
+    #: SendMessage tool_use id -> the task id that call addresses. This is the
+    #: persisted copy of the live projector's in-process alias map, so a
+    #: restarted process can still route a resumed task's frames to its
+    #: original dispatch card (alias-durability-tasks T1 A). Two raw shapes
+    #: carry the join: the assistant row's own ``input.to``, and the user
+    #: row's ``tool_result`` body / ``toolUseResult`` carrying
+    #: ``resumedAgentId`` (keyed by that block's tool_use_id).
+    send_aliases: Mapping[str, str] = field(default_factory=dict)
+    #: task id -> epoch ms of the newest ``SendMessage`` call row that resumed
+    #: it (red team P9, alias-durability rt2 round 2). A resume re-launches the
+    #: task, so this is the task's newest *survival* evidence — the arbitration
+    #: anchor F4 needs, because the dispatch receipt alone sits before the
+    #: stop notice it must supersede (the incident's real timeline: receipt
+    #: 01:28, stop 01:48, resume 01:52 — anchored on the receipt, the stale
+    #: notice still closed the resumed task). Recorded from the assistant
+    #: row's own timestamp when its ``tool_use`` is a verified ``SendMessage``
+    #: call; a row without a timestamp contributes nothing (only add, never
+    #: guess). Default empty so hand-built and older scans behave as before.
+    send_resume_times_ms: Mapping[str, int] = field(default_factory=dict)
+    #: task id -> the tool_use ids of the dispatch receipts that named it.
+    #: Read from the ``tool_result`` rows that launch an Agent call — the
+    #: line-style ``agentId: <id>`` body wording, or a structured
+    #: ``toolUseResult.agentId`` — and keyed by that block's tool_use_id. The
+    #: engine's own receipt rows therefore pin a task's dispatch roots without
+    #: any in-process memory, which is what survives a connector restart.
+    #:
+    #: Membership is gated on provenance (red team F1): a block contributes a
+    #: root only when its tool_use id is one the scan verified as a dispatch
+    #: call, so a tool result *quoting* ``agentId: <task>`` in its output
+    #: (grep/cat/cat-like echoes of a receipt) is never a root.
+    dispatch_roots: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    #: The tool_use ids the scan verified as **dispatch calls**: assistant
+    #: rows (sidechain included) whose tool_use name is ``DISPATCH_TOOL_NAME``,
+    #: the same name the in-process lineage gate uses. Every id in
+    #: ``dispatch_roots`` is guaranteed to be in here, and carrying the set
+    #: lets a consumer re-check that provenance instead of trusting the
+    #: mapping alone (red team F2/F3: a hand-built or polluted mapping must not
+    #: be able to mint phantom cards or steer a fold onto a quoting tool id).
+    verified_dispatch_ids: frozenset[str] = frozenset()
 
 
 def scan_raw_transcript(
@@ -452,18 +564,50 @@ def scan_raw_transcript(
 
     ``attachment`` rows repeat the same wrapper as rendering chrome and are
     skipped. The same pass also collects each task's newest ``agentId:``
-    mention (its dispatch receipt time), so callers get both facts for one
-    read of the file.
+    mention (its dispatch receipt time), each task's newest ``SendMessage``
+    resume-call row time (its newest survival evidence, P9), and the lineage
+    the resume fold needs (alias-durability-tasks T1 A): the SendMessage alias
+    map, the dispatch roots, and the provenance set that gates both, so
+    callers get every fact for one read of the file.
+
+    Both lineage maps are **provenance-gated** (red team F1): a ``tool_result``
+    row only counts as a dispatch receipt when the call it acknowledges is an
+    assistant ``tool_use`` named ``DISPATCH_TOOL_NAME``, and only counts as a
+    SendMessage receipt when that call is named ``SEND_MESSAGE_TOOL_NAME``.
+    The name map is built in the same pass — the transcript writes a call's
+    ``tool_use`` row before its ``tool_result`` row, so the name is always
+    registered by the time its result is read — and a result whose call was
+    never seen (or was seen with another name) contributes nothing at all
+    (fail-closed direction). Without this gate any tool output that merely
+    *quotes* ``agentId: <task>`` — a grep/cat of a receipt, a report about
+    another agent — read as a dispatch root, which is how a Bash tool id
+    became a task's only root and minted phantom cards (F1/F2/F3).
     """
 
     notices: list[RawTranscriptNotice] = []
     receipt_times: dict[str, int] = {}
+    send_aliases: dict[str, str] = {}
+    send_resume_times: dict[str, int] = {}
+    dispatch_roots: dict[str, set[str]] = {}
+    tool_use_names: dict[str, str] = {}
     last_anchor: str | None = None
     for line_index, line in enumerate(raw_lines):
         wants_notice = "<task-notification>" in line
         wants_receipt = "agentId:" in line
         wants_uuid = '"uuid"' in line
-        if not wants_notice and not wants_receipt and not wants_uuid:
+        wants_send = "SendMessage" in line
+        wants_resume = "resumedAgentId" in line
+        wants_agent_key = '"agentId"' in line
+        wants_tool_use = '"tool_use"' in line
+        if not (
+            wants_notice
+            or wants_receipt
+            or wants_uuid
+            or wants_send
+            or wants_resume
+            or wants_agent_key
+            or wants_tool_use
+        ):
             continue
         try:
             row = json.loads(line)
@@ -474,6 +618,24 @@ def scan_raw_transcript(
         row_uuid = _string(row.get("uuid"))
         if row_uuid is not None:
             last_anchor = row_uuid
+        if wants_tool_use:
+            _register_tool_use_names(row, tool_use_names)
+        if wants_receipt or wants_send or wants_resume or wants_agent_key:
+            try:
+                _extract_transcript_lineage(
+                    row,
+                    tool_use_names=tool_use_names,
+                    send_aliases=send_aliases,
+                    send_resume_times=send_resume_times,
+                    dispatch_roots=dispatch_roots,
+                )
+            except Exception:  # noqa: BLE001
+                # Lineage is best-effort: a row whose shape surprises the
+                # extractor is skipped, never allowed to sink the scan.
+                logger.debug(
+                    "Claude transcript lineage row skipped",
+                    exc_info=True,
+                )
         if not wants_notice and not wants_receipt:
             continue
         timestamp_ms = _parse_iso_ms(row.get("timestamp"))
@@ -507,13 +669,228 @@ def scan_raw_transcript(
                     line_index=line_index,
                 )
             )
+    verified_dispatch_ids = frozenset(
+        tool_use_id
+        for tool_use_id, name in tool_use_names.items()
+        if name == DISPATCH_TOOL_NAME
+    )
+    # Invariant seal: the extraction gate above already refuses any receipt
+    # whose call was not a verified dispatch, so this intersection changes
+    # nothing today — it exists so "dispatch_roots ⊆ verified_dispatch_ids"
+    # is true of the returned data by construction, whatever future edits do
+    # inside the loop.
+    sealed_roots = {
+        task_id: roots & verified_dispatch_ids
+        for task_id, roots in dispatch_roots.items()
+    }
     return RawTranscriptScan(
         notices=tuple(notices),
         receipt_times_ms=receipt_times,
+        send_aliases=send_aliases,
+        send_resume_times_ms=send_resume_times,
+        dispatch_roots={
+            task_id: frozenset(roots)
+            for task_id, roots in sealed_roots.items()
+            if roots
+        },
+        verified_dispatch_ids=verified_dispatch_ids,
     )
 
 
 _AGENT_ID_RE = re.compile(r"agentId:\s*([0-9a-zA-Z]+)")
+
+
+def _register_tool_use_names(
+    row: Mapping[str, Any],
+    tool_use_names: dict[str, str],
+) -> None:
+    """Record one row's ``tool_use`` id -> name pairs, in place.
+
+    The transcript writes a call's ``tool_use`` block on an assistant row
+    (sidechain rows included) *before* the tool_result row that answers it, so
+    a single forward pass over the file always has a call's name registered by
+    the time its result is read. This map is what turns "this tool_result
+    mentioned ``agentId``" into "this tool_use **dispatched** the task": the
+    judgement cannot be made from the result row alone, only from the call it
+    acknowledges. An id whose name never appears gets no entry, and every
+    consumer treats a missing entry as "not a dispatch" — fail-closed, so a
+    trimmed call row loses lineage rather than inventing it.
+    """
+
+    if row.get("type") != "assistant":
+        return
+    message = row.get("message")
+    content = message.get("content") if isinstance(message, Mapping) else None
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if not isinstance(block, Mapping):
+            continue
+        if block.get("type") != "tool_use":
+            continue
+        tool_use_id = _string(block.get("id"))
+        name = _string(block.get("name"))
+        if tool_use_id is not None and name is not None:
+            tool_use_names.setdefault(tool_use_id, name)
+
+
+def _extract_transcript_lineage(
+    row: Mapping[str, Any],
+    *,
+    tool_use_names: Mapping[str, str],
+    send_aliases: dict[str, str],
+    send_resume_times: dict[str, int],
+    dispatch_roots: dict[str, set[str]],
+) -> None:
+    """Learn one raw row's resume aliases and dispatch roots, in place.
+
+    Two row shapes carry lineage and both are read here (T1 A-1):
+
+    * an ``assistant`` row's ``SendMessage`` tool_use block — its
+      ``input.to`` names the task the call addresses, keyed by the block's
+      tool_use id (the id the resumed task's later frames are keyed on). The
+      same block's row timestamp is recorded as that task's newest resume
+      time (P9): a resume is a relaunch, and the F4 arbitration anchors on
+      the newest launch/survival evidence, not on the dispatch receipt the
+      stop notice legitimately post-dates. A row with no timestamp records
+      no time — the map only ever grows on evidence;
+    * a ``user`` row's ``tool_result`` blocks — a body whose JSON carries
+      ``resumedAgentId`` (or the row's own ``toolUseResult``) names the task a
+      SendMessage resumed, and a body carrying the launch receipt's
+      ``agentId`` (line-style, or structured in ``toolUseResult``) names the
+      task its tool_use id dispatched.
+
+    Both ``tool_result`` sources are gated on the **acknowledged call's name**
+    (red team F1): ``agentId`` is only a dispatch receipt when
+    ``tool_use_names`` says the call is ``DISPATCH_TOOL_NAME``, and
+    ``resumedAgentId`` is only a resume receipt when it says
+    ``SEND_MESSAGE_TOOL_NAME``. This is the same judgement the in-process path
+    makes (``messages._tool_call_content``'s ``if tool_name == "Agent"``,
+    ``send_message_target``'s ``tool_name != "SendMessage"``), applied to the
+    persisted surface — without it, any tool output that merely *quotes* a
+    receipt (a grep/cat, a report about another agent) becomes lineage. A
+    result whose call name was never seen contributes nothing (fail-closed).
+
+    Every field is read defensively; a row that does not match any shape
+    contributes nothing. The row-level ``toolUseResult`` is only attributed
+    when its row holds a single ``tool_result`` block — with several blocks in
+    one row the correspondence is ambiguous, and guessing it could splice an
+    alias onto the wrong call.
+    """
+
+    row_type = row.get("type")
+    message = row.get("message")
+    content = message.get("content") if isinstance(message, Mapping) else None
+    if row_type == "assistant":
+        if not isinstance(content, list):
+            return
+        for block in content:
+            if not isinstance(block, Mapping):
+                continue
+            if (
+                block.get("type") != "tool_use"
+                or block.get("name") != SEND_MESSAGE_TOOL_NAME
+            ):
+                continue
+            tool_use_id = _string(block.get("id"))
+            tool_input = block.get("input")
+            target = (
+                tool_input.get("to") if isinstance(tool_input, Mapping) else None
+            )
+            if tool_use_id is not None and isinstance(target, str) and target:
+                send_aliases.setdefault(tool_use_id, target)
+                row_time_ms = _parse_iso_ms(row.get("timestamp"))
+                if row_time_ms is not None:
+                    current = send_resume_times.get(target)
+                    if current is None or row_time_ms > current:
+                        send_resume_times[target] = row_time_ms
+        return
+    if row_type != "user" or not isinstance(content, list):
+        return
+    blocks = [
+        block
+        for block in content
+        if isinstance(block, Mapping) and block.get("type") == "tool_result"
+    ]
+    if not blocks:
+        return
+    row_details = row.get("toolUseResult")
+    row_details = row_details if isinstance(row_details, Mapping) else None
+    for block in blocks:
+        tool_use_id = _string(block.get("tool_use_id"))
+        if tool_use_id is None:
+            continue
+        call_name = tool_use_names.get(tool_use_id)
+        if call_name not in (DISPATCH_TOOL_NAME, SEND_MESSAGE_TOOL_NAME):
+            # A result the transcript never paired with a call — or paired
+            # with anything but a dispatch/resume call — proves nothing about
+            # this task. Fail closed, whatever its body says.
+            continue
+        texts = _tool_result_texts(block.get("content"))
+        parsed = _json_mapping_from_texts(texts)
+        if call_name == SEND_MESSAGE_TOOL_NAME:
+            resumed: Any = (
+                parsed.get("resumedAgentId") if parsed is not None else None
+            )
+            if not isinstance(resumed, str) or not resumed:
+                resumed = None
+            if resumed is None and row_details is not None and len(blocks) == 1:
+                candidate = row_details.get("resumedAgentId")
+                resumed = (
+                    candidate if isinstance(candidate, str) and candidate else None
+                )
+            if resumed is not None:
+                send_aliases.setdefault(tool_use_id, resumed)
+        if call_name != DISPATCH_TOOL_NAME:
+            continue
+        roots: set[str] = set()
+        if parsed is not None:
+            dispatched = parsed.get("agentId")
+            if isinstance(dispatched, str) and dispatched:
+                roots.add(dispatched)
+        if row_details is not None and len(blocks) == 1:
+            dispatched = row_details.get("agentId")
+            if isinstance(dispatched, str) and dispatched:
+                roots.add(dispatched)
+        for text in texts:
+            for match in _AGENT_ID_RE.finditer(text):
+                roots.add(match.group(1))
+        for agent_id in roots:
+            dispatch_roots.setdefault(agent_id, set()).add(tool_use_id)
+
+
+def _tool_result_texts(content: Any) -> tuple[str, ...]:
+    """The text bodies of one ``tool_result`` block's content, whatever shape."""
+
+    if isinstance(content, str):
+        return (content,)
+    if not isinstance(content, list):
+        return ()
+    texts: list[str] = []
+    for entry in content:
+        if isinstance(entry, str):
+            texts.append(entry)
+        elif isinstance(entry, Mapping):
+            text = entry.get("text")
+            if isinstance(text, str):
+                texts.append(text)
+    return tuple(texts)
+
+
+def _json_mapping_from_texts(texts: Sequence[str]) -> Mapping[str, Any] | None:
+    """The first text body that parses as a JSON object, else ``None``."""
+
+    for text in texts:
+        stripped = text.strip()
+        if not stripped.startswith("{"):
+            continue
+        try:
+            parsed = json.loads(stripped)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(parsed, Mapping):
+            return parsed
+    return None
 
 
 def raw_only_notices(
@@ -563,6 +940,47 @@ def raw_only_notices(
         for notice in newest_by_task.values()
         if notice.anchor is not None
     )
+
+
+def participation_times_ms(scan: RawTranscriptScan) -> dict[str, int]:
+    """Each task's newest survival evidence: dispatch receipt vs resume (P9).
+
+    The F4 arbitration must anchor on when the task was last *known alive*,
+    and a dispatch receipt alone is not that: after a SendMessage resume the
+    receipt still sits at the original dispatch, so the stop notice that
+    killed the previous incarnation post-dates it and would be attributed to
+    the incarnation the transport is now driving — the P9 false closure on
+    the real incident timeline (receipt 01:28, stop 01:48, resume 01:52). The
+    newest of (dispatch receipt, resume call row) is the honest anchor;
+    either source alone is merely the best the transcript had.
+    """
+
+    merged: dict[str, int] = dict(scan.receipt_times_ms)
+    for task_id, time_ms in scan.send_resume_times_ms.items():
+        current = merged.get(task_id)
+        if current is None or time_ms > current:
+            merged[task_id] = time_ms
+    return merged
+
+
+def participation_age_seconds(
+    scan: RawTranscriptScan,
+    task_id: str,
+    *,
+    now_ms: int,
+) -> float | None:
+    """The age of a task's newest survival evidence, or ``None`` (P9).
+
+    Same clamp as every other receipt age. A newer age is the conservative
+    direction everywhere this feeds: the F4 notice arbitration supersedes more
+    readily (sparing live tasks), and the never-started grace judges later, so
+    a resumed task is never mistaken for one that never launched.
+    """
+
+    time_ms = participation_times_ms(scan).get(task_id)
+    if time_ms is None:
+        return None
+    return max((now_ms - time_ms) / 1000.0, 0.0)
 
 
 #: A scan cache keyed by (path, size, mtime_ns). One sync settles a session by

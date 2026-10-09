@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -26,6 +27,19 @@ AGENT_TASK_TERMINAL_STATUSES: Mapping[str, str] = {
 AGENT_CARD_TERMINAL_STATUSES = frozenset(
     {"done", "failed", "interrupted", "cancelled"}
 )
+#: The CLI's tool_use name for an Agent dispatch call. This is the in-process
+#: lineage gate's exact criterion — ``messages._tool_call_content`` mints an
+#: Agent card only under ``if tool_name == "Agent"``, and the history folds
+#: gate dispatch roots on ``call.block.tool_name == "Agent"`` (reader's
+#: ``_agent_task_notification_folds``). The raw-transcript scanner must judge
+#: dispatch receipts by the same name, or the persisted surface and the live
+#: surface disagree about what a dispatch is (red team F1: any tool result
+#: quoting ``agentId: <task>`` inside its body read as a dispatch receipt).
+DISPATCH_TOOL_NAME = "Agent"
+#: The CLI's tool_use name for a SendMessage resume call, mirroring
+#: ``send_message_target``'s own gate. The resume receipt's ``resumedAgentId``
+#: is only evidence when the call it acknowledges is this tool.
+SEND_MESSAGE_TOOL_NAME = "SendMessage"
 # The CLI's async launch receipt for an Agent dispatch (run1 L491,
 # 2026-10-03): metadata only — the real result arrives later through task
 # events. It is not an outcome, so an Agent card must not land "done" on it.
@@ -256,6 +270,96 @@ def resolve_resume_alias(
         return None
     root = next(iter(roots))
     return root if root != tool_use_id else None
+
+
+def resolve_resume_alias_from_scan(
+    tool_use_id: str,
+    *,
+    send_aliases: Mapping[str, str] | None,
+    dispatch_roots: Mapping[str, frozenset[str]] | None,
+    verified_dispatch_ids: AbstractSet[str],
+) -> tuple[str, str] | None:
+    """Step 2 of the persistence fallback chain (T1 A-2): the scan's own join.
+
+    ``send_aliases`` / ``dispatch_roots`` are the raw transcript's persisted
+    copies of the two in-process maps ``resolve_resume_alias`` reads. This
+    applies the exact same constraints — the id must be a recorded alias, its
+    task must have exactly one dispatch root, and the root must not be the
+    alias itself — so the fallback can only ever reproduce a resolution the
+    in-process maps would have made had the process seen every frame. Anything
+    less certain returns ``None`` and the caller keeps its fail-closed
+    behaviour.
+
+    ``verified_dispatch_ids`` is the scan's provenance set: the tool_use ids
+    it verified as **dispatch calls** (assistant rows whose tool_use name is
+    ``DISPATCH_TOOL_NAME``). A root outside it is not a dispatch however the
+    mapping was built, and is refused (red team F3: a quoting tool result's id
+    as the task's only root must never be folded onto, and must never be
+    backfilled into the in-process maps). This is checkable-at-the-consumer by
+    design — the producer's mapping alone is a convention, the provenance set
+    makes it an invariant.
+
+    Returns ``(task_id, root)`` on a hit so the caller can warm its own maps.
+    """
+
+    if not send_aliases:
+        return None
+    task_id = send_aliases.get(tool_use_id)
+    if task_id is None:
+        return None
+    roots = dispatch_roots.get(task_id) if dispatch_roots else None
+    if roots is None or len(roots) != 1:
+        return None
+    root = next(iter(roots))
+    if root == tool_use_id:
+        return None
+    if root not in verified_dispatch_ids:
+        return None
+    return task_id, root
+
+
+def resolve_task_card_from_timeline(
+    *,
+    task_id: str,
+    timeline_items: Mapping[str, Any],
+    alias_keys: AbstractSet[str],
+    exclude: str,
+) -> str | None:
+    """Step 3 of the persistence fallback chain (T1 A-2): ask the projected timeline.
+
+    When the scan knows the alias's task but not a usable dispatch root (its
+    receipt rows are missing, or name several), the already-projected timeline
+    can still say which card carries the task. A card qualifies when it is an
+    Agent call whose ``agents`` map names the task and whose native tool_use id
+    is **not** a known alias key — an alias-keyed twin is a resume card, not
+    the dispatch root this is looking for.
+
+    Exactly one qualifying card must exist; zero (nothing known) or several
+    (ambiguity) returns ``None`` and leaves the caller fail-closed. The
+    ``exclude`` id (the alias being folded) never qualifies, so the result can
+    never loop back onto the incoming id.
+    """
+
+    candidates: set[str] = set()
+    for item in timeline_items.values():
+        if getattr(item, "type", None) != "tool":
+            continue
+        content = getattr(item, "content", None)
+        if not isinstance(content, Mapping) or content.get("kind") != "agent_call":
+            continue
+        agents = content.get("agents")
+        if not isinstance(agents, Mapping) or task_id not in agents:
+            continue
+        source = getattr(item, "source", None)
+        native = source.get("itemId") if isinstance(source, Mapping) else None
+        if not isinstance(native, str) or not native:
+            continue
+        if native == exclude or native in alias_keys:
+            continue
+        candidates.add(native)
+    if len(candidates) != 1:
+        return None
+    return next(iter(candidates))
 
 
 def closure_rank(status: str | None) -> tuple[int, int]:

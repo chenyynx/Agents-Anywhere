@@ -58,7 +58,11 @@ from connector.runtimes.claude.sdk.tasks import ClaudeTaskEvent
 from connector.runtimes.claude.sdk.title_tool import build_change_title_tool
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 from connector.runtimes.claude.sessions.scheduled import ClaudeScheduledSessions
-from connector.runtimes.claude.sessions.subagent_oracle import ClaudeSubagentOracle
+from connector.runtimes.claude.sessions.subagent_oracle import (
+    ClaudeSubagentOracle,
+    RawTranscriptScan,
+    participation_times_ms,
+)
 from connector.runtimes.claude.timeline.agent_calls import (
     agent_task_overlay_for_event,
 )
@@ -78,6 +82,7 @@ from connector.runtimes.claude.timeline.messages import (
     message_usage,
     stable_message_item_id,
     stable_tool_item_id,
+    terminal_publish_superseded,
 )
 from connector.runtimes.claude.timeline.stream import (
     ClaudeStreamAccumulator,
@@ -198,6 +203,79 @@ PROCESS_RETIRED_UNCONFIRMED_MESSAGE = (
     "shutdown could not be confirmed. This turn produced no result. Please "
     "try again."
 )
+
+
+def _raw_transcript_scan(session: ClaudeSession) -> RawTranscriptScan | None:
+    """Scan this session's raw transcript for the evidence sweep (D2).
+
+    Single entry point: delegates to the projector's own default seam
+    (`messages._read_session_raw_scan`), which wraps the reader's memoized
+    scanner — keyed by ``(path, size, mtime)`` — so repeating it every sweep
+    against an unchanged transcript costs one dict lookup, and the sweep and
+    the folds can never disagree about what the file says. A scan failure is
+    never evidence — it returns ``None`` and the sweep proceeds with whatever
+    else it has.
+    """
+
+    try:
+        # Delayed import for the same cycle reason as the projector seam.
+        from connector.runtimes.claude.timeline.messages import (
+            _read_session_raw_scan,
+        )
+
+        return _read_session_raw_scan(session)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Claude sweep raw transcript scan failed session_id={}",
+            session.session_id,
+        )
+        return None
+
+
+def _terminal_events_by_task(
+    scan: RawTranscriptScan | None,
+) -> dict[str, tuple[tuple[int | None, ClaudeTaskEvent], ...]]:
+    """Group a raw transcript scan's notices by task id (D2).
+
+    Only the engine's own notices survive in the raw file when the SDK
+    message view drops them (red team F7: the live sweep never read any
+    terminal notice). Every notice rides through in transcript order; the
+    oracle filters them to terminal statuses and picks the newest itself.
+    """
+
+    grouped: dict[str, list[tuple[int | None, ClaudeTaskEvent]]] = {}
+    for notice in scan.notices if scan is not None else ():
+        grouped.setdefault(notice.event.task_id, []).append(
+            (notice.timestamp_ms, notice.event)
+        )
+    return {task_id: tuple(events) for task_id, events in grouped.items()}
+
+
+def _receipt_ages_by_task(
+    scan: RawTranscriptScan | None,
+    *,
+    now_ms: int,
+) -> dict[str, float]:
+    """Age (seconds) of each task's newest *participation* evidence (D2, P9).
+
+    The anchor is the newer of the dispatch receipt and the task's most recent
+    SendMessage resume row (``participation_times_ms``): a resume relaunches
+    the task, so the receipt alone would let a legitimate stop notice — it
+    post-dates the dispatch — be attributed to the incarnation the transport
+    is now driving (the P9 false closure on the real incident timeline).
+    Same clamp as the history path's ``_history_receipt_ages``. A newer (closer)
+    anchor is the conservative direction for every consumer: the F4 notice
+    arbitration supersedes more readily (sparing live tasks), and the
+    never-started grace judges later, so a resumed task is never mistaken for
+    one that never launched.
+    """
+
+    if scan is None:
+        return {}
+    return {
+        task_id: max((now_ms - time_ms) / 1000.0, 0.0)
+        for task_id, time_ms in participation_times_ms(scan).items()
+    }
 
 
 @dataclass(slots=True)
@@ -859,24 +937,24 @@ class ClaudeTurnRunner:
                 # event and the dispatch on one card instead of two.
                 await self._update_external_session_id(session, event.session_id)
             overlay, status = agent_task_overlay_for_event(event)
-            item = self.timeline.fold_agent_task_event(
+            items = self.timeline.fold_agent_task_items(
                 session,
                 tool_use_id=tool_use_id,
                 overlay=overlay,
                 status=status,
             )
-            previous = session.timeline_items.get(item.id)
-            if (
-                previous is not None
-                and previous.status == item.status
-                and dict(previous.content) == dict(item.content)
-            ):
-                # Idempotent closure (L2 §3.4): the terminal burst repeats
-                # itself — an identical card is not republished here, and the
-                # batch coalesce / server dedup / content-hash no-op behind
-                # this still catches anything that does (findings §8.7).
-                return
-            await self.notifications.timeline_activity.timeline_item_upsert(item)
+            for item in items:
+                if self._publish_gate_skips(session, item):
+                    # Idempotent closure (L2 §3.4): the terminal burst repeats
+                    # itself — an identical card is not republished here — and
+                    # the N1 time order refuses a terminal item no newer than
+                    # the published one. The batch coalesce / server dedup /
+                    # content-hash no-op behind this still catches anything
+                    # that does reach it (findings §8.7). A sibling item is
+                    # compared on its own, so an unchanged canonical never
+                    # masks a sibling that moved (T1 B).
+                    continue
+                await self.notifications.timeline_activity.timeline_item_upsert(item)
         except Exception:  # noqa: BLE001
             logger.exception(
                 "Claude task event folding failed session_id={} task_id={}",
@@ -945,6 +1023,35 @@ class ClaudeTurnRunner:
             )
         return stopped
 
+    def _publish_gate_skips(
+        self,
+        session: ClaudeSession,
+        item: RuntimeTimelineItem,
+    ) -> bool:
+        """Whether this item must not be published over the current state (N1).
+
+        One gate for both publication loops (the fold's and the sweep's), so
+        the two can never disagree about what may land. Besides the exact
+        no-op comparison, a terminal item that is not strictly newer than the
+        already-published terminal state of the same id is dropped (red team
+        P10): the sweep computes its items synchronously and publishes them
+        across awaits, so its stale verdict could otherwise land after a
+        fold's honest terminal and persist a divergence nothing re-judges —
+        the next sweep's candidates treat a terminal published state as
+        closing the id. ``terminal_publish_superseded`` holds the rule; this
+        only pairs it with the record it must compare against.
+        """
+
+        previous = session.timeline_items.get(item.id)
+        if previous is None:
+            return False
+        if (
+            previous.status == item.status
+            and dict(previous.content) == dict(item.content)
+        ):
+            return True
+        return terminal_publish_superseded(item, previous)
+
     async def close_open_agent_cards(
         self,
         session: ClaudeSession,
@@ -982,6 +1089,15 @@ class ClaudeTurnRunner:
         sweep, the next task_started fold re-opens it (the fold clamp in
         `timeline.messages`). The sweep therefore cannot lie about a live
         agent, and cannot strand a dead card.
+
+        G3 (`.local-dev/subagent-alias-durability-tasks.md`): the evidence
+        pass also receives the session's raw terminal notices (D2) — the
+        provenance the sweep never had — and reads them from the transcript's
+        own file; the projector judges the published cards alongside the
+        in-memory ones and treats `live_task_ids` as an attachment rather
+        than a hard skip (D3), so a task the engine itself reported finished
+        closes even while a transport still vouches for it, while file
+        silence alone never touches it.
         """
 
         if evidence and self.oracle is None:
@@ -992,20 +1108,33 @@ class ClaudeTurnRunner:
         try:
             kwargs: dict[str, Any] = {}
             if evidence and self.oracle is not None:
+                oracle = self.oracle
+                clock = getattr(oracle, "clock", None)
+                now_ms = (
+                    int(clock() * 1000)
+                    if callable(clock)
+                    else int(time.time() * 1000)
+                )
+                scan = _raw_transcript_scan(session)
                 kwargs = {
-                    "oracle": self.oracle,
+                    "oracle": oracle,
                     "attached_task_ids": self._attached_agent_task_ids(session),
                     "live_task_ids": self.live_agent_task_ids(session),
+                    "terminal_events": _terminal_events_by_task(scan),
+                    "receipt_ages": _receipt_ages_by_task(scan, now_ms=now_ms),
+                    # Pin the sweep's "now" to the same instant the ages were
+                    # computed against, so the grace and the file deadline
+                    # judge one clock.
+                    "now_ms": now_ms,
                 }
             items = self.timeline.close_open_agent_cards(session, **kwargs)
             published = 0
             for item in items:
-                previous = session.timeline_items.get(item.id)
-                if (
-                    previous is not None
-                    and previous.status == item.status
-                    and dict(previous.content) == dict(item.content)
-                ):
+                if self._publish_gate_skips(session, item):
+                    # The synchronous judgment above ran against the
+                    # pre-await state; by the time this awaited publish runs
+                    # a fold may have landed a newer terminal on the same id
+                    # (N1), and this gate refuses to overwrite it.
                     continue
                 await self.notifications.timeline_activity.timeline_item_upsert(item)
                 published += 1

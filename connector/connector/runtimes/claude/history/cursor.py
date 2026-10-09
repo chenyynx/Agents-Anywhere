@@ -16,7 +16,14 @@ from typing import Any
 # notice the SDK view dropped now folds from the raw transcript, and a stranded
 # card closes from the subagent-transcript oracle. Both reach transcripts whose
 # cursors are already past them, so every stored v3 cursor must rebuild once.
-HISTORY_PROJECTION_VERSION = 4
+#
+# v5 (2026-10-09): alias-durability task closure. The canonical dispatch root
+# now resolves from the raw transcript when the in-process lineage was lost to
+# a restart, so a resumed task's lifecycle folds onto the original card, and a
+# terminal verdict closes every derived card id. Sessions whose cursors are
+# already past the stuck frames (the restart-race sessions) must rebuild once
+# to re-close the cards the old fold stranded.
+HISTORY_PROJECTION_VERSION = 5
 
 
 @dataclass(frozen=True, slots=True)

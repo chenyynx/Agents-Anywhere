@@ -924,19 +924,39 @@ def _is_receipt_row(row: Mapping[str, Any]) -> bool:
     one row-type over (R4-2: a human message quoting the id re-stamped a dead
     task's launch anchor through exactly this branch). What separates the two
     is the engine's own wording: every launch receipt opens with
-    ``ASYNC_AGENT_RECEIPT_PREFIX``, which is the same criterion the message
-    view applies through :func:`is_async_agent_receipt` (F5's real shape), so
-    the raw scan and the message view now admit the bare body on one rule.
-    The two ``tool_result`` shapes are deliberately NOT gated on wording: the
-    block type is the engine's channel there, and F5's bare result — the form
-    whose dispatch call row the transcript may no longer hold — keeps its
-    prefix clause instead of a lineage check, which would kill it.
+    ``ASYNC_AGENT_RECEIPT_PREFIX``. What the raw scan and the message view
+    share is that wording criterion, NOT the same boundary (R1e-3): every
+    message-view call site hands :func:`is_async_agent_receipt` a
+    *tool_result* channel and the fold additionally demands a known ``Agent``
+    call, while this scan reads the user row's own text with no call
+    requirement at all — so a human pasting the receipt wording verbatim is
+    admitted here where the message view has no channel that would. That
+    looseness is declared and accepted: no reliable marker separates the two
+    rows.
+    The ``tool_result`` block shape without metadata is deliberately NOT
+    gated on wording: the block type is the engine's channel there, and F5's
+    bare result — the form whose dispatch call row the transcript may no
+    longer hold — keeps its prefix clause instead of a lineage check, which
+    would kill it.
+
+    Where the row carries ``toolUseResult`` metadata, the metadata's mere
+    presence is not the test (R1e-2): the frame is judged by
+    :func:`is_async_agent_receipt` on that metadata with the row's own text
+    as the body — an explicit ``async_launched`` status is a launch receipt;
+    any other explicit status is the call's OUTCOME (a sync Agent call's
+    result frame is its card's done/failed, and the message view refuses the
+    very same metadata); a status-less frame falls back to the wording. A
+    row whose text cannot be read is refused rather than trusted on the
+    metadata alone.
     """
 
     if row.get("type") != "user":
         return False
     if isinstance(row.get("toolUseResult"), Mapping):
-        return True
+        return is_async_agent_receipt(
+            row.get("toolUseResult"),
+            output=_receipt_row_body_text(row),
+        )
     message = row.get("message")
     content = message.get("content") if isinstance(message, Mapping) else None
     if isinstance(content, str):
@@ -950,6 +970,30 @@ def _is_receipt_row(row: Mapping[str, Any]) -> bool:
         isinstance(block, Mapping) and block.get("type") == "tool_result"
         for block in content
     )
+
+
+def _receipt_row_body_text(row: Mapping[str, Any]) -> str | None:
+    """The text of the row's own content, for the wording judgment.
+
+    The raw scan's counterpart of the text the message view hands to
+    :func:`is_async_agent_receipt` as the tool_result's body: a bare string
+    content reads as itself, a ``tool_result`` block as its text parts.
+    ``None`` when no text can be read at all — the caller then refuses the
+    row rather than trusting its metadata alone.
+    """
+
+    message = row.get("message")
+    content = message.get("content") if isinstance(message, Mapping) else None
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return None
+    texts: list[str] = []
+    for block in content:
+        if not isinstance(block, Mapping) or block.get("type") != "tool_result":
+            continue
+        texts.extend(_tool_result_texts(block.get("content")))
+    return "\n".join(texts) if texts else None
 
 
 def _register_tool_use_names(

@@ -838,6 +838,19 @@ class RuntimeSyncRunner:
         # never silently upgraded to a seam). A failed read proves nothing
         # and seeds nothing; a seam of 0 — a failed read, or a fully
         # displaced page whose ladder starts at 0 anyway — extends nothing.
+        #
+        # R1e-1 (recorded trade, not a defect): this early exit is the
+        # explicit exchange taken here — bounded load ⇄ the R4-1 forever-walk.
+        # The price of the seed: `beyond_extent` becomes reachable one cycle
+        # earlier, so a library that is exactly full at the seam AND stays
+        # transiently short for exactly the two cycles the ladder reads it
+        # (page 1 full, the seam window empty, content back — a mount hiccup,
+        # a CLI migration) wraps, records the end, and sleeps with the
+        # residue past page 1 delayed until the next projection bump or a
+        # restart: the page-1 signal is consumed, so nothing re-arms the
+        # sweep. Recorded as a known shape by the R1 round-5 review
+        # (`test_red_r1e_attack.py`: `..._a_two_cycle_hole_sleeps_the_sweep`
+        # and `..._the_transient_hole_is_reachable_through_the_real_reader`).
         reported_seam = _page_reported_seam(page_one_page)
         if (
             reported_seam is not None
@@ -987,10 +1000,16 @@ class RuntimeSyncRunner:
                 )
                 return
             # End of the library: the circle is complete (page 1 plus every
-            # rotation window has been compared). The extent is a fact about
-            # the library, not about this circle, so a sweep that sleeps keeps
-            # it: a ladder that wakes up past the end then re-seeks at once
-            # instead of spending a cooldown learning the same thing again.
+            # rotation window has been compared). The extent is kept on the
+            # sleeping state — but nothing reads it back (R1e-4): activation
+            # builds a FRESH SessionRotationState (extent 0) and starts the
+            # ladder at `first_offset`, and a re-activated sweep rebuilds the
+            # extent each cycle from page 1's seam seed (R4-1). The kept
+            # value is meaningful only while the sweep stays active, where
+            # the cycle-to-cycle `replace` carries it forward — stated here
+            # as it is, instead of promising a wake-up re-seek the activation
+            # path cannot deliver (`test_red_r1e_attack.py`:
+            # `..._the_extent_does_not_survive_an_activation`).
             if mode == SESSION_ROTATION_REPORT or state.circle_candidates == 0:
                 logger.info(
                     "session rotation sweep completed runtime={} offset={} candidates_this_circle={} circles={}",

@@ -441,8 +441,8 @@ final class V2SessionRepository {
             } catch {
                 return
             }
-            guard isCurrent(entry), let projection = entry.projection else { return }
-            projection.applyChildren(page, parents: [parentID])
+            guard isCurrent(entry), entry.projection != nil else { return }
+            entry.projection?.applyChildren(page, parents: [parentID])
             emit(entry)
             guard page.hasMore else { return }
             // The cursor is the oldest row of the page, whatever order the

@@ -475,6 +475,20 @@ enum SubAgentProgress {
     /// rather than render an empty body or a silent "finished".
     static func isContentLoaded(_ card: SubAgentCard, in items: [V2TimelineItem]) -> Bool {
         if items.contains(where: { $0.id == card.id }) { return true }
+        return hasDetailRows(card, in: items)
+    }
+
+    /// Whether the card's own detail rows are on this device — a row carrying
+    /// `parentItemId` in the card's lineage, the same membership rule the
+    /// activity list renders by (session-open-coverage P3).
+    ///
+    /// This is the lazy-load trigger's state bit, deliberately narrower than
+    /// `isContentLoaded`: the card's own row being present makes the panel
+    /// "loaded" while its activity may still be missing entirely, and that
+    /// exact shape is the normal one once the coverage reads exclude detail
+    /// rows. The panel and the card fold ask this to decide whether their
+    /// on-demand `mode=children` load still owes rows.
+    static func hasDetailRows(_ card: SubAgentCard, in items: [V2TimelineItem]) -> Bool {
         let ids = lineageIDs(of: card, in: items)
         return items.contains { item in
             guard let parent = parentItemID(item) else { return false }

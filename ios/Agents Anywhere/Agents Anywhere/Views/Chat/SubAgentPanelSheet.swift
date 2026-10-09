@@ -39,8 +39,9 @@ struct SubAgentPanelSheet: View {
     @State private var selection: String?
     @State private var showsFullPrompt = false
     /// P3: whether the selected card's lazily-fetched detail rows are being
-    /// loaded. Reuses `isContentLoaded` as the state bit — this only picks
-    /// between the skeleton and the honest "not loaded" line.
+    /// loaded. The state bits come from the ClientCore rules above
+    /// (`hasDetailRows` / `isContentLoaded`); this only rides beside them so
+    /// the body can pick the skeleton over the honest "not loaded" line.
     @State private var isLoadingDetail = false
 
     private static let collapsedPromptLimit = 8
@@ -132,12 +133,15 @@ struct SubAgentPanelSheet: View {
     }
 
     /// The card whose detail rows this screen wants right now: the selection
-    /// while its content is missing locally, nil otherwise (nothing to load,
-    /// or the rows are already here). Driving `.task(id:)` from it keeps the
-    /// load one-shot per card — a failed load is not retried until a new
-    /// selection, and a card the panel never shows produces no request.
+    /// while its own rows are missing locally, nil otherwise (nothing to
+    /// load, or the rows are already here). Keyed on `hasDetailRows`, not
+    /// `isContentLoaded`: a card the window still holds reads as "loaded"
+    /// while its activity rows may be missing entirely — the normal shape
+    /// once the coverage reads exclude them. Driving `.task(id:)` from it
+    /// keeps the load one-shot per card — a failed load is not retried until
+    /// a new selection, and a card the panel never shows produces no request.
     private var detailRequest: String? {
-        guard let card = selectedCard, !SubAgentProgress.isContentLoaded(card, in: detailWindow) else { return nil }
+        guard let card = selectedCard, !SubAgentProgress.hasDetailRows(card, in: detailWindow) else { return nil }
         return card.id
     }
 
@@ -146,7 +150,7 @@ struct SubAgentPanelSheet: View {
     /// dispatch sibling's rows too). The skeleton shows while it runs; the
     /// merged rows arrive through the projection like every other update.
     private func loadDetailIfNeeded() async {
-        guard let card = selectedCard, !SubAgentProgress.isContentLoaded(card, in: detailWindow) else { return }
+        guard let card = selectedCard, !SubAgentProgress.hasDetailRows(card, in: detailWindow) else { return }
         isLoadingDetail = true
         defer { isLoadingDetail = false }
         await chat.session.loadSubAgentDetail(parentIDs: SubAgentProgress.lineageIDs(of: card, in: detailWindow))
@@ -271,10 +275,14 @@ struct SubAgentPanelSheet: View {
             // prompt but none of its activity. Say so instead of rendering a
             // blank body that reads as "nothing happened". A resume-alias card
             // passes this gate through its sibling's rows (pp 2026-10-09).
-            // P3: while those rows are being fetched on demand, the skeleton
-            // stands in; only a settled miss keeps the honest notice.
-            if !SubAgentProgress.isContentLoaded(card, in: detailWindow) {
-                if isLoadingDetail { SubAgentDetailLoadingSkeleton() } else { notLoadedNotice }
+            // P3: while the missing detail rows are being fetched on demand,
+            // the skeleton stands in. The notice itself stays bound to
+            // `isContentLoaded` (the pre-P3 honesty rule) — a card whose row
+            // is present but whose activity is still in flight must not
+            // falsely claim nothing is loaded.
+            if !SubAgentProgress.hasDetailRows(card, in: detailWindow) {
+                if isLoadingDetail { SubAgentDetailLoadingSkeleton() }
+                else if !SubAgentProgress.isContentLoaded(card, in: detailWindow) { notLoadedNotice }
             }
             promptSection(card)
             activitySection(card)

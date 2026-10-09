@@ -568,14 +568,36 @@ def test_R1b_P2_the_message_view_still_supplies_an_unanchored_task(monkeypatch) 
     )
     assert ages[TASK_ID] == 180.0
 
-    # ...and the scanner's own answer still wins whenever it has one.
+    # ...and the scanner's own answer still wins whenever it has one — but
+    # "the scanner's own" now means VERIFIED (R1c R3-2): a scan that tied the
+    # anchor to a real dispatch call has the engine's word and keeps it, which
+    # is the rule this half of the test was written for.
     scanned_ms = mention_ms - 600_000
     anchored = _history_receipt_ages(
         (_dispatch_message(), _mention_message(mention_ms)),
         now_ms=mention_ms + 180_000,
         raw_receipt_times={TASK_ID: scanned_ms},
+        verified_dispatch_roots=frozenset({TASK_ID}),
     )
     assert anchored[TASK_ID] == 780.0
+
+    # An UNVERIFIED scanner anchor is the other case, and R1b's absolute rule
+    # could not tell them apart: nothing ties that anchor to a call (F5's bare
+    # `tool_result`, whose dispatch row was trimmed away), so a strictly newer
+    # receipt in the message view overrules it. Only newer mentions displace
+    # one, so the direction of travel stays "later", never "older".
+    overruled = _history_receipt_ages(
+        (_dispatch_message(), _mention_message(mention_ms)),
+        now_ms=mention_ms + 180_000,
+        raw_receipt_times={TASK_ID: scanned_ms},
+    )
+    assert overruled[TASK_ID] == 180.0
+    # ...and an older mention still does not.
+    assert _history_receipt_ages(
+        (_dispatch_message(), _mention_message(scanned_ms - 1)),
+        now_ms=mention_ms + 180_000,
+        raw_receipt_times={TASK_ID: scanned_ms},
+    )[TASK_ID] == 780.0
 
 
 # ---------------------------------------------------------------------------

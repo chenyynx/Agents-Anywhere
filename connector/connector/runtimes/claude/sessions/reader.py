@@ -62,6 +62,7 @@ from connector.runtimes.claude.sessions.subagent_oracle import (
     raw_only_notices,
     scan_raw_transcript,
     scan_transcript_file,
+    verified_dispatch_tasks,
 )
 from connector.runtimes.claude.sessions.sync_state import ClaudeSessionSyncStateStore
 from connector.runtimes.claude.timeline.agent_calls import (
@@ -137,7 +138,14 @@ class SessionListPage(tuple):
         return page
 
     def rescanned(self, sessions: tuple[SessionMeta, ...]) -> SessionListPage:
-        """The same read's sessions after filtering/truncation, flags intact."""
+        """The same read's sessions after filtering/truncation, flags intact.
+
+        This is also the protocol the re-pager in `runtime_protocol` looks for
+        by name (R1c): a page type MAY expose a callable ``rescanned`` to say
+        "here are my flags on a re-wrapped page", and one that does not is left
+        as the plain tuple it always was. It is a protocol, not a method every
+        runtime has to implement — `runtime_protocol` cannot import a runtime's
+        reader, so the name is the whole contract."""
 
         return SessionListPage(
             sessions,
@@ -607,6 +615,7 @@ def _history_items_from_messages(
     resequenced = _resequence_history_items(_dedupe_history_items(items))
     if oracle is None:
         return resequenced
+    raw_participation = participation_times_ms(raw_scan) if raw_scan else {}
     return _apply_oracle_closures(
         session,
         resequenced,
@@ -620,9 +629,18 @@ def _history_items_from_messages(
         # own helper, so both sides now judge the same engine facts the same
         # way, and the anchor only ever moves newer — the conservative
         # direction for a ceiling.
-        raw_receipt_times=(
-            participation_times_ms(raw_scan) if raw_scan else {}
+        raw_receipt_times=raw_participation,
+        # R1c R3-2: which of those anchors the scan can tie to a real dispatch
+        # call. Only those keep the fold from overruling them with the message
+        # view; a bare `tool_result` anchor (F5) is still an anchor, it just is
+        # not the engine's word about which call it answered.
+        verified_dispatch_roots=(
+            verified_dispatch_tasks(raw_scan) if raw_scan else frozenset()
         ),
+        # ...and the ceiling reads the raw transcript's own times, with no
+        # message-view supplement at all: for a hard closure a newer mention
+        # from free text is not a tie to be broken, it is the closure deferred.
+        raw_ceiling_times=raw_participation,
         oracle=oracle,
         live_task_ids=live_task_ids,
     )
@@ -635,6 +653,8 @@ def _apply_oracle_closures(
     messages: tuple[Any, ...],
     raw_notices: tuple[tuple[int, ClaudeTaskEvent], ...],
     raw_receipt_times: Mapping[str, int] | None = None,
+    verified_dispatch_roots: frozenset[str] = frozenset(),
+    raw_ceiling_times: Mapping[str, int] | None = None,
     oracle: ClaudeSubagentOracle,
     now_ms: int | None = None,
     live_task_ids: frozenset[str] = frozenset(),
@@ -656,6 +676,20 @@ def _apply_oracle_closures(
         messages,
         now_ms=resolved_now_ms,
         raw_receipt_times=raw_receipt_times,
+        verified_dispatch_roots=verified_dispatch_roots,
+    )
+    # R1c: the ceiling's anchor, from the raw transcript alone. The age above is
+    # what the never-started grace and the F4 arbitration judge on; this is the
+    # age the hard ceiling judges on, because for that rule a newer bogus anchor
+    # is not a harmless tie — it defers the closure for as long as the session
+    # keeps being written.
+    ceiling_age_by_task = (
+        {
+            task_id: max((resolved_now_ms - time_ms) / 1000.0, 0.0)
+            for task_id, time_ms in raw_ceiling_times.items()
+        }
+        if raw_ceiling_times is not None
+        else None
     )
     closed: list[RuntimeTimelineItem] = []
     for item in items:
@@ -689,6 +723,7 @@ def _apply_oracle_closures(
                     session=session,
                     terminal_by_task=terminal_by_task,
                     receipt_age_by_task=receipt_age_by_task,
+                    ceiling_age_by_task=ceiling_age_by_task,
                     now_ms=resolved_now_ms,
                     live_task_ids=live_task_ids,
                 ).items()
@@ -735,6 +770,7 @@ def _apply_oracle_closures(
                 session=session,
                 terminal_by_task=terminal_by_task,
                 receipt_age_by_task=receipt_age_by_task,
+                ceiling_age_by_task=ceiling_age_by_task,
                 now_ms=resolved_now_ms,
                 live_task_ids=live_task_ids,
             )
@@ -784,7 +820,8 @@ def _card_oracle_verdicts(
     session: ClaudeSession,
     terminal_by_task: Mapping[str, tuple[int | None, ClaudeTaskEvent]],
     receipt_age_by_task: Mapping[str, float],
-    now_ms: int | None,
+    ceiling_age_by_task: Mapping[str, float] | None = None,
+    now_ms: int | None = None,
     live_task_ids: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """One evidence verdict per judged task; declined tasks are absent.
@@ -794,6 +831,11 @@ def _card_oracle_verdicts(
     stale sibling's verdict. A task in that set is `attached` as well — the
     connector is driving its process — so even its own file silence cannot
     close it (a terminal notice still can).
+
+    ``ceiling_age_by_task`` is the age ceiling's own anchor (R1c): the one the
+    raw transcript vouches for, without the free-text supplement the other two
+    rules tolerate. A task it has no entry for gets no ceiling judgement rather
+    than a borrowed one.
     """
 
     verdicts: dict[str, Any] = {}
@@ -807,6 +849,8 @@ def _card_oracle_verdicts(
             cwd=session.cwd,
             terminal_events=(terminal,) if terminal is not None else (),
             receipt_age_seconds=receipt_age_by_task.get(task_id),
+            ceiling_age_seconds=(ceiling_age_by_task or {}).get(task_id),
+            ceiling_anchored=ceiling_age_by_task is not None,
             attached_live=task_id in live_task_ids,
             now_ms=now_ms,
         )
@@ -909,8 +953,9 @@ def _history_receipt_ages(
     *,
     now_ms: float,
     raw_receipt_times: Mapping[str, int] | None = None,
+    verified_dispatch_roots: frozenset[str] = frozenset(),
 ) -> dict[str, float]:
-    """The age (in seconds) of a task's newest agentId mention in the transcript.
+    """The age (in seconds) of a task's newest agentId receipt in the transcript.
 
     The CLI writes the receipt — with the task's ``agentId`` — into the
     transcript when the Agent call is dispatched (an ``async_launched`` launch
@@ -924,19 +969,24 @@ def _history_receipt_ages(
     at all, so before this the age was unknowable and the never-started closure
     unreachable on real data.
 
-    The supplement may only PLACE an anchor, never move one (R1b R2-5). A
-    message is free text: an assistant can quote `agentId: <task>` in a
-    sentence about an old run without the task being alive, and the fold used
-    to take the newest mention per task, so one stray sentence re-stamped the
-    clock of a task that died a day ago. That was survivable while the anchor
-    only fed notice arbitration and the never-started grace, where a newer
-    anchor merely defers a judgement some other rule still reaches. T2 makes it
-    load-bearing for a HARD ceiling, and then the same sentence defers the
-    closure without bound — while the session keeps writing, the file mtime
-    stays fresh and `agentFileStale` never fires either, so nothing else can
-    reach the card. The scanner's own receipt is the evidence this rule is
-    supposed to rest on, so a task the scanner already placed keeps the
-    scanner's answer.
+    Who wins when both surfaces have an anchor is decided by PROVENANCE, not by
+    order (R1c R3-2). A message is free text: an assistant can quote
+    ``agentId: <task>`` in a sentence about an old run without the task being
+    alive, and the fold used to take the newest mention per task, so one stray
+    sentence re-stamped the clock of a task that died a day ago. R1b closed that
+    by making the scanner absolute — which is one way too far, because the
+    scanner's anchor is not always the better evidence. Where the raw file has
+    only a bare ``tool_result`` (F5's shape, its call row trimmed away) nothing
+    ties that anchor to a call, and a genuinely newer receipt in the message
+    view was discarded in favour of a stale one: a task that launched five
+    minutes ago was closed on a 26-hour-old echo.
+
+    So a scanner anchor whose roots the scan verified against a real dispatch
+    call keeps it — that is the engine's own word, and the rule R1b wanted. Any
+    other scanner anchor yields to a strictly newer message-view receipt. Only
+    *newer* mentions displace one, so this can move an anchor later (deferring a
+    judgement, the direction that cannot lie about a live agent) and never
+    manufacture an older launch.
     """
 
     newest_ms: dict[str, int] = {
@@ -951,8 +1001,12 @@ def _history_receipt_ages(
             continue
         for match in _AGENT_ID_RE.finditer(text):
             task_id = match.group(1)
-            if task_id in newest_ms:
-                # Already anchored by the scanner: free text outranks nothing.
+            current = newest_ms.get(task_id)
+            if current is not None and (
+                task_id in verified_dispatch_roots or time_ms <= current
+            ):
+                # The scanner's own verified receipt, or nothing newer to say:
+                # either way the anchor stands.
                 continue
             newest_ms[task_id] = time_ms
     return {

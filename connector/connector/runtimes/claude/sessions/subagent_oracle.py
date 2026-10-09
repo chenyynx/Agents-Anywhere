@@ -395,6 +395,8 @@ class ClaudeSubagentOracle:
         cwd: str | None,
         terminal_events: Sequence[tuple[int | None, ClaudeTaskEvent]] = (),
         receipt_age_seconds: float | None = None,
+        ceiling_age_seconds: float | None = None,
+        ceiling_anchored: bool = False,
         attached_live: bool = False,
         now_ms: int | None = None,
     ) -> AgentTaskEvidence | None:
@@ -436,14 +438,16 @@ class ClaudeSubagentOracle:
         newer than the receipt is still read as superseded rather than trusted
         on sub-tolerance noise.
 
-        The receipt age comes from the newest ``agentId:`` mention, which later
+        The receipt age comes from the newest ``agentId:`` receipt, which later
         transcript text can *pollute* to be newer than the true launch; that
         bias shrinks the age, pushes ``receipt_time`` later, and so errs toward
         *superseding* notices — keeping attached tasks open. The bias is
         therefore conservative in the one direction that cannot lie about a
         live agent. With no receipt age, or a notice with no time, there is
         nothing to arbitrate and rule 1 stands exactly as before, as it does
-        for non-attached tasks.
+        for non-attached tasks. This is also why the ceiling reads its own age
+        instead: a newer anchor is harmless when it supersedes a notice, and
+        unbounded when it defers a closure.
 
         Time order is the OUTER arbitration for one task's own notice
         sequence; ``closure_rank`` remains the INNER arbiter among verdicts of
@@ -526,11 +530,25 @@ class ClaudeSubagentOracle:
         # what this rule declines to trust, and the card closes. `attached`
         # has already returned above; the explicit guard is kept so the hard
         # exemption holds even if this branch is ever re-ordered.
+        #
+        # The ceiling is the one judgement that reads an age at all, so it is
+        # also the one that must not read a *polluted* one (R1c): it judges on
+        # `ceiling_age_seconds`, the anchor that came from the raw transcript
+        # alone — no free-text supplement, no mention from either surface. A
+        # newer bogus anchor can only ever DEFERR this closure, so a session
+        # that keeps writing could hold a dead card open forever while every
+        # other rule finds it fresh; the never-started grace and the F4
+        # arbitration below keep the combined anchor, where a newer anchor is
+        # the harmless direction. A caller with no separate ceiling anchor
+        # falls back to the receipt age, so the ceiling is never unreachable.
+        ceiling_age = (
+            ceiling_age_seconds if ceiling_anchored else receipt_age_seconds
+        )
         if (
             not attached_live
             and self.age_bound_seconds > 0
-            and receipt_age_seconds is not None
-            and receipt_age_seconds > self.age_bound_seconds
+            and ceiling_age is not None
+            and ceiling_age > self.age_bound_seconds
         ):
             return AgentTaskEvidence(
                 closure_status="interrupted",
@@ -539,7 +557,7 @@ class ClaudeSubagentOracle:
                 # the never-started rule ends on, F2b): the file's freshness
                 # is exactly what this branch distrusts, so the mtime is not
                 # the honest "ended at".
-                end_time_ms=int(current_ms - receipt_age_seconds * 1000),
+                end_time_ms=int(current_ms - ceiling_age * 1000),
                 agent_status="interrupted",
             )
         return None
@@ -656,12 +674,14 @@ class RawTranscriptScan:
     """What one transcript's raw lines say about Agent tasks."""
 
     notices: tuple[RawTranscriptNotice, ...]
-    #: task_id -> epoch ms of the newest ``agentId: <id>`` mention in the
+    #: task_id -> epoch ms of the newest ``agentId: <id>`` receipt in the
     #: transcript. The CLI writes that receipt when an Agent call is
     #: dispatched, so it is the closest thing the transcript has to a launch
     #: time — the input the never-started grace needs (F5). The SDK message
     #: view exposes no timestamps at all, which is why this comes from the raw
-    #: file.
+    #: file. Rows are admitted by SHAPE (a ``user`` row carrying a
+    #: ``tool_result`` block), not by the substring: a row that only quotes
+    #: ``agentId:`` never gets in (R1c), because a mention is not a receipt.
     receipt_times_ms: Mapping[str, int] = field(default_factory=dict)
     #: SendMessage tool_use id -> the task id that call addresses. This is the
     #: persisted copy of the live projector's in-process alias map, so a
@@ -723,11 +743,23 @@ def scan_raw_transcript(
 
     ``attachment`` rows repeat the same wrapper as rendering chrome and are
     skipped. The same pass also collects each task's newest ``agentId:``
-    mention (its dispatch receipt time), each task's newest ``SendMessage``
+    receipt (its dispatch receipt time), each task's newest ``SendMessage``
     resume-call row time (its newest survival evidence, P9), and the lineage
     the resume fold needs (alias-durability-tasks T1 A): the SendMessage alias
     map, the dispatch roots, and the provenance set that gates both, so
     callers get every fact for one read of the file.
+
+    Receipt times are read by the row's SHAPE, not by the substring (R1c): a
+    ``user`` row — carrying a ``tool_result`` block, the row-level
+    ``toolUseResult`` variant, or the bare body F5 pinned — is the engine's
+    answer to a dispatch call, while an ``assistant`` row that merely contains
+    ``agentId:`` is quoting one. Both are found by the same substring, and only
+    one of them is evidence of a launch: the quoting shape is what let an
+    assistant's sentence re-stamp a dead task's launch anchor and defer the age
+    ceiling indefinitely. The gate here is deliberately weaker than the lineage
+    gate below, which also demands the acknowledged call's *name* because it
+    mints a root — F5's bare result, whose call row was trimmed away, must
+    still date its task.
 
     Both lineage maps are **provenance-gated** (red team F1): a ``tool_result``
     row only counts as a dispatch receipt when the call it acknowledges is an
@@ -798,7 +830,18 @@ def scan_raw_transcript(
         if not wants_notice and not wants_receipt:
             continue
         timestamp_ms = _parse_iso_ms(row.get("timestamp"))
-        if wants_receipt and timestamp_ms is not None:
+        # R1c: a receipt is admitted by the SHAPE of the row, not by the
+        # substring. The CLI writes the launch receipt as the ``tool_result``
+        # that answers the dispatch call, so a row of that shape is a receipt
+        # whatever it says (F5's bare result, whose call row may be trimmed, is
+        # still a receipt and must survive); a row that merely *contains*
+        # ``agentId:`` — an assistant quoting a run, a report about another
+        # agent, a grep/cat of a transcript — is not, and letting it in let any
+        # sentence re-stamp a dead task's launch anchor. Same shape test the
+        # notice branch below applies to its own rows, and strictly weaker than
+        # the lineage gate: that one also demands the acknowledged call's name,
+        # because it mints a root, while this only dates a mention.
+        if wants_receipt and timestamp_ms is not None and _is_receipt_row(row):
             for match in _AGENT_ID_RE.finditer(line):
                 task_id = match.group(1)
                 if (receipt_times.get(task_id) or -1) < timestamp_ms:
@@ -857,6 +900,37 @@ def scan_raw_transcript(
 
 
 _AGENT_ID_RE = re.compile(r"agentId:\s*([0-9a-zA-Z]+)")
+
+
+def _is_receipt_row(row: Mapping[str, Any]) -> bool:
+    """Whether this raw row has the shape a dispatch receipt is written in.
+
+    Receipts arrive on a ``user`` row, in either of the two shapes the CLI has
+    written them in: a ``tool_result`` block (with the row-level
+    ``toolUseResult`` variant), or the bare body of the user row itself — the
+    form F5 pinned, whose dispatch call row the transcript may no longer hold
+    and which is the reason the message-view supplement exists at all. Both are
+    the engine's own channel.
+
+    An ``assistant`` row is not one of those shapes and never was: that is where
+    free text lives, so a line that merely *mentions* ``agentId:`` there is a
+    sentence about a run, not the engine's answer to a dispatch call. Dropping
+    that shape is what R1c needed; the two receipt shapes above are kept whole.
+    """
+
+    if row.get("type") != "user":
+        return False
+    if isinstance(row.get("toolUseResult"), Mapping):
+        return True
+    message = row.get("message")
+    content = message.get("content") if isinstance(message, Mapping) else None
+    if isinstance(content, str):
+        # The bare F5 body: the receipt IS the user row's content.
+        return True
+    return isinstance(content, list) and any(
+        isinstance(block, Mapping) and block.get("type") == "tool_result"
+        for block in content
+    )
 
 
 def _register_tool_use_names(
@@ -1120,6 +1194,57 @@ def participation_times_ms(scan: RawTranscriptScan) -> dict[str, int]:
         if current is None or time_ms > current:
             merged[task_id] = time_ms
     return merged
+
+
+def verified_dispatch_tasks(scan: RawTranscriptScan) -> frozenset[str]:
+    """The tasks whose dispatch receipt the scan can attribute to a real call.
+
+    ``dispatch_roots`` is already sealed to ``verified_dispatch_ids`` by the
+    scan, so a non-empty root set *is* the intersection; it is recomputed here
+    explicitly because the consumer's decision is "may this anchor be
+    overruled?", and a decision that turns on an invariant living three files
+    away should say which invariant it means.
+
+    A task outside this set still has a receipt time — a bare ``tool_result``
+    whose dispatch row the transcript no longer holds is F5's whole reason the
+    supplement exists — but nothing ties it to a call, so a free-text mention
+    newer than it may overrule it (R1c R3-2).
+    """
+
+    verified = scan.verified_dispatch_ids
+    return frozenset(
+        task_id
+        for task_id, roots in scan.dispatch_roots.items()
+        if roots & verified
+    )
+
+
+def participation_ages_seconds(
+    scan: RawTranscriptScan | None,
+    *,
+    now_ms: int,
+) -> dict[str, float]:
+    """Every task's age from the raw transcript ALONE (R1c).
+
+    This is the age ceiling's anchor, kept apart from the age the other rules
+    judge on for exactly one reason: the others consume a free-text supplement
+    (F5's bare ``tool_result``, which the raw file may not have), and that
+    supplement is also the shape a quote takes. A mention that only *says*
+    ``agentId:`` can move this anchor in both directions — and for a ceiling,
+    moving it later defers the closure without bound, while every other rule
+    that would otherwise reach the card finds a fresh file.
+
+    So the ceiling reads this, and only this. A task the raw transcript has
+    nothing for gets no age and therefore no ceiling closure; the server-side
+    age janitor is the floor under that shape, not this rule's job to guess.
+    """
+
+    if scan is None:
+        return {}
+    return {
+        task_id: max((now_ms - time_ms) / 1000.0, 0.0)
+        for task_id, time_ms in participation_times_ms(scan).items()
+    }
 
 
 def participation_age_seconds(

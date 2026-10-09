@@ -107,6 +107,17 @@ SESSION_ROTATION_STALL_CIRCLES = 3
 # nothing forever (a library that shrank under a persisted offset) must still
 # be able to conclude and re-seek.
 SESSION_ROTATION_UNPROVEN_EMPTY_LIMIT = 3
+# How many windows the ladder may walk after a re-seek before the re-seek
+# re-arms (R1c R3-1). The re-seek is what recovers a ladder left pointing past a
+# library that shrank under a persisted offset, so spending it once per circle
+# made that recovery unreachable for the rest of the sweep's life — and a
+# circle only concludes on a read that proves something, so a reader that fails
+# everywhere never concludes one: the ladder then committed forward forever,
+# past a residue it could have found by looking again. Bounded, because wrapping
+# on every spend would re-read the same windows in a tight loop; a sweep that
+# wraps every few windows still climbs a few new ones between wraps, so a reader
+# that recovers is reached within the cooldown.
+SESSION_ROTATION_RESEEK_COOLDOWN_WINDOWS = 8
 # Rest cycles the sweep inserts after consecutive window reads that rebuilt
 # nothing, capped (R1 P2-5). The activation signal is a page-1 edge that only a
 # page-1 rebuild consumes, so a page-1 session whose rebuild keeps failing
@@ -692,7 +703,12 @@ class RuntimeSyncRunner:
         What the sweep refuses to do (R1): conclude the library on an empty
         window it cannot vouch for (P1-2), sleep for good on a circle it never
         proved (P1-3), or re-read a whole library every cycle for a signal that
-        will not be consumed (P2-5).
+        will not be consumed (P2-5). And (R1c) it keeps looking back: the
+        re-seek re-arms on a cooldown instead of being spent once per circle,
+        and a ladder reading empty at or beyond the furthest window that ever
+        held a session re-seeks on the position alone — a sweep whose reader
+        fails, or whose library shrank under a persisted offset, used to climb
+        away from the residue for the life of the process.
         """
 
         mode = session_rotation_mode()
@@ -770,10 +786,32 @@ class RuntimeSyncRunner:
                 state.unproven_empties + 1,
                 SESSION_ROTATION_UNPROVEN_EMPTY_LIMIT,
             )
-            proven_end_of_library = state.circle_windows > 0 and not unverified
+            # R1c R3-1: an empty window at or beyond the furthest offset that
+            # has ever held a session is not "unproven" — there is nothing at
+            # this position that has ever been there, so the ladder was pointed
+            # at a position the library does not have (a persisted offset under
+            # a library that shrank, or a seed from a past sweep). This reads
+            # the *position*, not the circle's progress, so it recovers that
+            # ladder in one read instead of a whole patience-and-cooldown run,
+            # and it is the only judgement here that trusts the ladder's
+            # coordinates over what it has managed to read. A window the
+            # filters emptied (`scanned > 0`) is excluded on purpose: the
+            # sessions are still there, so the ladder's position is fine.
+            beyond_extent = (
+                not unverified
+                and state.library_extent > 0
+                and state.offset >= state.library_extent
+            )
+            proven_end_of_library = (
+                state.circle_windows > 0 or state.past_library_extent
+            ) and not unverified
             patience_spent = unproven >= SESSION_ROTATION_UNPROVEN_EMPTY_LIMIT
+            reseek_armed = (
+                state.circle_stalls == 0
+                or state.windows_since_reseek >= SESSION_ROTATION_RESEEK_COOLDOWN_WINDOWS
+            )
             if not proven_end_of_library:
-                if patience_spent and state.circle_stalls == 0:
+                if (patience_spent and reseek_armed) or beyond_extent:
                     # Spent the circle's patience without ever proving an end,
                     # so the sweep must NOT disarm: the activation signal is a
                     # page-1 edge that only a page-1 rebuild consumes, so
@@ -783,15 +821,28 @@ class RuntimeSyncRunner:
                     # that is really in the library instead: this is what
                     # recovers a ladder left pointing past a library that
                     # shrank under a persisted offset.
+                    #
+                    # The re-seek re-arms after the cooldown, so this shape is
+                    # not one repair per circle but one per cooldown: a sweep
+                    # whose reader fails everywhere never concludes a circle,
+                    # and a one-shot budget left it walking forward for the life
+                    # of the process (R1c R3-1). Looking beyond the extent also
+                    # counts as the proof of the end that a non-empty window
+                    # would otherwise have supplied, so the next empty window
+                    # on the way back can conclude the circle.
                     logger.warning(
-                        "session rotation re-seeking after an unproven run of "
-                        "empty windows runtime={} offset={} read_failed={} "
-                        "scanned={} unproven_empties={}",
+                        "session rotation re-seeking runtime={} offset={} "
+                        "read_failed={} scanned={} unproven_empties={} "
+                        "library_extent={} windows_since_reseek={} "
+                        "beyond_extent={}",
                         runtime_id,
                         state.offset,
                         read_failed,
                         scanned,
                         unproven,
+                        state.library_extent,
+                        state.windows_since_reseek,
+                        beyond_extent,
                     )
                     await self._record_rotation_state(
                         scoped_runtime_id,
@@ -804,20 +855,27 @@ class RuntimeSyncRunner:
                             circle_windows=0,
                             unproven_empties=0,
                             circle_stalls=state.circle_stalls + 1,
+                            windows_since_reseek=0,
+                            past_library_extent=(
+                                state.past_library_extent or beyond_extent
+                            ),
                         ),
                     )
                     return
                 # Step over it and keep the sweep armed; the skipped window is
                 # picked up again on the next circle. The patience counter is
                 # what stops a reader that fails on EVERY window from walking
-                # offsets inside one run: after the first re-seek, a spent
-                # counter resets here so the ladder commits FORWARD past the
-                # region that keeps failing instead of wrapping back into it
-                # and re-reading the same windows forever.
+                # offsets inside one run: while the re-seek is still cooling
+                # down, a spent counter resets here so the ladder commits
+                # FORWARD past the region that keeps failing instead of
+                # wrapping back into it and re-reading the same windows
+                # forever — and the cooldown is what brings the re-seek back
+                # afterwards, so the forward run is bounded (R1c R3-1).
                 logger.warning(
                     "session rotation window is not proof of the end of the "
                     "library runtime={} offset={} read_failed={} scanned={} "
-                    "unproven_empties={} circle_windows={} circle_stalls={}",
+                    "unproven_empties={} circle_windows={} circle_stalls={} "
+                    "windows_since_reseek={}",
                     runtime_id,
                     state.offset,
                     read_failed,
@@ -825,6 +883,7 @@ class RuntimeSyncRunner:
                     unproven,
                     state.circle_windows,
                     state.circle_stalls,
+                    state.windows_since_reseek,
                 )
                 await self._record_rotation_state(
                     scoped_runtime_id,
@@ -833,11 +892,15 @@ class RuntimeSyncRunner:
                         state,
                         offset=state.offset + SESSION_ROTATION_PAGE_SIZE,
                         unproven_empties=0 if patience_spent else unproven,
+                        windows_since_reseek=state.windows_since_reseek + 1,
                     ),
                 )
                 return
             # End of the library: the circle is complete (page 1 plus every
-            # rotation window has been compared).
+            # rotation window has been compared). The extent is a fact about
+            # the library, not about this circle, so a sweep that sleeps keeps
+            # it: a ladder that wakes up past the end then re-seeks at once
+            # instead of spending a cooldown learning the same thing again.
             if mode == SESSION_ROTATION_REPORT or state.circle_candidates == 0:
                 logger.info(
                     "session rotation sweep completed runtime={} offset={} candidates_this_circle={} circles={}",
@@ -847,7 +910,12 @@ class RuntimeSyncRunner:
                     state.circles + 1,
                 )
                 await self._record_rotation_state(
-                    scoped_runtime_id, runtime_type, SessionRotationState()
+                    scoped_runtime_id,
+                    runtime_type,
+                    replace(
+                        SessionRotationState(),
+                        library_extent=state.library_extent,
+                    ),
                 )
                 return
             if state.circle_rebuilt == 0:
@@ -861,7 +929,12 @@ class RuntimeSyncRunner:
                         stall,
                     )
                     await self._record_rotation_state(
-                        scoped_runtime_id, runtime_type, SessionRotationState()
+                        scoped_runtime_id,
+                        runtime_type,
+                        replace(
+                            SessionRotationState(),
+                            library_extent=state.library_extent,
+                        ),
                     )
                     return
                 logger.warning(
@@ -878,6 +951,7 @@ class RuntimeSyncRunner:
                         offset=first_offset,
                         stall_circles=stall,
                         circles=state.circles + 1,
+                        library_extent=state.library_extent,
                     ),
                 )
                 return
@@ -892,6 +966,7 @@ class RuntimeSyncRunner:
                     active=True,
                     offset=first_offset,
                     circles=state.circles + 1,
+                    library_extent=state.library_extent,
                 ),
             )
             return
@@ -899,6 +974,13 @@ class RuntimeSyncRunner:
             session for session in page if session_requires_timeline_sync(session)
         ]
         circle_candidates = state.circle_candidates + len(candidates)
+        # A window that came back with sessions is the only evidence of where
+        # the library ends, so it is the one read that raises the extent — and
+        # it clears the "looked past the end" proof, because the library's end
+        # has just moved.
+        library_extent = max(
+            state.library_extent, state.offset + SESSION_ROTATION_PAGE_SIZE
+        )
         if mode == SESSION_ROTATION_REPORT:
             logger.info(
                 "session rotation report runtime={} offset={} sessions={} would_rebuild={} session_ids={}",
@@ -920,6 +1002,9 @@ class RuntimeSyncRunner:
                     circle_candidates=circle_candidates,
                     circle_windows=state.circle_windows + 1,
                     unproven_empties=0,
+                    windows_since_reseek=state.windows_since_reseek + 1,
+                    library_extent=library_extent,
+                    past_library_extent=False,
                 ),
             )
             return
@@ -992,6 +1077,9 @@ class RuntimeSyncRunner:
                 circle_rebuilt=state.circle_rebuilt + rebuilt,
                 circle_windows=state.circle_windows + 1,
                 unproven_empties=0,
+                windows_since_reseek=state.windows_since_reseek + 1,
+                library_extent=library_extent,
+                past_library_extent=False,
                 idle_reads=idle_reads,
                 rest_cycles=rest_cycles,
             ),
@@ -1357,11 +1445,30 @@ class SessionRotationState:
     * `unproven_empties` — empty windows read so far in a circle that has no
       proof; `SESSION_ROTATION_UNPROVEN_EMPTY_LIMIT` of them spends the
       circle's patience.
-    * `circle_stalls` — how many times this circle has already spent that
-      patience and re-seeked. One re-seek is what recovers a ladder left
-      pointing past a library that shrank under a persisted offset; a second
-      one would wrap the ladder back into the windows that just failed, so the
-      next spend commits forward instead (R1b R2-2).
+    * `circle_stalls` — how many times this circle has spent that patience and
+      re-seeked. Counted, not capped (R1c R3-1): the re-seek is what recovers
+      a ladder left pointing past a library that shrank under a persisted
+      offset, and a budget of one per circle made that recovery unreachable for
+      the rest of the sweep's life — a circle only concludes on a read that
+      proves something, so a reader that fails (or a library that shrank) never
+      concludes one, and the ladder committed forward past a residue it could
+      have found by looking again. `windows_since_reseek` is the cooldown that
+      keeps the repeats bounded (R1b R2-2's concern: wrapping on every spend
+      would re-read the same windows in a tight loop).
+    * `windows_since_reseek` — windows walked since the last re-seek. At
+      `SESSION_ROTATION_RESEEK_COOLDOWN_WINDOWS` the next patience spend
+      re-arms the re-seek; below it the ladder commits forward, which is what
+      gets it out of a region that keeps failing.
+    * `library_extent` — the high-water mark: one past the furthest offset that
+      ever returned a non-empty window (0 = never). A ladder reading empty at
+      or beyond it is not "unproven" — there is nothing there that has ever
+      been there, so it re-seeks without spending patience, and a library that
+      shrank under a persisted offset is recovered in one read instead of a
+      whole cooldown.
+    * `past_library_extent` — the sweep has looked beyond `library_extent` and
+      found nothing. That IS the proof of the library's end that
+      `circle_windows` otherwise supplies, so it stands in for it until a real
+      window is read (which clears it).
     * `circles` — circles concluded since activation. The first one always
       runs flat out (it is the one a version bump just paid for); the idle
       backoff only applies past it.
@@ -1378,6 +1485,9 @@ class SessionRotationState:
     circle_windows: int = 0
     unproven_empties: int = 0
     circle_stalls: int = 0
+    windows_since_reseek: int = 0
+    library_extent: int = 0
+    past_library_extent: bool = False
     circles: int = 0
     idle_reads: int = 0
     rest_cycles: int = 0
@@ -1405,6 +1515,9 @@ def session_rotation_state_from_mapping(
         circle_windows=_optional_int(value.get("circleWindows")) or 0,
         unproven_empties=_optional_int(value.get("unprovenEmpties")) or 0,
         circle_stalls=_optional_int(value.get("circleStalls")) or 0,
+        windows_since_reseek=_optional_int(value.get("windowsSinceReseek")) or 0,
+        library_extent=_optional_int(value.get("libraryExtent")) or 0,
+        past_library_extent=value.get("pastLibraryExtent") is True,
         circles=_optional_int(value.get("circles")) or 0,
         idle_reads=_optional_int(value.get("idleReads")) or 0,
         rest_cycles=_optional_int(value.get("restCycles")) or 0,
@@ -1422,6 +1535,9 @@ def session_rotation_state_payload(state: SessionRotationState) -> dict[str, Any
         "circleWindows": state.circle_windows,
         "unprovenEmpties": state.unproven_empties,
         "circleStalls": state.circle_stalls,
+        "windowsSinceReseek": state.windows_since_reseek,
+        "libraryExtent": state.library_extent,
+        "pastLibraryExtent": state.past_library_extent,
         "circles": state.circles,
         "idleReads": state.idle_reads,
         "restCycles": state.rest_cycles,

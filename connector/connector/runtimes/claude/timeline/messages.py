@@ -42,6 +42,7 @@ from connector.runtimes.claude.sdk.tasks import is_task_notification_text
 from connector.runtimes.claude.sdk.title_tool import is_title_tool_name
 from connector.runtimes.claude.sessions.subagent_oracle import (
     RawTranscriptScan,
+    participation_ages_seconds,
     participation_times_ms,
 )
 from connector.runtimes.claude.timeline.agent_calls import (
@@ -1545,6 +1546,15 @@ class ClaudeMessageProjector:
         participation_times = (
             participation_times_ms(scan) if scan is not None else {}
         )
+        # R1c: the age ceiling reads the raw transcript alone. `age` above may
+        # come from a caller's free-text supplement or from the card's own mint
+        # stamp, and for a hard closure a newer anchor from either of those is
+        # not a tie to break -- it is the closure deferred for as long as the
+        # session keeps being written. Absent a raw anchor the ceiling declines;
+        # the server-side age janitor is the floor under that shape.
+        ceiling_ages = participation_ages_seconds(
+            scan, now_ms=int(now_seconds * 1000)
+        )
         for task_id in sorted(task_ids):
             age = ages.get(task_id)
             if age is None and launched_at is not None:
@@ -1562,6 +1572,10 @@ class ClaudeMessageProjector:
                 cwd=session.cwd,
                 terminal_events=events.get(task_id, ()),
                 receipt_age_seconds=age,
+                ceiling_age_seconds=ceiling_ages.get(task_id),
+                # Only when the raw transcript was actually readable: the
+                # ceiling has its own anchor exactly when it could look.
+                ceiling_anchored=scan is not None,
                 attached_live=task_id in attached,
                 now_ms=now_ms,
             )

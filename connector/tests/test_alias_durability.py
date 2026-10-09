@@ -38,6 +38,7 @@ from typing import Any
 from connector.runtime_protocol import RuntimeTimelineItem
 from connector.runtimes.claude.domain.session import ClaudeSession
 from connector.runtimes.claude.sessions.subagent_oracle import (
+    RawTranscriptScan,
     scan_raw_transcript,
 )
 from connector.runtimes.claude.timeline import messages as messages_module
@@ -58,6 +59,7 @@ SEND = "call_sendmsg_alias_a"
 SEND2 = "call_sendmsg_alias_b"
 ROOT_A = "call_dispatch_root_b"
 ROOT_B = "call_dispatch_root_c"
+BASH = "call_bash_probe_1"
 # Real task ids are pure alphanumeric (the CLI's own shape): the scanner's
 # ``agentId:`` wording stops at a non-alnum byte, so a fixture with an
 # underscore would not reproduce what the engine writes.
@@ -76,6 +78,67 @@ def _session() -> ClaudeSession:
 # --------------------------------------------------------------------------
 # Synthetic raw-row fixtures (shapes trimmed from the incident, ids invented)
 # --------------------------------------------------------------------------
+
+
+def _raw_dispatch_row(
+    uuid: str,
+    tool_use_id: str,
+    *,
+    name: str = "Agent",
+    tool_input: Any = None,
+) -> str:
+    """An assistant row carrying a tool call (an Agent dispatch by default).
+
+    The call row is what registers ``tool_use_id -> name`` for the scanner's
+    provenance gate (red team F1); a receipt without its call row is declined.
+    """
+
+    if tool_input is None:
+        tool_input = {
+            "description": "work",
+            "prompt": "p",
+            "run_in_background": True,
+        }
+    return json.dumps(
+        {
+            "type": "assistant",
+            "uuid": uuid,
+            "timestamp": "2026-10-09T01:28:40.000Z",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": tool_use_id,
+                        "name": name,
+                        "input": tool_input,
+                    }
+                ],
+            },
+        }
+    )
+
+
+def _raw_result_row(uuid: str, tool_use_id: str, text: str) -> str:
+    """A user row carrying an arbitrary tool_result body."""
+
+    return json.dumps(
+        {
+            "type": "user",
+            "uuid": uuid,
+            "timestamp": "2026-10-09T01:28:41.000Z",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": [{"type": "text", "text": text}],
+                    }
+                ],
+            },
+        }
+    )
 
 
 def _raw_send_row(uuid: str, tool_use_id: str, task_id: str) -> str:
@@ -179,10 +242,15 @@ def _raw_receipt_row(
 
 
 def _incident_scan():
-    """The full transcript of the incident shape: dispatch + resume + receipt."""
+    """The full transcript of the incident shape: dispatch + resume + receipt.
+
+    The dispatch *call* row leads (the CLI writes a call before its result),
+    which is what lets the scanner verify the receipt's provenance.
+    """
 
     return scan_raw_transcript(
         (
+            _raw_dispatch_row("d0", DISPATCH),
             _raw_receipt_row("r1", DISPATCH, TASK),
             _raw_send_row("s1", SEND, TASK),
             _raw_resume_row("s2", SEND, TASK),
@@ -249,14 +317,17 @@ def test_scan_learns_the_sendmessage_alias_from_input_to() -> None:
 
 
 def test_scan_learns_the_resume_alias_from_body_and_structured_details() -> None:
-    # Both surfaces carry it; either alone must be enough.
+    # Both surfaces carry it; either alone must be enough. The SendMessage
+    # call row leads — the resume receipt is only readable when its call was
+    # verified as a SendMessage.
+    send_row = _raw_send_row("s1", SEND, TASK)
     row_with_body = _raw_resume_row("s2", SEND, TASK)
-    assert scan_raw_transcript((row_with_body,)).send_aliases == {SEND: TASK}
+    assert scan_raw_transcript((send_row, row_with_body)).send_aliases == {SEND: TASK}
     structured_only = json.loads(row_with_body)
     structured_only["message"]["content"][0]["content"] = [
         {"type": "text", "text": "(elided)"}
     ]
-    scan = scan_raw_transcript((json.dumps(structured_only),))
+    scan = scan_raw_transcript((send_row, json.dumps(structured_only)))
     assert scan.send_aliases == {SEND: TASK}
 
 
@@ -271,21 +342,33 @@ def test_scan_does_not_treat_a_resume_row_as_a_dispatch_root() -> None:
 
 
 def test_scan_learns_dispatch_roots_from_body_and_structured_shapes() -> None:
-    full = scan_raw_transcript((_raw_receipt_row("r1", DISPATCH, TASK),))
+    call = _raw_dispatch_row("d0", DISPATCH)
+    full = scan_raw_transcript((call, _raw_receipt_row("r1", DISPATCH, TASK)))
     assert full.dispatch_roots == {TASK: frozenset({DISPATCH})}
     body_only = scan_raw_transcript(
-        (_raw_receipt_row("r2", DISPATCH, TASK, structured=False),)
+        (call, _raw_receipt_row("r2", DISPATCH, TASK, structured=False))
     )
     assert body_only.dispatch_roots == {TASK: frozenset({DISPATCH})}
     structured_only = scan_raw_transcript(
-        (_raw_receipt_row("r3", DISPATCH, TASK, body=False),)
+        (call, _raw_receipt_row("r3", DISPATCH, TASK, body=False))
     )
     assert structured_only.dispatch_roots == {TASK: frozenset({DISPATCH})}
+
+
+def test_scan_verifies_dispatch_call_names_and_seals_roots() -> None:
+    scan = _incident_scan()
+    # The receipt's call was witnessed as an Agent dispatch; the evidence is
+    # carried next to the mapping so consumers can re-check it (F2/F3).
+    assert scan.verified_dispatch_ids == frozenset({DISPATCH})
+    roots = {root for roots in scan.dispatch_roots.values() for root in roots}
+    assert roots <= scan.verified_dispatch_ids
 
 
 def test_scan_keeps_every_root_of_an_ambiguous_task() -> None:
     scan = scan_raw_transcript(
         (
+            _raw_dispatch_row("d0", DISPATCH),
+            _raw_dispatch_row("d1", ROOT_A),
             _raw_receipt_row("r1", DISPATCH, TASK),
             _raw_receipt_row("r2", ROOT_A, TASK),
         )
@@ -302,7 +385,7 @@ def test_scan_never_attributes_row_details_when_the_row_has_two_results() -> Non
             "content": [{"type": "text", "text": "ok"}],
         }
     )
-    scan = scan_raw_transcript((json.dumps(row),))
+    scan = scan_raw_transcript((_raw_dispatch_row("d0", DISPATCH), json.dumps(row)))
     # The structured agentId belongs to one of two blocks; guessing would
     # splice the root onto the wrong call, so it is declined entirely.
     assert scan.dispatch_roots == {}
@@ -355,20 +438,30 @@ def test_scan_ignores_non_tool_rows_and_hostile_shapes() -> None:
 
 def test_resolve_from_scan_keeps_the_single_root_contract() -> None:
     sends = {SEND: TASK}
+    verified = {DISPATCH, ROOT_A}
     assert resolve_resume_alias_from_scan(
-        SEND, send_aliases=sends, dispatch_roots={TASK: frozenset({DISPATCH})}
+        SEND,
+        send_aliases=sends,
+        dispatch_roots={TASK: frozenset({DISPATCH})},
+        verified_dispatch_ids=verified,
     ) == (TASK, DISPATCH)
     # Not an alias at all.
     assert (
         resolve_resume_alias_from_scan(
-            DISPATCH, send_aliases=sends, dispatch_roots={TASK: frozenset({DISPATCH})}
+            DISPATCH,
+            send_aliases=sends,
+            dispatch_roots={TASK: frozenset({DISPATCH})},
+            verified_dispatch_ids=verified,
         )
         is None
     )
     # Alias whose receipt never landed.
     assert (
         resolve_resume_alias_from_scan(
-            SEND, send_aliases=sends, dispatch_roots={}
+            SEND,
+            send_aliases=sends,
+            dispatch_roots={},
+            verified_dispatch_ids=verified,
         )
         is None
     )
@@ -378,20 +471,38 @@ def test_resolve_from_scan_keeps_the_single_root_contract() -> None:
             SEND,
             send_aliases=sends,
             dispatch_roots={TASK: frozenset({DISPATCH, ROOT_A})},
+            verified_dispatch_ids=verified,
         )
         is None
     )
     # A self-referential mapping never loops back on itself.
     assert (
         resolve_resume_alias_from_scan(
-            SEND, send_aliases=sends, dispatch_roots={TASK: frozenset({SEND})}
+            SEND,
+            send_aliases=sends,
+            dispatch_roots={TASK: frozenset({SEND})},
+            verified_dispatch_ids=verified | {SEND},
+        )
+        is None
+    )
+    # A root without provenance is refused exactly like no root at all
+    # (red team F3): quoting tool ids must never be folded onto.
+    assert (
+        resolve_resume_alias_from_scan(
+            SEND,
+            send_aliases=sends,
+            dispatch_roots={TASK: frozenset({ROOT_A})},
+            verified_dispatch_ids={DISPATCH},
         )
         is None
     )
     # No scan content at all.
     assert (
         resolve_resume_alias_from_scan(
-            SEND, send_aliases=None, dispatch_roots=None
+            SEND,
+            send_aliases=None,
+            dispatch_roots=None,
+            verified_dispatch_ids=frozenset(),
         )
         is None
     )
@@ -582,6 +693,7 @@ def test_in_process_lineage_outranks_a_conflicting_scan() -> None:
     conflicting["scan"] = scan_raw_transcript(
         (
             _raw_send_row("s1", SEND, TASK),
+            _raw_dispatch_row("d9", ROOT_A),
             _raw_receipt_row("r9", ROOT_A, TASK),
         )
     )
@@ -739,6 +851,8 @@ def test_terminal_fold_mints_engine_evidenced_roots_without_local_cards() -> Non
     scan = scan_raw_transcript(
         (
             _raw_send_row("s1", SEND, TASK),
+            _raw_dispatch_row("d1", ROOT_A),
+            _raw_dispatch_row("d2", ROOT_B),
             _raw_receipt_row("r1", ROOT_A, TASK),
             _raw_receipt_row("r2", ROOT_B, TASK),
         )
@@ -809,7 +923,11 @@ def test_a_terminal_sibling_is_never_walked_backwards() -> None:
 
 def test_reopen_spreads_running_to_root_backed_ids_only() -> None:
     session = _session()
-    holder = {"scan": scan_raw_transcript((_raw_receipt_row("r1", ROOT_A, TASK),))}
+    holder = {
+        "scan": scan_raw_transcript(
+            (_raw_dispatch_row("d1", ROOT_A), _raw_receipt_row("r1", ROOT_A, TASK))
+        )
+    }
     projector = ClaudeMessageProjector(raw_scan_provider=lambda _s: holder["scan"])
     closed = projector.fold_agent_task_items(
         session,
@@ -824,6 +942,8 @@ def test_reopen_spreads_running_to_root_backed_ids_only() -> None:
     # the re-opened state too — it is engine evidence, an alias would not be.
     holder["scan"] = scan_raw_transcript(
         (
+            _raw_dispatch_row("d1", ROOT_A),
+            _raw_dispatch_row("d2", ROOT_B),
             _raw_receipt_row("r1", ROOT_A, TASK),
             _raw_receipt_row("r2", ROOT_B, TASK),
         )
@@ -845,6 +965,8 @@ def test_reopen_does_not_revive_a_terminal_sibling() -> None:
     session = _session()
     scan = scan_raw_transcript(
         (
+            _raw_dispatch_row("d1", ROOT_A),
+            _raw_dispatch_row("d2", ROOT_B),
             _raw_receipt_row("r1", ROOT_A, TASK),
             _raw_receipt_row("r2", ROOT_B, TASK),
         )
@@ -897,3 +1019,230 @@ def test_default_seam_resolves_without_an_injected_provider(monkeypatch) -> None
     )
     assert item.id == canonical
     assert projector._agent_cards[canonical].status == "done"
+
+
+# --------------------------------------------------------------------------
+# F1/F2/F3 (red team): lineage only from calls verified as dispatch/resume
+# --------------------------------------------------------------------------
+
+
+def test_scan_ignores_agent_id_text_quoted_by_a_non_dispatch_result() -> None:
+    # The empirically attested pollution shape: a Bash/Read output that
+    # quotes a receipt. Its id must never become a root.
+    scan = scan_raw_transcript(
+        (
+            _raw_dispatch_row(
+                "b0", BASH, name="Bash", tool_input={"command": "grep -r agentId ."}
+            ),
+            _raw_result_row("b1", BASH, f"a row mentioning\nagentId: {TASK}\n"),
+        )
+    )
+    assert scan.dispatch_roots == {}
+    assert scan.verified_dispatch_ids == frozenset()
+
+
+def test_scan_ignores_structured_agent_id_quoted_by_a_non_dispatch_result() -> None:
+    row = json.loads(_raw_result_row("b1", BASH, "ok"))
+    row["toolUseResult"] = {"agentId": TASK, "status": "completed"}
+    scan = scan_raw_transcript(
+        (
+            _raw_dispatch_row(
+                "b0", BASH, name="Read", tool_input={"file_path": "receipt.json"}
+            ),
+            json.dumps(row),
+        )
+    )
+    assert scan.dispatch_roots == {}
+
+
+def test_scan_ignores_resume_json_quoted_by_a_non_sendmessage_result() -> None:
+    body = json.dumps({"success": True, "resumedAgentId": TASK})
+    scan = scan_raw_transcript(
+        (
+            _raw_dispatch_row(
+                "b0", BASH, name="Bash", tool_input={"command": "cat receipt.json"}
+            ),
+            _raw_result_row("b1", BASH, body),
+        )
+    )
+    assert scan.send_aliases == {}
+    assert scan.dispatch_roots == {}
+
+
+def test_scan_does_not_accept_a_task_named_call_as_a_dispatch_root() -> None:
+    # The gate mirrors the in-process judgement exactly: only "Agent" names
+    # mint Agent cards (``_tool_call_content``), so only "Agent" receipts can
+    # be dispatch roots. A "Task"-named call has no card to heal.
+    scan = scan_raw_transcript(
+        (
+            _raw_dispatch_row("d0", ROOT_A, name="Task"),
+            _raw_receipt_row("r1", ROOT_A, TASK),
+        )
+    )
+    assert scan.dispatch_roots == {}
+
+
+def test_scan_declines_receipts_whose_call_row_is_missing() -> None:
+    # A trimmed file: result rows exist, their call rows do not. Nothing may
+    # be learned — fail-closed, not fail-open.
+    scan = scan_raw_transcript(
+        (
+            _raw_receipt_row("r1", DISPATCH, TASK),
+            _raw_resume_row("s2", SEND, TASK),
+        )
+    )
+    assert scan.dispatch_roots == {}
+    assert scan.send_aliases == {}
+
+
+def _polluted_incident_scan() -> RawTranscriptScan:
+    """The incident transcript plus the attested pollution line (p3 shape)."""
+
+    return scan_raw_transcript(
+        (
+            _raw_dispatch_row("d0", DISPATCH),
+            _raw_receipt_row("r1", DISPATCH, TASK),
+            _raw_send_row("s1", SEND, TASK),
+            _raw_resume_row("s2", SEND, TASK),
+            _raw_dispatch_row(
+                "b0", BASH, name="Bash", tool_input={"command": "cat transcript"}
+            ),
+            _raw_result_row(
+                "b1",
+                BASH,
+                f"Async agent launched successfully.\nagentId: {TASK} (internal ID)\n",
+            ),
+        )
+    )
+
+
+def test_polluted_transcript_fold_lands_the_real_root_without_a_twin() -> None:
+    scan = _polluted_incident_scan()
+    # The polluted mention is filtered at the scan, so the task keeps its one
+    # real root and the resume join stays resolvable.
+    assert scan.dispatch_roots == {TASK: frozenset({DISPATCH})}
+    session = _session()
+    projector = ClaudeMessageProjector(raw_scan_provider=lambda _s: scan)
+    item = _fold(
+        projector,
+        session,
+        tool_use_id=SEND,
+        overlay=_overlay(status="running"),
+        status="running",
+    )
+    assert item.id == stable_tool_item_id(session, DISPATCH)
+    # Neither the alias id nor the quoting tool id ever becomes a card.
+    assert stable_tool_item_id(session, SEND) not in projector._agent_cards
+    assert stable_tool_item_id(session, BASH) not in projector._agent_cards
+    assert projector._task_roots == {TASK: {DISPATCH}}
+
+
+def test_a_polluted_only_transcript_folds_fail_closed_without_backfill() -> None:
+    # The p5 shape through the real scanner: the only `agentId:` mention is a
+    # quoting tool result and the true receipt is absent from this file.
+    scan = scan_raw_transcript(
+        (
+            _raw_send_row("s1", SEND, TASK),
+            _raw_resume_row("s2", SEND, TASK),
+            _raw_dispatch_row(
+                "b0", BASH, name="Bash", tool_input={"command": "grep agentId"}
+            ),
+            _raw_result_row("b1", BASH, f"agentId: {TASK}"),
+        )
+    )
+    assert scan.dispatch_roots == {}
+    session = _session()
+    projector = ClaudeMessageProjector(raw_scan_provider=lambda _s: scan)
+    item = _fold(
+        projector,
+        session,
+        tool_use_id=SEND,
+        overlay=_overlay(status="running"),
+        status="running",
+    )
+    # Fail-closed on its own key, exactly like any unresolvable alias, and the
+    # polluted id is never pinned into the in-process maps.
+    assert item.id == stable_tool_item_id(session, SEND)
+    assert projector._task_roots == {}
+    assert stable_tool_item_id(session, BASH) not in projector._agent_cards
+
+
+def test_a_hand_built_scan_without_provenance_mints_nothing() -> None:
+    # The p1 shape: a scan mapping claims two roots, but no provenance set
+    # witnesses them as dispatch calls. Neither root may be minted or folded.
+    scan = RawTranscriptScan(
+        notices=(),
+        send_aliases={SEND: TASK},
+        dispatch_roots={TASK: frozenset({DISPATCH, BASH})},
+    )
+    session = _session()
+    projector = ClaudeMessageProjector(raw_scan_provider=lambda _s: scan)
+    items = projector.fold_agent_task_items(
+        session,
+        tool_use_id=SEND,
+        overlay=_overlay(status="completed"),
+        status="done",
+    )
+    assert [item.id for item in items] == [stable_tool_item_id(session, SEND)]
+    assert stable_tool_item_id(session, BASH) not in projector._agent_cards
+    assert stable_tool_item_id(session, DISPATCH) not in projector._agent_cards
+
+
+def test_a_unique_unverified_root_never_folds_or_backfills() -> None:
+    # The p5 shape exactly: a single but unverified "root" must not be folded
+    # onto and must not be pinned into the in-process maps.
+    scan = RawTranscriptScan(
+        notices=(),
+        send_aliases={SEND: TASK},
+        dispatch_roots={TASK: frozenset({BASH})},
+    )
+    session = _session()
+    projector = ClaudeMessageProjector(raw_scan_provider=lambda _s: scan)
+    items = projector.fold_agent_task_items(
+        session,
+        tool_use_id=SEND,
+        overlay=_overlay(status="completed"),
+        status="done",
+    )
+    assert [item.id for item in items] == [stable_tool_item_id(session, SEND)]
+    assert projector._task_roots == {}
+    assert projector._send_to_task == {}
+    assert stable_tool_item_id(session, BASH) not in projector._agent_cards
+
+
+def test_a_published_non_agent_row_is_never_overwritten_by_a_resolved_root() -> None:
+    # Defense in depth: even a scan that *claims* provenance for a polluted
+    # root cannot fold an agent verdict over the ordinary tool row the
+    # session already published at that id — the timeline contradicts the
+    # claim, so the resolution is refused.
+    scan = RawTranscriptScan(
+        notices=(),
+        send_aliases={SEND: TASK},
+        dispatch_roots={TASK: frozenset({BASH})},
+        verified_dispatch_ids=frozenset({BASH}),
+    )
+    session = _session()
+    bash_item_id = stable_tool_item_id(session, BASH)
+    session.timeline_items[bash_item_id] = RuntimeTimelineItem(
+        id=bash_item_id,
+        session_id=SESSION_ID,
+        type="tool",
+        status="done",
+        order_seq=7,
+        content_hash="hash-bash",
+        role="tool",
+        content={"kind": "tool_call", "title": "Bash"},
+        source={"runtime": "claude", "itemId": BASH},
+    )
+    projector = ClaudeMessageProjector(raw_scan_provider=lambda _s: scan)
+    items = projector.fold_agent_task_items(
+        session,
+        tool_use_id=SEND,
+        overlay=_overlay(status="completed"),
+        status="done",
+    )
+    assert bash_item_id not in [item.id for item in items]
+    assert stable_tool_item_id(session, SEND) in [item.id for item in items]
+    # The published Bash row is untouched: still the ordinary tool call.
+    assert session.timeline_items[bash_item_id].content["kind"] == "tool_call"
+    assert projector._task_roots == {}

@@ -27,6 +27,19 @@ AGENT_TASK_TERMINAL_STATUSES: Mapping[str, str] = {
 AGENT_CARD_TERMINAL_STATUSES = frozenset(
     {"done", "failed", "interrupted", "cancelled"}
 )
+#: The CLI's tool_use name for an Agent dispatch call. This is the in-process
+#: lineage gate's exact criterion — ``messages._tool_call_content`` mints an
+#: Agent card only under ``if tool_name == "Agent"``, and the history folds
+#: gate dispatch roots on ``call.block.tool_name == "Agent"`` (reader's
+#: ``_agent_task_notification_folds``). The raw-transcript scanner must judge
+#: dispatch receipts by the same name, or the persisted surface and the live
+#: surface disagree about what a dispatch is (red team F1: any tool result
+#: quoting ``agentId: <task>`` inside its body read as a dispatch receipt).
+DISPATCH_TOOL_NAME = "Agent"
+#: The CLI's tool_use name for a SendMessage resume call, mirroring
+#: ``send_message_target``'s own gate. The resume receipt's ``resumedAgentId``
+#: is only evidence when the call it acknowledges is this tool.
+SEND_MESSAGE_TOOL_NAME = "SendMessage"
 # The CLI's async launch receipt for an Agent dispatch (run1 L491,
 # 2026-10-03): metadata only — the real result arrives later through task
 # events. It is not an outcome, so an Agent card must not land "done" on it.
@@ -264,6 +277,7 @@ def resolve_resume_alias_from_scan(
     *,
     send_aliases: Mapping[str, str] | None,
     dispatch_roots: Mapping[str, frozenset[str]] | None,
+    verified_dispatch_ids: AbstractSet[str],
 ) -> tuple[str, str] | None:
     """Step 2 of the persistence fallback chain (T1 A-2): the scan's own join.
 
@@ -275,6 +289,15 @@ def resolve_resume_alias_from_scan(
     in-process maps would have made had the process seen every frame. Anything
     less certain returns ``None`` and the caller keeps its fail-closed
     behaviour.
+
+    ``verified_dispatch_ids`` is the scan's provenance set: the tool_use ids
+    it verified as **dispatch calls** (assistant rows whose tool_use name is
+    ``DISPATCH_TOOL_NAME``). A root outside it is not a dispatch however the
+    mapping was built, and is refused (red team F3: a quoting tool result's id
+    as the task's only root must never be folded onto, and must never be
+    backfilled into the in-process maps). This is checkable-at-the-consumer by
+    design — the producer's mapping alone is a convention, the provenance set
+    makes it an invariant.
 
     Returns ``(task_id, root)`` on a hit so the caller can warm its own maps.
     """
@@ -289,6 +312,8 @@ def resolve_resume_alias_from_scan(
         return None
     root = next(iter(roots))
     if root == tool_use_id:
+        return None
+    if root not in verified_dispatch_ids:
         return None
     return task_id, root
 

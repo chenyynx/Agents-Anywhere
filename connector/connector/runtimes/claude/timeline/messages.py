@@ -749,12 +749,14 @@ class ClaudeMessageProjector:
         A sibling is folded only when it can honestly be moved: a card the
         projector or the session's timeline already holds is moved only if its
         status is weaker than the verdict (a terminal status is sticky —
-        ``resolve_agent_card_status`` never walks one backwards); a sibling
-        with no local card is published only when the evidence names it as an
-        engine-recorded dispatch root, never for an alias key whose card was
-        never seen — fabricating a card out of an alias id is exactly the twin
-        this invariant exists to prevent. Folds are idempotent upserts, so a
-        repeat publishes nothing new.
+        ``resolve_agent_card_status`` never walks one backwards), or when the
+        verdict is a strictly later engine terminal than the time the sibling
+        recorded for its closure (F4b's time order, the one exception to
+        stickiness); a sibling with no local card is published only when the
+        evidence names it as an engine-recorded dispatch root, never for an
+        alias key whose card was never seen — fabricating a card out of an
+        alias id is exactly the twin this invariant exists to prevent. Folds
+        are idempotent upserts, so a repeat publishes nothing new.
 
         Failures are not hidden here: this is pure state work on the fold path
         and any exception propagates to the caller's own guard, exactly as it
@@ -808,8 +810,9 @@ class ClaudeMessageProjector:
 
         1. the in-process maps, exactly as before;
         2. the raw scan's persisted join (``send_aliases`` -> a single
-           ``dispatch_roots`` entry), for a process that never saw the
-           dispatch frames;
+           ``dispatch_roots`` entry, whose root the scan verified as a
+           dispatch call — red team F3: an unverified id, e.g. a quoting tool
+           result's Bash id, is refused exactly like no root at all);
         3. the session's projected timeline, for the case where the scan knows
            the alias's task but no receipt row pins its root: the unique Agent
            card naming that task whose own id is not an alias key is the root.
@@ -827,17 +830,24 @@ class ClaudeMessageProjector:
             task_roots=self._task_roots,
         )
         if resolved is not None:
-            return resolved
+            return self._accept_card_target(session, resolved)
         scan = self._session_raw_scan(session)
         from_scan = resolve_resume_alias_from_scan(
             tool_use_id,
             send_aliases=scan.send_aliases if scan is not None else None,
             dispatch_roots=scan.dispatch_roots if scan is not None else None,
+            verified_dispatch_ids=(
+                scan.verified_dispatch_ids if scan is not None else frozenset()
+            ),
         )
         if from_scan is not None:
             task_id, root = from_scan
-            self._backfill_agent_lineage(tool_use_id, task_id, root)
-            return root
+            root = self._accept_card_target(session, root)
+            if root is not None:
+                self._backfill_agent_lineage(tool_use_id, task_id, root)
+                return root
+            # A contradicted root is refused exactly like an absent one; the
+            # timeline step below still gets its chance.
         task_id = (
             scan.send_aliases.get(tool_use_id) if scan is not None else None
         ) or self._send_to_task.get(tool_use_id)
@@ -852,10 +862,34 @@ class ClaudeMessageProjector:
             alias_keys=alias_keys,
             exclude=tool_use_id,
         )
+        root = self._accept_card_target(session, root)
         if root is None:
             return None
         self._backfill_agent_lineage(tool_use_id, task_id, root)
         return root
+
+    def _accept_card_target(
+        self,
+        session: ClaudeSession,
+        target: str | None,
+    ) -> str | None:
+        """Refuse a resolved target the session's own timeline contradicts.
+
+        Red team F2/F3 defense in depth: card ids and ordinary tool-row ids
+        share one ``stable_tool_item_id`` space. If the id a resolution wants
+        to use is already *published* as a non-agent tool row, the evidence
+        contradicts itself — the claim says "dispatch call", the timeline says
+        "Bash row" — and the resolution is refused (fail-closed) rather than
+        folding an agent verdict over a real tool item. An id with no
+        published row, or one published as an agent card, passes untouched.
+        """
+
+        if target is None:
+            return None
+        published = session.timeline_items.get(stable_tool_item_id(session, target))
+        if published is not None and not _is_agent_call_item(published):
+            return None
+        return target
 
     def _backfill_agent_lineage(
         self,
@@ -887,16 +921,31 @@ class ClaudeMessageProjector:
         marks ids the evidence names as engine dispatch roots — the only ids
         eligible to be published without a local card. The canonical id is
         excluded: it is this fold's own target, not a sibling.
+
+        ``is_root`` is provenance-tight (red team F2): a scan root counts only
+        when the scan's own ``verified_dispatch_ids`` witnesses it as an
+        assistant row's ``DISPATCH_TOOL_NAME`` call. A mapping entry without
+        that witness (a polluted or hand-built scan, a Bash id that merely
+        quoted a receipt) is not evidence of anything and is dropped here —
+        it must never be minted as an agent card, least of all at an id the
+        same transcript already uses for an ordinary tool row. In-process
+        roots need no such check: ``_learn_agent_lineage`` only ever learns
+        them from projected ``AgentCallToolContent``, whose own gate is the
+        same ``tool_name == "Agent"``.
         """
 
         derived: dict[str, bool] = {}
         scan = self._session_raw_scan(session)
+        verified = (
+            scan.verified_dispatch_ids if scan is not None else frozenset()
+        )
         for task_id in task_ids:
             for root in self._task_roots.get(task_id, ()):
                 derived[root] = True
             if scan is not None:
                 for root in scan.dispatch_roots.get(task_id, ()):
-                    derived[root] = True
+                    if root in verified:
+                        derived[root] = True
             for alias, mapped in self._send_to_task.items():
                 if mapped == task_id:
                     # An alias never outranks a root if the id is somehow both.
@@ -923,12 +972,32 @@ class ClaudeMessageProjector:
         Skip rules (T1 B): a sibling whose local status is not weaker than the
         verdict is left untouched — a terminal status must never be walked
         backwards, and an equal one is the idempotent no-op; a sibling with no
-        local card needs ``is_root`` evidence before it may be minted at all.
+        local card votes for itself only with ``is_root`` evidence, which by
+        the time it gets here is provenance-tight (see
+        ``_derived_agent_card_ids``).
+
+        The mint path carries one more guard on top (red team F2/F3): an id
+        the session's timeline already holds as a *non-agent* tool row is
+        refused on every path, even with root evidence. Card ids and tool-row
+        ids share the ``stable_tool_item_id`` space, so folding an agent
+        verdict — or minting an agent card — over an ordinary tool item would
+        replace a real Bash/Read row with a phantom agent card; and no
+        legitimate dispatch root is ever an id some other tool call owns.
+
+        One exception to the terminal stickiness, F4b's time order: a sibling
+        that *is* terminal still moves when the verdict is a strictly later
+        engine terminal than the time that sibling recorded — the same rule
+        the canonical card obeys, so one task's cards cannot diverge on a
+        superseded frame.
         """
 
         item_id = stable_tool_item_id(session, tool_use_id)
         card = self._agent_cards.get(item_id)
         published = session.timeline_items.get(item_id)
+        if card is None and published is not None and not _is_agent_call_item(
+            published
+        ):
+            return None
         current = (
             card.status
             if card is not None
@@ -937,7 +1006,14 @@ class ClaudeMessageProjector:
         if current is None:
             if not is_root:
                 return None
-        elif resolve_agent_card_status(current, verdict) == current:
+        elif resolve_agent_card_status(
+            current, verdict
+        ) == current and not _terminal_time_order_override(
+            previous_status=current,
+            previous_time_ms=_recorded_closure_time_ms(card, published),
+            incoming_status=verdict,
+            incoming_time_ms=overlay.end_time,
+        ):
             return None
         sibling, _ = self._fold_agent_task_card(
             session,
@@ -964,6 +1040,21 @@ class ClaudeMessageProjector:
         Returns the item to publish and whether the I-G2 clamp re-opened the
         card (a terminal card a *started* task claimed), which the caller
         treats as a verdict to spread like a terminal one.
+
+        F4b time order (``alias-durability-tasks.md`` rt2): a terminal fold
+        onto an already-terminal card may replace it only when the incoming
+        engine verdict is *strictly later* than the time the card recorded
+        (``overlay.end_time`` — an evidence closure's notice/file time, or an
+        earlier event's own end). Time order is the outer arbitration; the
+        same-instant ordering stays with ``closure_rank`` (interrupted beats
+        done) and with the sticky rules of ``resolve_agent_card_status`` — the
+        two layers cannot disagree, because this only moves a card onto a
+        strictly newer engine verdict and never re-ranks a tie. A card closed
+        without an engine time — above all the stop path's subjective
+        ``stoppedWithoutTask`` judgment — has nothing to be ordered against
+        and keeps its stickiness: a late-but-older completed notice can never
+        flip a closed interrupted card (the stop-race defense), and the wire
+        clamp on a *started* task remains that card's reopening path.
         """
 
         item_id = stable_tool_item_id(session, tool_use_id)
@@ -971,10 +1062,33 @@ class ClaudeMessageProjector:
         card = self._agent_card(item_id)
         if card.turn_id is None and turn_id is not None:
             card.turn_id = turn_id
+        previous_status = card.status
+        previous_time_ms = card.overlay.end_time
         card.overlay.merge(overlay)
         card.session_id = session.session_id
         card.tool_use_id = tool_use_id
-        card.status = resolve_agent_card_status(card.status, status)
+        override = _terminal_time_order_override(
+            previous_status=previous_status,
+            previous_time_ms=previous_time_ms,
+            incoming_status=status,
+            incoming_time_ms=overlay.end_time,
+        )
+        card.status = (
+            status if override else resolve_agent_card_status(previous_status, status)
+        )
+        if (
+            previous_status in AGENT_CARD_TERMINAL_STATUSES
+            and previous_time_ms is not None
+            and overlay.end_time is not None
+            and overlay.end_time <= previous_time_ms
+        ):
+            # F4b provenance: a same-instant or older engine terminal must not
+            # rewrite the end time the card recorded for its closure either —
+            # the status is sticky above, and the time it ended with stays
+            # sticky with it. (The merge is last-write-wins by design for the
+            # running-to-terminal transition and for strictly newer verdicts;
+            # only a superseded frame is refused here.)
+            card.overlay.end_time = previous_time_ms
         resolved_base = card.content or base or card.overlay.synthesized_call(
             tool_use_id
         )
@@ -1513,6 +1627,68 @@ def _read_session_raw_scan(session: ClaudeSession) -> RawTranscriptScan | None:
     return _read_raw_transcript_scan(session)
 
 
+def _terminal_time_order_override(
+    *,
+    previous_status: str | None,
+    previous_time_ms: int | None,
+    incoming_status: str | None,
+    incoming_time_ms: int | None,
+) -> bool:
+    """Whether a strictly later engine terminal may replace a terminal card (F4b).
+
+    ``.local-dev/subagent-alias-durability-tasks.md`` rt2, red team CONFIRMED:
+    once a card has been closed — by an evidence sweep, a stale notice, or a
+    file-staleness judgment — the terminal stickiness of
+    ``resolve_agent_card_status`` refused every later engine verdict, so a
+    wrongly-closed task could never be corrected by the engine's own honest
+    completion. Time order is the correction's outer arbitration: a terminal
+    fold replaces a terminal card only when the incoming event is *strictly
+    later* than the time the card recorded for its closure. Both times must be
+    present; a card closed without an engine time (the stop path's subjective
+    ``stoppedWithoutTask`` judgment) has nothing to order against and stays
+    sticky, and a same-instant or older engine terminal is exactly the late,
+    superseded frame the stop race is defended against.
+
+    ``closure_rank`` stays the *inner* arbiter — it orders simultaneous
+    verdicts within one adjudication (a card's several tasks, the same-time
+    ``interrupted``-beats-``done`` rule) and is deliberately not consulted
+    here; the two layers cannot disagree, because this only moves a card onto a
+    strictly newer engine verdict, never re-ranks a tie.
+    """
+
+    return (
+        previous_status in AGENT_CARD_TERMINAL_STATUSES
+        and incoming_status in AGENT_CARD_TERMINAL_STATUSES
+        and previous_time_ms is not None
+        and incoming_time_ms is not None
+        and incoming_time_ms > previous_time_ms
+    )
+
+
+def _recorded_closure_time_ms(
+    card: ClaudeAgentCallCard | None,
+    published: RuntimeTimelineItem | None,
+) -> int | None:
+    """The time a closure recorded, read off the live or published record (F4b).
+
+    The in-memory card keeps it on its overlay (evidence closures and dated
+    folds both write it there); a card that survives only as a published
+    timeline item — the restart shape — carries the same value flat on its
+    content, where every closure surface writes it. ``None`` means no engine
+    time was recorded — exactly the stop path's ``stoppedWithoutTask`` shape,
+    and the reason it stays sticky.
+    """
+
+    if card is not None:
+        return card.overlay.end_time
+    if published is None:
+        return None
+    value = published.content.get("endTime")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
 def _fold_task_ids(overlay: ClaudeAgentTaskOverlay) -> tuple[str, ...]:
     """The task ids one fold names, deduplicated in encounter order."""
 
@@ -1521,6 +1697,20 @@ def _fold_task_ids(overlay: ClaudeAgentTaskOverlay) -> tuple[str, ...]:
         if isinstance(task_id, str) and task_id:
             seen.setdefault(task_id, None)
     return tuple(seen)
+
+
+def _is_agent_call_item(item: RuntimeTimelineItem) -> bool:
+    """Whether one published timeline item is an Agent-call card.
+
+    The mint guard of the sibling walk (red team F2): ids are shared between
+    Agent cards and ordinary tool rows, so "a card already exists here" is only
+    true when the published row is an ``agent_call``.
+    """
+
+    if item.type != "tool":
+        return False
+    content = item.content
+    return isinstance(content, Mapping) and content.get("kind") == "agent_call"
 
 
 def _published_evidence_closed_content(

@@ -375,6 +375,11 @@ def test_D3_a_live_task_with_a_terminal_notice_closes_with_the_notice_status() -
         oracle=_oracle(now=now, files={TASK_ID: _stale_file(now)}),
         live_task_ids=frozenset({TASK_ID}),
         terminal_events={TASK_ID: ((notice_ms, _notice_event("completed")),)},
+        # F4 arbitration fixture: the task launched minutes before the notice,
+        # so the notice is attributable to the incarnation the transport is
+        # driving and rule 1 stands (a stale notice — one not post-dating the
+        # latest launch evidence — is the superseded shape pinned separately).
+        receipt_ages={TASK_ID: 300.0},
     )
 
     assert [closed.id for closed in items] == [card_id]
@@ -465,6 +470,9 @@ def test_D3_F6_every_task_adjudicated_then_the_card_closes() -> None:
         terminal_events={
             SECOND_TASK_ID: ((notice_ms, _notice_event("completed", task_id=SECOND_TASK_ID)),)
         },
+        # F4 arbitration fixture: the live task's receipt predates its notice,
+        # so the notice is attributable and adjudicates the vouch-hit task.
+        receipt_ages={SECOND_TASK_ID: 300.0},
     )
 
     assert [closed.id for closed in items] == [card_id]

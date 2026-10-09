@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import AsyncIterator
+import json
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from typing import Any
 
+from loguru import logger
 from sqlalchemy import case, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -198,6 +200,7 @@ class TimelineRepositoryMixin:
         items: list[TimelineItemIn],
         source_observed_at: str | None = None,
         mark_read_on_change: bool = False,
+        prune_orphan_agent_calls: bool = False,
     ) -> TimelineBatchWriteResult:
         """Apply a Runtime-owned incremental timeline batch by stable item ID.
 
@@ -205,6 +208,10 @@ class TimelineRepositoryMixin:
         - updates source observation time when supplied
         - inserts or updates only IDs present in this batch
         - reserves one consecutive session revision per changed item
+        - ``prune_orphan_agent_calls`` additionally removes agent-call card
+          rows the batch does not cover, when every task they name is covered
+          by the batch itself (a full-history rebuild superseding older
+          projection generations; see ``_prune_orphan_agent_call_rows``)
         """
 
         incoming_by_id = latest_timeline_items_by_id(items)
@@ -221,10 +228,35 @@ class TimelineRepositoryMixin:
                 or not timeline_item_state_is_unchanged(existing, item)
             ]
             if not changed_inputs:
-                await self._update_source_observed_at(
-                    session_id=session_id,
-                    source_observed_at=source_observed_at,
-                )
+                if prune_orphan_agent_calls:
+                    async with self._engine.begin() as conn:
+                        await update_source_observed_at(
+                            conn,
+                            session_id=session_id,
+                            source_observed_at=source_observed_at,
+                        )
+                        pruned = await self._prune_orphan_agent_call_rows(
+                            conn,
+                            session_id=session_id,
+                            covered_by_id=incoming_by_id,
+                        )
+                        if pruned:
+                            # Deletions with no item write of their own must
+                            # still advance the session so a refetch reaches
+                            # clients that already hold the removed rows. The
+                            # bump is for the refetch only: a deletion is not
+                            # content the user has now seen, so it must never
+                            # consume the unread badge (R2, red-team review).
+                            await self._bump_session(
+                                conn,
+                                session_id,
+                                mark_read=False,
+                            )
+                else:
+                    await self._update_source_observed_at(
+                        session_id=session_id,
+                        source_observed_at=source_observed_at,
+                    )
                 return TimelineBatchWriteResult(items=(), changed=False)
 
             now = utc_now()
@@ -261,10 +293,84 @@ class TimelineRepositoryMixin:
                     )
                     changed_items.append(normalized)
                 await self.timeline.upsert_many(conn, changed_items)
+                if prune_orphan_agent_calls:
+                    await self._prune_orphan_agent_call_rows(
+                        conn,
+                        session_id=session_id,
+                        covered_by_id=incoming_by_id,
+                    )
         return TimelineBatchWriteResult(
             items=tuple(changed_items),
             changed=True,
         )
+
+    async def _prune_orphan_agent_call_rows(
+        self,
+        conn: AsyncConnection,
+        *,
+        session_id: str,
+        covered_by_id: Mapping[str, TimelineItemIn],
+    ) -> list[str]:
+        """Delete agent-call cards a full-history rebuild no longer covers.
+
+        A rebuild republishes every card the engine still knows, so an
+        agent-call row outside that set can only be a leftover of an older
+        projection generation that minted ids the current one will never emit
+        again (the restart-race alias twins). A leftover is pruned only when
+        every task it names is covered by the batch itself: a rebuild window
+        that starts after a compaction cannot reach pre-compaction cards, and
+        those must keep their rows even though the batch does not cover them.
+        Non-agent-call rows are never touched here — other item kinds have
+        producers outside the projection (queued client messages, local
+        snapshots) that a history rebuild does not speak for.
+
+        Runs inside the caller's transaction under the session timeline lock,
+        so the rows it sees are exactly the rows inside the session fence.
+        """
+
+        covered_item_ids = set(covered_by_id)
+        covered_task_ids: set[str] = set()
+        for item in covered_by_id.values():
+            covered_task_ids.update(_agent_call_task_ids(item.content))
+        if not covered_task_ids:
+            return []
+        row = (
+            await conn.execute(
+                select(sessions_t.c.seq).where(sessions_t.c.id == session_id)
+            )
+        ).first()
+        if row is None:
+            raise KeyError(session_id)
+        fence = int(row[0])
+        rows = (
+            await conn.execute(
+                select(
+                    timeline_items_t.c.id,
+                    timeline_items_t.c.updated_seq,
+                    timeline_items_t.c.payload_json,
+                ).where(
+                    timeline_items_t.c.session_id == session_id,
+                    timeline_items_t.c.type == "tool",
+                )
+            )
+        ).all()
+        doomed: list[str] = []
+        for item_id, updated_seq, payload_json in rows:
+            if item_id in covered_item_ids or int(updated_seq) > fence:
+                continue
+            tasks = _stored_agent_call_task_ids(payload_json)
+            if not tasks or not tasks <= covered_task_ids:
+                continue
+            doomed.append(item_id)
+        if not doomed:
+            return []
+        await self.timeline.delete_items(conn, session_id, set(doomed))
+        logger.info(
+            "Timeline rebuild pruned orphan agent cards session_id={} pruned={}",
+            session_id,
+            sorted(doomed),
+        )
+        return sorted(doomed)
 
     @session_revision_fenced
     async def replace_timeline_snapshot(
@@ -632,3 +738,30 @@ def session_timeline_lock_key(session_id: str) -> int:
 
     digest = hashlib.sha256(session_id.encode("utf-8")).digest()
     return int.from_bytes(digest[:8], "big", signed=True)
+
+
+def _agent_call_task_ids(content: Any) -> set[str]:
+    """The task ids an agent-call content names; empty for every other item."""
+
+    if not isinstance(content, Mapping) or content.get("kind") != "agent_call":
+        return set()
+    agents = content.get("agents")
+    if not isinstance(agents, Mapping):
+        return set()
+    return {key for key in agents if isinstance(key, str) and key}
+
+
+def _stored_agent_call_task_ids(payload_json: str) -> set[str]:
+    """The task ids a stored timeline row names; empty for non-agent rows.
+
+    Total by construction: a row whose payload cannot be read as an
+    agent-call content yields the empty set, and the empty set never prunes.
+    """
+
+    try:
+        payload = json.loads(payload_json)
+    except (TypeError, ValueError):
+        return set()
+    if not isinstance(payload, dict):
+        return set()
+    return _agent_call_task_ids(payload.get("content"))

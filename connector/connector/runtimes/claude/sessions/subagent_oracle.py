@@ -512,6 +512,17 @@ class RawTranscriptScan:
     #: row's ``tool_result`` body / ``toolUseResult`` carrying
     #: ``resumedAgentId`` (keyed by that block's tool_use_id).
     send_aliases: Mapping[str, str] = field(default_factory=dict)
+    #: task id -> epoch ms of the newest ``SendMessage`` call row that resumed
+    #: it (red team P9, alias-durability rt2 round 2). A resume re-launches the
+    #: task, so this is the task's newest *survival* evidence — the arbitration
+    #: anchor F4 needs, because the dispatch receipt alone sits before the
+    #: stop notice it must supersede (the incident's real timeline: receipt
+    #: 01:28, stop 01:48, resume 01:52 — anchored on the receipt, the stale
+    #: notice still closed the resumed task). Recorded from the assistant
+    #: row's own timestamp when its ``tool_use`` is a verified ``SendMessage``
+    #: call; a row without a timestamp contributes nothing (only add, never
+    #: guess). Default empty so hand-built and older scans behave as before.
+    send_resume_times_ms: Mapping[str, int] = field(default_factory=dict)
     #: task id -> the tool_use ids of the dispatch receipts that named it.
     #: Read from the ``tool_result`` rows that launch an Agent call — the
     #: line-style ``agentId: <id>`` body wording, or a structured
@@ -553,10 +564,11 @@ def scan_raw_transcript(
 
     ``attachment`` rows repeat the same wrapper as rendering chrome and are
     skipped. The same pass also collects each task's newest ``agentId:``
-    mention (its dispatch receipt time) and the lineage the resume fold needs
-    (alias-durability-tasks T1 A): the SendMessage alias map, the dispatch
-    roots, and the provenance set that gates both, so callers get every fact
-    for one read of the file.
+    mention (its dispatch receipt time), each task's newest ``SendMessage``
+    resume-call row time (its newest survival evidence, P9), and the lineage
+    the resume fold needs (alias-durability-tasks T1 A): the SendMessage alias
+    map, the dispatch roots, and the provenance set that gates both, so
+    callers get every fact for one read of the file.
 
     Both lineage maps are **provenance-gated** (red team F1): a ``tool_result``
     row only counts as a dispatch receipt when the call it acknowledges is an
@@ -575,6 +587,7 @@ def scan_raw_transcript(
     notices: list[RawTranscriptNotice] = []
     receipt_times: dict[str, int] = {}
     send_aliases: dict[str, str] = {}
+    send_resume_times: dict[str, int] = {}
     dispatch_roots: dict[str, set[str]] = {}
     tool_use_names: dict[str, str] = {}
     last_anchor: str | None = None
@@ -613,6 +626,7 @@ def scan_raw_transcript(
                     row,
                     tool_use_names=tool_use_names,
                     send_aliases=send_aliases,
+                    send_resume_times=send_resume_times,
                     dispatch_roots=dispatch_roots,
                 )
             except Exception:  # noqa: BLE001
@@ -673,6 +687,7 @@ def scan_raw_transcript(
         notices=tuple(notices),
         receipt_times_ms=receipt_times,
         send_aliases=send_aliases,
+        send_resume_times_ms=send_resume_times,
         dispatch_roots={
             task_id: frozenset(roots)
             for task_id, roots in sealed_roots.items()
@@ -724,6 +739,7 @@ def _extract_transcript_lineage(
     *,
     tool_use_names: Mapping[str, str],
     send_aliases: dict[str, str],
+    send_resume_times: dict[str, int],
     dispatch_roots: dict[str, set[str]],
 ) -> None:
     """Learn one raw row's resume aliases and dispatch roots, in place.
@@ -732,7 +748,12 @@ def _extract_transcript_lineage(
 
     * an ``assistant`` row's ``SendMessage`` tool_use block — its
       ``input.to`` names the task the call addresses, keyed by the block's
-      tool_use id (the id the resumed task's later frames are keyed on);
+      tool_use id (the id the resumed task's later frames are keyed on). The
+      same block's row timestamp is recorded as that task's newest resume
+      time (P9): a resume is a relaunch, and the F4 arbitration anchors on
+      the newest launch/survival evidence, not on the dispatch receipt the
+      stop notice legitimately post-dates. A row with no timestamp records
+      no time — the map only ever grows on evidence;
     * a ``user`` row's ``tool_result`` blocks — a body whose JSON carries
       ``resumedAgentId`` (or the row's own ``toolUseResult``) names the task a
       SendMessage resumed, and a body carrying the launch receipt's
@@ -778,6 +799,11 @@ def _extract_transcript_lineage(
             )
             if tool_use_id is not None and isinstance(target, str) and target:
                 send_aliases.setdefault(tool_use_id, target)
+                row_time_ms = _parse_iso_ms(row.get("timestamp"))
+                if row_time_ms is not None:
+                    current = send_resume_times.get(target)
+                    if current is None or row_time_ms > current:
+                        send_resume_times[target] = row_time_ms
         return
     if row_type != "user" or not isinstance(content, list):
         return
@@ -914,6 +940,47 @@ def raw_only_notices(
         for notice in newest_by_task.values()
         if notice.anchor is not None
     )
+
+
+def participation_times_ms(scan: RawTranscriptScan) -> dict[str, int]:
+    """Each task's newest survival evidence: dispatch receipt vs resume (P9).
+
+    The F4 arbitration must anchor on when the task was last *known alive*,
+    and a dispatch receipt alone is not that: after a SendMessage resume the
+    receipt still sits at the original dispatch, so the stop notice that
+    killed the previous incarnation post-dates it and would be attributed to
+    the incarnation the transport is now driving — the P9 false closure on
+    the real incident timeline (receipt 01:28, stop 01:48, resume 01:52). The
+    newest of (dispatch receipt, resume call row) is the honest anchor;
+    either source alone is merely the best the transcript had.
+    """
+
+    merged: dict[str, int] = dict(scan.receipt_times_ms)
+    for task_id, time_ms in scan.send_resume_times_ms.items():
+        current = merged.get(task_id)
+        if current is None or time_ms > current:
+            merged[task_id] = time_ms
+    return merged
+
+
+def participation_age_seconds(
+    scan: RawTranscriptScan,
+    task_id: str,
+    *,
+    now_ms: int,
+) -> float | None:
+    """The age of a task's newest survival evidence, or ``None`` (P9).
+
+    Same clamp as every other receipt age. A newer age is the conservative
+    direction everywhere this feeds: the F4 notice arbitration supersedes more
+    readily (sparing live tasks), and the never-started grace judges later, so
+    a resumed task is never mistaken for one that never launched.
+    """
+
+    time_ms = participation_times_ms(scan).get(task_id)
+    if time_ms is None:
+        return None
+    return max((now_ms - time_ms) / 1000.0, 0.0)
 
 
 #: A scan cache keyed by (path, size, mtime_ns). One sync settles a session by

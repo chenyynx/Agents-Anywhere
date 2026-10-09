@@ -61,6 +61,7 @@ from connector.runtimes.claude.sessions.scheduled import ClaudeScheduledSessions
 from connector.runtimes.claude.sessions.subagent_oracle import (
     ClaudeSubagentOracle,
     RawTranscriptScan,
+    participation_times_ms,
 )
 from connector.runtimes.claude.timeline.agent_calls import (
     agent_task_overlay_for_event,
@@ -81,6 +82,7 @@ from connector.runtimes.claude.timeline.messages import (
     message_usage,
     stable_message_item_id,
     stable_tool_item_id,
+    terminal_publish_superseded,
 )
 from connector.runtimes.claude.timeline.stream import (
     ClaudeStreamAccumulator,
@@ -243,19 +245,25 @@ def _receipt_ages_by_task(
     *,
     now_ms: int,
 ) -> dict[str, float]:
-    """Age (seconds) of each task's newest launch receipt (D2, feeds F5).
+    """Age (seconds) of each task's newest *participation* evidence (D2, P9).
 
-    The CLI stamps the receipt — with the task's ``agentId`` — when the Agent
-    call is dispatched, so its age is the never-started grace's input. Same
-    source, same clamp as the history path's ``_history_receipt_ages``, so a
-    live sweep and an offline rebuild can never disagree on the age.
+    The anchor is the newer of the dispatch receipt and the task's most recent
+    SendMessage resume row (``participation_times_ms``): a resume relaunches
+    the task, so the receipt alone would let a legitimate stop notice — it
+    post-dates the dispatch — be attributed to the incarnation the transport
+    is now driving (the P9 false closure on the real incident timeline).
+    Same clamp as the history path's ``_history_receipt_ages``. A newer (closer)
+    anchor is the conservative direction for every consumer: the F4 notice
+    arbitration supersedes more readily (sparing live tasks), and the
+    never-started grace judges later, so a resumed task is never mistaken for
+    one that never launched.
     """
 
     if scan is None:
         return {}
     return {
         task_id: max((now_ms - time_ms) / 1000.0, 0.0)
-        for task_id, time_ms in scan.receipt_times_ms.items()
+        for task_id, time_ms in participation_times_ms(scan).items()
     }
 
 
@@ -925,18 +933,15 @@ class ClaudeTurnRunner:
                 status=status,
             )
             for item in items:
-                previous = session.timeline_items.get(item.id)
-                if (
-                    previous is not None
-                    and previous.status == item.status
-                    and dict(previous.content) == dict(item.content)
-                ):
+                if self._publish_gate_skips(session, item):
                     # Idempotent closure (L2 §3.4): the terminal burst repeats
-                    # itself — an identical card is not republished here, and the
-                    # batch coalesce / server dedup / content-hash no-op behind
-                    # this still catches anything that does (findings §8.7). A
-                    # sibling item is compared on its own, so an unchanged
-                    # canonical never masks a sibling that moved (T1 B).
+                    # itself — an identical card is not republished here — and
+                    # the N1 time order refuses a terminal item no newer than
+                    # the published one. The batch coalesce / server dedup /
+                    # content-hash no-op behind this still catches anything
+                    # that does reach it (findings §8.7). A sibling item is
+                    # compared on its own, so an unchanged canonical never
+                    # masks a sibling that moved (T1 B).
                     continue
                 await self.notifications.timeline_activity.timeline_item_upsert(item)
         except Exception:  # noqa: BLE001
@@ -1006,6 +1011,35 @@ class ClaudeTurnRunner:
                 reason,
             )
         return stopped
+
+    def _publish_gate_skips(
+        self,
+        session: ClaudeSession,
+        item: RuntimeTimelineItem,
+    ) -> bool:
+        """Whether this item must not be published over the current state (N1).
+
+        One gate for both publication loops (the fold's and the sweep's), so
+        the two can never disagree about what may land. Besides the exact
+        no-op comparison, a terminal item that is not strictly newer than the
+        already-published terminal state of the same id is dropped (red team
+        P10): the sweep computes its items synchronously and publishes them
+        across awaits, so its stale verdict could otherwise land after a
+        fold's honest terminal and persist a divergence nothing re-judges —
+        the next sweep's candidates treat a terminal published state as
+        closing the id. ``terminal_publish_superseded`` holds the rule; this
+        only pairs it with the record it must compare against.
+        """
+
+        previous = session.timeline_items.get(item.id)
+        if previous is None:
+            return False
+        if (
+            previous.status == item.status
+            and dict(previous.content) == dict(item.content)
+        ):
+            return True
+        return terminal_publish_superseded(item, previous)
 
     async def close_open_agent_cards(
         self,
@@ -1085,12 +1119,11 @@ class ClaudeTurnRunner:
             items = self.timeline.close_open_agent_cards(session, **kwargs)
             published = 0
             for item in items:
-                previous = session.timeline_items.get(item.id)
-                if (
-                    previous is not None
-                    and previous.status == item.status
-                    and dict(previous.content) == dict(item.content)
-                ):
+                if self._publish_gate_skips(session, item):
+                    # The synchronous judgment above ran against the
+                    # pre-await state; by the time this awaited publish runs
+                    # a fold may have landed a newer terminal on the same id
+                    # (N1), and this gate refuses to overwrite it.
                     continue
                 await self.notifications.timeline_activity.timeline_item_upsert(item)
                 published += 1

@@ -13,37 +13,59 @@ stickiness then refused the engine's own honest ``completed``.
 Two arbitrations close it, both keyed on time order:
 
 * F4a (prevention, oracle rule 1): a terminal notice may close an attached
-  task only when it post-dates the task's latest launch evidence by more than
-  the mtime tolerance — anything at or before the receipt is a death the
-  resume superseded and is treated as absent.
+  task only when it post-dates the task's latest *participation* evidence —
+  the newer of the dispatch receipt and the task's most recent SendMessage
+  resume row (P9, second red-team round: anchoring on the receipt alone let a
+  legitimate stop notice close the resumed task, because the notice really
+  does post-date the dispatch) — by more than the mtime tolerance.
 * F4b (correction, fold): a terminal fold may replace an already-terminal
   card only when the incoming engine verdict is strictly later than the time
   the card recorded; same-instant or older stays sticky (the stop race), and
   a closure with no engine time (``stoppedWithoutTask``) has nothing to order
   against and keeps its stickiness.
+* N1 (publication, P10): both publication loops share one gate — a terminal
+  item that is not strictly newer than the already-published terminal of the
+  same id is dropped, so a sweep's stale verdict cannot land after a fold's
+  honest terminal and persist a card/published divergence.
 
 Fixtures are synthetic (fake clock, dict-backed file probe, planted synthetic
-ids). The full kill-resume-sweep-completion sequence mirrors the red team's
-``p6_d3_stale_notice.py`` probe.
+ids and a synthetic incident timeline carrying the production offsets). The
+full sequence mirrors the red team's ``p6_d3_stale_notice.py`` /
+``p9_f4_real.py`` / ``p10_sweep_stale_publish.py`` probes.
 """
 
 from __future__ import annotations
 
+import json
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from connector.runtime_protocol import AgentCallToolContent
+from connector.runtime_protocol import (
+    AgentCallToolContent,
+    RuntimeConfig,
+    RuntimeHostClient,
+    RuntimeTimelineItem,
+)
 from connector.runtimes.claude.domain.session import ClaudeSession
+from connector.runtimes.claude.runtime import ClaudeRuntime
 from connector.runtimes.claude.sdk.tasks import ClaudeTaskEvent
 from connector.runtimes.claude.sessions.subagent_oracle import (
     AgentFileInfo,
     ClaudeSubagentOracle,
     RawTranscriptScan,
+    participation_times_ms,
+    scan_raw_transcript,
 )
 from connector.runtimes.claude.timeline.agent_calls import ClaudeAgentTaskOverlay
 from connector.runtimes.claude.timeline.messages import (
     ClaudeMessageProjector,
     stable_tool_item_id,
+    terminal_publish_superseded,
+)
+from connector.runtimes.claude.turns.lifecycle import (
+    _receipt_ages_by_task,
 )
 
 X = "a6805987502c5966c"
@@ -59,6 +81,19 @@ PROJECTS_DIR = Path("/tmp/fake-claude-projects")
 T_STALE = 1_759_852_084_000
 NOW = T_STALE + 600_000
 TOLERANCE_MS = 2_000
+
+# The real incident timeline (sess_Nk19-gOK4L5Eaw, 2026-10-09), on a synthetic
+# base with the production offsets: dispatch receipt 01:28:43, stop notice
+# 01:48:04, SendMessage resume 01:52:17, honest completion 02:05:55. Anchored
+# on the receipt alone the notice was "attributable" (it legitimately
+# post-dates the dispatch) and closed the resumed task — the confirmed P9
+# false closure; the resume row after the notice is what supersedes it.
+INCIDENT_BASE_MS = 1_758_000_000_000
+INCIDENT_RECEIPT_MS = INCIDENT_BASE_MS
+INCIDENT_STOP_MS = INCIDENT_BASE_MS + 1_161_000
+INCIDENT_RESUME_MS = INCIDENT_BASE_MS + 1_414_000
+INCIDENT_COMP_MS = INCIDENT_BASE_MS + 2_232_000
+INCIDENT_NOW_MS = INCIDENT_COMP_MS - 600_000
 
 
 class _Clock:
@@ -227,8 +262,25 @@ def test_F4a_without_receipt_evidence_the_notice_stands() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_F4_kill_resume_sweep_then_honest_completion_ends_done() -> None:
-    projector = ClaudeMessageProjector()
+def _incident_scan() -> RawTranscriptScan:
+    """The P9 fixture's scan: receipt at dispatch, resume row after the stop."""
+
+    return RawTranscriptScan(
+        notices=(),
+        receipt_times_ms={X: INCIDENT_RECEIPT_MS},
+        send_resume_times_ms={X: INCIDENT_RESUME_MS},
+        send_aliases={R: X},
+        dispatch_roots={X: frozenset({R})},
+        verified_dispatch_ids=frozenset({R}),
+    )
+
+
+def test_P9_kill_resume_sweep_then_honest_completion_ends_done() -> None:
+    # The real incident timeline. The caller hands the sweep the dispatch-only
+    # receipt age (the pre-P9 premise, kept deliberately as the input), and the
+    # projector's scan seam supplies the resume row: the merged participation
+    # anchor supersedes the stop notice, so the resumed task is spared.
+    projector = ClaudeMessageProjector(raw_scan_provider=lambda _s: _incident_scan())
     session = _session()
 
     # 1) the transport resumed the task: task_started folds the card open.
@@ -242,28 +294,38 @@ def test_F4_kill_resume_sweep_then_honest_completion_ends_done() -> None:
     )
     assert resume.status == "running"
 
-    # 2) the periodic evidence sweep runs with the stale stopped notice and a
-    #    missing subagent file: the notice is superseded, the task is spared.
+    # 2) the mid-run evidence sweep: stale stopped notice + missing subagent
+    #    file + attached — the P9 shape that used to close the live task.
     items = projector.close_open_agent_cards(
         session,
-        oracle=_oracle(now_ms=NOW),
-        terminal_events={X: ((T_STALE, _notice_event("stopped")),)},
-        receipt_ages={X: (NOW - T_STALE) / 1000.0},
+        oracle=_oracle(now_ms=INCIDENT_NOW_MS),
+        terminal_events={X: ((INCIDENT_STOP_MS, _notice_event("stopped")),)},
+        receipt_ages={X: (INCIDENT_NOW_MS - INCIDENT_RECEIPT_MS) / 1000.0},
         attached_task_ids=frozenset({X}),
         live_task_ids=frozenset({X}),
-        now_ms=NOW,
+        now_ms=INCIDENT_NOW_MS,
     )
     assert items == ()
 
-    # 3) the task genuinely completes: the honest verdict lands.
-    done = projector.fold_agent_task_event(
+    # 3) the honest completion lands — the live wire's undated notification
+    #    first, then the import fold carrying the notice timestamp.
+    live_done = projector.fold_agent_task_event(
         session,
         tool_use_id=R,
         overlay=ClaudeAgentTaskOverlay(agents={X: {"status": "completed"}}),
         status="done",
     )
-    assert done.status == "done"
-    assert done.content["agents"][X]["status"] == "completed"
+    assert live_done.status == "done"
+    imported = projector.fold_agent_task_event(
+        session,
+        tool_use_id=R,
+        overlay=ClaudeAgentTaskOverlay(
+            agents={X: {"status": "completed"}}, end_time=INCIDENT_COMP_MS
+        ),
+        status="done",
+    )
+    assert imported.status == "done"
+    assert imported.content["agents"][X]["status"] == "completed"
 
 
 # --------------------------------------------------------------------------
@@ -460,3 +522,298 @@ def test_F4b_sibling_cards_follow_the_correction_and_stay_idempotent() -> None:
         status="done",
     )
     assert [item.id for item in again] == [canonical]
+
+# --------------------------------------------------------------------------
+# P9: the scan records resume rows; the participation anchor merges the maps
+# --------------------------------------------------------------------------
+
+
+def _iso_ms(epoch_ms: int) -> str:
+    return (
+        datetime.fromtimestamp(epoch_ms / 1000, tz=UTC)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _raw_assistant_send_row(tool_use_id: str, to: str, timestamp: str) -> str:
+    return json.dumps(
+        {
+            "type": "assistant",
+            "uuid": f"row-{tool_use_id}",
+            "timestamp": timestamp,
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": tool_use_id,
+                        "name": "SendMessage",
+                        "input": {"to": to, "message": "resume"},
+                    }
+                ],
+            },
+        }
+    )
+
+
+def _raw_assistant_agent_row(tool_use_id: str, to: str, timestamp: str) -> str:
+    # The control shape: a non-SendMessage tool_use that happens to carry an
+    # ``input.to`` — it must not record a resume time.
+    return json.dumps(
+        {
+            "type": "assistant",
+            "uuid": f"row-{tool_use_id}",
+            "timestamp": timestamp,
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": tool_use_id,
+                        "name": "Agent",
+                        "input": {"to": to, "prompt": "x"},
+                    }
+                ],
+            },
+        }
+    )
+
+
+def test_scan_records_the_newest_resume_row_time_per_task() -> None:
+    first = INCIDENT_BASE_MS + 1_000
+    newest = INCIDENT_BASE_MS + 5_000
+    scan = scan_raw_transcript(
+        (
+            _raw_assistant_send_row("call_send_1", X, _iso_ms(first)),
+            _raw_assistant_send_row("call_send_2", X, _iso_ms(newest)),
+            _raw_assistant_agent_row("call_agent_to", X, _iso_ms(newest + 1_000)),
+            # No timestamp on this row: it must contribute nothing (only add,
+            # never guess).
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "call_send_3",
+                                "name": "SendMessage",
+                                "input": {"to": X},
+                            }
+                        ],
+                    },
+                }
+            ),
+        )
+    )
+    assert scan.send_resume_times_ms == {X: newest}
+    # The alias map is unchanged by the new field: the newest row still
+    # registers its alias (setdefault keeps the first id seen per call).
+    assert scan.send_aliases == {
+        "call_send_1": X,
+        "call_send_2": X,
+        "call_send_3": X,
+    }
+
+
+def test_participation_times_take_the_newer_of_receipt_and_resume() -> None:
+    receipt_only = RawTranscriptScan(
+        notices=(), receipt_times_ms={X: 1_000, "other": 500}
+    )
+    assert participation_times_ms(receipt_only) == {X: 1_000, "other": 500}
+
+    resume_newer = RawTranscriptScan(
+        notices=(),
+        receipt_times_ms={X: 1_000},
+        send_resume_times_ms={X: 2_000, "resume_only": 3_000},
+    )
+    assert participation_times_ms(resume_newer) == {X: 2_000, "resume_only": 3_000}
+
+    receipt_newer = RawTranscriptScan(
+        notices=(),
+        receipt_times_ms={X: 5_000},
+        send_resume_times_ms={X: 2_000},
+    )
+    assert participation_times_ms(receipt_newer) == {X: 5_000}
+
+
+def test_receipt_ages_use_the_participation_anchor() -> None:
+    # The lifecycle consumer: a resumed task's age must come from the resume
+    # row, not the dispatch receipt the stop notice post-dates.
+    scan = _incident_scan()
+    ages = _receipt_ages_by_task(scan, now_ms=INCIDENT_NOW_MS)
+    assert ages[X] == (INCIDENT_NOW_MS - INCIDENT_RESUME_MS) / 1000.0
+    assert _receipt_ages_by_task(None, now_ms=INCIDENT_NOW_MS) == {}
+
+
+# --------------------------------------------------------------------------
+# N1: the shared publication gate (fold loop and sweep loop)
+# --------------------------------------------------------------------------
+
+
+def _platform_card(
+    *,
+    status: str,
+    end_time_ms: int | None,
+    agents: dict[str, dict[str, Any]] | None = None,
+) -> RuntimeTimelineItem:
+    content: dict[str, Any] = {
+        "kind": "agent_call",
+        "title": "research",
+        "agents": {k: dict(v) for k, v in (agents or {X: {"status": status}}).items()},
+    }
+    if end_time_ms is not None:
+        content["endTime"] = end_time_ms
+    return RuntimeTimelineItem(
+        id="claude_tool_n1",
+        session_id=SESSION_ID,
+        type="tool",
+        status=status,
+        order_seq=1,
+        content_hash="sha256:n1",
+        role="tool",
+        content=content,
+    )
+
+
+def test_N1_the_publish_gate_drops_terminal_items_not_strictly_newer() -> None:
+    done_t2 = _platform_card(status="done", end_time_ms=NOW)
+    interrupted_t1 = _platform_card(status="interrupted", end_time_ms=NOW - 60_000)
+    undated = _platform_card(status="interrupted", end_time_ms=None)
+    undated_published = _platform_card(status="done", end_time_ms=None)
+    running = _platform_card(status="running", end_time_ms=None)
+
+    # A rival verdict (different status) that is not strictly newer is
+    # dropped — including the same instant and an undated incoming.
+    assert terminal_publish_superseded(interrupted_t1, done_t2) is True
+    assert terminal_publish_superseded(undated, done_t2) is True
+    assert terminal_publish_superseded(
+        _platform_card(status="interrupted", end_time_ms=NOW), done_t2
+    ) is True  # same instant
+    # Strictly later — F4b's legitimate correction passes.
+    assert terminal_publish_superseded(done_t2, interrupted_t1) is False
+    # A published state with no time cannot order a timed incoming claim: the
+    # stop closure's undated interruption must stay correctable.
+    assert terminal_publish_superseded(done_t2, undated_published) is False
+    # A republish of the SAME verdict is enrichment (the terminal burst:
+    # task_updated closes with the end time, task_notification adds the
+    # verbatim summary) — it passes at equal time and only a strictly older
+    # one is refused, so the recorded time is never walked backwards.
+    enriched_done = _platform_card(
+        status="done", end_time_ms=NOW, agents={X: {"status": "completed"}}
+    )
+    assert terminal_publish_superseded(enriched_done, done_t2) is False
+    assert terminal_publish_superseded(
+        _platform_card(status="done", end_time_ms=None), done_t2
+    ) is False
+    assert terminal_publish_superseded(
+        _platform_card(status="interrupted", end_time_ms=NOW - 120_000),
+        _platform_card(status="interrupted", end_time_ms=NOW - 60_000),
+    ) is True
+    # Non-terminal incoming always publishes (the reopen path).
+    assert terminal_publish_superseded(running, done_t2) is False
+    # No published state: nothing to arbitrate.
+    assert terminal_publish_superseded(interrupted_t1, None) is False
+
+
+class _RecordingHost(RuntimeHostClient):
+    def __init__(self) -> None:
+        self.timeline_item_upserts: list[RuntimeTimelineItem] = []
+
+    @property
+    def connector_id(self) -> str:
+        return "conn_test"
+
+    async def timeline_item_upsert(self, item: RuntimeTimelineItem) -> None:
+        self.timeline_item_upserts.append(item)
+
+
+def test_N1_the_fold_loop_refuses_a_superseded_terminal_publish() -> None:
+    # The P10 interleave, driven through the real fold publication loop: the
+    # published row already carries the honest stale-corrected terminal at t2,
+    # the in-memory card still records its own closure at t1 < t2, and the
+    # fold's republish (content differs, time not strictly newer) must not
+    # land. Without the gate this loop traded a card/published divergence.
+    import asyncio
+
+    host = _RecordingHost()
+    runtime = ClaudeRuntime(
+        config=RuntimeConfig(runtime="claude", revision=1, values={"environment": {}}),
+        host=host,
+        subagent_oracle=_oracle(now_ms=NOW),
+    )
+    # Hermetic: no ambient transcript read for the sibling walk.
+    runtime._timeline._raw_scan_provider = lambda _s: None
+    session = _session()
+    runtime._sessions[session.session_id] = session
+    runner = runtime._turns.runner
+    runner.agent_task_calls[(session.session_id, X)] = R
+
+    projector = runtime._timeline
+    projector.fold_agent_task_event(
+        session,
+        tool_use_id=R,
+        overlay=ClaudeAgentTaskOverlay(agents={X: {"status": "running"}}),
+        status="running",
+    )
+    card_id = stable_tool_item_id(session, R)
+    closed = projector.fold_agent_task_event(
+        session,
+        tool_use_id=R,
+        overlay=ClaudeAgentTaskOverlay(
+            agents={X: {"status": "killed"}}, end_time=NOW - 60_000
+        ),
+        status="interrupted",
+    )
+    assert closed.status == "interrupted"
+    # The honest completion already landed and published (t2 > t1).
+    session.timeline_items[card_id] = replace(
+        closed,
+        status="done",
+        content={
+            **dict(closed.content),
+            "agents": {X: {"status": "completed"}},
+            "endTime": NOW,
+        },
+    )
+
+    # A superseded engine frame (an older stopped notice) folds: the card
+    # stays interrupted at t1, and the republish is refused by the gate.
+    asyncio.run(
+        runner.fold_agent_task_event(
+            session,
+            ClaudeTaskEvent(
+                kind="updated",
+                task_id=X,
+                status="stopped",
+                tool_use_id=R,
+                end_time=NOW - 120_000,
+            ),
+        )
+    )
+    assert host.timeline_item_upserts == []
+    assert session.timeline_items[card_id].status == "done"
+
+
+def test_N1_a_stale_sweep_item_is_refused_by_the_shared_gate() -> None:
+    # The sweep loop's half: the item the sweep computed synchronously is
+    # checked against the state at publish time, and a stale terminal that is
+    # not strictly newer is dropped (the same rule the fold loop applies).
+    projector = ClaudeMessageProjector()
+    session = _session()
+    card_id = _mint_card(projector, status="running")
+    stale = _close_by_notice(projector, session, notice_ms=NOW - 300_000)
+    assert [item.id for item in stale] == [card_id]
+    stale_item = stale[0]
+    session.timeline_items[card_id] = replace(
+        stale_item,
+        status="done",
+        content={
+            **dict(stale_item.content),
+            "agents": {X: {"status": "completed"}},
+            "endTime": NOW,
+        },
+    )
+    assert terminal_publish_superseded(stale_item, session.timeline_items[card_id])

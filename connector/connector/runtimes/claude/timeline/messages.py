@@ -40,7 +40,10 @@ from connector.runtimes.claude.domain.models import claude_context_window
 from connector.runtimes.claude.domain.session import ClaudeSession
 from connector.runtimes.claude.sdk.tasks import is_task_notification_text
 from connector.runtimes.claude.sdk.title_tool import is_title_tool_name
-from connector.runtimes.claude.sessions.subagent_oracle import RawTranscriptScan
+from connector.runtimes.claude.sessions.subagent_oracle import (
+    RawTranscriptScan,
+    participation_times_ms,
+)
 from connector.runtimes.claude.timeline.agent_calls import (
     AGENT_CARD_TERMINAL_STATUSES,
     ClaudeAgentCallCard,
@@ -1514,6 +1517,14 @@ class ClaudeMessageProjector:
         stamp supplies it (F5) — without that, a never-started task could
         never be judged. A candidate restored from the timeline has no card
         and therefore no stamp: it rides the caller's receipt ages alone.
+
+        Whichever age arrives, the projector's own scan is consulted for the
+        task's newest *survival* evidence (P9): a SendMessage resume row can
+        sit after the age's anchor, and the arbitration (and the never-started
+        grace) must judge against the latest participation, not the dispatch
+        receipt a legitimate stop notice post-dates. The closer anchor wins;
+        the scan is the injected seam and its read is memoized, so this adds
+        one dict lookup per judgement in practice.
         """
 
         verdicts: dict[str, Any] = {}
@@ -1530,10 +1541,21 @@ class ClaudeMessageProjector:
             now_seconds = (
                 oracle_clock() if callable(oracle_clock) else self._clock()
             )
+        scan = self._session_raw_scan(session)
+        participation_times = (
+            participation_times_ms(scan) if scan is not None else {}
+        )
         for task_id in sorted(task_ids):
             age = ages.get(task_id)
             if age is None and launched_at is not None:
                 age = max(now_seconds - launched_at, 0.0)
+            participation_time_ms = participation_times.get(task_id)
+            if participation_time_ms is not None:
+                participation_age = max(
+                    now_seconds - participation_time_ms / 1000.0, 0.0
+                )
+                if age is None or participation_age < age:
+                    age = participation_age
             verdict = oracle.evidence(
                 task_id=task_id,
                 external_session_id=session.external_session_id,
@@ -1663,6 +1685,65 @@ def _terminal_time_order_override(
         and incoming_time_ms is not None
         and incoming_time_ms > previous_time_ms
     )
+
+
+def terminal_publish_superseded(
+    incoming: RuntimeTimelineItem,
+    published: RuntimeTimelineItem | None,
+) -> bool:
+    """Whether a terminal item must not be published over a published terminal.
+
+    Red team P10 / N1 (alias-durability rt2 round 2). The sweep computes its
+    items synchronously and publishes them across awaits; a fold can land an
+    honest terminal on the same id in between, and the sweep's stale item —
+    built from the pre-fold snapshot — then lands last, leaving
+    ``session.timeline_items`` showing a worse terminal than the in-memory
+    card. Nothing re-judges it (a terminal published state masks the card from
+    the next sweep's candidates), so the divergence persists; this is the
+    publication-side half of F4b, the same outer time order applied where both
+    publication loops (the fold's and the sweep's) can share it.
+
+    Drops the incoming item when it is terminal, the currently published state
+    of the same id is terminal too, and it is not strictly newer — with the
+    verdict itself deciding the strictness: a *rival* verdict (different
+    status) must be strictly newer than the published one, while a republish
+    of the *same* verdict is enrichment (the CLI's terminal burst closes with
+    ``task_updated``'s end time and then ``task_notification``'s verbatim
+    summary; findings §8.6) and passes at equal time, dropped only when it
+    would walk the recorded time backwards. An undated rival is never provably
+    newer and is dropped; a published state with no time is a closure nothing
+    can be ordered against, so a timed rival passes rather than being dropped
+    — or the stop closure's undated interruption could never be corrected by
+    the engine's own dated completion. ``closure_rank`` is untouched: this
+    orders times, never ties.
+    """
+
+    if published is None:
+        return False
+    if incoming.status not in AGENT_CARD_TERMINAL_STATUSES:
+        return False
+    if published.status not in AGENT_CARD_TERMINAL_STATUSES:
+        return False
+    published_time_ms = _content_end_time_ms(published.content)
+    if published_time_ms is None:
+        return False
+    incoming_time_ms = _content_end_time_ms(incoming.content)
+    if incoming.status != published.status:
+        if incoming_time_ms is None:
+            return True
+        return incoming_time_ms <= published_time_ms
+    if incoming_time_ms is None:
+        return False
+    return incoming_time_ms < published_time_ms
+
+
+def _content_end_time_ms(content: Mapping[str, Any]) -> int | None:
+    """The flat ``endTime`` every closure surface writes onto item content."""
+
+    value = content.get("endTime")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
 
 
 def _recorded_closure_time_ms(

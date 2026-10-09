@@ -1513,6 +1513,111 @@ async def _test_claude_runtime_session_sync_marker_skips_unchanged_history() -> 
     assert forced[0].metadata["sync"]["requires_timeline_sync"] is True
 
 
+def test_claude_runtime_paged_window_excludes_the_local_overlay() -> None:
+    asyncio.run(_test_claude_runtime_paged_window_excludes_the_local_overlay())
+
+
+async def _test_claude_runtime_paged_window_excludes_the_local_overlay() -> None:
+    host = _RecordingHost()
+    sdk = _HistorySdk(
+        sessions=[
+            SimpleNamespace(
+                session_id=f"claude_rotation_{index:03d}",
+                summary=f"Rotation {index}",
+                last_modified=1_789_000_000_000 - index,
+                file_size=123 + index,
+                cwd="/repo",
+            )
+            for index in range(130)
+        ]
+    )
+    runtime = _runtime(host=host, sdk=sdk)
+    # A live local session with the newest ordering time, as the freshness
+    # overlay of page 1 would have.
+    runtime._session_store.ensure(
+        "sess_local_live",
+        external_session_id="claude_local_live",
+        title="Local live",
+        cwd="/repo",
+    )
+
+    first_page = await runtime.list_sessions(limit=10)
+    second_page = await runtime.list_sessions(limit=10, cursor="100")
+
+    # Page 1 keeps its merge: the live local session rides on top.
+    assert first_page[0].session_id == "sess_local_live"
+    # A paged window is the raw history window: the local overlay must not
+    # displace the tail of the window (which `[:limit]` would then cut), and
+    # page-1 sessions must not repeat inside it.
+    assert [session.external_session_id for session in second_page] == [
+        f"claude_rotation_{index:03d}" for index in range(100, 110)
+    ]
+    assert all(
+        session.session_id != "sess_local_live" for session in second_page
+    )
+    assert sdk.list_calls == [
+        {"limit": 10, "offset": 0},
+        {"limit": 10, "offset": 100},
+    ]
+
+
+def test_claude_runtime_reports_projection_outdated_until_rebuilt() -> None:
+    asyncio.run(_test_claude_runtime_reports_projection_outdated_until_rebuilt())
+
+
+async def _test_claude_runtime_reports_projection_outdated_until_rebuilt() -> None:
+    host = _RecordingHost()
+    sdk = _HistorySdk(
+        sessions=[
+            SimpleNamespace(
+                session_id="claude_projection",
+                summary="Projection",
+                last_modified=1_789_000_000_000,
+                file_size=123,
+                cwd="/repo",
+            )
+        ]
+    )
+    runtime = _runtime(host=host, sdk=sdk)
+    # A local twin of the history session, so the merge path carries the flag.
+    runtime._session_store.ensure(
+        "sess_projection_local",
+        external_session_id="claude_projection",
+        title="Projection local",
+        cwd="/repo",
+    )
+
+    first = await runtime.list_sessions(limit=10)
+
+    session = next(
+        item for item in first if item.external_session_id == "claude_projection"
+    )
+    assert session.metadata["sync"]["projection_outdated"] is True
+    assert session.metadata["sync"]["requires_timeline_sync"] is True
+
+    await runtime.sync_session_timeline(session.session_id, "claude_projection")
+    second = await runtime.list_sessions(limit=10)
+    rebuilt = next(
+        item for item in second if item.external_session_id == "claude_projection"
+    )
+    assert rebuilt.metadata["sync"]["projection_outdated"] is False
+    assert rebuilt.metadata["sync"]["changed"] is False
+    assert rebuilt.metadata["sync"]["requires_timeline_sync"] is False
+
+    # A cursor stamped by an older projection must demand a rebuild even when
+    # the transcript has not moved — this is the version-bump signal the
+    # library rotation activates on.
+    cursor_state = host.sync_states["claude/history/cursor/claude_projection"]
+    cursor_state["projectorVersion"] = 4
+    third = await runtime.list_sessions(limit=10)
+    outdated = next(
+        item for item in third if item.external_session_id == "claude_projection"
+    )
+    assert outdated.metadata["sync"]["changed"] is False
+    assert outdated.metadata["sync"]["projection_outdated"] is True
+    assert outdated.metadata["sync"]["requires_timeline_sync"] is True
+
+
 def test_claude_runtime_does_not_commit_session_marker_when_publish_fails() -> None:
     asyncio.run(
         _test_claude_runtime_does_not_commit_session_marker_when_publish_fails()

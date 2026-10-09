@@ -116,7 +116,7 @@ class ClaudeSessionReader:
         cursor: str | None = None,
         force: bool = False,
     ) -> tuple[SessionMeta, ...]:
-        local_sessions = self.session_store.list_sessions(limit=limit)
+        offset = _cursor_offset(cursor)
         history_sessions = await self._list_history_sessions(
             limit=limit,
             cursor=cursor,
@@ -124,13 +124,25 @@ class ClaudeSessionReader:
         )
         history_sessions = _filter_history_sessions_for_unresolved_live_sessions(
             runtime_sessions=self.session_store.sessions(),
-            local_sessions=local_sessions,
+            local_sessions=self.session_store.list_sessions(limit=limit),
             history_sessions=history_sessions,
         )
         history_sessions = _filter_history_sessions_for_active_local_sessions(
             runtime_sessions=self.session_store.sessions(),
             history_sessions=history_sessions,
         )
+        if offset > 0:
+            # Pages past the first are the library-coverage window (the rotating
+            # scan that reaches sessions beyond the first page). The local
+            # overlay is liveness freshness and belongs to page 1, which is
+            # fetched unchanged every cycle: merging it into a paged window
+            # would pull page-1 sessions up and then `[:limit]` would cut the
+            # tail of the window — dropping exactly the sessions a coverage
+            # sweep exists to reach. A paged window is therefore the raw history
+            # window, still guarded by the live/active filters above so an
+            # actively driven session is never rebuilt behind the live writer.
+            return history_sessions[:limit]
+        local_sessions = self.session_store.list_sessions(limit=limit)
         return _merge_session_metas(local_sessions, history_sessions)[:limit]
 
     async def get_session_state(
@@ -285,6 +297,12 @@ class ClaudeSessionReader:
                     "requires_timeline_sync": requires_timeline_sync,
                     "history_cursor_missing": previous_cursor is None,
                     "previous_marker": previous_marker,
+                    # Whether the stored cursor was produced by an older
+                    # projection (or is missing entirely). This is the natural
+                    # signal a projection version bump leaves behind, and the
+                    # connector's library-scan rotation reads it to decide when
+                    # old sessions need a rebuild pass.
+                    "projection_outdated": projection_outdated,
                 },
                 "sdk": _sdk_session_metadata(sdk_session),
             },
@@ -1467,6 +1485,14 @@ def _merge_session_meta(primary: SessionMeta, secondary: SessionMeta) -> Session
             "changed": (
                 primary_sync.get("changed") is True
                 or secondary_sync.get("changed") is True
+            ),
+            # The local overlay never carries this flag; the history side does.
+            # It must survive the merge exactly like the two above, or a session
+            # that is both live and history-backed would hide its outdated
+            # projection from the library sweep.
+            "projection_outdated": (
+                primary_sync.get("projection_outdated") is True
+                or secondary_sync.get("projection_outdated") is True
             ),
         }
     return SessionMeta(

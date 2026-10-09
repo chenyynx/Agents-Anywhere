@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import secrets
 import time
-from collections.abc import Awaitable, Callable
-from dataclasses import replace
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, replace
 from typing import Any
 
 from pydantic import ValidationError
@@ -55,6 +56,41 @@ ACTIVE_SESSION_SYNC_SKIP_STATUSES: frozenset[RuntimeStatus] = frozenset(
     {"waiting", "pending", "running", "waiting_approval", "stopping"}
 )
 VALIDATION_ERROR_LOG_LIMIT = 5
+
+# T1 (stale-residue-selfheal, 2026-10-09): runtimes without a complete session
+# inventory list one bounded page per cycle, so every session past it is never
+# compared and its stale rows (a card stuck on `running`) are never rebuilt —
+# residue cause ③. The library rotation adds ONE further window per cycle to
+# the same marker-comparison flow. `AGENT_CONNECTOR_SESSION_ROTATION` selects
+# the mode:
+#   off    (default) — rotation is not consulted at all; behavior is exactly
+#                      what it was before this feature, byte for byte.
+#   report           — the sweep walks the same circle but only logs what it
+#                      would rebuild: the first rollout stage. No publish, no
+#                      rebuild, no durable session state.
+#   on               — the sweep rebuilds, capped per cycle.
+# An unrecognized value fails safe to off.
+SESSION_ROTATION_ENV = "AGENT_CONNECTOR_SESSION_ROTATION"
+SESSION_ROTATION_OFF = "off"
+SESSION_ROTATION_REPORT = "report"
+SESSION_ROTATION_ON = "on"
+_SESSION_ROTATION_MODES = frozenset(
+    {SESSION_ROTATION_OFF, SESSION_ROTATION_REPORT, SESSION_ROTATION_ON}
+)
+# One window per cycle, the same bound page 1 uses.
+SESSION_ROTATION_PAGE_SIZE = 100
+# Page 1 (offset 0) is fetched every cycle anyway, so the rotation ladder
+# starts one window in.
+SESSION_ROTATION_FIRST_OFFSET = SESSION_ROTATION_PAGE_SIZE
+# Rebuilds on rotation windows are capped per cycle (task card §3 T1.4: 5~10),
+# so a library-wide projection bump spreads over hours instead of spiking
+# CPU/IO/ingest in minutes. Page 1 is never capped — freshness is its job.
+SESSION_ROTATION_REBUILD_BUDGET = 8
+# Consecutive circles that ended with candidates but no successful rebuild
+# before the sweep gives up and sleeps (a poison session must not keep the
+# whole sweep awake).
+SESSION_ROTATION_STALL_CIRCLES = 3
+SESSION_ROTATION_STATE_VERSION = 1
 
 
 class RuntimeSyncRunner:
@@ -108,8 +144,12 @@ class RuntimeSyncRunner:
         # revision is never handed to different content, including across
         # restarts; the in-process copy keeps continuity when persistence
         # itself fails.
-        self._catalog_state_hosts: dict[str, RuntimeHostClient] = {}
+        self._instance_state_hosts: dict[str, RuntimeHostClient] = {}
         self._catalog_push_states: dict[str, CatalogPushState] = {}
+        # Session rotation (T1): the in-process copy of one runtime's
+        # library-scan position, mirroring the catalog push state cache — the
+        # memory copy keeps the sweep from restarting when persistence fails.
+        self._rotation_states: dict[str, SessionRotationState] = {}
         self.closing = False
 
     def _session_sync_lock(self, runtime_id: str, session_id: str) -> asyncio.Lock:
@@ -381,6 +421,25 @@ class RuntimeSyncRunner:
                             )
                         ]
                     )
+                else:
+                    # T1: the inventory-less path gets one extra rotating
+                    # window per cycle. It runs after page 1 (freshness keeps
+                    # its priority) and its failures are its own: a rotation
+                    # error must not hold back the startup reconciliation
+                    # bookkeeping below.
+                    try:
+                        await self.run_session_rotation(
+                            runtime=runtime,
+                            runtime_id=runtime_id,
+                            scoped_runtime_id=scoped_runtime_id,
+                            runtime_type=runtime_type,
+                            page_one_sessions=sessions,
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.exception(
+                            "session rotation cycle failed runtime={}",
+                            runtime_id,
+                        )
                 if not failed:
                     self._recovered[runtime_id] = recovery_generation
                 logger.info(
@@ -557,6 +616,258 @@ class RuntimeSyncRunner:
         # safe; otherwise an unchanged inventory marker could suppress its retry.
         return not deferred_replacement
 
+    async def run_session_rotation(
+        self,
+        *,
+        runtime: AgentRuntime,
+        runtime_id: str,
+        scoped_runtime_id: str,
+        runtime_type: str,
+        page_one_sessions: tuple[SessionMeta, ...],
+    ) -> None:
+        """One cycle of the library-scan rotation (T1, stale-residue-selfheal).
+
+        A runtime without a complete session inventory lists one bounded first
+        page per cycle, so sessions past it were never compared and their stale
+        rows were never rebuilt (residue cause ③). The rotation fetches ONE
+        further window per cycle and runs it through the existing marker
+        comparison and `requires_timeline_sync` flow — no new publish path.
+
+        Activation is on demand (task card §3 T1.8): a cycle whose first page
+        shows any `projection_outdated` session — the natural trace a
+        projection version bump leaves behind, including a cursor that is
+        missing entirely — opens a full-library sweep. One window is scanned per
+        cycle; when a whole circle finds nothing to rebuild the sweep sleeps
+        again, so steady state costs zero rotation load. A session stays a
+        candidate until its rebuild lands, which is what makes the sweep
+        converge: it cannot go back to sleep while an outdated session is still
+        surfacing. Sessions whose source files are gone are out of any local
+        scan's reach and remain the server-side age janitor's job.
+
+        Rebuilds on rotation windows are capped per cycle (§3 T1.4) so a
+        library-wide projection bump spreads over hours instead of spiking
+        CPU/IO/ingest in minutes; page 1 is never capped — freshness is its job.
+        A page whose candidates keep failing does not hold the sweep hostage
+        (`SESSION_ROTATION_STALL_CIRCLES`).
+
+        Mode `report` walks exactly one circle and logs what it would rebuild,
+        publishing nothing; mode `off` (the default) returns before any state is
+        touched or read.
+        """
+
+        mode = session_rotation_mode()
+        if mode == SESSION_ROTATION_OFF:
+            return
+        state = await self._rotation_state(scoped_runtime_id, runtime_type)
+        if not state.active:
+            outdated = sum(
+                1
+                for session in page_one_sessions
+                if session_projection_outdated(session)
+            )
+            if outdated == 0:
+                return
+            state = SessionRotationState(active=True)
+            logger.info(
+                "session rotation sweep activated runtime={} outdated_page_one_sessions={}",
+                runtime_id,
+                outdated,
+            )
+            # Persist before the first window read: if that read fails, the
+            # activation must survive the cycle — the page-1 signal that opened
+            # the sweep may already be rebuilt by the time the next cycle runs.
+            await self._record_rotation_state(scoped_runtime_id, runtime_type, state)
+        try:
+            page = await runtime.list_sessions(
+                limit=SESSION_ROTATION_PAGE_SIZE,
+                cursor=str(state.offset),
+                force=False,
+            )
+        except Exception:  # noqa: BLE001
+            # A failed window read must not advance the ladder; the sweep
+            # resumes at the same offset next cycle.
+            logger.exception(
+                "session rotation window read failed runtime={} offset={}",
+                runtime_id,
+                state.offset,
+            )
+            return
+        if not page:
+            # End of the library: the circle is complete (page 1 plus every
+            # rotation window has been compared).
+            if mode == SESSION_ROTATION_REPORT or state.circle_candidates == 0:
+                logger.info(
+                    "session rotation sweep completed runtime={} offset={} candidates_this_circle={}",
+                    runtime_id,
+                    state.offset,
+                    state.circle_candidates,
+                )
+                await self._record_rotation_state(
+                    scoped_runtime_id, runtime_type, SessionRotationState()
+                )
+                return
+            if state.circle_rebuilt == 0:
+                stall = state.stall_circles + 1
+                if stall >= SESSION_ROTATION_STALL_CIRCLES:
+                    logger.warning(
+                        "session rotation sweep stalled; sleeping with candidates unrebuilt "
+                        "runtime={} candidates={} circles={}",
+                        runtime_id,
+                        state.circle_candidates,
+                        stall,
+                    )
+                    await self._record_rotation_state(
+                        scoped_runtime_id, runtime_type, SessionRotationState()
+                    )
+                    return
+                logger.warning(
+                    "session rotation circle rebuilt nothing runtime={} candidates={} stall_circles={}",
+                    runtime_id,
+                    state.circle_candidates,
+                    stall,
+                )
+                await self._record_rotation_state(
+                    scoped_runtime_id,
+                    runtime_type,
+                    SessionRotationState(active=True, stall_circles=stall),
+                )
+                return
+            await self._record_rotation_state(
+                scoped_runtime_id, runtime_type, SessionRotationState(active=True)
+            )
+            return
+        candidates = [
+            session for session in page if session_requires_timeline_sync(session)
+        ]
+        circle_candidates = state.circle_candidates + len(candidates)
+        if mode == SESSION_ROTATION_REPORT:
+            logger.info(
+                "session rotation report runtime={} offset={} sessions={} would_rebuild={} session_ids={}",
+                runtime_id,
+                state.offset,
+                len(page),
+                len(candidates),
+                ",".join(
+                    session.external_session_id or session.session_id
+                    for session in candidates
+                ),
+            )
+            await self._record_rotation_state(
+                scoped_runtime_id,
+                runtime_type,
+                replace(
+                    state,
+                    offset=state.offset + SESSION_ROTATION_PAGE_SIZE,
+                    circle_candidates=circle_candidates,
+                ),
+            )
+            return
+        rebuilt = 0
+        attempted = 0
+        for session in candidates:
+            if attempted >= SESSION_ROTATION_REBUILD_BUDGET:
+                break
+            attempted += 1
+            try:
+                async with self._session_sync_lock(runtime_id, session.session_id):
+                    # L3b: the same per-session lock the live and settle writers
+                    # take, so a rotation rebuild never overlaps the session's
+                    # live writer. Actively driven sessions are already dropped
+                    # from a paged window by the reader's live/active filters,
+                    # and `sync_existing_session` keeps its own active-status
+                    # gate for the ones that reach it.
+                    completed = await self.sync_existing_session(runtime, session)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "session rotation rebuild failed runtime={} session_id={} external_session_id={} offset={}",
+                    session.runtime,
+                    session.session_id,
+                    session.external_session_id,
+                    state.offset,
+                )
+                continue
+            if completed is True:
+                rebuilt += 1
+        logger.info(
+            "session rotation window runtime={} offset={} sessions={} candidates={} rebuilt={}",
+            runtime_id,
+            state.offset,
+            len(page),
+            len(candidates),
+            rebuilt,
+        )
+        await self._record_rotation_state(
+            scoped_runtime_id,
+            runtime_type,
+            replace(
+                state,
+                offset=state.offset + SESSION_ROTATION_PAGE_SIZE,
+                circle_candidates=circle_candidates,
+                circle_rebuilt=state.circle_rebuilt + rebuilt,
+            ),
+        )
+
+    async def _rotation_state(
+        self,
+        scoped_runtime_id: str,
+        runtime_type: str,
+    ) -> SessionRotationState:
+        """This runtime's scan position, from memory or the state store."""
+
+        cached = self._rotation_states.get(scoped_runtime_id)
+        if cached is not None:
+            return cached
+        host = await self._instance_state_host(scoped_runtime_id)
+        try:
+            raw = await host.sync_state_read(
+                _session_rotation_state_key(runtime_type, scoped_runtime_id)
+            )
+        except (NotImplementedError, AttributeError):
+            logger.debug(
+                "session rotation state store unavailable runtime_id={}",
+                scoped_runtime_id,
+            )
+            return SessionRotationState()
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "reading session rotation state failed runtime_id={}",
+                scoped_runtime_id,
+            )
+            return SessionRotationState()
+        state = session_rotation_state_from_mapping(raw)
+        self._rotation_states[scoped_runtime_id] = state
+        return state
+
+    async def _record_rotation_state(
+        self,
+        scoped_runtime_id: str,
+        runtime_type: str,
+        state: SessionRotationState,
+    ) -> None:
+        """Remember one scan position, memory first.
+
+        The in-process copy keeps the sweep moving when the state store cannot
+        persist, mirroring the catalog push state's continuity rule.
+        """
+
+        self._rotation_states[scoped_runtime_id] = state
+        host = await self._instance_state_host(scoped_runtime_id)
+        try:
+            await host.sync_state_write(
+                _session_rotation_state_key(runtime_type, scoped_runtime_id),
+                session_rotation_state_payload(state),
+            )
+        except (NotImplementedError, AttributeError):
+            logger.debug(
+                "session rotation state store unavailable runtime_id={}",
+                scoped_runtime_id,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "persisting session rotation state failed runtime_id={}; keeping in-memory continuity",
+                scoped_runtime_id,
+            )
+
     async def _ingest_scanner_notifications(
         self,
         notifications: list[dict[str, Any]],
@@ -623,7 +934,7 @@ class RuntimeSyncRunner:
         signature = catalog_content_signature(payload_builder(catalog))
         runtime_id = catalog.runtime_id or catalog.runtime
         key = _catalog_push_state_key(catalog.runtime, runtime_id, catalog_type)
-        state_host = await self._catalog_state_host(runtime_id)
+        state_host = await self._instance_state_host(runtime_id)
         previous = await self._catalog_push_state(state_host, key)
         if previous is not None and previous.content_signature == signature:
             logger.debug(
@@ -654,16 +965,17 @@ class RuntimeSyncRunner:
             previous.revision if previous is not None else None,
         )
 
-    async def _catalog_state_host(self, runtime_id: str) -> RuntimeHostClient:
-        """Bind the host to the runtime instance whose catalog state is read.
+    async def _instance_state_host(self, runtime_id: str) -> RuntimeHostClient:
+        """Bind the host to the runtime instance whose state is read.
 
-        Push state belongs to one runtime instance and lives beside that
-        instance's other state. A host that cannot bind (an older or test host)
-        keeps the shared host: the state key names the instance in either case,
-        so entries never collide.
+        Instance state (catalog push continuity, session rotation position)
+        belongs to one runtime instance and lives beside that instance's other
+        state. A host that cannot bind (an older or test host) keeps the shared
+        host: the state key names the instance in either case, so entries never
+        collide.
         """
 
-        cached = self._catalog_state_hosts.get(runtime_id)
+        cached = self._instance_state_hosts.get(runtime_id)
         if cached is not None:
             return cached
         host = self.host
@@ -673,11 +985,11 @@ class RuntimeSyncRunner:
                 host = await prepare(runtime_id)
             except Exception:  # noqa: BLE001
                 logger.exception(
-                    "binding runtime host for catalog state failed runtime_id={}",
+                    "binding runtime host for instance state failed runtime_id={}",
                     runtime_id,
                 )
                 host = self.host
-        self._catalog_state_hosts[runtime_id] = host
+        self._instance_state_hosts[runtime_id] = host
         return host
 
     async def _catalog_push_state(
@@ -792,6 +1104,17 @@ def _catalog_push_state_key(
     return f"{runtime}/instances/{runtime_id}/catalog-push/{catalog_type}"
 
 
+def _session_rotation_state_key(runtime: str, runtime_id: str) -> str:
+    """State key naming one runtime instance's rotation position.
+
+    Same instance-namespaced convention as the catalog push state, so the
+    entry lands with the instance's other state and never collides across
+    instances.
+    """
+
+    return f"{runtime}/instances/{runtime_id}/session-rotation"
+
+
 def session_requires_timeline_sync(session: SessionMeta) -> bool:
     sync = session.metadata.get("sync")
     if not isinstance(sync, dict):
@@ -805,6 +1128,98 @@ def session_sync_changed(session: SessionMeta) -> bool | None:
         return None
     changed = sync.get("changed")
     return changed if isinstance(changed, bool) else None
+
+
+def session_projection_outdated(session: SessionMeta) -> bool:
+    """Whether this session's stored projection is behind the current one.
+
+    Runtimes that can say so (Claude's reader) stamp this into the sync
+    metadata: True when the stored history cursor is missing or was produced by
+    an older projection version. It is the library rotation's activation
+    signal, because it is the trace a projection version bump leaves on every
+    session it has not yet rebuilt. Runtimes that do not report it simply never
+    activate a rotation.
+    """
+
+    sync = session.metadata.get("sync")
+    if not isinstance(sync, dict):
+        return False
+    return sync.get("projection_outdated") is True
+
+
+@dataclass(frozen=True, slots=True)
+class SessionRotationState:
+    """Durable scan position of one runtime's library rotation.
+
+    `offset` is the NEXT rotation window; page 1 (offset 0) is fetched by every
+    cycle already, so the ladder starts one window in. `circle_candidates` and
+    `circle_rebuilt` accumulate over the circle currently being scanned: a
+    circle that ends with no candidates compared clean and puts the sweep to
+    sleep; a circle that ends with candidates but zero successful rebuilds
+    counts as stalled, and the stall limit stops one poison session from
+    keeping the sweep awake forever.
+    """
+
+    active: bool = False
+    offset: int = SESSION_ROTATION_FIRST_OFFSET
+    circle_candidates: int = 0
+    circle_rebuilt: int = 0
+    stall_circles: int = 0
+
+
+def session_rotation_state_from_mapping(
+    value: Mapping[str, Any] | None,
+) -> SessionRotationState:
+    if (
+        not isinstance(value, Mapping)
+        or value.get("version") != SESSION_ROTATION_STATE_VERSION
+    ):
+        return SessionRotationState()
+    offset = _optional_int(value.get("offset"))
+    return SessionRotationState(
+        active=value.get("active") is True,
+        offset=(
+            offset
+            if offset is not None and offset >= SESSION_ROTATION_FIRST_OFFSET
+            else SESSION_ROTATION_FIRST_OFFSET
+        ),
+        circle_candidates=_optional_int(value.get("circleCandidates")) or 0,
+        circle_rebuilt=_optional_int(value.get("circleRebuilt")) or 0,
+        stall_circles=_optional_int(value.get("stallCircles")) or 0,
+    )
+
+
+def session_rotation_state_payload(state: SessionRotationState) -> dict[str, Any]:
+    return {
+        "version": SESSION_ROTATION_STATE_VERSION,
+        "active": state.active,
+        "offset": state.offset,
+        "circleCandidates": state.circle_candidates,
+        "circleRebuilt": state.circle_rebuilt,
+        "stallCircles": state.stall_circles,
+    }
+
+
+def session_rotation_mode() -> str:
+    """The rotation mode for this cycle, read fresh so it flips without a restart.
+
+    Unknown values fail safe to `off`: an operator typo must never enable a
+    library-wide rebuild loop.
+    """
+
+    raw = os.environ.get(SESSION_ROTATION_ENV)
+    if raw is None:
+        return SESSION_ROTATION_OFF
+    value = raw.strip().lower()
+    return value if value in _SESSION_ROTATION_MODES else SESSION_ROTATION_OFF
+
+
+def _optional_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
 
 
 def _session_meta_notification(session: SessionMeta) -> dict[str, Any]:

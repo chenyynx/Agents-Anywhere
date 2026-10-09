@@ -946,8 +946,10 @@ def _is_receipt_row(row: Mapping[str, Any]) -> bool:
     any other explicit status is the call's OUTCOME (a sync Agent call's
     result frame is its card's done/failed, and the message view refuses the
     very same metadata); a status-less frame falls back to the wording. A
-    row whose text cannot be read is refused rather than trusted on the
-    metadata alone.
+    row whose text cannot be read is refused when no explicit status speaks
+    for it (R1f-2): a status-less frame is not trusted on the metadata alone,
+    while an explicit ``async_launched`` admits without a body — the message
+    view judges that frame the same way.
     """
 
     if row.get("type") != "user":
@@ -977,9 +979,14 @@ def _receipt_row_body_text(row: Mapping[str, Any]) -> str | None:
 
     The raw scan's counterpart of the text the message view hands to
     :func:`is_async_agent_receipt` as the tool_result's body: a bare string
-    content reads as itself, a ``tool_result`` block as its text parts.
-    ``None`` when no text can be read at all — the caller then refuses the
-    row rather than trusting its metadata alone.
+    content reads as itself, a ``tool_result`` block as its text parts. Only
+    ``tool_result`` blocks are read, which is narrower than the message
+    view's own extraction (that one reads any block's ``text``): a
+    text-typed frame is refused here where the view could read it (R1f-1,
+    recorded — the refusal only ever delays a closure, and the CLI writes
+    receipts as bare strings or ``tool_result`` blocks, not text-typed
+    frames). ``None`` when no text can be read this way — a status-less row
+    is then refused rather than trusted on the metadata alone.
     """
 
     message = row.get("message")

@@ -32,6 +32,13 @@ nonisolated struct TimelineScrollState: Equatable {
     private var lastRequest: BottomRequest?
     private var commandID = 0
     private var awaitsUserScrollSettlement = false
+    /// The reader's arrival, judged where their gesture stopped (`phaseChanged`
+    /// at `.idle`) rather than when the settlement task wakes. The page's own
+    /// layout can displace the published viewport in between — a tap inside the
+    /// task's 64 ms grows the composer and shortens the visible height — and
+    /// that displacement must not turn a reader who stopped at the bottom into
+    /// one who parked away from it.
+    private var readerSettledAtBottom = false
     /// Set by `open()`, consumed by the first command it produces. A reader
     /// gesture before that command clears it, so later returns animate.
     private var openingReturnIsPending = false
@@ -161,6 +168,7 @@ nonisolated struct TimelineScrollState: Equatable {
             awaitsUserScrollSettlement = true
         }
         phase = next
+        if next == .idle, awaitsUserScrollSettlement { readerSettledAtBottom = viewportIsAtBottom }
         return beganGesture
     }
 
@@ -168,8 +176,10 @@ nonisolated struct TimelineScrollState: Equatable {
         guard needsUserScrollSettlement, !returningToBottom else { return }
         awaitsUserScrollSettlement = false
         // A stale visible marker must not grant auto-follow and pull the
-        // reader back down; the arrival is measured, not probed (round 1.3).
-        mode = viewportIsAtBottom && !interactionIsPresented ? .following : .reading
+        // reader back down; the arrival is measured, not probed (round 1.3),
+        // and measured where the reader left it — not wherever the page has
+        // since been displaced by our own layout.
+        mode = readerSettledAtBottom && !interactionIsPresented ? .following : .reading
     }
 
     var pendingBottomRequest: BottomRequest? {

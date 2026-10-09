@@ -377,4 +377,31 @@ import Testing
             #expect(!reversed)
         }
     }
+
+    /// The reader's arrival is judged where their gesture stopped, not when the
+    /// settlement task wakes: a tap inside those 64 ms grows the composer and
+    /// displaces the published viewport, and that displacement must not turn a
+    /// reader who stopped at the bottom into one who parked away from it.
+    /// Without the latch this reads `.reading` and the keyboard pin refuses.
+    @Test func aReaderWhoStopsAtTheBottomKeepsFollowingEvenIfThePageMovesAfter() throws {
+        var state = try openedAtBottom()
+        _ = state.phaseChanged(.tracking, viewport: viewport(offset: 600))
+        _ = state.phaseChanged(.idle, viewport: viewport(offset: 1320))
+        // The composer grew (bottom inset 120 -> 172) before the task woke.
+        state.geometryChanged(TimelineViewport(contentHeight: 2000, containerHeight: 800,
+            topInset: 80, bottomInset: 172, offsetY: 1320))
+        state.settleUserScroll()
+        #expect(state.mode == .following)
+    }
+
+    /// The control: the latch must not grant following to a reader who stopped
+    /// away from the bottom.
+    @Test func aReaderWhoStopsAwayFromTheBottomStaysInReading() throws {
+        var state = try openedAtBottom()
+        _ = state.phaseChanged(.tracking, viewport: viewport(offset: 600))
+        _ = state.phaseChanged(.idle, viewport: viewport(offset: 600))
+        state.geometryChanged(viewport(offset: 600))
+        state.settleUserScroll()
+        #expect(state.mode == .reading)
+    }
 }

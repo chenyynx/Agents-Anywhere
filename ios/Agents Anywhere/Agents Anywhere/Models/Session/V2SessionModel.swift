@@ -536,7 +536,7 @@ final class V2SessionModel: Identifiable {
         guard isValid, composer.text.isEmpty, composer.attachments.isEmpty else { return false }
         draft = pending.content; composer.attachments = pending.attachments; draftAttachmentIDs = pending.attachmentIDs
         pending.didRestoreDraft = true
-        composer.isFocused = true
+        composer.setFocusIntent(true)
         repository?.draftDidChange()
         return true
     }

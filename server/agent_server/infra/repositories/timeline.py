@@ -31,6 +31,11 @@ from agent_server.infra.db import timeline_items as timeline_items_t
 from agent_server.infra.db.engine import SQLITE_BACKEND
 from agent_server.infra.repositories.store_support import session_revision_fenced
 
+# One shared "the janitor proved nothing is due here" answer. ``changed=False``
+# is what lets the publish layer skip a session-only envelope for a sweep that
+# touched no row, exactly like an unchanged sync batch.
+_JANITOR_NO_CHANGE = TimelineBatchWriteResult(items=(), changed=False)
+
 
 class TimelineRepositoryMixin:
     async def reserve_timeline_sequence(
@@ -432,7 +437,7 @@ class TimelineRepositoryMixin:
         item_ids: list[str],
         older_than: datetime,
         closed_by_evidence: str,
-    ) -> list[str]:
+    ) -> TimelineBatchWriteResult:
         """Close age-bounded residue rows without deleting them.
 
         Guards, all re-checked here under the session timeline lock and the
@@ -452,6 +457,15 @@ class TimelineRepositoryMixin:
           a session that is still being talked about by its connector keeps
           its rows even when they look old.
 
+        Both silence columns are read, and this writer must leave both alone:
+        the revision bump below passes ``touch_updated_at=False`` precisely
+        because this method is the one writer that must not count as the
+        session being talked about. A janitor that stamped ``updated_at``
+        with its own clock re-armed every session it healed, so any sweep
+        that covered only part of a session (the candidate probe is capped
+        and global) left the remainder ``running`` with nothing left to close
+        it until the whole 48h bound elapsed a second time.
+
         Closing never deletes: ``status`` becomes ``interrupted`` (a legal
         terminal value), the embedded payload status follows, the content
         gains ``closedByEvidence``, and the state hash is recomputed with the
@@ -460,6 +474,13 @@ class TimelineRepositoryMixin:
         higher-``updated_seq`` upsert guard. The revision bump copies the
         prune precedent (``mark_read=False``): a closure is not content the
         user has now seen, so it must never consume the unread badge.
+
+        The return type is the prune precedent's ``TimelineBatchWriteResult``
+        so the revision publishes the closed rows: a bare id list reaches
+        ``publish_revision_result`` as an unknown result and yields a
+        session-only envelope with no items and no refetch flag, which moves
+        every client's cursor past the closure without ever telling them the
+        row changed.
         """
 
         now = utc_now()
@@ -483,9 +504,9 @@ class TimelineRepositoryMixin:
                 older_than,
                 allow_missing=True,
             ):
-                return []
+                return _JANITOR_NO_CHANGE
             if not _timestamp_is_older_than(session_row.updated_at, older_than):
-                return []
+                return _JANITOR_NO_CHANGE
             active_run = (
                 await conn.execute(
                     select(active_runs_t.c.session_id).where(
@@ -494,7 +515,7 @@ class TimelineRepositoryMixin:
                 )
             ).first()
             if active_run is not None:
-                return []
+                return _JANITOR_NO_CHANGE
             fence = int(session_row.seq)
             rows = (
                 await conn.execute(
@@ -527,11 +548,12 @@ class TimelineRepositoryMixin:
                 and _timestamp_is_older_than(item_time, older_than)
             ]
             if not doomed:
-                return []
+                return _JANITOR_NO_CHANGE
             first_seq = await self._reserve_session_revisions(
                 conn,
                 session_id,
                 count=len(doomed),
+                touch_updated_at=False,
             )
             for index, existing in enumerate(sorted(doomed, key=lambda item: item.id)):
                 content = existing.content
@@ -561,7 +583,7 @@ class TimelineRepositoryMixin:
                 session_id,
                 sorted(item.id for item in closed),
             )
-        return [item.id for item in closed]
+        return TimelineBatchWriteResult(items=tuple(closed), changed=True)
 
     @session_revision_fenced
     async def replace_timeline_snapshot(
@@ -801,8 +823,17 @@ class TimelineRepositoryMixin:
         *,
         count: int,
         mark_read: bool = False,
+        touch_updated_at: bool = True,
     ) -> int:
-        """Reserve a consecutive revision range with one session update."""
+        """Reserve a consecutive revision range with one session update.
+
+        ``touch_updated_at=False`` keeps ``sessions.updated_at`` where it was.
+        That column is the "this session was written" activity signal the
+        age janitor's silence guard reads, so a maintenance writer that only
+        records its own repair must not refresh it — otherwise the janitor
+        re-arms every session it just healed and a sweep that covers only part
+        of a session strands the rest until the bound elapses a second time.
+        """
 
         if count <= 0:
             raise ValueError("timeline revision count must be positive")
@@ -834,9 +865,10 @@ class TimelineRepositoryMixin:
         values: dict[str, Any] = {
             "seq": next_seq,
             "updated_seq": next_seq,
-            "updated_at": utc_now(),
             "seq_allocated_high": next_seq,
         }
+        if touch_updated_at:
+            values["updated_at"] = utc_now()
         if mark_read:
             values["last_read_seq"] = case(
                 (

@@ -37,8 +37,16 @@ final class ComposerDraft {
     var isFocused = false
     var isComposing = false
 
-    var isExpanded: Bool { isFocused || !text.isEmpty || !attachments.isEmpty }
-    var hasSendableContent: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty }
+    /// The one emptiness predicate. Text counts as content only when something
+    /// survives trimming, and every consumer reads it from here: the send gate
+    /// always did, but the composer's expansion and placeholder read the raw
+    /// string, so a draft left holding only whitespace stayed expanded with the
+    /// placeholder hidden and the send key grey — and the archive pinned that
+    /// state across relaunches. Whitespace is not content: it cannot be sent,
+    /// so it must not hold the bar open.
+    var hasContent: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    var isExpanded: Bool { isFocused || hasContent || !attachments.isEmpty }
+    var hasSendableContent: Bool { hasContent || !attachments.isEmpty }
     var canAttemptSend: Bool { !isComposing && hasSendableContent }
 
     func clear() { text = ""; attachments = []; isComposing = false }

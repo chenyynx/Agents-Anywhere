@@ -155,11 +155,12 @@ import Testing
         #expect(TextPhraseSequence.chunks(in: "选择设备和 Agent，把想做的事交给它。").count > 1)
     }
 
-    @Test func composerWhitespaceExpandsButMarkedTextNeverSends() {
+    @Test func composerWhitespaceCollapsesButMarkedTextNeverSends() {
         let draft = ComposerDraft()
         #expect(!draft.isExpanded)
         draft.text = "\n  "
-        #expect(draft.isExpanded)
+        #expect(!draft.isExpanded)
+        #expect(!draft.hasContent)
         #expect(!draft.canAttemptSend)
         draft.text = "中文\n下一行"
         draft.isComposing = true
@@ -168,6 +169,35 @@ import Testing
         #expect(draft.canAttemptSend)
         draft.invalidate()
         #expect(!draft.isValid && draft.text.isEmpty)
+    }
+
+    /// A draft left holding only whitespace must read as empty everywhere:
+    /// collapsed bar, placeholder back, key grey. Rapid keyboard churn left a
+    /// session in exactly that state, and the archive preserved the blank
+    /// draft, so the expanded bar survived a relaunch until a send cleared it.
+    @Test func composerWhitespaceOnlyDraftsAreEmptyEverywhere() {
+        let draft = ComposerDraft()
+        for whitespace in [" ", "\n", "\n  ", "\r\n", "\t", " \n \t "] {
+            draft.text = whitespace
+            #expect(!draft.hasContent)
+            #expect(!draft.isExpanded)
+            #expect(!draft.canAttemptSend)
+        }
+        draft.isFocused = true
+        #expect(draft.isExpanded)
+        draft.isFocused = false
+        for content in ["a", "中文", "a\nb", " a ", "a\n\n"] {
+            draft.text = content
+            #expect(draft.hasContent)
+            #expect(draft.isExpanded)
+            #expect(draft.canAttemptSend)
+        }
+        draft.text = " \n "
+        draft.attachments = [ChatAttachment(name: "note.txt", data: Data(), mediaType: "text/plain")]
+        #expect(!draft.hasContent && draft.isExpanded)
+        draft.attachments = []
+        draft.clear()
+        #expect(!draft.hasContent && !draft.isExpanded && !draft.canAttemptSend)
     }
 
     @Test func catalogRespectsTopLevelAvailabilityAndOpaqueModelReasoningIDs() throws {

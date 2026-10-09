@@ -70,7 +70,6 @@ from connector.runtimes.claude.timeline.markers import (
 )
 from connector.runtimes.claude.timeline.messages import (
     ClaudeMessageProjector,
-    is_interactive_tool_name,
     is_synthetic_control_message,
     message_id,
     message_model,
@@ -176,9 +175,13 @@ class PendingAwait(Enum):
       cap (D3): that is the one bound left on a turn wedged on a tool that
       never returns.
 
-    Approvals are never classified by tool name — any tool can be held by
-    `can_use_tool` — so their pending signal comes from the interaction
-    notices; the interactive tool NAME only covers the question shape.
+    INTERACTION is never classified by tool name. Any tool can be held by
+    `can_use_tool`, and a question's own tool_use entry can outlive a broken
+    pair-up (a lost result / a scope-drift pop-miss — B5/F1,
+    `.local-dev/watchdog-liveness-b4-report.md` §1), so the exemption comes
+    only from the interaction notices — the live record that the user is
+    being asked something right now. An open call of any name is EXECUTION:
+    stall clock paused, hard cap armed.
     """
 
     NONE = "none"
@@ -599,14 +602,19 @@ class ClaudeTurnRunner:
         B2 (§3 D2) suspends both timers while the turn is visibly waiting on
         something (`pending_await`, sampled per tick, never cached): a stall
         verdict is withheld whenever ANY tool call is unanswered, and the hard
-        cap is withheld as well for the interaction class (an on-screen
-        question or approval). Zero-content turns never reach any of this —
-        the fast kill above returns before the pending state is ever
-        consulted, which is the ordering B2 is required to preserve (a ghost
-        with no frames has nothing to wait on anyway). The pending callable
-        is a parameter, not a method call, so this stays a static adjudicator
-        whose only contact with the live runner is the tick-by-tick fact it
-        is handed.
+        cap is withheld as well for the interaction class — which B5/F1
+        (`_pending_await`) narrows to a LIVE interaction notice; the
+        projection's tool name never exempts this timer. Zero-content turns
+        never reach any of this — the fast kill above returns before the
+        pending state is ever consulted, which is the ordering B2 is required
+        to preserve (a ghost with no frames has nothing to wait on anyway).
+        The pending callable is a parameter, not a method call, so this stays
+        a static adjudicator whose only contact with the live runner is the
+        tick-by-tick fact it is handed — and one that RAISES is contained
+        (B5/F3, B4 §1): treated as NONE for that tick so both timers keep
+        running, logged once per turn, because a broken accessor must not
+        decapitate the adjudication and strand the execution lock with no
+        timer left and no record.
         """
 
         try:
@@ -627,12 +635,32 @@ class ClaudeTurnRunner:
         last_labour_at = execution.started_at_monotonic
         deferral_logged = False
         pause_logged = False
+        sampler_error_logged = False
         while True:
             if execution.finished.is_set():
                 return None
             now = time.monotonic()
             age = now - execution.started_at_monotonic
-            pending = pending_await()
+            try:
+                pending = pending_await()
+            except Exception:  # noqa: BLE001 - a broken sampler must not kill it
+                # F3 (B4 §1): the sampler reads two live objects; a raise in
+                # it used to kill this task on the spot — no verdict, no
+                # fire, no terminal, the lock held, no log until task-GC
+                # time. Degrade to the most conservative reading (NONE: the
+                # stall clock runs, the cap stays armed), keep polling so a
+                # recovered accessor is picked up again, and say so once per
+                # turn instead of once per tick.
+                pending = PendingAwait.NONE
+                if not sampler_error_logged:
+                    sampler_error_logged = True
+                    logger.warning(
+                        "Claude watchdog pending await sampler raised; "
+                        "treating as none session_id={} turn_id={}",
+                        session_id,
+                        execution.turn_id,
+                        exc_info=True,
+                    )
             if age >= hard_cap and not pending.cap_exempt:
                 # The absolute bound, checked first: when it and the stall
                 # verdict are both due, the hard cap is the truer name. It is
@@ -718,16 +746,30 @@ class ClaudeTurnRunner:
     ) -> PendingAwait:
         """Classify what this turn is visibly waiting on (B2, §3 D2).
 
-        Three sources, read live at every watchdog tick and never cached:
+        Two sources, read live at every watchdog tick and never cached:
 
         * the interaction notices — an approval (`can_use_tool` holds ANY
           tool name, so this cannot be classified by name) or a question
-          still open for this session;
+          still open for this session. A live notice is the ONLY fact that
+          grants INTERACTION: it is the record that the user is being asked
+          something right now;
         * the projection's open tool calls for THIS turn — a tool_use whose
-          `tool_result` has not arrived;
-        * within those, `is_interactive_tool_name` separates the question
-          shape (whose card is a visible "waiting for you" state) from the
-          execution class (a long tool's legal silence).
+          `tool_result` has not arrived. Any such call is a pending
+          EXECUTION: its silence is legal (a Bash, a pytest, a subagent
+          wait), so the stall clock pauses, but the hard cap stays armed.
+
+        B5/F1 (`.local-dev/watchdog-liveness-b4-report.md` §1): the tool
+        NAME no longer classifies anything here. The real CLI routes
+        AskUserQuestion through `can_use_tool` in every permission mode
+        (B4 §2a, probe-verified), so a legitimate question ALWAYS has a live
+        notice — and "frame present, notice absent" can only mean the
+        pair-up broke (item-id scope drift on the result, a dropped result
+        on an answered question, a discarded sidechain call). Classified by
+        name, those stale entries granted `cap_exempt` at ANY age and left
+        the execution lock with no timer able to collect it; as EXECUTION
+        the same shape still pauses the stall clock but is closed by its
+        hard cap — which is what `open_tool_calls`' own docstring promises
+        for unpaired leftovers.
 
         Both sources are read-only snapshots; nothing here writes projector
         or controller state. The `_tool_calls` registry is filtered by turn
@@ -738,14 +780,9 @@ class ClaudeTurnRunner:
 
         if self.interactions.pending_for_session(session.session_id):
             return PendingAwait.INTERACTION
-        open_calls = self.timeline.open_tool_calls(execution.turn_id)
-        if not open_calls:
-            return PendingAwait.NONE
-        if any(
-            is_interactive_tool_name(call.block.tool_name) for call in open_calls
-        ):
-            return PendingAwait.INTERACTION
-        return PendingAwait.EXECUTION
+        if self.timeline.open_tool_calls(execution.turn_id):
+            return PendingAwait.EXECUTION
+        return PendingAwait.NONE
 
     async def _scheduled_watchdog(
         self,

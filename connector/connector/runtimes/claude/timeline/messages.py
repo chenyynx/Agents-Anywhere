@@ -495,7 +495,10 @@ class ClaudeMessageProjector:
         * an entry whose `tool_result` matched under a different item-id
           scope (`stable_tool_item_id` keys on the external session id, which
           a session can claim after the call was projected) is never paired —
-          that turn then reaches its hard cap instead of its stall budget;
+          that turn then reaches its hard cap instead of its stall budget.
+          B5/F1 makes that promise hold for the question shape too: the
+          watchdog's cap exemption comes only from live interaction notices,
+          so a stale `AskUserQuestion` entry is an EXECUTION like any other;
         * sidechain (subagent) frames are projected under the main turn's id,
           so a subagent's open call pauses the main turn's stall clock too —
           D2's accepted reading: the main turn IS waiting on that call.
@@ -1941,13 +1944,15 @@ def is_interactive_tool_name(tool_name: str | None) -> bool:
     user-visible notice under the same name but keeps its own literal — the
     domain layer must not import the timeline layer.
 
-    The scheduled-turn watchdog reads it too (B2,
-    `.local-dev/claude-watchdog-liveness-tasks.md` §3 D2): an open call of
-    this shape is an on-screen question — a visible "waiting for you" state —
-    so the turn is exempt from the hard cap as well as the stall clock.
-    Approvals are deliberately NOT name-classified anywhere: any tool can be
-    held by `can_use_tool`, so their pending signal comes from the interaction
-    notices, never from a tool name.
+    The scheduled-turn watchdog deliberately does NOT read it (B5/F1,
+    `.local-dev/watchdog-liveness-b4-report.md` §1): a bare open tool_use
+    entry proves nothing about a live question, and classifying one by name
+    turned OFF the hard cap while PAUSING the stall clock — a stale entry
+    (lost result / scope-drift pop-miss) left the turn uncollectable at any
+    age. The watchdog's INTERACTION exemption therefore comes only from live
+    interaction notices
+    (`ClaudeInteractionController.pending_for_session`). The name here serves
+    routing and the card shape, never deadline classification.
     """
 
     return tool_name == "AskUserQuestion"

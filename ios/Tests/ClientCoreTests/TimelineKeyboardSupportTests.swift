@@ -5,11 +5,43 @@ import Testing
 /// S2 (2026-10-02): pins the non-invalidating publication rules and the
 /// keyboard payload parse the timeline's transition windows rely on.
 /// Expectations are spelled as literals so any change to a rule turns
-/// these red. (The keyboard-follow coordination this file once covered was
-/// reverted at pp's direction; the page does not move with the keyboard.)
-/// keyboard payload parse and the keyboard-follow coordination gate, plus the
-/// command counts and order the timeline relies on. Expectations are spelled
-/// as literals so any change to a rule turns these red.
+/// these red. (The keyboard-height follow this file once covered was reverted
+/// at pp's direction; 2026-10-09 added the within-window bottom pin — a hold
+/// on the bottom edge, still no keyboard-height arithmetic.)
+
+/// The keyboard window's bottom pin: while the keyboard moves, the page's own
+/// follow paths are muted, so a reader at the bottom keeps it by an explicit
+/// no-animation pin rather than by the scroll view's default anchor.
+@Suite struct TimelineKeyboardBottomPinTests {
+    private func pin(following: Bool = true, scrolling: Bool = false, suspended: Bool = false,
+                     measured: Bool = true, atBottom: Bool = false) -> Bool {
+        TimelineKeyboardBottomPin.shouldPin(isFollowing: following, isScrolling: scrolling,
+            navigationSuspended: suspended, isMeasured: measured, atBottom: atBottom)
+    }
+
+    @Test func aFollowingReaderKeepsTheBottomWhileTheKeyboardMoves() {
+        #expect(pin())
+    }
+
+    @Test func aSampleThatAlreadyRestsAtTheBottomIsLeftAlone() {
+        #expect(!pin(atBottom: true))
+    }
+
+    @Test func theReaderAndTheDrawerAlwaysWin() {
+        #expect(!pin(scrolling: true))
+        #expect(!pin(suspended: true))
+    }
+
+    @Test func onlyFollowingPins() {
+        // A reading visit and a presented interaction both land here: neither
+        // may be dragged to the bottom by a keyboard.
+        #expect(!pin(following: false))
+    }
+
+    @Test func anUnmeasuredSampleNeverPins() {
+        #expect(!pin(measured: false))
+    }
+}
 
 @Suite struct TimelineViewportPublicationDecisionTests {
     private func viewport(content: CGFloat = 2000, container: CGFloat = 800,

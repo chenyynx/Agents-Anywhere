@@ -32,6 +32,9 @@ struct ChatTimelineView: View {
     /// never reads it, so opening or closing the keyboard re-evaluates the
     /// return pill and the dismiss layer instead of the whole timeline chain.
     @State private var keyboard = TimelineKeyboardMonitor()
+    /// Set while a keyboard-driven pin holds the bottom, so a transition end
+    /// releases exactly what its own window pinned and nothing else.
+    @State private var keyboardPinnedBottom = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.sidebarDrawerIsTransitioning) private var sidebarIsTransitioning
     @Environment(\.sidebarDrawerObscuresDetail) private var sidebarObscuresDetail
@@ -149,6 +152,7 @@ struct ChatTimelineView: View {
                     // the rendered page. Publish only dimensions used by following,
                     // and not even those while the keyboard animation drives them.
                     viewportSample.value = value
+                    pinBottomForKeyboard(value)
                     publishViewportSample(value, keyboardTransitionActive: keyboardDrivingLayout)
                     // A landed instant return is confirmed by geometry even when
                     // the tail callback arrived before this sample did.
@@ -377,6 +381,26 @@ struct ChatTimelineView: View {
     private var keyboardDrivingLayout: Bool {
         keyboard.transitionActive || (keyboard.isVisible && scrolling.userIsScrolling)
     }
+    /// Keeps the newest row on the input bar for as long as the keyboard is
+    /// moving. Inside the transition window the page mutes its own follow
+    /// paths, so the bottom rests on the scroll view's default anchor alone —
+    /// a default, not a guarantee, and one a manual scroll detaches. The pin is
+    /// a no-animation edge target, so it rides the keyboard's own animation
+    /// frame by frame instead of racing it, and it is re-derived from the
+    /// freshest sample every frame, so a release landing in between (a
+    /// navigation generation bump, a streaming revision) heals on the next one.
+    private func pinBottomForKeyboard(_ sample: TimelineViewport) {
+        guard keyboard.transitionActive, keyboard.isVisible else { return }
+        guard TimelineKeyboardBottomPin.shouldPin(isFollowing: scrolling.mode == .following,
+            isScrolling: scrolling.userIsScrolling, navigationSuspended: navigationIsSuspended,
+            isMeasured: sample.isMeasured, atBottom: sample.measuredAtBottom) else { return }
+        // Assign once per window: a per-frame write would re-evaluate the page
+        // body on every sample, the storm S2 exists to remove.
+        if !keyboardPinnedBottom { keyboardPinnedBottom = true }
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { position.scrollTo(edge: .bottom) }
+    }
     /// Writes a sample into view state only when it changes a decision (S2).
     /// Sampling stays per-frame in the non-invalidating box; publishing
     /// re-evaluates the page body, so a keyboard transition that only
@@ -441,6 +465,14 @@ struct ChatTimelineView: View {
     }
     private func keyboardTransitionDidEnd(token: Int) {
         guard keyboard.finishTransition(token: token) else { return }
+        // Release this window's own pin before the settled sample is judged,
+        // so the regular machinery decides on a page that no target of ours is
+        // holding. A return already in flight keeps its own target — it owns
+        // the release, and its completion releases it.
+        if keyboardPinnedBottom {
+            keyboardPinnedBottom = false
+            if scrolling.activeCommand == nil { releaseScrollPosition() }
+        }
         // Rule ⑤: evaluate the latest sample with the window closed, so a
         // visible height withheld during the transition lands now and the
         // `lastRequest` dedup cannot stay pinned to a pre-keyboard value.

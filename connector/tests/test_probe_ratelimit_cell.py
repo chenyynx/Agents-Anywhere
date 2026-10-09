@@ -144,7 +144,7 @@ def test_process_retirement_is_disclosed_while_the_limiter_silences_the_ledger(
             assert error["message"] == lifecycle.PROCESS_RETIRED_MESSAGE
             assert error["params"] == {
                 "retirementConfirmed": True,
-                "stuckSeconds": int(lifecycle.CONTENTING_TURN_WATCHDOG_SECONDS),
+                "stuckSeconds": int(lifecycle.CONTENTING_TURN_STALL_SECONDS),
                 "interruptedBackgroundTaskCount": 0,
             }
 

@@ -412,7 +412,10 @@ def test_p4_live_ghost_rejects_human_turn() -> None:
 @pytest.fixture()
 def _short_watchdog(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(lifecycle, "POLLED_TURN_WATCHDOG_SECONDS", 0.2)
-    monkeypatch.setattr(lifecycle, "CONTENTING_TURN_WATCHDOG_SECONDS", 0.4)
+    monkeypatch.setattr(lifecycle, "CONTENTING_TURN_FLOOR_SECONDS", 0.4)
+    monkeypatch.setattr(lifecycle, "CONTENTING_TURN_STALL_SECONDS", 0.2)
+    monkeypatch.setattr(lifecycle, "CONTENTING_TURN_HARD_CAP_SECONDS", 0.8)
+    monkeypatch.setattr(lifecycle, "WATCHDOG_STALL_POLL_SECONDS", 0.02)
 
 
 def test_p5_skipped_retirement_clears_current_then_human_turn_works(

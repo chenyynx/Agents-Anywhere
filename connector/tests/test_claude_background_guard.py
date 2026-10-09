@@ -221,17 +221,20 @@ def _parse(frame: dict[str, Any]) -> Any:
 
 @pytest.fixture(autouse=True)
 def _short_breaker_budget(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Compress the 30s product budget so the breaker is observable in a test.
+    """Compress the product budgets so the breaker is observable in a test.
 
-    Both product budgets stay compressed (claude-watchdog-longrun-tasks.md
-    §2 G1/G2), but which one fires has changed since the B5 cast-frame gate:
-    the wake frame that mints these ghosts is passive arrival and no longer
-    counts as content, so they now reap on the fast kill. The L1 invariant
-    these tests pin does not depend on which of the two budgets fired.
+    The contenting budgets stay compressed too (claude-watchdog-liveness-
+    tasks.md §3), but which one fires has changed since the B5 cast-frame
+    gate: the wake frame that mints these ghosts is passive arrival and no
+    longer counts as content, so they now reap on the fast kill. The L1
+    invariant these tests pin does not depend on which budget fired.
     """
 
     monkeypatch.setattr(lifecycle, "POLLED_TURN_WATCHDOG_SECONDS", 0.2)
-    monkeypatch.setattr(lifecycle, "CONTENTING_TURN_WATCHDOG_SECONDS", 0.4)
+    monkeypatch.setattr(lifecycle, "CONTENTING_TURN_FLOOR_SECONDS", 0.4)
+    monkeypatch.setattr(lifecycle, "CONTENTING_TURN_STALL_SECONDS", 0.2)
+    monkeypatch.setattr(lifecycle, "CONTENTING_TURN_HARD_CAP_SECONDS", 0.8)
+    monkeypatch.setattr(lifecycle, "WATCHDOG_STALL_POLL_SECONDS", 0.02)
 
 
 # --------------------------------------------------------------------------

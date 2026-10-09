@@ -18,12 +18,16 @@ transcript's last write was 0.13s AFTER the firing line.
 The breaker itself is the P0 defense and must not go away: a turn minted out of
 silence that never projects anything and never sees a result holds
 ``session.execution`` forever, the session stays running and the composer stays
-disabled. So the deadline is now two-stage — a fast kill for the zero-content
-class, and an absolute ceiling for a turn that has shown real work.
+disabled. So the deadline is now an adjudication — a fast kill for the
+zero-content class, and, for a turn that has shown real work, a stall verdict
+that fires only once its labour frames have stood still past an age floor
+(progress arbitration, `.local-dev/claude-watchdog-liveness-tasks.md` §2/§3).
 
-The ceilings here are compressed; the numbers in
+The budgets here are compressed; the numbers in
 ``lifecycle.POLLED_TURN_WATCHDOG_SECONDS`` /
-``lifecycle.CONTENTING_TURN_WATCHDOG_SECONDS`` are the product contract and are
+``lifecycle.CONTENTING_TURN_FLOOR_SECONDS`` /
+``lifecycle.CONTENTING_TURN_STALL_SECONDS`` /
+``lifecycle.CONTENTING_TURN_HARD_CAP_SECONDS`` are the product contract and are
 pinned separately below.
 
 Every fixture is an SDK-parsed shape (``parse_message``) or built from the
@@ -63,10 +67,15 @@ from connector.runtimes.claude.turns import lifecycle
 
 SESSION = "a0be10a0-b644-42f9-84a2-b3e191cd144a"
 
-# Compressed budgets. The ratio is what matters (ceiling > fast kill), the
-# numbers are what makes the file fast.
+# Compressed budgets. The ratios are what matter — FLOOR above FAST_KILL (a
+# ghost still reaps fast), and FLOOR >= FAST_KILL + STALL so "early silence"
+# fires AT the floor exactly as the product numbers do. The numbers are what
+# makes the file fast.
 FAST_KILL = 0.1
-CEILING = 1.0
+FLOOR = 0.6
+STALL = 0.3
+HARD_CAP = 2.0
+TICK = 0.02
 
 # --------------------------------------------------------------------------
 # Wire payloads
@@ -213,10 +222,16 @@ class _CapturedWarnings:
 def _budgets(
     monkeypatch: pytest.MonkeyPatch,
     fast: float = FAST_KILL,
-    ceiling: float = CEILING,
+    floor: float = FLOOR,
+    stall: float = STALL,
+    cap: float = HARD_CAP,
+    tick: float = TICK,
 ) -> None:
     monkeypatch.setattr(lifecycle, "POLLED_TURN_WATCHDOG_SECONDS", fast)
-    monkeypatch.setattr(lifecycle, "CONTENTING_TURN_WATCHDOG_SECONDS", ceiling)
+    monkeypatch.setattr(lifecycle, "CONTENTING_TURN_FLOOR_SECONDS", floor)
+    monkeypatch.setattr(lifecycle, "CONTENTING_TURN_STALL_SECONDS", stall)
+    monkeypatch.setattr(lifecycle, "CONTENTING_TURN_HARD_CAP_SECONDS", cap)
+    monkeypatch.setattr(lifecycle, "WATCHDOG_STALL_POLL_SECONDS", tick)
 
 
 async def _cast_with_labour(
@@ -250,18 +265,22 @@ async def _cast_with_labour(
 
 
 def test_watchdog_deadlines_are_the_adjudicated_product_budgets() -> None:
-    """30s fast kill, 1800s absolute ceiling (pp verdict, §2 G2/G3; ceiling
-    raised 600->1800 as the 2026-10-09 stopgap, see lifecycle.py).
+    """30s fast kill, then floor/stall/hard cap (pp verdict,
+    `.local-dev/claude-watchdog-liveness-tasks.md` §3 micro-verdict).
 
-    Both magnitudes are load-bearing and neither is derivable from the code:
-    the fast kill is the C1 budget for the ghost class; the ceiling bounds a
-    contenting turn that never settles, and 1800s (stopgap) now also keeps
-    every observed real wake-cycle (10-15 min of continuous work) inside the
-    window. The root fix replaces the number with progress arbitration.
+    All four magnitudes are load-bearing and none is derivable from the code.
+    The fast kill is the C1 budget for the ghost class; the floor is the age
+    before which no contenting kill is permitted (a whole observed wake-cycle
+    — 10-15 min of continuous work — fits inside it); the stall budget is how
+    long labour may stand still before the turn is judged dead (5x the largest
+    audited legal generation gap); the hard cap is the one absolute bound, and
+    the only verdict an always-progressing turn can meet.
     """
 
     assert lifecycle.POLLED_TURN_WATCHDOG_SECONDS == 30.0
-    assert lifecycle.CONTENTING_TURN_WATCHDOG_SECONDS == 1800.0
+    assert lifecycle.CONTENTING_TURN_FLOOR_SECONDS == 600.0
+    assert lifecycle.CONTENTING_TURN_STALL_SECONDS == 300.0
+    assert lifecycle.CONTENTING_TURN_HARD_CAP_SECONDS == 3600.0
 
 
 # --------------------------------------------------------------------------
@@ -273,9 +292,9 @@ def test_watchdog_deadlines_are_the_adjudicated_product_budgets() -> None:
     ("published_items", "consumed_frames", "expected"),
     [
         (0, 0, lifecycle.WATCHDOG_REASON_ZERO_CONTENT),
-        (12, 0, lifecycle.WATCHDOG_REASON_CONTENT_CEILING),
-        (0, 7, lifecycle.WATCHDOG_REASON_CONTENT_CEILING),
-        (3, 4, lifecycle.WATCHDOG_REASON_CONTENT_CEILING),
+        (12, 0, lifecycle.WATCHDOG_REASON_CONTENT_STALL),
+        (0, 7, lifecycle.WATCHDOG_REASON_CONTENT_STALL),
+        (3, 4, lifecycle.WATCHDOG_REASON_CONTENT_STALL),
     ],
 )
 def test_content_gate_is_the_or_of_both_counters(
@@ -290,6 +309,11 @@ def test_content_gate_is_the_or_of_both_counters(
     turn that published 12 items be killed like a ghost. Neither counter may be
     swapped for "the final answer text" either — jmD_zip published nothing at
     all and was not a ghost.
+
+    The gate now selects the ADJUDICATION, not merely an exemption: (0, 0) is
+    judged on the spot as a ghost, while any content routes the turn into the
+    stall arbitration. The floor/stall budgets are zeroed so the decision is
+    read directly, not a clock.
     """
 
     execution = ClaudeExecution(
@@ -298,27 +322,34 @@ def test_content_gate_is_the_or_of_both_counters(
         consumed_frames=consumed_frames,
     )
     assert execution.has_turn_content is (
-        expected == lifecycle.WATCHDOG_REASON_CONTENT_CEILING
+        expected != lifecycle.WATCHDOG_REASON_ZERO_CONTENT
     )
 
     async def run() -> None:
-        reason = await lifecycle.ClaudeTurnRunner._await_watchdog_deadlines(
-            execution, 0.01, 0.01
+        verdict = await lifecycle.ClaudeTurnRunner._await_watchdog_deadlines(
+            execution,
+            0.01,  # fast kill
+            0.0,  # floor: no age requirement for this read of the gate
+            0.0,  # stall: no silence requirement for this read of the gate
+            100.0,  # hard cap: never in play on either branch
+            0.01,  # tick
+            "turn_gate",
         )
-        assert reason == expected
+        assert verdict is not None
+        assert verdict.reason == expected
 
     asyncio.run(run())
 
 
-def test_a_finished_turn_never_fires_either_deadline() -> None:
+def test_a_finished_turn_never_fires_a_deadline() -> None:
     execution = ClaudeExecution(turn_id="turn_done", published_items=4)
     execution.finished.set()
 
     async def run() -> None:
-        reason = await lifecycle.ClaudeTurnRunner._await_watchdog_deadlines(
-            execution, 5.0, 600.0
+        verdict = await lifecycle.ClaudeTurnRunner._await_watchdog_deadlines(
+            execution, 5.0, 600.0, 300.0, 3600.0, 5.0, "turn_done"
         )
-        assert reason is None
+        assert verdict is None
 
     asyncio.run(run())
 
@@ -424,12 +455,15 @@ def test_long_turn_that_only_consumes_frames_survives_the_fast_kill(
 
 
 def test_content_turn_is_not_killed_by_frame_silence(monkeypatch: pytest.MonkeyPatch) -> None:
-    """C4 boundary: silence after real work never re-arms a short deadline.
+    """C4 boundary, re-adjudicated: silence under the stall budget never kills.
 
     A legal `sleep 75` produces 72.003s of zero-frame silence on the wire
     (findings §2.4), and this product's own normal usage includes 35s+ tools
-    with a declared 600s timeout. No frame-based reset exists here on purpose:
-    the only timer left after content is the absolute ceiling.
+    with a declared 600s timeout. Progress arbitration states the invariant
+    more strongly than the old "no frame-based reset" rule did: silence
+    shorter than CONTENTING_TURN_STALL_SECONDS fires nothing, even once the
+    turn is past the age floor — the only clock that matters is the one
+    measured from the last labour sample.
 
     The work has to be post-cast (the cast frame itself is excluded from the
     gate after B5), which matches the real wire: the wake frame casts, the
@@ -446,10 +480,29 @@ def test_content_turn_is_not_killed_by_frame_silence(monkeypatch: pytest.MonkeyP
             await runtime.start_turn("silent", None, "hello")
             session = await _settled_session(runtime, "silent")
             execution = await _cast_with_labour(client, session)
+            baseline = execution.published_items
 
-            # No frame at all for a long stretch — the C4 shape.
-            await asyncio.sleep(FAST_KILL * 6)
+            # A silence that reaches the age floor while the stall clock is
+            # still fresh: the floor is what protects the turn here.
+            await asyncio.sleep(FLOOR - FAST_KILL / 2)
+            assert session.execution is execution, (
+                "silence under the stall budget must not be re-armed into a "
+                "short deadline"
+            )
+
+            # Fresh labour pushes the stall clock out again; the next stretch
+            # of silence is still shorter than STALL and the turn is now past
+            # the floor, so it must not die either.
+            await client.incoming.put(
+                _with_session(
+                    {**POST_CAST_WORK_FRAME, "uuid": "silent-late-work"},
+                    client.native_id,
+                )
+            )
+            await _wait_until(lambda: execution.published_items > baseline)
+            await asyncio.sleep(STALL / 2)
             assert session.execution is execution
+            assert not _turn_ends(host, execution.turn_id)
             assert client.disconnected is False
         finally:
             await runtime.stop()
@@ -473,9 +526,9 @@ def test_zero_content_ghost_is_reaped_by_the_fast_kill(
     avoid, so it is asserted against the lock, not just against a log line.
     """
 
-    # A deliberately wide ceiling: the ghost must be gone long before it, so
-    # "exempt everything" cannot pass this by simply waiting longer.
-    _budgets(monkeypatch, fast=FAST_KILL, ceiling=30.0)
+    # Deliberately wide contenting budgets: the ghost must be gone long before
+    # them, so "exempt everything" cannot pass this by simply waiting longer.
+    _budgets(monkeypatch, fast=FAST_KILL, floor=30.0, stall=30.0, cap=90.0)
 
     async def run() -> None:
         client = _ScheduledClaudeClient()
@@ -511,7 +564,8 @@ def test_zero_content_ghost_is_reaped_by_the_fast_kill(
             )
             assert session.execution is None
             assert session.queued_execution is None
-            # The fast kill, not the ceiling: the terminal text names 0.2s.
+            # The fast kill, not the contenting arbitration: the terminal text
+            # names 0.2s.
             assert ended["metadata"]["terminalReason"] == "scheduled_watchdog_timeout"
         finally:
             await runtime.stop()
@@ -519,17 +573,18 @@ def test_zero_content_ghost_is_reaped_by_the_fast_kill(
     asyncio.run(run())
 
 
-def test_ghost_recovery_never_waits_for_the_ceiling(
+def test_ghost_recovery_never_waits_for_the_contenting_budgets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A wide ceiling must not slow the ghost class down.
+    """Wide contenting budgets must not slow the ghost class down.
 
-    600s for a ghost would be "the session is running and the composer is dead
-    for ten minutes" — a different P0 with the same symptom. The fast kill is
-    measured from the cast, so the ghost is gone at 30s whatever the ceiling is.
+    The floor+stall path for a ghost would be "the session is running and the
+    composer is dead for ten minutes" — a different P0 with the same symptom.
+    The fast kill is measured from the cast, so the ghost is gone at 30s
+    whatever those budgets are.
     """
 
-    _budgets(monkeypatch, fast=FAST_KILL, ceiling=30.0)
+    _budgets(monkeypatch, fast=FAST_KILL, floor=30.0, stall=30.0, cap=90.0)
 
     async def run() -> None:
         client = _ScheduledClaudeClient()
@@ -576,13 +631,13 @@ def test_recast_ghost_is_reaped_by_the_fast_kill(
     the CLI at the end of it anyway (the 10x damage the B5 e2e measured).
 
     Both counters are asserted at (0, 0) before the deadline rather than
-    assumed, and the ceiling is deliberately wide (30s) against a 0.1s fast
+    assumed, and the contenting budgets are deliberately wide (30s) against a 0.1s fast
     kill: a gate that exempted "anything that was ever seen" cannot pass by
     waiting longer — the reap must happen inside the fast kill, which the
     firing's own `reason=zero_content_fast_kill` line proves.
     """
 
-    _budgets(monkeypatch, fast=FAST_KILL, ceiling=30.0)
+    _budgets(monkeypatch, fast=FAST_KILL, floor=30.0, stall=30.0, cap=90.0)
 
     async def run() -> None:
         client = _ScheduledClaudeClient()
@@ -610,8 +665,8 @@ def test_recast_ghost_is_reaped_by_the_fast_kill(
             assert execution.has_turn_content is False
 
             with _CapturedWarnings() as captured:
-                # Fast kill (0.1s), not the wide ceiling: waiting for the
-                # ceiling would blow this 5s timeout.
+                # Fast kill (0.1s), not the wide contenting budgets: waiting
+                # for them would blow this 5s timeout.
                 await _wait_until(lambda: bool(_turn_ends(host, execution.turn_id)))
             ended = _turn_ends(host, execution.turn_id)[-1]
             assert ended["outcome"] == "failed"
@@ -651,17 +706,17 @@ def test_preamble_marker_does_not_lift_a_recast_ghost_to_the_ceiling(
     output — it is still upserted — but this turn did nothing to earn it:
     it was already lying there before the cast. If anything pre-cast counts,
     a re-cast ghost whose preamble happens to hold a stale `compact_boundary`
-    is exempted from the fast kill and sits on the 600s ceiling with the
-    composer disabled — the B5 damage, reached from the other side.
+    is exempted from the fast kill and sits in the contenting arbitration with
+    the composer disabled — the B5 damage, reached from the other side.
 
     Same red-line shape as the cast-frame test above: (0, 0) asserted before
-    the deadline, a deliberately wide ceiling (30s) against a 0.1s fast kill,
+    the deadline, deliberately wide contenting budgets (30s) against a 0.1s fast kill,
     and the firing's own `reason=zero_content_fast_kill` line as the proof
     which deadline fired. Position only — the marker's own payload would count
     if it arrived one frame later.
     """
 
-    _budgets(monkeypatch, fast=FAST_KILL, ceiling=30.0)
+    _budgets(monkeypatch, fast=FAST_KILL, floor=30.0, stall=30.0, cap=90.0)
 
     async def run() -> None:
         client = _ScheduledClaudeClient()
@@ -692,8 +747,8 @@ def test_preamble_marker_does_not_lift_a_recast_ghost_to_the_ceiling(
             assert execution.has_turn_content is False
 
             with _CapturedWarnings() as captured:
-                # Fast kill (0.1s), not the wide ceiling: waiting for the
-                # ceiling would blow this 5s timeout.
+                # Fast kill (0.1s), not the wide contenting budgets: waiting
+                # for them would blow this 5s timeout.
                 await _wait_until(lambda: bool(_turn_ends(host, execution.turn_id)))
             ended = _turn_ends(host, execution.turn_id)[-1]
             assert ended["outcome"] == "failed"
@@ -710,23 +765,26 @@ def test_preamble_marker_does_not_lift_a_recast_ghost_to_the_ceiling(
 
 
 # --------------------------------------------------------------------------
-# 5. G2: the absolute ceiling is still a deadline
+# 5. G2 re-adjudicated: a stalled contenting turn is still a deadline
 # --------------------------------------------------------------------------
 
 
-def test_containing_turn_is_reaped_at_the_absolute_ceiling(
+def test_stalled_contenting_turn_is_reaped_by_the_stall_verdict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Exempt from the fast kill ≠ never settled (red line §5).
+    """Exempt from the fast kill ≠ never settled (red line §5, re-adjudicated).
 
-    A turn that showed work and then stalls keeps its lock until the ceiling,
-    then takes the exact same forced-failure + release + retire path the ghost
-    takes. Pinned on timing, not just on the outcome: the turn must still be
-    alive well past the fast kill, so collapsing the ceiling back onto the fast
-    kill (or deleting it) turns this red.
+    A turn that showed work and then stalls takes the exact same
+    forced-failure + release + retire path the ghost takes — the verdict is
+    now `contenting_turn_stall`, fired once the labour counters have been
+    still for STALL while the turn is past FLOOR. Pinned on timing, not just
+    on the outcome: the turn must still be alive well past the fast kill, so
+    collapsing the floor back onto the fast kill (or deleting the verdict)
+    turns this red.
 
-    Two races used to make this test itself flaky (5/13 isolated before the
-    fix), both fixed at the cause rather than by loosening anything:
+    Two races used to make the ceiling version of this test flaky (5/13
+    isolated before the fix), both fixed at the cause rather than by
+    loosening anything:
 
     1. Disconnection was asserted at turn-end time, but `_scheduled_watchdog`
        runs `finish_execution` (which records the turn's end and unlocks the
@@ -740,26 +798,33 @@ def test_containing_turn_is_reaped_at_the_absolute_ceiling(
        explicitly before any timing starts.
     """
 
-    _budgets(monkeypatch, fast=FAST_KILL, ceiling=CEILING)
+    _budgets(monkeypatch)
 
     async def run() -> None:
         client = _ScheduledClaudeClient()
         host = _RecordingHost()
         runtime = _runtime_with(host, _single_client_factory(client))
         try:
-            await runtime.start_turn("ceiling", None, "hello")
-            session = await _settled_session(runtime, "ceiling")
+            await runtime.start_turn("stall", None, "hello")
+            session = await _settled_session(runtime, "stall")
             execution = await _cast_with_labour(client, session)
             assert execution.published_items > 0
 
-            await asyncio.sleep((FAST_KILL + CEILING) / 2)
-            assert session.execution is execution, (
-                "the ceiling must not collapse onto the fast kill"
-            )
+            # Well past the fast kill, before the floor: the turn still owns
+            # its lock, so the exemption has not collapsed onto the fast kill.
+            await asyncio.sleep(FAST_KILL * 3)
+            assert session.execution is execution
             assert not _turn_ends(host, execution.turn_id)
 
-            await _wait_until(lambda: bool(_turn_ends(host, execution.turn_id)))
-            assert _turn_ends(host, execution.turn_id)[-1]["outcome"] == "failed"
+            with _CapturedWarnings() as captured:
+                await _wait_until(lambda: bool(_turn_ends(host, execution.turn_id)))
+            ended = _turn_ends(host, execution.turn_id)[-1]
+            assert ended["outcome"] == "failed"
+            assert ended["metadata"]["terminalReason"] == "scheduled_watchdog_timeout"
+            log = captured.joined()
+            assert f"reason={lifecycle.WATCHDOG_REASON_CONTENT_STALL}" in log, log
+            assert "stall_seconds=" in log, log
+            assert "age_seconds=" in log, log
             assert session.execution is None
             assert session.queued_execution is None
             # Transport close happens strictly after the turn's end is
@@ -783,10 +848,10 @@ def test_live_background_work_still_blocks_retirement(
 ) -> None:
     """The do-not-retire invariant is untouched by the content gate.
 
-    A turn that has shown work is now reaped by the ceiling instead of the fast
-    kill; when live background work rides the same transport, the ceiling must
-    still downgrade to "fail the turn, drop the ghost response, keep the
-    process" exactly as before.
+    A turn that has shown work is now reaped by the stall verdict instead of
+    the fast kill; when live background work rides the same transport, that
+    verdict must still downgrade to "fail the turn, drop the ghost response,
+    keep the process" exactly as before.
     """
 
     _budgets(monkeypatch)
@@ -837,7 +902,7 @@ def test_live_background_work_still_blocks_retirement(
 def test_repeat_containing_timeouts_still_report_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The client-visible limiter is untouched by the new second deadline."""
+    """The client-visible limiter is untouched by the new adjudication."""
 
     _budgets(monkeypatch)
 
@@ -919,7 +984,7 @@ def test_fatal_retirement_is_logged_even_when_the_limiter_silences_the_report(
             connection.stuck_timeout_reports = 1
 
             # A containing turn (post-cast labour), so the firing below is the
-            # ceiling branch the assertion names.
+            # stall branch the assertion names.
             execution = await _cast_with_labour(client, session)
 
             with _CapturedWarnings() as captured:
@@ -946,7 +1011,9 @@ def test_fatal_retirement_is_logged_even_when_the_limiter_silences_the_report(
                 lifecycle.CLAUDE_PROCESS_RETIRED_SOURCE
             )
             assert error["params"]["retirementConfirmed"] is True
-            assert error["params"]["stuckSeconds"] == int(CEILING)
+            assert error["params"]["stuckSeconds"] == int(
+                lifecycle.CONTENTING_TURN_STALL_SECONDS
+            )
             assert error["message"] == lifecycle.PROCESS_RETIRED_MESSAGE
 
             # ...and the process death is on its own line, with the counters
@@ -954,7 +1021,7 @@ def test_fatal_retirement_is_logged_even_when_the_limiter_silences_the_report(
             log = captured.joined()
             assert "Claude stuck transport retirement is FATAL" in log, log
             assert f"turn_id={execution.turn_id}" in log
-            assert f"reason={lifecycle.WATCHDOG_REASON_CONTENT_CEILING}" in log, log
+            assert f"reason={lifecycle.WATCHDOG_REASON_CONTENT_STALL}" in log, log
             assert "client_reported=False" in log, log
         finally:
             await runtime.stop()
@@ -1139,8 +1206,8 @@ def test_human_turns_are_never_armed_even_when_they_publish(
 #
 # Arm A is the one the code comments ask for, and the only one that is purely
 # observational. Arm B is its mirror: without it, "count every post-cast frame"
-# passes A perfectly and parks every ghost on the 600s ceiling with the composer
-# disabled. Arm C is what keeps the gate POSITIONAL — the same payload, one
+# passes A perfectly and parks every ghost on the contenting floor with the
+# composer disabled. Arm C is what keeps the gate POSITIONAL — the same payload, one
 # frame later, is counted; as the frame that cast the turn it is not, even when
 # it published a timeline item of its own.
 #
@@ -1666,7 +1733,7 @@ def test_content_gate_counts_every_shape_that_projects_something(
                 # ghost shape: several shapes above publish a real timeline
                 # item when they cast, and that item is still not evidence that
                 # the turn did work (B5). A gate that counted it would park
-                # every re-cast residue on the 600s ceiling.
+                # every re-cast residue on the contenting floor.
                 assert turn.published_items == 0, (
                     f"{label}: the casting frame projected "
                     f"{projected_while_casting} item(s) and booked "

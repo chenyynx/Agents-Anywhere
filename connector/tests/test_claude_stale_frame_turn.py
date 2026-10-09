@@ -173,7 +173,10 @@ def _short_breaker_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     """
 
     monkeypatch.setattr(lifecycle, "POLLED_TURN_WATCHDOG_SECONDS", 0.2)
-    monkeypatch.setattr(lifecycle, "CONTENTING_TURN_WATCHDOG_SECONDS", 0.4)
+    monkeypatch.setattr(lifecycle, "CONTENTING_TURN_FLOOR_SECONDS", 0.4)
+    monkeypatch.setattr(lifecycle, "CONTENTING_TURN_STALL_SECONDS", 0.2)
+    monkeypatch.setattr(lifecycle, "CONTENTING_TURN_HARD_CAP_SECONDS", 0.8)
+    monkeypatch.setattr(lifecycle, "WATCHDOG_STALL_POLL_SECONDS", 0.02)
     # F1: the declined-terminal grace window, for the same reason and with the
     # same caveat. It is 30 s in production (see the constant's trade note);
     # here it is 0.2 s so a turn that starves after a decline settles in

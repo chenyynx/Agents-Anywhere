@@ -722,6 +722,15 @@ class RuntimeSyncRunner:
         single window read. Without that verdict the sweep read one empty
         window per cycle forever, one whole-library scan each, exactly the
         steady-state load the on-demand design exists to avoid.
+
+        And (c1e R4-1) the one shape the coverage verdict cannot speak for — a
+        library of exactly `limit` sessions, whose page 1 is full and
+        therefore unprovable — resolves through the extent instead: page 1's
+        seam seeds `library_extent`, so the first window at the seam is
+        `beyond_extent` rather than "unproven", and the next verified empty
+        window concludes the circle and sleeps. That shape used to have no
+        exit at all but "the library grows past the page"; the page-1 signal
+        being consumed was not one, because an armed sweep never consults it.
         """
 
         mode = session_rotation_mode()
@@ -809,6 +818,33 @@ class RuntimeSyncRunner:
                 replace(state, rest_cycles=state.rest_cycles - 1),
             )
             return
+        # R4-1: page 1's own read is also a bound on the library. A page that
+        # exposed `seam` history sessions proves sessions exist at `[0, seam)`
+        # — the seam is a prefix of the history list — so the extent
+        # high-water mark can never be lower than it. Without this seed a
+        # library of exactly `limit` sessions kept `library_extent` at 0
+        # forever: page 1 is full (and a full page is deliberately unprovable
+        # as "the end", `_page_one_covers_library`) every window past the
+        # seam is legitimately empty, and `beyond_extent` needs a non-zero
+        # extent — so the sweep walked one whole-library scan per cycle for
+        # the life of the process, and the only exits were "the library grows
+        # past the page" or a process restart (R4-1). With the seed the first
+        # empty window at the seam is `beyond_extent`: it wraps and records
+        # `past_library_extent`, and the next verified empty window concludes
+        # the circle and sleeps — the same two-read path a multi-page library
+        # already takes past its end. Only the explicit marker is trusted,
+        # exactly as `_first_rotation_offset` trusts it: a reader that says
+        # nothing keeps its old behavior (a page that is a plain tuple is
+        # never silently upgraded to a seam). A failed read proves nothing
+        # and seeds nothing; a seam of 0 — a failed read, or a fully
+        # displaced page whose ladder starts at 0 anyway — extends nothing.
+        reported_seam = _page_reported_seam(page_one_page)
+        if (
+            reported_seam is not None
+            and not _page_read_failed(page_one_page)
+            and reported_seam > state.library_extent
+        ):
+            state = replace(state, library_extent=reported_seam)
         try:
             page = await runtime.list_sessions(
                 limit=SESSION_ROTATION_PAGE_SIZE,
@@ -1514,11 +1550,16 @@ class SessionRotationState:
       re-arms the re-seek; below it the ladder commits forward, which is what
       gets it out of a region that keeps failing.
     * `library_extent` — the high-water mark: one past the furthest offset that
-      ever returned a non-empty window (0 = never). A ladder reading empty at
-      or beyond it is not "unproven" — there is nothing there that has ever
-      been there, so it re-seeks without spending patience, and a library that
-      shrank under a persisted offset is recovered in one read instead of a
-      whole cooldown.
+      ever held sessions, from either evidence (0 = never). A non-empty window
+      raises it to `offset + page size`; page 1's own read seeds it with the
+      seam it exposed (R4-1), because a library of exactly `limit` sessions
+      gives the ladder no non-empty window beyond the seam at all — every
+      window there is legitimately empty, so without the seed the extent
+      stayed 0, `past_library_extent` was unreachable, and the sweep could
+      never sleep. A ladder reading empty at or beyond it is not "unproven" —
+      there is nothing there that has ever been there, so it re-seeks without
+      spending patience, and a library that shrank under a persisted offset is
+      recovered in one read instead of a whole cooldown.
     * `past_library_extent` — the sweep has looked beyond `library_extent` and
       found nothing. That IS the proof of the library's end that
       `circle_windows` otherwise supplies, so it stands in for it until a real

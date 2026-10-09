@@ -217,8 +217,9 @@ def test_the_reader_reports_a_library_that_fits_inside_page_one() -> None:
 
 def test_the_reader_does_not_report_a_full_window_as_the_whole_library() -> None:
     """A page the SDK filled to its size is a page boundary, not the end of
-    the list — the T==limit residual stays unproven and the ladder keeps
-    walking (pinned in `test_a_library_exactly_one_page_long_keeps_walking`)."""
+    the list — the T==limit read stays unprovable here, and the ladder
+    resolves the shape through its seeded extent (c1e R4-1, pinned in
+    `test_a_library_exactly_one_page_long_sleeps`)."""
 
     host = _RecordingHost()
     runtime = _runtime(
@@ -327,16 +328,25 @@ def test_the_coverage_verdict_survives_rescanned_and_the_bound_instance() -> Non
     assert bound_page.page_one_complete is True
 
 
-# --- The residual, the seam-0 rule table, and the no-verdict fallback. ------
+# --- The R4-1 boundary, the seam-0 rule table, and the no-verdict fallback. -
 
 
-def test_a_library_exactly_one_page_long_keeps_walking(monkeypatch) -> None:
-    """Known residual (documented in `_page_one_covers_library`): a library of
-    exactly `limit` sessions returns a full window, so "the list ends here"
-    is unprovable — there is no count in the SDK listing and a second probe
-    read would cost a whole extra scan per cycle. The ladder keeps walking
-    until the library grows past the page (or the page-1 signal is consumed),
-    exactly as it did before the verdict existed. Pinned, not fixed."""
+def test_a_library_exactly_one_page_long_sleeps(monkeypatch) -> None:
+    """The R4-1 fix (was: `..._keeps_walking`, the pinned residual): a library
+    of exactly `limit` sessions no longer walks forever.
+
+    Page 1 is full, so the coverage verdict is deliberately withheld — a full
+    window is a page boundary, not an end. What resolves the shape is the
+    extent seed (c1e): page 1's seam raises `library_extent` to `limit`, so
+    the first window at the seam is `beyond_extent` rather than "unproven",
+    and the next verified empty window concludes the circle. Two window reads,
+    then sleep.
+
+    Before the seed this shape had no exit at all but "the library grows past
+    the page" — and the second exit the fixer documented ("or the page-1
+    signal is consumed") was not one: an armed sweep never consults that
+    signal, and the red team measured the signal fully consumed with the sweep
+    still walking (R4-1)."""
 
     monkeypatch.setenv(SESSION_ROTATION_ENV, "on")
     host = _RecordingHost()
@@ -351,8 +361,11 @@ def test_a_library_exactly_one_page_long_keeps_walking(monkeypatch) -> None:
 
     asyncio.run(drive())
 
-    assert _window_reads(sdk), sdk.list_calls
-    assert (host.sync_states.get(ROTATION_STATE_KEY) or {}).get("active") is True
+    state = host.sync_states.get(ROTATION_STATE_KEY) or {}
+    assert state.get("active", False) is False, state
+    # The end proven in two reads (beyond_extent, then the wrap read that
+    # concludes) instead of one whole-library scan per cycle forever.
+    assert len(_window_reads(sdk)) == 2, sdk.list_calls
 
 
 def test_the_seam_zero_rule_and_the_persisted_zero_position() -> None:

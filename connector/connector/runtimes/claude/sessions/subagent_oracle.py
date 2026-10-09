@@ -50,6 +50,7 @@ from connector.runtimes.claude.timeline.agent_calls import (
     DISPATCH_TOOL_NAME,
     SEND_MESSAGE_TOOL_NAME,
     agent_task_terminal_status,
+    is_async_agent_receipt,
 )
 
 #: How a card was closed from engine evidence. Carried on the item's
@@ -916,6 +917,20 @@ def _is_receipt_row(row: Mapping[str, Any]) -> bool:
     free text lives, so a line that merely *mentions* ``agentId:`` there is a
     sentence about a run, not the engine's answer to a dispatch call. Dropping
     that shape is what R1c needed; the two receipt shapes above are kept whole.
+
+    The bare body is the shape the HUMAN writes on a ``user`` row too — a typed
+    message, hook output, a pasted command result — so the row type alone
+    cannot admit it without re-opening the pollution this gate exists to close
+    one row-type over (R4-2: a human message quoting the id re-stamped a dead
+    task's launch anchor through exactly this branch). What separates the two
+    is the engine's own wording: every launch receipt opens with
+    ``ASYNC_AGENT_RECEIPT_PREFIX``, which is the same criterion the message
+    view applies through :func:`is_async_agent_receipt` (F5's real shape), so
+    the raw scan and the message view now admit the bare body on one rule.
+    The two ``tool_result`` shapes are deliberately NOT gated on wording: the
+    block type is the engine's channel there, and F5's bare result — the form
+    whose dispatch call row the transcript may no longer hold — keeps its
+    prefix clause instead of a lineage check, which would kill it.
     """
 
     if row.get("type") != "user":
@@ -925,8 +940,12 @@ def _is_receipt_row(row: Mapping[str, Any]) -> bool:
     message = row.get("message")
     content = message.get("content") if isinstance(message, Mapping) else None
     if isinstance(content, str):
-        # The bare F5 body: the receipt IS the user row's content.
-        return True
+        # The bare F5 body: the receipt IS the user row's content — admitted
+        # only when the body carries the engine's launch wording (R4-2). The
+        # metadata channel is absent by construction here (that is the other
+        # branch above), so the body has to speak, exactly as
+        # `is_async_agent_receipt` reads it in the message view.
+        return is_async_agent_receipt(None, output=content)
     return isinstance(content, list) and any(
         isinstance(block, Mapping) and block.get("type") == "tool_result"
         for block in content

@@ -68,6 +68,11 @@ struct ChatTimelineView: View {
     private var hasInteractions: Bool {
         model.session.notices.notices.contains { $0.isVisible && $0.notice.type == "interaction" }
     }
+    /// The data window's first row — the signal a prepend or a trim moves.
+    /// Hoisted out of the `onChange` key: the optional chain over the
+    /// presentation's rows is one expression too deep for the type checker
+    /// inside a modifier chain of this size.
+    private var dataWindowFirstRowID: String? { model.timeline.rows.first?.id }
     private var viewport: TimelineViewport { viewportSample.value ?? scrolling.viewport }
     private var navigationIsSuspended: Bool { sidebarIsTransitioning || sidebarObscuresDetail }
     var body: some View {
@@ -242,7 +247,7 @@ struct ChatTimelineView: View {
                 // re-pin is motionless and spares them the animated lurch.
                 _ = scrolling.reassertOpeningReturn()
             }
-            .onChange(of: model.timeline.rows.first?.id) { oldFirst, newFirst in
+            .onChange(of: dataWindowFirstRowID) { oldFirst, newFirst in
                 armDataWindowCorrection(from: oldFirst, to: newFirst)
             }
             .onChange(of: hasInteractions, initial: true) { _, presented in

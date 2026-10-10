@@ -14,7 +14,7 @@ name: iOS Build & Test
 
 on:
   push:
-    branches: [dev]
+    branches: [dev, feat/session-open-coverage]
     paths:
       - "ios/**"
       - ".github/workflows/ios-build.yml"

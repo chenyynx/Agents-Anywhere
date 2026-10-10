@@ -161,7 +161,15 @@ nonisolated struct TimelineWindowMoveGate {
 ///   rides the flight is motion-masked and its resting cost is nil — the page
 ///   is an absolute offset away from a framing nobody can observe.
 nonisolated enum TimelineAnchorWritePolicy {
-    enum Action: Equatable { case write, absorb }
+    enum Action: Equatable {
+        case write
+        case absorb
+        /// Refused because the displacement is beyond what one write may
+        /// carry: it is not this move's estimate error but uncorrected
+        /// structure (a prepend that landed inside the settle), and writing
+        /// it would fling the reader. Logged so the next device log names it.
+        case capped
+    }
 
     /// Displacements at or below this many points are invisible under a
     /// gesture, so they are absorbed instead of written. Grounding: layout
@@ -171,8 +179,16 @@ nonisolated enum TimelineAnchorWritePolicy {
     /// this line keeps the common case (every previously measured unit) a
     /// no-op under the reader's hand.
     static let gestureTolerance: CGFloat = 8
+    /// The largest displacement one write may carry (about 1.5 screens).
+    /// Anything larger is not a move's residual — the log's
+    /// `Δ+19224.7 (interacting) wrote` was a prepend's worth of structure
+    /// hiding inside an anchor correction — and no phase should write it:
+    /// at rest it flings the page, under a finger it jumps it, in flight it
+    /// is already masked. Absorb, and say so.
+    static let maxWrittenDelta: CGFloat = 1.5 * 900
 
     static func action(delta: CGFloat, phase: TimelineScrollState.Phase) -> Action {
+        guard abs(delta) <= maxWrittenDelta else { return .capped }
         switch phase {
         case .idle, .animating:
             return .write

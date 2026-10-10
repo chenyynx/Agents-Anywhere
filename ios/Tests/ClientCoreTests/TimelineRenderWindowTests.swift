@@ -291,6 +291,33 @@ import Testing
         #expect(window.shrinkableCount(sample: shrinkTrigger) > 0)
     }
 
+    /// The prepend correction's math (round 4): a backfill page shifts the
+    /// boundary down, and the data window's own signal prices exactly that
+    /// shift — while the render-window signal, which the move anchors use,
+    /// stays silent for the same pair, because the render boundary kept its
+    /// identity. That orthogonality is what lets the in-place correction and
+    /// a move's estimate-error correction coexist without double-paying.
+    @Test func aPrependShiftIsPricedByTheDataWindowSignalAlone() {
+        // Before the page: the data window starts at "old"; the boundary "b"
+        // last measured at y 4 000 with the reader at offset 1 000.
+        let before = TimelineHistoryLayout(firstRowID: "old", renderFirstRowID: "b",
+            anchorRowID: "b", edge: .top, y: 4_000)
+        var dataAnchor = TimelineHistoryPosition(id: 1, layout: before,
+            offsetY: 1_000, topInset: 80, signal: .dataWindow)
+        dataAnchor.receivedPage(firstRowID: nil)
+        // The prepend lands: the window now starts at "older", the boundary
+        // is still "b", and its y moved by the prepended block (1 500 pt).
+        let after = TimelineHistoryLayout(firstRowID: "older", renderFirstRowID: "b",
+            anchorRowID: "b", edge: .top, y: 5_500)
+        #expect(dataAnchor.laidOut(after, generation: 1) == 2_500,
+            "the reader is corrected by exactly what the page shifted, not by the whole history")
+        var windowAnchor = TimelineHistoryPosition(id: 1, layout: before,
+            offsetY: 1_000, topInset: 80, signal: .renderWindow)
+        windowAnchor.receivedPage(firstRowID: nil)
+        #expect(windowAnchor.laidOut(after, generation: 1) == nil,
+            "a pure prepend does not move the render window")
+    }
+
     /// The floor under the hysteresis band: the return-to-bottom storm cut
     /// the set to a single row (rendered=1, spacer=39 452) because the band
     /// is drawn in estimated points. However far below the reader sits, a
@@ -361,6 +388,15 @@ import Testing
         }
         #expect(TimelineAnchorWritePolicy.action(delta: tolerance + 400, phase: .decelerating) == .absorb,
             "a point target stops the fling; a residual that rode the flight costs nothing at rest")
+        // The per-write fuse (round 4): a displacement past one and a half
+        // screens is uncorrected structure, never a residual — the fourth
+        // log's `Δ+19224.7 wrote` would have flung the reader — so no phase
+        // writes it, and the cap is named for the log.
+        #expect(TimelineAnchorWritePolicy.action(delta: 19_224.7, phase: .idle) == .capped)
+        #expect(TimelineAnchorWritePolicy.action(delta: -19_224.7, phase: .tracking) == .capped)
+        #expect(TimelineAnchorWritePolicy.action(delta: 19_224.7, phase: .decelerating) == .capped)
+        // Just inside the fuse still grades by phase as before.
+        #expect(TimelineAnchorWritePolicy.action(delta: TimelineAnchorWritePolicy.maxWrittenDelta, phase: .idle) == .write)
     }
 
     // MARK: the content's equatable seam (F2)

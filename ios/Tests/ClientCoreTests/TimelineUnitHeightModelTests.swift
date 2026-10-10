@@ -64,17 +64,25 @@ import Testing
         #expect(long < TimelineUnitHeightEstimator.maxEstimatedHeight)
     }
 
-    /// The system rows of that same log: one folded reasoning header, priced
-    /// as a header pill — the payload behind the fold never counts as lines.
-    @Test func aFoldedReasoningRowIsPricedAsItsHeader() {
-        let folded = TimelineUnitHeightFacts(kind: .single, isCollapsed: false, rowCount: 1,
-            textLength: 19_000, attachmentCount: 0, isStreaming: false, isFoldedReasoning: true)
-        #expect(TimelineUnitHeightEstimator.height(folded, width: 343, typeScale: 1)
+    /// The system rows of that log, and round 4's fold leaders: a unit that
+    /// renders header-only is priced as its header pill, whatever payload
+    /// sits behind the fold and whatever kind it is — the 30 000-char
+    /// assistant rows of the fourth log measured 38 pt while their text-priced
+    /// estimate sat at the clamp.
+    @Test func aCollapsedUnitIsPricedAsItsHeaderWhateverItHides() {
+        let collapsedGroup = facts(kind: .tools, collapsed: true, rows: 3, text: 30_513)
+        #expect(TimelineUnitHeightEstimator.height(collapsedGroup, width: 343, typeScale: 1)
+            == TimelineUnitHeightEstimator.collapsedFold)
+        let lone = facts(kind: .single, collapsed: true, rows: 1, text: 30_513)
+        #expect(TimelineUnitHeightEstimator.height(lone, width: 343, typeScale: 1)
             == TimelineUnitHeightEstimator.collapsedFold)
         // The same payload once the reader opens the fold counts as body.
-        let unfolded = TimelineUnitHeightFacts(kind: .single, isCollapsed: false, rowCount: 1,
-            textLength: 19_000, attachmentCount: 0, isStreaming: false, isFoldedReasoning: false)
-        #expect(TimelineUnitHeightEstimator.height(unfolded, width: 343, typeScale: 1) > 1000)
+        let opened = facts(kind: .single, collapsed: false, rows: 1, text: 30_513)
+        #expect(TimelineUnitHeightEstimator.height(opened, width: 343, typeScale: 1) > 1000)
+        let openedGroup = facts(kind: .tools, collapsed: false, rows: 3, text: 30_513)
+        #expect(TimelineUnitHeightEstimator.height(openedGroup, width: 343, typeScale: 1)
+            == TimelineUnitHeightEstimator.collapsedFold + 3 * (TimelineUnitHeightEstimator.bodyLine * 1.2),
+            "an opened group is still priced by its row count, as before")
     }
 
     @Test func cacheKeysDistinguishEveryShapeDimension() {

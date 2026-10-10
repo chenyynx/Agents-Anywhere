@@ -242,6 +242,9 @@ struct ChatTimelineView: View {
                 // re-pin is motionless and spares them the animated lurch.
                 _ = scrolling.reassertOpeningReturn()
             }
+            .onChange(of: model.timeline.rows.first?.id) { oldFirst, newFirst in
+                armDataWindowCorrection(from: oldFirst, to: newFirst)
+            }
             .onChange(of: hasInteractions, initial: true) { _, presented in
                 scrolling.setInteractionPresented(presented)
             }
@@ -680,6 +683,37 @@ struct ChatTimelineView: View {
         windowBox.commit(plan)
     }
 
+    /// A change of the data window's first row — a backfill prepend, or the
+    /// opening's trim — shifts everything below it. At the bottom the pin
+    /// holds and the shift is invisible; for a reader browsing history it is
+    /// a real jump, and it used to stay uncorrected, only to explode out of
+    /// the *next* window move's anchor write (the fourth device log:
+    /// `Δ+19224.7 (interacting) wrote`, `Δ+15613.3 absorbed`). The
+    /// displacement is priced where it happens instead: the render boundary
+    /// keeps its identity across a pure prepend, so arming the anchor machine
+    /// against the y the boundary measured *before* the change — on the data
+    /// window's own signal, which the render-window signal deliberately
+    /// ignores for a pure prepend — corrects exactly the shift, one page at
+    /// a time. Guards: only a reader who has taken over and is reading sees
+    /// it (a follower is pinned by the machinery that owns the tail), the
+    /// boundary must survive the change (a drop hands the viewport to the
+    /// re-assert instead), and nothing else may be correcting already.
+    private func armDataWindowCorrection(from oldFirst: String?, to newFirst: String?) {
+        guard let oldFirst, let newFirst, oldFirst != newFirst,
+              scrolling.mode == .reading, scrolling.readerTookOver,
+              windowAnchor == nil, historyPosition == nil,
+              let boundary = windowBox.resolvedFirstUnitID,
+              model.timeline.rows.contains(where: { $0.id == boundary }),
+              let before = windowBox.lastMeasuredY(of: boundary) else { return }
+        windowGeneration &+= 1
+        var anchor = TimelineHistoryPosition(id: windowGeneration, layout: TimelineHistoryLayout(
+            firstRowID: oldFirst, renderFirstRowID: "",
+            anchorRowID: boundary, edge: .top, y: before),
+            offsetY: viewport.offsetY, topInset: viewport.topInset, signal: .dataWindow)
+        anchor.receivedPage(firstRowID: nil)
+        windowAnchor = anchor
+    }
+
     /// Every rendered unit's frame lands here. The store keeps the measured
     /// truth (the spacer's refinement source and the shrink arithmetic); a
     /// frame of the armed anchor additionally drives the point correction —
@@ -711,6 +745,10 @@ struct ChatTimelineView: View {
             let action = TimelineAnchorWritePolicy.action(delta: delta, phase: scrolling.phase)
             TimelineDiag.record(.correction(anchor: measurement.id, delta: delta, targetOffset: offset,
                 phase: String(describing: scrolling.phase), wrote: action == .write))
+            if action == .capped {
+                TimelineDiag.record(.correctionCapped(anchor: measurement.id, delta: delta,
+                    phase: String(describing: scrolling.phase)))
+            }
             guard action == .write else { return }
             var transaction = Transaction(animation: nil)
             transaction.disablesAnimations = true
@@ -1138,6 +1176,10 @@ private extension V2SendQueue {
     /// Whether `id` is in the current render set: the gate every reported
     /// frame passes before it may touch the store (L1/L2).
     func isRendered(_ id: String) -> Bool { window.isRendered(id) }
+    /// The last measured content-y of a rendered unit — the "before" an
+    /// in-place data-window correction arms against (round 4: a prepend's
+    /// displacement is priced where it happens, not left to accumulate).
+    func lastMeasuredY(of id: String) -> CGFloat? { measurements[id]?.y }
 
     @ObservationIgnored private var window = TimelineRenderWindow()
     @ObservationIgnored private var heights = TimelineUnitHeightCache()
@@ -1356,17 +1398,22 @@ private extension V2SendQueue {
             if row.structure.isStreamingText { isStreaming = true }
         }
         let multi = group.kind != .single
-        // A lone reasoning row renders as a folded header (one line — the log's
-        // system rows all measured 32 pt) while `row.text` carries the whole
-        // thinking payload. Counting that payload as body lines is what priced
-        // single rows at 12 000 pt; the estimator prices the fold instead.
-        let foldedReasoning = !multi && group.rows.count == 1
-            && group.rows[0].structure.isReasoning
-            && !disclosures.isExpandedIfKnown(group.id)
+        // Whether the unit currently renders header-only — the estimator's
+        // one question about a fold. A group fold is keyed "group:<id>" by
+        // the fold view, not by the group id; a lone message row is the
+        // bubble itself and never folds; every other lone row (reasoning,
+        // tool details, marker detail) folds under its own id.
+        let expanded: Bool
+        if multi {
+            expanded = disclosures.isExpandedIfKnown("group:\(group.id)")
+        } else if case .message = group.rows[0].value.content {
+            expanded = true
+        } else {
+            expanded = disclosures.isExpandedIfKnown(group.id)
+        }
         return TimelineUnitHeightFacts(kind: group.kind,
-            isCollapsed: multi && !disclosures.isExpandedIfKnown(group.id),
+            isCollapsed: !expanded,
             rowCount: group.rows.count, textLength: textLength,
-            attachmentCount: attachmentCount, isStreaming: isStreaming,
-            isFoldedReasoning: foldedReasoning)
+            attachmentCount: attachmentCount, isStreaming: isStreaming)
     }
 }

@@ -24,6 +24,10 @@ nonisolated struct TimelineDiagEvent: Equatable, Identifiable {
         /// the offset it would write, the phase it would write under, and
         /// whether it actually did (`TimelineAnchorWritePolicy`).
         case correction(anchor: String, delta: CGFloat, targetOffset: CGFloat, phase: String, wrote: Bool)
+        /// The write was refused by the per-write fuse: a displacement past
+        /// `TimelineAnchorWritePolicy.maxWrittenDelta` is uncorrected
+        /// structure, not a residual — writing it would fling the reader.
+        case correctionCapped(anchor: String, delta: CGFloat, phase: String)
         /// A unit an expand just materialised reported its first measurement —
         /// the height model's residual for that unit, the Δ a correction eats.
         case materialized(id: String, estimated: CGFloat, measured: CGFloat)
@@ -47,6 +51,8 @@ nonisolated struct TimelineDiagEvent: Equatable, Identifiable {
                 return "\(stamp) move: \(move) \(units) units, est \(Self.points(estimatedHeight))pt measured \(Self.points(measuredHeight))pt"
             case let .correction(anchor, delta, targetOffset, phase, wrote):
                 return "\(stamp) correct: \(anchor) Δ\(Self.signed(delta)) → \(Self.points(targetOffset)) (\(phase)) \(wrote ? "wrote" : "absorbed")"
+            case let .correctionCapped(anchor, delta, phase):
+                return "\(stamp) capped: \(anchor) Δ\(Self.signed(delta)) (\(phase)) — not written"
             case let .materialized(id, estimated, measured):
                 return "\(stamp) measured: \(id) est \(Self.points(estimated)) vs \(Self.points(measured)) Δ\(Self.signed(measured - estimated))"
             case let .prependLanding(addedRows, presentedRows):

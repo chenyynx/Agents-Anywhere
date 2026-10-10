@@ -233,10 +233,83 @@ import Testing
         // Materialising the top block moves it into the set…
         #expect(window.expand(sample: sample(offset: 0, windowTop: 0)) > 0)
         #expect(window.isRendered(above))
-        // …and releasing it again takes it straight back out: whatever it
-        // reports from here on is stale.
+        // …and releasing it again takes it straight back out — once the block
+        // has reported its measurements (round 3: an unmeasured expansion
+        // guards itself against the shrink that restarts the limit cycle).
+        // Whatever the released units report from here on is stale.
+        let measured = Dictionary(uniqueKeysWithValues:
+            window.units[window.start...].map { ($0.id, $0.height) })
+        window.applyMeasuredHeights(measured)
         #expect(window.shrink(sample: sample(offset: 60_000, windowTop: 5_000)) > 0)
         #expect(!window.isRendered(above))
+    }
+
+    // MARK: round 3 — the estimator's blast radius (on-device log, 2026-10-10)
+
+    /// A pre-layout frame reports height 0: baking it made every Δ a jump
+    /// against zero, and the real layout wrote the correction back 35 ms
+    /// later — the log's double jump (`est 529.1 vs 0.0` → `Δ−583.1 wrote` →
+    /// `Δ−52.1 wrote`). Neither the bake path nor a frame may accept a
+    /// non-positive height.
+    @Test func nonPositiveHeightsAreNeverBaked() {
+        var window = TimelineRenderWindow()
+        window.adopt(units(300, height: 60))
+        let start = window.start
+        var heights: [String: CGFloat] = [:]
+        heights[window.units[start].id] = 0
+        heights[window.units[start + 1].id] = -12
+        heights[window.units[start + 2].id] = 64
+        window.applyMeasuredHeights(heights)
+        #expect(window.units[start].height == 60 && !window.units[start].isMeasured,
+            "a zero frame is not a measurement")
+        #expect(window.units[start + 1].height == 60 && !window.units[start + 1].isMeasured)
+        #expect(window.units[start + 2].height == 64 && window.units[start + 2].isMeasured,
+            "a real one still lands")
+    }
+
+    /// The log's three-second limit cycle: an expansion materialised five
+    /// units whose inflated estimates kept the band inside expand range, so
+    /// the shrink released them and the next sample expanded them again. A
+    /// materialised block stays until it reports its measurement.
+    @Test func anExpandedBlockStaysUntilItMeasures() {
+        var window = TimelineRenderWindow()
+        window.adopt(units(600, height: 60))
+        let expandTrigger = sample(offset: 0, windowTop: 0)
+        #expect(window.move(sample: expandTrigger) == .expand)
+        let moved = window.expand(sample: expandTrigger)
+        #expect(moved > 0)
+        #expect(!window.guardedUnmeasured.isEmpty, "the block guards itself until it measures")
+        // Far below the boundary a shrink is due — but not at the block that
+        // has not reported yet: that is the cycle.
+        let shrinkTrigger = sample(offset: 20_000, windowTop: 0)
+        #expect(window.shrinkableCount(sample: shrinkTrigger) == 0)
+        // Once every rendered unit reports, the band is free again.
+        let measured = Dictionary(uniqueKeysWithValues:
+            window.units[window.start...].map { ($0.id, $0.height) })
+        window.applyMeasuredHeights(measured)
+        #expect(window.guardedUnmeasured.isEmpty)
+        #expect(window.shrinkableCount(sample: shrinkTrigger) > 0)
+    }
+
+    /// The floor under the hysteresis band: the return-to-bottom storm cut
+    /// the set to a single row (rendered=1, spacer=39 452) because the band
+    /// is drawn in estimated points. However far below the reader sits, a
+    /// shrink leaves at least `minRenderedUnits` and `minRenderedScreens`.
+    @Test func aShrinkNeverLeavesTheRenderSetBelowTheFloor() {
+        var window = TimelineRenderWindow()
+        window.adopt(units(3000, height: 60))
+        let measured = Dictionary(uniqueKeysWithValues:
+            window.units[window.start...].map { ($0.id, $0.height) })
+        window.applyMeasuredHeights(measured)
+        let far = sample(offset: 60_000, windowTop: 0)
+        for _ in 0..<200 {
+            guard window.shrinkableCount(sample: far) > 0 else { break }
+            window.shrink(sample: far)
+        }
+        #expect(window.renderedUnitCount >= TimelineRenderWindow.minRenderedUnits)
+        let renderedHeight = window.units[window.start...].reduce(CGFloat(0)) { $0 + $1.height }
+        #expect(renderedHeight >= TimelineRenderWindow.minRenderedScreens * far.viewport.visibleHeight,
+            "the floor is drawn in real points, not in the estimator's currency")
     }
 
     // MARK: the move gate (F3, round 2)

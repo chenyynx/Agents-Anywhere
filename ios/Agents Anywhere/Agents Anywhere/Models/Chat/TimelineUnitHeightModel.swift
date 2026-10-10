@@ -19,6 +19,12 @@ nonisolated struct TimelineUnitHeightFacts: Equatable {
     /// Whether any row is still streaming its text — such a measurement is
     /// not authoritative for the settled shape the spacer will show.
     let isStreaming: Bool
+    /// Whether the unit renders as a folded reasoning header at estimate
+    /// time: one line on screen, whatever the payload behind it weighs.
+    /// Without this the whole thinking text counts as body lines — the
+    /// on-device log priced single system rows at 12 000 pt against 32 pt of
+    /// real estate (2026-10-10).
+    var isFoldedReasoning: Bool = false
 }
 
 /// The measured-truth cache key: the task sheet's (id, column width, Dynamic
@@ -62,22 +68,40 @@ nonisolated enum TimelineUnitHeightEstimator {
     static let attachmentStrip: CGFloat = 96
     /// Average glyph width factor for the body font.
     static let glyphWidth: CGFloat = 7.2
+    /// The estimator's exit clamp: no unit may *claim* more than about three
+    /// screens. A genuinely tall unit renders once and is replaced by its
+    /// measured truth, while an unbounded estimate poisons everything drawn
+    /// in estimated points until then — the spacer, the expand/shrink
+    /// hysteresis band and every anchor correction (the log's system rows,
+    /// estimated 10–200× over). Roughly three phone screens; the estimate is
+    /// a placeholder, never a contract.
+    static let maxEstimatedHeight: CGFloat = 3 * 900
 
     static func height(_ facts: TimelineUnitHeightFacts, width: CGFloat, typeScale: CGFloat) -> CGFloat {
         let line = bodyLine * typeScale
+        let estimate: CGFloat
         switch facts.kind {
         case .single:
-            if facts.rowCount == 1, facts.textLength == 0, facts.attachmentCount == 0 {
-                return collapsedFold
+            // A folded reasoning row shows one header line; its payload is
+            // read behind the fold, never laid out until the reader opens it.
+            if facts.isFoldedReasoning {
+                estimate = collapsedFold
+            } else if facts.rowCount == 1, facts.textLength == 0, facts.attachmentCount == 0 {
+                estimate = collapsedFold
+            } else {
+                estimate = messageChrome + CGFloat(lines(for: facts.textLength, width: width, typeScale: typeScale)) * line
+                    + CGFloat(facts.attachmentCount) * attachmentStrip
             }
-            return messageChrome + CGFloat(lines(for: facts.textLength, width: width, typeScale: typeScale)) * line
-                + CGFloat(facts.attachmentCount) * attachmentStrip
         case .tools, .reconnect, .agents:
-            if facts.isCollapsed { return collapsedFold }
-            // Expanded folds are rough on purpose: the spacer refines them by
-            // measurement as soon as the reader reaches them.
-            return collapsedFold + CGFloat(facts.rowCount) * (line * 1.2)
+            if facts.isCollapsed {
+                estimate = collapsedFold
+            } else {
+                // Expanded folds are rough on purpose: the spacer refines them
+                // by measurement as soon as the reader reaches them.
+                estimate = collapsedFold + CGFloat(facts.rowCount) * (line * 1.2)
+            }
         }
+        return min(estimate, maxEstimatedHeight)
     }
 
     static func lines(for textLength: Int, width: CGFloat, typeScale: CGFloat) -> Int {

@@ -228,6 +228,14 @@ nonisolated struct TimelineRenderWindow: Equatable {
     /// above the viewport. The gap between this and `expandOverscanScreens` is
     /// the hysteresis: a settled shrink cannot immediately re-expand.
     static let shrinkKeepScreens: CGFloat = 2
+    /// The render set's floor — the fuse under the hysteresis band. Both bars
+    /// are drawn in points the *reader* can see, not in the estimator's
+    /// currency: a poisoned estimate can walk the band down to a single row
+    /// (the on-device log's return-to-bottom storm: seven cuts in 300 ms,
+    /// rendered=1, spacer=39 452). A shrink may never take the set below
+    /// either bar, whatever `above` claims.
+    static let minRenderedUnits = 20
+    static let minRenderedScreens: CGFloat = 1.5
 
     enum Move: Equatable {
         case expand
@@ -241,6 +249,16 @@ nonisolated struct TimelineRenderWindow: Equatable {
     private(set) var start = 0
     /// Σ (height + spacing) over the hidden units, maintained incrementally.
     private(set) var hiddenContribution: CGFloat = 0
+    /// Units the latest expansions materialised that have not reported a
+    /// measurement yet. Releasing them would hide the very block whose
+    /// estimate is still inflating `above`, and the next sample would expand
+    /// the same units again — the log's three-second expand/shrink limit
+    /// cycle (five units, 862.7 pt estimates, over and over). A materialised
+    /// unit is rendered, and the layout its own expansion caused reports its
+    /// frame within a frame or two, so "until measured" is bounded in
+    /// practice; until then the window keeps the block. Ids leave the set
+    /// when they measure or when a rebuild drops them.
+    private(set) var guardedUnmeasured: Set<String> = []
 
     var isEmpty: Bool { units.isEmpty }
     var firstUnitID: String? { units.indices.contains(start) ? units[start].id : nil }
@@ -305,6 +323,9 @@ nonisolated struct TimelineRenderWindow: Equatable {
         } else {
             start = Self.tailStart(in: newUnits, rowBudget: defaultRowBudget)
         }
+        // A rebuild is a new unit list: guards of units that no longer exist
+        // would block a shrink for nothing.
+        guardedUnmeasured.formIntersection(newUnits.lazy.map(\.id))
         rebuildHiddenContribution()
     }
 
@@ -322,13 +343,17 @@ nonisolated struct TimelineRenderWindow: Equatable {
 
     /// Applies measured heights to rendered units before a move is planned or
     /// executed: the shrink arithmetic must give the spacer the heights the
-    /// rows actually occupied, not the estimates they replaced.
+    /// rows actually occupied, not the estimates they replaced. A non-positive
+    /// height is not a measurement — it is a pre-layout frame (the log's
+    /// `vs 0.0` rows, whose Δ then wrote a jump 35 ms before the real layout
+    /// arrived) — so it is refused rather than baked.
     mutating func applyMeasuredHeights(_ heights: [String: CGFloat]) {
         guard !heights.isEmpty else { return }
         for index in start..<units.count {
-            if let height = heights[units[index].id] {
+            if let height = heights[units[index].id], height > 0 {
                 units[index].height = height
                 units[index].isMeasured = true
+                guardedUnmeasured.remove(units[index].id)
             }
         }
     }
@@ -352,15 +377,28 @@ nonisolated struct TimelineRenderWindow: Equatable {
     /// Whole units move, never a partial group.
     func shrinkableCount(sample: TimelineWindowSample) -> Int {
         guard sample.viewport.isMeasured, start < units.count else { return 0 }
-        let keep = Self.shrinkKeepScreens * sample.viewport.visibleHeight
+        let screen = sample.viewport.visibleHeight
+        let keep = Self.shrinkKeepScreens * screen
+        let floorHeight = Self.minRenderedScreens * screen
+        var remainingHeight: CGFloat = 0
+        for index in start..<units.count { remainingHeight += units[index].height + Self.unitSpacing }
         var index = start
         var rows = 0
         var released: CGFloat = 0
         var count = 0
         while index < units.count, rows < Self.moveBlockRows {
+            // A block the last expansion materialised stays until it measures:
+            // releasing it puts the inflated estimate straight back on top,
+            // and the next sample expands the same units again.
+            guard !guardedUnmeasured.contains(units[index].id) else { break }
             let next = released + units[index].height + Self.unitSpacing
             guard sample.above - next >= keep else { break }
+            // The floor: whatever would stay rendered clears both bars — a
+            // unit count and a measured height, never the estimator's points.
+            let after = remainingHeight - (units[index].height + Self.unitSpacing)
+            guard units.count - (index + 1) >= Self.minRenderedUnits, after >= floorHeight else { break }
             released = next
+            remainingHeight = after
             rows += units[index].rowCount
             index += 1
             count += 1
@@ -384,6 +422,11 @@ nonisolated struct TimelineRenderWindow: Equatable {
         }
         let count = start - index
         guard count > 0 else { return 0 }
+        // The block just materialised guards itself until it measures (see
+        // `guardedUnmeasured`): an unmeasured shrink would put its estimate
+        // straight back on top and expand it again next sample.
+        let materialized = (index..<start).filter { !units[$0].isMeasured }.map { units[$0].id }
+        guardedUnmeasured.formUnion(materialized)
         // The reader is corrected by the difference between these estimates
         // and the real layout; the spacer gives back exactly what it charged.
         hiddenContribution -= contribution(of: index..<start)

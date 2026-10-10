@@ -47,6 +47,36 @@ import Testing
         #expect(withAttachment > marker)
     }
 
+    /// Round 3 (on-device log, 2026-10-10): the estimator's exit clamp. A
+    /// poisoned input — a system row whose payload counted as body lines —
+    /// priced one row at 12 000 pt, and everything drawn in estimated points
+    /// (the spacer, the hysteresis band, every anchor Δ) went with it. No
+    /// unit may claim more than `maxEstimatedHeight`, whatever the input says.
+    @Test func noEstimateClaimsMoreThanTheExitClamp() {
+        let absurd = TimelineUnitHeightEstimator.height(facts(text: 500_000), width: 343, typeScale: 1)
+        #expect(absurd == TimelineUnitHeightEstimator.maxEstimatedHeight)
+        let many = TimelineUnitHeightEstimator.height(
+            facts(kind: .tools, collapsed: false, rows: 4000), width: 343, typeScale: 1)
+        #expect(many == TimelineUnitHeightEstimator.maxEstimatedHeight)
+        // The clamp binds only above the bound: an ordinary long message is
+        // left alone.
+        let long = TimelineUnitHeightEstimator.height(facts(text: 4000), width: 343, typeScale: 1)
+        #expect(long < TimelineUnitHeightEstimator.maxEstimatedHeight)
+    }
+
+    /// The system rows of that same log: one folded reasoning header, priced
+    /// as a header pill — the payload behind the fold never counts as lines.
+    @Test func aFoldedReasoningRowIsPricedAsItsHeader() {
+        let folded = TimelineUnitHeightFacts(kind: .single, isCollapsed: false, rowCount: 1,
+            textLength: 19_000, attachmentCount: 0, isStreaming: false, isFoldedReasoning: true)
+        #expect(TimelineUnitHeightEstimator.height(folded, width: 343, typeScale: 1)
+            == TimelineUnitHeightEstimator.collapsedFold)
+        // The same payload once the reader opens the fold counts as body.
+        let unfolded = TimelineUnitHeightFacts(kind: .single, isCollapsed: false, rowCount: 1,
+            textLength: 19_000, attachmentCount: 0, isStreaming: false, isFoldedReasoning: false)
+        #expect(TimelineUnitHeightEstimator.height(unfolded, width: 343, typeScale: 1) > 1000)
+    }
+
     @Test func cacheKeysDistinguishEveryShapeDimension() {
         var cache = TimelineUnitHeightCache()
         let base = TimelineUnitHeightKey(id: "a", width: 343, typeScale: 0, isCollapsed: true, isStreaming: false)

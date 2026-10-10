@@ -1190,6 +1190,11 @@ private extension V2SendQueue {
     /// next move's spacer arithmetic.
     func recordUnitFrame(_ measurement: TimelineWindowUnitMeasurement) {
         guard window.isRendered(measurement.id) else { return }
+        // A non-positive frame is a pre-layout report, not a measurement: the
+        // log's `vs 0.0` rows baked it, computed a Δ against zero and wrote a
+        // jump — then wrote it back 35 ms later when the real layout landed.
+        // Refusing it collapses the double jump into the single correction.
+        guard measurement.height > 0 else { return }
         // Diagnostics: the first measurement of a unit an expand just
         // materialised is the height model's residual for it.
         if let estimated = materializing.removeValue(forKey: measurement.id) {
@@ -1350,9 +1355,17 @@ private extension V2SendQueue {
             if row.structure.isStreamingText { isStreaming = true }
         }
         let multi = group.kind != .single
+        // A lone reasoning row renders as a folded header (one line — the log's
+        // system rows all measured 32 pt) while `row.text` carries the whole
+        // thinking payload. Counting that payload as body lines is what priced
+        // single rows at 12 000 pt; the estimator prices the fold instead.
+        let foldedReasoning = !multi && group.rows.count == 1
+            && group.rows[0].structure.isReasoning
+            && !disclosures.isExpandedIfKnown(group.id)
         return TimelineUnitHeightFacts(kind: group.kind,
             isCollapsed: multi && !disclosures.isExpandedIfKnown(group.id),
             rowCount: group.rows.count, textLength: textLength,
-            attachmentCount: attachmentCount, isStreaming: isStreaming)
+            attachmentCount: attachmentCount, isStreaming: isStreaming,
+            isFoldedReasoning: foldedReasoning)
     }
 }

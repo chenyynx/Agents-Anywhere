@@ -40,6 +40,14 @@ nonisolated struct TimelineScrollState: Equatable {
     /// into a parked one. Settling ORs it with the freshest measurement, so a
     /// late-reported arrival still counts.
     private var readerSettledAtBottom = false
+    /// Whether the reader came to rest at the bottom — geometry alone, no
+    /// settlement, no probes, no mode. Their own gesture clears it (the
+    /// position is theirs until they rest again), and a rest at the bottom sets
+    /// it; a displacement the page causes itself, with no gesture behind it,
+    /// neither sets nor clears. The keyboard hold reads this instead of
+    /// `mode`, whose settlement has to clear a phase callback, a 64 ms task and
+    /// the marker probes first — machinery a hold on the bottom does not need.
+    private(set) var readerRestsAtBottom = false
     /// Set by `open()`, consumed by the first command it produces. A reader
     /// gesture before that command clears it, so later returns animate.
     private var openingReturnIsPending = false
@@ -149,7 +157,10 @@ nonisolated struct TimelineScrollState: Equatable {
         viewport = next
         // A measurable arrival ends the displacement episode; the next one
         // may be reconciled again.
-        if next.measuredAtBottom { bottomReconcileIsSpent = false }
+        if next.measuredAtBottom {
+            bottomReconcileIsSpent = false
+            if !userIsScrolling { readerRestsAtBottom = true }
+        }
     }
 
     mutating func tailVisibilityChanged(_ region: TimelineTailVisibility.Region, visible: Bool) {
@@ -167,9 +178,11 @@ nonisolated struct TimelineScrollState: Equatable {
         if beganGesture {
             browseHistory(byReader: true)
             awaitsUserScrollSettlement = true
+            readerRestsAtBottom = false
         }
         phase = next
         if next == .idle, awaitsUserScrollSettlement { readerSettledAtBottom = viewportIsAtBottom }
+        if next == .idle, viewportIsAtBottom { readerRestsAtBottom = true }
         return beganGesture
     }
 

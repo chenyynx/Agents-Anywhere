@@ -391,7 +391,7 @@ struct ChatTimelineView: View {
     /// navigation generation bump, a streaming revision) heals on the next one.
     private func pinBottomForKeyboard(_ sample: TimelineViewport) {
         guard keyboard.transitionActive, keyboard.isVisible else { return }
-        guard TimelineKeyboardBottomPin.shouldPin(isFollowing: scrolling.mode == .following,
+        guard TimelineKeyboardBottomPin.shouldPin(restsAtBottom: scrolling.readerRestsAtBottom,
             isScrolling: scrolling.userIsScrolling, navigationSuspended: navigationIsSuspended,
             isMeasured: sample.isMeasured, atBottom: sample.measuredAtBottom) else { return }
         // Assign once per window: a per-frame write would re-evaluate the page

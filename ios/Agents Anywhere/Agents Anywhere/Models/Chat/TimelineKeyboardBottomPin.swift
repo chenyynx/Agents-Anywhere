@@ -17,10 +17,15 @@ import Foundation
 /// pending-request dedup. A pin is idempotent and re-derived from the freshest
 /// sample every frame, so it needs no latch and no command, and a request
 /// already travelling must not refuse it.
+///
+/// Admission is geometric — the reader came to rest at the bottom — and never
+/// `mode`: the settle that produces following mode has to clear a phase
+/// callback, a 64 ms task and the marker probes first, which is exactly the
+/// shape that answers "the second time works".
 nonisolated enum TimelineKeyboardBottomPin {
-    static func shouldPin(isFollowing: Bool, isScrolling: Bool, navigationSuspended: Bool,
+    static func shouldPin(restsAtBottom: Bool, isScrolling: Bool, navigationSuspended: Bool,
                           isMeasured: Bool, atBottom: Bool) -> Bool {
-        guard isMeasured, !navigationSuspended, !isScrolling, isFollowing else { return false }
+        guard isMeasured, !navigationSuspended, !isScrolling, restsAtBottom else { return false }
         return !atBottom
     }
 }

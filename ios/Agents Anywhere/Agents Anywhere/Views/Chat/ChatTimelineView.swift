@@ -258,7 +258,15 @@ struct ChatTimelineView: View {
                 scrolling.setInteractionPresented(presented)
             }
             .onChange(of: model.isOpeningReady, initial: true) { _, ready in
-                if ready { scrolling.open(interactionPresented: hasInteractions) }
+                if ready {
+                    // Seed the prepend correction's baseline once the opening
+                    // window exists, so the first backfill page arms exactly
+                    // as the old `onChange(of: rows.first?.id)` would have.
+                    if dataWindowFirstRowID == nil {
+                        dataWindowFirstRowID = model.timeline.rows.first?.id
+                    }
+                    scrolling.open(interactionPresented: hasInteractions)
+                }
             }
             .task(id: model.openingPositionSettled) {
                 // P2: the automatic full-history backfill starts strictly

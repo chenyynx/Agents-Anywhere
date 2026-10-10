@@ -32,6 +32,35 @@ nonisolated struct TimelineDiagEvent: Equatable, Identifiable {
         /// move): the raw row index the view cuts `rows` on, the boundary
         /// unit, the render set's size and the spacer it stood up.
         case sliceChange(startRowIndex: Int, boundary: String?, renderedUnits: Int, spacerHeight: CGFloat)
+
+        /// One line for one event at one clock reading — the transcript the
+        /// buffer stores and the line the os.Logger double-write emits, so
+        /// the on-screen log and Console carry the same text.
+        func line(at clock: TimeInterval) -> String {
+            let stamp = String(format: "%.3f", clock)
+            switch self {
+            case let .gateRefused(item, phase):
+                return "\(stamp) gate refused: \(item) (\(phase))"
+            case let .plannedMove(move, units, estimatedHeight):
+                return "\(stamp) move: \(move) \(units) units, est \(Self.points(estimatedHeight))pt"
+            case let .correction(anchor, delta, targetOffset, phase, wrote):
+                return "\(stamp) correct: \(anchor) Δ\(Self.signed(delta)) → \(Self.points(targetOffset)) (\(phase)) \(wrote ? "wrote" : "absorbed")"
+            case let .materialized(id, estimated, measured):
+                return "\(stamp) measured: \(id) est \(Self.points(estimated)) vs \(Self.points(measured)) Δ\(Self.signed(measured - estimated))"
+            case let .prependLanding(addedRows, presentedRows):
+                return "\(stamp) prepend: +\(addedRows) rows (presented \(presentedRows))"
+            case let .sliceChange(startRowIndex, boundary, renderedUnits, spacerHeight):
+                return "\(stamp) slice: start=\(startRowIndex) boundary=\(boundary ?? "-") rendered=\(renderedUnits) spacer=\(Self.points(spacerHeight))"
+            }
+        }
+
+        private static func points(_ value: CGFloat) -> String {
+            String(format: "%.1f", Double(value))
+        }
+
+        private static func signed(_ value: CGFloat) -> String {
+            (value >= 0 ? "+" : "−") + points(abs(value))
+        }
     }
 
     /// Monotonic sequence number (survives the ring's head dropping).
@@ -40,33 +69,9 @@ nonisolated struct TimelineDiagEvent: Equatable, Identifiable {
     let at: TimeInterval
     let kind: Kind
 
-    /// The one-line transcript entry, newest language: stable enough to paste
-    /// into a bug report and grep in a Console export.
-    var formatted: String {
-        let clock = String(format: "%.3f", at)
-        switch kind {
-        case let .gateRefused(item, phase):
-            return "\(clock) gate refused: \(item) (\(phase))"
-        case let .plannedMove(move, units, estimatedHeight):
-            return "\(clock) move: \(move) \(units) units, est \(Self.points(estimatedHeight))pt"
-        case let .correction(anchor, delta, targetOffset, phase, wrote):
-            return "\(clock) correct: \(anchor) Δ\(Self.signed(delta)) → \(Self.points(targetOffset)) (\(phase)) \(wrote ? "wrote" : "absorbed")"
-        case let .materialized(id, estimated, measured):
-            return "\(clock) measured: \(id) est \(Self.points(estimated)) vs \(Self.points(measured)) Δ\(Self.signed(measured - estimated))"
-        case let .prependLanding(addedRows, presentedRows):
-            return "\(clock) prepend: +\(addedRows) rows (presented \(presentedRows))"
-        case let .sliceChange(startRowIndex, boundary, renderedUnits, spacerHeight):
-            return "\(clock) slice: start=\(startRowIndex) boundary=\(boundary ?? "-") rendered=\(renderedUnits) spacer=\(Self.points(spacerHeight))"
-        }
-    }
-
-    private static func points(_ value: CGFloat) -> String {
-        String(format: "%.1f", Double(value))
-    }
-
-    private static func signed(_ value: CGFloat) -> String {
-        (value >= 0 ? "+" : "−") + points(abs(value))
-    }
+    /// The one-line transcript entry: stable enough to paste into a bug
+    /// report and grep in a Console export.
+    var formatted: String { kind.line(at: at) }
 }
 
 /// The ring itself: append-only, bounded, oldest-first. Pure bookkeeping with
@@ -103,9 +108,10 @@ nonisolated struct TimelineDiagBuffer {
 /// override); while it is off, `record` evaluates nothing — the payload is an
 /// autoclosure, so not even the event's fields are built.
 ///
-/// Appends hop to the next runloop turn: the slice-change event is recorded
-/// from a view body, and writing observed state mid-update is undefined —
-/// the hop keeps the panel's re-render out of the update that caused it.
+/// Appends are synchronous. The one call site that runs inside a view body
+/// (the store's slice note) hops a runloop turn *before* calling in: writing
+/// observed state mid-update is undefined, and the hop keeps the panel's
+/// re-render out of the update that caused it.
 @MainActor @Observable
 final class TimelineDiag {
     static let shared = TimelineDiag()
@@ -167,7 +173,7 @@ final class TimelineDiag {
         buffer.append(value, at: ProcessInfo.processInfo.systemUptime)
         revision &+= 1
         #if canImport(os)
-        logger.notice("\(value.formatted, privacy: .public)")
+        logger.notice("\(value.line(at: ProcessInfo.processInfo.systemUptime), privacy: .public)")
         #endif
     }
 

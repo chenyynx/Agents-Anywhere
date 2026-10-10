@@ -97,7 +97,8 @@ struct ChatTimelineView: View {
             // opening offsets stay top-anchored so the opening positioning
             // keeps owning its own first layout (see the note above). This is
             // the system's own follow; no keyboard-height arithmetic.
-            .defaultScrollAnchor(.bottom, for: .sizeChanges)
+            // EXPERIMENT: reverted .bottom→.top (c86e3a4a) pending device A/B for the 10-10 scroll-jump regression
+            .defaultScrollAnchor(.top, for: .sizeChanges)
             .allowsHitTesting(model.isOpeningReady)
             .accessibilityHidden(!model.isOpeningReady)
             .onScrollPhaseChange { _, phase, context in

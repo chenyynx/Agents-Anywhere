@@ -87,6 +87,40 @@ nonisolated struct ChatTimelineContentInputs: Equatable {
     var windowMoveRevision = 0
 }
 
+/// The render-window move's guard list as one value: a geometry sample may
+/// judge (and commit) a move only while nothing else owns the viewport. Pure,
+/// so the list is named at the call site and each condition is pinnable.
+nonisolated struct TimelineWindowMoveGate {
+    /// The §7 feature flag (`AA_TIMELINE_WINDOW=0` renders the full list).
+    var windowingEnabled = true
+    /// The opening's own positioning has settled; before that its instant
+    /// return owns the page.
+    var openingSettled = true
+    /// A drawer transition owns the page.
+    var navigationSuspended = false
+    /// A previous window move is still settling.
+    var moveSettling = false
+    /// A history page's anchor is still settling.
+    var historySettling = false
+    /// A history load is in flight — its landing rewrites the page.
+    var historyLoadInFlight = false
+    /// A bottom command owns the viewport.
+    var bottomCommandInFlight = false
+    /// The keyboard drives the layout.
+    var keyboardDrivingLayout = false
+    /// F3: the reader's own gesture — a drag, or the fling it leaves behind —
+    /// owns the offset. An anchor correction written now would fight the
+    /// native scroll. A refused move is judged again on the next delivered
+    /// sample, including the one the gesture's own end delivers.
+    var userIsScrolling = false
+
+    var allows: Bool {
+        windowingEnabled && openingSettled && !navigationSuspended && !moveSettling
+            && !historySettling && !historyLoadInFlight && !bottomCommandInFlight
+            && !keyboardDrivingLayout && !userIsScrolling
+    }
+}
+
 /// The render set of the windowed timeline (task sheet §P2 对策A): the data
 /// stays fully in memory, while the view renders only a suffix of the data —
 /// the tail window — and represents everything older with one spacer on top.

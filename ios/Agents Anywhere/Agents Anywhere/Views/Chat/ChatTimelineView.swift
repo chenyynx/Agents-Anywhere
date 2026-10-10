@@ -151,6 +151,12 @@ struct ChatTimelineView: View {
                     latestPull.begin(at: current, promptVisible: latestPromptVisible,
                         canLoad: model.session.hasNewerItems && !model.session.isLoadingHistory && latestLoadRequest == nil && olderLoadRequest == nil)
                 }
+                // F3: every sample the gesture (or its fling) delivered had its
+                // window judgement refused — the anchor correction must not
+                // write a point target under the reader's finger — and the
+                // geometry that stopped moving does not deliver another one by
+                // itself. Judge once the reader lets go.
+                if mapped == .idle { timelineWindowDidSample(current) }
                 if mapped == .interacting { latestPull.update(current); olderPull.update(current) }
                 if mapped == .idle || mapped == .decelerating {
                     let shouldLoadLatest = latestPull.end(), shouldLoadOlder = olderPull.end()
@@ -604,14 +610,25 @@ struct ChatTimelineView: View {
     // MARK: - Windowed timeline (P2 对策A)
 
     /// One geometry sample's judgement of the render window. The guard list is
-    /// deliberately conservative: no move while the navigation is suspended,
-    /// while a history load or an in-flight bottom command owns the viewport,
-    /// while a previous window move is still settling, or while the keyboard
-    /// drives the layout. A refused move is retried by later samples.
+    /// deliberately conservative (see `TimelineWindowMoveGate`): no move while
+    /// the navigation is suspended, while a history load or an in-flight
+    /// bottom command owns the viewport, while a previous window move is still
+    /// settling, while the keyboard drives the layout — or while the reader's
+    /// own gesture owns the offset (F3): the anchor correction a commit arms
+    /// writes a point target, which would fight a live drag or fling. A refused
+    /// move is retried by later samples, and once when the gesture settles.
     private func timelineWindowDidSample(_ sample: TimelineViewport) {
-        guard Self.timelineWindowEnabled, model.openingPositionSettled, !navigationIsSuspended,
-              windowAnchor == nil, historyPosition == nil, olderLoadRequest == nil, latestLoadRequest == nil,
-              scrolling.activeCommand == nil, !keyboardDrivingLayout else { return }
+        guard TimelineWindowMoveGate(
+            windowingEnabled: Self.timelineWindowEnabled,
+            openingSettled: model.openingPositionSettled,
+            navigationSuspended: navigationIsSuspended,
+            moveSettling: windowAnchor != nil,
+            historySettling: historyPosition != nil,
+            historyLoadInFlight: olderLoadRequest != nil || latestLoadRequest != nil,
+            bottomCommandInFlight: scrolling.activeCommand != nil,
+            keyboardDrivingLayout: keyboardDrivingLayout,
+            userIsScrolling: scrolling.userIsScrolling
+        ).allows else { return }
         guard let plan = windowBox.planMove(viewport: sample) else { return }
         applyWindowMove(plan)
     }

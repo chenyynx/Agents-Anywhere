@@ -215,6 +215,26 @@ import Testing
         }
     }
 
+    // MARK: the move gate (F3)
+
+    /// A sample may judge (and commit) a window move only while nothing else
+    /// owns the viewport — including the reader's own gesture and the fling it
+    /// leaves behind: the correction a commit arms writes a point target, which
+    /// would fight a live drag. The gesture's end re-runs the judgement.
+    @Test func theWindowMoveGateRefusesWhileTheReaderOwnsTheOffset() {
+        #expect(TimelineWindowMoveGate().allows, "nothing else owns the viewport")
+        #expect(!TimelineWindowMoveGate(userIsScrolling: true).allows,
+            "a drag or fling owns the offset — no anchor correction under it")
+        #expect(!TimelineWindowMoveGate(windowingEnabled: false).allows)
+        #expect(!TimelineWindowMoveGate(openingSettled: false).allows)
+        #expect(!TimelineWindowMoveGate(navigationSuspended: true).allows)
+        #expect(!TimelineWindowMoveGate(moveSettling: true).allows)
+        #expect(!TimelineWindowMoveGate(historySettling: true).allows)
+        #expect(!TimelineWindowMoveGate(historyLoadInFlight: true).allows)
+        #expect(!TimelineWindowMoveGate(bottomCommandInFlight: true).allows)
+        #expect(!TimelineWindowMoveGate(keyboardDrivingLayout: true).allows)
+    }
+
     // MARK: the content's equatable seam (F2)
 
     /// A committed window move publishes only through `windowMoveRevision`:

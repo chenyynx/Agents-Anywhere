@@ -90,5 +90,10 @@ enum TimelineGrouping {
     // Each fold observes its own bit. Toggling one tool must not reconstruct
     // every other expanded tool's diff and output subtree.
     func isExpanded(_ id: String) -> Bool { entry(id).expanded }
+    /// Non-creating read for the windowed timeline's height estimates: a fold
+    /// that has never been toggled has no entry and is collapsed. Reading a
+    /// hidden group through `isExpanded` would mint entries for the whole
+    /// unloaded history on every estimate pass.
+    func isExpandedIfKnown(_ id: String) -> Bool { entries[id]?.expanded ?? false }
     func toggle(_ id: String) { entry(id).expanded.toggle() }
 }

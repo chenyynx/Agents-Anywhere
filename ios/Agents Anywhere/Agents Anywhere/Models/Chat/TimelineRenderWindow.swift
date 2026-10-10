@@ -1,0 +1,262 @@
+import Foundation
+
+/// One rendered unit of the windowed timeline: a whole `ChatTimelineGroup`
+/// (or a single row) taken from `tl.timeline.rows`, with the height the model
+/// currently believes it contributes to the content.
+///
+/// `height` is the view's own frame height — the same quantity the group's
+/// `onGeometryChange` writes back when it renders. Estimates stand in until a
+/// unit has been measured; once measured, the value is the recorded truth.
+nonisolated struct TimelineRenderUnit: Equatable {
+    /// The unit's first row id (the group's identity in the timeline).
+    let id: String
+    /// How many data rows the unit covers.
+    let rowCount: Int
+    /// Content height in points (measured truth or coarse estimate).
+    var height: CGFloat
+    /// Whether `height` came from a real layout pass rather than the estimator.
+    var isMeasured: Bool
+}
+
+/// One measured rendered unit: the frame the group reported in the timeline's
+/// content coordinate space (`chat.timeline.content`).
+nonisolated struct TimelineWindowUnitMeasurement: Equatable {
+    let id: String
+    let y: CGFloat
+    let height: CGFloat
+}
+
+/// The geometry of the rendered window handed to the view: which data row the
+/// window starts at, what the spacer above it must claim, and the ids the
+/// anchor bookkeeping keys on.
+nonisolated struct TimelineWindowFrame: Equatable {
+    /// Index into `model.timeline.rows` of the first rendered row.
+    let startRowIndex: Int
+    /// The first rendered unit's id (nil when there are no rows at all).
+    let firstUnitID: String?
+    /// The top spacer's height in points (0 when nothing is hidden).
+    let spacerHeight: CGFloat
+    let hiddenRowCount: Int
+    let renderedRowCount: Int
+}
+
+/// A geometry sample and the measured top of the rendered window, in the
+/// timeline content's coordinate space. `above` is the rendered content the
+/// reader still has between the viewport's top edge and the window's top edge.
+nonisolated struct TimelineWindowSample: Equatable {
+    let viewport: TimelineViewport
+    let windowTop: CGFloat
+
+    /// Points of rendered content above the viewport's top edge. Negative when
+    /// the viewport has been pushed above the window's top (the reader is
+    /// looking at the spacer region before an expansion lands).
+    var above: CGFloat { viewport.offsetY + viewport.topInset - windowTop }
+}
+
+/// The render set of the windowed timeline (task sheet §P2 对策A): the data
+/// stays fully in memory, while the view renders only a suffix of the data —
+/// the tail window — and represents everything older with one spacer on top.
+///
+/// The window always ends at the newest unit (the tail sentinels, status line
+/// and queue ride below the rendered groups and must stay inside the rendered
+/// region). Only the top boundary moves:
+///
+/// - the reader approaching the window's top expands it upward in blocks, so
+///   the spacer region is (re)materialized well before it becomes visible;
+/// - the reader moving far below the window's top releases the far-top units
+///   back into the spacer.
+///
+/// Both moves are anchored by the existing `TimelineHistoryPosition` machine
+/// (see `Signal.renderWindow`): the spacer gives back exactly the estimates
+/// that were charged to it, the real layout supplies the difference, and the
+/// anchor correction pin the reader in place — the net displacement is zero.
+///
+/// Spacer accounting: in the fully rendered list the distance from the
+/// timeline's first child to the top of unit `i` is `Σ (h_j + spacing)` over
+/// the units before it (the VStack adds one gap per child). With `T` hidden
+/// units the spacer and its own surrounding gaps must reproduce that distance
+/// exactly, so `spacerHeight = Σ (h_j + spacing) - spacing`.
+nonisolated struct TimelineRenderWindow: Equatable {
+    /// The timeline content's `VStack(spacing:)`. Kept here so the spacer
+    /// arithmetic and the view cannot drift apart.
+    static let unitSpacing: CGFloat = 20
+    /// Cold open: render at least this many rows at the tail.
+    static let initialWindowRows = 160
+    /// One expand/shrink move covers at most this many rows…
+    static let moveBlockRows = 100
+    /// …and an expansion stops early once it has added this much height, so a
+    /// post-move correction stays proportional to what the reader can see.
+    static let expandBlockScreens: CGFloat = 2
+    /// Expand while less than this many screens of rendered content remain
+    /// above the viewport.
+    static let expandOverscanScreens: CGFloat = 1.5
+    /// Shrink once rendered content above the viewport exceeds this many
+    /// screens…
+    static let shrinkMarginScreens: CGFloat = 4
+    /// …but never release a unit that would leave less than this many screens
+    /// above the viewport. The gap between this and `expandOverscanScreens` is
+    /// the hysteresis: a settled shrink cannot immediately re-expand.
+    static let shrinkKeepScreens: CGFloat = 2
+
+    enum Move: Equatable {
+        case expand
+        case shrink
+        case none
+    }
+
+    private(set) var units: [TimelineRenderUnit] = []
+    /// Index of the first rendered unit; everything before it is hidden
+    /// behind the spacer.
+    private(set) var start = 0
+    /// Σ (height + spacing) over the hidden units, maintained incrementally.
+    private(set) var hiddenContribution: CGFloat = 0
+
+    var isEmpty: Bool { units.isEmpty }
+    var firstUnitID: String? { units.indices.contains(start) ? units[start].id : nil }
+    var hiddenUnitCount: Int { start }
+    var renderedUnitCount: Int { max(0, units.count - start) }
+
+    /// The spacer that stands in for every hidden unit.
+    var spacerHeight: CGFloat {
+        guard start > 0 else { return 0 }
+        return max(0, hiddenContribution - Self.unitSpacing)
+    }
+
+    var frame: TimelineWindowFrame {
+        var hidden = 0
+        for unit in units[..<min(start, units.count)] { hidden += unit.rowCount }
+        var rendered = 0
+        for unit in units[min(start, units.count)...] { rendered += unit.rowCount }
+        return TimelineWindowFrame(
+            startRowIndex: hidden,
+            firstUnitID: firstUnitID,
+            spacerHeight: spacerHeight,
+            hiddenRowCount: hidden,
+            renderedRowCount: rendered)
+    }
+
+    /// Rebuilds the unit list for a data change while preserving the rendered
+    /// set: the boundary sticks to its unit id, so a prepend of history pages
+    /// moves into the spacer instead of growing the render set. Falls back to
+    /// the default tail window on the first bind and when the boundary unit
+    /// vanished (a regroup merged or dropped it).
+    mutating func adopt(_ newUnits: [TimelineRenderUnit], defaultRowBudget: Int = TimelineRenderWindow.initialWindowRows) {
+        let previousFirstID = firstUnitID
+        units = newUnits
+        if let previousFirstID, let index = newUnits.firstIndex(where: { $0.id == previousFirstID }) {
+            start = index
+        } else if previousFirstID != nil {
+            // The boundary unit was merged away or dropped: clamp the old
+            // index into the new list rather than jumping to the tail — the
+            // reader keeps roughly their place and the next move trims.
+            start = min(max(0, start), max(0, newUnits.count - 1))
+        } else {
+            start = Self.tailStart(in: newUnits, rowBudget: defaultRowBudget)
+        }
+        rebuildHiddenContribution()
+    }
+
+    /// The tail-anchored default: walk up from the end until the budget is
+    /// covered, taking whole units.
+    static func tailStart(in units: [TimelineRenderUnit], rowBudget: Int) -> Int {
+        var index = units.count
+        var rows = 0
+        while index > 0, rows < rowBudget {
+            index -= 1
+            rows += units[index].rowCount
+        }
+        return index
+    }
+
+    /// Applies measured heights to rendered units before a move is planned or
+    /// executed: the shrink arithmetic must give the spacer the heights the
+    /// rows actually occupied, not the estimates they replaced.
+    mutating func applyMeasuredHeights(_ heights: [String: CGFloat]) {
+        guard !heights.isEmpty else { return }
+        for index in start..<units.count {
+            if let height = heights[units[index].id] {
+                units[index].height = height
+                units[index].isMeasured = true
+            }
+        }
+    }
+
+    /// The expand/shrink decision for one geometry sample. Pure — the view
+    /// evaluates it per frame and writes state only when a move is due.
+    func move(sample: TimelineWindowSample) -> Move {
+        guard sample.viewport.isMeasured, !units.isEmpty else { return .none }
+        let screen = sample.viewport.visibleHeight
+        if start > 0, sample.above < Self.expandOverscanScreens * screen {
+            return .expand
+        }
+        if sample.above > Self.shrinkMarginScreens * screen,
+           shrinkableCount(sample: sample) > 0 {
+            return .shrink
+        }
+        return .none
+    }
+
+    /// How many top units a shrink would release right now (0 = refused).
+    /// Whole units move, never a partial group.
+    func shrinkableCount(sample: TimelineWindowSample) -> Int {
+        guard sample.viewport.isMeasured, start < units.count else { return 0 }
+        let keep = Self.shrinkKeepScreens * sample.viewport.visibleHeight
+        var index = start
+        var rows = 0
+        var released: CGFloat = 0
+        var count = 0
+        while index < units.count, rows < Self.moveBlockRows {
+            let next = released + units[index].height + Self.unitSpacing
+            guard sample.above - next >= keep else { break }
+            released = next
+            rows += units[index].rowCount
+            index += 1
+            count += 1
+        }
+        return count
+    }
+
+    /// Materializes the top block: whole units until the row budget or the
+    /// height budget is reached, at least one. Returns the unit count moved
+    /// out of the spacer (0 when nothing is hidden).
+    mutating func expand(sample: TimelineWindowSample) -> Int {
+        guard start > 0 else { return 0 }
+        let heightBudget = Self.expandBlockScreens * sample.viewport.visibleHeight
+        var index = start
+        var rows = 0
+        var height: CGFloat = 0
+        while index > 0, rows < Self.moveBlockRows, height < heightBudget {
+            index -= 1
+            rows += units[index].rowCount
+            height += units[index].height + Self.unitSpacing
+        }
+        let count = start - index
+        guard count > 0 else { return 0 }
+        // The reader is corrected by the difference between these estimates
+        // and the real layout; the spacer gives back exactly what it charged.
+        hiddenContribution -= contribution(of: index..<start)
+        start = index
+        return count
+    }
+
+    /// Releases the top block back into the spacer. Returns the unit count
+    /// hidden (0 when the move is refused: releasing would eat the overscan).
+    mutating func shrink(sample: TimelineWindowSample) -> Int {
+        let count = shrinkableCount(sample: sample)
+        guard count > 0 else { return 0 }
+        let given = min(start + count, units.count)
+        hiddenContribution += contribution(of: start..<given)
+        start = given
+        return count
+    }
+
+    private func contribution(of range: Range<Int>) -> CGFloat {
+        var total: CGFloat = 0
+        for unit in units[range] { total += unit.height + Self.unitSpacing }
+        return total
+    }
+
+    private mutating func rebuildHiddenContribution() {
+        hiddenContribution = contribution(of: 0..<min(start, units.count))
+    }
+}

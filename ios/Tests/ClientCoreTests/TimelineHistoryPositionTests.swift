@@ -120,4 +120,64 @@ import Testing
         let correction = anchor.laidOut(layout(first: "earlier", y: 1080), generation: generation)
         #expect(correction == 1420)
     }
+
+    // MARK: render-window signal (the windowed timeline's expand/shrink moves)
+
+    private func renderLayout(renderFirst: String, anchor: String = "anchor", y: CGFloat) -> TimelineHistoryLayout {
+        TimelineHistoryLayout(firstRowID: "data-first", renderFirstRowID: renderFirst,
+            anchorRowID: anchor, edge: .top, y: y)
+    }
+
+    /// A window move keeps the reader in place: the data window's first row
+    /// never changes, only the render boundary — and the correction is the
+    /// measured y delta of the surviving anchor.
+    @Test func renderWindowMovesCorrectThroughTheSameMath() {
+        var anchor = TimelineHistoryPosition(id: 11, layout: renderLayout(renderFirst: "g10", y: 900),
+            offsetY: 4000, topInset: 80, signal: .renderWindow)
+        #expect(anchor.laidOut(renderLayout(renderFirst: "g10", y: 900), generation: 11) == nil,
+            "An unchanged window never corrects")
+        let correction = anchor.laidOut(renderLayout(renderFirst: "g4", y: 1280), generation: 11)
+        #expect(correction == 4380)
+        // The anchor's on-screen position is invariant — net displacement zero.
+        let onScreen = 1280 - (correction ?? 0)
+        let before: CGFloat = 900 - 4000
+        #expect(onScreen == before)
+        // A later markdown settle corrects against the original point again.
+        let settled = anchor.laidOut(renderLayout(renderFirst: "g4", y: 1310), generation: 11)
+        #expect(settled == 4410)
+    }
+
+    /// The two signals are orthogonal: a history prepend (data first row
+    /// changes, render boundary does not) never fires the window signal, and
+    /// a window move never fires the data signal — the loadOlder anchor's
+    /// behavior is untouched by the windowed timeline.
+    @Test func theTwoWindowSignalsAreOrthogonal() {
+        let dataPrepend = TimelineHistoryLayout(firstRowID: "much-older", renderFirstRowID: "g10",
+            anchorRowID: "anchor", edge: .top, y: 1200)
+        var windowAnchor = TimelineHistoryPosition(id: 12, layout: renderLayout(renderFirst: "g10", y: 900),
+            offsetY: 4000, topInset: 80, signal: .renderWindow)
+        #expect(windowAnchor.laidOut(dataPrepend, generation: 12) == nil,
+            "A data prepend with a stable render boundary is not a window move")
+        var history = TimelineHistoryPosition(id: 13, layout: layout(first: "old", anchor: "anchor", y: 80),
+            offsetY: 400, topInset: 80)
+        #expect(history.laidOut(dataPrepend, generation: 13) == 1520,
+            "The data signal keeps correcting history pans exactly as before")
+
+        let windowMove = TimelineHistoryLayout(firstRowID: "data-first", renderFirstRowID: "g2",
+            anchorRowID: "anchor", edge: .top, y: 1500)
+        var historyForWindow = TimelineHistoryPosition(id: 14, layout: layout(first: "data-first", anchor: "anchor", y: 80),
+            offsetY: 400, topInset: 80)
+        #expect(historyForWindow.laidOut(windowMove, generation: 14) == nil,
+            "A window move with an unchanged data first row is not a history pan")
+    }
+
+    @Test func aCancelledWindowAnchorStopsCorrectingButStillFinishes() {
+        var anchor = TimelineHistoryPosition(id: 15, layout: renderLayout(renderFirst: "g10", y: 900),
+            offsetY: 4000, topInset: 80, signal: .renderWindow)
+        anchor.cancelRestoration()
+        #expect(anchor.laidOut(renderLayout(renderFirst: "g1", y: 1400), generation: 15) == nil)
+        // The request itself still completes: settlement is not the correction.
+        anchor.receivedPage(firstRowID: "data-first")
+        #expect(anchor.isReadyToFinish)
+    }
 }

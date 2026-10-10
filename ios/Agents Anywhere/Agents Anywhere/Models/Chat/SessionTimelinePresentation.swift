@@ -76,6 +76,12 @@ final class SessionTimelinePresentation {
     /// from its own top: without the re-assert the reader is parked away
     /// from the newest rows until a manual scroll (2026-10-08).
     private(set) var windowRevision = 0
+    /// Bumped whenever the row membership changes (any bind that replaces the
+    /// `rows` array). The windowed timeline's unit/height caches rebuild off
+    /// this revision instead of diffing the array per body evaluation; a
+    /// streaming text update never bumps it, so re-estimates stay off the
+    /// per-token path.
+    private(set) var membershipRevision = 0
     @ObservationIgnored private var pending: [V2TimelineItem]?
     @ObservationIgnored private var animatePending = false
     @ObservationIgnored private var initialized = false
@@ -134,7 +140,10 @@ final class SessionTimelinePresentation {
             // keeps the first id, so neither bumps.
             let prepended = !rows.isEmpty && updated.first?.id != rows.first?.id
             let dropped = !presented.isSubset(of: Set(updated.map(\.id)))
-            if rows.map(\.id) != updated.map(\.id) { rows = updated }
+            if rows.map(\.id) != updated.map(\.id) {
+                rows = updated
+                membershipRevision &+= 1
+            }
             // A drop of a previously presented row means the window itself
             // moved (a trim, a latest-page swap, a recovery replacement) — one
             // of the shapes that needs the viewport re-asserted.

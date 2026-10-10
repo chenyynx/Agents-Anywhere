@@ -9,6 +9,7 @@ struct AccountSettingsSheet: View {
     @AppStorage(ProjectSidebarPreferences.compactSessionListKey) private var compactSessionList = false
     @AppStorage(OrbSettingsKeys.palette) private var orbPaletteValue = "kimi"
     @AppStorage(OrbSettingsKeys.customHex) private var orbCustomHexValue = OrbSettingsKeys.encodeCustomHex(["#007CFF", "#00F6FF", "#DFC8F5"])
+    @AppStorage(TimelineDiag.enabledKey) private var timelineDiagnostics = false
     @State private var confirmsSignOut = false
     @State private var signOutError: String?
     @State private var toasts = ChatToastStore()
@@ -78,6 +79,21 @@ struct AccountSettingsSheet: View {
                     }
                     .tint(.green)
                     .disabled(!showsSessionList)
+                }
+                Section(String(localized: "Diagnostics")) {
+                    Toggle(isOn: $timelineDiagnostics) {
+                        Label(String(localized: "Timeline diagnostics"), appSymbol: "waveform.path.ecg")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .tint(.green)
+                    .onChange(of: timelineDiagnostics) { _, _ in
+                        // The log reads the persisted switch through the
+                        // facade; refreshing here flips the chat page's
+                        // overlay in the same tick the user flips it.
+                        TimelineDiag.shared.refresh()
+                    }
+                } footer: {
+                    Text(String(localized: "Timeline diagnostics footer"))
                 }
                 Section(String(localized: "Workspace")) {
                     NavigationLink { SettingsServerView() } label: {

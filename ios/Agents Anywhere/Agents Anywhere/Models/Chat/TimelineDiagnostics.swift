@@ -171,7 +171,14 @@ final class TimelineDiag {
         #endif
     }
 
-    func snapshot() -> [TimelineDiagEvent] { buffer.events }
+    /// The buffer's contents. Reading `revision` on the way out is what makes
+    /// the call the panel's observation hook — the buffer itself is ignored,
+    /// so an append costs one integer write and this one read per render.
+    func snapshot() -> [TimelineDiagEvent] {
+        _ = revision
+        return buffer.events
+    }
+
     func formatted() -> String { buffer.formatted() }
     func clear() { buffer.removeAll(); revision &+= 1 }
 }

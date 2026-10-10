@@ -387,6 +387,13 @@ struct ChatTimelineView: View {
                     historyPosition?.cancelRestoration()
                     scrolling.requestBottom()
                 })
+            // The timeline's decision log (Settings → Timeline diagnostics): a
+            // sibling overlay, so it cannot move a row, charge a spacer or
+            // take a scroll gesture. Absent — not just hidden — while the log
+            // is off, which is the default.
+            if TimelineDiag.shared.isEnabled {
+                TimelineDiagnosticsOverlay()
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // K3: with the keyboard up, a tap on empty message space closes it.

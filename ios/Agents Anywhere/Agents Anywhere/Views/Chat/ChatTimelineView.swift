@@ -256,8 +256,11 @@ struct ChatTimelineView: View {
                 // page while the opening's own machinery was still settling.
                 // A short quiet beat keeps the first fetch from racing the
                 // landing layout; the presentation coalescer
-                // (`TimelinePrependCoalescer`) folds the rest of the flood
-                // into few landings.
+                // (`TimelinePrependCoalescer`) then folds the rest of the
+                // flood into a single landing — one fixed, capped hold: a
+                // flood inside its 0.9 s window repaints once, a stream that
+                // keeps arriving at most once per window, never "a few"
+                // landings per flood.
                 guard model.openingPositionSettled else { return }
                 do { try await Task.sleep(for: .milliseconds(450)) } catch { return }
                 guard !Task.isCancelled else { return }

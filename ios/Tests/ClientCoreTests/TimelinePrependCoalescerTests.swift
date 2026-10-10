@@ -2,9 +2,10 @@ import Foundation
 import Testing
 @testable import ClientCore
 
-/// The opening-flood governance's pure half: history-page prepends land as
-/// few repaints as possible without ever starving the flush. Self-contained
-/// so the same file runs in the Linux shadow sandbox.
+/// The opening-flood governance's pure half: history-page prepends land once
+/// per capped hold — one repaint for a flood inside the window, at most one
+/// per window while pages keep arriving — and the flush is never starved.
+/// Self-contained so the same file runs in the Linux shadow sandbox.
 @Suite struct TimelinePrependCoalescerTests {
     @Test func afreshPrependStageOpensAShortHold() {
         var coalescer = TimelinePrependCoalescer()

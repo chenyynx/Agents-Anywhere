@@ -10,8 +10,12 @@ import Observation
 /// pending batch — which already contains every page that arrived meanwhile,
 /// because each observation carries the projection's current full window. The
 /// data still lands in memory page by page; only the presentation's landing
-/// count shrinks. Bounded by `maxWindow` so a continuous event stream can
-/// never starve the flush.
+/// count shrinks. The hold is fixed and capped, not a rolling debounce: a
+/// flood that fits inside `maxWindow` lands **once**, and a stream that keeps
+/// arriving lands at most once per `maxWindow` — never "a few" landings per
+/// flood. Bounded by `maxWindow` so a continuous event stream can never
+/// starve the flush. The hold gates only the batch staged as a prepend; a live
+/// append staged underneath it publishes on its own reveal clock.
 nonisolated struct TimelinePrependCoalescer: Equatable {
     /// One hold's extension per prepend-looking stage.
     static let step: TimeInterval = 0.25

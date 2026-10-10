@@ -72,9 +72,13 @@ Semantic error and availability colors remain separate from the primary color.
   one (the backfill's prepends) extends a trailing-debounce hold
   (`TimelinePrependCoalescer`, 0.25 s per page, 0.9 s cap); a flush inside the
   hold publishes the newest pending batch, which already contains every page
-  that arrived. The backfill additionally waits a short quiet beat after the
+  that arrived. The hold is fixed and capped — a flood that fits inside the
+  0.9 s window lands **once**, and a stream that keeps arriving lands at most
+  once per window, not "a few" times per flood. Only a batch that itself
+  prepends waits it out; a live reply staged underneath publishes on its own
+  reveal clock. The backfill additionally waits a short quiet beat after the
   opening position settles before its first fetch. Pages still land in memory
-  one by one — the reader just sees single-digit repaints instead of one per
+  one by one — the reader just sees the coalesced landing instead of one per
   page.
 - Opening a session shows one persistent loading indicator in the detail
   column only for a true cold load, that is, when no in-memory projection

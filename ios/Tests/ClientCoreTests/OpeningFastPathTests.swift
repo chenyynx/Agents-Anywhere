@@ -391,6 +391,54 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         #expect(!reasserted)
     }
 
+    @Test func aTookOverFollowerStillGetsTheInstantRePin() throws {
+        var state = try openedAtBottom()
+        // The reader takes over and reads mid-history...
+        state.phaseChanged(.tracking, viewport: viewport(offset: 900, height: 2600))
+        state.phaseChanged(.idle, viewport: viewport(offset: 900, height: 2600))
+        state.settleUserScroll()
+        #expect(state.readerTookOver && state.mode == .reading)
+        // ...then scrolls back to the bottom and rests there: following again.
+        state.phaseChanged(.tracking, viewport: viewport(offset: 1920, height: 2600))
+        state.phaseChanged(.idle, viewport: viewport(offset: 1920, height: 2600))
+        state.settleUserScroll()
+        #expect(state.readerTookOver && state.mode == .following)
+        // A window change (a prepend landing above) displaces the resting
+        // follower. The re-assert is theirs too now: the instant return lands
+        // exactly where they rest, so it moves nothing they can see — the
+        // batch-2 prepend re-pin no longer skips taken-over followers.
+        state.geometryChanged(viewport(offset: 1920, height: 3000))
+        let reasserted = state.reassertOpeningReturn()
+        #expect(reasserted)
+        let command = try nextCommand(&state)
+        #expect(command.instant)
+        state.geometryChanged(viewport(offset: 2320, height: 3000))
+        visibility(&state, end: true)
+        let completed = state.complete(command)
+        #expect(completed && state.mode == .following)
+        // The instant flag was consumed with that return: the next explicit
+        // return is a normal animated one. A lingering `openingReturnIsPending`
+        // would make the bottom pill land without its spring, and this turns
+        // red.
+        state.geometryChanged(viewport(offset: 1920, height: 3000))
+        state.requestBottom()
+        let next = try nextCommand(&state)
+        #expect(!next.instant)
+    }
+
+    @Test func aParkedHistoryReaderStillRefusesTheReAssert() throws {
+        var state = try openedAtBottom()
+        // Taken over and resting away from the bottom: the one state the
+        // re-assert must keep its hands off — a return here would yank them
+        // off what they stopped to read.
+        state.phaseChanged(.tracking, viewport: viewport(offset: 900, height: 2600))
+        state.phaseChanged(.idle, viewport: viewport(offset: 900, height: 2600))
+        state.settleUserScroll()
+        #expect(state.readerTookOver && state.mode == .reading)
+        let reasserted = state.reassertOpeningReturn()
+        #expect(!reasserted)
+    }
+
     @Test func anExplicitHistoryRequestEndsTheOpeningClaim() throws {
         var state = try openedAtBottom()
         state.browseHistory(byReader: true)

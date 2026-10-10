@@ -1461,6 +1461,39 @@ class ClaudeMessageProjector:
             base = card.overlay.synthesized_call(card.tool_use_id)
         return card.overlay.apply(base)
 
+    def tool_use_id_for_task(
+        self,
+        session: ClaudeSession,
+        task_id: str,
+    ) -> str | None:
+        """The dispatch tool_use id of the session's card that names ``task_id`` (F3).
+
+        The reverse of the task_started binding (`agent_task_calls`): that
+        binding is written only by a local_agent ``task_started`` carrying a
+        tool id, so a terminal frame whose binding was never written — the
+        missed/filtered start of zombie-agent-card §0 companion defect A —
+        has no key. The card itself still knows the task: its agents map is
+        keyed by task id, on either surface (the wire content or the task
+        overlay a receipt-less mint carried). Traversal is insertion-ordered
+        and the first card naming the task wins, matching the fold's
+        canonical one-card-per-task semantics; a card without a dispatch id
+        cannot host a fold and is skipped. No hit returns ``None`` and the
+        caller stays exactly as silent as before (local_bash tasks have no
+        card, so their frames remain unprojected — findings §8.11).
+        """
+
+        for item_id, card in tuple(self._agent_cards.items()):
+            if card.session_id != session.session_id:
+                # One projector serves every session of the runtime.
+                continue
+            if card.tool_use_id is None:
+                continue
+            content = self._overlaid_card_content(card)
+            if content is None or task_id not in content.agents:
+                continue
+            return card.tool_use_id
+        return None
+
     def _card_item(
         self,
         session: ClaudeSession,

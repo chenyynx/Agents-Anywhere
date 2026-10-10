@@ -84,7 +84,9 @@ SUBAGENT_STALE_SECONDS: float = 900.0
 #: (measured background work sits in the ~30-minute range), so the value is
 #: far above every honest silence and a false close is impossible for any
 #: task the transport still vouches for — ``attached``/live tasks are exempt
-#: entirely. Overridable at construction; the environment variable below
+#: from it too, except when the ceiling's own raw-transcript anchor (not a
+#: receipt guess) is itself past the bound (F2 pierce, zombie-agent-card).
+#: Overridable at construction; the environment variable below
 #: supplies the default and a value ``<= 0`` disables the judgement.
 SUBAGENT_AGE_BOUND_SECONDS: float = 24 * 60 * 60.0
 
@@ -412,8 +414,12 @@ class ClaudeSubagentOracle:
         2. Otherwise, an ``attached`` task (a live turn is driving the process)
            is never closed on file silence alone — a long tool call writes
            nothing for a while and must not be mistaken for dead. The
-           exemption is hard for the age ceiling too: no clock judgement
-           closes a task the transport still vouches for.
+           exemption bends in exactly one place (F2, zombie-agent-card): the
+           age ceiling pierces it when the *ceiling's own* raw-transcript
+           anchor is older than the bound, because no legitimate run —
+           attached or not — stays unproven for that long; without that
+           anchored age no clock judgement closes a task the transport still
+           vouches for, and the caller abstains.
         3. No terminal notice: a missing transcript past the start grace closes
            as ``interrupted`` (never started); a transcript silent past the
            stale deadline closes as ``interrupted``; a fresh transcript stays
@@ -496,6 +502,32 @@ class ClaudeSubagentOracle:
         # No notice that closes the task. Now the file decides — but only when
         # nobody is actively driving the process.
         if attached_live:
+            # F2 (zombie-agent-card, companion defect B): the age ceiling
+            # pierces the attached exemption — but only on its OWN anchor.
+            # The T2 premise "no legitimate run stays silent this long" holds
+            # for attached tasks too, and an attached task whose pin is a
+            # stale register entry (the resume/notification gap) would
+            # otherwise abstain forever: F1 narrows the exemption from the
+            # snapshot side, this closes the shape where the connection never
+            # saw a snapshot at all. `ceiling_anchored` is required and NOT
+            # widened to the receipt age the way the non-attached branch
+            # falls back: without a raw-transcript anchor there is no age
+            # this judgement may trust for a task the transport vouches for,
+            # so it abstains and the server janitor remains that form's
+            # floor. A fresh `ceiling_age_seconds` inside the bound simply
+            # abstains like any other unproven case.
+            if (
+                self.age_bound_seconds > 0
+                and ceiling_anchored
+                and ceiling_age_seconds is not None
+                and ceiling_age_seconds > self.age_bound_seconds
+            ):
+                return AgentTaskEvidence(
+                    closure_status="interrupted",
+                    closed_by="ageBounded",
+                    end_time_ms=int(current_ms - ceiling_age_seconds * 1000),
+                    agent_status="interrupted",
+                )
             return None
         if not info.path_known:
             return None
@@ -529,8 +561,9 @@ class ClaudeSubagentOracle:
         # fresh, but the task's newest launch/survival evidence is older than
         # any legitimate run — with no live signal, the file's freshness is
         # what this rule declines to trust, and the card closes. `attached`
-        # has already returned above; the explicit guard is kept so the hard
-        # exemption holds even if this branch is ever re-ordered.
+        # has already returned above (after its own F2 pierce); the explicit
+        # guard is kept so the exemption holds even if this branch is ever
+        # re-ordered.
         #
         # The ceiling is the one judgement that reads an age at all, so it is
         # also the one that must not read a *polluted* one (R1c): it judges on

@@ -208,6 +208,15 @@ nonisolated struct TimelineRenderWindow: Equatable {
             renderedRowCount: rendered)
     }
 
+    /// Whether `id` belongs to the current render set. A frame reported for
+    /// anything else is stale — the unit was released by a shrink, or left by
+    /// a rebind — and must feed neither the anchor correction nor the height
+    /// caches the next move bakes from.
+    func isRendered(_ id: String) -> Bool {
+        guard !units.isEmpty else { return false }
+        return units[min(start, units.count)...].contains { $0.id == id }
+    }
+
     /// Rebuilds the unit list for a data change while preserving the rendered
     /// set: the boundary sticks to its unit id, so a prepend of history pages
     /// moves into the spacer instead of growing the render set. Falls back to

@@ -215,6 +215,30 @@ import Testing
         }
     }
 
+    // MARK: the render set's membership gate (L1/L2)
+
+    /// Only the rendered suffix is a valid source of reported frames: a late
+    /// report from a unit the window released would hand the anchor a dead y
+    /// and bake a stale height into the next move's spacer arithmetic.
+    @Test func onlyTheRenderedSuffixAcceptsReportedFrames() {
+        var window = TimelineRenderWindow()
+        window.adopt(units(300, height: 60))
+        let start = window.start
+        #expect(start > 1)
+        let boundary = window.units[start].id
+        let above = window.units[start - 1].id
+        #expect(window.isRendered(boundary), "the boundary unit keeps reporting")
+        #expect(!window.isRendered(above), "the unit above it lives behind the spacer")
+        #expect(!window.isRendered("ghost"))
+        // Materialising the top block moves it into the set…
+        #expect(window.expand(sample: sample(offset: 0, windowTop: 0)) > 0)
+        #expect(window.isRendered(above))
+        // …and releasing it again takes it straight back out: whatever it
+        // reports from here on is stale.
+        #expect(window.shrink(sample: sample(offset: 60_000, windowTop: 5_000)) > 0)
+        #expect(!window.isRendered(above))
+    }
+
     // MARK: the move gate (F3)
 
     /// A sample may judge (and commit) a window move only while nothing else

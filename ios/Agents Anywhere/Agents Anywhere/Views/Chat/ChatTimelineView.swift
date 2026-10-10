@@ -661,6 +661,10 @@ struct ChatTimelineView: View {
     /// deferred out of the geometry callback through the same main-queue box
     /// the history layout uses, so no scroll target is written mid-layout.
     private func windowUnitDidMeasure(_ measurement: TimelineWindowUnitMeasurement) {
+        // L1: a frame from outside the current render set is a stale report
+        // (its unit was released, or the window re-bound under it). It must
+        // neither refine the spacer nor drive the anchor's point correction.
+        guard windowBox.isRendered(measurement.id) else { return }
         windowBox.recordUnitFrame(measurement)
         guard windowAnchor?.origin?.anchorRowID == measurement.id else { return }
         windowUpdates.submit(measurement) { measurement in
@@ -1095,6 +1099,9 @@ private extension V2SendQueue {
     private(set) var moveRevision = 0
     /// The render window's first unit right now (nil before the first bind).
     var resolvedFirstUnitID: String? { lastFrame.firstUnitID }
+    /// Whether `id` is in the current render set: the gate every reported
+    /// frame passes before it may touch the store (L1/L2).
+    func isRendered(_ id: String) -> Bool { window.isRendered(id) }
 
     @ObservationIgnored private var window = TimelineRenderWindow()
     @ObservationIgnored private var heights = TimelineUnitHeightCache()
@@ -1137,8 +1144,12 @@ private extension V2SendQueue {
 
     /// Records one rendered unit's frame: the measured-truth cache for the
     /// height model, the current-height bake source for moves, and the y the
-    /// anchor correction reads while a move settles.
+    /// anchor correction reads while a move settles. Frames of units outside
+    /// the render set are dropped — their y stopped being meaningful when they
+    /// left, and a released unit's stale height must never be baked into the
+    /// next move's spacer arithmetic.
     func recordUnitFrame(_ measurement: TimelineWindowUnitMeasurement) {
+        guard window.isRendered(measurement.id) else { return }
         measurements[measurement.id] = measurement
         measuredHeights[measurement.id] = measurement.height
         guard let unitFacts = facts[measurement.id] else { return }

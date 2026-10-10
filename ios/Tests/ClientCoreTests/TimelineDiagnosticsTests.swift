@@ -20,11 +20,12 @@ import Testing
     @Test func theTranscriptIsOneLinePerEventOldestFirst() {
         var buffer = TimelineDiagBuffer(capacity: 10)
         buffer.append(.gateRefused(item: "historyLoadInFlight", phase: "decelerating"), at: 1.5)
-        buffer.append(.plannedMove(move: "expand", units: 14, estimatedHeight: 2380), at: 2)
+        buffer.append(.plannedMove(move: "expand", units: 14, estimatedHeight: 2380, measuredHeight: 0), at: 2)
         let lines = buffer.formatted().split(separator: "\n")
         #expect(lines.count == 2)
         #expect(lines[0] == "1.500 gate refused: historyLoadInFlight (decelerating)")
-        #expect(lines[1] == "2.000 move: expand 14 units, est 2380.0pt")
+        #expect(lines[1] == "2.000 move: expand 14 units, est 2380.0pt measured 0.0pt",
+            "the measured half is the block's bake coverage — the next log's question")
     }
 
     @Test func everyKindFormatsTheFieldsItCarries() {
@@ -46,10 +47,10 @@ import Testing
 
     @Test func clearEmptiesTheRingAndKeepsTheSequence() {
         var buffer = TimelineDiagBuffer(capacity: 8)
-        buffer.append(.plannedMove(move: "shrink", units: 3, estimatedHeight: 240), at: 1)
+        buffer.append(.plannedMove(move: "shrink", units: 3, estimatedHeight: 240, measuredHeight: 240), at: 1)
         buffer.removeAll()
         #expect(buffer.isEmpty && buffer.formatted().isEmpty)
-        buffer.append(.plannedMove(move: "expand", units: 1, estimatedHeight: 80), at: 2)
+        buffer.append(.plannedMove(move: "expand", units: 1, estimatedHeight: 80, measuredHeight: 0), at: 2)
         #expect(buffer.events.map(\.id) == [2], "clearing does not rewind the ids")
     }
 

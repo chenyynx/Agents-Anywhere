@@ -1255,8 +1255,9 @@ private extension V2SendQueue {
             // whose first measurement will show the residual.
             let range = plan.move == .expand ? window.start..<startBefore : startBefore..<window.start
             let estimated = window.units[range].reduce(CGFloat(0)) { $0 + $1.height + TimelineRenderWindow.unitSpacing }
+            let measured = window.units[range].reduce(CGFloat(0)) { $0 + ($1.isMeasured ? $1.height : 0) }
             TimelineDiag.record(.plannedMove(move: plan.move == .expand ? "expand" : "shrink",
-                units: moved, estimatedHeight: estimated))
+                units: moved, estimatedHeight: estimated, measuredHeight: measured))
             if plan.move == .expand, TimelineDiag.isCollecting {
                 materializing = Dictionary(uniqueKeysWithValues: window.units[range].map { ($0.id, $0.height) })
             } else {

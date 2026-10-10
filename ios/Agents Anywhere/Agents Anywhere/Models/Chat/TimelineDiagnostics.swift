@@ -15,8 +15,10 @@ nonisolated struct TimelineDiagEvent: Equatable, Identifiable {
         /// (`TimelineWindowMoveGate.Refusal`), `phase` the reader's phase.
         case gateRefused(item: String, phase: String)
         /// A boundary move committed: `units` whole units, `estimatedHeight`
-        /// their summed estimate — the height the spacer was charged/released.
-        case plannedMove(move: String, units: Int, estimatedHeight: CGFloat)
+        /// their summed estimate — the height the spacer was charged/released —
+        /// and `measuredHeight`, how much of that block had already been
+        /// measured (`estimated − measured` is the move's estimate exposure).
+        case plannedMove(move: String, units: Int, estimatedHeight: CGFloat, measuredHeight: CGFloat)
         /// The anchor's correction was evaluated: the unit that stayed
         /// rendered, the displacement it removes (real height minus estimate),
         /// the offset it would write, the phase it would write under, and
@@ -41,8 +43,8 @@ nonisolated struct TimelineDiagEvent: Equatable, Identifiable {
             switch self {
             case let .gateRefused(item, phase):
                 return "\(stamp) gate refused: \(item) (\(phase))"
-            case let .plannedMove(move, units, estimatedHeight):
-                return "\(stamp) move: \(move) \(units) units, est \(Self.points(estimatedHeight))pt"
+            case let .plannedMove(move, units, estimatedHeight, measuredHeight):
+                return "\(stamp) move: \(move) \(units) units, est \(Self.points(estimatedHeight))pt measured \(Self.points(measuredHeight))pt"
             case let .correction(anchor, delta, targetOffset, phase, wrote):
                 return "\(stamp) correct: \(anchor) Δ\(Self.signed(delta)) → \(Self.points(targetOffset)) (\(phase)) \(wrote ? "wrote" : "absorbed")"
             case let .materialized(id, estimated, measured):

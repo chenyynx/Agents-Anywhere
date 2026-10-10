@@ -523,6 +523,7 @@ def _history_items_from_messages(
     raw_scan: RawTranscriptScan | None = None,
     oracle: ClaudeSubagentOracle | None = None,
     live_task_ids: frozenset[str] = frozenset(),
+    window_origin_uuid: str | None = None,
 ) -> tuple[RuntimeTimelineItem, ...]:
     """Project one transcript window into timeline items.
 
@@ -537,7 +538,9 @@ def _history_items_from_messages(
     )
     if raw_scan is None and raw_lines:
         raw_scan = scan_raw_transcript(raw_lines)
-    raw_notices = _raw_history_notices(messages, raw_scan)
+    raw_notices = _raw_history_notices(
+        messages, raw_scan, window_origin_uuid=window_origin_uuid
+    )
     notification_folds = _agent_task_notification_folds(
         session,
         messages,
@@ -1286,6 +1289,8 @@ def _read_raw_transcript_scan(session: ClaudeSession) -> RawTranscriptScan | Non
 def _raw_history_notices(
     messages: tuple[Any, ...],
     scan: RawTranscriptScan | None,
+    *,
+    window_origin_uuid: str | None = None,
 ) -> tuple[tuple[int, ClaudeTaskEvent], ...]:
     """Raw-only terminal notices the SDK view dropped, placed at their anchor.
 
@@ -1293,6 +1298,11 @@ def _raw_history_notices(
     behaves exactly as before. A notice participates only when its raw-file
     anchor resolves inside this window (see ``raw_only_notices``); it is folded
     at the anchor's index so the window's own later signals still win.
+
+    ``window_origin_uuid`` is the incremental cursor's last-message uuid, when
+    this projection is an incremental pass (D-B): the raw-only notices the
+    window cut off are admitted past it. A rebase / first sync / full snapshot
+    passes ``None`` and keeps the old gate exactly.
     """
 
     if scan is None or not scan.notices:
@@ -1309,7 +1319,11 @@ def _raw_history_notices(
             if isinstance(key, str) and key and key not in sdk_uuid_order:
                 sdk_uuid_order[key] = index
     try:
-        return raw_only_notices(scan, sdk_uuid_order=sdk_uuid_order)
+        return raw_only_notices(
+            scan,
+            sdk_uuid_order=sdk_uuid_order,
+            window_origin_uuid=window_origin_uuid,
+        )
     except Exception:  # noqa: BLE001
         logger.exception("Claude raw transcript notification scan failed")
         return ()

@@ -179,6 +179,34 @@ class ClaudeHistorySyncer:
                 live_session.context_probe if live_session is not None else None
             ),
         )
+        # D-A (zombie-agent-card §9): the evidence sweep iterates the STORE's
+        # sessions, but a session this connector has only ever read through
+        # history — never driven live — reached the store through
+        # ``record_timeline_item``'s bare ``ensure(session_id)``, which fills
+        # neither cwd nor the external id. Without them the oracle's probe
+        # resolves no transcript path and abstains on every card, so the sweep
+        # is blind to exactly the sessions it must heal after a restart.
+        #
+        # Enrich an EXISTING store entry; never create one here. Creating a
+        # store session for a history-only session would put a local overlay on
+        # page 1 that shadows the history meta it must not outvote (the merge
+        # drops ``history_cursor_missing`` and the marker test that pins it),
+        # and a session with no store entry has no card for the sweep to heal
+        # anyway (cards only reach the store through ``record_timeline_item``).
+        # A value the live transport already authored stays authoritative: the
+        # store's ``ensure`` overwrites a truthy cwd, so only a MISSING field
+        # is filled (the G1 guard).
+        stored = self.session_store.get(session_id, external_session_id)
+        if stored is not None:
+            self.session_store.ensure(
+                session_id=session_id,
+                external_session_id=(
+                    None if stored.external_session_id else external_session_id
+                ),
+                cwd=None if stored.cwd else session.cwd,
+                title=None if stored.title else session.title,
+                ordering_time=None if stored.ordering_time else session.ordering_time,
+            )
         tool_call_lookup, hidden_tool_use_ids = await asyncer.asyncify(
             _history_tool_call_context
         )(
@@ -201,6 +229,16 @@ class ClaudeHistorySyncer:
             oracle=self.oracle,
             live_task_ids=(
                 self.live_task_ids(session) if self.live_task_ids else frozenset()
+            ),
+            # D-B (zombie-agent-card §9): an incremental pass is bounded by the
+            # previous cursor, so a raw-only notice written after that cursor
+            # must be admitted even though its (raw-file) anchor is a row the
+            # SDK view already surfaced. A rebase / first sync covers the whole
+            # transcript and passes None — no boundary, so the old gate holds.
+            window_origin_uuid=(
+                previous_cursor.last_message_uuid
+                if not rebased and previous_cursor is not None
+                else None
             ),
         )
         snapshot = RuntimeTimelineSnapshot(

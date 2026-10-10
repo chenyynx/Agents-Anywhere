@@ -17,7 +17,23 @@ class ClaudeSessionStore:
         external_session_id: str | None = None,
         cwd: str | None = None,
         title: str | None = None,
+        ordering_time: str | None = None,
     ) -> ClaudeSession:
+        """Adopt a session into the store, filling whichever fields arrive.
+
+        ``ordering_time`` is the sort key the caller already knows the session
+        by. History sync supplies the transcript's own ``last_modified`` so an
+        entry it creates sorts exactly where the library already sorts it —
+        defaulting to "now" there would pull a settled session to the top of
+        page 1 every time the connector adopted one (D-A, zombie-agent-card
+        §9).
+
+        Every field stays "fill when truthy": a caller that does not know a
+        value passes ``None`` and leaves whatever the store already holds
+        alone. The history reader uses that to adopt meta onto a session a
+        live transport already authored without outvoting it.
+        """
+
         session = self._sessions.get(session_id)
         if session is None:
             session = ClaudeSession(
@@ -25,7 +41,7 @@ class ClaudeSessionStore:
                 external_session_id=external_session_id,
                 cwd=cwd,
                 title=title,
-                ordering_time=_now_iso(),
+                ordering_time=ordering_time or _now_iso(),
             )
             self._sessions[session_id] = session
             return session
@@ -36,7 +52,7 @@ class ClaudeSessionStore:
         if title:
             session.title = title
         if session.ordering_time is None:
-            session.ordering_time = _now_iso()
+            session.ordering_time = ordering_time or _now_iso()
         return session
 
     def update_meta(

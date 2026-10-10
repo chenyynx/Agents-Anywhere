@@ -84,7 +84,9 @@ SUBAGENT_STALE_SECONDS: float = 900.0
 #: (measured background work sits in the ~30-minute range), so the value is
 #: far above every honest silence and a false close is impossible for any
 #: task the transport still vouches for — ``attached``/live tasks are exempt
-#: entirely. Overridable at construction; the environment variable below
+#: from it too, except when the ceiling's own raw-transcript anchor (not a
+#: receipt guess) is itself past the bound (F2 pierce, zombie-agent-card).
+#: Overridable at construction; the environment variable below
 #: supplies the default and a value ``<= 0`` disables the judgement.
 SUBAGENT_AGE_BOUND_SECONDS: float = 24 * 60 * 60.0
 
@@ -412,8 +414,12 @@ class ClaudeSubagentOracle:
         2. Otherwise, an ``attached`` task (a live turn is driving the process)
            is never closed on file silence alone — a long tool call writes
            nothing for a while and must not be mistaken for dead. The
-           exemption is hard for the age ceiling too: no clock judgement
-           closes a task the transport still vouches for.
+           exemption bends in exactly one place (F2, zombie-agent-card): the
+           age ceiling pierces it when the *ceiling's own* raw-transcript
+           anchor is older than the bound, because no legitimate run —
+           attached or not — stays unproven for that long; without that
+           anchored age no clock judgement closes a task the transport still
+           vouches for, and the caller abstains.
         3. No terminal notice: a missing transcript past the start grace closes
            as ``interrupted`` (never started); a transcript silent past the
            stale deadline closes as ``interrupted``; a fresh transcript stays
@@ -496,6 +502,32 @@ class ClaudeSubagentOracle:
         # No notice that closes the task. Now the file decides — but only when
         # nobody is actively driving the process.
         if attached_live:
+            # F2 (zombie-agent-card, companion defect B): the age ceiling
+            # pierces the attached exemption — but only on its OWN anchor.
+            # The T2 premise "no legitimate run stays silent this long" holds
+            # for attached tasks too, and an attached task whose pin is a
+            # stale register entry (the resume/notification gap) would
+            # otherwise abstain forever: F1 narrows the exemption from the
+            # snapshot side, this closes the shape where the connection never
+            # saw a snapshot at all. `ceiling_anchored` is required and NOT
+            # widened to the receipt age the way the non-attached branch
+            # falls back: without a raw-transcript anchor there is no age
+            # this judgement may trust for a task the transport vouches for,
+            # so it abstains and the server janitor remains that form's
+            # floor. A fresh `ceiling_age_seconds` inside the bound simply
+            # abstains like any other unproven case.
+            if (
+                self.age_bound_seconds > 0
+                and ceiling_anchored
+                and ceiling_age_seconds is not None
+                and ceiling_age_seconds > self.age_bound_seconds
+            ):
+                return AgentTaskEvidence(
+                    closure_status="interrupted",
+                    closed_by="ageBounded",
+                    end_time_ms=int(current_ms - ceiling_age_seconds * 1000),
+                    agent_status="interrupted",
+                )
             return None
         if not info.path_known:
             return None
@@ -529,8 +561,9 @@ class ClaudeSubagentOracle:
         # fresh, but the task's newest launch/survival evidence is older than
         # any legitimate run — with no live signal, the file's freshness is
         # what this rule declines to trust, and the card closes. `attached`
-        # has already returned above; the explicit guard is kept so the hard
-        # exemption holds even if this branch is ever re-ordered.
+        # has already returned above (after its own F2 pierce); the explicit
+        # guard is kept so the exemption holds even if this branch is ever
+        # re-ordered.
         #
         # The ceiling is the one judgement that reads an age at all, so it is
         # also the one that must not read a *polluted* one (R1c): it judges on
@@ -723,6 +756,15 @@ class RawTranscriptScan:
     #: mapping alone (red team F2/F3: a hand-built or polluted mapping must not
     #: be able to mint phantom cards or steer a fold onto a quoting tool id).
     verified_dispatch_ids: frozenset[str] = frozenset()
+    #: Row uuid -> its 0-based line in ``raw_lines``. Built in the same pass as
+    #: everything above (the scan already parses every uuid-bearing row), it is
+    #: what lets ``raw_only_notices`` compare a notice's own position against
+    #: the row a stored cursor stopped at: the message view never surfaces a
+    #: ``queue-operation`` notice, so the only way to tell a notice written
+    #: *after* the cursor from one written before it is in the raw file's own
+    #: line order (D-B, zombie-agent-card §9). Empty for hand-built scans,
+    #: which then keep the window gate exactly as it was.
+    uuid_line_index: Mapping[str, int] = field(default_factory=dict)
 
 
 def scan_raw_transcript(
@@ -783,6 +825,7 @@ def scan_raw_transcript(
     dispatch_roots: dict[str, set[str]] = {}
     tool_use_names: dict[str, str] = {}
     last_anchor: str | None = None
+    uuid_line_index: dict[str, int] = {}
     for line_index, line in enumerate(raw_lines):
         wants_notice = "<task-notification>" in line
         wants_receipt = "agentId:" in line
@@ -810,6 +853,10 @@ def scan_raw_transcript(
         row_uuid = _string(row.get("uuid"))
         if row_uuid is not None:
             last_anchor = row_uuid
+            # Keep the FIRST line a uuid appears on: a resumed/rewritten file
+            # can repeat a row, and the earlier position is the honest order
+            # for the window gate (D-B). `setdefault` is the whole rule.
+            uuid_line_index.setdefault(row_uuid, line_index)
         if wants_tool_use:
             _register_tool_use_names(row, tool_use_names)
         if wants_receipt or wants_send or wants_resume or wants_agent_key:
@@ -897,6 +944,7 @@ def scan_raw_transcript(
             if roots
         },
         verified_dispatch_ids=verified_dispatch_ids,
+        uuid_line_index=uuid_line_index,
     )
 
 
@@ -1200,6 +1248,7 @@ def raw_only_notices(
     scan: RawTranscriptScan,
     *,
     sdk_uuid_order: Mapping[str, int],
+    window_origin_uuid: str | None = None,
 ) -> tuple[tuple[int, ClaudeTaskEvent], ...]:
     """The ``(placement_index, event)`` of the raw notices the SDK dropped.
 
@@ -1222,15 +1271,51 @@ def raw_only_notices(
     by the transcript's real order. A notice with no anchor at all — no uuid on
     its row and none before it — cannot be located and is declined.
 
+    ``window_origin_uuid`` (D-B, zombie-agent-card §9) is the incremental
+    cursor's own last-message uuid: the row the previous projection stopped at.
+    A raw notice carries no uuid of its own, so its anchor is the *last uuid row
+    before it* — which, for a notice the CLI appended after a covered row, is a
+    row the SDK view already surfaced. Such a notice then failed
+    ``anchor not in sdk_uuid_order`` and was dropped even though it sits *after*
+    the cursor and belongs to this projection: the s7 shape, where a completion
+    notice written after the cursor never reached the fold and the card stayed
+    running until the 24h floor. The origin is the discriminator the SDK view
+    cannot give (it never surfaces a notice), so it is read from the raw file's
+    own line order: a notice whose anchor line is at or before the origin's line
+    was already covered by an earlier window and stays dropped; one after it is
+    admitted. Without an origin (a rebase, a first sync, a full snapshot — no
+    incremental boundary to compare against) the gate is byte-identical to
+    before, so those passes keep folding exactly the notices they always did.
+
     One signal per task is kept (the newest by timestamp), since two placements
     for one task would only add an ambiguous tie.
     """
 
+    origin_line: int | None = None
+    if window_origin_uuid is not None:
+        origin_line = scan.uuid_line_index.get(window_origin_uuid)
     newest_by_task: dict[str, RawTranscriptNotice] = {}
     for notice in scan.notices:
         if notice.row_uuid is not None and notice.row_uuid in sdk_uuid_order:
             continue
-        if notice.anchor is None or notice.anchor not in sdk_uuid_order:
+        anchor_in_window = (
+            notice.anchor is not None and notice.anchor in sdk_uuid_order
+        )
+        if not anchor_in_window:
+            # Raw-only and unplaceable by the SDK view. Only an explicit window
+            # origin may admit it, and only when its own raw line sits strictly
+            # after the origin's — i.e. the notice was written into this
+            # projection, not an earlier one. The origin is a row the cursor
+            # covered, so the notice's ANCHOR (the last uuid row before it) can
+            # be that very covered row; the notice's own line is what proves it
+            # came after.
+            if origin_line is not None and notice.line_index > origin_line:
+                task_id = notice.event.task_id
+                current = newest_by_task.get(task_id)
+                if current is None or (notice.timestamp_ms or -1) >= (
+                    current.timestamp_ms or -1
+                ):
+                    newest_by_task[task_id] = notice
             continue
         task_id = notice.event.task_id
         current = newest_by_task.get(task_id)
@@ -1238,11 +1323,19 @@ def raw_only_notices(
             current.timestamp_ms or -1
         ):
             newest_by_task[task_id] = notice
-    return tuple(
-        (sdk_uuid_order[notice.anchor], notice.event)
-        for notice in newest_by_task.values()
-        if notice.anchor is not None
-    )
+    placed: list[tuple[int, ClaudeTaskEvent]] = []
+    for notice in newest_by_task.values():
+        if notice.anchor is None:
+            continue
+        if notice.anchor in sdk_uuid_order:
+            placed.append((sdk_uuid_order[notice.anchor], notice.event))
+        else:
+            # A window-origin admission is not in the SDK view: it is placed
+            # before every window signal (-1) so a resume/activity row *inside*
+            # the window still outranks it — the only safe order for a notice
+            # this projection cannot locate among its own messages.
+            placed.append((-1, notice.event))
+    return tuple(placed)
 
 
 def participation_times_ms(scan: RawTranscriptScan) -> dict[str, int]:

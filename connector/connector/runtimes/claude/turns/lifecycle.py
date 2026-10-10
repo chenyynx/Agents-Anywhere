@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import secrets
 import time
 from collections.abc import Iterable, Mapping
@@ -170,6 +171,28 @@ CONTEXT_PROBE_SWEEP_INTERVAL_SECONDS = 5.0
 # seconds is far below the 15-minute staleness deadline and cheap (a stat per
 # open task), so a stranded card closes promptly without hammering the disk.
 AGENT_CARD_EVIDENCE_SWEEP_INTERVAL_SECONDS = 60.0
+
+# F1 (zombie-agent-card): the kill switch for the snapshot vouch. When on
+# (default), the exemption set `live_agent_task_ids` vouches only for tasks
+# present in BOTH the keep-alive register (`background.active_ids`) and the
+# CLI's newest `background_tasks_changed` snapshot — a task the engine stopped
+# listing loses its exemption and falls back to ordinary evidence judgement.
+# `0`/`off` restores the byte-for-byte old behaviour: the register's full set
+# vouches. Read per call so a test (or an operator) can flip it without a
+# restart. The spec defines exactly those two off-spellings; any other value
+# — garbage included — keeps the default on rather than silently honoring a
+# typo as a kill switch.
+LIVE_VOUCH_ENV: str = "AA_SUBAGENT_LIVE_VOUCH"
+
+
+def _live_vouch_enabled() -> bool:
+    """Whether the CLI snapshot co-signs the live-task exemption (F1)."""
+
+    raw = os.environ.get(LIVE_VOUCH_ENV)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in {"0", "off"}
+
 
 WATCHDOG_REASON_ZERO_CONTENT = "zero_content_fast_kill"
 WATCHDOG_REASON_CONTENT_CEILING = "containing_turn_ceiling"
@@ -922,8 +945,22 @@ class ClaudeTurnRunner:
             # never through its own tool_use_id, which for a local_bash task
             # points *inside* the subagent and would attach a Bash row to a
             # task that has no card (findings §8.11). An unbound task (its
-            # task_started was filtered or missed) is not projected.
+            # task_started was filtered or missed) used to be silently
+            # dropped here even when the card it belongs to exists.
             tool_use_id = self.agent_task_calls.get(key)
+            if tool_use_id is None:
+                # F3 (zombie-agent-card, binding gap): the exemption the
+                # background register grants is wider than this binding —
+                # observed() vouches on any task frame while only a
+                # local_agent task_started *with* a tool_use_id ever binds —
+                # so a terminal frame for a card whose binding was never
+                # written (task_started missed, or filtered) used to vanish.
+                # Reverse-lookup the card through its own agents map (the
+                # task id is the key); a task with no card — local_bash and
+                # friends — still returns nothing and stays unprojected.
+                tool_use_id = self.timeline.tool_use_id_for_task(
+                    session, event.task_id
+                )
             if tool_use_id is None:
                 return
             if (
@@ -1138,6 +1175,15 @@ class ClaudeTurnRunner:
                     continue
                 await self.notifications.timeline_activity.timeline_item_upsert(item)
                 published += 1
+                if evidence:
+                    # F1 release (zombie-agent-card): the closure just
+                    # published, so the register's pin on these tasks is now
+                    # provably stale — drop it or the exemption set (and with
+                    # it arm_idle) stays wedged by ids whose terminal frame
+                    # will never come. Only after a successful upsert, and
+                    # only for judged evidence closures: the stop path's own
+                    # semantics are untouched.
+                    self._release_evidence_tasks(session, item)
             if published:
                 logger.warning(
                     "Claude open subagent cards closed without a task "
@@ -1154,16 +1200,64 @@ class ClaudeTurnRunner:
             )
             return 0
 
-    def live_agent_task_ids(self, session: ClaudeSession) -> frozenset[str]:
-        """Tasks the live transport vouches for (the F2 provider).
+    def _release_evidence_tasks(
+        self,
+        session: ClaudeSession,
+        item: RuntimeTimelineItem,
+    ) -> None:
+        """Release the closed card's task ids from the keep-alive register.
 
-        A connection that is alive and not closing is the only qualification:
-        its ``background.active_ids`` is the transport's own set of tasks it
-        knows to be running right now. Deliberately NOT gated on
-        ``session.execution`` — a background subagent keeps running while the
-        main session sits idle, and a null execution does not mean the process
-        stopped — and deliberately not ``connection.task_ids``, the broader
-        reconciliation set that retains finished ids.
+        The item just published is an evidence closure: every open task on
+        that card was judged terminal by the oracle, so any id still sitting
+        in ``background.active_ids`` for one of them is the stale pin this
+        batch exists to lift (zombie-agent-card §0 — a terminal frame the
+        resume/notification gap swallowed never discards it, and the pinned
+        id then keeps both the exemption set and arm_idle wedged forever).
+        The agents map is keyed by task id; ids absent from the register
+        discard as a no-op, and a missing connection (session already
+        detached) simply skips — releasing is a bonus, never a dependency.
+        """
+
+        raw_agents = item.content.get("agents")
+        if not isinstance(raw_agents, Mapping):
+            return
+        connection = self.connections.get(session.session_id)
+        if connection is None:
+            return
+        for task_id in raw_agents:
+            if isinstance(task_id, str) and task_id:
+                connection.background.release(task_id)
+
+    def live_agent_task_ids(self, session: ClaudeSession) -> frozenset[str]:
+        """Tasks the live transport vouches for (the F2 provider, F1 filtered).
+
+        A connection that is alive and not closing is the qualification; the
+        task set itself is now the intersection of two registers (F1,
+        zombie-agent-card):
+
+        * ``background.active_ids`` — the transport's keep-alive register.
+          Still deliberately NOT gated on ``session.execution`` (a background
+          subagent runs while the main session sits idle) and never
+          ``connection.task_ids`` (the broader reconciliation set that
+          retains finished ids);
+        * ``background.last_snapshot_ids`` — the CLI's own newest snapshot of
+          outstanding work, when one has been seen. The register only ever
+          loses an id to a live terminal frame, so a task whose terminal the
+          resume/notification gap swallowed stays pinned there forever and
+          used to blind every evidence closure behind this exemption. The
+          snapshot is the engine's stronger liveness word: a task it no
+          longer lists loses the exemption and falls back to ordinary
+          evidence judgement. When no snapshot has ever arrived
+          (``last_snapshot_ids is None`` — a fresh connection, or the env
+          kill switch ``AA_SUBAGENT_LIVE_VOUCH`` = ``0``/``off``), this
+          returns the full register set: byte-for-byte the old, conservative
+          behaviour.
+
+        The snapshot never edits the register — keep-alive bookkeeping
+        (arm_idle, drain waits) keeps its own semantics; only this exemption
+        consumer narrows. A card closed from evidence then *releases* its
+        task ids (``background.release``) so the pin cannot outlive the
+        judgement.
 
         Wired to the reader/syncer as their ``live_task_ids`` provider so a
         history rebuild never closes a card whose task the transport still
@@ -1173,7 +1267,14 @@ class ClaudeTurnRunner:
         connection = self.connections.get(session.session_id)
         if connection is None or connection.closing:
             return frozenset()
-        return frozenset(connection.background.active_ids)
+        background = connection.background
+        active = frozenset(background.active_ids)
+        if not _live_vouch_enabled():
+            return active
+        snapshot = background.last_snapshot_ids
+        if snapshot is None:
+            return active
+        return active & snapshot
 
     def _attached_agent_task_ids(self, session: ClaudeSession) -> frozenset[str]:
         """The ``attached`` set the oracle exempts from the file-staleness closure.

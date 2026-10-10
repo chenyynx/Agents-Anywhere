@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
 import asyncer
@@ -9,6 +9,7 @@ from connector.logging import logger
 from connector.runtime_protocol import (
     PreparedSessionTimelineSync,
     RuntimeConfig,
+    RuntimeTimelineItem,
     RuntimeTimelineSnapshot,
     RuntimeUpstreamError,
 )
@@ -179,6 +180,20 @@ class ClaudeHistorySyncer:
                 live_session.context_probe if live_session is not None else None
             ),
         )
+        # D-A (zombie-agent-card §9): the evidence sweep iterates the STORE's
+        # sessions (``session_store.sessions()``), so a session this connector
+        # has only ever read through history — never driven live — must have a
+        # store entry or the sweep is blind to it and its stale cards never
+        # close. The history read is the one path that knows the cwd and the
+        # external id the oracle's probe needs.
+        #
+        # Adopt the entry only for a session that actually carries an Agent card
+        # (see the gated call after ``items`` is computed): the sweep judges
+        # cards, so a session with none has nothing to heal, and adopting every
+        # history session would balloon the store and perturb the library
+        # rotation's page accounting. A value the live transport already
+        # authored stays authoritative (the G1 guard): ``ensure`` overwrites a
+        # truthy field, so pass None for any value the store already holds.
         tool_call_lookup, hidden_tool_use_ids = await asyncer.asyncify(
             _history_tool_call_context
         )(
@@ -202,6 +217,28 @@ class ClaudeHistorySyncer:
             live_task_ids=(
                 self.live_task_ids(session) if self.live_task_ids else frozenset()
             ),
+            # D-B (zombie-agent-card §9): an incremental pass is bounded by the
+            # previous cursor, so a raw-only notice written after that cursor
+            # must be admitted even though its (raw-file) anchor is a row the
+            # SDK view already surfaced. A rebase / first sync covers the whole
+            # transcript and passes None — no boundary, so the old gate holds.
+            window_origin_uuid=(
+                previous_cursor.last_message_uuid
+                if not rebased and previous_cursor is not None
+                else None
+            ),
+        )
+        # D-A: adopt a store entry when this session carries an Agent card and
+        # the store has none (or the entry is missing the cwd/external id the
+        # oracle's probe needs). Cards only ever reach the store through the
+        # live timeline-activity path, so a history-only session's card is
+        # invisible to the sweep without this. Gated on "has an agent card" so
+        # the store stays exactly as wide as the set the sweep must judge.
+        self._adopt_store_entry_for_cards(
+            session_id=session_id,
+            external_session_id=external_session_id,
+            session=session,
+            items=items,
         )
         snapshot = RuntimeTimelineSnapshot(
             session_id=session_id,
@@ -240,6 +277,51 @@ class ClaudeHistorySyncer:
 
         return commit
 
+    def _adopt_store_entry_for_cards(
+        self,
+        *,
+        session_id: str,
+        external_session_id: str | None,
+        session: ClaudeSession,
+        items: tuple[RuntimeTimelineItem, ...],
+    ) -> None:
+        """Ensure a store entry exists for a session that carries an Agent card.
+
+        D-A (zombie-agent-card §9): the 60s evidence sweep iterates
+        ``session_store.sessions()``, and an Agent card only ever reaches the
+        store through the live timeline-activity path — so a history-only
+        session (never live-driven) has no store entry, its card is invisible
+        to the sweep, and a stale card never closes. Adopt one here, carrying
+        the very meta the oracle's probe needs (cwd + external id).
+
+        Gated on "this session published an Agent card": a session with no such
+        card has nothing the sweep can heal, and adopting every history session
+        would widen the store (and perturb the library rotation's page
+        accounting) for no benefit. A value the live transport already authored
+        stays authoritative — ``ensure`` overwrites a truthy field, so only a
+        MISSING one is filled (the G1 guard). ``ensure`` is a no-op on the
+        idempotent repeat, so the adopt runs once per session that needs it.
+        """
+
+        if not any(_carries_agent_card(item) for item in items):
+            return
+        stored = self.session_store.get(session_id, external_session_id)
+        self.session_store.ensure(
+            session_id=session_id,
+            external_session_id=(
+                external_session_id
+                if stored is None or not stored.external_session_id
+                else None
+            ),
+            cwd=(session.cwd if stored is None or not stored.cwd else None),
+            title=(session.title if stored is None or not stored.title else None),
+            ordering_time=(
+                session.ordering_time
+                if stored is None or not stored.ordering_time
+                else None
+            ),
+        )
+
     async def _read_history(
         self,
         external_session_id: str,
@@ -257,6 +339,20 @@ class ClaudeHistorySyncer:
             directory=cwd,
         )
         return info, messages
+
+
+def _carries_agent_card(item: RuntimeTimelineItem) -> bool:
+    """Whether this published item is an Agent call card (kind == agent_call).
+
+    Inlined rather than imported from ``timeline.messages`` to keep this
+    history module free of a reader→timeline import edge: the predicate is one
+    field and the shape is fixed by the protocol.
+    """
+
+    if item.type != "tool":
+        return False
+    content = item.content
+    return isinstance(content, Mapping) and content.get("kind") == "agent_call"
 
 
 def _history_session(

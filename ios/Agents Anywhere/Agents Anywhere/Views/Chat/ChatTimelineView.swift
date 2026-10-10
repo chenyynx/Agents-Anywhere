@@ -220,7 +220,17 @@ struct ChatTimelineView: View {
                 // post-paint — the opening return has landed (or its bounded
                 // fallback expired), so the first frame is on screen and its
                 // position is settled. Nothing here touches the opening path.
+                //
+                // Opening-flood governance (2026-10-10): the backfill's pages
+                // then land back to back and used to repaint/re-assert per
+                // page while the opening's own machinery was still settling.
+                // A short quiet beat keeps the first fetch from racing the
+                // landing layout; the presentation coalescer
+                // (`TimelinePrependCoalescer`) folds the rest of the flood
+                // into few landings.
                 guard model.openingPositionSettled else { return }
+                do { try await Task.sleep(for: .milliseconds(450)) } catch { return }
+                guard !Task.isCancelled else { return }
                 model.session.beginHistoryBackfill()
             }
             .onChange(of: BackfillReaderSignals(

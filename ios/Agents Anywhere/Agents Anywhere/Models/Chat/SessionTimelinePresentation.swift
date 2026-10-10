@@ -1,6 +1,51 @@
 import Foundation
 import Observation
 
+/// Trailing-debounce for history-page prepends (2026-10-10 opening-flood
+/// governance). The opening backfill lands its pages back to back; each
+/// landing repainted the whole timeline and re-asserted the opening position,
+/// which the reader saw as "opening jumps". Every stage that looks like a
+/// prepend (the pending batch's first row is not the published one) extends a
+/// short hold; a flush that lands inside the hold simply publishes the latest
+/// pending batch — which already contains every page that arrived meanwhile,
+/// because each observation carries the projection's current full window. The
+/// data still lands in memory page by page; only the presentation's landing
+/// count shrinks. Bounded by `maxWindow` so a continuous event stream can
+/// never starve the flush.
+nonisolated struct TimelinePrependCoalescer: Equatable {
+    /// One hold's extension per prepend-looking stage.
+    static let step: TimeInterval = 0.25
+    /// The furthest a hold may extend from its first stage.
+    static let maxWindow: TimeInterval = 0.9
+
+    private(set) var until: TimeInterval = 0
+    private var cap: TimeInterval = 0
+
+    var isHolding: Bool { until > 0 }
+
+    mutating func notePrependStage(now: TimeInterval) {
+        if until <= now {
+            until = now + Self.step
+            cap = now + Self.maxWindow
+        } else {
+            until = min(until + Self.step, cap)
+        }
+    }
+
+    /// The instant a pending batch may publish: the reveal batch clock or the
+    /// hold, whichever is later.
+    func flushEarliest(nextBatchAt: TimeInterval) -> TimeInterval {
+        max(nextBatchAt, until)
+    }
+
+    func holds(at now: TimeInterval) -> Bool { until > now }
+
+    mutating func didFlush() {
+        until = 0
+        cap = 0
+    }
+}
+
 @MainActor @Observable
 final class ChatTimelineRowModel: Identifiable {
     let id: V2TimelineItemID
@@ -104,11 +149,19 @@ final class SessionTimelinePresentation {
         initialized = true
     }
 
-    func stage(_ items: [V2TimelineItem], detailItems: [V2TimelineItem]? = nil, animate: Bool) {
+    func stage(_ items: [V2TimelineItem], detailItems: [V2TimelineItem]? = nil, animate: Bool,
+               now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         pending = items.filter(\.isVisibleInChat)
         // nil keeps the detail sidecar as staged by the previous call; the
         // observation path always passes the projection's current sidecar.
         if let detailItems { pendingDetail = detailItems.filter(\.isVisibleInChat) }
+        // A staged batch whose first row is not the published one is a history
+        // prepend (or a replacement — the coalescer only delays, never drops).
+        // The backfill's page flood lands through this hold instead of one
+        // viewport-shifting repaint per page.
+        if let stagedFirst = pending?.first?.id, let publishedFirst = rows.first?.id, stagedFirst != publishedFirst {
+            prependCoalescer.notePrependStage(now: now)
+        }
         // Once a recovery snapshot is staged, preserve its snap semantics until
         // that tick even if a live event arrives immediately afterwards.
         animatePending = pendingWasStaged ? animatePending && animate : animate
@@ -117,6 +170,8 @@ final class SessionTimelinePresentation {
     }
     @ObservationIgnored private var pendingWasStaged = false
     @ObservationIgnored private var pendingDetail: [V2TimelineItem]?
+    /// The history-page prepend debounce (see `TimelinePrependCoalescer`).
+    @ObservationIgnored private var prependCoalescer = TimelinePrependCoalescer()
 
     func flush(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         if let pending {
@@ -150,6 +205,7 @@ final class SessionTimelinePresentation {
             if prepended || dropped { windowRevision &+= 1 }
             if !hasPresentedSnapshot { hasPresentedSnapshot = true }
             self.pending = nil; pendingWasStaged = false
+            prependCoalescer.didFlush()
         }
         if let pendingDetail {
             let existing = Dictionary(uniqueKeysWithValues: detailRows.map { ($0.id, $0) })
@@ -184,14 +240,18 @@ final class SessionTimelinePresentation {
                         // Text received during a reveal waits for it to end, then
                         // goes on screen as one batch. Text after a pause shows at
                         // once. Without new text, poll briefly to notice arrivals
-                        // and settle rows whose reveal has ended.
+                        // and settle rows whose reveal has ended. A prepend batch
+                        // additionally waits out the coalescer's hold, so a flood
+                        // of history pages lands as few repaints instead of one
+                        // per page.
                         let now = ProcessInfo.processInfo.systemUptime
-                        let wait = self.pending != nil ? self.nextBatchAt - now : Self.idlePoll
+                        let flushAt = self.prependCoalescer.flushEarliest(nextBatchAt: self.nextBatchAt)
+                        let wait = self.pending != nil ? flushAt - now : Self.idlePoll
                         if wait > 0 {
                             do { try await Task.sleep(for: .seconds(wait)) } catch { return }
                         }
                         let current = ProcessInfo.processInfo.systemUptime
-                        guard self.pending == nil || current >= self.nextBatchAt else { continue }
+                        guard self.pending == nil || (current >= self.nextBatchAt && current >= self.prependCoalescer.until) else { continue }
                         self.flush(now: current)
                         self.synchronizePending(session.pendingMessages)
                     } while !Task.isCancelled && (self.pending != nil || self.rows.contains { $0.isRevealing })

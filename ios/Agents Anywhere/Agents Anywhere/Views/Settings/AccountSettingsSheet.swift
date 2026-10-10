@@ -80,10 +80,9 @@ struct AccountSettingsSheet: View {
                     .tint(.green)
                     .disabled(!showsSessionList)
                 }
-                Section(String(localized: "Diagnostics")) {
+                Section {
                     Toggle(isOn: $timelineDiagnostics) {
-                        Label(String(localized: "Timeline diagnostics"), appSymbol: "waveform.path.ecg")
-                            .labelStyle(.titleAndIcon)
+                        Text(String(localized: "Timeline diagnostics"))
                     }
                     .tint(.green)
                     .onChange(of: timelineDiagnostics) { _, _ in
@@ -92,6 +91,8 @@ struct AccountSettingsSheet: View {
                         // overlay in the same tick the user flips it.
                         TimelineDiag.shared.refresh()
                     }
+                } header: {
+                    Text(String(localized: "Diagnostics"))
                 } footer: {
                     Text(String(localized: "Timeline diagnostics footer"))
                 }

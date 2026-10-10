@@ -13,13 +13,13 @@ import Testing
 /// follow paths are muted, so a reader at the bottom keeps it by an explicit
 /// no-animation pin rather than by the scroll view's default anchor.
 @Suite struct TimelineKeyboardBottomPinTests {
-    private func pin(following: Bool = true, scrolling: Bool = false, suspended: Bool = false,
+    private func pin(restsAtBottom: Bool = true, scrolling: Bool = false, suspended: Bool = false,
                      measured: Bool = true, atBottom: Bool = false) -> Bool {
-        TimelineKeyboardBottomPin.shouldPin(isFollowing: following, isScrolling: scrolling,
+        TimelineKeyboardBottomPin.shouldPin(restsAtBottom: restsAtBottom, isScrolling: scrolling,
             navigationSuspended: suspended, isMeasured: measured, atBottom: atBottom)
     }
 
-    @Test func aFollowingReaderKeepsTheBottomWhileTheKeyboardMoves() {
+    @Test func aReaderWhoRestedAtTheBottomKeepsItWhileTheKeyboardMoves() {
         #expect(pin())
     }
 
@@ -32,10 +32,10 @@ import Testing
         #expect(!pin(suspended: true))
     }
 
-    @Test func onlyFollowingPins() {
+    @Test func onlyAReaderWhoRestedAtTheBottomPins() {
         // A reading visit and a presented interaction both land here: neither
         // may be dragged to the bottom by a keyboard.
-        #expect(!pin(following: false))
+        #expect(!pin(restsAtBottom: false))
     }
 
     @Test func anUnmeasuredSampleNeverPins() {

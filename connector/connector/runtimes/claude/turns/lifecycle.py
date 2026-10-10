@@ -2286,6 +2286,15 @@ class ClaudeTurnRunner:
                     message=message,
                     projector=self.timeline,
                 )
+                # A message boundary (`message_stop`, or a new `message_start`
+                # id) closes every block the just-ended message left open and
+                # buffers the done rows there, because that one event can close
+                # more than one. Take them now so they publish with this frame,
+                # rather than waiting for the settle-time flush — that flush is
+                # a whole-turn-late backstop, and a provider that never sends
+                # the block's own stop (LiteLLM's thinking block) would leave
+                # the row "running" until then.
+                boundary_items = stream_accumulator.drain_pending_items()
                 if is_stream_event(message):
                     # Whatever the accumulator is still holding belongs to the
                     # message this stream event belongs to, so the card travels
@@ -2491,6 +2500,12 @@ class ClaudeTurnRunner:
                     await self.publish_items(
                         execution,
                         (_with_parent_card(stream_item, frame_parent_item_id),),
+                        counted=counts_this_frame,
+                    )
+                if boundary_items:
+                    await self.publish_items(
+                        execution,
+                        _with_parent_cards(boundary_items, frame_parent_item_id),
                         counted=counts_this_frame,
                     )
                 if is_stream_event(message):

@@ -158,9 +158,15 @@ final class SessionTimelinePresentation {
         // A staged batch whose first row is not the published one is a history
         // prepend (or a replacement — the coalescer only delays, never drops).
         // The backfill's page flood lands through this hold instead of one
-        // viewport-shifting repaint per page.
+        // viewport-shifting repaint per page. The verdict is per batch: the
+        // hold gates *this* batch's flush (M1), so a live append staged while
+        // a backfill hold is still open — the projection re-limits its oldest
+        // rows, a replacement republishes the head — publishes on its own
+        // reveal clock instead of waiting out somebody else's hold.
+        pendingIsPrepend = false
         if let stagedFirst = pending?.first?.id, let publishedFirst = rows.first?.id, stagedFirst != publishedFirst {
             prependCoalescer.notePrependStage(now: now)
+            pendingIsPrepend = true
         }
         // Once a recovery snapshot is staged, preserve its snap semantics until
         // that tick even if a live event arrives immediately afterwards.
@@ -172,6 +178,16 @@ final class SessionTimelinePresentation {
     @ObservationIgnored private var pendingDetail: [V2TimelineItem]?
     /// The history-page prepend debounce (see `TimelinePrependCoalescer`).
     @ObservationIgnored private var prependCoalescer = TimelinePrependCoalescer()
+    /// Whether the staged batch itself is a prepend (set per `stage`, cleared
+    /// per flush) — only such a batch waits the hold out.
+    @ObservationIgnored private(set) var pendingIsPrepend = false
+
+    /// The clock the pending batch may publish on: the reveal batch clock, and
+    /// for a prepend batch additionally the coalescer's hold. A live append is
+    /// never gated by a hold a backfill page opened (M1).
+    var pendingPublishAt: TimeInterval {
+        pendingIsPrepend ? prependCoalescer.flushEarliest(nextBatchAt: nextBatchAt) : nextBatchAt
+    }
 
     func flush(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         if let pending {
@@ -205,6 +221,7 @@ final class SessionTimelinePresentation {
             if prepended || dropped { windowRevision &+= 1 }
             if !hasPresentedSnapshot { hasPresentedSnapshot = true }
             self.pending = nil; pendingWasStaged = false
+            pendingIsPrepend = false
             prependCoalescer.didFlush()
         }
         if let pendingDetail {
@@ -242,16 +259,17 @@ final class SessionTimelinePresentation {
                         // once. Without new text, poll briefly to notice arrivals
                         // and settle rows whose reveal has ended. A prepend batch
                         // additionally waits out the coalescer's hold, so a flood
-                        // of history pages lands as few repaints instead of one
-                        // per page.
+                        // of history pages lands once per capped hold instead of
+                        // one per page; a live batch staged under that hold is
+                        // judged by its own reveal clock alone (M1).
                         let now = ProcessInfo.processInfo.systemUptime
-                        let flushAt = self.prependCoalescer.flushEarliest(nextBatchAt: self.nextBatchAt)
+                        let flushAt = self.pendingPublishAt
                         let wait = self.pending != nil ? flushAt - now : Self.idlePoll
                         if wait > 0 {
                             do { try await Task.sleep(for: .seconds(wait)) } catch { return }
                         }
                         let current = ProcessInfo.processInfo.systemUptime
-                        guard self.pending == nil || (current >= self.nextBatchAt && current >= self.prependCoalescer.until) else { continue }
+                        guard self.pending == nil || current >= self.pendingPublishAt else { continue }
                         self.flush(now: current)
                         self.synchronizePending(session.pendingMessages)
                     } while !Task.isCancelled && (self.pending != nil || self.rows.contains { $0.isRevealing })

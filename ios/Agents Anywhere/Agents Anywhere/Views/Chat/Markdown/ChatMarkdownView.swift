@@ -12,16 +12,37 @@ struct ChatMarkdownView: View {
     var isStreaming = false
     var resolvesFileReferences = false
     @State private var blocks: [MarkdownBlockSnapshot] = []
+    /// Whether the first parse has ever landed. Until it does, `blocks` is
+    /// empty because the parse is detached (see the `.task`), not because the
+    /// text is empty.
+    @State private var parsedOnce = false
     /// When each block's newest glyphs finish revealing. A block's drawing
     /// clock runs only until then, so a stalled or finished block stops redrawing.
     @State private var revealDeadlines: [Int: Date] = [:]
+    @Environment(\.chatMarkdownFont) private var placeholderFont
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ForEach(blocks) { block in
-                MarkdownBlockView(block: block, isStreaming: isStreaming, isTail: block.id == blocks.last?.id,
-                                  revealDeadline: revealDeadlines[block.id] ?? .distantPast)
-                    .equatable()
+            // The parse is detached so it never blocks a gesture, which means
+            // the row's first frame has no blocks yet. An empty shell renders
+            // ~38 pt, the timeline measures that as truth, and the row then
+            // leaps to its real height when the parse lands — the round-5
+            // root cause (a 30 000-char message measured 38 pt, then exploded,
+            // jumping everything below it). Until the first parse result, show
+            // the raw text at the same font so the first frame is already
+            // about the final height.
+            if !parsedOnce && !text.isEmpty {
+                Text(text)
+                    .font(placeholderFont)
+                    .foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ForEach(blocks) { block in
+                    MarkdownBlockView(block: block, isStreaming: isStreaming, isTail: block.id == blocks.last?.id,
+                                      revealDeadline: revealDeadlines[block.id] ?? .distantPast)
+                        .equatable()
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -36,6 +57,9 @@ struct ChatMarkdownView: View {
                 worker.cancel()
             }
             guard !Task.isCancelled, case .success(let next) = result else { return }
+            // The placeholder gives way to the structured render on the first
+            // result, empty text included (an empty reply has no placeholder).
+            if !parsedOnce { parsedOnce = true }
             guard blocks != next else { return }
             if isStreaming {
                 // Set in the same update as the text, so the first frame of new

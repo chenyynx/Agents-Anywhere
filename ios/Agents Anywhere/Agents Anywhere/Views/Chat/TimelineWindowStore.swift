@@ -85,6 +85,17 @@ import Observation
         // jump — then wrote it back 35 ms later when the real layout landed.
         // Refusing it collapses the double jump into the single correction.
         guard measurement.height > 0 else { return }
+        // A long message's markdown parses off the main actor, so its row can
+        // report an empty shell — a couple of lines — before the text lays
+        // out, then leap to its real height. Baking that shell as truth is
+        // what jumped everything below it (round-5 root cause). The placeholder
+        // in `ChatMarkdownView` is the main defence; this is the floor, and it
+        // is scoped to an expanded unit (a collapsed fold legitimately renders
+        // a one-line header however much text it hides): a unit that is showing
+        // its body and carries this much text can never be two lines, so keep
+        // the estimate until a real frame arrives.
+        if let unitFacts = facts[measurement.id], !unitFacts.isCollapsed,
+           unitFacts.textLength > 1000, measurement.height < 66 { return }
         // Diagnostics: the first measurement of a unit an expand just
         // materialised is the height model's residual for it.
         if let estimated = materializing.removeValue(forKey: measurement.id) {

@@ -55,6 +55,12 @@ struct ChatTimelineView: View {
     /// The gate's last verdict, so the diagnostics log records the change of
     /// a refusal — not one line per geometry sample.
     @State private var lastGateRefusal: TimelineWindowMoveGate.Refusal?
+    /// The data window's first row id as of the last window-revision change —
+    /// the "before" a prepend's in-place correction arms against. Kept as state
+    /// and armed from the existing `windowRevision` handler rather than a new
+    /// `onChange` in the body: one modifier fewer (round 4's prepend fix put
+    /// the body expression over the type checker's budget).
+    @State private var dataWindowFirstRowID: String?
     /// §7 feature flag: default on; `AA_TIMELINE_WINDOW=0` (debug/simulator)
     /// falls back to the pre-windowed full render for A/B comparison.
     private static let timelineWindowEnabled = ProcessInfo.processInfo.environment["AA_TIMELINE_WINDOW"] != "0"
@@ -68,11 +74,6 @@ struct ChatTimelineView: View {
     private var hasInteractions: Bool {
         model.session.notices.notices.contains { $0.isVisible && $0.notice.type == "interaction" }
     }
-    /// The data window's first row — the signal a prepend or a trim moves.
-    /// Hoisted out of the `onChange` key: the optional chain over the
-    /// presentation's rows is one expression too deep for the type checker
-    /// inside a modifier chain of this size.
-    private var dataWindowFirstRowID: String? { model.timeline.rows.first?.id }
     private var viewport: TimelineViewport { viewportSample.value ?? scrolling.viewport }
     private var navigationIsSuspended: Bool { sidebarIsTransitioning || sidebarObscuresDetail }
     var body: some View {
@@ -246,9 +247,12 @@ struct ChatTimelineView: View {
                 // a reader resting back at the bottom (following), where the
                 // re-pin is motionless and spares them the animated lurch.
                 _ = scrolling.reassertOpeningReturn()
-            }
-            .onChange(of: dataWindowFirstRowID) { oldFirst, newFirst in
-                armDataWindowCorrection(from: oldFirst, to: newFirst)
+                // The same trigger is a prepend's landing: price the data
+                // window's displacement here, where it happens, instead of
+                // letting it explode out of the next move's anchor write.
+                armDataWindowCorrection(from: dataWindowFirstRowID,
+                                        to: model.timeline.rows.first?.id)
+                dataWindowFirstRowID = model.timeline.rows.first?.id
             }
             .onChange(of: hasInteractions, initial: true) { _, presented in
                 scrolling.setInteractionPresented(presented)

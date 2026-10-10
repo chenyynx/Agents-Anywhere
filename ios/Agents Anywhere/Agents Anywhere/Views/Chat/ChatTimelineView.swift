@@ -52,6 +52,9 @@ struct ChatTimelineView: View {
     /// until this one settles).
     @State private var windowAnchor: TimelineHistoryPosition?
     @State private var windowGeneration = 0
+    /// The gate's last verdict, so the diagnostics log records the change of
+    /// a refusal — not one line per geometry sample.
+    @State private var lastGateRefusal: TimelineWindowMoveGate.Refusal?
     /// §7 feature flag: default on; `AA_TIMELINE_WINDOW=0` (debug/simulator)
     /// falls back to the pre-windowed full render for A/B comparison.
     private static let timelineWindowEnabled = ProcessInfo.processInfo.environment["AA_TIMELINE_WINDOW"] != "0"
@@ -624,7 +627,7 @@ struct ChatTimelineView: View {
     /// (`TimelineAnchorWritePolicy`). A refused move is retried by later
     /// samples, and once when the gesture settles.
     private func timelineWindowDidSample(_ sample: TimelineViewport) {
-        guard TimelineWindowMoveGate(
+        let gate = TimelineWindowMoveGate(
             windowingEnabled: Self.timelineWindowEnabled,
             openingSettled: model.openingPositionSettled,
             navigationSuspended: navigationIsSuspended,
@@ -632,8 +635,18 @@ struct ChatTimelineView: View {
             historySettling: historyPosition != nil,
             historyLoadInFlight: olderLoadRequest != nil || latestLoadRequest != nil,
             bottomCommandInFlight: scrolling.activeCommand != nil,
-            keyboardDrivingLayout: keyboardDrivingLayout
-        ).allows else { return }
+            keyboardDrivingLayout: keyboardDrivingLayout)
+        if let refusal = gate.refusal {
+            // Diagnostics: log the *change* of verdict, not every sample — a
+            // closed gate is asked once per geometry frame.
+            if lastGateRefusal != refusal {
+                lastGateRefusal = refusal
+                TimelineDiag.record(.gateRefused(item: refusal.rawValue,
+                    phase: String(describing: scrolling.phase)))
+            }
+            return
+        }
+        if lastGateRefusal != nil { lastGateRefusal = nil }
         guard let plan = windowBox.planMove(viewport: sample) else { return }
         applyWindowMove(plan)
     }
@@ -688,7 +701,10 @@ struct ChatTimelineView: View {
             // Round 2: the move was allowed to commit under the reader's
             // gesture, so the write it arms is graded by who owns the offset
             // (a point target stops a fling; it does not end a drag).
-            guard TimelineAnchorWritePolicy.action(delta: delta, phase: scrolling.phase) == .write else { return }
+            let action = TimelineAnchorWritePolicy.action(delta: delta, phase: scrolling.phase)
+            TimelineDiag.record(.correction(anchor: measurement.id, delta: delta, targetOffset: offset,
+                phase: String(describing: scrolling.phase), wrote: action == .write))
+            guard action == .write else { return }
             var transaction = Transaction(animation: nil)
             transaction.disablesAnimations = true
             withTransaction(transaction) { position.scrollTo(y: offset) }
@@ -1126,6 +1142,10 @@ private extension V2SendQueue {
     @ObservationIgnored private var facts: [String: TimelineUnitHeightFacts] = [:]
     @ObservationIgnored private var lastFrame = TimelineWindowFrame(
         startRowIndex: 0, firstUnitID: nil, spacerHeight: 0, hiddenRowCount: 0, renderedRowCount: 0)
+    /// The units an expand just materialised, keyed by their estimate — the
+    /// diagnostics log shows their first measurement against it. Only filled
+    /// while the log collects, so the hot path never pays for it.
+    @ObservationIgnored private var materializing: [String: CGFloat] = [:]
     @ObservationIgnored private var signature: Signature?
     @ObservationIgnored private var lastWidthKey = 0
     @ObservationIgnored private var lastTypeScaleKey = 0
@@ -1163,6 +1183,12 @@ private extension V2SendQueue {
     /// next move's spacer arithmetic.
     func recordUnitFrame(_ measurement: TimelineWindowUnitMeasurement) {
         guard window.isRendered(measurement.id) else { return }
+        // Diagnostics: the first measurement of a unit an expand just
+        // materialised is the height model's residual for it.
+        if let estimated = materializing.removeValue(forKey: measurement.id) {
+            TimelineDiag.record(.materialized(id: measurement.id, estimated: estimated,
+                measured: measurement.height))
+        }
         measurements[measurement.id] = measurement
         measuredHeights[measurement.id] = measurement.height
         guard let unitFacts = facts[measurement.id] else { return }
@@ -1203,16 +1229,49 @@ private extension V2SendQueue {
     /// just left the render set are pruned — their y stops being meaningful,
     /// and a stale y must never stand in for a fresh report.
     func commit(_ plan: PlannedWindowMove) {
+        let startBefore = window.start
+        let frameBefore = lastFrame
+        let moved: Int
         switch plan.move {
-        case .expand: _ = window.expand(sample: plan.sample)
-        case .shrink: _ = window.shrink(sample: plan.sample)
+        case .expand: moved = window.expand(sample: plan.sample)
+        case .shrink: moved = window.shrink(sample: plan.sample)
         case .none: return
         }
+        if moved > 0 {
+            // Diagnostics: the block the move just walked, summed the way the
+            // spacer accounts for it — and, for an expansion, the estimates
+            // whose first measurement will show the residual.
+            let range = plan.move == .expand ? window.start..<startBefore : startBefore..<window.start
+            let estimated = window.units[range].reduce(CGFloat(0)) { $0 + $1.height + TimelineRenderWindow.unitSpacing }
+            TimelineDiag.record(.plannedMove(move: plan.move == .expand ? "expand" : "shrink",
+                units: moved, estimatedHeight: estimated))
+            if plan.move == .expand, TimelineDiag.isCollecting {
+                materializing = Dictionary(uniqueKeysWithValues: window.units[range].map { ($0.id, $0.height) })
+            } else {
+                materializing = [:]
+            }
+        }
         lastFrame = window.frame
+        noteSliceChange(from: frameBefore)
         let rendered = Set(window.units[window.start...].map(\.id))
         measurements = measurements.filter { rendered.contains($0.key) }
         measuredHeights = measuredHeights.filter { rendered.contains($0.key) }
         moveRevision &+= 1
+    }
+
+    /// Diagnostics: records the rendered slice's change — only the two paths
+    /// that can move it (a membership rebuild, a committed move) call this, so
+    /// a streaming token flush never produces a line.
+    private func noteSliceChange(from previous: TimelineWindowFrame) {
+        let next = lastFrame
+        guard next.startRowIndex != previous.startRowIndex || next.firstUnitID != previous.firstUnitID
+            || next.renderedRowCount != previous.renderedRowCount else { return }
+        let event = TimelineDiagEvent.Kind.sliceChange(startRowIndex: next.startRowIndex,
+            boundary: next.firstUnitID, renderedUnits: window.renderedUnitCount,
+            spacerHeight: next.spacerHeight)
+        // This note runs inside the content body: writing the log's observed
+        // state mid-update is undefined, so the append waits one runloop turn.
+        DispatchQueue.main.async { TimelineDiag.record(event) }
     }
 
     private func rebuild(rows: [ChatTimelineRowModel], interactionTargets: Set<String>, width: CGFloat,
@@ -1265,8 +1324,10 @@ private extension V2SendQueue {
         facts = nextFacts
         lastWidthKey = widthKey
         lastTypeScaleKey = typeScaleKey
+        let frameBefore = lastFrame
         window.adopt(units)
         lastFrame = window.frame
+        noteSliceChange(from: frameBefore)
     }
 
     private static func unitFacts(of group: ChatTimelineGroup,

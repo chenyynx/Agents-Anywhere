@@ -215,6 +215,12 @@ final class SessionTimelinePresentation {
             // keeps the first id, so neither bumps.
             let prepended = !rows.isEmpty && updated.first?.id != rows.first?.id
             let dropped = !presented.isSubset(of: Set(updated.map(\.id)))
+            // Diagnostics: one line per landing, not per observation — a
+            // coalesced backfill batch is exactly the thing worth counting.
+            if prepended {
+                TimelineDiag.record(.prependLanding(addedRows: updated.count - rows.count,
+                    presentedRows: updated.count))
+            }
             if rows.map(\.id) != updated.map(\.id) {
                 rows = updated
                 membershipRevision &+= 1

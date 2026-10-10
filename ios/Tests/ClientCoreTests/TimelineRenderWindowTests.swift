@@ -297,10 +297,31 @@ import Testing
         window.adopt(units(300, height: 60))
         let startRows = window.frame.startRowIndex
         // The boundary group was merged away by a regroup: the old index is
-        // clamped into the new list rather than jumping to the tail.
-        window.adopt(units(290, height: 60))
-        #expect(window.frame.startRowIndex == min(startRows, 290 - 1))
-        #expect(window.frame.hiddenRowCount + window.frame.renderedRowCount == 290)
+        // clamped into the new list rather than jumping to the tail — it still
+        // sits at or past the tail floor, so the reader keeps their place.
+        let merged = units(290, height: 60).filter { $0.id != "u140" }
+        window.adopt(merged)
+        #expect(window.frame.startRowIndex == min(startRows, merged.count - 1))
+        #expect(window.frame.hiddenRowCount + window.frame.renderedRowCount == merged.count)
+    }
+
+    /// A vanished boundary while a large prepend lands: clamping alone pins the
+    /// boundary at its old index, and the window is a suffix that ends at the
+    /// newest unit — that mid-list window renders everything between the pin
+    /// and the tail, growing with the history until the reader next falls below
+    /// the shrink margin. The tail floor is the bounded outcome.
+    @Test func adoptingAFallenBoundaryFallsBackToTheTailWindow() throws {
+        var window = TimelineRenderWindow()
+        window.adopt(units(3000, height: 60))
+        let fallen = try #require(window.firstUnitID)
+        // 5000 older units land while a regroup drops the boundary unit.
+        let older = (0..<5000).map { unit("p\($0)", height: 60) }
+        window.adopt(older + units(3000, height: 60).filter { $0.id != fallen })
+        let floor = TimelineRenderWindow.tailStart(in: window.units,
+            rowBudget: TimelineRenderWindow.initialWindowRows)
+        #expect(window.start == floor, "the clamp never leaves the window above the tail floor")
+        #expect(window.renderedUnitCount == TimelineRenderWindow.initialWindowRows)
+        #expect(window.renderedUnitCount < window.units.count, "and never scales with the history")
     }
 
     @Test func summaryAndFrameCountersAgree() {

@@ -228,10 +228,17 @@ nonisolated struct TimelineRenderWindow: Equatable {
         if let previousFirstID, let index = newUnits.firstIndex(where: { $0.id == previousFirstID }) {
             start = index
         } else if previousFirstID != nil {
-            // The boundary unit was merged away or dropped: clamp the old
-            // index into the new list rather than jumping to the tail — the
-            // reader keeps roughly their place and the next move trims.
-            start = min(max(0, start), max(0, newUnits.count - 1))
+            // The boundary unit was merged away or dropped: clamp the old index
+            // into the new list, then apply the tail window's own floor. The
+            // clamp alone can pin the boundary far above the tail while the
+            // history grows below it — the window is a suffix that always ends
+            // at the newest unit, so that mid-list window renders every unit
+            // between the pinned index and the tail and grows with the data
+            // until the reader happens to fall below the shrink margin (and
+            // nothing re-asserts them either: this path bumps no revision).
+            // The floor is the bounded outcome: the reader lands on the tail.
+            let clamped = min(max(0, start), max(0, newUnits.count - 1))
+            start = max(clamped, Self.tailStart(in: newUnits, rowBudget: defaultRowBudget))
         } else {
             start = Self.tailStart(in: newUnits, rowBudget: defaultRowBudget)
         }

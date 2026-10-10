@@ -285,24 +285,61 @@ final class V2SessionRepository {
         return try await hydrate(entry)
     }
 
+    /// The reader's own history request (the top pull and its button): the
+    /// page it fetches never waits — it must land for the reader, and the
+    /// view's own history anchor absorbs the prepend.
     func loadOlder(sessionId: V2SessionID, limit: Int = 100) async throws -> V2SessionData {
+        try await loadOlder(sessionId: sessionId, limit: limit, readerOwned: true)
+    }
+
+    /// - Parameter readerOwned: true for the reader's request, false for the
+    ///   automatic backfill's own rounds. A backfill page additionally waits
+    ///   for the reader to be quiet again before its merge (see
+    ///   `waitForHistoryMergeClearance`): the quiet gate below is sampled
+    ///   before the fetch, and a reader can take the page back while it is in
+    ///   flight — scrolling, parked mid-history or typing. Merging then would
+    ///   prepend rows under them with nothing to anchor the offset (2026-10-10
+    ///   field report: "莫名其妙就跳到新位置" while reading history). The page
+    ///   is held, never dropped — a dropped page reads as a stalled round and
+    ///   two of those end the loop — and applied once the reader is quiet. A
+    ///   manual request joining this same in-flight task takes ownership
+    ///   (`readerWaitsForHistoryTask`) and the page lands for the reader
+    ///   immediately.
+    private func loadOlder(sessionId: V2SessionID, limit: Int, readerOwned: Bool) async throws -> V2SessionData {
         try requireNetwork()
         _ = try await load(sessionId: sessionId)
         let entry = entry(for: sessionId)
-        if let task = entry.historyTask { return try await task.value }
+        if let task = entry.historyTask {
+            if readerOwned { entry.readerWaitsForHistoryTask = true }
+            return try await task.value
+        }
         guard let data = entry.projection?.data,
               data.hasOlderItems, let before = data.items.first?.orderSeq else {
             return entry.projection!.data
         }
         let version = entry.readVersion
         let task = Task { [self] in
-            defer { if entry.readVersion == version { entry.historyTask = nil } }
+            defer {
+                if entry.readVersion == version {
+                    entry.historyTask = nil
+                    entry.readerWaitsForHistoryTask = false
+                }
+            }
             let page = try await detail.loadOlderItems(sessionId: sessionId, beforeOrderSeq: before, limit: limit)
             try requireCurrent(entry, version: version)
+            if !readerOwned, !entry.readerWaitsForHistoryTask {
+                guard await waitForHistoryMergeClearance(entry) else { throw CancellationError() }
+                // The wait can outlive a re-open or refresh; a page read
+                // against the old version must not merge into the rebuilt one.
+                try requireCurrent(entry, version: version)
+            }
             entry.projection?.applyHistory(page)
             emit(entry)
             return entry.projection!.data
         }
+        // The task's own latch starts clean; only a manual request joining
+        // this same page sets it (above), and it is cleared when the task ends.
+        entry.readerWaitsForHistoryTask = false
         entry.historyTask = task
         return try await task.value
     }
@@ -399,7 +436,7 @@ final class V2SessionRepository {
             guard !projection.windowIsAtCapacity else { return }                                   // budget
             guard await waitForBackfillQuiet(entry) else { return }                                // pause / lifecycle end
             let before = entry.projection?.data.items.first?.orderSeq
-            do { _ = try await loadOlder(sessionId: entry.id) }
+            do { _ = try await loadOlder(sessionId: entry.id, limit: 100, readerOwned: false) }
             catch { return } // error → stop; next open resumes
             guard isCurrent(entry) else { return }
             let after = entry.projection?.data.items.first?.orderSeq
@@ -428,6 +465,26 @@ final class V2SessionRepository {
         if entry.backfillReaderIsScrolling || entry.backfillReaderIsParked { return true }
         // 输入中: the keyboard being up counts as active input.
         return entry.model.composer.isFocused || entry.model.composer.isComposing
+    }
+
+    /// The post-fetch half of the backfill's reader hold (2026-10-10). The
+    /// pre-fetch gate above is sampled before the request goes out; a reader
+    /// who takes the page back while it is in flight (scrolling, parking
+    /// mid-history, or typing) must still not have it merged under them — the
+    /// prepend would shift the content with no anchor to absorb it. The page
+    /// waits here instead of being dropped: dropping reads as a round that
+    /// cannot advance the window, and two of those end the loop. A manual
+    /// request that joined this same task takes ownership
+    /// (`readerWaitsForHistoryTask`) — the reader asked for the page, and the
+    /// view's own history anchor absorbs its prepend. Returns false when the
+    /// entry's lifecycle ended, which the caller treats like a cancelled page.
+    private func waitForHistoryMergeClearance(_ entry: Entry) async -> Bool {
+        while !Task.isCancelled, isCurrent(entry) {
+            if entry.readerWaitsForHistoryTask || !backfillReaderIsActive(entry) { return true }
+            do { try await sleep(Self.backfillQuietPollInterval) }
+            catch { return false }
+        }
+        return false
     }
 
     // MARK: - On-demand SubAgent detail (session-open-coverage P3)
@@ -1431,6 +1488,12 @@ private final class Entry {
     var observers: [UUID: AsyncStream<V2SessionObservation>.Continuation] = [:]
     var loadTask: Task<V2SessionData, Error>?
     var historyTask: Task<V2SessionData, Error>?
+    /// Set while a manual `loadOlder` has joined the in-flight history task:
+    /// the page is the reader's, so a backfill-fetched merge stops waiting for
+    /// the reader to be quiet and lands immediately (the view's own history
+    /// anchor absorbs it). Cleared when the task ends and at each task's
+    /// creation, so a cancelled predecessor can never leave it latched.
+    var readerWaitsForHistoryTask = false
     /// The automatic full-history backfill loop (P2). Cancelled by `stop()`;
     /// the id lets a loop that is ending clear its own registration only.
     var backfillTask: Task<Void, Never>?

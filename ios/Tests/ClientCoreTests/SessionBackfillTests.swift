@@ -265,6 +265,79 @@ import Testing
         #expect(http.count("timeline") >= 1)
     }
 
+    @Test func anInFlightPageWaitsOutTheReaderWhoTookItBack() async throws {
+        let http = TestHTTPTransport()
+        let gate = TestGate()
+        http.respond = { call in
+            if call.path.hasSuffix("snapshot") {
+                return try self.snapshotResponse(orders: 201...300, hasMore: true)
+            }
+            if self.isTimeline(call) {
+                await gate.wait()
+                return try self.historyResponse(before: self.ordered(call))
+            }
+            return try http.defaultResponse(call)
+        }
+        let repo = repository(transport: http)
+        defer { repo.reset() }
+        _ = try await repo.open(sessionId: "session")
+
+        repo.beginHistoryBackfill(sessionId: "session")
+        try await waitForCoverage { http.count("timeline") == 1 } // the page is in flight
+        // The reader takes the page back mid-fetch and parks mid-history. The
+        // quiet gate was sampled before the request went out; merging the
+        // response now would prepend rows under them with nothing to anchor
+        // the offset (the 2026-10-10 field report). The page must wait.
+        repo.setBackfillReaderState(scrolling: false, parkedInHistory: true, sessionId: "session")
+        gate.release()
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(repo.cached(sessionId: "session")?.items.count == 100, "The fetched page waits for the reader")
+        #expect(repo.cached(sessionId: "session")?.hasOlderItems == true)
+
+        // Back at the bottom the held page lands and the loop resumes from
+        // there: the wait is a pause, not a stall (nothing is dropped — a
+        // dropped page would read as a stalled round and two would end the
+        // fill).
+        repo.setBackfillReaderState(scrolling: false, parkedInHistory: false, sessionId: "session")
+        try await waitForCoverage { repo.cached(sessionId: "session")?.hasOlderItems == false }
+        #expect(repo.cached(sessionId: "session")?.items.count == 300)
+        #expect(http.count("timeline") == 2, "The held page is applied, never re-fetched or dropped")
+    }
+
+    @Test func aManualRequestJoiningAWaitingPageLandsForTheReader() async throws {
+        let http = TestHTTPTransport()
+        let gate = TestGate()
+        http.respond = { call in
+            if call.path.hasSuffix("snapshot") {
+                return try self.snapshotResponse(orders: 201...300, hasMore: true)
+            }
+            if self.isTimeline(call) {
+                await gate.wait()
+                return try self.historyResponse(before: self.ordered(call))
+            }
+            return try http.defaultResponse(call)
+        }
+        let repo = repository(transport: http)
+        defer { repo.reset() }
+        _ = try await repo.open(sessionId: "session")
+
+        repo.beginHistoryBackfill(sessionId: "session")
+        try await waitForCoverage { http.count("timeline") == 1 }
+        // The reader parks while the backfill's page is in flight...
+        repo.setBackfillReaderState(scrolling: false, parkedInHistory: true, sessionId: "session")
+        gate.release()
+        // ...and then asks for a page themselves. The manual request joins the
+        // same in-flight task and takes it over: the page must land for the
+        // reader — their own history anchor absorbs the prepend — instead of
+        // waiting out the hold that exists to protect them from unanchored
+        // merges.
+        let manual = Task { _ = try await repo.loadOlder(sessionId: "session") }
+        try await waitForCoverage { (repo.cached(sessionId: "session")?.items.count ?? 0) >= 200 }
+        _ = try await manual.value
+        #expect(repo.cached(sessionId: "session")?.items.count == 200)
+        #expect(http.count("timeline") == 1, "The manual request joins the in-flight page, never duplicating it")
+    }
+
     @Test func reopeningTheSessionReArmsAnInterruptedBackfill() async throws {
         let http = TestHTTPTransport()
         let gate = TestGate()

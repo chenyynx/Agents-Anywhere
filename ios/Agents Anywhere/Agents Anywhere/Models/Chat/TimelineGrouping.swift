@@ -72,6 +72,29 @@ enum TimelineGrouping {
         return groups
     }
 
+    /// The raw row index each group starts at: `result[i]` is the index of
+    /// `groups[i].id` in `rows`. Groups are built in row order but skip rows
+    /// (a SubAgent child row never forms one, nor does a row an interaction
+    /// target exempts from grouping), so a single forward walk aligns the two
+    /// lists. The windowed timeline slices `rows` on these indices — the only
+    /// basis for which re-grouping the suffix reproduces the units from the
+    /// boundary down. O(rows), one pass, on top of grouping's own pass.
+    static func rawStartIndices(in rows: [ChatTimelineRowModel], for groups: [ChatTimelineGroup]) -> [Int] {
+        var indices: [Int] = []
+        indices.reserveCapacity(groups.count)
+        var cursor = 0
+        for group in groups {
+            // Defensive: `groups` came from `rows`, so the id is ahead of the
+            // cursor; if it ever is not, the walk stops at the end, the index
+            // clamps to the row count and the caller's slice is empty —
+            // rendered nothing, never a misaligned slice.
+            while cursor < rows.count, rows[cursor].id != group.id { cursor += 1 }
+            indices.append(min(cursor, rows.count))
+            cursor += 1
+        }
+        return indices
+    }
+
     static func reconnectMessage(_ item: V2TimelineItem) -> String? {
         guard item.type == .system, item.status == .failed else { return nil }
         let raw = item.raw["content"]

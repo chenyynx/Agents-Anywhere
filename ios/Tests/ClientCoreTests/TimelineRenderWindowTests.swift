@@ -146,6 +146,75 @@ import Testing
         }
     }
 
+    // MARK: the raw row basis — grouping skips rows (F1)
+
+    /// A timeline row with no fixture dependency: grouping reads only the
+    /// structure projection, and `parentItemId` alone makes a row a SubAgent
+    /// child — present in `rows`, never a group of its own.
+    @MainActor private func row(_ id: String, childOf parent: String? = nil) throws -> ChatTimelineRowModel {
+        var object: [String: Any] = ["id": id, "sessionId": "session",
+            "type": "message", "status": "done", "content": ["text": "hello"]]
+        if let parent { object["content"] = ["text": "child of \(parent)", "parentItemId": parent] }
+        return ChatTimelineRowModel(try JSONDecoder().decode(V2TimelineItem.self,
+            from: JSONSerialization.data(withJSONObject: object)))
+    }
+
+    /// `rows = [A, a1, B, b1, b2, C, c1, D]`: the child rows enter the data
+    /// (live frames and recovery are unfiltered) but grouping skips them, so
+    /// the grouped rows behind the boundary at C (2) is *not* C's raw index (5).
+    /// Slicing `rows` on the grouped count started the list at B — the boundary
+    /// unit then sat inside the spacer's claimed height *and* rendered.
+    @Test @MainActor func frameStartsAtTheBoundaryUnitsRawRowIndexWhenGroupingSkipsRows() throws {
+        let rows = try [row("A"), row("a1", childOf: "A"), row("B"), row("b1", childOf: "B"),
+            row("b2", childOf: "B"), row("C"), row("c1", childOf: "C"), row("D")]
+        let groups = TimelineGrouping.groups(rows, interactionTargets: [])
+        #expect(groups.map(\.id) == ["A", "B", "C", "D"])
+        let rawStarts = TimelineGrouping.rawStartIndices(in: rows, for: groups)
+        #expect(rawStarts == [0, 2, 5, 7])
+        let units = zip(groups, rawStarts).map { pair in
+            TimelineRenderUnit(id: pair.0.id, rowCount: pair.0.rows.count, height: 60,
+                isMeasured: false, rawStartRowIndex: pair.1)
+        }
+        var window = TimelineRenderWindow()
+        window.adopt(units, defaultRowBudget: 2) // the two newest units → boundary at C
+        let frame = window.frame
+        #expect(window.firstUnitID == "C")
+        #expect(frame.startRowIndex == 5, "the raw index of C, not the 2 grouped rows behind the spacer")
+        // The informational counters keep their grouped-row semantics.
+        #expect(frame.hiddenRowCount == 2 && frame.renderedRowCount == 2)
+        // What the view does with the frame: slice the raw rows on it and
+        // re-group. The first group of that suffix must be the store's own
+        // first rendered unit, and the whole suffix must be the units from the
+        // boundary down — nothing re-rendered from inside the spacer.
+        let sliced = TimelineGrouping.groups(Array(rows[frame.startRowIndex...]), interactionTargets: [])
+        #expect(sliced.first?.id == window.firstUnitID)
+        #expect(sliced.map(\.id) == ["C", "D"])
+    }
+
+    /// The slice lands on the first rendered unit with skipped rows only above
+    /// the boundary (A, D), only below it (A), and on both sides of it (B).
+    @Test @MainActor func theSliceStartsWithTheFirstRenderedUnitWithSkipsOnEitherSideOfTheBoundary() throws {
+        let rows = try [row("A"), row("a1", childOf: "A"), row("B"), row("b1", childOf: "B"),
+            row("b2", childOf: "B"), row("C"), row("c1", childOf: "C"), row("D")]
+        let groups = TimelineGrouping.groups(rows, interactionTargets: [])
+        let units = zip(groups, TimelineGrouping.rawStartIndices(in: rows, for: groups)).map { pair in
+            TimelineRenderUnit(id: pair.0.id, rowCount: pair.0.rows.count, height: 60,
+                isMeasured: false, rawStartRowIndex: pair.1)
+        }
+        // (tail budget, expected first unit, its raw row index).
+        for (budget, first, raw) in [(4, "A", 0), (3, "B", 2), (1, "D", 7)] {
+            var window = TimelineRenderWindow()
+            window.adopt(units, defaultRowBudget: budget)
+            let frame = window.frame
+            #expect(window.firstUnitID == first, "budget \(budget)")
+            #expect(frame.startRowIndex == raw, "raw index of \(first)")
+            let sliced = TimelineGrouping.groups(Array(rows[frame.startRowIndex...]), interactionTargets: [])
+            let from = try #require(groups.firstIndex { $0.id == first })
+            #expect(sliced.first?.id == window.firstUnitID)
+            #expect(sliced.map(\.id) == groups[from...].map(\.id))
+        }
+    }
+
     // MARK: data changes
 
     @Test func adoptingAPrependMovesThePagesIntoTheSpacerWithoutGrowingTheRenderSet() {

@@ -16,6 +16,14 @@ nonisolated struct TimelineRenderUnit: Equatable {
     var height: CGFloat
     /// Whether `height` came from a real layout pass rather than the estimator.
     var isMeasured: Bool
+    /// Index of this unit's first row in the raw `rows` array — the basis the
+    /// view slices on. Grouping skips rows (SubAgent child rows never form a
+    /// group), so this is *not* the running sum of the units' `rowCount`: only
+    /// the raw index lands the slice on this unit's first row, which is what
+    /// keeps `groups(rows[slice…])` equal to the units from the boundary down.
+    /// Nil for hand-built units (tests) — `frame` then falls back to the
+    /// grouped hidden count, the same index exactly when nothing was skipped.
+    var rawStartRowIndex: Int? = nil
 }
 
 /// One measured rendered unit: the frame the group reported in the timeline's
@@ -30,7 +38,11 @@ nonisolated struct TimelineWindowUnitMeasurement: Equatable {
 /// window starts at, what the spacer above it must claim, and the ids the
 /// anchor bookkeeping keys on.
 nonisolated struct TimelineWindowFrame: Equatable {
-    /// Index into `model.timeline.rows` of the first rendered row.
+    /// Index into `model.timeline.rows` of the first rendered row: the raw
+    /// row index of the first rendered unit (not a count of the rows behind
+    /// the spacer — grouping skips rows, so the two only coincide when
+    /// nothing was skipped). Slicing `rows` anywhere else starts the rendered
+    /// list mid-history and charges the spacer for units it then renders.
     let startRowIndex: Int
     /// The first rendered unit's id (nil when there are no rows at all).
     let firstUnitID: String?
@@ -127,8 +139,13 @@ nonisolated struct TimelineRenderWindow: Equatable {
         for unit in units[..<min(start, units.count)] { hidden += unit.rowCount }
         var rendered = 0
         for unit in units[min(start, units.count)...] { rendered += unit.rowCount }
+        // The slice basis is the boundary unit's own first row: the view cuts
+        // `rows` here, and re-grouping that suffix must yield exactly the
+        // rendered units. Units built without a raw start fall back to the
+        // grouped hidden count — identical only when grouping skipped nothing.
+        let boundary = units.indices.contains(start) ? units[start].rawStartRowIndex : nil
         return TimelineWindowFrame(
-            startRowIndex: hidden,
+            startRowIndex: boundary ?? hidden,
             firstUnitID: firstUnitID,
             spacerHeight: spacerHeight,
             hiddenRowCount: hidden,

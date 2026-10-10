@@ -1161,6 +1161,11 @@ private extension V2SendQueue {
                          widthKey: Int, typeScaleKey: Int, typeScale: CGFloat,
                          disclosures: TimelineDisclosureState) {
         let groups = TimelineGrouping.groups(rows, interactionTargets: interactionTargets)
+        // F1: each unit carries its first row's raw index — the basis the
+        // content body slices `rows` on. Grouping's own count of the rows
+        // behind the boundary is not that index whenever a skipped row (a
+        // SubAgent child) sits above it.
+        let rawStarts = TimelineGrouping.rawStartIndices(in: rows, for: groups)
         let keysMatch = widthKey == lastWidthKey && typeScaleKey == lastTypeScaleKey
         if !keysMatch {
             // Every recorded or measured height is geometry for another
@@ -1177,7 +1182,7 @@ private extension V2SendQueue {
         var units: [TimelineRenderUnit] = []
         units.reserveCapacity(groups.count)
         nextFacts.reserveCapacity(groups.count)
-        for group in groups {
+        for (index, group) in groups.enumerated() {
             let unitFacts = Self.unitFacts(of: group, disclosures: disclosures)
             nextFacts[group.id] = unitFacts
             var height: CGFloat
@@ -1196,7 +1201,8 @@ private extension V2SendQueue {
                 }
             }
             units.append(TimelineRenderUnit(id: group.id, rowCount: group.rows.count,
-                height: height, isMeasured: isMeasured))
+                height: height, isMeasured: isMeasured,
+                rawStartRowIndex: index < rawStarts.count ? rawStarts[index] : nil))
         }
         facts = nextFacts
         lastWidthKey = widthKey

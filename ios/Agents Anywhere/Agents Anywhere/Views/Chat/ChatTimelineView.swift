@@ -28,6 +28,7 @@ struct ChatTimelineView: View {
     @State private var viewportSample = ChatViewportSample()
     @State private var viewportUpdates = ChatLayoutUpdate<TimelineViewport>()
     @State private var historyUpdates = ChatLayoutUpdate<TimelineHistoryLayout>()
+    @State private var windowUpdates = ChatLayoutUpdate<TimelineWindowUnitMeasurement>()
     @State private var latestPull = TimelineHistoryPull()
     @State private var olderPull = TimelineHistoryPull(edge: .older)
     @State private var olderPromptVisible = false
@@ -377,7 +378,7 @@ struct ChatTimelineView: View {
         // passive and armed only while the keyboard is visible.
         .modifier(TimelineKeyboardDismissLayer(keyboard: keyboard))
         .traceChatLayout("timeline-viewport")
-        .onDisappear { viewportUpdates.cancel(); historyUpdates.cancel() }
+        .onDisappear { viewportUpdates.cancel(); historyUpdates.cancel(); windowUpdates.cancel() }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { note in
             keyboard.setVisible(true)
             keyboardTransitionBegan(TimelineKeyboardEvent(source: .willShow, userInfo: note.userInfo ?? [:]))
@@ -635,20 +636,25 @@ struct ChatTimelineView: View {
 
     /// Every rendered unit's frame lands here. The store keeps the measured
     /// truth (the spacer's refinement source and the shrink arithmetic); a
-    /// frame of the armed anchor additionally drives the point correction.
+    /// frame of the armed anchor additionally drives the point correction —
+    /// deferred out of the geometry callback through the same main-queue box
+    /// the history layout uses, so no scroll target is written mid-layout.
     private func windowUnitDidMeasure(_ measurement: TimelineWindowUnitMeasurement) {
         windowBox.recordUnitFrame(measurement)
-        guard var anchor = windowAnchor, anchor.origin?.anchorRowID == measurement.id,
-              let dataFirst = model.timeline.rows.first?.id else { return }
-        let layout = TimelineHistoryLayout(firstRowID: dataFirst,
-            renderFirstRowID: windowBox.resolvedFirstUnitID ?? "",
-            anchorRowID: measurement.id, edge: .top, y: measurement.y)
-        let offset = anchor.laidOut(layout, generation: windowGeneration)
-        if windowAnchor != anchor { windowAnchor = anchor }
-        guard let offset else { return }
-        var transaction = Transaction(animation: nil)
-        transaction.disablesAnimations = true
-        withTransaction(transaction) { position.scrollTo(y: offset) }
+        guard windowAnchor?.origin?.anchorRowID == measurement.id else { return }
+        windowUpdates.submit(measurement) { measurement in
+            guard var anchor = windowAnchor, anchor.origin?.anchorRowID == measurement.id,
+                  let dataFirst = model.timeline.rows.first?.id else { return }
+            let layout = TimelineHistoryLayout(firstRowID: dataFirst,
+                renderFirstRowID: windowBox.resolvedFirstUnitID ?? "",
+                anchorRowID: measurement.id, edge: .top, y: measurement.y)
+            let offset = anchor.laidOut(layout, generation: windowGeneration)
+            if windowAnchor != anchor { windowAnchor = anchor }
+            guard let offset else { return }
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { position.scrollTo(y: offset) }
+        }
     }
 }
 

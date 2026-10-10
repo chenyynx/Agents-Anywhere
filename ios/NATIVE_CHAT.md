@@ -55,6 +55,27 @@ Semantic error and availability colors remain separate from the primary color.
   probes and actual column widths have separate measurements. Real iPad resizing
   reflows immediately, and Dynamic Type/display scale/direction changes reset the
   cache. Authoritative replacements reset the enclosing layout generation.
+- The timeline renders a window, not the loaded history. The rows stay fully in
+  memory, while the content shows a tail window — ~160 rows on a cold open,
+  expanded in bounded blocks as the reader approaches its top edge and released
+  back as they move far below — with one spacer above standing in for every
+  unrendered older unit. Its height reproduces the rendered list's spacing
+  arithmetic exactly; the spacer and the real block differ only by the coarse
+  estimate, and the difference is corrected without animation by the same
+  anchor math a history page prepend uses (`TimelineHistoryPosition`, whose
+  `renderWindow` signal watches the window's own first unit). Stable
+  steady-state rendering therefore costs the window, not the session: the
+  loaded row count no longer drives per-flush grouping, turn-action rebuilds
+  or the rendered view count. Deep-history browsing still renders everything
+  above the reader down to the tail; the window is a suffix by design.
+- History pages land coalesced. A stage whose first row is not the published
+  one (the backfill's prepends) extends a trailing-debounce hold
+  (`TimelinePrependCoalescer`, 0.25 s per page, 0.9 s cap); a flush inside the
+  hold publishes the newest pending batch, which already contains every page
+  that arrived. The backfill additionally waits a short quiet beat after the
+  opening position settles before its first fetch. Pages still land in memory
+  one by one — the reader just sees single-digit repaints instead of one per
+  page.
 - Opening a session shows one persistent loading indicator in the detail
   column only for a true cold load, that is, when no in-memory projection
   exists as the page is created. A memory-cached visit presents its snapshot

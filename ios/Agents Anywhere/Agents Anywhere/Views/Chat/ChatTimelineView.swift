@@ -78,6 +78,10 @@ struct ChatTimelineView: View {
                     keepsOlderPrompt: hasRequestedOlder, historyAnchor: historyPosition?.origin,
                     queueRoster: model.session.sendQueue.renderRoster,
                     window: windowBox, windowEnabled: Self.timelineWindowEnabled,
+                    // F2: a committed window move publishes only through this
+                    // revision — the store object itself never changes — so the
+                    // equatable seam has to carry it or the body is skipped.
+                    windowMoveRevision: windowBox.moveRevision,
                     onLoadOlder: loadOlder, onLoadLatest: loadLatest,
                     onHistoryLayout: historyDidLayOut,
                     onUnitFrame: windowUnitDidMeasure,
@@ -707,6 +711,10 @@ private struct ChatTimelineContent: View, Equatable {
     let window: TimelineWindowStore
     /// The §7 feature flag, hoisted so the content's equality sees it.
     let windowEnabled: Bool
+    /// The store's committed-move revision, read by the parent (F2): the store
+    /// is the same object across a commit, so this is the only value that can
+    /// carry the move through `.equatable()`.
+    let windowMoveRevision: Int
     let onLoadOlder: () -> Void
     let onLoadLatest: () -> Void
     let onHistoryLayout: (TimelineHistoryLayout) -> Void
@@ -726,12 +734,21 @@ private struct ChatTimelineContent: View, Equatable {
     /// reads this one boolean for both the frame and the animation value.
     private var hasStatusLine: Bool { model.sendingPlaceholder != nil }
 
+    /// The value half of the seam, so it can be pinned by unit tests: see
+    /// `ChatTimelineContentInputs`. Two contents over the same model and the
+    /// same store are equal only while every compared input — including the
+    /// store's committed-move revision — still matches.
+    var equatableInputs: ChatTimelineContentInputs {
+        ChatTimelineContentInputs(latestPullReady: latestPullReady, isLoadingLatest: isLoadingLatest,
+            olderPullReady: olderPullReady, isLoadingOlder: isLoadingOlder,
+            keepsOlderPrompt: keepsOlderPrompt, historyAnchor: historyAnchor,
+            queueRoster: queueRoster, windowEnabled: windowEnabled,
+            windowMoveRevision: windowMoveRevision)
+    }
+
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.model === rhs.model && lhs.latestPullReady == rhs.latestPullReady && lhs.isLoadingLatest == rhs.isLoadingLatest
-            && lhs.olderPullReady == rhs.olderPullReady && lhs.isLoadingOlder == rhs.isLoadingOlder
-            && lhs.keepsOlderPrompt == rhs.keepsOlderPrompt && lhs.historyAnchor == rhs.historyAnchor
-            && lhs.queueRoster == rhs.queueRoster
-            && lhs.window === rhs.window && lhs.windowEnabled == rhs.windowEnabled
+        lhs.model === rhs.model && lhs.window === rhs.window
+            && lhs.equatableInputs == rhs.equatableInputs
     }
 
     /// The window's height-model inputs, read from the environment: the

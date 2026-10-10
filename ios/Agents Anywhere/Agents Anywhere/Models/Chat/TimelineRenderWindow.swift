@@ -65,6 +65,28 @@ nonisolated struct TimelineWindowSample: Equatable {
     var above: CGFloat { viewport.offsetY + viewport.topInset - windowTop }
 }
 
+/// The value half of `ChatTimelineContent`'s `.equatable()` seam: every input
+/// the content compares by value (the chat model and the window store are
+/// compared by identity; the closures are not compared at all). Held as one
+/// value so the seam is unit-testable — and because it is what carries a
+/// committed render-window move across SwiftUI's skip: the store object is the
+/// same object before and after a commit, only its `moveRevision` moves, so
+/// without that revision in an equated value the body reads as unchanged,
+/// `frame()` never re-runs and the rendered slice never moves.
+nonisolated struct ChatTimelineContentInputs: Equatable {
+    var latestPullReady = false
+    var isLoadingLatest = false
+    var olderPullReady = false
+    var isLoadingOlder = false
+    var keepsOlderPrompt = false
+    var historyAnchor: TimelineHistoryLayout? = nil
+    var queueRoster = ""
+    var windowEnabled = false
+    /// The window store's committed-move revision (F2): the only value a
+    /// window move publishes through this seam.
+    var windowMoveRevision = 0
+}
+
 /// The render set of the windowed timeline (task sheet §P2 对策A): the data
 /// stays fully in memory, while the view renders only a suffix of the data —
 /// the tail window — and represents everything older with one spacer on top.

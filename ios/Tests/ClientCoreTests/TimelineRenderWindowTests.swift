@@ -215,6 +215,23 @@ import Testing
         }
     }
 
+    // MARK: the content's equatable seam (F2)
+
+    /// A committed window move publishes only through `windowMoveRevision`:
+    /// the store object is the very same object across the commit. The seam
+    /// has to read as unequal then — otherwise SwiftUI skips the body,
+    /// `frame()` never re-runs and the rendered slice never moves.
+    @Test func aCommittedWindowMoveBreaksTheContentsEquatableSeam() {
+        let atRest = ChatTimelineContentInputs(windowEnabled: true, windowMoveRevision: 0)
+        let committed = ChatTimelineContentInputs(windowEnabled: true, windowMoveRevision: 1)
+        #expect(atRest != committed, "the move revision alone must break equality")
+        #expect(atRest == ChatTimelineContentInputs(windowEnabled: true, windowMoveRevision: 0))
+        // The rest of the seam still compares by value.
+        #expect(atRest != ChatTimelineContentInputs(keepsOlderPrompt: true, windowEnabled: true, windowMoveRevision: 0))
+        #expect(atRest != ChatTimelineContentInputs(queueRoster: "q1", windowEnabled: true, windowMoveRevision: 0))
+        #expect(atRest != ChatTimelineContentInputs(windowEnabled: false, windowMoveRevision: 0))
+    }
+
     // MARK: data changes
 
     @Test func adoptingAPrependMovesThePagesIntoTheSpacerWithoutGrowingTheRenderSet() {

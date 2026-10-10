@@ -45,8 +45,12 @@ nonisolated struct TimelineScrollState: Equatable {
     private var openingReturnIsPending = false
     /// The opening visit's claim on the viewport. It ends only when the reader
     /// takes over (a drag, or an explicit history request): a window change
-    /// landing later must never move a reader who has chosen a position — but
-    /// it must still re-assert the opening for everyone else.
+    /// landing later must never move a reader who has chosen a position — the
+    /// single exception is a reader who settles back into following (mode
+    /// `.following`), where the re-assert is motionless and corrects only the
+    /// displacement the window change itself caused (see
+    /// `reassertOpeningReturn`) — but it must still re-assert the opening for
+    /// everyone else.
     private(set) var readerTookOver = false
     /// R2 backstop: the publish-point reconcile asks at most once per
     /// displacement episode. The latch re-arms only when a published sample
@@ -136,9 +140,17 @@ nonisolated struct TimelineScrollState: Equatable {
     /// no opening to re-assert), a suspended drawer refuses (the native
     /// target would be applied mid-transition), and the first reader gesture
     /// or explicit history request releases the claim for good.
+    ///
+    /// One state is not the reader "owning" a position: a reader who took
+    /// over and settled back into following (mode `.following` — their rest
+    /// judged at the bottom). A window change there has already displaced the
+    /// page the follow machinery was holding, and the re-assert lands exactly
+    /// where that reader rests — an instant motionless re-pin instead of the
+    /// 24 ms-coalesced animated chase. Every other taken-over state — a drag
+    /// in flight, a rest away from the bottom — still refuses (2026-10-10).
     @discardableResult
     mutating func reassertOpeningReturn() -> Bool {
-        guard hasOpened, !navigationIsSuspended, !readerTookOver else { return false }
+        guard hasOpened, !navigationIsSuspended, !readerTookOver || mode == .following else { return false }
         openingReturnIsPending = true
         requestBottom()
         return true

@@ -204,7 +204,9 @@ struct ChatTimelineView: View {
                 // sess_ps8Z29uknMTIhw). Re-arm the opening's own instant
                 // return for the landing instead of trusting the follow gates,
                 // which can all be closed at that instant. The state refuses
-                // on its own once the reader has taken over the page.
+                // on its own once the reader has taken over the page — except
+                // a reader resting back at the bottom (following), where the
+                // re-pin is motionless and spares them the animated lurch.
                 _ = scrolling.reassertOpeningReturn()
             }
             .onChange(of: hasInteractions, initial: true) { _, presented in

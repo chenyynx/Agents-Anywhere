@@ -86,4 +86,38 @@ import Testing
         let unrelated = history.laidOut(layout(first: "earlier-tool", anchor: "other-tool", y: 900, edge: .bottom), generation: 8)
         #expect(unrelated == nil)
     }
+
+    /// The user's own page is the one prepend path with an anchor: the
+    /// presentation bumps `windowRevision` for it like any other prepend, and
+    /// the view's consumer then runs — the refusal must leave both the
+    /// navigation generation and the armed anchor untouched, or the page
+    /// would land unanchored (2026-10-10 batch-2 regression, the "user's own
+    /// loadOlder" leak check).
+    @Test func theUserPageKeepsItsAnchorWhenTheWindowRevisionFires() throws {
+        var state = TimelineScrollState()
+        state.geometryChanged(TimelineViewport(contentHeight: 2000, containerHeight: 800, topInset: 80, bottomInset: 120, offsetY: 1320))
+        state.tailVisibilityChanged(.near, visible: true)
+        state.tailVisibilityChanged(.end, visible: true)
+        state.open()
+        let opening = try #require(state.pendingBottomRequest)
+        let begun = state.begin(opening)
+        let command = try #require(begun)
+        let completed = state.complete(command)
+        #expect(completed)
+        // The reader takes over and pulls a page of history at the top: the
+        // view arms the anchor against the request's navigation generation.
+        state.phaseChanged(.tracking, viewport: TimelineViewport(contentHeight: 2600, containerHeight: 800, topInset: 80, bottomInset: 120, offsetY: 60))
+        state.browseHistory(byReader: true)
+        let generation = state.navigationGeneration
+        var anchor = TimelineHistoryPosition(id: generation, layout: layout(y: 80), offsetY: 420, topInset: 80)
+        // The page lands and prepends: `windowRevision` bumps, and the view
+        // re-asserts the opening return exactly as its onChange does.
+        let reasserted = state.reassertOpeningReturn()
+        #expect(!reasserted, "A reader's own page never triggers an opening return")
+        #expect(state.pendingBottomRequest == nil, "No follow request is armed behind the reader's back")
+        #expect(state.navigationGeneration == generation, "The armed anchor's generation survives the consumer")
+        // The anchor still absorbs the prepend under the reader.
+        let correction = anchor.laidOut(layout(first: "earlier", y: 1080), generation: generation)
+        #expect(correction == 1420)
+    }
 }

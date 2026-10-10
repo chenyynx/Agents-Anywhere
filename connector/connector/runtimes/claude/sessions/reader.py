@@ -1791,6 +1791,16 @@ def _merge_session_meta(primary: SessionMeta, secondary: SessionMeta) -> Session
                 primary_sync.get("projection_outdated") is True
                 or secondary_sync.get("projection_outdated") is True
             ),
+            # The history read is the only side that knows this flag, so a
+            # local overlay adopted for a history-only session (D-A,
+            # zombie-agent-card §9) must carry it through the merge rather
+            # than drop it — otherwise creating a store entry for such a
+            # session hides the cursor state the marker predicates read.
+            "history_cursor_missing": (
+                secondary_sync.get("history_cursor_missing")
+                if secondary.metadata.get("source") == "claude.session/list"
+                else primary_sync.get("history_cursor_missing")
+            ),
         }
     return SessionMeta(
         session_id=primary.session_id,

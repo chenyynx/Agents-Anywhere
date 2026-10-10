@@ -470,14 +470,16 @@ def _history_oracle() -> ClaudeSubagentOracle:
 def test_Z2_T1_history_sync_gives_the_store_session_the_meta_the_sweep_needs(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    """Never-live session -> store cwd/external set -> sweep closes the card.
+    """Never-live session -> store entry created -> sweep closes the card.
 
-    Pre-fix no store session is ever created by the history sync (the store
-    only ever learns of a session through ``record_timeline_item``'s bare
-    ``ensure(session_id)``), so ``store.get(...)`` is ``None``, the raw
-    transcript scan cannot resolve a path, and the sweep never iterates the
-    session at all. The e2e's s6-rootcause probe printed exactly:
-    ``cwd=None external=None`` / ``_read_raw_transcript_scan -> None``.
+    Pre-fix a history-only session (never live-driven) has NO store entry at
+    all: the store only ever learns of a session through the live
+    timeline-activity path, and the history sync never created one. The evidence
+    sweep iterates ``session_store.sessions()`` — empty for such a session — so
+    its Agent card is invisible to the sweep and never closes. The e2e's
+    s6-rootcause probe printed exactly ``store.sessions() == ()`` for this
+    shape. The fix adopts an entry here, carrying the cwd + external id the
+    oracle's probe needs.
     """
 
     config, project, raw = _layout(tmp_path)
@@ -488,15 +490,10 @@ def test_Z2_T1_history_sync_gives_the_store_session_the_meta_the_sweep_needs(
 
     host, runtime = _runtime_with(_history_oracle())
     store = runtime._session_store
-    # The production shape (e2e s6-rootcause step 1): the store entry exists
-    # but bare — the live timeline-activity path created it through
-    # ``record_timeline_item``'s ``ensure(session_id)``, which fills neither
-    # cwd nor the external id. The history read is what knows both, and the
-    # sweep iterates exactly this store set, so the read must enrich it.
-    store.ensure(session_id=SESSION_ID)
-    bare = store.get(SESSION_ID)
-    assert bare is not None and bare.cwd is None
-    assert bare.external_session_id is None
+    # The production shape (e2e s6-rootcause): a history-only session the
+    # store has never heard of — no entry exists before the sync.
+    assert store.get(SESSION_ID, EXTERNAL_SESSION_ID) is None
+    assert store.sessions() == ()
 
     sdk = _FakeSdk([_sdk_dispatch(), _sdk_receipt()], raw, project)
     syncer = _syncer(

@@ -70,10 +70,11 @@ jobs:
     # The package is only released once the unit tests pass: a red test suite
     # must never produce an installable IPA.
     needs: test
-    # Verification-only dispatches (feature branches) run the test job alone:
-    # only the dev line publishes an installable IPA, so a branch dispatch can
-    # never clobber the `ipa-dev` release with a half-finished build.
-    if: github.ref == 'refs/heads/dev'
+    # The open-coverage line runs the full build too (its push trigger was
+    # extended for exactly this); every other branch dispatch stays
+    # verification-only — the test job alone — so it can never attach a
+    # half-finished package to the `ipa-dev` release.
+    if: github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/feat/session-open-coverage'
     runs-on: macos-26
     timeout-minutes: 90
     steps:

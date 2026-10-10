@@ -616,10 +616,13 @@ struct ChatTimelineView: View {
     /// deliberately conservative (see `TimelineWindowMoveGate`): no move while
     /// the navigation is suspended, while a history load or an in-flight
     /// bottom command owns the viewport, while a previous window move is still
-    /// settling, while the keyboard drives the layout — or while the reader's
-    /// own gesture owns the offset (F3): the anchor correction a commit arms
-    /// writes a point target, which would fight a live drag or fling. A refused
-    /// move is retried by later samples, and once when the gesture settles.
+    /// settling, or while the keyboard drives the layout. The reader's own
+    /// gesture is *not* a guard (round 2): the expand is what keeps the history
+    /// ahead of them materialised, and refusing it mid-gesture let them scroll
+    /// into the top spacer — a screen of blank. What the commit arms — the
+    /// anchor's point correction — is graded at its write site instead
+    /// (`TimelineAnchorWritePolicy`). A refused move is retried by later
+    /// samples, and once when the gesture settles.
     private func timelineWindowDidSample(_ sample: TimelineViewport) {
         guard TimelineWindowMoveGate(
             windowingEnabled: Self.timelineWindowEnabled,
@@ -629,8 +632,7 @@ struct ChatTimelineView: View {
             historySettling: historyPosition != nil,
             historyLoadInFlight: olderLoadRequest != nil || latestLoadRequest != nil,
             bottomCommandInFlight: scrolling.activeCommand != nil,
-            keyboardDrivingLayout: keyboardDrivingLayout,
-            userIsScrolling: scrolling.userIsScrolling
+            keyboardDrivingLayout: keyboardDrivingLayout
         ).allows else { return }
         guard let plan = windowBox.planMove(viewport: sample) else { return }
         applyWindowMove(plan)
@@ -676,9 +678,17 @@ struct ChatTimelineView: View {
             let layout = TimelineHistoryLayout(firstRowID: dataFirst,
                 renderFirstRowID: windowBox.resolvedFirstUnitID ?? "",
                 anchorRowID: measurement.id, edge: .top, y: measurement.y)
+            // The displacement this correction removes: the anchor's new
+            // measured y minus the y it was armed against (the height model's
+            // residual — zero once every unit in the move has been measured).
+            let delta = layout.y - (anchor.origin?.y ?? layout.y)
             let offset = anchor.laidOut(layout, generation: windowGeneration)
             if windowAnchor != anchor { windowAnchor = anchor }
             guard let offset else { return }
+            // Round 2: the move was allowed to commit under the reader's
+            // gesture, so the write it arms is graded by who owns the offset
+            // (a point target stops a fling; it does not end a drag).
+            guard TimelineAnchorWritePolicy.action(delta: delta, phase: scrolling.phase) == .write else { return }
             var transaction = Transaction(animation: nil)
             transaction.disablesAnimations = true
             withTransaction(transaction) { position.scrollTo(y: offset) }

@@ -239,16 +239,17 @@ import Testing
         #expect(!window.isRendered(above))
     }
 
-    // MARK: the move gate (F3)
+    // MARK: the move gate (F3, round 2)
 
-    /// A sample may judge (and commit) a window move only while nothing else
-    /// owns the viewport — including the reader's own gesture and the fling it
-    /// leaves behind: the correction a commit arms writes a point target, which
-    /// would fight a live drag. The gesture's end re-runs the judgement.
-    @Test func theWindowMoveGateRefusesWhileTheReaderOwnsTheOffset() {
-        #expect(TimelineWindowMoveGate().allows, "nothing else owns the viewport")
-        #expect(!TimelineWindowMoveGate(userIsScrolling: true).allows,
-            "a drag or fling owns the offset — no anchor correction under it")
+    /// A sample may judge (and commit) a window move while nothing but the
+    /// reader owns the viewport. The reader's gesture is deliberately *not* on
+    /// the list (round 2): refusing an expand mid-gesture left the history
+    /// ahead of them unmaterialised, so their drag or fling ran into the top
+    /// spacer — one screen of blank, then a jump when the gesture ended (device
+    /// regression, 2026-10-10). What a commit arms — the anchor's point
+    /// correction — is graded at its write site instead.
+    @Test func theWindowMoveGateRefusesEveryOwnerExceptTheReadersGesture() {
+        #expect(TimelineWindowMoveGate().allows, "nothing but the reader owns the viewport")
         #expect(!TimelineWindowMoveGate(windowingEnabled: false).allows)
         #expect(!TimelineWindowMoveGate(openingSettled: false).allows)
         #expect(!TimelineWindowMoveGate(navigationSuspended: true).allows)
@@ -257,6 +258,36 @@ import Testing
         #expect(!TimelineWindowMoveGate(historyLoadInFlight: true).allows)
         #expect(!TimelineWindowMoveGate(bottomCommandInFlight: true).allows)
         #expect(!TimelineWindowMoveGate(keyboardDrivingLayout: true).allows)
+    }
+
+    /// A refusal names the member that closed the gate — the diagnostics
+    /// window shows exactly which owner held the move back.
+    @Test func theGateNamesTheMemberThatRefused() {
+        #expect(TimelineWindowMoveGate().refusal == nil)
+        #expect(TimelineWindowMoveGate(historyLoadInFlight: true).refusal == .historyLoadInFlight)
+        #expect(TimelineWindowMoveGate(keyboardDrivingLayout: true).refusal == .keyboardDrivingLayout)
+        #expect(TimelineWindowMoveGate(windowingEnabled: false, moveSettling: true).refusal == .windowingEnabled,
+            "the list is checked in order, first refusal wins")
+    }
+
+    /// The correction write is graded by who owns the offset, not gated away
+    /// from the move itself: the residual the anchor removes (real height minus
+    /// estimate) is invisible under a gesture, a correction under a finger does
+    /// not end the drag, and a point target always stops a fling.
+    @Test func theAnchorWritePolicyGradesTheCorrectionByWhoOwnsTheOffset() {
+        let tolerance = TimelineAnchorWritePolicy.gestureTolerance
+        #expect(TimelineAnchorWritePolicy.action(delta: 0.6, phase: .idle) == .write,
+            "nothing owns the offset: this is the correction the anchor exists for")
+        #expect(TimelineAnchorWritePolicy.action(delta: 130, phase: .idle) == .write)
+        #expect(TimelineAnchorWritePolicy.action(delta: 130, phase: .animating) == .write)
+        for phase in [TimelineScrollState.Phase.tracking, .interacting] {
+            #expect(TimelineAnchorWritePolicy.action(delta: tolerance, phase: phase) == .absorb,
+                "layout noise under a held finger is not worth a write")
+            #expect(TimelineAnchorWritePolicy.action(delta: tolerance + 0.5, phase: phase) == .write)
+            #expect(TimelineAnchorWritePolicy.action(delta: -tolerance - 0.5, phase: phase) == .write)
+        }
+        #expect(TimelineAnchorWritePolicy.action(delta: tolerance + 400, phase: .decelerating) == .absorb,
+            "a point target stops the fling; a residual that rode the flight costs nothing at rest")
     }
 
     // MARK: the content's equatable seam (F2)

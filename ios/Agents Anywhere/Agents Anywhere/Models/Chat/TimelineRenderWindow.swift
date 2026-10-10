@@ -90,6 +90,14 @@ nonisolated struct ChatTimelineContentInputs: Equatable {
 /// The render-window move's guard list as one value: a geometry sample may
 /// judge (and commit) a move only while nothing else owns the viewport. Pure,
 /// so the list is named at the call site and each condition is pinnable.
+///
+/// The reader's own gesture is deliberately **not** a member (round 2). The
+/// window is what keeps the history ahead of the reader materialised: refusing
+/// an expand while their finger or fling is moving let them scroll straight
+/// into the top spacer — the whole unloaded history collapses into that one
+/// blank block (device regression, 2026-10-10). A move during a gesture is
+/// legal; what it arms — the anchor's point correction — is graded where it is
+/// written (see `TimelineAnchorWritePolicy`).
 nonisolated struct TimelineWindowMoveGate {
     /// The §7 feature flag (`AA_TIMELINE_WINDOW=0` renders the full list).
     var windowingEnabled = true
@@ -108,16 +116,71 @@ nonisolated struct TimelineWindowMoveGate {
     var bottomCommandInFlight = false
     /// The keyboard drives the layout.
     var keyboardDrivingLayout = false
-    /// F3: the reader's own gesture — a drag, or the fling it leaves behind —
-    /// owns the offset. An anchor correction written now would fight the
-    /// native scroll. A refused move is judged again on the next delivered
-    /// sample, including the one the gesture's own end delivers.
-    var userIsScrolling = false
 
-    var allows: Bool {
-        windowingEnabled && openingSettled && !navigationSuspended && !moveSettling
-            && !historySettling && !historyLoadInFlight && !bottomCommandInFlight
-            && !keyboardDrivingLayout && !userIsScrolling
+    /// Which member closed the gate (nil = the sample may judge a move). The
+    /// name is what the diagnostics window shows, so a refused move on device
+    /// says which owner held it back instead of "nothing happened".
+    enum Refusal: String, Equatable {
+        case windowingEnabled, openingSettled, navigationSuspended, moveSettling
+        case historySettling, historyLoadInFlight, bottomCommandInFlight, keyboardDrivingLayout
+    }
+
+    var refusal: Refusal? {
+        if !windowingEnabled { return .windowingEnabled }
+        if !openingSettled { return .openingSettled }
+        if navigationSuspended { return .navigationSuspended }
+        if moveSettling { return .moveSettling }
+        if historySettling { return .historySettling }
+        if historyLoadInFlight { return .historyLoadInFlight }
+        if bottomCommandInFlight { return .bottomCommandInFlight }
+        if keyboardDrivingLayout { return .keyboardDrivingLayout }
+        return nil
+    }
+
+    var allows: Bool { refusal == nil }
+}
+
+/// Whether the window anchor's point correction may touch the offset while a
+/// move settles. The correction's displacement (`Δ` = the anchor's new
+/// measured y minus its armed y) is the height model's residual error: zero
+/// once every unit in the move has been measured (`heights` /
+/// `measuredHeights` carry the truth forward), non-zero only for units
+/// materialising for the first time (see `TimelineUnitHeightEstimator`).
+///
+/// Round 2: a move may commit while the reader scrolls (the gate no longer
+/// refuses their gesture), so the write it arms has to respect whoever holds
+/// the offset:
+///
+/// - nothing owns it → write. This is the correction the anchor exists for,
+///   unchanged from before the gesture gate existed.
+/// - a finger is down → a point write does not end a `UIScrollView` drag, and
+///   text sitting displaced under a held finger is the visible failure, so a
+///   Δ above the tolerance is corrected; a smaller one is noise.
+/// - the fling is running → never write: a point target always stops the
+///   deceleration, and acceptance is "the fling is not truncated". A Δ that
+///   rides the flight is motion-masked and its resting cost is nil — the page
+///   is an absolute offset away from a framing nobody can observe.
+nonisolated enum TimelineAnchorWritePolicy {
+    enum Action: Equatable { case write, absorb }
+
+    /// Displacements at or below this many points are invisible under a
+    /// gesture, so they are absorbed instead of written. Grounding: layout
+    /// rounding and font-metric noise sit at 1–2 pt (the anchor's own dedup
+    /// already drops ≤ 0.5 pt), while a virgin unit's estimator residual is
+    /// tens to hundreds of points — the two populations are far apart, and
+    /// this line keeps the common case (every previously measured unit) a
+    /// no-op under the reader's hand.
+    static let gestureTolerance: CGFloat = 8
+
+    static func action(delta: CGFloat, phase: TimelineScrollState.Phase) -> Action {
+        switch phase {
+        case .idle, .animating:
+            return .write
+        case .tracking, .interacting:
+            return abs(delta) <= gestureTolerance ? .absorb : .write
+        case .decelerating:
+            return .absorb
+        }
     }
 }
 

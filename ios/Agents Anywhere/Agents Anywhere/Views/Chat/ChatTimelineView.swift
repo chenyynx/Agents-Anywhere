@@ -42,6 +42,18 @@ struct ChatTimelineView: View {
     /// Set while a keyboard-driven pin holds the bottom, so a transition end
     /// releases exactly what its own window pinned and nothing else.
     @State private var keyboardPinnedBottom = false
+    /// The windowed timeline's render-set store (P2 对策A). The content reads
+    /// its published move revision; the geometry callbacks feed it per frame.
+    @State private var windowBox = TimelineWindowStore()
+    /// Armed while a render-window expand/shrink settles: the same anchor
+    /// math `historyPosition` runs for history pages, watching the render
+    /// window's own boundary signal. One move at a time (the next is refused
+    /// until this one settles).
+    @State private var windowAnchor: TimelineHistoryPosition?
+    @State private var windowGeneration = 0
+    /// §7 feature flag: default on; `AA_TIMELINE_WINDOW=0` (debug/simulator)
+    /// falls back to the pre-windowed full render for A/B comparison.
+    private static let timelineWindowEnabled = ProcessInfo.processInfo.environment["AA_TIMELINE_WINDOW"] != "0"
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.sidebarDrawerIsTransitioning) private var sidebarIsTransitioning
     @Environment(\.sidebarDrawerObscuresDetail) private var sidebarObscuresDetail
@@ -64,8 +76,10 @@ struct ChatTimelineView: View {
                     olderPullReady: olderPull.isReady, isLoadingOlder: olderLoadRequest != nil,
                     keepsOlderPrompt: hasRequestedOlder, historyAnchor: historyPosition?.origin,
                     queueRoster: model.session.sendQueue.renderRoster,
+                    window: windowBox, windowEnabled: Self.timelineWindowEnabled,
                     onLoadOlder: loadOlder, onLoadLatest: loadLatest,
                     onHistoryLayout: historyDidLayOut,
+                    onUnitFrame: windowUnitDidMeasure,
                     onPromptVisibility: { latestPromptVisible = $0 },
                     onOlderPromptVisibility: { olderPromptVisible = $0 },
                     onTailVisibility: { region, visible in
@@ -126,6 +140,7 @@ struct ChatTimelineView: View {
                     // as the user takes over, including interrupted animations.
                     releaseScrollPosition()
                     historyPosition?.cancelRestoration()
+                    windowAnchor?.cancelRestoration()
                     olderPull.begin(at: current, promptVisible: olderPromptVisible,
                         canLoad: model.session.hasOlderItems && !model.session.isLoadingHistory && olderLoadRequest == nil && latestLoadRequest == nil)
                     latestPull.begin(at: current, promptVisible: latestPromptVisible,
@@ -164,6 +179,10 @@ struct ChatTimelineView: View {
                     // A landed instant return is confirmed by geometry even when
                     // the tail callback arrived before this sample did.
                     acknowledgeInstantOpeningIfArrived()
+                    // The render window is judged by every delivered sample:
+                    // the decision is pure and bounded, and view state is
+                    // written only when an expand/shrink move is actually due.
+                    timelineWindowDidSample(value)
                     if !navigationIsSuspended && scrolling.phase == .interacting {
                         var latest = latestPull, older = olderPull
                         latest.update(value); older.update(value)
@@ -232,6 +251,11 @@ struct ChatTimelineView: View {
                 do { try await Task.sleep(for: .milliseconds(450)) } catch { return }
                 guard !Task.isCancelled else { return }
                 model.session.beginHistoryBackfill()
+                // The opening's own last geometry sample was delivered while
+                // the window gate was still closed: judge it now, so a cold
+                // open settles its render window without waiting for the
+                // reader's first scroll.
+                if let sample = viewportSample.value { timelineWindowDidSample(sample) }
             }
             .onChange(of: BackfillReaderSignals(
                 scrolling: scrolling.userIsScrolling,
@@ -305,6 +329,28 @@ struct ChatTimelineView: View {
                     position.isPositionedByUser = true
                 }
                 historyPosition = nil; olderLoadRequest = nil
+            }
+            .task(id: WindowMoveSettlement(id: windowAnchor?.id, ready: windowAnchor?.isReadyToFinish == true,
+                offset: windowAnchor?.restoredOffset)) {
+                guard let request = windowAnchor?.id, windowAnchor?.isReadyToFinish == true else { return }
+                // Same settlement as a history pan: the correction's own
+                // reports restart this, and 64 ms of quiet ends the move.
+                do { try await Task.sleep(for: .milliseconds(64)) } catch { return }
+                guard !Task.isCancelled, windowAnchor?.id == request else { return }
+                // Release the point target a landed correction left behind —
+                // unless a bottom return has since taken ownership of the
+                // viewport (its own completion releases).
+                if windowAnchor?.restoredOffset != nil, scrolling.activeCommand == nil {
+                    releaseScrollPosition()
+                }
+                windowAnchor = nil
+                // A move can need chaining (a fast scroll's overscan, or the
+                // cold open trimming a deep default window) and no further
+                // geometry sample is guaranteed once the layout settles —
+                // judge the latest sample once more. The decision terminates
+                // on its own: thresholds stop the chain, expansions are
+                // bounded by the data's top, releases by the keep guard.
+                if let sample = viewportSample.value { timelineWindowDidSample(sample) }
             }
             .task(id: latestLoadRequest) {
                 guard let generation = latestLoadRequest else { return }
@@ -539,10 +585,70 @@ struct ChatTimelineView: View {
         let ready: Bool
         let offset: CGFloat?
     }
+    private struct WindowMoveSettlement: Equatable {
+        let id: Int?
+        let ready: Bool
+        let offset: CGFloat?
+    }
     private struct UserScrollSettlement: Equatable {
         let needed: Bool
         let tail: TimelineTailVisibility
         let generation: Int
+    }
+
+    // MARK: - Windowed timeline (P2 对策A)
+
+    /// One geometry sample's judgement of the render window. The guard list is
+    /// deliberately conservative: no move while the navigation is suspended,
+    /// while a history load or an in-flight bottom command owns the viewport,
+    /// while a previous window move is still settling, or while the keyboard
+    /// drives the layout. A refused move is retried by later samples.
+    private func timelineWindowDidSample(_ sample: TimelineViewport) {
+        guard Self.timelineWindowEnabled, model.openingPositionSettled, !navigationIsSuspended,
+              windowAnchor == nil, historyPosition == nil, olderLoadRequest == nil, latestLoadRequest == nil,
+              scrolling.activeCommand == nil, !keyboardDrivingLayout else { return }
+        guard let plan = windowBox.planMove(viewport: sample) else { return }
+        applyWindowMove(plan)
+    }
+
+    /// Commits one expand/shrink: arms the anchor against the post-move first
+    /// unit (the unit that stays rendered across the move), then applies the
+    /// slice change. The spacer gives back exactly the estimates it charged,
+    /// so the reader's displacement is only the estimate error — which the
+    /// anchor's own measured reports correct, no animation, the same math a
+    /// history page prepend runs through `historyPosition`.
+    private func applyWindowMove(_ plan: TimelineWindowStore.PlannedWindowMove) {
+        guard let dataFirst = model.timeline.rows.first?.id else { return }
+        windowGeneration &+= 1
+        var anchor = TimelineHistoryPosition(id: windowGeneration, layout: TimelineHistoryLayout(
+            firstRowID: dataFirst, renderFirstRowID: plan.renderFirstUnitID,
+            anchorRowID: plan.anchorUnitID, edge: .top, y: plan.anchorY),
+            offsetY: plan.sample.viewport.offsetY, topInset: plan.sample.viewport.topInset,
+            signal: .renderWindow)
+        // The window anchor's completion does not depend on the data window's
+        // first row: a history page landing mid-settle must not hold it open
+        // (the layout reports carry whatever the data first row is by then).
+        anchor.receivedPage(firstRowID: nil)
+        windowAnchor = anchor
+        windowBox.commit(plan)
+    }
+
+    /// Every rendered unit's frame lands here. The store keeps the measured
+    /// truth (the spacer's refinement source and the shrink arithmetic); a
+    /// frame of the armed anchor additionally drives the point correction.
+    private func windowUnitDidMeasure(_ measurement: TimelineWindowUnitMeasurement) {
+        windowBox.recordUnitFrame(measurement)
+        guard var anchor = windowAnchor, anchor.origin?.anchorRowID == measurement.id,
+              let dataFirst = model.timeline.rows.first?.id else { return }
+        let layout = TimelineHistoryLayout(firstRowID: dataFirst,
+            renderFirstRowID: windowBox.resolvedFirstUnitID ?? "",
+            anchorRowID: measurement.id, edge: .top, y: measurement.y)
+        let offset = anchor.laidOut(layout, generation: windowGeneration)
+        if windowAnchor != anchor { windowAnchor = anchor }
+        guard let offset else { return }
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { position.scrollTo(y: offset) }
     }
 }
 
@@ -589,13 +695,23 @@ private struct ChatTimelineContent: View, Equatable {
     /// seam (and the queue section's animation) notice roster and state
     /// changes; the rows themselves read the live model.
     let queueRoster: String
+    /// The windowed timeline's store (P2 对策A). The body resolves the
+    /// rendered slice through it; its caches rebuild off row membership, so
+    /// token streams never re-estimate.
+    let window: TimelineWindowStore
+    /// The §7 feature flag, hoisted so the content's equality sees it.
+    let windowEnabled: Bool
     let onLoadOlder: () -> Void
     let onLoadLatest: () -> Void
     let onHistoryLayout: (TimelineHistoryLayout) -> Void
+    let onUnitFrame: (TimelineWindowUnitMeasurement) -> Void
     let onPromptVisibility: (Bool) -> Void
     let onOlderPromptVisibility: (Bool) -> Void
     let onTailVisibility: (TimelineTailVisibility.Region, Bool) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    /// The content column's measured width — the height model's key input.
+    @State private var contentWidth: CGFloat = 0
     /// F1 (pp 2026-10-07): the tail spacer's resting height — the two-tier
     /// contract is 32 with a status line present and this value at rest, so
     /// the SubAgent capsule seats near the content when the session is idle.
@@ -609,10 +725,32 @@ private struct ChatTimelineContent: View, Equatable {
             && lhs.olderPullReady == rhs.olderPullReady && lhs.isLoadingOlder == rhs.isLoadingOlder
             && lhs.keepsOlderPrompt == rhs.keepsOlderPrompt && lhs.historyAnchor == rhs.historyAnchor
             && lhs.queueRoster == rhs.queueRoster
+            && lhs.window === rhs.window && lhs.windowEnabled == rhs.windowEnabled
     }
+
+    /// The window's height-model inputs, read from the environment: the
+    /// Dynamic Type bucket is the stable cache dimension, the scale is only
+    /// the estimator's coarse multiplier.
+    private var typeScaleBucket: Int { DynamicTypeSize.allCases.firstIndex(of: dynamicTypeSize) ?? 3 }
+    private var typeScale: CGFloat {
+        // ≈ UIKit's body-text ratios per category (large = 1.0).
+        let scales: [CGFloat] = [0.82, 0.88, 0.94, 1.0, 1.12, 1.23, 1.35, 1.64, 1.95, 2.35, 2.76, 3.12]
+        return scales.indices.contains(typeScaleBucket) ? scales[typeScaleBucket] : 1.0
+    }
+
     var body: some View {
-        let groups = TimelineGrouping.groups(model.timeline.rows, interactionTargets: Set(model.session.notices.notices
-            .filter(\.isVisible).compactMap(\.timelineTargetID)))
+        let targets = Set(model.session.notices.notices.filter(\.isVisible).compactMap(\.timelineTargetID))
+        // The windowed render set: everything below the boundary is rendered —
+        // the tail sentinels, status line and queue must stay inside the
+        // rendered region — and everything older is one spacer on top.
+        let frame = windowEnabled
+            ? window.frame(rows: model.timeline.rows, revision: model.timeline.membershipRevision,
+                interactionTargets: targets, width: contentWidth,
+                typeScaleKey: typeScaleBucket, typeScale: typeScale, disclosures: model.disclosures)
+            : TimelineWindowFrame(startRowIndex: 0, firstUnitID: model.timeline.rows.first?.id,
+                spacerHeight: 0, hiddenRowCount: 0, renderedRowCount: model.timeline.rows.count)
+        let start = min(max(0, frame.startRowIndex), model.timeline.rows.count)
+        let groups = TimelineGrouping.groups(Array(model.timeline.rows[start...]), interactionTargets: targets)
         let actions = TimelineTurnActions.build(groups: groups, suppressLatest: model.isRunning || model.session.hasNewerItems,
             hasPendingUserMessage: !model.session.hasNewerItems && (!model.timeline.pendingMessages.isEmpty || !model.session.pendingMessages.isEmpty))
         // Prefer a message whose start cannot move into a prefixed tool group.
@@ -622,7 +760,7 @@ private struct ChatTimelineContent: View, Equatable {
         let anchorEdge = historyAnchor?.edge ?? (anchorGroup?.rows.first?.structure.groupKind == .single ? .top : .bottom)
         // Keep actual row geometry available as Markdown grows and tool groups
         // change height. Hidden tool details own their deferred work separately.
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: TimelineRenderWindow.unitSpacing) {
             if model.session.hasOlderItems || keepsOlderPrompt {
                 Group {
                     if isLoadingOlder {
@@ -645,17 +783,40 @@ private struct ChatTimelineContent: View, Equatable {
                 .font(.footnote).frame(maxWidth: .infinity, minHeight: 44)
                 .onScrollVisibilityChange(threshold: 0.9) { onOlderPromptVisibility($0) }
             }
+            // The window's single top placeholder: one blank child standing in
+            // for every unrendered older unit. Its height reproduces the
+            // rendered list's own spacing arithmetic exactly (see
+            // TimelineRenderWindow.spacerHeight), so materializing a boundary
+            // block moves only the estimate error — which the window anchor
+            // corrects without animation.
+            if frame.spacerHeight > 0 {
+                Color.clear
+                    .frame(height: frame.spacerHeight)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
             ForEach(groups) { group in
                 SessionTimelineGroupView(group: group, chat: model, onAttachment: onAttachment, onFile: onFile,
                     turnAction: actions[group.id], onSubAgent: onSubAgent)
                     .id(group.id)
                     .background {
+                        // Every rendered unit reports its frame: measured truth
+                        // for the spacer model and the shrink arithmetic, and —
+                        // while a window move settles — the anchor's own
+                        // correction reports.
+                        Color.clear.onGeometryChange(for: TimelineWindowUnitMeasurement.self) { geometry in
+                            let unitFrame = geometry.frame(in: .named("chat.timeline.content"))
+                            return TimelineWindowUnitMeasurement(id: group.id, y: unitFrame.minY, height: unitFrame.height)
+                        } action: { onUnitFrame($0) }
+                    }
+                    .background {
                         if group.id == anchorGroup?.id, let firstRowID = model.timeline.rows.first?.id {
                             Color.clear.onGeometryChange(for: TimelineHistoryLayout.self) { geometry in
-                                let frame = geometry.frame(in: .named("chat.timeline.content"))
+                                let geometryFrame = geometry.frame(in: .named("chat.timeline.content"))
                                 return TimelineHistoryLayout(firstRowID: firstRowID,
+                                    renderFirstRowID: frame.firstUnitID ?? "",
                                     anchorRowID: historyAnchor?.anchorRowID ?? group.id, edge: anchorEdge,
-                                    y: anchorEdge == .top ? frame.minY : frame.maxY)
+                                    y: anchorEdge == .top ? geometryFrame.minY : geometryFrame.maxY)
                             } action: { onHistoryLayout($0) }
                         }
                     }
@@ -729,6 +890,13 @@ private struct ChatTimelineContent: View, Equatable {
                     .allowsHitTesting(false).accessibilityHidden(true)
             }
             .id("tail")
+        }
+        // The column width is the height model's cache dimension: a rotation
+        // or column change re-estimates through the store's signature.
+        // Measured before the column modifier so it reflects the text width,
+        // not the padded container.
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+            if abs(width - contentWidth) > 1 { contentWidth = width }
         }
         .modifier(ChatPageContentColumn(horizontalInset: nil))
         .coordinateSpace(name: "chat.timeline.content")
@@ -860,5 +1028,193 @@ private struct TimelineKeyboardDismissLayer: ViewModifier {
 private extension V2SendQueue {
     var renderRoster: String {
         items.map { "\($0.id):\($0.state)" }.joined(separator: ",")
+    }
+}
+
+/// The windowed timeline's view-side store (P2 对策A). Wraps the pure
+/// `TimelineRenderWindow` with the caches the content body and the geometry
+/// callbacks share.
+///
+/// Publishing discipline (S2): `moveRevision` is the only observed property —
+/// the content body reads it through `frame(...)`, so only committed moves
+/// re-render the slice. Every other write (caches, measurements) is
+/// `@ObservationIgnored`, so per-frame callbacks never re-evaluate the page.
+@MainActor @Observable private final class TimelineWindowStore {
+    struct PlannedWindowMove {
+        let move: TimelineRenderWindow.Move
+        let sample: TimelineWindowSample
+        /// The unit that stays rendered across the move: the current first
+        /// unit for an expansion, the post-move first unit for a shrink.
+        let anchorUnitID: String
+        /// Its pre-move content y — the correction's origin.
+        let anchorY: CGFloat
+        /// The pre-move render-window first unit (the signal origin).
+        let renderFirstUnitID: String
+    }
+
+    private(set) var moveRevision = 0
+    /// The render window's first unit right now (nil before the first bind).
+    var resolvedFirstUnitID: String? { lastFrame.firstUnitID }
+
+    @ObservationIgnored private var window = TimelineRenderWindow()
+    @ObservationIgnored private var heights = TimelineUnitHeightCache()
+    /// The frames of the currently rendered units (y is meaningful only while
+    /// the unit is rendered — pruned at every move).
+    @ObservationIgnored private var measurements: [String: TimelineWindowUnitMeasurement] = [:]
+    /// The rendered units' current heights, the bake source for a move.
+    @ObservationIgnored private var measuredHeights: [String: CGFloat] = [:]
+    @ObservationIgnored private var facts: [String: TimelineUnitHeightFacts] = [:]
+    @ObservationIgnored private var lastFrame = TimelineWindowFrame(
+        startRowIndex: 0, firstUnitID: nil, spacerHeight: 0, hiddenRowCount: 0, renderedRowCount: 0)
+    @ObservationIgnored private var signature: Signature?
+    @ObservationIgnored private var lastWidthKey = 0
+    @ObservationIgnored private var lastTypeScaleKey = 0
+
+    private struct Signature: Equatable {
+        let revision: Int
+        let targets: String
+        let width: Int
+        let typeScale: Int
+    }
+
+    /// Resolves the rendered slice for the content body. Rebuilds the unit
+    /// list only when the data membership, the interaction targets or the
+    /// geometry keys change — never per token flush.
+    func frame(rows: [ChatTimelineRowModel], revision: Int, interactionTargets: Set<String>,
+               width: CGFloat, typeScaleKey: Int, typeScale: CGFloat,
+               disclosures: TimelineDisclosureState) -> TimelineWindowFrame {
+        _ = moveRevision // Observation hook: a committed move re-renders the slice.
+        let widthKey = Int(width.rounded())
+        let next = Signature(revision: revision, targets: interactionTargets.sorted().joined(separator: ","),
+            width: widthKey, typeScale: typeScaleKey)
+        if next != signature {
+            rebuild(rows: rows, interactionTargets: interactionTargets, width: width,
+                widthKey: widthKey, typeScaleKey: typeScaleKey, typeScale: typeScale, disclosures: disclosures)
+            signature = next
+        }
+        return lastFrame
+    }
+
+    /// Records one rendered unit's frame: the measured-truth cache for the
+    /// height model, the current-height bake source for moves, and the y the
+    /// anchor correction reads while a move settles.
+    func recordUnitFrame(_ measurement: TimelineWindowUnitMeasurement) {
+        measurements[measurement.id] = measurement
+        measuredHeights[measurement.id] = measurement.height
+        guard let unitFacts = facts[measurement.id] else { return }
+        heights.record(measurement.height, for: TimelineUnitHeightKey(id: measurement.id,
+            width: lastWidthKey, typeScale: lastTypeScaleKey,
+            isCollapsed: unitFacts.isCollapsed, isStreaming: unitFacts.isStreaming))
+    }
+
+    /// Judges the window and prepares everything a move's anchor needs, from
+    /// the pre-move state. Pure with respect to view state (cache writes
+    /// only): the caller commits or drops the plan.
+    func planMove(viewport: TimelineViewport) -> PlannedWindowMove? {
+        guard let first = lastFrame.firstUnitID, let top = measurements[first] else { return nil }
+        // The shrink arithmetic must give the spacer the heights the rendered
+        // rows actually occupied, not the estimates they replaced — with
+        // measured truth a shrink's displacement is zero by construction.
+        window.applyMeasuredHeights(measuredHeights)
+        let sample = TimelineWindowSample(viewport: viewport, windowTop: top.y)
+        switch window.move(sample: sample) {
+        case .none:
+            return nil
+        case .expand:
+            // The new block materializes above the current first unit: that
+            // unit survives the move and is the correction's anchor.
+            return PlannedWindowMove(move: .expand, sample: sample,
+                anchorUnitID: first, anchorY: top.y, renderFirstUnitID: first)
+        case .shrink:
+            let count = window.shrinkableCount(sample: sample)
+            guard count > 0, window.start + count < window.units.count else { return nil }
+            let anchorID = window.units[window.start + count].id
+            guard let anchor = measurements[anchorID] else { return nil }
+            return PlannedWindowMove(move: .shrink, sample: sample,
+                anchorUnitID: anchorID, anchorY: anchor.y, renderFirstUnitID: first)
+        }
+    }
+
+    /// Applies a planned move and publishes it. Measurements of units that
+    /// just left the render set are pruned — their y stops being meaningful,
+    /// and a stale y must never stand in for a fresh report.
+    func commit(_ plan: PlannedWindowMove) {
+        switch plan.move {
+        case .expand: _ = window.expand(sample: plan.sample)
+        case .shrink: _ = window.shrink(sample: plan.sample)
+        case .none: return
+        }
+        lastFrame = window.frame
+        let rendered = Set(window.units[window.start...].map(\.id))
+        measurements = measurements.filter { rendered.contains($0.key) }
+        measuredHeights = measuredHeights.filter { rendered.contains($0.key) }
+        moveRevision &+= 1
+    }
+
+    private func rebuild(rows: [ChatTimelineRowModel], interactionTargets: Set<String>, width: CGFloat,
+                         widthKey: Int, typeScaleKey: Int, typeScale: CGFloat,
+                         disclosures: TimelineDisclosureState) {
+        let groups = TimelineGrouping.groups(rows, interactionTargets: interactionTargets)
+        let keysMatch = widthKey == lastWidthKey && typeScaleKey == lastTypeScaleKey
+        if !keysMatch {
+            // Every recorded or measured height is geometry for another
+            // column or type size: retire it and re-estimate.
+            measurements.removeAll()
+            measuredHeights.removeAll()
+        }
+        var carried: [String: TimelineRenderUnit] = [:]
+        if keysMatch {
+            carried.reserveCapacity(window.units.count)
+            for unit in window.units { carried[unit.id] = unit }
+        }
+        var nextFacts: [String: TimelineUnitHeightFacts] = [:]
+        var units: [TimelineRenderUnit] = []
+        units.reserveCapacity(groups.count)
+        nextFacts.reserveCapacity(groups.count)
+        for group in groups {
+            let unitFacts = Self.unitFacts(of: group, disclosures: disclosures)
+            nextFacts[group.id] = unitFacts
+            var height: CGFloat
+            var isMeasured = false
+            if let carriedUnit = carried[group.id] {
+                height = carriedUnit.height
+                isMeasured = carriedUnit.isMeasured
+            } else {
+                let key = TimelineUnitHeightKey(id: group.id, width: widthKey, typeScale: typeScaleKey,
+                    isCollapsed: unitFacts.isCollapsed, isStreaming: unitFacts.isStreaming)
+                if let recorded = heights.height(for: key) {
+                    height = recorded
+                    isMeasured = true
+                } else {
+                    height = TimelineUnitHeightEstimator.height(unitFacts, width: width, typeScale: typeScale)
+                }
+            }
+            units.append(TimelineRenderUnit(id: group.id, rowCount: group.rows.count,
+                height: height, isMeasured: isMeasured))
+        }
+        facts = nextFacts
+        lastWidthKey = widthKey
+        lastTypeScaleKey = typeScaleKey
+        window.adopt(units)
+        lastFrame = window.frame
+    }
+
+    private static func unitFacts(of group: ChatTimelineGroup,
+                                  disclosures: TimelineDisclosureState) -> TimelineUnitHeightFacts {
+        var textLength = 0
+        var attachmentCount = 0
+        var isStreaming = false
+        for row in group.rows {
+            textLength += row.text.count
+            if case let .message(message) = row.value.content {
+                attachmentCount += message.attachments.count
+            }
+            if row.structure.isStreamingText { isStreaming = true }
+        }
+        let multi = group.kind != .single
+        return TimelineUnitHeightFacts(kind: group.kind,
+            isCollapsed: multi && !disclosures.isExpandedIfKnown(group.id),
+            rowCount: group.rows.count, textLength: textLength,
+            attachmentCount: attachmentCount, isStreaming: isStreaming)
     }
 }

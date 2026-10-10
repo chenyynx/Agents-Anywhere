@@ -155,11 +155,12 @@ import Testing
         #expect(TextPhraseSequence.chunks(in: "选择设备和 Agent，把想做的事交给它。").count > 1)
     }
 
-    @Test func composerWhitespaceExpandsButMarkedTextNeverSends() {
+    @Test func composerWhitespaceCollapsesButMarkedTextNeverSends() {
         let draft = ComposerDraft()
         #expect(!draft.isExpanded)
         draft.text = "\n  "
-        #expect(draft.isExpanded)
+        #expect(!draft.isExpanded)
+        #expect(!draft.hasContent)
         #expect(!draft.canAttemptSend)
         draft.text = "中文\n下一行"
         draft.isComposing = true
@@ -168,6 +169,49 @@ import Testing
         #expect(draft.canAttemptSend)
         draft.invalidate()
         #expect(!draft.isValid && draft.text.isEmpty)
+    }
+
+    /// A draft left holding only whitespace must read as empty everywhere:
+    /// collapsed bar, placeholder back, key grey. Rapid keyboard churn left a
+    /// session in exactly that state, and the archive preserved the blank
+    /// draft, so the expanded bar survived a relaunch until a send cleared it.
+    @Test func composerWhitespaceOnlyDraftsAreEmptyEverywhere() {
+        let draft = ComposerDraft()
+        for whitespace in [" ", "\n", "\n  ", "\r\n", "\t", " \n \t "] {
+            draft.text = whitespace
+            #expect(!draft.hasContent)
+            #expect(!draft.isExpanded)
+            #expect(!draft.canAttemptSend)
+        }
+        draft.isFocused = true
+        #expect(draft.isExpanded)
+        draft.isFocused = false
+        for content in ["a", "中文", "a\nb", " a ", "a\n\n"] {
+            draft.text = content
+            #expect(draft.hasContent)
+            #expect(draft.isExpanded)
+            #expect(draft.canAttemptSend)
+        }
+        draft.text = " \n "
+        draft.attachments = [ChatAttachment(name: "note.txt", data: Data(), mediaType: "text/plain")]
+        #expect(!draft.hasContent && draft.isExpanded)
+        draft.attachments = []
+        draft.clear()
+        #expect(!draft.hasContent && !draft.isExpanded && !draft.canAttemptSend)
+    }
+
+    /// Only the expanding transition animates. The bar's height is a layout
+    /// input to the page's bottom inset, so a plain focus write grows it one
+    /// frame before the keyboard's own animation and the list snaps — the
+    /// jolt the device reports with an empty composer, and only with an empty
+    /// one: a draft holding text is already expanded, so focus changes nothing.
+    /// Collapsing keeps its existing path, and reduce motion keeps it still.
+    @Test func onlyTheComposerExpansionAnimates() {
+        #expect(ComposerFocusTransition.animates(previous: false, next: true, reduceMotion: false))
+        #expect(!ComposerFocusTransition.animates(previous: true, next: true, reduceMotion: false))
+        #expect(!ComposerFocusTransition.animates(previous: true, next: false, reduceMotion: false))
+        #expect(!ComposerFocusTransition.animates(previous: false, next: false, reduceMotion: false))
+        #expect(!ComposerFocusTransition.animates(previous: false, next: true, reduceMotion: true))
     }
 
     @Test func catalogRespectsTopLevelAvailabilityAndOpaqueModelReasoningIDs() throws {

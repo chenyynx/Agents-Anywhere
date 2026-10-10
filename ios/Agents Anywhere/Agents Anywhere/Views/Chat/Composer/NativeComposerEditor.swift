@@ -50,7 +50,17 @@ final class ComposerEditorController {
         guard let textView, let draft, draft.isValid else { return }
         if draft.text != textView.text { draft.text = textView.text ?? "" }
         draft.isComposing = textView.markedTextRange != nil
-        draft.isFocused = textView.isFirstResponder
+        let focused = textView.isFirstResponder
+        guard draft.isFocused != focused else { return }
+        if ComposerFocusTransition.animates(previous: draft.isFocused, next: focused,
+                                            reduceMotion: UIAccessibility.isReduceMotionEnabled) {
+            // The expansion grows the bar, and the bar's height is the page's
+            // bottom inset: only an animated transaction moves the inset and
+            // the list together, on the same curve the bar itself animates on.
+            withAnimation(.smooth(duration: 0.24)) { draft.isFocused = true }
+        } else {
+            draft.isFocused = focused
+        }
     }
 }
 

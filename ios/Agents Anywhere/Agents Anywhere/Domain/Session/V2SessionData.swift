@@ -52,7 +52,7 @@ struct V2SessionData: Hashable {
     /// pushed out of the window by later traffic still drives the capsule.
     var activeAgentCards: [V2ActiveAgentCard] = []
 
-    init(snapshot: V2SessionSnapshot) {
+    init(snapshot: V2SessionSnapshot, now: Date = Date()) {
         session = snapshot.session
         items = snapshot.timeline.items.sorted { $0.orderSeq < $1.orderSeq }
         hasOlderItems = snapshot.timeline.hasMore
@@ -60,6 +60,15 @@ struct V2SessionData: Hashable {
         capabilities = snapshot.effectiveCapabilities
         notices = snapshot.notices
         cursor = snapshot.eventCursor
+        // session-open-coverage P1: the snapshot's active cards seed the
+        // sidecar through the very same absorb rule every other source uses, so
+        // a card the window does not hold yet — the cold-open case — is on the
+        // capsule from the first read, a card the window also carries is
+        // counted once (id union, newer version wins), and a terminal card
+        // never enters. Skips other sessions' rows exactly as the merge does.
+        for item in snapshot.activeAgents where item.sessionId == snapshot.session.id {
+            activeAgentCards = SubAgentProgress.absorbingActiveCards(item, into: activeAgentCards, now: now)
+        }
     }
 }
 

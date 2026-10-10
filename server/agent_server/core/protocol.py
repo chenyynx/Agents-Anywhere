@@ -206,6 +206,12 @@ class ProtocolSessionSnapshotResponse(ProtocolWireModel):
     session: SessionView
     state: SessionRuntimeState | None = None
     timeline: ProtocolTimelineSnapshot
+    # Non-terminal Agent cards carried beside the timeline page (P1, session
+    # open coverage): they stay visible to the client even when their rows sit
+    # outside the timeline window / byte budget and no live frame has arrived.
+    # Deliberately outside the timeline byte budget — a small, independently
+    # limited list — and additive, so older clients simply ignore the field.
+    activeAgents: list[TimelineItem] = Field(default_factory=list)
     approvals: list[Approval] = Field(default_factory=list)
     notices: list[NoticeIn] = Field(default_factory=list)
     effectiveCapabilities: ProtocolCapabilitySet

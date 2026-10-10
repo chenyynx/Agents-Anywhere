@@ -28,6 +28,18 @@ nonisolated struct ChatAttachment: Codable, Identifiable, Equatable {
     }
 }
 
+/// Whether a focus write must carry an animation. Only the expanding
+/// transition does: the bar's height is a layout input to the page's bottom
+/// inset, so a plain write grows that inset one frame — and one transaction —
+/// before the keyboard's own animation starts, and the list answers with a
+/// snap. Collapsing keeps its existing path: the keyboard's animation already
+/// carries it, and the field reports it as smooth.
+nonisolated enum ComposerFocusTransition {
+    static func animates(previous: Bool, next: Bool, reduceMotion: Bool) -> Bool {
+        next && !previous && !reduceMotion
+    }
+}
+
 /// The editor owns marked-text state; the account/session owns the draft lifetime.
 @MainActor @Observable
 final class ComposerDraft {
@@ -37,8 +49,16 @@ final class ComposerDraft {
     var isFocused = false
     var isComposing = false
 
-    var isExpanded: Bool { isFocused || !text.isEmpty || !attachments.isEmpty }
-    var hasSendableContent: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty }
+    /// The one emptiness predicate. Text counts as content only when something
+    /// survives trimming, and every consumer reads it from here: the send gate
+    /// always did, but the composer's expansion and placeholder read the raw
+    /// string, so a draft left holding only whitespace stayed expanded with the
+    /// placeholder hidden and the send key grey — and the archive pinned that
+    /// state across relaunches. Whitespace is not content: it cannot be sent,
+    /// so it must not hold the bar open.
+    var hasContent: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    var isExpanded: Bool { isFocused || hasContent || !attachments.isEmpty }
+    var hasSendableContent: Bool { hasContent || !attachments.isEmpty }
     var canAttemptSend: Bool { !isComposing && hasSendableContent }
 
     func clear() { text = ""; attachments = []; isComposing = false }

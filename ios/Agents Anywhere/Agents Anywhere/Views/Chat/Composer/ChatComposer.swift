@@ -52,7 +52,7 @@ struct ChatComposer: View {
                     .accessibilityIdentifier("chat.composer.options")
 
                     ZStack(alignment: .topLeading) {
-                        if draft.text.isEmpty {
+                        if !draft.hasContent {
                             Text(placeholder)
                                 .font(.body)
                                 .lineLimit(1)

@@ -1052,6 +1052,11 @@ async def session_snapshot(
                 session_id=session_id,
                 limit=limit,
             )
+            # P1: in-flight Agent cards ride beside the timeline page, outside
+            # its (100-item / byte-budget) window and outside the 2MB timeline
+            # budget itself. Read under the same fence as `items` so the two
+            # surfaces cannot disagree about a card's state.
+            active_agents = await db.list_active_agent_cards(session_id=session_id)
             next_seq = await db.get_session_seq(session_id)
         session = session_with_runtime_state(session, runtime_state)
         session = await with_effective_session_connector_status(manager, session)
@@ -1089,6 +1094,7 @@ async def session_snapshot(
             nextSeq=next_seq,
             hasMore=has_more or budget_has_more,
         ),
+        activeAgents=active_agents,
         approvals=[],
         notices=notices,
         effectiveCapabilities=effective_capabilities,

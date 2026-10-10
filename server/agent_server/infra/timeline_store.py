@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
 from sqlalchemy import delete, insert, select
@@ -11,6 +12,15 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from agent_server.core.models import TimelineItem
 from agent_server.infra.db import timeline_items
 from agent_server.infra.db.engine import SQLITE_BACKEND
+
+#: Item statuses that leave an Agent card active, positively enumerated from
+#: the protocol's ``TimelineStatus`` literal (core/models.py). Mirrors the
+#: client's phase mapping (iOS ``SubAgentPhase.from``: ``pending``/``running``/
+#: ``waiting_approval`` are the live phases; ``done``/``failed``/``cancelled``/
+#: ``interrupted`` are terminal). Keep this a positive list rather than a
+#: negation of the terminal set: a status a future protocol adds is then never
+#: silently advertised as an active card.
+_ACTIVE_AGENT_CARD_STATUSES = frozenset({"pending", "running", "waiting_approval"})
 
 
 def _json_dumps(value: Any) -> str:
@@ -259,6 +269,77 @@ class SqlTimelineStore:
         items.reverse()
         return items, has_more
 
+    async def list_active_agent_cards(
+        self, session_id: str, *, limit: int = 20
+    ) -> list[TimelineItem]:
+        """The newest non-terminal Agent cards of one session, oldest first.
+
+        P1 of the session-open coverage plan (2026-10-09): the snapshot carries
+        these rows beside the timeline page, so a client knows about in-flight
+        subagents even when their cards fall outside the (100-item / byte
+        budget) windows and no live frame has arrived to announce them. The
+        query runs against this table directly — no connector RPC — so it adds
+        no first-paint round trip.
+
+        Per-item filter. A row qualifies when its status is non-terminal —
+        positively enumerated as ``pending``/``running``/``waiting_approval``,
+        mirroring the client's phase mapping (iOS ``SubAgentPhase.from``: those
+        three are the live phases, the other four ``TimelineStatus`` values are
+        terminal) — and its payload is a tool row whose ``content.kind`` is
+        ``agent_call``. Tool rows are the only candidates: every other item
+        kind has no agent-card surface.
+
+        Defensive rule (documented, not queried). A card whose *item* status is
+        already terminal while its ``content.agents`` still carries a live
+        entry (``running`` or the launch receipt ``async_launched`` — the
+        connector's ``AGENT_TASK_LIVE_STATUSES``) is still an active card in
+        theory and should be kept too: the live entry outranks the item
+        status. The engine-side clamp deployed on 2026-10-09 (a terminal fold
+        re-opens a card when a *started* task outranks it; stale terminal
+        publishes are gated) means such a row should never reach this table.
+        That assumption is flagged for red-team review: the positive status
+        enumeration cannot see terminal rows, so a terminal-with-live-agents
+        row that did land would stay invisible here — and to the capsule this
+        query feeds — rather than being returned defensively.
+
+        ``limit`` caps the result at the newest cards by ``order_seq``; the
+        rows are returned oldest first, like every other list_* reader here.
+        The cap deliberately counts cards, not raw candidate rows: the
+        candidates are only the non-terminal tool rows (bounded by construction
+        — history-length does not bound them), and a non-agent tool row must
+        never push a card out of the list the client promises to carry.
+        """
+
+        if limit <= 0:
+            return []
+        async with self._engine.connect() as conn:
+            rows = (
+                await conn.execute(
+                    timeline_items.select()
+                    .where(
+                        timeline_items.c.session_id == session_id,
+                        timeline_items.c.type == "tool",
+                        timeline_items.c.status.in_(
+                            sorted(_ACTIVE_AGENT_CARD_STATUSES)
+                        ),
+                    )
+                    .order_by(
+                        timeline_items.c.order_seq.desc(),
+                        timeline_items.c.updated_seq.desc(),
+                        timeline_items.c.id.desc(),
+                    )
+                )
+            ).mappings().all()
+        cards = [
+            item
+            for item in (
+                TimelineItem.model_validate_json(row["payload_json"]) for row in rows
+            )
+            if _is_agent_call_item(item)
+        ]
+        cards.sort(key=lambda item: (item.orderSeq, item.updatedSeq, item.id))
+        return cards[-limit:]
+
     def _row_values(self, item: TimelineItem) -> dict[str, Any]:
         return {
             "session_id": item.sessionId,
@@ -276,3 +357,16 @@ class SqlTimelineStore:
 def _item_time(item: TimelineItem) -> str | None:
     values = [value for value in (item.createdAt, item.completedAt, item.updatedAt) if value]
     return max(values) if values else None
+
+
+def _is_agent_call_item(item: TimelineItem) -> bool:
+    """Whether a stored tool row renders as an Agent card.
+
+    Same convention as the repository's task-id readers: the content is free
+    JSON, and ``content.kind == "agent_call"`` is the only marker (see
+    ``repositories/timeline._agent_call_task_ids``). Total by construction: a
+    payload whose content is not a mapping is not a card.
+    """
+
+    content = item.content
+    return isinstance(content, Mapping) and content.get("kind") == "agent_call"

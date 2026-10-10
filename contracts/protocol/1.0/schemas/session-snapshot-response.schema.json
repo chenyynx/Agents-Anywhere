@@ -1299,6 +1299,13 @@
   "$id": "urn:agents-anywhere:protocol:1.0:session-snapshot-response",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "activeAgents": {
+      "items": {
+        "$ref": "#/$defs/TimelineItem"
+      },
+      "title": "Activeagents",
+      "type": "array"
+    },
     "approvals": {
       "items": {
         "$ref": "#/$defs/Approval"
@@ -1355,6 +1362,7 @@
     "session",
     "state",
     "timeline",
+    "activeAgents",
     "approvals",
     "notices",
     "effectiveCapabilities",

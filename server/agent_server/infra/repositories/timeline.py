@@ -755,6 +755,19 @@ class TimelineRepositoryMixin:
             limit=limit,
         )
 
+    async def list_active_agent_cards(
+        self,
+        *,
+        session_id: str,
+        limit: int = 20,
+    ) -> list[TimelineItem]:
+        """The session's non-terminal Agent cards for the snapshot payload."""
+
+        return await self.timeline.list_active_agent_cards(
+            session_id,
+            limit=limit,
+        )
+
     @session_revision_fenced
     async def record_session_turn_end(
         self,

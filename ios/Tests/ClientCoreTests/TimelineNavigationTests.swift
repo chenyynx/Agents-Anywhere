@@ -377,4 +377,57 @@ import Testing
             #expect(!reversed)
         }
     }
+
+    /// The reader's arrival is judged where their gesture stopped, not when the
+    /// settlement task wakes: a tap inside those 64 ms grows the composer and
+    /// displaces the published viewport, and that displacement must not turn a
+    /// reader who stopped at the bottom into one who parked away from it.
+    /// Without the latch this reads `.reading` and the keyboard pin refuses.
+    @Test func aReaderWhoStopsAtTheBottomKeepsFollowingEvenIfThePageMovesAfter() throws {
+        var state = try openedAtBottom()
+        _ = state.phaseChanged(.tracking, viewport: viewport(offset: 600))
+        _ = state.phaseChanged(.idle, viewport: viewport(offset: 1320))
+        // The composer grew (bottom inset 120 -> 172) before the task woke.
+        state.geometryChanged(TimelineViewport(contentHeight: 2000, containerHeight: 800,
+            topInset: 80, bottomInset: 172, offsetY: 1320))
+        state.settleUserScroll()
+        #expect(state.mode == .following)
+    }
+
+    /// The keyboard hold's admission is geometric: the reader rested at the
+    /// bottom, with no settlement, no probe report and no mode involved. The
+    /// page's own displacement — the composer growing, here — must not revoke
+    /// it, which is the whole point of not asking the settle machinery.
+    @Test func theHoldKeepsTheBottomWithoutAnySettlementOrProbe() throws {
+        var state = try openedAtBottom()
+        #expect(state.readerRestsAtBottom)
+        state.geometryChanged(TimelineViewport(contentHeight: 2000, containerHeight: 800,
+            topInset: 80, bottomInset: 172, offsetY: 1320))
+        #expect(state.readerRestsAtBottom)
+    }
+
+    /// The reader's own gesture takes the position back: until they rest at the
+    /// bottom again, the hold stays out of the way.
+    @Test func aReadersOwnGestureTakesTheBottomBack() throws {
+        var state = try openedAtBottom()
+        #expect(state.readerRestsAtBottom)
+        _ = state.phaseChanged(.tracking, viewport: viewport(offset: 600))
+        #expect(!state.readerRestsAtBottom)
+        _ = state.phaseChanged(.decelerating, viewport: viewport(offset: 900))
+        state.geometryChanged(viewport(offset: 1100))
+        #expect(!state.readerRestsAtBottom)
+        _ = state.phaseChanged(.idle, viewport: viewport(offset: 1320))
+        #expect(state.readerRestsAtBottom)
+    }
+
+    /// The control: the latch must not grant following to a reader who stopped
+    /// away from the bottom.
+    @Test func aReaderWhoStopsAwayFromTheBottomStaysInReading() throws {
+        var state = try openedAtBottom()
+        _ = state.phaseChanged(.tracking, viewport: viewport(offset: 600))
+        _ = state.phaseChanged(.idle, viewport: viewport(offset: 600))
+        state.geometryChanged(viewport(offset: 600))
+        state.settleUserScroll()
+        #expect(state.mode == .reading)
+    }
 }

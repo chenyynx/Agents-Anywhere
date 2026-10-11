@@ -68,6 +68,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Perform the writes. Without it this is a read-only dry run.",
     )
+    parser.add_argument(
+        "--allow-active",
+        action="store_true",
+        help=(
+            "Repair even a session with an active run (safe when --cutoff is the "
+            "fix's deploy instant: live turns only touch post-cutoff rows, which "
+            "are skipped). Needed for a session that is continuously in use."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -107,27 +116,55 @@ def _done_item(item: TimelineItem) -> TimelineItemIn:
     return TimelineItemIn.model_validate(data)
 
 
+def _is_stranded_thinking(item) -> bool:
+    """A reasoning row stranded on ``running`` — this repair's ONLY target.
+
+    Scoped deliberately: a stranded ``tool`` row is a different defect with a
+    different owner (``TimelineJanitor`` closes those ``interrupted``), and
+    closing one ``done`` here would claim a completion that never happened. A
+    thinking row is safe to close ``done`` because its text streamed to
+    completion and only the boundary signal was lost.
+    """
+
+    return (
+        item.type == "system"
+        and (item.content or {}).get("blockType") == "thinking"
+    )
+
+
 async def reconcile_stranded(
     store: Store,
     *,
     cutoff: str,
     session_ids: list[str] | None = None,
     apply: bool = False,
+    allow_active: bool = False,
 ) -> int:
-    """Reconcile stranded rows; return how many were (or would be) rewritten."""
+    """Reconcile stranded thinking rows; return how many were (or would be) rewritten.
+
+    ``allow_active`` overrides the active-run guard. It is safe for a
+    cutoff-scoped repair because every targeted row was created BEFORE the
+    fix's deploy: a live turn can only touch post-cutoff rows (which this skips
+    and which self-heal), and it never rewrites a stranded pre-fix row, so the
+    two writers cannot collide. The guard exists for the general case; when a
+    session is the one being actively used (so it is never idle), this is the
+    switch that lets its own backlog be repaired.
+    """
 
     sessions = session_ids or await _sessions_with_running_rows(store)
     total = 0
     for session_id in sessions:
         active = await store.get_active_run(session_id)
-        if active is not None:
+        if active is not None and not allow_active:
             print(f"SKIP {session_id}: active run — refusing to race a live turn")
             continue
         items = await store.timeline.read(session_id)
         stranded = [
             item
             for item in items
-            if item.status == "running" and (item.createdAt or "") < cutoff
+            if item.status == "running"
+            and _is_stranded_thinking(item)
+            and (item.createdAt or "") < cutoff
         ]
         if not stranded:
             continue
@@ -153,6 +190,7 @@ async def main(argv: list[str] | None = None) -> int:
             cutoff=args.cutoff,
             session_ids=args.session,
             apply=args.apply,
+            allow_active=args.allow_active,
         )
         mode = "APPLIED" if args.apply else "DRY RUN"
         print(f"{mode}: {total} row(s)")

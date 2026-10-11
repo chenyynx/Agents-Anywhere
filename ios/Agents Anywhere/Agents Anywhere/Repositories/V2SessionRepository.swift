@@ -132,6 +132,17 @@ final class V2SessionRepository {
         entries[sessionId]?.recoveryDiagnostics ?? []
     }
 
+    /// Clears the self-heal disclosure once the view has shown it. The notice
+    /// is one-shot: dropping the entry field and emitting makes the model
+    /// observe nil, so re-entering the session page cannot replay a notice
+    /// already acknowledged. `snapshotRecoveryCount` is left untouched, so a
+    /// later rebuild publishes a fresh, higher-numbered payload as before.
+    func clearRecoveryNotice(sessionId: V2SessionID) {
+        guard let entry = entries[sessionId], entry.recoveryNotice != nil else { return }
+        entry.recoveryNotice = nil
+        emit(entry)
+    }
+
     /// Returns cached durable content immediately. Observe to keep live facts fresh.
     func load(sessionId: V2SessionID) async throws -> V2SessionData {
         let entry = entry(for: sessionId)
@@ -1249,8 +1260,9 @@ private final class Entry {
     /// Newest-last ring of the failed rounds booked on this entry.
     var recoveryDiagnostics: [V2SessionRecoveryDiagnostic] = []
     /// The disclosure of the last successful rebuild — a rebuilt projection is
-    /// user-visible state. Sticky: it stays until a later rebuild replaces it,
-    /// so a view that attaches later still sees the acknowledgement.
+    /// user-visible state. One-shot: the session page clears it through
+    /// `clearRecoveryNotice(sessionId:)` once shown, and a later rebuild
+    /// replaces it with a fresh, higher-numbered value.
     var recoveryNotice: V2SessionRecoveryNotice?
     var connectionTask: Task<Void, Never>?
     /// The observed-session heal loop. Cancelled by `stop()`; the id lets a

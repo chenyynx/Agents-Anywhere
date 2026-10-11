@@ -17532,6 +17532,23 @@
           }
         }
       }
+    },
+    "图片还没准备好，稍后再试；发送完成后即可查看。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The image is not ready yet. Try again in a moment; once the send completes you can open it."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "图片还没准备好，稍后再试；发送完成后即可查看。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

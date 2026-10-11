@@ -136,6 +136,11 @@ struct SessionChatView: View, Equatable {
     @State private var pendingTakeover: Bool?
     @State private var hasStartedLoading = false
     @Environment(\.colorScheme) private var colorScheme
+    /// The app-level connection state. Its top banner already reports a
+    /// connectivity outage, so this view withholds connection-class toasts while
+    /// that banner is up (one incident, one message) and drops its own toasts
+    /// below the banner when both are on screen.
+    @EnvironmentObject private var appState: AppState
     @ScaledMetric(relativeTo: .body) private var bodyLineHeight: CGFloat = 22
     @ScaledMetric(relativeTo: .footnote) private var takeoverPillHeight: CGFloat = 32
 
@@ -162,6 +167,14 @@ struct SessionChatView: View, Equatable {
     private var controls: ChatControlMetrics { .init(bodyLineHeight: bodyLineHeight) }
     private var session: V2SessionModel { model.session }
     private var requiresTakeover: Bool { session.metadata?.takeover == false }
+    /// Approximate height of the app-level connection banner (RootView) so the
+    /// session toast column clears it. The banner owns the exact geometry; this
+    /// is only a stand-off and the 8pt gap tolerates the small error.
+    private static let connectionBannerHeight: CGFloat = 72
+    /// The app-level connection banner is showing; its message already covers a
+    /// connectivity outage, so the session surface defers to it.
+    private var connectionBannerVisible: Bool { appState.restoreConnectionError != nil }
+    private var visibleToasts: [ChatToast] { toasts.visible(hidingConnectivity: connectionBannerVisible) }
     // Sidebar motion changes the containing card, not the session. Observable
     // model changes and real size/environment changes still update this subtree.
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -203,7 +216,8 @@ struct SessionChatView: View, Equatable {
                         // the only place the queue resumes from.
                         SendQueueBanner(model: model)
                             .traceChatLayout("send-queue-banner")
-                        ChatErrorToasts(store: toasts, isRetrying: session.isLoading, onRetry: { _ in await session.refresh() })
+                        ChatErrorToasts(items: visibleToasts, isRetrying: session.isLoading,
+                            onRetry: { _ in await session.refresh() }, onDismiss: { toasts.dismiss($0) })
                         if let success = model.commandSuccess {
                             CommandSuccessToast(feedback: success) { model.commandSuccess = nil }
                                 .frame(maxWidth: .infinity, alignment: .center)
@@ -212,7 +226,10 @@ struct SessionChatView: View, Equatable {
                             CommandSuccessToast(feedback: switched) { model.switchFeedback = nil }
                                 .frame(maxWidth: .infinity, alignment: .center)
                         }
-                    }.padding(.top, 8)
+                    }
+                    // Drop clear of the app-level connection banner when it is
+                    // up, so the two never stack at the same height.
+                    .padding(.top, connectionBannerVisible ? Self.connectionBannerHeight + 8 : 8)
                 }
         }
         .modifier(ChatPageToolbar(title: session.metadata?.title ?? fallbackTitle ?? String(localized: "会话"),

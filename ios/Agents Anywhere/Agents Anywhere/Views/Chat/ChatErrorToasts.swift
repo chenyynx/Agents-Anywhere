@@ -3,27 +3,32 @@ import SwiftUI
 /// Non-inline errors float below the header. Paging only changes the visible
 /// toast; retry is always an explicit read, never a replay of the failed action.
 struct ChatErrorToasts: View {
-    let store: ChatToastStore
+    /// The toasts to show (already filtered by the session surface — connection
+    /// toasts are withheld while the app-level banner shows the same outage).
+    let items: [ChatToast]
     let isRetrying: Bool
     let onRetry: (String) async -> Void
+    let onDismiss: (String) -> Void
     @State private var selected: String?
     @ScaledMetric(relativeTo: .footnote) private var lineHeight: CGFloat = 18
-    private var height: CGFloat { min(220, max(136, lineHeight * 4 + 74)) }
+    static func height(lineHeight: CGFloat) -> CGFloat { min(220, max(136, lineHeight * 4 + 74)) }
+    private var height: CGFloat { Self.height(lineHeight: lineHeight) }
+
 
     var body: some View {
-        if !store.items.isEmpty {
+        if !items.isEmpty {
             ScrollView(.horizontal) {
                 HStack(spacing: 12) {
-                    ForEach(Array(store.items.enumerated()), id: \.element.id) { index, item in
+                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 8) {
                                 AppSymbol("exclamationmark.circle").foregroundStyle(.secondary)
                                 Text(item.title).font(.subheadline.weight(.medium)).lineLimit(1)
                                 Spacer(minLength: 0)
-                                if store.items.count > 1 {
-                                    Text("\(index + 1)/\(store.items.count)").font(.caption2).monospacedDigit().foregroundStyle(.secondary)
+                                if items.count > 1 {
+                                    Text("\(index + 1)/\(items.count)").font(.caption2).monospacedDigit().foregroundStyle(.secondary)
                                 }
-                                Button { store.dismiss(item.id) } label: {
+                                Button { onDismiss(item.id) } label: {
                                     AppSymbol("xmark", size: 11).frame(width: 44, height: 44)
                                 }.buttonStyle(.plain).accessibilityLabel(String(localized: "关闭此提示"))
                             }
@@ -50,10 +55,18 @@ struct ChatErrorToasts: View {
             .padding(.horizontal, ChatControlMetrics.collapsedHorizontalInset)
             .padding(.top, 4).padding(.bottom, 10)
             .frame(maxWidth: ChatControlMetrics.maximumContentWidth)
-            .onChange(of: store.items.map(\.id), initial: true) { _, ids in
+            .onChange(of: items.map(\.id), initial: true) { _, ids in
                 if selected == nil || !ids.contains(selected ?? "") { selected = ids.first }
             }
-            .accessibilityHint(store.items.count > 1 ? String(localized: "左右滑动查看其他提示") : "")
+            .accessibilityHint(items.count > 1 ? String(localized: "左右滑动查看其他提示") : "")
         }
+    }
+}
+
+extension ChatErrorToasts {
+    /// Shows every toast in `store` (no connection-hiding). For the sheets and
+    /// device screens that have no app-level connection banner of their own.
+    init(store: ChatToastStore, isRetrying: Bool, onRetry: @escaping (String) async -> Void) {
+        self.init(items: store.items, isRetrying: isRetrying, onRetry: onRetry, onDismiss: { store.dismiss($0) })
     }
 }

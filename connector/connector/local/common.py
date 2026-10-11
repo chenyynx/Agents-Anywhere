@@ -9,6 +9,32 @@ MAX_DIR_ENTRIES = 500
 MAX_OUTPUT_CHARS = 64_000
 MAX_READ_TEXT_BYTES = 4 * 1024 * 1024
 
+# Workspace path disambiguation (fs.resolvePath). The traversal is deliberately
+# bounded: it is read-only, stays inside the workspace root, and returns as soon
+# as a limit is hit rather than risking an unbounded scan.
+RESOLVE_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        "node_modules",
+        ".venv",
+        "venv",
+        "__pycache__",
+        "dist",
+        "build",
+        ".build",
+        "Pods",
+        ".next",
+        ".ruff_cache",
+        ".pytest_cache",
+    }
+)
+RESOLVE_MAX_DEPTH = 12
+RESOLVE_MAX_ENTRIES = 20000
+RESOLVE_MAX_SECONDS = 2.0
+RESOLVE_MAX_CANDIDATES = 20
+
+_WORD_BOUNDARY_CHARS = "-_. "
+
 Notify = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 
@@ -30,6 +56,95 @@ def resolve_path(root: Path, raw_path: str) -> Path:
     if not path.is_absolute():
         path = root / path
     return path.resolve(strict=False)
+
+
+def _is_within_root(root: Path, candidate: Path) -> bool:
+    return candidate == root or root in candidate.parents
+
+
+def _is_separator(char: str) -> bool:
+    return char in "/\\"
+
+
+def query_components(root: Path, raw_path: str) -> list[str]:
+    """Relative path segments the workspace lookup should suffix-match against.
+
+    Absolute paths keep only the portion below `root`; a relative path keeps its
+    own segments with any `..` escapes and `.` noise removed.
+    """
+    try:
+        resolved = resolve_path(root, raw_path)
+    except (OSError, RuntimeError, ValueError):
+        # expanduser()/resolve() can raise on a pathological path; fall back to
+        # the textual split so a probe degrades to a miss instead of a 502.
+        resolved = None
+    if resolved is not None and _is_within_root(root, resolved):
+        return [part for part in resolved.relative_to(root).parts if part not in ("", ".")]
+
+    replaced = raw_path.replace("\\", "/")
+    parts = [part for part in replaced.split("/") if part not in ("", ".", "..")]
+    return parts
+
+
+def score_candidate(query: str, candidate_relpath: str) -> int:
+    """Fuzzy relevance of `candidate_relpath` for `query` (VS Code Quick Open style).
+
+    Mirrors the Cmd+P scoring rules: a matched char starts at 1; a run of
+    contiguous matches accumulates an increasing bonus; the first pattern
+    character, a start-of-path char, a path separator, the word-boundary set
+    ``- _ . <space>`` and a camelCase transition all score higher; unmatched
+    gaps deduct. Returns -1 when `query` is not a subsequence of the candidate.
+    """
+    if not query:
+        return 0
+
+    score = 0
+    pattern_index = 0
+    consecutive = 0
+    gap = 0
+    for target_index, target_char in enumerate(candidate_relpath):
+        if pattern_index >= len(query):
+            break
+
+        pattern_char = query[pattern_index]
+        if target_char.lower() != pattern_char.lower():
+            gap += 1
+            consecutive = 0
+            continue
+        # An uppercase target char only matches when the query is uppercase
+        # there too, so a lowercase query favours the lowercase spelling.
+        if target_char.isupper() and not pattern_char.isupper():
+            gap += 1
+            consecutive = 0
+            continue
+
+        if pattern_index == 0:
+            score += 16
+        elif consecutive > 0:
+            score += 8 + consecutive * 2
+        else:
+            score += 1
+        if gap > 0:
+            score -= gap
+            gap = 0
+        consecutive += 1
+
+        if target_index == 0:
+            score += 12
+        else:
+            prev = candidate_relpath[target_index - 1]
+            if _is_separator(prev):
+                score += 10
+            elif prev in _WORD_BOUNDARY_CHARS:
+                score += 6
+            if target_char.isupper() and prev.islower():
+                score += 6
+
+        pattern_index += 1
+
+    if pattern_index < len(query):
+        return -1
+    return score
 
 
 def nearest_existing_dir(path: Path, *, fallback: Path | None = None) -> Path:

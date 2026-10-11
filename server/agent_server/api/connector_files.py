@@ -91,6 +91,38 @@ async def connector_fs_list(
     return RpcResponsePayload(ok=True, result=result)
 
 
+@router.post("/{connector_id}/fs/resolve-path", response_model=RpcResponsePayload)
+async def connector_fs_resolve_path(
+    connector_id: str,
+    payload: dict[str, Any] = Body(default_factory=dict),
+    root: str | None = Query(default=None, min_length=1),
+    user_id: str = Depends(current_user_id),
+    store: Store = Depends(get_store),
+    manager: ConnectorRpcManager = Depends(get_rpc),
+) -> RpcResponsePayload:
+    await require_owned_online_connector(connector_id, user_id, store, manager)
+    root_value = root or payload.get("root")
+    if not isinstance(root_value, str) or not root_value.strip():
+        raise HTTPException(status_code=422, detail="root is required")
+    raw_path = payload.get("path")
+    if not isinstance(raw_path, str):
+        raise HTTPException(status_code=422, detail="path must be a string")
+    # Unlike fs/list, the server must NOT pre-join `path` onto `root`: the
+    # connector performs workspace disambiguation and needs the raw root/path.
+    result = await request_connector(
+        manager,
+        connector_id,
+        "fs.resolvePath",
+        {
+            "sessionId": connector_scope_id(connector_id),
+            "root": root_value,
+            "path": raw_path,
+        },
+        timeout=30,
+    )
+    return RpcResponsePayload(ok=True, result=result)
+
+
 @router.post("/{connector_id}/fs/read", response_model=RpcResponsePayload)
 async def connector_fs_read(
     connector_id: str,

@@ -6,6 +6,15 @@ struct ChatToast: Identifiable, Equatable {
     let title: String
     let message: String
     let canRetry: Bool
+    /// The failure class this toast came from (failure channel only). `nil` for
+    /// the pre-rendered notice channel, which carries no `V2ClientFailure`.
+    var kind: V2ClientFailure.Kind? = nil
+
+    /// A connection-class failure (the network or the server is unreachable).
+    /// The app-level connection banner already reports this same outage, so the
+    /// session surface holds these back while the banner is showing — one
+    /// incident, one message.
+    var isConnectivity: Bool { kind == .offline || kind == .transient }
 }
 
 /// One current issue per source. Dismissing an issue does not change connection
@@ -30,7 +39,7 @@ struct ChatToast: Identifiable, Equatable {
         case .offline: heading = String(localized: "网络已断开")
         default: heading = String(localized: "操作未完成")
         }
-        items.append(ChatToast(id: source, title: title ?? heading, message: failure.message, canRetry: canRetry))
+        items.append(ChatToast(id: source, title: title ?? heading, message: failure.message, canRetry: canRetry, kind: failure.kind))
     }
 
     /// Pre-rendered runtime notices, deduplicated by event identity.
@@ -57,4 +66,13 @@ struct ChatToast: Identifiable, Equatable {
     }
 
     func dismiss(_ id: String) { items.removeAll { $0.id == id } }
+
+    /// The toasts the session surface should show right now. When the app-level
+    /// connection banner is visible its message already covers a connection
+    /// outage, so connection-class toasts are withheld — but they stay in
+    /// `items`, so the fact survives and the toast returns once the outage
+    /// clears. Non-connection failures always show.
+    func visible(hidingConnectivity: Bool) -> [ChatToast] {
+        hidingConnectivity ? items.filter { !$0.isConnectivity } : items
+    }
 }

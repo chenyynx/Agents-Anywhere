@@ -31,6 +31,10 @@ struct SessionChatView: View, Equatable {
         /// locally (an optimistic send with no `openUrl` yet); when present the
         /// viewer decodes it directly and skips the loader entirely.
         case attachmentImage(V2AttachmentContent, image: UIImage?, tappedAt: Date, localData: Data? = nil)
+        /// The disambiguation picker (B1): a raw in-message path matched several
+        /// workspace files, so the user chooses one instead of the client
+        /// guessing. Carries the ranked candidates and the original location.
+        case fileChoice(FileOpenChoice)
         var id: String {
             switch self {
             case .notices: "notices"
@@ -39,8 +43,18 @@ struct SessionChatView: View, Equatable {
             case .subagents(let cardID, let fromCapsule): "subagents:\(fromCapsule ? "capsule" : "card"):\(cardID)"
             case .preview(let reference, let root): "file:\(root ?? ""):\(reference.id)"
             case .attachmentImage(let file, _, _, _): "attachment:\(file.fileId ?? file.cacheKey)"
+            case .fileChoice(let choice): "fileChoice:\(choice.id)"
             }
         }
+    }
+    /// A pending "which file did you mean?" decision: the original requested
+    /// path, the connector's ranked candidates, and the source location to carry
+    /// into the preview once a file is chosen.
+    private struct FileOpenChoice: Identifiable {
+        let requested: String
+        let candidates: [V2WorkspaceFileCandidate]
+        let location: SessionFileReference?
+        var id: String { requested }
     }
     @State private var previewURL: URL?
     @State private var previewDirectory: URL?
@@ -113,12 +127,20 @@ struct SessionChatView: View, Equatable {
             }
         case .attachmentImage(let file, let image, let tappedAt, let localData):
             AttachmentImageViewerSheet(file: file, initialImage: image, tappedAt: tappedAt, loader: imageLoader, localData: localData)
+        case .fileChoice(let choice):
+            FileCandidateChooserSheet(requested: choice.requested, candidates: choice.candidates,
+                onSelect: { candidate in chooseFile(candidate.path, location: choice.location) })
         }
     }
     @State private var toasts = ChatToastStore()
     @State private var pendingTakeover: Bool?
     @State private var hasStartedLoading = false
     @Environment(\.colorScheme) private var colorScheme
+    /// The app-level connection state. Its top banner already reports a
+    /// connectivity outage, so this view withholds connection-class toasts while
+    /// that banner is up (one incident, one message) and drops its own toasts
+    /// below the banner when both are on screen.
+    @EnvironmentObject private var appState: AppState
     @ScaledMetric(relativeTo: .body) private var bodyLineHeight: CGFloat = 22
     @ScaledMetric(relativeTo: .footnote) private var takeoverPillHeight: CGFloat = 32
 
@@ -145,6 +167,14 @@ struct SessionChatView: View, Equatable {
     private var controls: ChatControlMetrics { .init(bodyLineHeight: bodyLineHeight) }
     private var session: V2SessionModel { model.session }
     private var requiresTakeover: Bool { session.metadata?.takeover == false }
+    /// Approximate height of the app-level connection banner (RootView) so the
+    /// session toast column clears it. The banner owns the exact geometry; this
+    /// is only a stand-off and the 8pt gap tolerates the small error.
+    private static let connectionBannerHeight: CGFloat = 72
+    /// The app-level connection banner is showing; its message already covers a
+    /// connectivity outage, so the session surface defers to it.
+    private var connectionBannerVisible: Bool { appState.restoreConnectionError != nil }
+    private var visibleToasts: [ChatToast] { toasts.visible(hidingConnectivity: connectionBannerVisible) }
     // Sidebar motion changes the containing card, not the session. Observable
     // model changes and real size/environment changes still update this subtree.
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -186,7 +216,8 @@ struct SessionChatView: View, Equatable {
                         // the only place the queue resumes from.
                         SendQueueBanner(model: model)
                             .traceChatLayout("send-queue-banner")
-                        ChatErrorToasts(store: toasts, isRetrying: session.isLoading, onRetry: { _ in await session.refresh() })
+                        ChatErrorToasts(items: visibleToasts, isRetrying: session.isLoading,
+                            onRetry: { _ in await session.refresh() }, onDismiss: { toasts.dismiss($0) })
                         if let success = model.commandSuccess {
                             CommandSuccessToast(feedback: success) { model.commandSuccess = nil }
                                 .frame(maxWidth: .infinity, alignment: .center)
@@ -195,7 +226,10 @@ struct SessionChatView: View, Equatable {
                             CommandSuccessToast(feedback: switched) { model.switchFeedback = nil }
                                 .frame(maxWidth: .infinity, alignment: .center)
                         }
-                    }.padding(.top, 8)
+                    }
+                    // Drop clear of the app-level connection banner when it is
+                    // up, so the two never stack at the same height.
+                    .padding(.top, connectionBannerVisible ? Self.connectionBannerHeight + 8 : 8)
                 }
         }
         .modifier(ChatPageToolbar(title: session.metadata?.title ?? fallbackTitle ?? String(localized: "会话"),
@@ -263,7 +297,10 @@ struct SessionChatView: View, Equatable {
         }
         .environment(\.openURL, OpenURLAction { url in
             if let reference = SessionFileReference.reference(from: url) {
-                if session.isValid { sheet = .preview(reference) }
+                // A file link must disambiguate against the workspace before it
+                // can open; the line/column from the link ride along so the
+                // preview still focuses the requested source location.
+                Task { await resolveAndOpen(rawPath: reference.path, location: reference) }
                 return .handled
             }
             return ["https", "http", "mailto"].contains(url.scheme?.lowercased() ?? "") ? .systemAction : .discarded
@@ -344,8 +381,62 @@ struct SessionChatView: View, Equatable {
     }
 
     private func openFile(_ path: String) {
-        guard session.isValid, !path.isEmpty else { return }
-        sheet = .preview(SessionFileReference.parse(path))
+        guard session.isValid, !path.isEmpty else {
+            openFailed(String(localized: "无法打开这个文件。"))
+            return
+        }
+        Task { await resolveAndOpen(rawPath: path) }
+    }
+
+    /// Disambiguates a raw in-message path against the session's workspace, then
+    /// opens the single match, asks the user to choose among several, or reports
+    /// "not found". Every branch is user-visible — a click never fails silently.
+    ///
+    /// `location` carries the line/column of the source link (markdown links)
+    /// into the preview so it can still focus the requested position.
+    private func resolveAndOpen(rawPath: String, location: SessionFileReference? = nil) async {
+        guard session.isValid, !rawPath.isEmpty else {
+            openFailed(String(localized: "无法打开这个文件。"))
+            return
+        }
+        // The workspace root is the session's cwd. It is never defaulted to "."
+        // here: resolving a bare name against the wrong root is exactly the bug
+        // this path exists to avoid, so a missing cwd is an explicit message.
+        guard let meta = session.metadata, let root = meta.cwd, !root.isEmpty else {
+            openFailed(String(localized: "会话没有工作区根目录，无法打开文件。"))
+            return
+        }
+        let resolution: FileOpenResolution
+        do {
+            let result = try await fileService.resolvePath(connectorId: meta.connectorId, root: root, path: rawPath)
+            resolution = FileOpenResolution.make(requestedPath: rawPath, result: result)
+        } catch {
+            openFailed(V2ClientFailure(error).message)
+            return
+        }
+        guard session.isValid else { return }
+        switch resolution {
+        case .open(let path):
+            sheet = .preview(SessionFileReference(path: path, line: location?.line, column: location?.column))
+        case .choose(let requested, let candidates):
+            sheet = .fileChoice(FileOpenChoice(requested: requested, candidates: candidates, location: location))
+        case .notFound(let requested):
+            openFailed(String(localized: "未在工作区找到『\(requested)』，请检查路径。"))
+        }
+    }
+
+    /// Opens a resolved preview from the candidate chooser, carrying the original
+    /// source location so the preview focus survives disambiguation.
+    private func chooseFile(_ path: String, location: SessionFileReference?) {
+        guard session.isValid else { return }
+        sheet = .preview(SessionFileReference(path: path, line: location?.line, column: location?.column))
+    }
+
+    /// The shared, user-visible failure surface for opening a file. Uses the
+    /// same `opening` toast source as the session-opening errors so a single
+    /// kind of problem never stacks two toasts.
+    private func openFailed(_ message: String) {
+        toasts.update(source: "opening", failure: V2ClientFailure(kind: .unavailable, message: message))
     }
 
     private func openAttachment(_ file: V2AttachmentContent, thumbnail: UIImage?) {
@@ -392,6 +483,50 @@ struct SessionChatView: View, Equatable {
     private func cleanPreview() {
         if let directory = previewDirectory { try? FileManager.default.removeItem(at: directory) }
         previewDirectory = nil
+    }
+}
+
+/// The disambiguation picker for an in-message path that matched several
+/// workspace files (层 B1). The candidates arrive ranked by the connector; the
+/// user picks one and that file is previewed. Nothing is auto-selected — a bare
+/// name that is not unique must never resolve by guess (宁缺勿假).
+private struct FileCandidateChooserSheet: View {
+    let requested: String
+    let candidates: [V2WorkspaceFileCandidate]
+    let onSelect: (V2WorkspaceFileCandidate) -> Void
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            List(candidates) { candidate in
+                Button {
+                    // Selecting a candidate swaps the presented item to the
+                    // preview; the chooser is not dismissed separately, since
+                    // that would nil the same binding and cancel the swap.
+                    onSelect(candidate)
+                } label: {
+                    HStack(spacing: 12) {
+                        AppSymbol("doc.text")
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(candidate.name).foregroundStyle(.primary)
+                            Text(candidate.relative)
+                                .font(.system(.footnote, design: .monospaced))
+                                .foregroundStyle(.secondary).lineLimit(2)
+                        }
+                        Spacer(minLength: 8)
+                    }.padding(.vertical, 6).contentShape(.rect)
+                }.buttonStyle(.plain)
+            }
+            .navigationTitle(String(localized: "选择要打开的文件"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { SheetCloseToolbar { dismiss() } }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                Text(String(localized: "『\(requested)』在工作区里匹配到多个文件，请选择要打开的一个。"))
+                    .font(.footnote).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+            }
+        }
+        .appSheetPresentation(.compact)
     }
 }
 

@@ -17549,6 +17549,91 @@
           }
         }
       }
+    },
+    "无法打开这个文件。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This file cannot be opened."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法打开这个文件。"
+          }
+        }
+      }
+    },
+    "会话没有工作区根目录，无法打开文件。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This session has no workspace root, so the file cannot be opened."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "会话没有工作区根目录，无法打开文件。"
+          }
+        }
+      }
+    },
+    "未在工作区找到『%@』，请检查路径。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not find \"%@\" in the workspace. Check the path."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未在工作区找到『%@』，请检查路径。"
+          }
+        }
+      }
+    },
+    "选择要打开的文件": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose a file"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择要打开的文件"
+          }
+        }
+      }
+    },
+    "『%@』在工作区里匹配到多个文件，请选择要打开的一个。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "\"%@\" matches several files in the workspace. Choose one to open."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "『%@』在工作区里匹配到多个文件，请选择要打开的一个。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

@@ -21,14 +21,6 @@ class ClaudeStreamAccumulator:
     partial_revision: int = 0
     partial_thinking_blocks: dict[int, str] = field(default_factory=dict)
     partial_thinking_revision: int = 0
-    # Rows a message boundary closed but could not return from
-    # `item_from_stream_event` (which yields at most one item). A `message_stop`
-    # can close several blocks at once, so the done rows ride here and the
-    # caller drains them right after the frame. `finalize_pending_thinking`
-    # keeps working independently of this buffer: they close disjoint sets
-    # (this one closes at the boundary, that one closes whatever a boundary
-    # never reached), and closing is idempotent.
-    pending_items: list[RuntimeTimelineItem] = field(default_factory=list)
     # Per-call usage of the message being streamed: seeded by the API's
     # `message_start.message.usage`, kept current by `message_delta.usage`
     # (which carries the message's cumulative output count).
@@ -63,16 +55,8 @@ class ClaudeStreamAccumulator:
                 _string(payload.get("id")) if isinstance(payload, Mapping) else None
             )
             if message_id != self.partial_message_id:
-                # A new message begins: close whatever the previous message
-                # left open before its counters reset. A `message_start` is a
-                # completeness signal in its own right — a block still open
-                # under the old id was never going to be closed, whether the
-                # backend dropped its `content_block_stop` (the LiteLLM
-                # bridge omits the thinking block's stop) or the stream simply
-                # moved on. A retransmitted message_start for the SAME message
-                # must not reset counters, so streamed revisions stay monotonic
-                # per item — the boundary close only runs on a genuine new id.
-                self._close_open_blocks(session, turn_id, projector)
+                # A retransmitted message_start for the same message must not
+                # reset counters: streamed revisions stay monotonic per item.
                 self.partial_text_blocks.clear()
                 self.partial_revision = 0
                 self.partial_thinking_blocks.clear()
@@ -143,14 +127,6 @@ class ClaudeStreamAccumulator:
                 text=thinking,
                 usage=self._stream_frame_usage(message),
             )
-        if event_type == "message_stop":
-            # The message is complete: every block it opened is done, whether or
-            # not its own `content_block_stop` ever arrived (the LiteLLM bridge
-            # omits the thinking block's; other backends may omit others). The
-            # rows are buffered — a stop can close several blocks and this event
-            # returns at most one — and the caller drains them right after.
-            self._close_open_blocks(session, turn_id, projector, message)
-            return None
         if event_type == "message_delta":
             self._absorb_delta_usage(message, event)
             return self._partial_item(session, turn_id, message, projector)
@@ -164,11 +140,6 @@ class ClaudeStreamAccumulator:
         self.partial_thinking_revision = 0
         self.partial_usage = None
         self.partial_model = None
-        # A boundary's buffered rows are the caller's to drain; if the caller
-        # moved on without draining (the final assistant frame resets before
-        # asking, and a subsequent boundary would have published them), drop
-        # them here so they can never leak into the next message.
-        self.pending_items.clear()
 
     def remember_usage(
         self,
@@ -269,10 +240,6 @@ class ClaudeStreamAccumulator:
         turn_id: str,
         message: Any,
         projector: ClaudeMessageProjector,
-        *,
-        status: str = "running",
-        usage: Mapping[str, int] | None = None,
-        usage_model: str | None = None,
     ) -> RuntimeTimelineItem | None:
         text = "".join(
             self.partial_text_blocks[index]
@@ -289,25 +256,18 @@ class ClaudeStreamAccumulator:
             return None
         self.partial_revision += 1
         item_id = stable_message_item_id(session, message_id)
-        # A streaming frame carries the live seed; a settle-time close (a
-        # message boundary, or `finalize_pending_thinking`) republishes a row
-        # the message frame already wrote, so it passes the same usage in from
-        # `_stream_frame_usage` rather than stripping it.
-        if usage is None and status == "running":
-            usage = None if _is_sidechain(message) else self.partial_usage
-            usage_model = None if _is_sidechain(message) else self.partial_model
         return projector.message_item(
             session=session,
             turn_id=turn_id,
             role="assistant",
             text=text,
             event="claude.turn.assistant.partial",
-            status=status,
+            status="running",
             native_item_id=message_id,
             item_id=item_id,
             revision=self.partial_revision,
-            usage=usage,
-            usage_model=usage_model,
+            usage=None if _is_sidechain(message) else self.partial_usage,
+            usage_model=None if _is_sidechain(message) else self.partial_model,
         )
 
     def _thinking_partial_item(
@@ -351,61 +311,9 @@ class ClaudeStreamAccumulator:
         turn_id: str,
         projector: ClaudeMessageProjector,
     ) -> tuple[RuntimeTimelineItem, ...]:
-        """Close whatever a turn left open when it ends without a boundary.
+        """Close thinking blocks that never received a content_block_stop."""
 
-        The turn-settle backstop. A message boundary (`message_stop`, or a new
-        `message_start` id) closes the rows it can as they stream; this catches
-        a turn that ends without ever seeing its message's boundary — a
-        truncated stream, a kill mid-call. It closes every still-open block,
-        not just thinking: a text partial stranded open by the same truncation
-        is the same bug, so it is settled the same way. The two paths close
-        disjoint sets — a row the boundary already published is gone from the
-        open maps, so nothing is double-published.
-        """
-
-        self._close_open_blocks(session, turn_id, projector)
-        return self.drain_pending_items()
-
-    def drain_pending_items(self) -> tuple[RuntimeTimelineItem, ...]:
-        """Take the rows a message boundary closed but could not return.
-
-        `item_from_stream_event` yields at most one item, but a `message_stop`
-        or a new `message_start` can close several blocks at once (thinking
-        blocks of more than one index), so the boundary rows are buffered here
-        and the caller drains them right after feeding the frame. Draining is
-        destructive and idempotent: a second call returns nothing.
-        """
-
-        items = tuple(self.pending_items)
-        self.pending_items.clear()
-        return items
-
-    def _close_open_blocks(
-        self,
-        session: ClaudeSession,
-        turn_id: str,
-        projector: ClaudeMessageProjector,
-        message: Any = None,
-    ) -> None:
-        """Close every block still open, buffering the done rows.
-
-        Called at a message boundary — `message_stop`, or a `message_start`
-        that has moved on to a new id. The wire guarantees no more deltas for
-        the message being closed, so any block still open will never receive
-        its own `content_block_stop` (the LiteLLM anthropic→openai bridge drops
-        the thinking block's; another backend could drop any of them). Each is
-        published as done rather than stranded in `running`.
-
-        Blocks are keyed by index and closed independently, so an interleaved
-        stream (text and thinking open at once, deltas alternating between
-        indices) closes each correctly with its own content — nothing is
-        concatenated across indices and nothing leaks between them.
-
-        Rows ride `pending_items` because this can close several at once;
-        `drain_pending_items` returns them to the caller for publication.
-        """
-
-        usage = self._stream_frame_usage(message)
+        items: list[RuntimeTimelineItem] = []
         for index in sorted(self.partial_thinking_blocks):
             text = self.partial_thinking_blocks[index]
             if not text:
@@ -417,24 +325,12 @@ class ClaudeStreamAccumulator:
                 index=index,
                 status="done",
                 text=text,
-                usage=usage,
+                usage=self._stream_frame_usage(None),
             )
             if item is not None:
-                self.pending_items.append(item)
+                items.append(item)
         self.partial_thinking_blocks.clear()
-        if self.partial_text_blocks:
-            item = self._partial_item(
-                session,
-                turn_id,
-                message,
-                projector,
-                status="done",
-                usage=usage,
-                usage_model=self.partial_model,
-            )
-            if item is not None:
-                self.pending_items.append(item)
-            self.partial_text_blocks.clear()
+        return tuple(items)
 
 
 def _stream_event(message: Any) -> Mapping[str, Any] | None:

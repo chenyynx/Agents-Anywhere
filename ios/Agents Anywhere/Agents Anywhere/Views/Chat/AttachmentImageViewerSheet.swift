@@ -19,6 +19,11 @@ struct AttachmentImageViewerSheet: View {
     /// metrics (tap→present ms, tap→fullres ms).
     let tappedAt: Date
     let loader: AttachmentImageLoader
+    /// Original bytes the caller already holds (an optimistic send with no
+    /// `openUrl` yet). When present the viewer decodes these directly and never
+    /// touches the loader — the network path has no URL to open for such a
+    /// file, so it would fail. nil for the ordinary uploaded-image path.
+    let localData: Data?
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.displayScale) private var displayScale
@@ -33,11 +38,13 @@ struct AttachmentImageViewerSheet: View {
     /// device-recording run keeps them without a debug build.
     private static let log = Logger(subsystem: "agents.anywhere", category: "image-open")
 
-    init(file: V2AttachmentContent, initialImage: UIImage?, tappedAt: Date = Date(), loader: AttachmentImageLoader) {
+    init(file: V2AttachmentContent, initialImage: UIImage?, tappedAt: Date = Date(),
+         loader: AttachmentImageLoader, localData: Data? = nil) {
         self.file = file
         self.initialImage = initialImage
         self.tappedAt = tappedAt
         self.loader = loader
+        self.localData = localData
         // T1: the thumbnail is on screen from the first frame, not after a load.
         _image = State(initialValue: initialImage)
     }
@@ -135,6 +142,27 @@ struct AttachmentImageViewerSheet: View {
     private func loadFullResolution(container: CGSize) async {
         guard fullResolutionURL == nil else { return }
         loadError = nil
+        // A locally held original (an optimistic send not yet uploaded) has no
+        // server URL to open, so the loader's network path cannot serve it.
+        // Decode the bytes directly, sized through the same ImageIO downsample
+        // that guards memory on the network path. The thumbnail stays on screen
+        // until the full-resolution decode is ready to swap in.
+        if let localData {
+            let target = Self.targetPixelSize(container: container, displayScale: displayScale)
+            let data = await Task.detached(priority: .userInitiated) {
+                ChatImageThumbnail.make(data: localData, maxPixelSize: target)
+            }.value
+            guard !Task.isCancelled else { return }
+            if let data, let decoded = UIImage(data: data) {
+                image = decoded
+            } else if let decoded = UIImage(data: localData) {
+                image = decoded
+            } else {
+                loadError = AttachmentImageDownloadError.downloadUnreadable.localizedDescription
+            }
+            Self.log.notice("[ImageOpen] local fullres \(Self.milliseconds(since: tappedAt), privacy: .public) ms")
+            return
+        }
         // A cache hit resolves in a frame or two; the badge waits briefly so a
         // hit never flashes a spinner over an image already on screen.
         let badge = Task {

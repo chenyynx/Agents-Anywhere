@@ -27,7 +27,10 @@ struct SessionChatView: View, Equatable {
         case preview(SessionFileReference, root: String? = nil)
         /// The instant image viewer: opens on the thumbnail the bubble already
         /// decoded (nil when it has none) while the loader serves the original.
-        case attachmentImage(V2AttachmentContent, image: UIImage?, tappedAt: Date)
+        /// `localData` carries the original bytes for an image still held
+        /// locally (an optimistic send with no `openUrl` yet); when present the
+        /// viewer decodes it directly and skips the loader entirely.
+        case attachmentImage(V2AttachmentContent, image: UIImage?, tappedAt: Date, localData: Data? = nil)
         var id: String {
             switch self {
             case .notices: "notices"
@@ -35,7 +38,7 @@ struct SessionChatView: View, Equatable {
             case .files: "files"
             case .subagents(let cardID, let fromCapsule): "subagents:\(fromCapsule ? "capsule" : "card"):\(cardID)"
             case .preview(let reference, let root): "file:\(root ?? ""):\(reference.id)"
-            case .attachmentImage(let file, _, _): "attachment:\(file.fileId ?? file.cacheKey)"
+            case .attachmentImage(let file, _, _, _): "attachment:\(file.fileId ?? file.cacheKey)"
             }
         }
     }
@@ -108,8 +111,8 @@ struct SessionChatView: View, Equatable {
                 WorkspaceFilePreviewSheet(connectorId: meta.connectorId, root: root ?? meta.cwd ?? ".", path: reference.path,
                     service: fileService, session: session, location: reference)
             }
-        case .attachmentImage(let file, let image, let tappedAt):
-            AttachmentImageViewerSheet(file: file, initialImage: image, tappedAt: tappedAt, loader: imageLoader)
+        case .attachmentImage(let file, let image, let tappedAt, let localData):
+            AttachmentImageViewerSheet(file: file, initialImage: image, tappedAt: tappedAt, loader: imageLoader, localData: localData)
         }
     }
     @State private var toasts = ChatToastStore()
@@ -293,12 +296,20 @@ struct SessionChatView: View, Equatable {
         // The self-heal acknowledgement: the client rebuilt the session's data
         // from a snapshot because the incremental recovery could not be
         // applied. Its own source, so it never masks or inherits the session
-        // failure it resolves; the payload carries the rebuild ordinal, so a
-        // later rebuild re-opens a dismissed toast instead of staying silent.
+        // failure it resolves. The disclosure is one-shot: once pushed to the
+        // toast store it is cleared on the model (and the repository entry
+        // behind it), so re-entering the session page cannot replay a notice
+        // already shown; a later rebuild publishes a fresh, higher-numbered
+        // payload that re-opens a dismissed toast instead of staying silent.
+        // Only a non-nil notice is forwarded: clearing the field drives a
+        // second change, and the store's `update(failure: nil)` would tear the
+        // just-shown toast down again.
         .onChange(of: session.recoveryNotice, initial: true) { _, notice in
+            guard let notice else { return }
             toasts.update(source: "sync-recovery",
-                          failure: notice.map { V2ClientFailure(kind: .transient, message: $0.message) },
-                          title: notice?.title)
+                          failure: V2ClientFailure(kind: .transient, message: notice.message),
+                          title: notice.title)
+            session.clearRecoveryNotice()
         }
     }
 
@@ -339,6 +350,16 @@ struct SessionChatView: View, Equatable {
 
     private func openAttachment(_ file: V2AttachmentContent, thumbnail: UIImage?) {
         if file.readsFromDevice, let path = file.devicePath { sheet = .preview(SessionFileReference(path: path), root: file.root); return }
+        // Images with a local original in hand — an optimistic send still in
+        // flight, or a message waiting in the queue — open the instant viewer
+        // straight on those bytes: no `openUrl` exists until the upload binds a
+        // server id, so the network path below would 404. The loader is skipped
+        // for this sheet.
+        if let local = session.localImageRoute(for: file) {
+            let initial = thumbnail ?? UIImage(data: local)
+            sheet = .attachmentImage(file, image: initial, tappedAt: Date(), localData: local)
+            return
+        }
         // Images on the raw byte route open the instant viewer: it presents on
         // the thumbnail already in hand (the bubble's decoded image, or the
         // preview bytes the store kept for local sends) while the original
@@ -365,7 +386,7 @@ struct SessionChatView: View, Equatable {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 try data.write(to: url, options: [.atomic, .completeFileProtection])
                 previewDirectory = directory; previewURL = url
-            } catch { model.error = error.localizedDescription }
+            } catch { model.error = String(localized: "图片还没准备好，稍后再试；发送完成后即可查看。") }
         }
     }
     private func cleanPreview() {

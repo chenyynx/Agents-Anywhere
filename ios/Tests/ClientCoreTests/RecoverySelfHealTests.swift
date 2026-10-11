@@ -245,6 +245,42 @@ private struct TestRecoveryReadFailure: Error {}
         _ = try await restored.load(sessionId: "session")
         #expect(restored.recoveryDiagnostics(sessionId: "session") == records)
     }
+
+    /// The disclosure is one-shot. Once the session page has shown it, the
+    /// field is cleared (on the model and, through it, the repository entry),
+    /// so re-entering the page cannot replay a notice already acknowledged.
+    /// The rebuild counter is untouched, so a later rebuild still publishes a
+    /// fresh, higher-numbered payload that reopens the toast.
+    @Test func theDisclosureIsClearedOnceAcknowledged() async throws {
+        let http = TestHTTPTransport(); let realtime = TestRealtimeAPI()
+        var date = Date()
+        let repo = repository(transport: http, realtime: realtime, now: { date })
+        defer { repo.reset() }
+        _ = try await repo.open(sessionId: "session")
+        let poisoned = try poisonedRecovery()
+        realtime.onRecover = { poisoned }
+        #expect(await syncRound(repo) == false)
+        #expect(await syncRound(repo))
+        let first = try #require(repo.session(id: "session").recoveryNotice)
+
+        // The view acknowledges: the field is gone from the model.
+        repo.session(id: "session").clearRecoveryNotice()
+        #expect(repo.session(id: "session").recoveryNotice == nil)
+
+        // A further failure inside the window neither rebuilds nor repopulates
+        // the cleared notice — re-entering the page stays silent.
+        #expect(await syncRound(repo) == false)
+        #expect(http.count("snapshot") == 2)
+        #expect(repo.session(id: "session").recoveryNotice == nil)
+
+        // Past the window a new rebuild numbers its disclosure afresh, so a
+        // cleared notice does not suppress the next real recovery.
+        date += 3600
+        #expect(await syncRound(repo))
+        #expect(http.count("snapshot") == 3)
+        let second = try #require(repo.session(id: "session").recoveryNotice)
+        #expect(second != first)
+    }
 }
 
 /// The same repository as `repository(transport:realtime:now:)`, plus the

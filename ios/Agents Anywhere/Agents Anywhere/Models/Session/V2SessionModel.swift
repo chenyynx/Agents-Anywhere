@@ -153,8 +153,10 @@ final class V2SessionModel: Identifiable {
     private(set) var failure: V2ClientFailure?
     /// The last self-heal disclosure the repository published: the session's
     /// data was rebuilt from a snapshot because the incremental recovery could
-    /// not be applied. Sticky until a later rebuild replaces it, so the toast
-    /// source it feeds never loses the acknowledgement mid-visit.
+    /// not be applied. One-shot: the session page clears it via
+    /// `clearRecoveryNotice()` once shown, so re-entering the page cannot replay
+    /// it, while a later rebuild (a higher `snapshotRecoveryCount`) publishes a
+    /// fresh value that opens again.
     private(set) var recoveryNotice: V2SessionRecoveryNotice?
     private(set) var hasOlderItems = false
     private(set) var hasNewerItems = false
@@ -500,6 +502,17 @@ final class V2SessionModel: Identifiable {
         evaluateSendQueue()
     }
 
+    /// Acknowledges the self-heal disclosure after the view has shown it. The
+    /// notice is one-shot: clearing the model field — and, through the
+    /// repository, the entry behind it — means re-entering the session page
+    /// does not replay a notice already disclosed, while
+    /// `snapshotRecoveryCount` keeps counting so a later rebuild still
+    /// publishes a fresh, higher-numbered payload that opens once more.
+    func clearRecoveryNotice() {
+        recoveryNotice = nil
+        repository?.clearRecoveryNotice(sessionId: id)
+    }
+
     func confirmEcho(_ item: V2TimelineItem) {
         guard item.sessionId == id, item.type == .message, item.role == .user,
               let clientID = item.source["clientMessageId"]?.stringValue else { return }
@@ -577,6 +590,35 @@ final class V2SessionModel: Identifiable {
         attachmentPreviews.clear()
         notices.clear()
         connection = .inactive; isValid = false; repository = nil
+    }
+
+    /// The original bytes of an attachment still held locally — an optimistic
+    /// send in flight, or a message waiting in the queue. The projection only
+    /// carries the `local:` file id (no `openUrl`), so a bubble tap on such an
+    /// image cannot reach the server; the full-resolution data lives on the
+    /// pending/queued `ChatAttachment` and this is the bridge back to it.
+    /// Matching is by the content's `fileId`, exactly the `local:<uuid>` the
+    /// store minted; nil once the upload bound a server id (the content's
+    /// fileId is then `file_…`) or when nothing local matches.
+    func localImageData(for content: V2AttachmentContent) -> Data? {
+        guard let fileId = content.fileId, fileId.hasPrefix("local:") else { return nil }
+        if let data = pendingMessages.lazy.compactMap({ message in
+            message.attachments.first { "local:\($0.id)" == fileId }?.data
+        }).first { return data }
+        return sendQueue.items.lazy.compactMap { item in
+            item.attachments.first { "local:\($0.id)" == fileId }?.data
+        }.first
+    }
+
+    /// The routing decision for a bubble tap on an attachment: an image whose
+    /// original is still held locally (no `openUrl` yet, and local bytes in
+    /// hand) opens the instant viewer straight on those bytes. Returns nil for
+    /// everything else — non-images, uploaded images with a URL, and local
+    /// images nothing matches — so the caller falls through to the existing
+    /// paths. A pure predicate so the view and its tests read the same rule.
+    func localImageRoute(for content: V2AttachmentContent) -> Data? {
+        guard content.isImage, content.openUrl == nil else { return nil }
+        return localImageData(for: content)
     }
 
     private func clearDraft(ifMatching pending: V2PendingMessage) {

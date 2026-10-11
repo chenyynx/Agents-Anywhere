@@ -2286,6 +2286,17 @@ class ClaudeTurnRunner:
                     message=message,
                     projector=self.timeline,
                 )
+                # A message boundary (`message_stop`, or a new `message_start`
+                # id) closes every block the just-ended message left open and
+                # buffers the done rows there, because that one event can close
+                # more than one. PEEK them now so they publish with this frame,
+                # rather than waiting for the settle-time flush — that flush is
+                # a whole-turn-late backstop, and a provider that never sends
+                # the block's own stop (LiteLLM's thinking block) would leave
+                # the row "running" until then. They are only CONFIRMED (dropped
+                # from the buffer) after the publish below succeeds, so a failed
+                # send leaves them recoverable by the settle-time flush.
+                boundary_items = stream_accumulator.peek_pending_items()
                 if is_stream_event(message):
                     # Whatever the accumulator is still holding belongs to the
                     # message this stream event belongs to, so the card travels
@@ -2493,6 +2504,16 @@ class ClaudeTurnRunner:
                         (_with_parent_card(stream_item, frame_parent_item_id),),
                         counted=counts_this_frame,
                     )
+                if boundary_items:
+                    await self.publish_items(
+                        execution,
+                        _with_parent_cards(boundary_items, frame_parent_item_id),
+                        counted=counts_this_frame,
+                    )
+                    # Only now that the send has not raised is it safe to drop
+                    # them: a failure here leaves them buffered for the
+                    # settle-time flush, instead of losing a closed row.
+                    stream_accumulator.confirm_pending_items(len(boundary_items))
                 if is_stream_event(message):
                     continue
                 if terminal_message is not None:
@@ -2606,7 +2627,22 @@ class ClaudeTurnRunner:
                 )
                 if role == "assistant":
                     emitted_final_assistant_content = True
-                    stream_accumulator.reset()
+                    # The final assistant frame ends the streamed message, so
+                    # resetting is a boundary: close (and publish) any thinking
+                    # block the message left open, rather than dropping it.
+                    # This is the point the LiteLLM frame order forced — the
+                    # aggregated frame arrives BEFORE `message_stop`, so a
+                    # boundary close that only watched `message_stop` would
+                    # find the block already cleared here.
+                    settled_items = stream_accumulator.reset(
+                        session, turn_id, self.timeline
+                    )
+                    if settled_items:
+                        await self.publish_items(
+                            execution,
+                            _with_parent_cards(settled_items, frame_parent_item_id),
+                            counted=counts_this_frame,
+                        )
 
             if (
                 declined_message is not None
@@ -2941,7 +2977,15 @@ class ClaudeTurnRunner:
             ),
             counted=counted,
         )
-        stream_accumulator.reset()
+        # The turn's final text is out; the streamed message is over, so close
+        # (and publish) any thinking block still open rather than dropping it.
+        settled_items = stream_accumulator.reset(session, turn_id, self.timeline)
+        if settled_items:
+            await self.publish_items(
+                execution,
+                _with_parent_cards(settled_items, parent_item_id),
+                counted=counted,
+            )
         return True
 
     def _record_stale_completion_downgrade(self, execution: ClaudeExecution) -> None:

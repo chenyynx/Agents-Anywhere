@@ -65,6 +65,9 @@ struct AccountSettingsSheet: View {
                     NavigationLink { SettingsLanguageView() } label: {
                         SettingsRow(title: String(localized: "Language"), symbol: "globe", value: SettingsLanguageView.currentLanguage)
                     }
+                    NavigationLink { DiagnosticsSettingsView() } label: {
+                        SettingsRow(title: String(localized: "诊断"), symbol: "waveform.path.ecg")
+                    }
                     Toggle(isOn: Binding(
                         get: { !showsSessionList },
                         set: { showsSessionList = !$0 }

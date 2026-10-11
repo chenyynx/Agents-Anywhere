@@ -585,6 +585,7 @@ final class SessionChatModel {
     }
 
     func send(_ text: String) async {
+        LatencyDiagnostics.mark(LatencyDiagnostics.Name.sendTap, session: session.id)
         if let command = await catalogCommand(for: text) {
             session.composer.text = text
             await runCommand(command, raw: text)
@@ -608,6 +609,7 @@ final class SessionChatModel {
                     self.repository.draftDidChange()
                 }
         }
+        LatencyDiagnostics.mark(LatencyDiagnostics.Name.sendReturn, session: session.id)
     }
 
     /// Stop is idempotent on the server (an already-finished turn answers 409,
@@ -623,6 +625,7 @@ final class SessionChatModel {
     /// (the batch's release rule): without them a spared task would have no
     /// way to be stopped.
     func interrupt() async {
+        LatencyDiagnostics.mark(LatencyDiagnostics.Name.interruptTap, session: session.id)
         guard !isWorking else { return }
         await perform { try await self.repository.interrupt(sessionId: self.session.id, preserveBackground: true) }
     }

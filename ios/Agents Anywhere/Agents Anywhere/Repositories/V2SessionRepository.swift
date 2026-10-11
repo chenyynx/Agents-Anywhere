@@ -368,10 +368,18 @@ final class V2SessionRepository {
     func send(sessionId: V2SessionID, content: String, attachmentIDs: [V2AttachmentID] = [], clientMessageID: String) async throws -> V2RuntimeActionResponse {
         try requireNetwork()
         let entry = entry(for: sessionId)
-        let response = try await detail.sendMessage(sessionId: sessionId, content: content, attachmentIds: attachmentIDs, clientMessageId: clientMessageID)
-        try requireCurrent(entry)
-        // Timeline echoes reconcile by clientMessageId; sending never refetches the snapshot.
-        return response
+        let started = LatencyDiagnostics.now()
+        LatencyDiagnostics.mark(LatencyDiagnostics.Name.sendHTTPStart, session: sessionId)
+        do {
+            let response = try await detail.sendMessage(sessionId: sessionId, content: content, attachmentIds: attachmentIDs, clientMessageId: clientMessageID)
+            LatencyDiagnostics.markElapsed(LatencyDiagnostics.Name.sendHTTPEnd, since: started, session: sessionId)
+            try requireCurrent(entry)
+            // Timeline echoes reconcile by clientMessageId; sending never refetches the snapshot.
+            return response
+        } catch {
+            LatencyDiagnostics.markElapsed(LatencyDiagnostics.Name.sendFail, since: started, session: sessionId, detail: "\(error)")
+            throw error
+        }
     }
 
     func steer(sessionId: V2SessionID, content: String, attachmentIDs: [V2AttachmentID] = [], clientMessageID: String) async throws -> V2RuntimeActionResponse {
@@ -385,6 +393,8 @@ final class V2SessionRepository {
     func interrupt(sessionId: V2SessionID, preserveBackground: Bool = false) async throws {
         try requireNetwork()
         let entry = entry(for: sessionId)
+        let started = LatencyDiagnostics.now()
+        LatencyDiagnostics.mark(LatencyDiagnostics.Name.interruptHTTPStart, session: sessionId)
         do { _ = try await detail.interrupt(sessionId: sessionId, preserveBackground: preserveBackground) }
         catch {
             // The capability gate refuses an interrupt exactly when there is
@@ -396,6 +406,7 @@ final class V2SessionRepository {
             if !meansNoActiveTurnInterrupt(error, entry: entry) { throw error }
         }
         try requireCurrent(entry)
+        LatencyDiagnostics.markElapsed(LatencyDiagnostics.Name.interruptHTTPEnd, since: started, session: sessionId)
         // The accepted interrupt is proof the runtime is stopping the turn,
         // but its ack carries no state and the frames that would report the
         // idle turn can be late or lost. Flow the composer to the post-stop
@@ -403,6 +414,7 @@ final class V2SessionRepository {
         // authoritative facts (and a failed round rolls it back).
         entry.predictedIdleSequence = entry.recoverySequence
         entry.model.runtime.beginPredictedIdle()
+        LatencyDiagnostics.mark(LatencyDiagnostics.Name.interruptPredicted, session: sessionId)
         emit(entry)
         launchFollowUpReconcile(entry)
     }

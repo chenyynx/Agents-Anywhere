@@ -126,6 +126,7 @@ struct ChatComposerDock: View {
         // form has nothing to commit, and each live form carries its own gate.
         guard affordance.shape != .stop, affordance.isActionEnabled else { return }
         isSending = true
+        LatencyDiagnostics.mark(LatencyDiagnostics.Name.sendEnqueued)
         // A send ends the editing session (the keyboard drops so the reply is
         // visible); an enqueue keeps it, because the queue is fed in a row.
         let dismissKeyboard = affordance.shape != .queueSend

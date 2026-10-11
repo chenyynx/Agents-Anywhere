@@ -169,6 +169,11 @@ final class V2SessionModel: Identifiable {
     /// pulse setting is off or Reduce Motion is on — the model never judges
     /// presentation.
     private(set) var incomingPulse: OrbPulse?
+    /// Diagnostic-only turn tracking for `traceReplyTimeline`; independent of the
+    /// runtime's own state so the tracer cannot affect delivery.
+    @ObservationIgnored private var diagTurnActive = false
+    @ObservationIgnored private var diagFirstTextLogged = false
+    @ObservationIgnored private var diagTurnStartSeq = 0
     private(set) var isLoading = false
     private(set) var isLoadingHistory = false
     private(set) var isValid = true
@@ -479,6 +484,7 @@ final class V2SessionModel: Identifiable {
         if recoveryNotice != observation.recoveryNotice { recoveryNotice = observation.recoveryNotice }
         runtime.update(data, connection: connection)
         notices.update(runtime.notices, sessionID: id)
+        traceReplyTimeline(data)
         if hasOlderItems != (data?.hasOlderItems ?? false) { hasOlderItems = data?.hasOlderItems ?? false }
         if hasNewerItems != (data?.hasNewerItems ?? false) { hasNewerItems = data?.hasNewerItems ?? false }
         let activeCards = data?.activeAgentCards ?? []
@@ -500,6 +506,36 @@ final class V2SessionModel: Identifiable {
         // Live facts or a fresh timeline may have opened every drain gate; the
         // queue takes its turn here rather than on a timer.
         evaluateSendQueue()
+    }
+
+    /// Diagnostic-only: records the first reply frame / first text delta / turn
+    /// end so a send→reply timeline can be reconstructed from an export. Entirely
+    /// inert when the tracer is off (guarded by `isEnabled`).
+    private func traceReplyTimeline(_ data: V2SessionData?) {
+        guard LatencyDiagnostics.isEnabled, let data else { return }
+        let status = data.state?.status
+        let inFlight = status?.isTurnInFlight == true
+        if inFlight, !diagTurnActive {
+            diagTurnActive = true
+            diagFirstTextLogged = false
+            // Bound "first text" to items that arrive AFTER this turn starts, so a
+            // historical assistant message cannot be mistaken for this turn's reply.
+            diagTurnStartSeq = data.items.map(\.orderSeq).max() ?? 0
+            LatencyDiagnostics.mark(LatencyDiagnostics.Name.turnFrameFirst, session: id)
+        }
+        if diagTurnActive, !diagFirstTextLogged,
+           let first = data.items.first(where: {
+               $0.orderSeq > diagTurnStartSeq && $0.type == .message && $0.role == .assistant
+           }) {
+            if case let .message(content) = first.content, !content.text.isEmpty {
+                diagFirstTextLogged = true
+                LatencyDiagnostics.mark(LatencyDiagnostics.Name.turnTextFirst, session: id)
+            }
+        }
+        if diagTurnActive, !inFlight, status == .idle {
+            diagTurnActive = false
+            LatencyDiagnostics.mark(LatencyDiagnostics.Name.turnEnd, session: id)
+        }
     }
 
     /// Acknowledges the self-heal disclosure after the view has shown it. The

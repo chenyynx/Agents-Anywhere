@@ -23,6 +23,26 @@ struct V2WorkspaceFilesService {
         return directory
     }
 
+    /// Disambiguates a raw path inside the workspace. The path and root are sent
+    /// verbatim — resolving a bare filename to a real file is the connector's
+    /// job, so this deliberately skips `ProjectWorkspacePath.requestRoot`.
+    func resolvePath(
+        connectorId: V2ConnectorID,
+        root: String,
+        path: String
+    ) async throws -> V2WorkspaceResolveResult {
+        let response = try await connectorAPI.resolveWorkspacePath(
+            connectorId: connectorId, root: root, request: V2WorkspaceResolveRequest(path: path)
+        )
+        if let error = response.error, !response.ok { throw error }
+        guard response.ok, let result = response.result else {
+            throw V2BusinessError.workspaceFilesUnavailable(
+                message: String(localized: "The workspace path could not be resolved.")
+            )
+        }
+        return result
+    }
+
     func readText(connectorId: V2ConnectorID, root: String, path: String, maxBytes: Int = 1_048_576) async throws -> V2WorkspaceTextResponse {
         guard (1...4_194_304).contains(maxBytes) else { throw V2BusinessError.invalidPageSize }
         return try await connectorAPI.readWorkspaceText(

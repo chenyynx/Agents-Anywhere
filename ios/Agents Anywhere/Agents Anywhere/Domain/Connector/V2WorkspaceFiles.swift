@@ -5,6 +5,37 @@ struct V2WorkspaceFilesListRequest: Encodable, Hashable {
     let path: String
 }
 
+/// Asks the connector to disambiguate a raw path (relative, bare filename,
+/// truncated, …) inside the workspace rooted at `root`. The path is sent
+/// verbatim — the connector, not the client, decides where it lands.
+struct V2WorkspaceResolveRequest: Encodable, Hashable {
+    let path: String
+}
+
+struct V2WorkspaceResolveResponse: Decodable, Hashable {
+    let ok: Bool
+    let result: V2WorkspaceResolveResult?
+    let error: V2RuntimeError?
+}
+
+struct V2WorkspaceResolveResult: Decodable, Hashable {
+    /// `exact` (a single file matched), `ambiguous` (candidates below) or `missing`.
+    let status: String
+    /// Absolute path, present only when `status == "exact"`.
+    let path: String?
+    /// Candidate files, present when `status == "ambiguous"`; ranked by `score` descending.
+    let candidates: [V2WorkspaceFileCandidate]?
+}
+
+struct V2WorkspaceFileCandidate: Decodable, Hashable, Identifiable {
+    let path: String
+    let relative: String
+    let name: String
+    let score: Int
+
+    var id: String { path }
+}
+
 struct V2WorkspaceFileReadRequest: Encodable, Hashable {
     let path: String
 }

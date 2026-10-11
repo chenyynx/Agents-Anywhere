@@ -40,6 +40,11 @@ protocol V2ConnectorAPIProtocol {
         connectorId: V2ConnectorID,
         request: V2WorkspaceFilesListRequest
     ) async throws -> V2WorkspaceDirectoryResponse
+    func resolveWorkspacePath(
+        connectorId: V2ConnectorID,
+        root: String,
+        request: V2WorkspaceResolveRequest
+    ) async throws -> V2WorkspaceResolveResponse
     func createWorkspaceFilePreviewToken(
         connectorId: V2ConnectorID,
         root: String,
@@ -185,6 +190,20 @@ struct V2ConnectorAPI: V2ConnectorAPIProtocol {
         let request = HTTPRequest<V2WorkspaceFilesListRequest, V2WorkspaceDirectoryResponse>(
             method: .post,
             path: "\(connectorPath(connectorId))/fs/list",
+            body: body
+        )
+        return try await transport.send(request)
+    }
+
+    func resolveWorkspacePath(
+        connectorId: V2ConnectorID,
+        root: String,
+        request body: V2WorkspaceResolveRequest
+    ) async throws -> V2WorkspaceResolveResponse {
+        let request = HTTPRequest<V2WorkspaceResolveRequest, V2WorkspaceResolveResponse>(
+            method: .post,
+            path: "\(connectorPath(connectorId))/fs/resolve-path",
+            queryItems: [URLQueryItem(name: "root", value: root)],
             body: body
         )
         return try await transport.send(request)

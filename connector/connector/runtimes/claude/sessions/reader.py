@@ -52,6 +52,9 @@ from connector.runtimes.claude.sdk.tasks import (
     ClaudeTaskEvent,
     task_events_from_notification_text,
 )
+from connector.runtimes.claude.sessions.bindings import (
+    ClaudeSessionBindingStore,
+)
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 from connector.runtimes.claude.sessions.subagent_oracle import (
     ClaudeSubagentOracle,
@@ -175,6 +178,7 @@ class ClaudeSessionReader:
     sdk_loader: SdkLoader | None
     sync_states: ClaudeSessionSyncStateStore
     pending_messages: ClaudePendingClientMessageRegistry
+    bindings: ClaudeSessionBindingStore | None = None
     oracle: ClaudeSubagentOracle | None = None
     #: Tasks the live transport vouches for, per session (F2). A session whose
     #: process the connector is actively driving must not have its cards closed
@@ -250,9 +254,25 @@ class ClaudeSessionReader:
     ) -> SessionState | None:
         local_session = self.session_store.get(session_id, external_session_id)
         if local_session is not None:
+            # The caller (Server) owns the canonical session id for every
+            # session it created; the Connector's local store keys sessions by
+            # an id it may have *derived* from the conversation uuid. After a
+            # restart those two ids diverge for platform-created sessions
+            # (locally re-derived ``sess_claude_...`` vs Server ``sess_...``),
+            # and returning the local id here made the Server reject the state
+            # as a mismatched binding (2026-10-12 ``sess_92gAb`` 502).
+            #
+            # The lookup above reached this session through the caller's
+            # ``external_session_id`` when the local id did not match, so the
+            # caller's ``session_id`` is the identity to echo back. A caller
+            # that gave no id (empty) still gets the local id.
             return SessionState(
-                session_id=local_session.session_id,
-                external_session_id=local_session.external_session_id,
+                session_id=session_id or local_session.session_id,
+                external_session_id=(
+                    local_session.external_session_id
+                    if local_session.external_session_id is not None
+                    else external_session_id
+                ),
                 runtime="claude",
                 status="idle",
                 selections=local_session.selections,
@@ -260,6 +280,24 @@ class ClaudeSessionReader:
             )
         if external_session_id is None:
             return None
+        if self.bindings is not None:
+            # A durable binding resolves the external uuid straight to the
+            # Server's id even before any interaction has re-established the
+            # in-memory map — the cold-restart path that started the 502.
+            binding = await self.bindings.read(external_session_id)
+            if binding is not None:
+                # Same "caller-supplied id wins" rule as the local branch: a
+                # stale binding (its write failed on a fail-soft path, or the
+                # Server moved the session) must not shadow the id the Server
+                # just supplied, or the binding check rejects the read again.
+                return SessionState(
+                    session_id=session_id or binding.session_id,
+                    external_session_id=external_session_id,
+                    runtime="claude",
+                    status="idle",
+                    selections={},
+                    metadata={"source": "claude.session.binding.state"},
+                )
         info = await self._read_history_session_info(external_session_id)
         if info is None:
             return None

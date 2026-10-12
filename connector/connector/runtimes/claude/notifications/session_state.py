@@ -26,12 +26,15 @@ class ClaudeSessionStateHandler:
         source: str,
     ) -> None:
         if self.bindings is not None and session.external_session_id:
-            # The external uuid is now known for this session, and
-            # ``session.session_id`` is the id the Server will use. Record the
-            # pair so a later restart re-derives nothing (see bindings.py).
+            # The external uuid is now known for this session. For a
+            # platform-created session ``session.session_id`` is the Server id;
+            # for a locally resumed one it is the Connector's derived id. Mark
+            # the write non-authoritative so a derived id never overwrites a
+            # binding the Server already established (see bindings.py).
             await self.bindings.write(
                 session.external_session_id,
                 session.session_id,
+                authoritative=False,
             )
         await self.host.session_meta_upsert(
             session_id=session.session_id,

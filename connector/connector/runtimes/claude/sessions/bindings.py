@@ -67,6 +67,8 @@ class ClaudeSessionBindingStore:
         external_session_id: str,
         session_id: str,
         runtime_id: str | None = None,
+        *,
+        authoritative: bool = True,
     ) -> None:
         """Record the Server-authoritative id for one external uuid.
 
@@ -74,12 +76,27 @@ class ClaudeSessionBindingStore:
         per-read RPC path does not churn the sync-state file. A genuine change
         (the Server moved the session to a different id) is logged because it
         means identity was previously mis-bound.
+
+        ``authoritative=False`` marks a write that came from a locally derived
+        id rather than the Server (e.g. a legacy scheduled session resumed under
+        its re-derived id). Such a write must not overwrite an existing binding:
+        the derived id is exactly the value this store exists to avoid, so the
+        first authoritative id wins and the derived one is dropped.
         """
 
         if not external_session_id or not session_id:
             return
         existing = await self.read(external_session_id)
         if existing is not None and existing.session_id == session_id:
+            return
+        if existing is not None and not authoritative:
+            logger.info(
+                "claude session binding kept existing external_session_id={} "
+                "existing_session_id={} ignored_session_id={}",
+                external_session_id,
+                existing.session_id,
+                session_id,
+            )
             return
         try:
             await self.host.sync_state_write(
@@ -135,7 +152,11 @@ def binding_to_state(binding: ClaudeSessionBinding) -> dict[str, Any]:
 
 
 def binding_from_state(state: Mapping[str, Any] | None) -> ClaudeSessionBinding | None:
-    if state is None:
+    # Defensive against a malformed stored value (a hand-edited state file, or
+    # a future store that does not narrow to a Mapping). ``read``/``write`` call
+    # this outside their try, so an AttributeError here would escape the
+    # fail-soft contract and fail the RPC that read a binding.
+    if not isinstance(state, Mapping):
         return None
     session_id = state.get("sessionId")
     if not isinstance(session_id, str) or not session_id:

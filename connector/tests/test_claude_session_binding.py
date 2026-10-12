@@ -274,6 +274,61 @@ def test_binding_write_is_idempotent() -> None:
     asyncio.run(run())
 
 
+def test_non_authoritative_write_keeps_existing_binding() -> None:
+    """A locally derived id must never overwrite the Server's binding.
+
+    Red-team P3: a legacy scheduled session resumed under its re-derived id
+    would otherwise regress a correct binding to the derived id.
+    """
+
+    async def run() -> None:
+        host = _BindingHost()
+        store = ClaudeSessionBindingStore(host)
+        await store.write(EXTERNAL_SESSION_ID, SERVER_SESSION_ID, RUNTIME_ID)
+        # A local (non-authoritative) write with the derived id is dropped.
+        await store.write(
+            EXTERNAL_SESSION_ID,
+            _derived_id(EXTERNAL_SESSION_ID),
+            authoritative=False,
+        )
+        stored = await store.read(EXTERNAL_SESSION_ID)
+        assert stored is not None
+        assert stored.session_id == SERVER_SESSION_ID
+
+    asyncio.run(run())
+
+
+def test_non_authoritative_write_sets_binding_when_absent() -> None:
+    """With no binding yet, even a local write seeds one (better than none)."""
+
+    async def run() -> None:
+        host = _BindingHost()
+        store = ClaudeSessionBindingStore(host)
+        derived = _derived_id(EXTERNAL_SESSION_ID)
+        await store.write(EXTERNAL_SESSION_ID, derived, authoritative=False)
+        stored = await store.read(EXTERNAL_SESSION_ID)
+        assert stored is not None and stored.session_id == derived
+
+    asyncio.run(run())
+
+
+def test_authoritative_write_can_change_binding() -> None:
+    async def run() -> None:
+        host = _BindingHost()
+        store = ClaudeSessionBindingStore(host)
+        await store.write(
+            EXTERNAL_SESSION_ID,
+            _derived_id(EXTERNAL_SESSION_ID),
+            authoritative=False,
+        )
+        # The Server moving the session to a new id is authoritative and wins.
+        await store.write(EXTERNAL_SESSION_ID, SERVER_SESSION_ID)
+        stored = await store.read(EXTERNAL_SESSION_ID)
+        assert stored is not None and stored.session_id == SERVER_SESSION_ID
+
+    asyncio.run(run())
+
+
 def test_binding_write_failure_is_soft() -> None:
     async def run() -> None:
         host = _BindingHost()
@@ -330,6 +385,25 @@ def test_binding_from_malformed_state_is_none() -> None:
     assert binding_from_state({}) is None
     assert binding_from_state({"sessionId": ""}) is None
     assert binding_from_state({"sessionId": 123}) is None
+    # A non-Mapping stored value must not raise: read/write call this outside
+    # their try, so an AttributeError would escape the fail-soft contract.
+    assert binding_from_state(["not", "a", "mapping"]) is None  # type: ignore[arg-type]
+    assert binding_from_state("scalar") is None  # type: ignore[arg-type]
+    assert binding_from_state(42) is None  # type: ignore[arg-type]
+
+
+def test_binding_read_survives_non_mapping_state() -> None:
+    async def run() -> None:
+        host = _BindingHost()
+        host.sync_states[session_binding_key(EXTERNAL_SESSION_ID)] = "garbage"  # type: ignore[assignment]
+        store = ClaudeSessionBindingStore(host)
+        assert await store.read(EXTERNAL_SESSION_ID) is None
+        # A write on top of a malformed value must also stay fail-soft.
+        await store.write(EXTERNAL_SESSION_ID, SERVER_SESSION_ID, RUNTIME_ID)
+        stored = await store.read(EXTERNAL_SESSION_ID)
+        assert stored is not None and stored.session_id == SERVER_SESSION_ID
+
+    asyncio.run(run())
 
 
 def test_binding_key_is_namespaced() -> None:

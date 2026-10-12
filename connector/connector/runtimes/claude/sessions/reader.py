@@ -286,8 +286,12 @@ class ClaudeSessionReader:
             # in-memory map — the cold-restart path that started the 502.
             binding = await self.bindings.read(external_session_id)
             if binding is not None:
+                # Same "caller-supplied id wins" rule as the local branch: a
+                # stale binding (its write failed on a fail-soft path, or the
+                # Server moved the session) must not shadow the id the Server
+                # just supplied, or the binding check rejects the read again.
                 return SessionState(
-                    session_id=binding.session_id,
+                    session_id=session_id or binding.session_id,
                     external_session_id=external_session_id,
                     runtime="claude",
                     status="idle",

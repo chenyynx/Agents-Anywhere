@@ -63,6 +63,21 @@ class _BindingHost(RuntimeHostClient):
     async def sync_state_delete(self, key: str) -> None:
         self.sync_states.pop(key, None)
 
+    async def session_state_update(
+        self,
+        session_id: str,
+        runtime: str,
+        status: Any = None,
+        selections: Any = None,
+        external_session_id: str | None = None,
+        status_reason: str | None = None,
+        error: Any = None,
+        metadata: Any = None,
+    ) -> None:
+        # The state cache pushes merges through the host; a fake host that
+        # absorbs them keeps the cache usable in tests.
+        return None
+
 
 def _derived_id(external_session_id: str) -> str:
     """Mirror the Connector's own derivation (namespace = conn:claude:rti_)."""
@@ -167,6 +182,80 @@ def test_binding_survives_restart() -> None:
         assert state is not None
         assert state.session_id == SERVER_SESSION_ID
         assert state.metadata["source"] == "claude.session.binding.state"
+
+    asyncio.run(run())
+
+
+def test_runtime_cache_hit_with_divergent_id_falls_through() -> None:
+    """A cache hit keyed by the wrong id must not shadow the caller's id.
+
+    Red-team P2: ``ClaudeRuntime.get_session_state`` short-circuits on the
+    in-memory state cache before reaching the reader. A stale entry reached via
+    the external uuid could carry a divergent ``session_id`` and bypass the
+    reader's "caller-supplied id wins" rule, reintroducing the 502. The cache
+    hit is only trusted when it agrees with the caller.
+    """
+
+    async def run() -> None:
+        from connector.runtime_protocol import RuntimeConfig as _RC
+        from connector.runtimes.claude.runtime import ClaudeRuntime
+
+        host = _BindingHost()
+        derived = _derived_id(EXTERNAL_SESSION_ID)
+        await ClaudeSessionBindingStore(host).write(
+            EXTERNAL_SESSION_ID, SERVER_SESSION_ID, RUNTIME_ID
+        )
+        runtime = ClaudeRuntime(
+            config=_RC(
+                runtime="claude",
+                revision=1,
+                values={"environment": {}},
+                runtime_id=RUNTIME_ID,
+            ),
+            host=host,
+        )
+        # Seed the cache with an entry whose id diverged from the Server's,
+        # written straight into the cache maps so no host capability hook runs.
+        from connector.runtime_protocol import SessionState
+
+        runtime._session_states._states[derived] = SessionState(
+            session_id=derived,
+            external_session_id=EXTERNAL_SESSION_ID,
+            runtime="claude",
+            status="idle",
+        )
+        runtime._session_states._session_ids_by_external_id[
+            EXTERNAL_SESSION_ID
+        ] = derived
+        state = await runtime.get_session_state(SERVER_SESSION_ID, EXTERNAL_SESSION_ID)
+        assert state is not None
+        # Not the cached divergent id — resolved to the caller's id.
+        assert state.session_id == SERVER_SESSION_ID
+
+    asyncio.run(run())
+
+
+def test_binding_branch_honours_caller_id_over_stale_binding() -> None:
+    """A stale binding must not shadow the id the Server just supplied.
+
+    Red-team P2: the binding branch returned ``binding.session_id`` verbatim,
+    contradicting the local branch's "caller-supplied id wins" rule. If the
+    binding is stale (its write failed on a fail-soft path, or the Server moved
+    the session) the returned id disagrees with the Server's and the read 502s
+    again — with the local branch empty, the read-defence cannot help.
+    """
+
+    async def run() -> None:
+        host = _BindingHost()
+        stale = "sess_STALE0000000000"
+        await ClaudeSessionBindingStore(host).write(
+            EXTERNAL_SESSION_ID, stale, RUNTIME_ID
+        )
+        reader = _reader(host, sessions={})
+        state = await reader.get_session_state(SERVER_SESSION_ID, EXTERNAL_SESSION_ID)
+        assert state is not None
+        # Caller's id wins; the stale binding does not leak through.
+        assert state.session_id == SERVER_SESSION_ID
 
     asyncio.run(run())
 

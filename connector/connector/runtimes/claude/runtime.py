@@ -239,7 +239,13 @@ class ClaudeRuntime(AgentRuntime):
             return state
         if external_session_id is not None:
             state = self._session_states.get_by_external_session_id(external_session_id)
-            if state is not None:
+            # A cache hit reached through the external uuid may have been
+            # registered under a *different* id (e.g. a history-scan id). For a
+            # session the Server named, echoing that id makes the binding check
+            # reject the read — the same divergence this fix removes elsewhere.
+            # Only trust the hit when it agrees with the caller, else fall
+            # through to the reader, which resolves "caller-supplied id wins".
+            if state is not None and (not session_id or state.session_id == session_id):
                 return state
         return await self._session_reader.get_session_state(
             session_id,

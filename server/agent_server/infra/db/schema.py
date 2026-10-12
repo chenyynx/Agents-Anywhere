@@ -502,10 +502,20 @@ timeline_items = Table(
     Column("role", Text),
     Column("order_seq", Integer, nullable=False),
     Column("updated_seq", BigInteger, nullable=False),
+    # The Runtime's native item id (``source.itemId``), the identity shared by
+    # a message's body row and its reasoning rows: the intra-message order
+    # invariant (v2_42) groups on it. NULL for rows written before v2_42 (no
+    # backfill) and for items whose Runtime never reported one.
+    Column("native_item_id", Text),
     Column("item_time", Text),
     Column("payload_json", Text, nullable=False),
     PrimaryKeyConstraint("session_id", "id"),
     Index("idx_timeline_items_session_updated_seq", "session_id", "updated_seq"),
+    Index(
+        "idx_timeline_items_session_native_item",
+        "session_id",
+        "native_item_id",
+    ),
     Index(
         "idx_timeline_items_session_latest",
         "session_id",

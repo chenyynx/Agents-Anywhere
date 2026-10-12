@@ -349,6 +349,10 @@ class SqlTimelineStore:
             "role": item.role,
             "order_seq": item.orderSeq,
             "updated_seq": item.updatedSeq,
+            # The Runtime native item id shared by a message's body row and its
+            # reasoning rows: the repository's intra-message order invariant
+            # (v2_42) groups on it. ``source`` is required, ``itemId`` optional.
+            "native_item_id": item.source.itemId,
             "item_time": _item_time(item),
             "payload_json": _json_dumps(item.model_dump(exclude_none=True)),
         }

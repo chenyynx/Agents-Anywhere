@@ -5,6 +5,11 @@ import hashlib
 import json
 
 import pytest
+from alembic import command
+from sqlalchemy import BigInteger, create_engine, inspect, text
+from sqlalchemy.dialects.postgresql import asyncpg as postgresql_asyncpg
+from sqlalchemy.ext.asyncio import create_async_engine
+
 from agent_server.infra.db.engine import build_engine, resolve_db_url
 from agent_server.infra.db.legacy_import import rehearse_v1_import
 from agent_server.infra.db.migrations import (
@@ -26,11 +31,7 @@ from agent_server.infra.db.schema import (
     sessions,
     timeline_items,
 )
-from alembic import command
 from migrations.versions import v2_24
-from sqlalchemy import BigInteger, create_engine, inspect, text
-from sqlalchemy.dialects.postgresql import asyncpg as postgresql_asyncpg
-from sqlalchemy.ext.asyncio import create_async_engine
 
 
 def _sqlite_url(path) -> str:
@@ -1125,9 +1126,50 @@ def test_unversioned_runtime_schema_is_classified_by_actual_columns(
     )
 
 
-def test_current_schema_version_is_v2_41() -> None:
-    assert CURRENT_SCHEMA_REVISION == "v2_41"
-    assert CURRENT_SCHEMA_VERSION == "2.41"
+def test_current_schema_version_is_v2_42() -> None:
+    assert CURRENT_SCHEMA_REVISION == "v2_42"
+    assert CURRENT_SCHEMA_VERSION == "2.42"
+
+
+def test_v2_42_adds_the_native_item_id_column_and_index(tmp_path) -> None:
+    path = tmp_path / "native-item-id.sqlite3"
+    url = _sqlite_url(path)
+    upgrade_database(db_url=url, revision="v2_41")
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        assert "native_item_id" not in {
+            column["name"]
+            for column in inspect(engine).get_columns("timeline_items")
+        }
+    finally:
+        engine.dispose()
+
+    upgrade_database(db_url=url)
+
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        columns = {
+            column["name"]: column
+            for column in inspect(engine).get_columns("timeline_items")
+        }
+        assert "native_item_id" in columns
+        assert columns["native_item_id"]["nullable"] is True
+        with engine.connect() as connection:
+            index_names = {
+                row[0]
+                for row in connection.execute(
+                    text(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type = 'index' AND tbl_name = 'timeline_items'"
+                    )
+                )
+            }
+        assert "idx_timeline_items_session_native_item" in index_names
+    finally:
+        engine.dispose()
+
+    # Idempotent: a second upgrade is a no-op.
+    upgrade_database(db_url=url)
 
 
 def test_v2_41_drops_the_sidebar_order_table(tmp_path) -> None:

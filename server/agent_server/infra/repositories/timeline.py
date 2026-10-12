@@ -4,6 +4,7 @@ import hashlib
 import json
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -300,6 +301,35 @@ class TimelineRepositoryMixin:
                         revision=next_timeline_item_revision(item, existing),
                     )
                     changed_items.append(normalized)
+                # A message's reasoning rows and its body row can arrive in one
+                # batch; enforce the intra-message order across the batch after
+                # every order_seq is known. In-batch rows are corrected in
+                # place; corrected on-disk siblings come back for this write.
+                sibling_movers = await self._apply_intra_message_order_batch(
+                    conn,
+                    session_id,
+                    changed_items,
+                    base=max_order_seq,
+                )
+                if sibling_movers:
+                    # Fresh updated_seq per moved sibling (see the single-row
+                    # writer's call site): a move invisible to list_since
+                    # leaves online clients rendering the broken order.
+                    first_mover_seq = await self._reserve_session_revisions(
+                        conn,
+                        session_id,
+                        count=len(sibling_movers),
+                        mark_read=False,
+                        touch_updated_at=False,
+                    )
+                    for index, mover in enumerate(sibling_movers):
+                        sibling_movers[index] = mover.model_copy(
+                            update={"updatedSeq": first_mover_seq + index}
+                        )
+                    mover_ids = {item.id for item in sibling_movers}
+                    changed_items = [
+                        item for item in changed_items if item.id not in mover_ids
+                    ] + sibling_movers
                 await self.timeline.upsert_many(conn, changed_items)
                 if prune_orphan_agent_calls:
                     await self._prune_orphan_agent_call_rows(
@@ -697,6 +727,32 @@ class TimelineRepositoryMixin:
                         session_id,
                         existing,
                     )
+                    order_seq, sibling_movers = (
+                        await self._apply_intra_message_order(
+                            conn,
+                            session_id,
+                            item,
+                            order_seq,
+                        )
+                    )
+                    if sibling_movers:
+                        # A moved sibling's order change is real content the
+                        # client must see: without a fresh updated_seq the
+                        # incremental stream (list_since) would not deliver
+                        # the move, and an online client would keep rendering
+                        # the broken order until the next full snapshot.
+                        first_mover_seq = await self._reserve_session_revisions(
+                            conn,
+                            session_id,
+                            count=len(sibling_movers),
+                            mark_read=False,
+                            touch_updated_at=False,
+                        )
+                        for index, mover in enumerate(sibling_movers):
+                            sibling_movers[index] = mover.model_copy(
+                                update={"updatedSeq": first_mover_seq + index}
+                            )
+                        await self.timeline.upsert_many(conn, sibling_movers)
                     result = timeline_item_from_runtime_input(
                         item,
                         updated_seq=updated_seq,
@@ -929,6 +985,325 @@ class TimelineRepositoryMixin:
             return existing.orderSeq
         return await self._max_timeline_order_seq(conn, session_id) + 1
 
+    async def _apply_intra_message_order(
+        self,
+        conn: AsyncConnection,
+        session_id: str,
+        item: TimelineItemIn,
+        order_seq: int,
+    ) -> int:
+        """Keep one message's reasoning rows strictly before its body row.
+
+        A message group is the set of stored rows sharing ``source.itemId``:
+        the body row (``type == "message"``) and its reasoning rows
+        (``type == "system" and content.kind == "reasoning"``). A client
+        keyset-paginates on the *stored* ``order_seq`` and renders in that
+        order, so a reasoning row that lands after its body row renders below
+        the answer. This is a strict corrector, not a normalizer: it runs on
+        every write but returns the incoming ``order_seq`` untouched and
+        writes nothing unless the invariant is actually broken (some reasoning
+        row's ``order_seq`` is not strictly below some message row's) — the
+        99.5% fast path. Re-applying it is therefore a no-op.
+
+        Returns the (possibly corrected) ``order_seq`` for the incoming row and
+        the stored sibling rows that must be rewritten (empty when nothing
+        moves). Persisting the siblings — with a fresh ``updated_seq`` each —
+        is the caller's job: the caller owns the session revision allocation,
+        and a sibling written with its stale ``updated_seq`` would be invisible
+        to the incremental stream (``list_since``) and an online client would
+        keep rendering the broken order. This is the single-row writer's
+        entry point (``upsert_timeline_item``); the batch writer uses
+        ``_apply_intra_message_order_batch``, because a group whose rows all
+        arrive in one batch has no on-disk sibling for this query to find.
+        """
+
+        incoming_kind = _intra_message_kind(item.type, item.content)
+        native_item_id = item.source.itemId
+        if not native_item_id or incoming_kind is None:
+            return order_seq, []
+        group: dict[str, _IntraMessageGroupRow] = {}
+        for row in await self._load_intra_message_group(conn, session_id, native_item_id):
+            if row.id != item.id:
+                group[row.id] = row
+        group[item.id] = _IntraMessageGroupRow(
+            id=item.id,
+            kind=incoming_kind,
+            order_seq=order_seq,
+            stored=None,
+        )
+        corrected = await self._repack_intra_message_group(
+            conn,
+            session_id,
+            [group],
+            base=await self._max_timeline_order_seq(conn, session_id),
+            logger_context=(session_id, native_item_id),
+        )
+        if corrected is None:
+            return order_seq, []
+        movers = self._intra_message_movers(corrected, [group], skip_ids={item.id})
+        return corrected.get(item.id, order_seq), movers
+
+    async def _apply_intra_message_order_batch(
+        self,
+        conn: AsyncConnection,
+        session_id: str,
+        items: list[TimelineItem],
+        *,
+        base: int,
+    ) -> list[TimelineItem]:
+        """Enforce the invariant across one sync batch, in place on ``items``.
+
+        Runs after the loop has computed every item's ``order_seq``: a group
+        whose rows all arrive in one batch has no on-disk sibling during the
+        loop, so the per-item helper cannot see it. This pass groups the
+        batch's own rows by ``source.itemId`` (the in-batch value winning over
+        any stored row of the same id), folds in on-disk siblings, and repacks
+        only the groups whose invariant is broken. ``base`` is the loop's
+        running high-water mark (no batch row is written yet, so the on-disk
+        maximum would undercount it). Corrected in-batch rows are mutated on
+        ``items``; corrected on-disk siblings are returned so the caller can
+        upsert them together with ``items`` (the caller dedupes by id). Groups
+        that already hold the invariant are never touched, so an unrelated
+        write cannot perturb a healthy group.
+        """
+
+        batch_by_native: dict[str, dict[str, TimelineItem]] = {}
+        for item in items:
+            native_item_id = item.source.itemId
+            if not native_item_id:
+                continue
+            if _intra_message_kind(item.type, item.content) is None:
+                continue
+            batch_by_native.setdefault(native_item_id, {})[item.id] = item
+        if not batch_by_native:
+            return []
+        groups: list[dict[str, _IntraMessageGroupRow]] = []
+        batch_ids: set[str] = set()
+        for native_item_id, batch_rows in batch_by_native.items():
+            group: dict[str, _IntraMessageGroupRow] = {}
+            for row in await self._load_intra_message_group(
+                conn, session_id, native_item_id
+            ):
+                if row.id in batch_rows:
+                    continue  # the in-batch value supersedes the stored row
+                group[row.id] = row
+            for row_id, batch_item in batch_rows.items():
+                kind = _intra_message_kind(batch_item.type, batch_item.content)
+                group[row_id] = _IntraMessageGroupRow(
+                    id=row_id,
+                    kind=kind or "message",
+                    order_seq=batch_item.orderSeq,
+                    stored=None,
+                )
+                batch_ids.add(row_id)
+            groups.append(group)
+        corrected = await self._repack_intra_message_group(
+            conn,
+            session_id,
+            groups,
+            base=base,
+            logger_context=(session_id, None),
+        )
+        if corrected is None:
+            return []
+        # Rewrite the corrected in-batch rows on ``items`` in place so the
+        # caller's upsert carries the new ``order_seq``; the corrected on-disk
+        # siblings come back as extra rows for the caller to upsert.
+        for index, item in enumerate(items):
+            new_order_seq = corrected.get(item.id)
+            if new_order_seq is not None and new_order_seq != item.orderSeq:
+                items[index] = item.model_copy(update={"orderSeq": new_order_seq})
+        return self._intra_message_movers(
+            corrected, groups, skip_ids=batch_ids
+        )
+
+    async def _load_intra_message_group(
+        self,
+        conn: AsyncConnection,
+        session_id: str,
+        native_item_id: str,
+    ) -> list[_IntraMessageGroupRow]:
+        """The stored reasoning/message rows of one native-item group."""
+
+        rows = (
+            await conn.execute(
+                select(
+                    timeline_items_t.c.id,
+                    timeline_items_t.c.type,
+                    timeline_items_t.c.order_seq,
+                    timeline_items_t.c.payload_json,
+                ).where(
+                    timeline_items_t.c.session_id == session_id,
+                    timeline_items_t.c.native_item_id == native_item_id,
+                )
+            )
+        ).all()
+        group: list[_IntraMessageGroupRow] = []
+        for row_id, row_type, row_order_seq, payload_json in rows:
+            kind = _stored_intra_message_kind(row_type, payload_json)
+            if kind is None:
+                continue
+            group.append(
+                _IntraMessageGroupRow(
+                    id=row_id,
+                    kind=kind,
+                    order_seq=int(row_order_seq),
+                    stored=TimelineItem.model_validate_json(payload_json),
+                )
+            )
+        return group
+
+    async def _session_order_seq_occupation(
+        self,
+        conn: AsyncConnection,
+        session_id: str,
+    ) -> set[int]:
+        """Every ``order_seq`` a row of this session already stores."""
+
+        rows = (
+            await conn.execute(
+                select(timeline_items_t.c.order_seq).where(
+                    timeline_items_t.c.session_id == session_id
+                )
+            )
+        ).all()
+        return {int(row[0]) for row in rows}
+
+    @staticmethod
+    def _free_slot_run(
+        *,
+        start: int,
+        count: int,
+        occupation: set[int],
+    ) -> list[int] | None:
+        """``count`` consecutive unoccupied slots at/after ``start``, or None.
+
+        The run must not dip below 1 (``order_seq`` is a positive ordering
+        integer; the timeline's allocator starts at 1). A run that would need
+        to exceed the session's highest slot defeats the in-place goal, so the
+        caller's ``base`` sitting in ``occupation`` naturally bounds the
+        search: scanning stops there and ``None`` sends the group to the
+        fresh-block fallback.
+        """
+
+        if start < 1 or count < 1:
+            return None
+        run: list[int] = []
+        slot = start
+        while len(run) < count:
+            if slot in occupation:
+                run.clear()
+            else:
+                run.append(slot)
+            slot += 1
+            # A gap this wide means the neighbourhood is full: the group's
+            # in-place run would overrun far past its original position.
+            if slot > start + count + len(occupation):
+                return None
+        return run or None
+
+    async def _repack_intra_message_group(
+        self,
+        conn: AsyncConnection,
+        session_id: str,
+        groups: list[dict[str, _IntraMessageGroupRow]],
+        *,
+        base: int,
+        logger_context: tuple[str, str | None],
+    ) -> dict[str, int] | None:
+        """Corrected ``order_seq`` per row id for every broken group in ``groups``.
+
+        ``base`` is the highest ``order_seq`` any row of this session will hold
+        once the caller's own writes land (the on-disk maximum for the
+        single-row writer; the loop's running high-water mark for the batch
+        writer). Returns ``None`` when no group is broken (the strict-corrector
+        fast path).
+
+        A broken group is repacked **in place** whenever the session has a run
+        of free slots at the group's own position: the group keeps its place
+        in the conversation and only its rows' relative order changes —
+        reasoning rows first in their stored relative order, then the message
+        rows in theirs. The occupation set is the session's stored
+        ``order_seq`` values (plus ``base``, so a slot the caller is about to
+        write is never handed to a sibling). When no in-place run fits, the
+        group falls back to a fresh contiguous block above ``base``; the
+        running base advances past each block so two corrected groups can
+        never share a slot. The fallback means a corrected group jumps to the
+        bottom of the timeline rather than staying where it was — the price of
+        a guaranteed collision-free result when the neighbourhood is full.
+        """
+
+        corrected: dict[str, int] = {}
+        repaired: list[tuple[int, int]] = []
+        occupation = await self._session_order_seq_occupation(conn, session_id)
+        occupation.add(base)
+        for group in groups:
+            reasoning = sorted(
+                (row for row in group.values() if row.kind == "reasoning"),
+                key=lambda row: (row.order_seq, row.id),
+            )
+            messages = sorted(
+                (row for row in group.values() if row.kind == "message"),
+                key=lambda row: (row.order_seq, row.id),
+            )
+            if not reasoning or not messages:
+                continue  # singleton group: nothing to order
+            if max(row.order_seq for row in reasoning) < min(
+                row.order_seq for row in messages
+            ):
+                continue  # already correct: strict corrector, no write
+            ordered = [*reasoning, *messages]
+            start = min(row.order_seq for row in ordered)
+            slots = self._free_slot_run(
+                start=start,
+                count=len(ordered),
+                occupation=occupation - {row.order_seq for row in ordered},
+            )
+            if slots is None:
+                # No in-place run fits; fall back to a fresh block above base.
+                slots = [base + offset for offset in range(1, len(ordered) + 1)]
+                base = base + len(ordered)
+            for row, new_order_seq in zip(ordered, slots, strict=True):
+                if row.order_seq != new_order_seq:
+                    corrected[row.id] = new_order_seq
+                occupation.discard(row.order_seq)
+                occupation.add(new_order_seq)
+            repaired.append((len(reasoning), len(messages)))
+        if not repaired:
+            return None
+        logger.debug(
+            "Timeline intra-message order repaired session_id={} native_item_id={} groups={}",
+            logger_context[0],
+            logger_context[1],
+            repaired,
+        )
+        return corrected
+
+    @staticmethod
+    def _intra_message_movers(
+        corrected: dict[str, int],
+        groups: list[dict[str, _IntraMessageGroupRow]],
+        *,
+        skip_ids: set[str],
+    ) -> list[TimelineItem]:
+        """Stored rows that must be rewritten to a corrected ``order_seq``.
+
+        The incoming / in-batch rows are the caller's to write (it rebuilds
+        them itself), so they are passed in ``skip_ids``; the on-disk siblings
+        are returned as rows the caller upserts beside its own.
+        """
+
+        movers: list[TimelineItem] = []
+        for group in groups:
+            for row in group.values():
+                if row.id in skip_ids or row.stored is None:
+                    continue
+                new_order_seq = corrected.get(row.id)
+                if new_order_seq is None or new_order_seq == row.order_seq:
+                    continue
+                movers.append(row.stored.model_copy(update={"orderSeq": new_order_seq}))
+        return movers
+
     @asynccontextmanager
     async def _timeline_lock(self, session_id: str) -> AsyncIterator[None]:
         """Serialize concurrent writers for one session timeline."""
@@ -1030,6 +1405,58 @@ def session_timeline_lock_key(session_id: str) -> int:
 
     digest = hashlib.sha256(session_id.encode("utf-8")).digest()
     return int.from_bytes(digest[:8], "big", signed=True)
+
+
+@dataclass(frozen=True, slots=True)
+class _IntraMessageGroupRow:
+    """One stored row of a message's intra-message order group.
+
+    ``kind`` is ``"reasoning"`` or ``"message"`` (the only two kinds the
+    invariant speaks about). ``stored`` is the full row for a sibling already
+    on disk, or ``None`` for the in-flight row whose stored payload/model is
+    supplied by the caller — the caller only needs its id and kind.
+    """
+
+    id: str
+    kind: str
+    order_seq: int
+    stored: TimelineItem | None
+
+
+def _intra_message_kind(item_type: str, content: Any) -> str | None:
+    """Classify one item as ``"reasoning"``, ``"message"`` or neither.
+
+    Generic on purpose: reasoning is ``type == "system"`` with
+    ``content.kind == "reasoning"`` and a message body is ``type ==
+    "message"`` — the same free-JSON ``content.kind`` convention the agent-card
+    readers use (``_agent_call_task_ids``). No provider or runtime is
+    consulted, so a Runtime that never reports a native item id (no group) is
+    untouched and a future Runtime is classified by shape alone.
+    """
+
+    if item_type == "message":
+        return "message"
+    if item_type == "system" and isinstance(content, Mapping) and content.get(
+        "kind"
+    ) == "reasoning":
+        return "reasoning"
+    return None
+
+
+def _stored_intra_message_kind(row_type: str, payload_json: str) -> str | None:
+    """Classify one stored timeline row; ``None`` for any other item.
+
+    Total by construction: a payload that cannot be read as a mapping yields
+    ``None`` (an unreadable row is never ordered).
+    """
+
+    try:
+        payload = json.loads(payload_json)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return _intra_message_kind(row_type, payload.get("content"))
 
 
 def _agent_call_task_ids(content: Any) -> set[str]:

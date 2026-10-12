@@ -182,7 +182,7 @@ struct ChatMarkdownView: View {
                 let token = String(plain[range])
                 let lower = plain.distance(from: plain.startIndex, to: range.lowerBound)
                 let upper = plain.distance(from: plain.startIndex, to: range.upperBound)
-                edits.append((document.index(base, offsetBy: lower)..<document.index(base, offsetBy: upper),
+                edits.append((document.index(base, offsetByCharacters: lower)..<document.index(base, offsetByCharacters: upper),
                               ChatFileChipAttachment(path: token, display: token)))
                 remaining -= 1
             }

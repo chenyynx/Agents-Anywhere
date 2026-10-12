@@ -89,6 +89,27 @@ struct V2WorkspaceTextRequest: Encodable, Hashable {
     var maxBytes: Int = 1_048_576
 }
 
+// MARK: - Workspace file list (whole-workspace catalog)
+
+/// Response for the connector's `fs/list-files` RPC: the whole workspace file
+/// catalog (relative POSIX paths) rooted at a chosen directory, used to match
+/// bare/partial file references client-side.
+///
+/// Distinct from `V2WorkspaceFilesListRequest` / `listWorkspaceFiles`, which
+/// enumerate a single directory (`fs/list`).
+struct V2WorkspaceFileListResponse: Decodable, Hashable {
+    let ok: Bool
+    let result: V2WorkspaceFileListResult?
+    let error: V2RuntimeError?
+}
+
+struct V2WorkspaceFileListResult: Decodable, Hashable {
+    /// Relative-to-root POSIX paths. Directory entries carry a trailing `/`.
+    let files: [String]
+    let truncated: Bool
+    let totalFiles: Int
+}
+
 struct V2WorkspaceTextResponse: Decodable, Hashable {
     let path: String
     let name: String

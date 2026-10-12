@@ -7,6 +7,9 @@ struct SessionTimelineGroupView: View {
     /// The second argument is the thumbnail already decoded by the bubble.
     let onAttachment: (V2AttachmentContent, UIImage?) -> Void
     let onFile: (String) -> Void
+    /// The session workspace's file catalog, when loaded; drives which message
+    /// paths become clickable.
+    var catalog: WorkspaceFileCatalog?
     var turnAction: TimelineTurnAction?
     /// L2: opens the SubAgent panel. Nil in the panel's own child rows.
     var onSubAgent: ((String) -> Void)?
@@ -47,7 +50,7 @@ struct SessionTimelineGroupView: View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(group.rows) { row in
                 SessionTimelineRow(row: row, chat: chat, onAttachment: onAttachment, cwd: chat.session.metadata?.cwd,
-                    disclosures: chat.disclosures, onFile: onFile, onSubAgent: onSubAgent)
+                    disclosures: chat.disclosures, onFile: onFile, catalog: catalog, onSubAgent: onSubAgent)
                 ForEach(chat.session.notices.notices.filter {
                     $0.isVisible && !$0.blocks(chat.session.id) && $0.timelineTargetID == row.id
                 }) { notice in SessionInteractionCard(item: notice, chat: chat) }
@@ -62,6 +65,9 @@ struct SessionTimelineEventView: View {
     let cwd: String?
     let disclosures: TimelineDisclosureState
     let onFile: (String) -> Void
+    /// The session workspace's file catalog, when loaded; the reasoning markdown
+    /// resolves bare names against it. `nil` keeps them plain text.
+    var catalog: WorkspaceFileCatalog?
     /// L2: opens the SubAgent panel from an Agent card's 查看详情 entry. Nil
     /// (the panel's own child rows) leaves the card without the entry.
     var onSubAgent: ((String) -> Void)?
@@ -94,7 +100,7 @@ struct SessionTimelineEventView: View {
             } else {
                 TimelineFold(id: row.id, title: value.title, symbol: value.symbol, status: row.value.status, disclosures: disclosures,
                     collapsesOnBodyDoubleTap: true) {
-                    ChatMarkdownView(text: row.text, isStreaming: row.isRevealing, resolvesFileReferences: true)
+                    ChatMarkdownView(text: row.text, isStreaming: row.isRevealing, resolvesFileReferences: true, catalog: catalog)
                         .id(row.layoutGeneration).padding(.leading, 24).foregroundStyle(.secondary)
                         // Reasoning stays well below the reply text.
                         .environment(\.chatMarkdownFont, .caption2)

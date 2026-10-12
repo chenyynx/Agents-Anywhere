@@ -11,6 +11,9 @@ struct ChatTimelineView: View {
     /// it has one; the image viewer opens on it before the original loads.
     let onAttachment: (V2AttachmentContent, UIImage?) -> Void
     let onFile: (String) -> Void
+    /// The session workspace's file catalog, when loaded. Passed straight to
+    /// the equatable content seam, so the timeline re-links once it arrives.
+    var catalog: WorkspaceFileCatalog?
     /// L2: opens the SubAgent panel from a card's 查看详情 entry.
     let onSubAgent: (String) -> Void
     @State private var historyLayout: TimelineHistoryLayout?
@@ -52,7 +55,7 @@ struct ChatTimelineView: View {
         // deceleration recognizer. The explicit return intent survives its callbacks.
         ZStack(alignment: .bottom) {
             ScrollView {
-                ChatTimelineContent(model: model, onAttachment: onAttachment, onFile: onFile, onSubAgent: onSubAgent,
+                ChatTimelineContent(model: model, onAttachment: onAttachment, onFile: onFile, catalog: catalog, onSubAgent: onSubAgent,
                     latestPullReady: latestPull.isReady, isLoadingLatest: latestLoadRequest != nil,
                     olderPullReady: olderPull.isReady, isLoadingOlder: olderLoadRequest != nil,
                     keepsOlderPrompt: hasRequestedOlder, historyAnchor: historyPosition?.origin,
@@ -537,6 +540,10 @@ private struct ChatTimelineContent: View, Equatable {
     let model: SessionChatModel
     let onAttachment: (V2AttachmentContent, UIImage?) -> Void
     let onFile: (String) -> Void
+    /// The workspace file catalog, when loaded. `identity` is compared below so
+    /// a catalog that lands after open re-links every message, while the same
+    /// catalog passed down never forces a redraw.
+    let catalog: WorkspaceFileCatalog?
     let onSubAgent: (String) -> Void
     let latestPullReady: Bool
     let isLoadingLatest: Bool
@@ -568,6 +575,7 @@ private struct ChatTimelineContent: View, Equatable {
             && lhs.olderPullReady == rhs.olderPullReady && lhs.isLoadingOlder == rhs.isLoadingOlder
             && lhs.keepsOlderPrompt == rhs.keepsOlderPrompt && lhs.historyAnchor == rhs.historyAnchor
             && lhs.queueRoster == rhs.queueRoster
+            && lhs.catalog?.identity == rhs.catalog?.identity
     }
     var body: some View {
         let groups = TimelineGrouping.groups(model.timeline.rows, interactionTargets: Set(model.session.notices.notices
@@ -605,7 +613,7 @@ private struct ChatTimelineContent: View, Equatable {
                 .onScrollVisibilityChange(threshold: 0.9) { onOlderPromptVisibility($0) }
             }
             ForEach(groups) { group in
-                SessionTimelineGroupView(group: group, chat: model, onAttachment: onAttachment, onFile: onFile,
+                SessionTimelineGroupView(group: group, chat: model, onAttachment: onAttachment, onFile: onFile, catalog: catalog,
                     turnAction: actions[group.id], onSubAgent: onSubAgent)
                     .id(group.id)
                     .background {

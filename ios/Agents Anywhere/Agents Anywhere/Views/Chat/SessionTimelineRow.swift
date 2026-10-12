@@ -10,6 +10,9 @@ struct SessionTimelineRow: View {
     var cwd: String?
     let disclosures: TimelineDisclosureState
     let onFile: (String) -> Void
+    /// The session workspace's file catalog, when loaded. Passed down to the
+    /// markdown renderer so bare names resolve against real files.
+    var catalog: WorkspaceFileCatalog?
     /// L2: opens the SubAgent panel for an Agent card. Nil (the panel's own
     /// child rows) renders no entry.
     var onSubAgent: ((String) -> Void)?
@@ -39,7 +42,8 @@ struct SessionTimelineRow: View {
                     }
                 }
             default:
-                SessionTimelineEventView(row: row, chat: chat, cwd: cwd, disclosures: disclosures, onFile: onFile, onSubAgent: onSubAgent)
+                SessionTimelineEventView(row: row, chat: chat, cwd: cwd, disclosures: disclosures, onFile: onFile,
+                    catalog: catalog, onSubAgent: onSubAgent)
 
             }
         }
@@ -50,7 +54,7 @@ struct SessionTimelineRow: View {
     }
 
     private var markdown: some View {
-        ChatMarkdownView(text: row.text, isStreaming: row.isRevealing, resolvesFileReferences: true)
+        ChatMarkdownView(text: row.text, isStreaming: row.isRevealing, resolvesFileReferences: true, catalog: catalog)
             .environment(\.chatLayoutTraceOwner, row.id)
             .id(row.layoutGeneration)
             .frame(minHeight: row.value.isStreamingText ? lineHeight : nil, alignment: .topLeading)

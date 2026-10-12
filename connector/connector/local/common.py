@@ -33,6 +33,17 @@ RESOLVE_MAX_ENTRIES = 20000
 RESOLVE_MAX_SECONDS = 2.0
 RESOLVE_MAX_CANDIDATES = 20
 
+# Workspace file listing (fs.listFiles). The client builds an "is this a real
+# file?" suffix set from this list, so it must be bounded: a bounded BFS for
+# non-git roots and a hard wall-clock budget in all cases. `truncated` reports
+# when any limit was hit so the client can refresh instead of trusting a
+# partial list.
+LIST_MAX_DEPTH = 8
+LIST_MAX_FILES_PER_DIR = 50
+LIST_MAX_TOTAL_FILES = 5000
+LIST_MAX_SECONDS = 3.0
+LIST_GIT_TIMEOUT_SECONDS = 3.0
+
 _WORD_BOUNDARY_CHARS = "-_. "
 
 Notify = Callable[[str, dict[str, Any]], Awaitable[None]]

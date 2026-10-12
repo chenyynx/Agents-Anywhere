@@ -33,6 +33,10 @@ final class V2ClientServices {
     private var agentModels: [String: DeviceAgentModel] = [:]
     let deviceManagement: V2DeviceManagementService
     let workspaceFiles: V2WorkspaceFilesService
+    /// App-scoped workspace file catalogs, keyed by `(connectorId, root)`. Shared
+    /// across session views so the same root is listed once and a session switch
+    /// or re-open reads the cache instead of re-fetching (3.3a).
+    let workspaceFileList = WorkspaceFileListModel()
     let newSession: NewSessionModel
 
     init(api: V2APIClient, accountID: String) {
@@ -161,6 +165,7 @@ final class V2ClientServices {
         dashboardRepository.invalidate()
         sessionReads.invalidate()
         newSession.invalidate()
+        workspaceFileList.reset()
         connectivity.stop()
         onConnectivityChange = nil
         sessionRepository.reset()

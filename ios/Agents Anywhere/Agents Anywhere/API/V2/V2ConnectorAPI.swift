@@ -40,6 +40,10 @@ protocol V2ConnectorAPIProtocol {
         connectorId: V2ConnectorID,
         request: V2WorkspaceFilesListRequest
     ) async throws -> V2WorkspaceDirectoryResponse
+    func workspaceFileList(
+        connectorId: V2ConnectorID,
+        root: String
+    ) async throws -> V2WorkspaceFileListResponse
     func resolveWorkspacePath(
         connectorId: V2ConnectorID,
         root: String,
@@ -191,6 +195,18 @@ struct V2ConnectorAPI: V2ConnectorAPIProtocol {
             method: .post,
             path: "\(connectorPath(connectorId))/fs/list",
             body: body
+        )
+        return try await transport.send(request)
+    }
+
+    func workspaceFileList(
+        connectorId: V2ConnectorID,
+        root: String
+    ) async throws -> V2WorkspaceFileListResponse {
+        let request = HTTPRequest<EmptyRequestBody, V2WorkspaceFileListResponse>(
+            method: .post,
+            path: "\(connectorPath(connectorId))/fs/list-files",
+            queryItems: [URLQueryItem(name: "root", value: root)]
         )
         return try await transport.send(request)
     }

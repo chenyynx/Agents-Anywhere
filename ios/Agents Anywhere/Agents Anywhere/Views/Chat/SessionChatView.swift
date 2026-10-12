@@ -18,6 +18,18 @@ struct SessionChatView: View, Equatable {
     private let imageLoader: AttachmentImageLoader
     private let fileService: V2WorkspaceFilesService
     private let detailService: V2SessionDetailService
+    /// The app-scoped workspace file catalog store, keyed by `(connectorId,
+    /// cwd)`. Observed so a background load landing re-renders the timeline;
+    /// the same instance is shared across session views, so one root is listed
+    /// once (3.3a).
+    private let fileList: WorkspaceFileListModel
+    /// The catalog for the session's own workspace root, once its (background)
+    /// load has landed. `nil` before that — every path stays plain text until
+    /// it arrives, and the renderer re-parses then.
+    private var catalog: WorkspaceFileCatalog? {
+        guard let meta = session.metadata, let root = meta.cwd, !root.isEmpty else { return nil }
+        return fileList.catalog(connectorId: meta.connectorId, root: root)
+    }
     private enum SessionSheet: Identifiable {
         case notices, details, files
         /// The SubAgent panel: the anchor card id plus its entry point. The
@@ -112,7 +124,8 @@ struct SessionChatView: View, Equatable {
         case .details: SessionDetailsSheet(chat: model, service: detailService)
         case .subagents(let cardID, let fromCapsule):
             SubAgentPanelSheet(chat: model, deviceName: deviceName, fallbackRuntimeName: fallbackRuntimeName,
-                initialCardID: cardID, opensFromCapsule: fromCapsule, onFile: openFile, onAttachment: openAttachment)
+                initialCardID: cardID, opensFromCapsule: fromCapsule, onFile: openFile, onAttachment: openAttachment,
+                catalog: catalog)
         case .files:
             if let meta = session.metadata, let cwd = meta.cwd {
                 WorkspaceFilesSheet(connectorId: meta.connectorId,
@@ -136,6 +149,8 @@ struct SessionChatView: View, Equatable {
     @State private var pendingTakeover: Bool?
     @State private var hasStartedLoading = false
     @Environment(\.colorScheme) private var colorScheme
+    /// A foreground return re-pulls the workspace file list (刷新时机 (b)).
+    @Environment(\.scenePhase) private var scenePhase
     /// The app-level connection state. Its top banner already reports a
     /// connectivity outage, so this view withholds connection-class toasts while
     /// that banner is up (one incident, one message) and drops its own toasts
@@ -161,6 +176,7 @@ struct SessionChatView: View, Equatable {
         self.fallbackTitle = fallbackTitle
         self.fallbackRuntimeName = fallbackRuntimeName
         fileService = services.workspaceFiles; detailService = services.sessionDetail
+        fileList = services.workspaceFileList
         imageLoader = services.attachmentImageLoader
         self.onMenu = onMenu
     }
@@ -186,7 +202,7 @@ struct SessionChatView: View, Equatable {
             Group {
                 if hasStartedLoading {
                     ChatTimelineView(model: model,
-                        onAttachment: openAttachment, onFile: openFile,
+                        onAttachment: openAttachment, onFile: openFile, catalog: catalog,
                         onSubAgent: { sheet = .subagents($0, fromCapsule: false) })
                 } else {
                     Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -292,15 +308,37 @@ struct SessionChatView: View, Equatable {
             async let usageRun: Void = chat.runContextUsage(sessionID: sessionID)
             _ = await (timelineRun, usageRun)
         }
+        // (a) The workspace file catalog loads on its own task — background and
+        // best-effort — after the page has already opened, so it never delays
+        // the first frame. Its path links appear once this lands.
+        .task(id: hasStartedLoading) {
+            guard hasStartedLoading else { return }
+            await loadFileCatalog()
+        }
+        // (b) The App returning to the foreground re-pulls the list — a file
+        // written while backgrounded becomes clickable without a page reload.
+        // The (re)load only fires for this view's own session root.
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            Task { await refreshFileCatalog() }
+        }
         .sheet(item: $sheet) { destination in
             sheetContent(for: destination)
         }
         .environment(\.openURL, OpenURLAction { url in
+            // The file chip / card open through `FileLink` (`aafile://open?path=`).
+            // Route it through the same `openReference` path as the inline
+            // `aa-workspace-file` links, so absolute-vs-relative resolution and
+            // the candidate chooser behave identically.
+            if let raw = FileLink.path(from: url) {
+                openReference(SessionFileReference.parse(raw))
+                return .handled
+            }
             if let reference = SessionFileReference.reference(from: url) {
-                // A file link must disambiguate against the workspace before it
-                // can open; the line/column from the link ride along so the
-                // preview still focuses the requested source location.
-                Task { await resolveAndOpen(rawPath: reference.path, location: reference) }
+                // The path resolves against the cached workspace catalog
+                // client-side (no server scan); the line/column from the link
+                // ride along so the preview still focuses the source location.
+                openReference(reference)
                 return .handled
             }
             return ["https", "http", "mailto"].contains(url.scheme?.lowercased() ?? "") ? .systemAction : .discarded
@@ -385,44 +423,59 @@ struct SessionChatView: View, Equatable {
             openFailed(String(localized: "无法打开这个文件。"))
             return
         }
-        Task { await resolveAndOpen(rawPath: path) }
+        openReference(SessionFileReference(path: path))
     }
 
-    /// Disambiguates a raw in-message path against the session's workspace, then
-    /// opens the single match, asks the user to choose among several, or reports
-    /// "not found". Every branch is user-visible — a click never fails silently.
+    /// Opens a file reference using the cached workspace catalog, entirely
+    /// client-side (§3.3c) — no server scan and no network round trip before
+    /// the preview.
     ///
-    /// `location` carries the line/column of the source link (markdown links)
-    /// into the preview so it can still focus the requested position.
-    private func resolveAndOpen(rawPath: String, location: SessionFileReference? = nil) async {
-        guard session.isValid, !rawPath.isEmpty else {
+    /// - A full absolute path opens directly and never consults the catalog
+    ///   (a very large workspace may truncate it out of the list); the server
+    ///   preview decides existence / directory / missing and reports it.
+    /// - A bare name or relative path resolves against the catalog: an exact or
+    ///   single suffix hit opens directly, several hits ask the user to choose,
+    ///   and no hit opens the raw path as-is.
+    /// - With no catalog yet, the raw path opens directly (the list is still
+    ///   loading in the background; the click is never blocked on it).
+    private func openReference(_ reference: SessionFileReference) {
+        let raw = reference.path
+        guard session.isValid, !raw.isEmpty else {
             openFailed(String(localized: "无法打开这个文件。"))
             return
         }
-        // The workspace root is the session's cwd. It is never defaulted to "."
-        // here: resolving a bare name against the wrong root is exactly the bug
-        // this path exists to avoid, so a missing cwd is an explicit message.
-        guard let meta = session.metadata, let root = meta.cwd, !root.isEmpty else {
+        let absolute = SessionFileReference.isAbsolutePath(raw)
+        // A bare name needs the session's workspace root; opening it against the
+        // wrong root is exactly the bug this path avoids, so a missing cwd is an
+        // explicit message. A full absolute path never needs the root.
+        guard absolute || session.metadata?.cwd?.isEmpty == false else {
             openFailed(String(localized: "会话没有工作区根目录，无法打开文件。"))
             return
         }
-        let resolution: FileOpenResolution
-        do {
-            let result = try await fileService.resolvePath(connectorId: meta.connectorId, root: root, path: rawPath)
-            resolution = FileOpenResolution.make(requestedPath: rawPath, result: result)
-        } catch {
-            openFailed(V2ClientFailure(error).message)
+        guard !absolute, let catalog else {
+            // No catalog yet, or an absolute path: open as-is.
+            present(SessionFileReference(path: raw, line: reference.line, column: reference.column))
             return
         }
-        guard session.isValid else { return }
-        switch resolution {
+        switch FileReferenceResolution.resolve(SessionFileReference.stripLineColumn(raw), catalog: catalog) {
         case .open(let path):
-            sheet = .preview(SessionFileReference(path: path, line: location?.line, column: location?.column))
-        case .choose(let requested, let candidates):
-            sheet = .fileChoice(FileOpenChoice(requested: requested, candidates: candidates, location: location))
-        case .notFound(let requested):
-            openFailed(String(localized: "未在工作区找到『\(requested)』，请检查路径。"))
+            present(SessionFileReference(path: path, line: reference.line, column: reference.column))
+        case .choose(let candidates):
+            let located = candidates.map {
+                V2WorkspaceFileCandidate(path: $0, relative: $0, name: ($0 as NSString).lastPathComponent, score: 0)
+            }
+            sheet = .fileChoice(FileOpenChoice(requested: raw, candidates: located, location: reference))
+        case .openAsIs(let path):
+            present(SessionFileReference(path: path, line: reference.line, column: reference.column))
         }
+    }
+
+    /// Presents the preview for a resolved reference. The path is opened as-is;
+    /// the server preview reports "directory" / "missing" on its own failure
+    /// surface, so nothing is silently swallowed.
+    private func present(_ reference: SessionFileReference) {
+        guard session.isValid else { return }
+        sheet = .preview(reference)
     }
 
     /// Opens a resolved preview from the candidate chooser, carrying the original
@@ -430,6 +483,21 @@ struct SessionChatView: View, Equatable {
     private func chooseFile(_ path: String, location: SessionFileReference?) {
         guard session.isValid else { return }
         sheet = .preview(SessionFileReference(path: path, line: location?.line, column: location?.column))
+    }
+
+    /// (a) Background load of the workspace file catalog on session open. Never
+    /// awaited on the render path — the page opens first, the paths become
+    /// clickable when this lands.
+    private func loadFileCatalog() async {
+        guard let meta = session.metadata, let root = meta.cwd, !root.isEmpty else { return }
+        await fileList.load(connectorId: meta.connectorId, root: root, service: fileService)
+    }
+
+    /// (b) Re-pulls the catalog (App returned to the foreground). Replaces any
+    /// previous list for this root.
+    private func refreshFileCatalog() async {
+        guard let meta = session.metadata, let root = meta.cwd, !root.isEmpty else { return }
+        await fileList.refresh(connectorId: meta.connectorId, root: root, service: fileService)
     }
 
     /// The shared, user-visible failure surface for opening a file. Uses the

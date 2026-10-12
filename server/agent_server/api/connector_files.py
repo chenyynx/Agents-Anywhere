@@ -123,6 +123,32 @@ async def connector_fs_resolve_path(
     return RpcResponsePayload(ok=True, result=result)
 
 
+@router.post("/{connector_id}/fs/list-files", response_model=RpcResponsePayload)
+async def connector_fs_list_files(
+    connector_id: str,
+    root: str | None = Query(default=None, min_length=1),
+    user_id: str = Depends(current_user_id),
+    store: Store = Depends(get_store),
+    manager: ConnectorRpcManager = Depends(get_rpc),
+) -> RpcResponsePayload:
+    await require_owned_online_connector(connector_id, user_id, store, manager)
+    # This endpoint has no `path`: the connector builds a workspace file list
+    # rooted at `root` itself, so the server must not join or normalize it.
+    if not isinstance(root, str) or not root.strip():
+        raise HTTPException(status_code=422, detail="root is required")
+    result = await request_connector(
+        manager,
+        connector_id,
+        "fs.listFiles",
+        {
+            "sessionId": connector_scope_id(connector_id),
+            "root": root,
+        },
+        timeout=30,
+    )
+    return RpcResponsePayload(ok=True, result=result)
+
+
 @router.post("/{connector_id}/fs/read", response_model=RpcResponsePayload)
 async def connector_fs_read(
     connector_id: str,

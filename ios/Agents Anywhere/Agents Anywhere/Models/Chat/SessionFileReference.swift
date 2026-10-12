@@ -74,4 +74,25 @@ nonisolated struct SessionFileReference: Hashable, Identifiable {
     static func inlinePath(_ text: String) -> String? { inlineReference(text)?.path }
     static func link(_ path: String) -> URL? { Self(path: path).link }
     static func stripLocation(_ path: String) -> String { parse(path).path }
+
+    // MARK: - Catalog-driven recognition (3.3b)
+
+    /// True when `reference` is an absolute path (POSIX `/…`, a Windows drive
+    /// `C:\…`, or a UNC share `\\…`). Absolute paths are always file
+    /// candidates and never consulted against the catalog.
+    static func isAbsolutePath(_ reference: String) -> Bool {
+        FileReferenceRecognizer.isAbsolutePath(reference)
+    }
+
+    /// Removes a trailing `:line:col` suffix (`:42`, `:42:8`). Kept alongside
+    /// `stripLocation`, which parses the location as well.
+    static func stripLineColumn(_ reference: String) -> String {
+        FileReferenceRecognizer.stripLineColumn(reference)
+    }
+
+    /// Whether `content` should render as a clickable file link: an absolute
+    /// path, or a member of the catalog's suffix set (a directory name is not).
+    static func recognize(_ content: String, catalog: WorkspaceFileCatalog) -> Bool {
+        FileReferenceRecognizer.recognize(content, catalog: catalog)
+    }
 }

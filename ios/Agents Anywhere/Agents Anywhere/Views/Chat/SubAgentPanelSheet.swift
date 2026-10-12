@@ -26,6 +26,9 @@ struct SubAgentPanelSheet: View {
     let onFile: (String) -> Void
     /// The second argument is the thumbnail already decoded by the bubble.
     let onAttachment: (V2AttachmentContent, UIImage?) -> Void
+    /// The session workspace's file catalog, when loaded, for the activity
+    /// rows' bare-name resolution. `nil` keeps them plain text.
+    var catalog: WorkspaceFileCatalog?
     /// The card the panel was opened from, and how it was opened: a capsule
     /// carries the newest active id (entry A), a timeline card its own id
     /// (entry B), nil the whole panel (entry A, no anchor).
@@ -45,12 +48,14 @@ struct SubAgentPanelSheet: View {
 
     init(chat: SessionChatModel, deviceName: String?, fallbackRuntimeName: String?,
          initialCardID: String?, opensFromCapsule: Bool = false,
-         onFile: @escaping (String) -> Void = { _ in }, onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void = { _, _ in }) {
+         onFile: @escaping (String) -> Void = { _ in }, onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void = { _, _ in },
+         catalog: WorkspaceFileCatalog? = nil) {
         self.chat = chat
         self.deviceName = deviceName
         self.fallbackRuntimeName = fallbackRuntimeName
         self.onFile = onFile
         self.onAttachment = onAttachment
+        self.catalog = catalog
         self.openingCardID = initialCardID
         self.opensFromCapsule = opensFromCapsule
         // The requested card wins; otherwise the opening rule (newest active /
@@ -303,7 +308,7 @@ struct SubAgentPanelSheet: View {
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(rows) { row in
                     SessionTimelineRow(row: row, chat: chat, onAttachment: onAttachment,
-                        cwd: chat.session.metadata?.cwd, disclosures: chat.disclosures, onFile: onFile)
+                        cwd: chat.session.metadata?.cwd, disclosures: chat.disclosures, onFile: onFile, catalog: catalog)
                 }
             }
         }

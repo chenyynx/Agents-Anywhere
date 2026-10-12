@@ -11,6 +11,11 @@ struct ChatMarkdownView: View {
     let text: String
     var isStreaming = false
     var resolvesFileReferences = false
+    /// The session workspace's file catalog, when it has loaded. `nil` (not yet
+    /// loaded) keeps every path as plain text; the same view re-parses and the
+    /// paths become clickable once the catalog arrives (loads are background,
+    /// never blocking the render).
+    var catalog: WorkspaceFileCatalog? = nil
     @State private var blocks: [MarkdownBlockSnapshot] = []
     /// When each block's newest glyphs finish revealing. A block's drawing
     /// clock runs only until then, so a stalled or finished block stops redrawing.
@@ -25,8 +30,8 @@ struct ChatMarkdownView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .task(id: ParseRequest(text: text, resolvesFileReferences: resolvesFileReferences)) {
-            let request = ParseRequest(text: text, resolvesFileReferences: resolvesFileReferences)
+        .task(id: ParseRequest(text: text, resolvesFileReferences: resolvesFileReferences, catalog: catalog)) {
+            let request = ParseRequest(text: text, resolvesFileReferences: resolvesFileReferences, catalog: catalog)
             // Parsing a long response must not block scroll and drawer gestures.
             // Cancelled requests cannot publish an older snapshot over a new reply.
             let worker = Task.detached(priority: .userInitiated) { try Self.parse(request) }
@@ -53,19 +58,22 @@ struct ChatMarkdownView: View {
     nonisolated private struct ParseRequest: Equatable, Sendable {
         let text: String
         let resolvesFileReferences: Bool
+        let catalog: WorkspaceFileCatalog?
     }
 
     nonisolated private static func parse(_ request: ParseRequest) throws -> [MarkdownBlockSnapshot] {
         try Task.checkCancellation()
         var document = try AttributedStringMarkdownParser.parse(request.text, syntaxExtensions: [.math])
         try Task.checkCancellation()
-        if request.resolvesFileReferences {
-            for run in document.runs {
-                if run.link == nil, run.inlinePresentationIntent?.contains(.code) == true,
-                   let reference = SessionFileReference.inlineReference(String(document[run.range].characters)) {
-                    document[run.range].link = reference.link
-                }
-            }
+        // Catalog membership decides what renders as a file object (3.3b): a
+        // bare name is a chip only when it is a real workspace file (entry ②); a
+        // backtick-quoted path becomes a chip — or loses that — by the same rule
+        // (entry ①). A path alone on its own line becomes a card. Without a
+        // loaded catalog everything stays plain text / code.
+        if request.resolvesFileReferences, let catalog = request.catalog {
+            Self.applyFileCards(in: &document, catalog: catalog)
+            Self.applyBacktickChips(in: &document, catalog: catalog)
+            Self.applyBareChips(in: &document, catalog: catalog)
         }
         document = GitDirectiveParser.enrich(document) { directives, attributes in
             var badge = AttributedString(directives.map(\.label).joined(separator: " · "), attributes: attributes)
@@ -74,6 +82,121 @@ struct ChatMarkdownView: View {
         }
         try Task.checkCancellation()
         return MarkdownBlockSnapshot.split(document)
+    }
+
+    /// A path alone on its own line renders as a file *card* instead of a chip
+    /// (the design's card form). "Alone" = a *standalone* paragraph block (exactly
+    /// one presentation component — not nested in a list or quote) whose trimmed
+    /// text is exactly one recognized reference (an absolute path, or a catalog
+    /// member after the `:line:col` suffix is stripped). A path quoted in
+    /// backticks on its own line is a card too — the card replaces what the chip
+    /// pass would otherwise draw. Links are skipped (their displayed text is not
+    /// the reference), so a `[x](url)` line is left alone.
+    ///
+    /// The whole paragraph is collapsed into a single run (its original
+    /// presentation intent preserved) so exactly one card placeholder is laid
+    /// out, not one per original run.
+    nonisolated private static func applyFileCards(in document: inout AttributedString, catalog: WorkspaceFileCatalog) {
+        // Group runs into blocks by the same identity the block splitter uses.
+        var groups: [(range: Range<AttributedString.Index>, intent: PresentationIntent?)] = []
+        var lastIdentity: Int?
+        for run in document.runs {
+            let identity = run.presentationIntent?.components.last?.identity ?? -1
+            if groups.last != nil, identity == lastIdentity {
+                let lower = groups[groups.count - 1].range.lowerBound
+                groups[groups.count - 1].range = lower..<run.range.upperBound
+            } else {
+                groups.append((run.range, run.presentationIntent))
+            }
+            lastIdentity = identity
+        }
+        var edits: [(range: Range<AttributedString.Index>, intent: PresentationIntent, raw: String)] = []
+        for group in groups {
+            // A standalone paragraph: one component, and it is a paragraph.
+            guard let intent = group.intent, intent.components.count == 1,
+                  intent.components[0].kind == .paragraph else { continue }
+            let content = document[group.range]
+            guard content.runs.allSatisfy({ $0.link == nil }) else { continue }
+            let text = String(content.characters).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty,
+                  FileReferenceScanner.codeReference(text, catalog: catalog) != nil else { continue }
+            // Keep the raw text (with any `:line:col`) as the open path: the card
+            // strips the location for its own title/subtitle, and the open link
+            // re-parses it so the preview still focuses the source line.
+            edits.append((group.range, intent, text))
+        }
+        // Apply from the end so earlier ranges stay valid as the document reindexes.
+        for edit in edits.reversed() {
+            var card = AttributedString(edit.raw)
+            card.presentationIntent = edit.intent
+            card.textual.attachment = AnyAttachment(ChatFileCardAttachment(path: edit.raw))
+            document.replaceSubrange(edit.range, with: card)
+        }
+    }
+
+    /// Entry ①: a backtick-quoted run whose content is a recognized file
+    /// reference (absolute path, or a catalog member after the `:line:col`
+    /// suffix is stripped) becomes an inline chip. Any other code — a directory
+    /// name, a command, a sentence — keeps rendering as plain inline code. The
+    /// chip keeps the raw content as its open path, so `:line:col` still focuses
+    /// the preview once `SessionChatView` parses it back out.
+    nonisolated private static func applyBacktickChips(in document: inout AttributedString, catalog: WorkspaceFileCatalog) {
+        var edits: [(Range<AttributedString.Index>, ChatFileChipAttachment)] = []
+        for run in document.runs {
+            guard run.textual.attachment == nil, run.link == nil,
+                  run.inlinePresentationIntent?.contains(.code) == true else { continue }
+            let content = String(document[run.range].characters)
+            guard FileReferenceScanner.codeReference(content, catalog: catalog) != nil else { continue }
+            edits.append((run.range, ChatFileChipAttachment(path: content, display: content)))
+        }
+        for edit in edits { document[edit.0].textual.attachment = AnyAttachment(edit.1) }
+    }
+
+    /// Entry ②: a bare path-like token in ordinary prose — not code, not HTML,
+    /// not an existing link (`[x](path)`), not inside a fenced block — becomes an
+    /// inline chip in its own sub-range. The token must end in a dotted extension
+    /// and be an exact catalog member, so URLs, e-mail addresses, versions, and
+    /// fractions never turn into chips.
+    ///
+    /// Ceiling on bare-path chips per message. Applying an attachment touches the
+    /// document (O(n) each), so a reply that repeats a workspace filename
+    /// thousands of times (a big diff / log) would otherwise be O(n²). Past the
+    /// cap, later tokens stay plain — no message is ever left un-chipped because
+    /// of a pathological one.
+    nonisolated private static let maxBareLinksPerMessage = 200
+
+    nonisolated private static func applyBareChips(in document: inout AttributedString, catalog: WorkspaceFileCatalog) {
+        var edits: [(Range<AttributedString.Index>, ChatFileChipAttachment)] = []
+        var remaining = Self.maxBareLinksPerMessage
+        for run in document.runs {
+            if remaining <= 0 { break }
+            guard run.textual.attachment == nil, run.link == nil,
+                  run.inlinePresentationIntent?.intersection([.code, .inlineHTML, .blockHTML]).isEmpty != false,
+                  !isCodeBlock(run.presentationIntent) else { continue }
+            let plain = String(document[run.range].characters)
+            // Token offsets are grapheme counts within the run; step from the
+            // run's own document-space lower bound so both indices land in
+            // `document` and the mutable subscript updates it in place.
+            let base = run.range.lowerBound
+            for range in FileReferenceScanner.bareReferences(in: plain, catalog: catalog, limit: remaining) {
+                let token = String(plain[range])
+                let lower = plain.distance(from: plain.startIndex, to: range.lowerBound)
+                let upper = plain.distance(from: plain.startIndex, to: range.upperBound)
+                edits.append((document.index(base, offsetBy: lower)..<document.index(base, offsetBy: upper),
+                              ChatFileChipAttachment(path: token, display: token)))
+                remaining -= 1
+            }
+        }
+        for edit in edits { document[edit.0].textual.attachment = AnyAttachment(edit.1) }
+    }
+
+    /// A fence's runs are one `codeBlock` presentation component; a path inside
+    /// a code block is never linked.
+    nonisolated private static func isCodeBlock(_ intent: PresentationIntent?) -> Bool {
+        intent?.components.contains {
+            if case .codeBlock = $0.kind { return true }
+            return false
+        } == true
     }
 }
 
@@ -144,7 +267,15 @@ private struct ChatMarkdownStyle: StructuredText.Style {
         headingStyle = ChatHeadingStyle(ledger: headingLedger)
     }
 
-    var inlineStyle: InlineStyle { defaults.inlineStyle }
+    // External links: underline + body ink (design §3 `ExternalLinkStyle`),
+    // instead of Textual's default accent color. Only the `link` slot changes;
+    // code/strong keep their defaults.
+    var inlineStyle: InlineStyle {
+        defaults.inlineStyle.link(
+            .foregroundColor(DynamicColor(Color(uiColor: ExternalLinkStyle.ink))),
+            .underlineStyle(.single)
+        )
+    }
     var blockQuoteStyle: ChatBlockQuoteStyle { ChatBlockQuoteStyle() }
     // Textual's defaults indent each level by 2em; a phone column needs ~1.4em.
     var listItemStyle: StructuredText.DefaultListItemStyle { .default(markerSpacing: .fontScaled(0.4)) }

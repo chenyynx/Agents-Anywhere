@@ -23,6 +23,23 @@ struct V2WorkspaceFilesService {
         return directory
     }
 
+    /// Fetches the whole workspace file catalog rooted at `root` in one call.
+    ///
+    /// The root is sent verbatim — like `resolvePath`, this deliberately skips
+    /// `ProjectWorkspacePath.requestRoot`: the caller has already chosen the
+    /// workspace root (session cwd / project path) and the connector lists
+    /// exactly that directory.
+    func fileList(connectorId: V2ConnectorID, root: String) async throws -> V2WorkspaceFileListResult {
+        let response = try await connectorAPI.workspaceFileList(connectorId: connectorId, root: root)
+        if let error = response.error, !response.ok { throw error }
+        guard response.ok, let result = response.result else {
+            throw V2BusinessError.workspaceFilesUnavailable(
+                message: String(localized: "The workspace file list is unavailable.")
+            )
+        }
+        return result
+    }
+
     /// Disambiguates a raw path inside the workspace. The path and root are sent
     /// verbatim — resolving a bare filename to a real file is the connector's
     /// job, so this deliberately skips `ProjectWorkspacePath.requestRoot`.

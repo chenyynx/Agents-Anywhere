@@ -18,6 +18,7 @@ class LocalRpcHandler:
         "fs.readDir",
         "fs.readText",
         "fs.resolvePath",
+        "fs.listFiles",
         "shell.exec",
         "shell.task.start",
         "shell.task.cancel",
@@ -62,6 +63,8 @@ class LocalRpcHandler:
             return await self.local_ops.read_text(params)
         if method == "fs.resolvePath":
             return await self.local_ops.resolve_path_entry(params)
+        if method == "fs.listFiles":
+            return await self.local_ops.list_files(params)
         if method == "shell.exec":
             return await self.local_ops.shell_exec(params)
         if method == "shell.task.start":

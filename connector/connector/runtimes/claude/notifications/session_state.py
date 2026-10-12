@@ -10,12 +10,14 @@ from connector.runtime_protocol import (
 )
 from connector.runtime_protocol.host import RuntimeHostClient
 from connector.runtimes.claude.domain.session import ClaudeSession
+from connector.runtimes.claude.sessions.bindings import ClaudeSessionBindingStore
 
 
 @dataclass(slots=True)
 class ClaudeSessionStateHandler:
     host: RuntimeHostClient
     session_states: RuntimeSessionStateCache
+    bindings: ClaudeSessionBindingStore | None = None
 
     async def session_meta_upsert(
         self,
@@ -23,6 +25,14 @@ class ClaudeSessionStateHandler:
         *,
         source: str,
     ) -> None:
+        if self.bindings is not None and session.external_session_id:
+            # The external uuid is now known for this session, and
+            # ``session.session_id`` is the id the Server will use. Record the
+            # pair so a later restart re-derives nothing (see bindings.py).
+            await self.bindings.write(
+                session.external_session_id,
+                session.session_id,
+            )
         await self.host.session_meta_upsert(
             session_id=session.session_id,
             runtime="claude",

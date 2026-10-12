@@ -14,6 +14,7 @@ from connector.runtimes.claude.notifications.session_state import (
 from connector.runtimes.claude.notifications.timeline_activity import (
     ClaudeTimelineActivityHandler,
 )
+from connector.runtimes.claude.sessions.bindings import ClaudeSessionBindingStore
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 
 
@@ -23,6 +24,7 @@ class ClaudeNotificationProjector:
     session_states: RuntimeSessionStateCache
     session_store: ClaudeSessionStore
     notices: ClaudeNoticeRegistry
+    bindings: ClaudeSessionBindingStore | None = None
     notice_handler: ClaudeNoticeHandler = field(init=False)
     session_state: ClaudeSessionStateHandler = field(init=False)
     timeline_activity: ClaudeTimelineActivityHandler = field(init=False)
@@ -35,6 +37,7 @@ class ClaudeNotificationProjector:
         self.session_state = ClaudeSessionStateHandler(
             host=self.host,
             session_states=self.session_states,
+            bindings=self.bindings,
         )
         self.timeline_activity = ClaudeTimelineActivityHandler(
             host=self.host,

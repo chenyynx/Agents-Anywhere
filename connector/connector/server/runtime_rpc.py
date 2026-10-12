@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, ClassVar
 
+from connector.logging import logger
 from connector.runtime_protocol import (
     AgentRuntime,
     RuntimeHostClient,
@@ -93,6 +94,7 @@ class RuntimeRpcHandler:
         return method in self.METHODS
 
     async def dispatch(self, method: str, params: dict[str, Any]) -> Any:
+        await self._record_external_session_binding(params)
         if method == "runtime.discover":
             return await self.discover_runtimes(params)
         if method == "runtime.configSchema":
@@ -275,6 +277,50 @@ class RuntimeRpcHandler:
                 await dispatch_session_stop_subagent(runtime, params),
             )
         raise ValueError(f"unsupported runtime method: {method}")
+
+    async def _record_external_session_binding(
+        self,
+        params: dict[str, Any],
+    ) -> None:
+        """Durably record the Server's session id for an external uuid.
+
+        The Server sends both ids whenever it addresses a session it owns
+        (``sessionId`` is ``sessions.id``; ``externalSessionId`` is the Claude
+        conversation uuid). Persisting that pair the first time a session is
+        touched is what lets a restarted Connector resolve a platform-created
+        session straight to the Server id instead of re-deriving its own and
+        tripping the binding check (2026-10-12 ``sess_92gAb`` 502).
+
+        Only runtime implementations that own an external session identity are
+        asked to bind (``bind_external_session``); the capability is probed
+        rather than assumed so runtimes without it are unaffected. The whole
+        step is best-effort — a failure here must never fail the RPC.
+        """
+
+        if not isinstance(params, dict):
+            return
+        session_id = params.get("sessionId")
+        external_session_id = params.get("externalSessionId")
+        if not isinstance(session_id, str) or not session_id:
+            return
+        if not isinstance(external_session_id, str) or not external_session_id:
+            return
+        try:
+            runtime = self._resolve_agent_runtime(params)
+        except Exception:  # noqa: BLE001 - binding must never fail the RPC
+            return
+        record = getattr(runtime, "bind_external_session", None)
+        if record is None:
+            return
+        try:
+            await record(external_session_id, session_id)
+        except Exception:  # noqa: BLE001 - binding must never fail the RPC
+            logger.exception(
+                "session binding record failed session_id={} "
+                "external_session_id={}",
+                session_id,
+                external_session_id,
+            )
 
     async def discover_runtimes(
         self,

@@ -616,6 +616,16 @@ class RuntimeInstance(AgentRuntime):
             ),
         )
 
+    async def bind_external_session(
+        self,
+        external_session_id: str,
+        session_id: str,
+    ) -> None:
+        await self.native_runtime.bind_external_session(
+            external_session_id,
+            session_id,
+        )
+
     async def get_session_state(
         self,
         session_id: str,

@@ -46,6 +46,7 @@ from connector.runtimes.claude.sdk.client import (
     ClaudeClientFactory,
     SdkLoader,
 )
+from connector.runtimes.claude.sessions.bindings import ClaudeSessionBindingStore
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 from connector.runtimes.claude.sessions.reader import ClaudeSessionReader
 from connector.runtimes.claude.sessions.subagent_oracle import ClaudeSubagentOracle
@@ -71,6 +72,7 @@ class ClaudeRuntime(AgentRuntime):
     _session_store: ClaudeSessionStore = field(init=False)
     _session_reader: ClaudeSessionReader = field(init=False)
     _session_sync_states: ClaudeSessionSyncStateStore = field(init=False)
+    _session_bindings: ClaudeSessionBindingStore = field(init=False)
     _pending_messages: ClaudePendingClientMessageRegistry = field(init=False)
     _history_syncer: ClaudeHistorySyncer = field(init=False)
     _catalogs: ClaudeCatalogReader = field(init=False)
@@ -90,6 +92,7 @@ class ClaudeRuntime(AgentRuntime):
         )
         self._session_store = ClaudeSessionStore(self._sessions)
         self._session_sync_states = ClaudeSessionSyncStateStore(self.host)
+        self._session_bindings = ClaudeSessionBindingStore(self.host)
         self._pending_messages = ClaudePendingClientMessageRegistry(
             connector_id=getattr(
                 self.host,
@@ -109,6 +112,7 @@ class ClaudeRuntime(AgentRuntime):
             sdk_loader=self.sdk_loader,
             sync_states=self._session_sync_states,
             pending_messages=self._pending_messages,
+            bindings=self._session_bindings,
             oracle=self.subagent_oracle,
         )
         self._history_syncer = ClaudeHistorySyncer(
@@ -128,6 +132,7 @@ class ClaudeRuntime(AgentRuntime):
             session_states=self._session_states,
             session_store=self._session_store,
             notices=self._notices,
+            bindings=self._session_bindings,
         )
         self._turns = ClaudeTurnController(
             config=self.config,
@@ -202,6 +207,27 @@ class ClaudeRuntime(AgentRuntime):
         limit: int = 100,
     ) -> RuntimePermissionCatalog:
         return await self._catalogs.list_permission_catalog(query=query, limit=limit)
+
+    async def bind_external_session(
+        self,
+        external_session_id: str,
+        session_id: str,
+    ) -> None:
+        """Persist the Server-authoritative id for one external uuid.
+
+        Called from the RPC entry point whenever a request carries both ids
+        (the Server always sends both when it reads a session), so the binding
+        is durably recorded the first time a session is touched — including
+        pre-existing sessions that predate this code, which is how the
+        cold-restart 502 heals for the whole existing library without a
+        migration. Fail-soft lives in the store.
+        """
+
+        await self._session_bindings.write(
+            external_session_id,
+            session_id,
+            runtime_id=self.config.runtime_id,
+        )
 
     async def get_session_state(
         self,

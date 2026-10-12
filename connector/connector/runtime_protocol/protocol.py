@@ -121,6 +121,21 @@ class AgentRuntime(ABC):
         _ = session_id, external_session_id
         return None
 
+    async def bind_external_session(
+        self,
+        external_session_id: str,
+        session_id: str,
+    ) -> None:
+        """Record the Server-authoritative id for an external session uuid.
+
+        Runtimes that own an external conversation identity override this to
+        persist the pair durably (see the Claude runtime); the default is a
+        no-op so every other provider is unaffected. Best-effort by contract:
+        implementations must not raise, since this rides the RPC entry point.
+        """
+
+        _ = external_session_id, session_id
+
     async def get_session_state(
         self,
         session_id: str,

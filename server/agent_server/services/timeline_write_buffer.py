@@ -41,6 +41,28 @@ DEFAULT_LANE_CACHE_ITEMS = 1024
 DEFAULT_LANE_IDLE_SECONDS = 900.0
 DEFAULT_MAX_LANES = 4096
 
+# A snapshot replacement can omit thousands of rows at once. Listing every
+# removed id would bloat the realtime envelope (the broker splits events above
+# its byte threshold) for the sake of a client-side in-place drop; past this
+# count the envelope states only ``refetch``, which those clients already act
+# on. Small deletions — the converged-twin case this exists for — stay stated.
+MAX_STATED_DELETIONS = 200
+
+
+def _state_deletions(envelope: dict[str, Any], deleted: tuple[str, ...]) -> None:
+    """Record removed row ids on an outbound envelope.
+
+    A removed row has no surviving item to carry the change, so the envelope
+    always forces ``refetch`` — the signal today's clients act on. The ids
+    themselves are stated only while they are few enough to be a targeted
+    in-place drop rather than a payload; above ``MAX_STATED_DELETIONS`` a
+    client re-pulls anyway, so the array would only cost bytes.
+    """
+
+    envelope["refetch"] = True
+    if len(deleted) <= MAX_STATED_DELETIONS:
+        envelope["deleted"] = list(deleted)
+
 
 @dataclass(slots=True)
 class _PendingSnapshot:
@@ -515,19 +537,15 @@ class TimelineWriteBuffer:
             "sessionId": session_id,
             "nextSeq": durable_sequence,
         }
-        if deleted:
-            # A removed row has no surviving item to carry the change. State the
-            # ids explicitly (a future client can drop them in place) and force a
-            # refetch, which is the signal today's client acts on
-            # (`session.refetch_required`) — without it a converged twin stays
-            # rendered until some later refetch.
-            envelope["deleted"] = list(deleted)
-            envelope["refetch"] = True
         if isinstance(result, SessionView):
             session = await self._project_session_connector_status(result)
             envelope["session"] = session.model_dump(mode="json")
         elif isinstance(result, TimelineItemWriteResult):
             envelope["items"] = [result.item.model_dump(mode="json")]
+            if deleted:
+                # A single-row writer states a surviving item but may also have
+                # removed a converged twin; nothing else carries that removal.
+                _state_deletions(envelope, deleted)
         elif isinstance(result, TimelineBatchWriteResult):
             result_items = list(result.items)
             needs_refetch = False
@@ -537,17 +555,30 @@ class TimelineWriteBuffer:
             if needs_refetch or len(result_items) > 100:
                 envelope.pop("timelineReset", None)
                 envelope["refetch"] = True
-            elif result_items:
+            else:
                 envelope["items"] = [
                     item.model_dump(mode="json") for item in result_items
                 ]
             if operation == "replace_timeline_snapshot" and "items" in envelope:
                 envelope["timelineReset"] = True
+            if deleted and operation != "replace_timeline_snapshot":
+                # A batch writer that also removed rows (converged twins) must
+                # say so: nothing else in the envelope carries a removal, and
+                # today's client acts on ``refetch``, not on ``deleted``. A
+                # snapshot replacement is excluded — its ``deleted`` is just
+                # "rows the new snapshot omits", and the envelope already
+                # carries the complete new timeline via ``timelineReset`` +
+                # ``items`` (empty included). Forcing a refetch there would
+                # strand the client on the refetch path and suppress the empty
+                # ``timeline.snapshot`` the client needs to clear the view.
+                _state_deletions(envelope, deleted)
         else:
             session = await self._project_session_connector_status(
                 await self._store.get_session(session_id)
             )
             envelope["session"] = session.model_dump(mode="json")
+            if deleted:
+                _state_deletions(envelope, deleted)
         await self._broker.publish(session_id, envelope)
         await self._sequences.mark_published(session_id, durable_sequence)
 
@@ -587,8 +618,7 @@ class TimelineWriteBuffer:
                     # A converged twin's removal must reach the client: there is
                     # no surviving item to carry it, so state the ids and force
                     # the refetch the client acts on.
-                    envelope["deleted"] = list(result.deleted)
-                    envelope["refetch"] = True
+                    _state_deletions(envelope, result.deleted)
                 await self._broker.publish(session_id, envelope)
                 await self._sequences.mark_published(session_id, next_seq)
             await publish_dashboard_changed(

@@ -126,6 +126,13 @@ class TimelineRepositoryMixin:
         the ``(session_id, id)`` primary key, so a payload with no itemId cannot
         stall it — and is meant to be run best-effort at startup. Returns the
         number of rows refilled.
+
+        The scan is restricted to rows that are still NULL: the predicate keeps
+        startup from re-reading every payload in the table (hundreds of
+        megabytes in production) to find the handful of rows a rolling upgrade
+        missed, and it is served by the ``(session_id, native_item_id)`` index
+        the migration builds. It is combined with — not replaced by — the
+        primary-key cursor, which is what guarantees termination.
         """
 
         refilled = 0
@@ -141,13 +148,14 @@ class TimelineRepositoryMixin:
                             timeline_items_t.c.payload_json,
                         )
                         .where(
+                            timeline_items_t.c.native_item_id.is_(None),
                             or_(
                                 timeline_items_t.c.session_id > after_session,
                                 and_(
                                     timeline_items_t.c.session_id == after_session,
                                     timeline_items_t.c.id > after_id,
                                 ),
-                            )
+                            ),
                         )
                         .order_by(
                             timeline_items_t.c.session_id,
@@ -207,34 +215,33 @@ class TimelineRepositoryMixin:
             # The removal runs under the same per-session timeline lock as the
             # writers, so a live write for this session cannot interleave
             # between the duplicate scan and the delete.
-            async with self._timeline_lock(session_id):
-                async with self._engine.begin() as conn:
-                    rows = (
-                        await conn.execute(
-                            select(
-                                timeline_items_t.c.id,
-                                timeline_items_t.c.updated_seq,
-                            )
-                            .where(
-                                timeline_items_t.c.session_id == session_id,
-                                timeline_items_t.c.type == "message",
-                                timeline_items_t.c.native_item_id == native_item_id,
-                                timeline_items_t.c.role.is_(role)
-                                if role is None
-                                else timeline_items_t.c.role == role,
-                            )
-                            .order_by(
-                                timeline_items_t.c.updated_seq,
-                                timeline_items_t.c.id,
-                            )
+            async with self._timeline_lock(session_id), self._engine.begin() as conn:
+                rows = (
+                    await conn.execute(
+                        select(
+                            timeline_items_t.c.id,
+                            timeline_items_t.c.updated_seq,
                         )
-                    ).all()
-                    doomed = {row_id for row_id, _ in rows[1:]}
-                    if not doomed:
-                        continue  # healed by a concurrent write; re-scan
-                    await self.timeline.delete_items(conn, session_id, doomed)
-                    await self._bump_session(conn, session_id, mark_read=False)
-                    removed += len(doomed)
+                        .where(
+                            timeline_items_t.c.session_id == session_id,
+                            timeline_items_t.c.type == "message",
+                            timeline_items_t.c.native_item_id == native_item_id,
+                            timeline_items_t.c.role.is_(role)
+                            if role is None
+                            else timeline_items_t.c.role == role,
+                        )
+                        .order_by(
+                            timeline_items_t.c.updated_seq,
+                            timeline_items_t.c.id,
+                        )
+                    )
+                ).all()
+                doomed = {row_id for row_id, _ in rows[1:]}
+                if not doomed:
+                    continue  # healed by a concurrent write; re-scan
+                await self.timeline.delete_items(conn, session_id, doomed)
+                await self._bump_session(conn, session_id, mark_read=False)
+                removed += len(doomed)
         return removed
 
     async def _next_duplicate_key(self) -> tuple[str | None, str, str | None]:
@@ -998,7 +1005,9 @@ class TimelineRepositoryMixin:
             items=tuple(normalized),
             changed=True,
             deleted=tuple(
-                sorted(set(current_by_id) - set(incoming_by_id) | converged_deletions)
+                sorted(
+                    (set(current_by_id) - set(incoming_by_id)) | converged_deletions
+                )
             ),
         )
 
@@ -1794,7 +1803,14 @@ class TimelineRepositoryMixin:
         # took (the red-team cross-group collision: two independent messages
         # landing on the same ``order_seq``).
         own_slots = {row.order_seq for group in groups for row in group.values()}
-        foreign_slots = (occupation - own_slots) | (extra_occupied or set())
+        # A group may reclaim its OWN current slots (``own_slots``), including
+        # the ones its in-batch rows were handed — those are in ``extra_occupied``
+        # too, so they must be subtracted there as well. Leaving them in the
+        # blocked set would make the in-place run unreachable for every in-batch
+        # group and push each one to a fresh block at the end of the session,
+        # which is exactly the "message teleports to the bottom" behaviour the
+        # in-place preference exists to avoid.
+        foreign_slots = (occupation - own_slots) | ((extra_occupied or set()) - own_slots)
         claimed: set[int] = set()
         # The highest slot in play. An in-place run must stay at or below it;
         # the fresh-block fallback lands above it. Both include the caller's
@@ -1803,9 +1819,7 @@ class TimelineRepositoryMixin:
         ceiling = max(
             [max(occupation, default=0), *own_slots, *(extra_occupied or set())]
         )
-        base = max(
-            [max(occupation, default=0), *own_slots, *(extra_occupied or set())]
-        )
+        base = ceiling
         for reasoning, messages in broken:
             ordered = [*reasoning, *messages]
             start = min(row.order_seq for row in ordered)

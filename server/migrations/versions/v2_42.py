@@ -64,6 +64,31 @@ def _index_exists(name: str) -> bool:
     return bind.execute(statement, {"name": name}).first() is not None
 
 
+def _index_is_usable(name: str) -> bool:
+    """Whether a *planner-usable* index of this name exists.
+
+    ``CREATE INDEX CONCURRENTLY`` that fails (a cancelled statement, a deadlock,
+    an operator's Ctrl-C) leaves the index behind marked ``indisvalid = false``.
+    It still shows up in ``pg_indexes``, but the planner ignores it — so a
+    retry that only checked existence would conclude "already built" and leave
+    the column permanently unindexed with no error to notice. On SQLite there
+    is no such state, so existence is usability.
+    """
+
+    bind = op.get_bind()
+    if bind.dialect.name == "sqlite":
+        return _index_exists(name)
+    row = bind.execute(
+        sa.text(
+            "SELECT i.indisvalid FROM pg_class c "
+            "JOIN pg_index i ON i.indexrelid = c.oid "
+            "WHERE c.relname = :name AND c.relkind = 'i'"
+        ),
+        {"name": name},
+    ).first()
+    return bool(row and row[0])
+
+
 def _native_item_id_from_payload(payload_json: str) -> str | None:
     try:
         payload = json.loads(payload_json)
@@ -99,7 +124,8 @@ def _backfill_native_item_id() -> None:
     )
     update_sql = sa.text(
         "UPDATE timeline_items SET native_item_id = :native_item_id "
-        "WHERE session_id = :session_id AND id = :id"
+        "WHERE session_id = :session_id AND id = :id "
+        "AND native_item_id IS NULL"
     )
     after_session = ""
     after_id = ""
@@ -148,7 +174,12 @@ def upgrade() -> None:
         _backfill_native_item_id()
 
     with context.autocommit_block():
-        if not _index_exists(NATIVE_ITEM_INDEX):
+        if not _index_is_usable(NATIVE_ITEM_INDEX):
+            # Either the index is absent, or a previous CONCURRENTLY build left
+            # it INVALID (present but unusable). Both mean "build it"; the drop
+            # clears the invalid shell so the name is free.
+            if _index_exists(NATIVE_ITEM_INDEX):
+                _drop_index_concurrently(NATIVE_ITEM_INDEX)
             op.create_index(
                 NATIVE_ITEM_INDEX,
                 "timeline_items",
@@ -158,8 +189,31 @@ def upgrade() -> None:
             )
 
 
+def _drop_index_concurrently(name: str) -> None:
+    """Drop ``name`` without an ACCESS EXCLUSIVE scan of the table.
+
+    On PostgreSQL a plain ``DROP INDEX`` locks the table against writes for the
+    whole drop; this migration's whole point is to avoid that. ``CONCURRENTLY``
+    cannot run inside a transaction, which is why every caller is already
+    inside an ``autocommit_block``.
+    """
+
+    bind = op.get_bind()
+    op.drop_index(
+        name,
+        table_name="timeline_items",
+        if_exists=True,
+        **(
+            {"postgresql_concurrently": True}
+            if bind.dialect.name == "postgresql"
+            else {}
+        ),
+    )
+
+
 def downgrade() -> None:
     if _index_exists(NATIVE_ITEM_INDEX):
-        op.drop_index(NATIVE_ITEM_INDEX, table_name="timeline_items")
+        with op.get_context().autocommit_block():
+            _drop_index_concurrently(NATIVE_ITEM_INDEX)
     if "native_item_id" in _column_names():
         op.drop_column("timeline_items", "native_item_id")

@@ -1230,6 +1230,141 @@ def test_v2_42_backfills_native_item_id_from_the_payload(tmp_path) -> None:
         engine.dispose()
 
 
+def test_v2_42_downgrade_then_upgrade_round_trips(tmp_path) -> None:
+    """The migration's DDL is not in the alembic chain's single transaction.
+
+    Each step runs in its own ``autocommit_block`` so a large ``timeline_items``
+    is never locked end-to-end, which means a partially applied run is recovered
+    by re-running, not by an automatic rollback. A downgrade followed by an
+    upgrade must therefore land back on the same schema — column, index and
+    backfilled values — with no manual repair.
+    """
+
+    path = tmp_path / "native-item-id-roundtrip.sqlite3"
+    url = _sqlite_url(path)
+    upgrade_database(db_url=url, revision="v2_41")
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO sessions "
+                    "(id, connector_id, runtime, runtime_id, status, takeover, "
+                    " seq, updated_seq, seq_allocated_high, created_at, updated_at) "
+                    "VALUES ('s1', 'c1', 'claude', 'r1', 'active', 0, 1, 1, 1, "
+                    " '2026-10-12T00:00:00Z', '2026-10-12T00:00:00Z')"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO timeline_items "
+                    "(session_id, id, type, status, role, order_seq, updated_seq, "
+                    " payload_json) VALUES "
+                    "('s1', 'm1', 'message', 'done', 'assistant', 1, 1, "
+                    " '{\"id\":\"m1\",\"source\":{\"runtime\":\"claude\","
+                    "\"itemId\":\"native-A\"}}')"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    def _columns() -> set[str]:
+        engine = create_engine(f"sqlite:///{path}")
+        try:
+            return {
+                column["name"]
+                for column in inspect(engine).get_columns("timeline_items")
+            }
+        finally:
+            engine.dispose()
+
+    def _native_item_id() -> str | None:
+        engine = create_engine(f"sqlite:///{path}")
+        try:
+            with engine.connect() as connection:
+                return connection.execute(
+                    text("SELECT native_item_id FROM timeline_items WHERE id = 'm1'")
+                ).scalar()
+        finally:
+            engine.dispose()
+
+    def _index_names() -> set[str]:
+        engine = create_engine(f"sqlite:///{path}")
+        try:
+            with engine.connect() as connection:
+                return {
+                    row[0]
+                    for row in connection.execute(
+                        text(
+                            "SELECT name FROM sqlite_master WHERE type = 'index' "
+                            "AND tbl_name = 'timeline_items'"
+                        )
+                    )
+                }
+        finally:
+            engine.dispose()
+
+    upgrade_database(db_url=url)
+    assert _native_item_id() == "native-A"
+    assert "idx_timeline_items_session_native_item" in _index_names()
+
+    command.downgrade(_alembic_config(url), "v2_41")
+    assert "native_item_id" not in _columns()
+    assert "idx_timeline_items_session_native_item" not in _index_names()
+
+    upgrade_database(db_url=url)
+    assert _native_item_id() == "native-A"
+    assert "idx_timeline_items_session_native_item" in _index_names()
+
+
+def test_v2_42_index_check_ignores_an_unusable_index(monkeypatch) -> None:
+    """``CREATE INDEX CONCURRENTLY`` that fails leaves an index the planner
+    ignores. Checking mere existence would then report "already built" forever
+    and silently leave the column unindexed, so the check must ask whether the
+    index is usable — and on PostgreSQL that answer comes from ``indisvalid``.
+    """
+
+    from types import SimpleNamespace
+
+    from migrations.versions import v2_42
+
+    class _Result:
+        def __init__(self, row) -> None:
+            self._row = row
+
+        def first(self):
+            return self._row
+
+    class _Bind:
+        dialect = SimpleNamespace(name="postgresql")
+
+        def __init__(self, row) -> None:
+            self.row = row
+            self.statements: list[str] = []
+
+        def execute(self, statement, _parameters):
+            self.statements.append(str(statement))
+            return _Result(self.row)
+
+    class _Op:
+        def __init__(self, bind) -> None:
+            self._bind = bind
+
+        def get_bind(self):
+            return self._bind
+
+    for row, expected in (
+        ((True,), True),  # a real, usable index
+        ((False,), False),  # the invalid shell a failed CONCURRENTLY leaves
+        (None, False),  # no such index at all
+    ):
+        bind = _Bind(row)
+        monkeypatch.setattr(v2_42, "op", _Op(bind))
+        assert v2_42._index_is_usable("idx_x") is expected
+        assert "indisvalid" in bind.statements[-1]
+        assert "relkind" in bind.statements[-1]
+
+
 def test_v2_41_drops_the_sidebar_order_table(tmp_path) -> None:
     path = tmp_path / "sidebar-order.sqlite3"
     url = _sqlite_url(path)
@@ -2243,6 +2378,59 @@ def test_invalid_migration_lock_timeout_is_rejected(tmp_path, monkeypatch) -> No
 
     with pytest.raises(DatabaseMigrationError, match="must be a number"):
         upgrade_database(db_url=_sqlite_url(tmp_path / "invalid-lock.sqlite3"))
+
+
+def test_postgres_migration_lock_holder_uses_autocommit(monkeypatch) -> None:
+    """The migration lock holder must not sit ``idle in transaction``.
+
+    SQLAlchemy autobegins a transaction on the first statement. A holder left
+    in transaction keeps a snapshot alive for the whole migration, and a
+    ``CREATE INDEX CONCURRENTLY`` (v2_42) on another connection waits for it to
+    end — a deadlock that hangs the migration forever. A real-PostgreSQL drill
+    caught exactly this, so the AUTOCOMMIT isolation is pinned here: it is
+    invisible on the SQLite test backend, which never runs the holder at all.
+    """
+
+    import agent_server.infra.db.migrations as migrations_module
+
+    captured: dict = {}
+
+    class _Result:
+        def scalar_one(self) -> int:
+            return 1  # "lock acquired"
+
+    class _Connection:
+        async def execute(self, _statement, _parameters=None):
+            return _Result()
+
+    class _ConnectContext:
+        async def __aenter__(self) -> _Connection:
+            return _Connection()
+
+        async def __aexit__(self, *_exc) -> bool:
+            return False
+
+    class _Engine:
+        def connect(self) -> _ConnectContext:
+            return _ConnectContext()
+
+        async def dispose(self) -> None:
+            return None
+
+    def spy_create(_url, **kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return _Engine()
+
+    monkeypatch.setattr(migrations_module, "create_async_engine", spy_create)
+
+    # The holder thread blocks on ``release`` until the context manager exits,
+    # so drive it fully: enter, then let the ``with`` unwind.
+    with migrations_module.postgres_migration_lock(
+        "postgresql+asyncpg://unused", timeout_seconds=5
+    ):
+        pass
+
+    assert captured.get("isolation_level") == "AUTOCOMMIT"
 
 
 def test_v1_rehearsal_requires_postgres_target(tmp_path) -> None:

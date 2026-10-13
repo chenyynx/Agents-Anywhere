@@ -516,11 +516,13 @@ class TimelineWriteBuffer:
             "nextSeq": durable_sequence,
         }
         if deleted:
-            # A removed row has no surviving item to carry the change, so the
-            # deletion is stated explicitly: the client drops these ids from
-            # its local timeline. Without it a converged twin would stay
-            # rendered until a full refetch.
+            # A removed row has no surviving item to carry the change. State the
+            # ids explicitly (a future client can drop them in place) and force a
+            # refetch, which is the signal today's client acts on
+            # (`session.refetch_required`) — without it a converged twin stays
+            # rendered until some later refetch.
             envelope["deleted"] = list(deleted)
+            envelope["refetch"] = True
         if isinstance(result, SessionView):
             session = await self._project_session_connector_status(result)
             envelope["session"] = session.model_dump(mode="json")
@@ -539,10 +541,6 @@ class TimelineWriteBuffer:
                 envelope["items"] = [
                     item.model_dump(mode="json") for item in result_items
                 ]
-            if deleted and not result_items:
-                # Deletion-only (a pure heal): a client that does not yet act on
-                # ``deleted`` still drops the ghost by re-pulling.
-                envelope["refetch"] = True
             if operation == "replace_timeline_snapshot" and "items" in envelope:
                 envelope["timelineReset"] = True
         else:
@@ -587,10 +585,10 @@ class TimelineWriteBuffer:
                     ]
                 if result.deleted:
                     # A converged twin's removal must reach the client: there is
-                    # no surviving item to carry it.
+                    # no surviving item to carry it, so state the ids and force
+                    # the refetch the client acts on.
                     envelope["deleted"] = list(result.deleted)
-                    if not result.items:
-                        envelope["refetch"] = True
+                    envelope["refetch"] = True
                 await self._broker.publish(session_id, envelope)
                 await self._sequences.mark_published(session_id, next_seq)
             await publish_dashboard_changed(

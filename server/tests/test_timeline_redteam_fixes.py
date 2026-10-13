@@ -353,3 +353,16 @@ async def test_startup_dedup_removes_existing_duplicate_groups(tmp_path) -> None
         assert await store.deduplicate_message_identities() == 0
     finally:
         await store.close()
+
+
+def test_deletion_envelope_becomes_the_refetch_signal_the_client_acts_on() -> None:
+    """The publish envelope's deletion must reach the socket layer as
+    ``session.refetch_required`` — the one signal today's client reacts to by
+    re-pulling (it does not yet understand ``deleted``)."""
+
+    from agent_server.core.events import events_from_invalidation
+
+    events = events_from_invalidation(
+        {"sessionId": "s1", "nextSeq": 7, "deleted": ["ghost"], "refetch": True}
+    )
+    assert "session.refetch_required" in {event.type for event in events}

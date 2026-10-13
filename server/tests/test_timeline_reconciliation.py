@@ -30,7 +30,11 @@ def timeline_input(
             "source": {
                 "runtime": "codex",
                 "sessionId": "thread_1",
-                "itemId": "runtime-item",
+                # A distinct message carries a distinct Runtime-native id; the
+                # native id is the message's server-side identity (the
+                # live/history convergence keys on it), so a shared spelling
+                # here would model three distinct messages as one.
+                "itemId": f"runtime-{item_id}",
                 "itemType": "agentMessage",
             },
             "orderSeq": order_seq,

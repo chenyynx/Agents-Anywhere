@@ -9,9 +9,13 @@ share — the Runtime's native item id (``source.itemId``) — which was not
 stored. ``native_item_id`` carries it, with an index for the per-write group
 lookup.
 
-No backfill: historical rows keep a NULL ``native_item_id`` until a later
-rewrite of that row repopulates it from the payload. Until then their order is
-left exactly as it is.
+The column is backfilled from the stored payload in the same migration: the
+corrector groups rows by ``native_item_id``, so a NULL historical row would be
+invisible to it and the invariant could never be repaired on existing data
+(red-team finding). The payload already carries ``source.itemId`` on every
+projected row, so the backfill is a faithful copy, not a guess. Rows whose
+payload has no ``itemId`` (platform-authored rows, or pre-projection rows)
+stay NULL and are simply out of scope.
 
 Revision ID: v2_42
 Revises: v2_41
@@ -19,6 +23,7 @@ Revises: v2_41
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -30,6 +35,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 NATIVE_ITEM_INDEX = "idx_timeline_items_session_native_item"
+_BACKFILL_BATCH = 1000
 
 
 def _column_names() -> set[str]:
@@ -58,12 +64,60 @@ def _index_exists(name: str) -> bool:
     return bind.execute(statement, {"name": name}).first() is not None
 
 
+def _native_item_id_from_payload(payload_json: str) -> str | None:
+    try:
+        payload = json.loads(payload_json)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    source = payload.get("source")
+    if not isinstance(source, dict):
+        return None
+    value = source.get("itemId")
+    return value if isinstance(value, str) and value else None
+
+
+def _backfill_native_item_id() -> None:
+    """Copy ``source.itemId`` from each payload into the new column.
+
+    Done in Python (not dialect SQL) so the same code runs on SQLite tests and
+    PostgreSQL production, and so a payload that is not valid JSON is skipped
+    rather than aborting the migration.
+    """
+
+    bind = op.get_bind()
+    rows = bind.execute(
+        sa.text(
+            "SELECT session_id, id, payload_json FROM timeline_items "
+            "WHERE native_item_id IS NULL"
+        )
+    ).fetchall()
+    updates: list[dict[str, str]] = []
+    for session_id, item_id, payload_json in rows:
+        native_item_id = _native_item_id_from_payload(payload_json)
+        if native_item_id is None:
+            continue
+        updates.append(
+            {"session_id": session_id, "id": item_id, "native_item_id": native_item_id}
+        )
+    for start in range(0, len(updates), _BACKFILL_BATCH):
+        bind.execute(
+            sa.text(
+                "UPDATE timeline_items SET native_item_id = :native_item_id "
+                "WHERE session_id = :session_id AND id = :id"
+            ),
+            updates[start : start + _BACKFILL_BATCH],
+        )
+
+
 def upgrade() -> None:
     if "native_item_id" not in _column_names():
         op.add_column(
             "timeline_items",
             sa.Column("native_item_id", sa.Text(), nullable=True),
         )
+    _backfill_native_item_id()
     if not _index_exists(NATIVE_ITEM_INDEX):
         op.create_index(
             NATIVE_ITEM_INDEX,

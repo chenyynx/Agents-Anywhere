@@ -1172,6 +1172,64 @@ def test_v2_42_adds_the_native_item_id_column_and_index(tmp_path) -> None:
     upgrade_database(db_url=url)
 
 
+def test_v2_42_backfills_native_item_id_from_the_payload(tmp_path) -> None:
+    """The corrector groups on ``native_item_id``; a pre-v2_42 row left NULL
+    would be invisible to it, so the migration must copy ``source.itemId`` out
+    of the stored payload. A row whose payload has no itemId stays NULL."""
+
+    path = tmp_path / "native-item-id-backfill.sqlite3"
+    url = _sqlite_url(path)
+    # Seed rows under the pre-column schema, exactly as a live deployment would
+    # have them, then upgrade.
+    upgrade_database(db_url=url, revision="v2_41")
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO sessions "
+                    "(id, connector_id, runtime, runtime_id, status, takeover, "
+                    " seq, updated_seq, seq_allocated_high, created_at, updated_at) "
+                    "VALUES ('s1', 'c1', 'claude', 'r1', 'active', 0, 1, 1, 1, "
+                    " '2026-10-12T00:00:00Z', '2026-10-12T00:00:00Z')"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO timeline_items "
+                    "(session_id, id, type, status, role, order_seq, updated_seq, "
+                    " payload_json) VALUES "
+                    "('s1', 'm1', 'message', 'done', 'assistant', 1, 1, "
+                    " '{\"id\":\"m1\",\"source\":{\"runtime\":\"claude\","
+                    "\"itemId\":\"native-A\"}}'), "
+                    "('s1', 'r1', 'system', 'done', 'system', 2, 2, "
+                    " '{\"id\":\"r1\",\"source\":{\"runtime\":\"claude\","
+                    "\"itemId\":\"native-A\"}}'), "
+                    "('s1', 'p1', 'message', 'done', 'user', 3, 3, "
+                    " '{\"id\":\"p1\",\"source\":{\"runtime\":\"platform\"}}')"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    upgrade_database(db_url=url)
+
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        with engine.connect() as connection:
+            rows = {
+                row[0]: row[1]
+                for row in connection.execute(
+                    text("SELECT id, native_item_id FROM timeline_items")
+                )
+            }
+        assert rows["m1"] == "native-A"
+        assert rows["r1"] == "native-A"
+        assert rows["p1"] is None  # no itemId in the payload -> stays NULL
+    finally:
+        engine.dispose()
+
+
 def test_v2_41_drops_the_sidebar_order_table(tmp_path) -> None:
     path = tmp_path / "sidebar-order.sqlite3"
     url = _sqlite_url(path)

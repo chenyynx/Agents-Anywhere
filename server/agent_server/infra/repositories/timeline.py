@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import AsyncIterator, Mapping
@@ -9,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import and_, case, func, or_, select, text, tuple_, update
+from sqlalchemy import and_, case, false, func, or_, select, text, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from agent_server.core.models import SessionView, TimelineItem, TimelineItemIn
@@ -221,18 +222,53 @@ class TimelineRepositoryMixin:
             cursor = group
             processed += 1
             session_id, native_item_id, role = group
-            # The outer per-session revision fence (which flushes any pending
-            # buffered projection for this session) must be held BEFORE the
-            # Timeline/DB lock: a maintenance write that reserves a revision
-            # reaches the bound Redis range sealer, whose ownership guard
-            # requires exactly this fence. Taking the DB lock first would invert
-            # the lock order the live writers use.
+            # One broken group must not abort the whole sweep: a fence-acquire
+            # timeout (Redis), a DB error, or any other per-group failure is
+            # logged and the pass moves on — the same isolation app.py gives the
+            # three passes. A failure here leaves THIS group's transaction rolled
+            # back (nothing removed) and is retried on the next restart.
+            try:
+                removed += await self._deduplicate_one_message_group(
+                    session_id, native_item_id, role
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - see comment above
+                logger.exception(
+                    "timeline dedup group failed session_id={} native_item_id={} role={}",
+                    session_id,
+                    native_item_id,
+                    role,
+                )
+        return removed
+
+    async def _deduplicate_one_message_group(
+        self,
+        session_id: str,
+        native_item_id: str,
+        role: str | None,
+    ) -> int:
+        """Remove the twin rows of one ``(session, native_item_id, role)`` group.
+
+        The outer per-session revision fence (which flushes any pending buffered
+        projection for this session) is held BEFORE the Timeline/DB lock: a
+        maintenance write that reserves a revision reaches the bound Redis range
+        sealer, whose ownership guard requires exactly this fence. Taking the DB
+        lock first would invert the lock order the live writers use. Returns the
+        number of rows removed (0 when the group is already healthy).
+        """
+
+        deleted: tuple[str, ...] = ()
+        rewritten: TimelineItem | None = None
+        try:
             async with self._session_write_fence(session_id):
-                deleted: tuple[str, ...] = ()
                 async with self._timeline_lock(session_id), self._engine.begin() as conn:
                     rows = (
                         await conn.execute(
-                            select(timeline_items_t.c.id)
+                            select(
+                                timeline_items_t.c.id,
+                                timeline_items_t.c.payload_json,
+                            )
                             .where(
                                 timeline_items_t.c.session_id == session_id,
                                 timeline_items_t.c.type == "message",
@@ -247,37 +283,78 @@ class TimelineRepositoryMixin:
                             )
                         )
                     ).all()
-                    doomed = {row_id for (row_id,) in rows[1:]}
+                    doomed = {row_id for row_id, _ in rows[1:]}
                     if doomed:
+                        # Keep the canonical (first-written) id but adopt the
+                        # NEWEST row's content, mirroring the live heal
+                        # (``_converge_message_identities`` + the caller's
+                        # upsert: same kept id, last-writer content). Without
+                        # this the sweep would keep a partial/older row and
+                        # permanently delete the final one — a data-loss
+                        # asymmetry the heal never has, because the row is
+                        # never written again for the sweep to repair.
+                        canonical_id = rows[0][0]
+                        newest = TimelineItem.model_validate_json(rows[-1][1])
+                        canonical = TimelineItem.model_validate_json(rows[0][1])
+                        if (
+                            newest.id != canonical_id
+                            and newest.contentHash != canonical.contentHash
+                        ):
+                            seq = await self._reserve_session_revisions(
+                                conn,
+                                session_id,
+                                count=1,
+                                mark_read=False,
+                                touch_updated_at=False,
+                            )
+                            rewritten = newest.model_copy(
+                                update={"id": canonical_id, "updatedSeq": seq}
+                            )
+                            await self.timeline.upsert_many(conn, [rewritten])
                         await self.timeline.delete_items(conn, session_id, doomed)
-                        await self._bump_session(conn, session_id, mark_read=False)
-                        removed += len(doomed)
+                        # The removal has no surviving row of its own to carry
+                        # it, and this pass must not count as the session being
+                        # talked about (see the janitor precedent): do not touch
+                        # ``sessions.updated_at``.
+                        await self._bump_session(
+                            conn, session_id, mark_read=False, touch_updated_at=False
+                        )
                         deleted = tuple(sorted(doomed))
                 if deleted:
-                    # Publish the removal after the DB transaction commits but
-                    # while the revision fence is still held — a removal has no
-                    # surviving item to carry it, so it must reach the client.
+                    # Publish after the DB transaction commits but while the
+                    # revision fence is still held — a removal has no surviving
+                    # item to carry it, so it must reach the client (and the
+                    # rewritten canonical row rides along when content moved).
+                    # Contained: the deletion is durable and the fence-exit
+                    # refetch still carries it, so a publish failure must not
+                    # discard the count or abort the sweep.
                     try:
                         await self._publish_session_revision_result(
                             session_id,
                             operation="deduplicate_message_identities",
                             result=TimelineBatchWriteResult(
-                                items=(),
-                                changed=False,
+                                items=(rewritten,) if rewritten is not None else (),
+                                changed=rewritten is not None,
                                 deleted=deleted,
                             ),
                         )
-                    except Exception:  # noqa: BLE001 - the deletion IS durable;
-                        # swallowing the publish error lets the sweep deliver
-                        # every other group's envelope; the fence-exit refetch
-                        # (durable_sequence > published head) still carries this
-                        # removal to clients, so it is delayed, never lost.
+                    except Exception:  # noqa: BLE001 - see comment above
                         logger.exception(
                             "timeline dedup publish failed session_id={} deleted={}",
                             session_id,
                             deleted,
                         )
-        return removed
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - the fence-exit recovery publish can
+            # also fail through a broken broker; the deletion (if any) is already
+            # durable, so log and still report the rows this group removed.
+            logger.exception(
+                "timeline dedup fence failed session_id={} deleted={}",
+                session_id,
+                deleted,
+            )
+        return len(deleted)
 
     async def repair_intra_message_order(
         self,
@@ -344,9 +421,22 @@ class TimelineRepositoryMixin:
                 # memory so only genuinely broken groups reach the write path.
                 broken = await self._broken_groups_in_page(conn, keys)
             for session_id, native_item_id in broken:
-                moved += await self._repair_one_intra_message_group(
-                    session_id, native_item_id
-                )
+                # Isolate each broken group: a fence-acquire timeout, DB error,
+                # or repack failure is logged and the page continues, so one
+                # stubborn group cannot abort the rest of the sweep.
+                try:
+                    moved += await self._repair_one_intra_message_group(
+                        session_id, native_item_id
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - see comment above
+                    logger.exception(
+                        "timeline order repair group failed session_id={} "
+                        "native_item_id={}",
+                        session_id,
+                        native_item_id,
+                    )
         return moved
 
     async def _broken_groups_in_page(
@@ -403,63 +493,93 @@ class TimelineRepositoryMixin:
         # Outer revision fence first (it flushes this session's pending buffered
         # projection and owns the Redis range lock the reserve below reaches),
         # then the Timeline/DB lock — the same order every live writer uses.
-        async with self._session_write_fence(session_id):
-            moved: list[TimelineItem] = []
-            async with self._timeline_lock(session_id), self._engine.begin() as conn:
-                group = await self._load_intra_message_group(
-                    conn, session_id, native_item_id
-                )
-                if not group:
-                    return 0
-                corrected = await self._repack_intra_message_group(
-                    conn,
-                    session_id,
-                    [{row.id: row for row in group}],
-                    logger_context=(session_id, native_item_id),
-                )
-                if corrected is None:
-                    return 0  # healthy: the corrector is strict
-                # The corrected rows are stored siblings; rewrite them with a
-                # fresh revision so an incrementally reading client replays the
-                # move, and bump the session so a publisher carries the change.
-                first_seq = await self._reserve_session_revisions(
-                    conn,
-                    session_id,
-                    count=len(corrected),
-                    mark_read=False,
-                    touch_updated_at=False,
-                )
-                by_id = {row.id: row for row in group}
-                for offset, (row_id, new_order_seq) in enumerate(
-                    sorted(corrected.items())
-                ):
-                    stored = by_id[row_id].stored
-                    if stored is None:
-                        continue
-                    moved.append(
-                        stored.model_copy(
-                            update={
-                                "orderSeq": new_order_seq,
-                                "updatedSeq": first_seq + offset,
-                            }
-                        )
+        moved: list[TimelineItem] = []
+        try:
+            async with self._session_write_fence(session_id):
+                async with self._timeline_lock(session_id), self._engine.begin() as conn:
+                    group = await self._load_intra_message_group(
+                        conn, session_id, native_item_id
                     )
+                    if not group:
+                        return 0
+                    corrected = await self._repack_intra_message_group(
+                        conn,
+                        session_id,
+                        [{row.id: row for row in group}],
+                        logger_context=(session_id, native_item_id),
+                    )
+                    if corrected is None:
+                        return 0  # healthy: the corrector is strict
+                    # The corrected rows are stored siblings; rewrite them with a
+                    # fresh revision so an incrementally reading client replays the
+                    # move, and bump the session so a publisher carries the change.
+                    first_seq = await self._reserve_session_revisions(
+                        conn,
+                        session_id,
+                        count=len(corrected),
+                        mark_read=False,
+                        touch_updated_at=False,
+                    )
+                    by_id = {row.id: row for row in group}
+                    for offset, (row_id, new_order_seq) in enumerate(
+                        sorted(corrected.items())
+                    ):
+                        stored = by_id[row_id].stored
+                        if stored is None:
+                            continue
+                        moved.append(
+                            stored.model_copy(
+                                update={
+                                    "orderSeq": new_order_seq,
+                                    "updatedSeq": first_seq + offset,
+                                }
+                            )
+                        )
+                    if moved:
+                        await self.timeline.upsert_many(conn, moved)
+                        # A maintenance move must not count as the session being
+                        # talked about: do not refresh ``sessions.updated_at``
+                        # (the age janitor's silence guard reads it).
+                        await self._bump_session(
+                            conn, session_id, mark_read=False, touch_updated_at=False
+                        )
                 if moved:
-                    await self.timeline.upsert_many(conn, moved)
-                    await self._bump_session(conn, session_id, mark_read=False)
-            if moved:
-                # Publish the moves after the transaction commits but while the
-                # revision fence is still held, so an incrementally reading
-                # client replays the reorder instead of waiting for a later flush.
-                await self._publish_session_revision_result(
-                    session_id,
-                    operation="repair_intra_message_order",
-                    result=TimelineBatchWriteResult(
-                        items=tuple(moved),
-                        changed=True,
-                    ),
-                )
-            return len(moved)
+                    # Publish the moves after the transaction commits but while the
+                    # revision fence is still held, so an incrementally reading
+                    # client replays the reorder instead of waiting for a later flush.
+                    # A publish failure is contained and logged (the move IS durable;
+                    # the fence-exit refetch still carries it) so one broken broker
+                    # call cannot abort the rest of the repair sweep.
+                    try:
+                        await self._publish_session_revision_result(
+                            session_id,
+                            operation="repair_intra_message_order",
+                            result=TimelineBatchWriteResult(
+                                items=tuple(moved),
+                                changed=True,
+                            ),
+                        )
+                    except Exception:  # noqa: BLE001 - see the dedup publish guard
+                        logger.exception(
+                            "timeline order repair publish failed session_id={} "
+                            "native_item_id={} moved={}",
+                            session_id,
+                            native_item_id,
+                            len(moved),
+                        )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - the fence-exit recovery publish can
+            # also fail through a broken broker; the move (if any) is already
+            # durable, so log and still report the rows this group moved.
+            logger.exception(
+                "timeline order repair fence failed session_id={} "
+                "native_item_id={} moved={}",
+                session_id,
+                native_item_id,
+                len(moved),
+            )
+        return len(moved)
 
     async def _next_duplicate_key(
         self,
@@ -475,11 +595,15 @@ class TimelineRepositoryMixin:
 
         ``role`` is nullable, so the last cursor segment cannot be a plain
         ``role > after_role`` comparison — SQLAlchemy rejects ``> None`` at
-        query-construction time. A NULL-role cursor position means "all
-        NULL-role groups of this ``(session, native_item_id)`` are behind us":
-        the strict continuation is the non-NULL roles of the same group key.
-        Engines disagree on where NULL sorts (SQLite first, PostgreSQL last),
-        so the predicate must not assume an engine-specific NULL position.
+        query-construction time, and a NULL role never satisfies any ``>`` / ``<``
+        comparison. The ordering is therefore pinned with an explicit
+        ``NULLS LAST`` (portable on SQLite >= 3.30 and PostgreSQL) so the two
+        engines agree on where NULL sorts; otherwise SQLite (NULLs first) and
+        PostgreSQL (NULLs last) would walk the same data in different orders,
+        and a NULL-role cursor position would mean different things on each. With
+        NULLs last, the role continuation past a string cursor must include the
+        NULL-role group of the same key explicitly, and a NULL cursor is the last
+        role of its key (nothing remains in that key).
         """
 
         query = (
@@ -501,18 +625,24 @@ class TimelineRepositoryMixin:
             .order_by(
                 timeline_items_t.c.session_id,
                 timeline_items_t.c.native_item_id,
-                timeline_items_t.c.role,
+                timeline_items_t.c.role.asc().nulls_last(),
             )
             .limit(1)
         )
         if after is not None:
             after_session, after_native, after_role = after
             if after_role is None:
-                # Past every NULL-role group of this group key; only the same
-                # key's non-NULL roles (and everything after) can remain.
-                role_continuation = timeline_items_t.c.role.is_not(None)
+                # NULL sorts last, so this is the final role of its key: no
+                # same-key continuation can remain.
+                same_key_continuation = false()
             else:
-                role_continuation = timeline_items_t.c.role > after_role
+                # Strictly-greater roles, plus the NULL-role group which sorts
+                # after every string under NULLS LAST (a NULL role can never
+                # satisfy ``>``, so it must be named explicitly).
+                same_key_continuation = or_(
+                    timeline_items_t.c.role > after_role,
+                    timeline_items_t.c.role.is_(None),
+                )
             query = query.where(
                 or_(
                     timeline_items_t.c.session_id > after_session,
@@ -523,7 +653,7 @@ class TimelineRepositoryMixin:
                     and_(
                         timeline_items_t.c.session_id == after_session,
                         timeline_items_t.c.native_item_id == after_native,
-                        role_continuation,
+                        same_key_continuation,
                     ),
                 )
             )
@@ -1500,12 +1630,14 @@ class TimelineRepositoryMixin:
         session_id: str,
         *,
         mark_read: bool = False,
+        touch_updated_at: bool = True,
     ) -> int:
         return await self._reserve_session_revisions(
             conn,
             session_id,
             count=1,
             mark_read=mark_read,
+            touch_updated_at=touch_updated_at,
         )
 
     async def _reserve_session_revisions(

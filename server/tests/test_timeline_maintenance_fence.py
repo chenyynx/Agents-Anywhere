@@ -352,16 +352,9 @@ async def test_backfill_native_item_ids_works_under_production_binding(
 
 @pytest.mark.anyio
 async def test_publish_failure_is_reported_and_write_still_commits(tmp_path) -> None:
-    """A publish error must not lose the sweep's committed deletion.
-
-    The per-group try/except logs the sweep's own publish failure and keeps
-    going, but the fence-exit recovery publish (durable_sequence >
-    published_head) goes through the same broken broker and re-raises out of
-    the fence — by design: a publish channel that is down must surface, not be
-    silently swallowed. What the test pins is the durable half: the deletion
-    HAS committed, it is logged, and the failure is the fence-exit one, not a
-    rolled-back write.
-    """
+    """A publish error must not lose the sweep's committed deletion, and must
+    not abort the sweep: the durable write commits, the failure is logged, and
+    the pass returns normally so other groups and the later passes still run."""
 
     from loguru import logger as loguru_logger
 
@@ -385,22 +378,61 @@ async def test_publish_failure_is_reported_and_write_still_commits(tmp_path) -> 
             updated_seq=2,
         )
 
-        # The sweep's own publish failure is contained; the fence-exit recovery
-        # publish then re-raises through the same broken broker.
-        with pytest.raises(RuntimeError, match="injected publish failure"):
-            await store.deduplicate_message_identities()
+        # The per-group isolation contains the publish failure: the sweep does
+        # NOT raise, so it still returns the removal count.
+        removed = await store.deduplicate_message_identities()
+        assert removed == 1
 
         # The DB transaction committed BEFORE any publish attempt — the
         # duplicate is gone and the session advanced, so a later working
         # flush/refetch delivers the removal.
         rows = await _rows_by_id(store, session.id)
         assert set(rows) == {"live_1"}
-        # The sweep's containment logged the failure (reported, not silent).
-        text = "".join(messages)
-        assert "dedup publish failed" in text
+        # The failure was reported, not silently swallowed.
+        assert "dedup" in "".join(messages) and "failed" in "".join(messages)
     finally:
         loguru_logger.remove(sink_id)
         # Close must swallow the deferred publish drain rather than raise.
+        await fixture.buffer.close()
+        await fixture.redis.aclose()
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_repair_publish_failure_is_contained(tmp_path) -> None:
+    """The order-repair publish is contained like the dedup one: a broken
+    broker call does not abort the repair sweep after the move committed."""
+
+    from loguru import logger as loguru_logger
+
+    store, session = await _store_with_session(tmp_path)
+    fixture = await _production_buffer(store, tmp_path, publish_fails=True)
+    messages: list[str] = []
+    sink_id = loguru_logger.add(messages.append, level="INFO")
+    try:
+        await _seed_row(
+            store,
+            session.id,
+            message_input(session.id, "body", native_item_id="X", order_seq=5),
+            order_seq=5,
+            updated_seq=5,
+        )
+        await _seed_row(
+            store,
+            session.id,
+            reasoning_input(session.id, "rsn", native_item_id="X", order_seq=6),
+            order_seq=6,
+            updated_seq=6,
+        )
+        # The repair records the move; its publish failure is contained, so the
+        # sweep returns normally (the fenced transaction already committed).
+        moved = await store.repair_intra_message_order()
+        assert moved > 0
+        rows = await _rows_by_id(store, session.id)
+        assert rows["rsn"].orderSeq < rows["body"].orderSeq  # the move committed
+        assert "failed" in "".join(messages)
+    finally:
+        loguru_logger.remove(sink_id)
         await fixture.buffer.close()
         await fixture.redis.aclose()
         await store.close()
@@ -460,6 +492,63 @@ async def test_dedup_heals_null_role_group_and_cursor_survives(tmp_path) -> None
         await fixture.aclose()
 
 
+@pytest.mark.anyio
+async def test_dedup_visits_both_role_groups_of_one_native_id(tmp_path) -> None:
+    """Within ONE ``native_item_id``, a NULL-role group and a string-role group
+    are distinct duplicate groups. The cursor must visit both regardless of the
+    engine's NULL ordering (SQLite NULLs-first vs PostgreSQL NULLs-last, pinned
+    to NULLS LAST). A plain ``role > after_role`` continuation silently drops
+    the NULL-role group on PostgreSQL — the engine production actually runs —
+    leaving one duplicate row unfixed on every restart."""
+
+    store, session = await _store_with_session(tmp_path)
+    fixture = await _production_buffer(store, tmp_path)
+    try:
+        # Same native id N, two duplicate groups split by role: assistant + NULL.
+        await _seed_row(
+            store,
+            session.id,
+            message_input(session.id, "na_1", native_item_id="N", order_seq=1),
+            order_seq=1,
+            updated_seq=1,
+        )
+        await _seed_row(
+            store,
+            session.id,
+            message_input(session.id, "na_2", native_item_id="N", order_seq=2),
+            order_seq=2,
+            updated_seq=2,
+        )
+        null_a = message_input(
+            session.id, "nn_1", native_item_id="N", order_seq=3
+        ).model_copy(update={"role": None})
+        null_b = message_input(
+            session.id, "nn_2", native_item_id="N", order_seq=4
+        ).model_copy(update={"role": None})
+        await _seed_row(store, session.id, null_a, order_seq=3, updated_seq=3)
+        await _seed_row(store, session.id, null_b, order_seq=4, updated_seq=4)
+
+        seen: list[tuple[str, str | None]] = []
+        after = None
+        for _ in range(10):
+            group = await store._next_duplicate_key(after=after)
+            if group is None:
+                break
+            seen.append((group[1], group[2]))
+            after = group
+        assert seen == [("N", "assistant"), ("N", None)]
+
+        removed = await store.deduplicate_message_identities()
+
+        # BOTH groups healed: each keeps its first-written (lowest updated_seq) row.
+        assert removed == 2
+        rows = await _rows_by_id(store, session.id)
+        assert set(rows) == {"na_1", "nn_1"}
+        assert await store.deduplicate_message_identities() == 0
+    finally:
+        await fixture.aclose()
+
+
 # ---------------------------------------------------------------------------
 # The session fence must be released on the success path (the Redis range lock
 # is not left held), so a subsequent accept for the same session proceeds.
@@ -504,5 +593,92 @@ async def test_session_fence_is_released_after_maintenance(tmp_path) -> None:
             ),
         )
         assert accepted.item.updatedSeq > 0
+    finally:
+        await fixture.aclose()
+
+
+async def _updated_at(store, session_id: str) -> str | None:
+    """The session's ``updated_at`` (the age janitor's silence signal)."""
+    from sqlalchemy import select
+
+    from agent_server.infra.db import sessions as sessions_t
+
+    async with store.engine.connect() as conn:
+        return (
+            await conn.execute(
+                select(sessions_t.c.updated_at).where(sessions_t.c.id == session_id)
+            )
+        ).scalar()
+
+
+@pytest.mark.anyio
+async def test_dedup_adopts_newest_content_on_the_canonical_id(tmp_path) -> None:
+    """The sweep keeps the canonical (first-written) id but adopts the NEWEST
+    row's content — mirroring the live heal. A partial/running live row landing
+    first and a final history row landing later must NOT lose the final text:
+    the older behavior kept the partial row and deleted the final one."""
+
+    store, session = await _store_with_session(tmp_path)
+    fixture = await _production_buffer(store, tmp_path)
+    try:
+        # First-written (canonical) row: a partial placeholder.
+        await _seed_row(
+            store,
+            session.id,
+            message_input(
+                session.id, "live_1", native_item_id="X", order_seq=1, text="partial"
+            ),
+            order_seq=1,
+            updated_seq=1,
+        )
+        # Later row: the final text under the same key.
+        await _seed_row(
+            store,
+            session.id,
+            message_input(
+                session.id, "hist_1", native_item_id="X", order_seq=2, text="FINAL ANSWER"
+            ),
+            order_seq=2,
+            updated_seq=2,
+        )
+
+        removed = await store.deduplicate_message_identities()
+
+        assert removed == 1
+        rows = await _rows_by_id(store, session.id)
+        assert set(rows) == {"live_1"}  # canonical id kept
+        assert rows["live_1"].content["text"] == "FINAL ANSWER"  # newest content won
+    finally:
+        await fixture.aclose()
+
+
+@pytest.mark.anyio
+async def test_maintenance_does_not_touch_updated_at(tmp_path) -> None:
+    """A maintenance write must not refresh ``sessions.updated_at`` — it is the
+    age janitor's silence signal, and a repair is not the session being talked
+    about (the same rule the stale-tool-row janitor documents)."""
+
+    store, session = await _store_with_session(tmp_path)
+    fixture = await _production_buffer(store, tmp_path)
+    try:
+        await _seed_row(
+            store,
+            session.id,
+            message_input(session.id, "live_1", native_item_id="X", order_seq=1),
+            order_seq=1,
+            updated_seq=1,
+        )
+        await _seed_row(
+            store,
+            session.id,
+            message_input(session.id, "hist_1", native_item_id="X", order_seq=2),
+            order_seq=2,
+            updated_seq=2,
+        )
+        before = await _updated_at(store, session.id)
+
+        assert await store.deduplicate_message_identities() == 1
+
+        assert await _updated_at(store, session.id) == before
     finally:
         await fixture.aclose()

@@ -262,8 +262,14 @@ require_docker
 [ -f "$COMPOSE_DIR/$COMPOSE_FILE" ] || abort "compose file not found: $COMPOSE_DIR/$COMPOSE_FILE"
 
 # 0a. The real compose service must be `server` -- assert it, do not assume.
-if ! dc config --services 2>/dev/null | grep -qx "$SERVER_SERVICE"; then
-  abort "compose service '$SERVER_SERVICE' not found; real services are: $(dc config --services 2>/dev/null | tr '\n' ' ')"
+# Capture once, then match with a here-string. Do NOT pipe `docker ... | grep -q`:
+# under `set -o pipefail`, grep -q exits as soon as it matches and closes the pipe,
+# so a producer still writing the remaining lines dies on SIGPIPE (141) — which
+# pipefail then reports as a pipeline failure, spuriously "not found" (~0.2% of
+# runs, timing-dependent). The same captured value feeds the error message.
+compose_services="$(dc config --services 2>/dev/null || true)"
+if ! grep -qx "$SERVER_SERVICE" <<<"$compose_services"; then
+  abort "compose service '$SERVER_SERVICE' not found; real services are: $(printf '%s' "$compose_services" | tr '\n' ' ')"
 fi
 echo "  PASS  compose service '$SERVER_SERVICE' exists"
 
@@ -491,7 +497,7 @@ for _ in $(seq 1 "$READINESS_ATTEMPTS"); do
     "import urllib.request,sys; \
      print(urllib.request.urlopen('http://127.0.0.1:$SERVER_PORT$HEALTH_PATH', timeout=3).read().decode())" \
     2>/dev/null || true)"
-  if printf '%s' "$body" | grep -q '"status":"ready"'; then
+  if grep -q '"status":"ready"' <<<"$body"; then
     ready=1
     break
   fi
@@ -531,13 +537,13 @@ maint_ok=0
 deadline=$(( $(date +%s) + MAINTENANCE_WAIT ))
 while [ "$(date +%s)" -lt "$deadline" ]; do
   logs="$(dc logs --since 10m "$SERVER_SERVICE" 2>/dev/null || true)"
-  if printf '%s' "$logs" | grep -qE "timeline startup maintenance (failed|incomplete|pass failed)"; then
+  if grep -qE "timeline startup maintenance (failed|incomplete|pass failed)" <<<"$logs"; then
     maint_fail=1
     break
   fi
-  if printf '%s' "$logs" | grep -qE "timeline startup maintenance (refilled=|applied results=)"; then
+  if grep -qE "timeline startup maintenance (refilled=|applied results=)" <<<"$logs"; then
     maint_ok=1
-    printf '%s\n' "$logs" | grep -E "timeline startup maintenance (refilled=|applied results=)" | tail -1 | sed 's/^/    /'
+    grep -E "timeline startup maintenance (refilled=|applied results=)" <<<"$logs" | tail -1 | sed 's/^/    /'
     break
   fi
   sleep 3

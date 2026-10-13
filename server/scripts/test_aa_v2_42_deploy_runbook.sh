@@ -23,7 +23,8 @@
 # Usage: bash test_aa_v2_42_deploy_runbook.sh [path-to-runbook.sh]
 set -uo pipefail
 
-SCRIPT="${1:-/home/ubuntu/repos/Agents-Anywhere/server/scripts/aa-v2_42-deploy-runbook.sh}"
+CANONICAL_SCRIPT="/home/ubuntu/repos/Agents-Anywhere/server/scripts/aa-v2_42-deploy-runbook.sh"
+SCRIPT="${1:-$CANONICAL_SCRIPT}"
 [ -f "$SCRIPT" ] || { echo "runbook not found: $SCRIPT" >&2; exit 2; }
 
 RELEASE_ID="sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -47,8 +48,14 @@ echo "== static checks =="
 if bash -n "$SCRIPT"; then ok "bash -n clean"; else bad "bash -n failed"; fi
 
 DUP="/home/ubuntu/aa-test/aa-v2_42-deploy-runbook.sh"
-if [ -f "$DUP" ]; then
+# The byte-identity check only means something on the CANONICAL runbook. When
+# the harness is pointed at a mutated copy (a regression probe), a "differs"
+# verdict is expected and must not masquerade as a caught regression — it is a
+# warning, not a case failure.
+if [ -f "$DUP" ] && [ "$SCRIPT" = "$CANONICAL_SCRIPT" ]; then
   if cmp -s "$SCRIPT" "$DUP"; then ok "aa-test copy byte-identical"; else bad "aa-test copy DIFFERS"; fi
+elif [ -f "$DUP" ]; then
+  echo "  warn - non-canonical runbook under test; skipping byte-identity check"
 fi
 # Strip full-line comments before scanning for risky command forms; the header
 # intentionally names `docker start` while forbidding it.
@@ -345,6 +352,14 @@ else bad "happy path should print DONE and exit 0 (rc=$RC): $(echo "$OUT" | tail
 echo "$DLOG" | grep -qE '\bdocker start\b' && bad "happy path used docker start" || ok "happy path never used docker start"
 echo "$DLOG" | grep -qE 'server-next' && bad "happy path referenced server-next" || ok "happy path never referenced server-next"
 echo "$DLOG" | grep -qE 'migrations upgrade' && ok "happy path ran the migration inside a compose run" || bad "happy path did not run the migration"
+# The migration MUST run on the pinned release image, i.e. the compose run is
+# driven by the generated override file (a second `-f`). A `dc run` (no override)
+# would let the migration fall back to the compose file's own image — the exact
+# P0-2 stale-`:latest` regression this runbook exists to remove — so assert the
+# override, not merely that some `migrations upgrade` ran.
+echo "$DLOG" | grep -qE 'compose -f [^ ]+ -f [^ ]+ run .*server -m agent_server\.infra\.db\.migrations upgrade' \
+  && ok "migration ran on the pinned release image (override -f present)" \
+  || bad "migration did not run on the pinned release image (no override -f)"
 echo "$DLOG" | grep -qE 'up -d --no-build --pull never --force-recreate' && ok "happy path force-recreated without build" || bad "happy path did not force-recreate"
 
 echo "== case 21: P0-1 'incomplete' maintenance log aborts =="

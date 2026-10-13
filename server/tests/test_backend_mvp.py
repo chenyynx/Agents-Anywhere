@@ -10605,7 +10605,16 @@ def test_timeline_sync_preserves_same_content_with_distinct_ids(tmp_path):
         ]
 
 
-def test_timeline_sync_preserves_distinct_ids_for_same_source_item(tmp_path):
+def test_timeline_sync_converges_one_message_onto_one_row(tmp_path):
+    """One logical message is one row: a live write and a history rebuild that
+    derive different ids but share ``source.itemId`` converge on the live id.
+
+    The live ``timeline.itemUpsert`` writes the message under its live id; the
+    later ``timeline.sync`` rebuild derives a different id (a ``derivedKey``
+    spelling) for the SAME native message. Storing both made the client render
+    the reply twice. The rebuild must instead update the live row in place.
+    """
+
     client = make_client(tmp_path)
     _, access_token, session_id, headers = create_connector_and_session(client)
     source = {
@@ -10667,14 +10676,16 @@ def test_timeline_sync_preserves_distinct_ids_for_same_source_item(tmp_path):
             json=sync_payload,
         )
         assert response.status_code == 200, response.text
-        receive_session_ws_event(ws, "timeline.item_created")
+        # The rebuild updates the canonical live row in place (revision 2 -> 3),
+        # so the push is an update, not a brand-new twin.
+        receive_session_ws_event(ws, "timeline.item_updated")
 
         state = session_view_for_assertions(client, session_id, headers)
         messages = [item for item in state["items"] if item["type"] == "message"]
-        assert [item["id"] for item in messages] == [
-            "tl_live_real_msg",
-            "tl_snapshot_real_msg",
-        ]
+        # Exactly one row for the native message, under the live id the client
+        # was already rendering; the snapshot's derived id never persists.
+        assert [item["id"] for item in messages] == ["tl_live_real_msg"]
+        assert messages[0]["content"]["text"] == "same answer"
         sequence_after_first_sync = asyncio.run(
             client.app.state.store.get_session_seq(session_id)
         )

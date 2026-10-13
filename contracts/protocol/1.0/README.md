@@ -44,3 +44,20 @@ stored upload's MIME before dispatch. Runtime adapters still validate actual
 content using their native attachment interface; MIME metadata alone does not
 prove that a file is a valid image. `supported`, `available` and `allowed` must
 also permit `runtime.attachment`.
+
+## Timeline resync keys (`refetch` / `timelineReset` / `deleted`)
+
+The Server's realtime timeline envelope (before projection to protocol events)
+carries three keys a client may observe. They are transport hints, not protocol
+event types; the Server projects them to `session.refetch_required` and
+`timeline.snapshot` (see `docs/api/realtime.md`).
+
+- `refetch` — re-pull `/sessions/{id}/snapshot`; the incremental stream cannot
+  express the change. Clients MUST honor this.
+- `timelineReset` — the envelope's `items` is the complete new timeline
+  (replace, not merge); an empty array clears the view.
+- `deleted` — ids the Server removed, as a **Server-reserved field**. Clients MAY
+  ignore it and rely on `refetch`; shipped clients do. It is bounded and may be
+  omitted for a large removal. Do not treat an unknown `deleted` key as an error.
+
+`refetch` wins over every other signal in the same envelope.

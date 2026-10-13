@@ -73,6 +73,31 @@ from agent_server.services.workspace import WorkspaceServiceError
 CONNECTOR_PRESENCE_SWEEP_SECONDS = 5
 
 
+async def _backfill_native_item_ids(app: FastAPI) -> None:
+    """One-time, best-effort timeline maintenance at startup.
+
+    Two passes: refill NULL ``native_item_id`` rows the migration did not cover
+    (a row written by an older worker during a rolling upgrade is otherwise
+    invisible to the intra-message corrector), then remove stored duplicate
+    message rows (a pre-fix live/history twin whose key is never written again
+    would otherwise keep both rows visible). Neither blocks startup nor fails
+    the process — a failure just leaves the work for the next restart.
+    """
+
+    try:
+        refilled = await app.state.store.backfill_native_item_ids()
+        removed = await app.state.store.deduplicate_message_identities()
+    except Exception:  # noqa: BLE001 - a maintenance pass must not break boot
+        logger.exception("timeline startup maintenance failed")
+        return
+    if refilled or removed:
+        logger.info(
+            "timeline startup maintenance refilled={} deduplicated={}",
+            refilled,
+            removed,
+        )
+
+
 async def _connector_presence_watchdog(app: FastAPI) -> None:
     while True:
         await asyncio.sleep(CONNECTOR_PRESENCE_SWEEP_SECONDS)
@@ -138,6 +163,11 @@ def create_app(
             await app.state.rpc.start()
             presence_task = asyncio.create_task(_connector_presence_watchdog(app))
             deletion_task = asyncio.create_task(app.state.connector_deletion_recovery.run())
+            # A row written by an older worker during a rolling upgrade can
+            # carry a NULL native_item_id and be invisible to the intra-message
+            # corrector; refill any such rows once, best-effort, off the
+            # startup path so a slow scan cannot delay serving.
+            asyncio.create_task(_backfill_native_item_ids(app))
             if app.state.timeline_janitor.enabled:
                 janitor_task = asyncio.create_task(app.state.timeline_janitor.run())
             else:

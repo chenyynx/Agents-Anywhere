@@ -501,17 +501,26 @@ class TimelineWriteBuffer:
 
         durable_sequence = await self._store.get_session_seq(session_id)
         published_through = await self._sequences.published_head(session_id)
+        deleted = tuple(getattr(result, "deleted", ()) or ())
         if (
             isinstance(result, TimelineBatchWriteResult)
             and not result.changed
+            and not deleted
             and published_through is not None
             and published_through >= durable_sequence
         ):
+            # A no-op write with nothing removed has nothing to publish.
             return
         envelope: dict[str, Any] = {
             "sessionId": session_id,
             "nextSeq": durable_sequence,
         }
+        if deleted:
+            # A removed row has no surviving item to carry the change, so the
+            # deletion is stated explicitly: the client drops these ids from
+            # its local timeline. Without it a converged twin would stay
+            # rendered until a full refetch.
+            envelope["deleted"] = list(deleted)
         if isinstance(result, SessionView):
             session = await self._project_session_connector_status(result)
             envelope["session"] = session.model_dump(mode="json")
@@ -526,10 +535,14 @@ class TimelineWriteBuffer:
             if needs_refetch or len(result_items) > 100:
                 envelope.pop("timelineReset", None)
                 envelope["refetch"] = True
-            else:
+            elif result_items:
                 envelope["items"] = [
                     item.model_dump(mode="json") for item in result_items
                 ]
+            if deleted and not result_items:
+                # Deletion-only (a pure heal): a client that does not yet act on
+                # ``deleted`` still drops the ghost by re-pulling.
+                envelope["refetch"] = True
             if operation == "replace_timeline_snapshot" and "items" in envelope:
                 envelope["timelineReset"] = True
         else:
@@ -560,20 +573,25 @@ class TimelineWriteBuffer:
             source_observed_at=snapshot.source_observed_at,
             mark_read_on_change=snapshot.mark_read_on_change,
         )
-        if result.items:
+        if result.items or result.deleted:
             next_seq = await self._store.get_session_seq(session_id)
             published_through = await self._sequences.published_head(session_id)
             if published_through is None or published_through < next_seq:
-                await self._broker.publish(
-                    session_id,
-                    {
-                        "sessionId": session_id,
-                        "nextSeq": next_seq,
-                        "items": [
-                            item.model_dump(mode="json") for item in result.items
-                        ],
-                    },
-                )
+                envelope: dict[str, Any] = {
+                    "sessionId": session_id,
+                    "nextSeq": next_seq,
+                }
+                if result.items:
+                    envelope["items"] = [
+                        item.model_dump(mode="json") for item in result.items
+                    ]
+                if result.deleted:
+                    # A converged twin's removal must reach the client: there is
+                    # no surviving item to carry it.
+                    envelope["deleted"] = list(result.deleted)
+                    if not result.items:
+                        envelope["refetch"] = True
+                await self._broker.publish(session_id, envelope)
                 await self._sequences.mark_published(session_id, next_seq)
             await publish_dashboard_changed(
                 self._store,

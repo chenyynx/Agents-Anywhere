@@ -124,19 +124,38 @@ def _backfill_native_item_id() -> None:
 
 
 def upgrade() -> None:
-    if "native_item_id" not in _column_names():
-        op.add_column(
-            "timeline_items",
-            sa.Column("native_item_id", sa.Text(), nullable=True),
-        )
-    _backfill_native_item_id()
-    if not _index_exists(NATIVE_ITEM_INDEX):
-        op.create_index(
-            NATIVE_ITEM_INDEX,
-            "timeline_items",
-            ["session_id", "native_item_id"],
-            unique=False,
-        )
+    """Add, backfill and index ``native_item_id`` without a long table lock.
+
+    The whole Alembic chain runs inside one transaction (``migrations/env.py``
+    wraps ``context.run_migrations()``). On PostgreSQL ``ADD COLUMN`` takes an
+    ACCESS EXCLUSIVE lock that is held until that transaction commits, so on a
+    large ``timeline_items`` a single-transaction migration would block every
+    read and write to the table for the whole backfill + index build. Each step
+    therefore runs in its own committed ``autocommit_block``; the index is built
+    ``CONCURRENTLY`` so it never blocks writers.
+    """
+
+    context = op.get_context()
+
+    with context.autocommit_block():
+        if "native_item_id" not in _column_names():
+            op.add_column(
+                "timeline_items",
+                sa.Column("native_item_id", sa.Text(), nullable=True),
+            )
+
+    with context.autocommit_block():
+        _backfill_native_item_id()
+
+    with context.autocommit_block():
+        if not _index_exists(NATIVE_ITEM_INDEX):
+            op.create_index(
+                NATIVE_ITEM_INDEX,
+                "timeline_items",
+                ["session_id", "native_item_id"],
+                unique=False,
+                postgresql_concurrently=True,
+            )
 
 
 def downgrade() -> None:

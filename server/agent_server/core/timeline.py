@@ -12,12 +12,18 @@ from agent_server.core.models import TimelineItem, TimelineItemIn
 class TimelineItemWriteResult:
     item: TimelineItem
     changed: bool
+    # Stable ids of rows this write removed (a converged live/history twin).
+    # A deletion has no surviving row to carry the change, so the publisher
+    # must express it explicitly — otherwise a client that already cached the
+    # removed id keeps rendering it until a full refetch.
+    deleted: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class TimelineBatchWriteResult:
     items: tuple[TimelineItem, ...]
     changed: bool
+    deleted: tuple[str, ...] = ()
 
 
 def timeline_item_state_is_unchanged(
@@ -27,6 +33,30 @@ def timeline_item_state_is_unchanged(
     """Compare the Runtime-owned state identity for one stable item ID."""
 
     return existing.contentHash == incoming.contentHash
+
+
+def native_item_id_from_payload(payload_json: str) -> str | None:
+    """Extract ``source.itemId`` from a stored payload, or None.
+
+    The Runtime-native item id lives in the payload (``source.itemId``) but is
+    also mirrored to a column for indexed grouping; a row written before the
+    column existed (or by an older worker during a rolling upgrade) carries
+    NULL and is invisible to the corrector until refilled. A malformed payload,
+    or one without an itemId, yields None — such rows are genuinely out of
+    scope, not an error.
+    """
+
+    try:
+        payload = json.loads(payload_json)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    source = payload.get("source")
+    if not isinstance(source, dict):
+        return None
+    value = source.get("itemId")
+    return value if isinstance(value, str) and value else None
 
 
 def timeline_item_from_runtime_input(

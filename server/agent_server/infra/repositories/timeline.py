@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import case, func, select, text, update
+from sqlalchemy import and_, case, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from agent_server.core.models import SessionView, TimelineItem, TimelineItemIn
@@ -18,6 +18,7 @@ from agent_server.core.timeline import (
     TimelineBatchWriteResult,
     TimelineItemWriteResult,
     latest_timeline_items_by_id,
+    native_item_id_from_payload,
     next_timeline_item_revision,
     timeline_item_content_hash,
     timeline_item_from_runtime_input,
@@ -110,6 +111,151 @@ class TimelineRepositoryMixin:
         async with self._timeline_lock(session_id), self._engine.connect() as conn:
             return await self._max_timeline_order_seq(conn, session_id)
 
+    async def backfill_native_item_ids(
+        self,
+        *,
+        batch_size: int = 1000,
+        max_batches: int = 1000,
+    ) -> int:
+        """Refill ``native_item_id`` for rows the migration v2_42 did not cover.
+
+        The migration backfills every row present when it ran; a row written by
+        an older worker during a rolling upgrade (or a session restored from an
+        old backup) can still carry NULL, and a NULL row is invisible to the
+        intra-message corrector. This is idempotent and bounded — it pages by
+        the ``(session_id, id)`` primary key, so a payload with no itemId cannot
+        stall it — and is meant to be run best-effort at startup. Returns the
+        number of rows refilled.
+        """
+
+        refilled = 0
+        after_session = ""
+        after_id = ""
+        for _ in range(max_batches):
+            async with self._engine.begin() as conn:
+                rows = (
+                    await conn.execute(
+                        select(
+                            timeline_items_t.c.session_id,
+                            timeline_items_t.c.id,
+                            timeline_items_t.c.payload_json,
+                        )
+                        .where(
+                            or_(
+                                timeline_items_t.c.session_id > after_session,
+                                and_(
+                                    timeline_items_t.c.session_id == after_session,
+                                    timeline_items_t.c.id > after_id,
+                                ),
+                            )
+                        )
+                        .order_by(
+                            timeline_items_t.c.session_id,
+                            timeline_items_t.c.id,
+                        )
+                        .limit(batch_size)
+                    )
+                ).all()
+                if not rows:
+                    return refilled
+                updates: list[dict[str, Any]] = []
+                for session_id, item_id, payload_json in rows:
+                    after_session, after_id = session_id, item_id
+                    native_item_id = native_item_id_from_payload(payload_json)
+                    if native_item_id is None:
+                        continue
+                    updates.append(
+                        {
+                            "native_item_id": native_item_id,
+                            "session_id": session_id,
+                            "id": item_id,
+                        }
+                    )
+                if updates:
+                    await conn.execute(
+                        text(
+                            "UPDATE timeline_items SET native_item_id = :native_item_id "
+                            "WHERE session_id = :session_id AND id = :id "
+                            "AND native_item_id IS NULL"
+                        ),
+                        updates,
+                    )
+                    refilled += len(updates)
+        return refilled
+
+    async def deduplicate_message_identities(
+        self,
+        *,
+        max_groups: int = 10_000,
+    ) -> int:
+        """Remove stored duplicate message rows (pre-fix live/history twins).
+
+        A write heals the twins for its own key, but a group that is never
+        written again would keep both rows forever — precisely the production
+        duplicates the fix is meant to remove. This one-time, idempotent sweep
+        finds every ``(session_id, native_item_id, role)`` message group with
+        more than one id, keeps the first-written row and deletes the rest,
+        advancing each affected session so a client refetches and drops the
+        removed id. Returns the number of rows removed.
+        """
+
+        removed = 0
+        for _ in range(max_groups):
+            async with self._engine.begin() as conn:
+                groups = (
+                    await conn.execute(
+                        select(
+                            timeline_items_t.c.session_id,
+                            timeline_items_t.c.native_item_id,
+                            timeline_items_t.c.role,
+                            func.count(func.distinct(timeline_items_t.c.id)).label(
+                                "ids"
+                            ),
+                        )
+                        .where(
+                            timeline_items_t.c.type == "message",
+                            timeline_items_t.c.native_item_id.is_not(None),
+                        )
+                        .group_by(
+                            timeline_items_t.c.session_id,
+                            timeline_items_t.c.native_item_id,
+                            timeline_items_t.c.role,
+                        )
+                        .having(
+                            func.count(func.distinct(timeline_items_t.c.id)) > 1
+                        )
+                        .limit(1)
+                    )
+                ).all()
+                if not groups:
+                    return removed
+                session_id, native_item_id, role, _count = groups[0]
+                rows = (
+                    await conn.execute(
+                        select(
+                            timeline_items_t.c.id,
+                            timeline_items_t.c.updated_seq,
+                        )
+                        .where(
+                            timeline_items_t.c.session_id == session_id,
+                            timeline_items_t.c.type == "message",
+                            timeline_items_t.c.native_item_id == native_item_id,
+                            timeline_items_t.c.role.is_(role)
+                            if role is None
+                            else timeline_items_t.c.role == role,
+                        )
+                        .order_by(
+                            timeline_items_t.c.updated_seq,
+                            timeline_items_t.c.id,
+                        )
+                    )
+                ).all()
+                doomed = {row_id for row_id, _ in rows[1:]}
+                await self.timeline.delete_items(conn, session_id, doomed)
+                await self._bump_session(conn, session_id, mark_read=False)
+                removed += len(doomed)
+        return removed
+
     async def persist_buffered_timeline_items(
         self,
         *,
@@ -160,6 +306,15 @@ class TimelineRepositoryMixin:
                 ).first()
                 if row is None:
                     raise KeyError(session_id)
+                if converged_deletions:
+                    # Remove the converged twins BEFORE the order pass and the
+                    # published-set build, so a row that is about to disappear
+                    # never takes part in the intra-message invariant (it would
+                    # otherwise be counted as a second body row and even pushed
+                    # back to the client with a fresh revision).
+                    await self.timeline.delete_items(
+                        conn, session_id, converged_deletions
+                    )
                 timeline_reset_seq = int(row.timeline_reset_seq or 0)
                 persistable_items = [
                     item
@@ -217,19 +372,10 @@ class TimelineRepositoryMixin:
                         item for item in changed_items if item.id not in mover_ids
                     ] + siblings
                 await self.timeline.upsert_many(conn, changed_items)
-                if converged_deletions:
-                    # A live/history twin collapsed onto the canonical id this
-                    # batch already wrote; the now-unreachable duplicate row is
-                    # removed in this same transaction. A pure heal (no item
-                    # write of its own) still needs a fresh revision so the
-                    # published set is not skipped as unchanged.
-                    await self.timeline.delete_items(
-                        conn, session_id, converged_deletions
-                    )
-                    if not changed_items:
-                        await self._bump_session(
-                            conn, session_id, mark_read=False
-                        )
+                if converged_deletions and not changed_items:
+                    # Pure heal (the twin was already removed above): a fresh
+                    # revision so the published set is not skipped as unchanged.
+                    await self._bump_session(conn, session_id, mark_read=False)
                 # The push must carry the corrected order, so rebuild the
                 # published set from the corrected rows (the corrector replaced
                 # the in-batch entries wholesale; ``persistable_items`` still
@@ -272,6 +418,7 @@ class TimelineRepositoryMixin:
         return TimelineBatchWriteResult(
             items=tuple(published_items),
             changed=bool(changed_items),
+            deleted=tuple(sorted(converged_deletions)),
         )
 
     @session_revision_fenced
@@ -359,7 +506,11 @@ class TimelineRepositoryMixin:
                                 session_id,
                                 mark_read=False,
                             )
-                return TimelineBatchWriteResult(items=(), changed=False)
+                return TimelineBatchWriteResult(
+                    items=(),
+                    changed=False,
+                    deleted=tuple(sorted(converged_deletions)),
+                )
 
             now = utc_now()
             changed_items: list[TimelineItem] = []
@@ -369,6 +520,13 @@ class TimelineRepositoryMixin:
                     session_id=session_id,
                     source_observed_at=source_observed_at,
                 )
+                if converged_deletions:
+                    # Remove converged twins before the order pass, so a row
+                    # about to disappear is never counted as a second body row
+                    # of the group (which would move it and re-publish it).
+                    await self.timeline.delete_items(
+                        conn, session_id, converged_deletions
+                    )
                 max_order_seq = await self._max_timeline_order_seq(conn, session_id)
                 first_updated_seq = await self._reserve_session_revisions(
                     conn,
@@ -423,19 +581,12 @@ class TimelineRepositoryMixin:
                         item for item in changed_items if item.id not in mover_ids
                     ] + sibling_movers
                 await self.timeline.upsert_many(conn, changed_items)
-                if converged_deletions:
-                    # A converged twin is deleted in the same transaction as the
-                    # write that adopted its identity, so no client can ever
-                    # observe both ids. When the heal had an item write of its
-                    # own that write's revision already publishes the change;
-                    # when it did not, the deletion needs a refetch-only bump —
-                    # the prune precedent (mark_read=False: removing a duplicate
-                    # row is not content the user has now seen).
-                    await self.timeline.delete_items(
-                        conn, session_id, converged_deletions
-                    )
-                    if not changed_items:
-                        await self._bump_session(conn, session_id, mark_read=False)
+                if converged_deletions and not changed_items:
+                    # Pure heal (the twin was removed at the top of this
+                    # transaction): a fresh revision so the deletion is
+                    # delivered — the prune precedent, mark_read=False because
+                    # removing a duplicate row is not content the user has seen.
+                    await self._bump_session(conn, session_id, mark_read=False)
                 if prune_orphan_agent_calls:
                     await self._prune_orphan_agent_call_rows(
                         conn,
@@ -445,6 +596,7 @@ class TimelineRepositoryMixin:
         return TimelineBatchWriteResult(
             items=tuple(changed_items),
             changed=True,
+            deleted=tuple(sorted(converged_deletions)),
         )
 
     async def _prune_orphan_agent_call_rows(
@@ -747,13 +899,24 @@ class TimelineRepositoryMixin:
             current_items = await self.timeline.read(session_id)
             current_by_id = {item.id: item for item in current_items}
             if timeline_snapshot_is_unchanged(current_by_id, incoming_by_id):
-                await self._update_source_observed_at(
-                    session_id=session_id,
-                    source_observed_at=source_observed_at,
-                )
+                async with self._engine.begin() as conn:
+                    await update_source_observed_at(
+                        conn,
+                        session_id=session_id,
+                        source_observed_at=source_observed_at,
+                    )
+                    if converged_deletions:
+                        # The snapshot's content matches, but it still healed a
+                        # duplicate twin: remove it and advance the session so a
+                        # refetch reaches clients that hold the stale id.
+                        await self.timeline.delete_items(
+                            conn, session_id, converged_deletions
+                        )
+                        await self._bump_session(conn, session_id, mark_read=False)
                 return TimelineBatchWriteResult(
                     items=tuple(current_items),
                     changed=False,
+                    deleted=tuple(sorted(converged_deletions)),
                 )
 
             now = utc_now()
@@ -818,9 +981,15 @@ class TimelineRepositoryMixin:
                     session_id,
                     set(current_by_id) - set(incoming_by_id),
                 )
+        # A snapshot replacement removes any stored row the snapshot omits; the
+        # converged twins are already excluded from ``incoming_by_id`` above, so
+        # report them as deletions the publisher can express.
         return TimelineBatchWriteResult(
             items=tuple(normalized),
             changed=True,
+            deleted=tuple(
+                sorted(set(current_by_id) - set(incoming_by_id) | converged_deletions)
+            ),
         )
 
     @session_revision_fenced
@@ -851,7 +1020,7 @@ class TimelineRepositoryMixin:
             unchanged = existing is not None and timeline_item_state_is_unchanged(
                 existing, item
             )
-            if unchanged and source_observed_at is None:
+            if unchanged and source_observed_at is None and not converged_deletions:
                 return TimelineItemWriteResult(item=existing, changed=False)
             async with self._engine.begin() as conn:
                 await update_source_observed_at(
@@ -861,6 +1030,14 @@ class TimelineRepositoryMixin:
                 )
                 if unchanged:
                     result = existing
+                    if converged_deletions:
+                        # Pure heal: the canonical row already holds this state,
+                        # but a duplicate twin is being removed with no write of
+                        # its own. Advance the session so the deletion is
+                        # delivered (a refetch reaches clients holding the
+                        # stale id); the removal is not content the user has
+                        # now seen, so it never consumes the unread badge.
+                        await self._bump_session(conn, session_id, mark_read=False)
                 else:
                     updated_seq = await self._bump_session(
                         conn,
@@ -915,7 +1092,11 @@ class TimelineRepositoryMixin:
                     await self.timeline.delete_items(
                         conn, session_id, converged_deletions
                     )
-        return TimelineItemWriteResult(item=result, changed=not unchanged)
+        return TimelineItemWriteResult(
+            item=result,
+            changed=not unchanged,
+            deleted=tuple(sorted(converged_deletions)),
+        )
 
     async def list_timeline_since(
         self,
@@ -1210,6 +1391,24 @@ class TimelineRepositoryMixin:
                 (row_id, int(updated_seq))
             )
 
+        # Tripwire: one native id appearing under two roles means a Runtime gave
+        # the same message id to a user turn and an assistant reply (or a path
+        # spelled the role differently — e.g. None on one side, "assistant" on
+        # the other). The role-aware key then splits and the duplicate silently
+        # survives, so surface it rather than letting it stay invisible.
+        roles_by_native: dict[str, set[str | None]] = {}
+        for native_item_id, row_role in stored:
+            roles_by_native.setdefault(native_item_id, set()).add(row_role)
+        for native_item_id, roles in roles_by_native.items():
+            if len(roles) > 1:
+                logger.warning(
+                    "timeline native item id spans multiple roles "
+                    "session_id={} native_item_id={} roles={}",
+                    session_id,
+                    native_item_id,
+                    sorted(str(role) for role in roles),
+                )
+
         # Canonical id per key: the first-written row. Tie-break on the id so
         # the choice is deterministic when two rows share an ``updated_seq``.
         canonical = {
@@ -1359,6 +1558,10 @@ class TimelineRepositoryMixin:
             session_id,
             groups,
             logger_context=(session_id, None),
+            # Every slot the batch has already allocated (not written yet) is
+            # off limits to an in-place correction, or a corrected row and an
+            # unrelated in-batch row could end up sharing an order_seq.
+            extra_occupied={item.orderSeq for item in items},
         )
         if corrected is None:
             return []
@@ -1478,31 +1681,31 @@ class TimelineRepositoryMixin:
         start: int,
         count: int,
         occupation: set[int],
+        ceiling: int,
     ) -> list[int] | None:
-        """``count`` consecutive unoccupied slots at/after ``start``, or None.
+        """``count`` consecutive unoccupied slots in ``[start, ceiling]``, or None.
 
-        The run must not dip below 1 (``order_seq`` is a positive ordering
-        integer; the timeline's allocator starts at 1). A run that would need
-        to exceed the session's highest slot defeats the in-place goal, so the
-        caller's ``base`` sitting in ``occupation`` naturally bounds the
-        search: scanning stops there and ``None`` sends the group to the
-        fresh-block fallback.
+        In-place means the group's rows stay inside the slot space the session
+        already uses: a run that would need a slot above ``ceiling`` (the
+        highest slot in play, including rows the caller has allocated but not
+        yet written) defeats the point and returns ``None`` so the caller uses
+        the fresh-block fallback instead. That bound is what keeps a search
+        from walking off the end of a dense session and landing on a slot a
+        concurrent in-batch row already holds.
         """
 
-        if start < 1 or count < 1:
+        if start < 1 or count < 1 or start > ceiling:
             return None
         run: list[int] = []
         slot = start
         while len(run) < count:
+            if slot > ceiling:
+                return None
             if slot in occupation:
                 run.clear()
             else:
                 run.append(slot)
             slot += 1
-            # A gap this wide means the neighbourhood is full: the group's
-            # in-place run would overrun far past its original position.
-            if slot > start + count + len(occupation):
-                return None
         return run or None
 
     async def _repack_intra_message_group(
@@ -1513,6 +1716,7 @@ class TimelineRepositoryMixin:
         *,
         logger_context: tuple[str, str | None],
         occupation: set[int] | None = None,
+        extra_occupied: set[int] | None = None,
     ) -> dict[str, int] | None:
         """Corrected ``order_seq`` per row id for every broken group in ``groups``.
 
@@ -1573,23 +1777,32 @@ class TimelineRepositoryMixin:
             occupation = set(occupation)
 
         # Slots that must never be handed out: every slot a row the caller is
-        # NOT rewriting currently holds, plus every slot a rewritten row is
-        # currently in (those become free only for the group that owns them).
-        # ``claimed`` accumulates the NEW slots this call has assigned, so a
-        # later broken group can never reuse a slot an earlier one just took
-        # (the red-team cross-group collision: two independent messages landing
-        # on the same ``order_seq``).
+        # NOT rewriting currently holds, every slot an in-batch row the caller
+        # has ALREADY allocated but not yet written, plus every slot a rewritten
+        # row is currently in (those become free only for the group that owns
+        # them). ``claimed`` accumulates the NEW slots this call has assigned,
+        # so a later broken group can never reuse a slot an earlier one just
+        # took (the red-team cross-group collision: two independent messages
+        # landing on the same ``order_seq``).
         own_slots = {row.order_seq for group in groups for row in group.values()}
-        foreign_slots = occupation - own_slots
+        foreign_slots = (occupation - own_slots) | (extra_occupied or set())
         claimed: set[int] = set()
-        # The fresh-block fallback lands above every slot in play — an untouched
-        # row's slot, an in-batch row's slot, or an already-claimed block.
-        base = max([max(occupation, default=0)] + sorted(own_slots))
+        # The highest slot in play. An in-place run must stay at or below it;
+        # the fresh-block fallback lands above it. Both include the caller's
+        # in-flight allocations so a corrected row can never collide with a
+        # batch row that has a slot but is not written yet.
+        ceiling = max(
+            [max(occupation, default=0), *own_slots, *(extra_occupied or set())]
+        )
+        base = max(
+            [max(occupation, default=0), *own_slots, *(extra_occupied or set())]
+        )
         for reasoning, messages in broken:
             ordered = [*reasoning, *messages]
             start = min(row.order_seq for row in ordered)
             # This group may reclaim its OWN current slots but nothing else:
-            # not a foreign slot, not a slot an earlier group already claimed.
+            # not a foreign slot, not an in-flight batch slot, not a slot an
+            # earlier group already claimed.
             blocked = foreign_slots | claimed | (
                 own_slots - {row.order_seq for row in ordered}
             )
@@ -1597,6 +1810,7 @@ class TimelineRepositoryMixin:
                 start=start,
                 count=len(ordered),
                 occupation=blocked,
+                ceiling=ceiling,
             )
             if slots is None:
                 # No in-place run fits; fall back to a fresh block above base.
@@ -1760,22 +1974,35 @@ class _IntraMessageGroupRow:
     stored: TimelineItem | None
 
 
+# The Runtime protocol's ``SystemContentKind`` reasoning member. Named and
+# centralised so the classification is auditable and a future Runtime that
+# spells its reasoning block differently has one place to extend.
+_REASONING_CONTENT_KINDS = frozenset({"reasoning"})
+
+
 def _intra_message_kind(item_type: str, content: Any) -> str | None:
     """Classify one item as ``"reasoning"``, ``"message"`` or neither.
 
-    Generic on purpose: reasoning is ``type == "system"`` with
-    ``content.kind == "reasoning"`` and a message body is ``type ==
-    "message"`` — the same free-JSON ``content.kind`` convention the agent-card
-    readers use (``_agent_call_task_ids``). No provider or runtime is
+    Generic on purpose: reasoning is ``type == "system"`` with a
+    ``content.kind`` in ``_REASONING_CONTENT_KINDS`` and a message body is
+    ``type == "message"`` — the same free-JSON ``content.kind`` convention the
+    agent-card readers use (``_agent_call_task_ids``). No provider or runtime is
     consulted, so a Runtime that never reports a native item id (no group) is
     untouched and a future Runtime is classified by shape alone.
+
+    Provider boundary (verified in production): the Runtimes we ship — Claude
+    and Codex — both store their reasoning as ``type == "system"`` with
+    ``content.kind == "reasoning"``, so both are covered. A Runtime that stored
+    reasoning under ``type == "message"`` would be treated as a *body* row
+    (which is what the protocol says ``message`` means); that shape is not
+    produced by our adapters and is out of scope by contract.
     """
 
     if item_type == "message":
         return "message"
     if item_type == "system" and isinstance(content, Mapping) and content.get(
         "kind"
-    ) == "reasoning":
+    ) in _REASONING_CONTENT_KINDS:
         return "reasoning"
     return None
 

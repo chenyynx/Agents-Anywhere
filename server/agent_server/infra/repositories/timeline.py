@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import and_, case, func, or_, select, text, update
+from sqlalchemy import and_, case, func, or_, select, text, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from agent_server.core.models import SessionView, TimelineItem, TimelineItemIn
@@ -320,10 +320,13 @@ class TimelineRepositoryMixin:
         keys: list[tuple[str, str]],
     ) -> list[tuple[str, str]]:
         """The page's ``(session_id, native_item_id)`` groups whose stored
-        reasoning does not strictly precede their stored body."""
+        reasoning does not strictly precede their stored body.
 
-        native_ids = {native for _session, native in keys}
-        wanted = set(keys)
+        Filters by the composite key (``tuple_ IN``), not ``native_item_id``
+        alone, so the ``(session_id, native_item_id)`` index serves it and the
+        query touches only this page's rows.
+        """
+
         rows = (
             await conn.execute(
                 select(
@@ -333,21 +336,21 @@ class TimelineRepositoryMixin:
                     timeline_items_t.c.order_seq,
                     timeline_items_t.c.payload_json,
                 ).where(
-                    timeline_items_t.c.native_item_id.in_(native_ids),
+                    tuple_(
+                        timeline_items_t.c.session_id,
+                        timeline_items_t.c.native_item_id,
+                    ).in_(keys),
                 )
             )
         ).all()
         groups: dict[tuple[str, str], dict[str, list[int]]] = {}
         for session_id, native_item_id, row_type, order_seq, payload_json in rows:
-            key = (session_id, native_item_id)
-            if key not in wanted:
-                continue
             kind = _stored_intra_message_kind(row_type, payload_json)
             if kind is None:
                 continue
-            groups.setdefault(key, {"reasoning": [], "message": []})[kind].append(
-                int(order_seq)
-            )
+            groups.setdefault(
+                (session_id, native_item_id), {"reasoning": [], "message": []}
+            )[kind].append(int(order_seq))
         broken: list[tuple[str, str]] = []
         for key, kinds in groups.items():
             reasoning, messages = kinds["reasoning"], kinds["message"]

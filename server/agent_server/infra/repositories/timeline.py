@@ -201,60 +201,70 @@ class TimelineRepositoryMixin:
 
         removed = 0
         for _ in range(max_groups):
-            async with self._engine.begin() as conn:
-                groups = (
-                    await conn.execute(
-                        select(
-                            timeline_items_t.c.session_id,
-                            timeline_items_t.c.native_item_id,
-                            timeline_items_t.c.role,
-                            func.count(func.distinct(timeline_items_t.c.id)).label(
-                                "ids"
-                            ),
+            session_id, native_item_id, role = await self._next_duplicate_key()
+            if session_id is None:
+                return removed
+            # The removal runs under the same per-session timeline lock as the
+            # writers, so a live write for this session cannot interleave
+            # between the duplicate scan and the delete.
+            async with self._timeline_lock(session_id):
+                async with self._engine.begin() as conn:
+                    rows = (
+                        await conn.execute(
+                            select(
+                                timeline_items_t.c.id,
+                                timeline_items_t.c.updated_seq,
+                            )
+                            .where(
+                                timeline_items_t.c.session_id == session_id,
+                                timeline_items_t.c.type == "message",
+                                timeline_items_t.c.native_item_id == native_item_id,
+                                timeline_items_t.c.role.is_(role)
+                                if role is None
+                                else timeline_items_t.c.role == role,
+                            )
+                            .order_by(
+                                timeline_items_t.c.updated_seq,
+                                timeline_items_t.c.id,
+                            )
                         )
-                        .where(
-                            timeline_items_t.c.type == "message",
-                            timeline_items_t.c.native_item_id.is_not(None),
-                        )
-                        .group_by(
-                            timeline_items_t.c.session_id,
-                            timeline_items_t.c.native_item_id,
-                            timeline_items_t.c.role,
-                        )
-                        .having(
-                            func.count(func.distinct(timeline_items_t.c.id)) > 1
-                        )
-                        .limit(1)
-                    )
-                ).all()
-                if not groups:
-                    return removed
-                session_id, native_item_id, role, _count = groups[0]
-                rows = (
-                    await conn.execute(
-                        select(
-                            timeline_items_t.c.id,
-                            timeline_items_t.c.updated_seq,
-                        )
-                        .where(
-                            timeline_items_t.c.session_id == session_id,
-                            timeline_items_t.c.type == "message",
-                            timeline_items_t.c.native_item_id == native_item_id,
-                            timeline_items_t.c.role.is_(role)
-                            if role is None
-                            else timeline_items_t.c.role == role,
-                        )
-                        .order_by(
-                            timeline_items_t.c.updated_seq,
-                            timeline_items_t.c.id,
-                        )
-                    )
-                ).all()
-                doomed = {row_id for row_id, _ in rows[1:]}
-                await self.timeline.delete_items(conn, session_id, doomed)
-                await self._bump_session(conn, session_id, mark_read=False)
-                removed += len(doomed)
+                    ).all()
+                    doomed = {row_id for row_id, _ in rows[1:]}
+                    if not doomed:
+                        continue  # healed by a concurrent write; re-scan
+                    await self.timeline.delete_items(conn, session_id, doomed)
+                    await self._bump_session(conn, session_id, mark_read=False)
+                    removed += len(doomed)
         return removed
+
+    async def _next_duplicate_key(self) -> tuple[str | None, str, str | None]:
+        """The next ``(session, native_item_id, role)`` message group with more
+        than one stored id, or ``(None, "", None)`` when none remains."""
+
+        async with self._engine.connect() as conn:
+            group = (
+                await conn.execute(
+                    select(
+                        timeline_items_t.c.session_id,
+                        timeline_items_t.c.native_item_id,
+                        timeline_items_t.c.role,
+                    )
+                    .where(
+                        timeline_items_t.c.type == "message",
+                        timeline_items_t.c.native_item_id.is_not(None),
+                    )
+                    .group_by(
+                        timeline_items_t.c.session_id,
+                        timeline_items_t.c.native_item_id,
+                        timeline_items_t.c.role,
+                    )
+                    .having(func.count(func.distinct(timeline_items_t.c.id)) > 1)
+                    .limit(1)
+                )
+            ).first()
+        if group is None:
+            return None, "", None
+        return group[0], group[1], group[2]
 
     async def persist_buffered_timeline_items(
         self,

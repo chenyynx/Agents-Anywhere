@@ -83,32 +83,44 @@ def _backfill_native_item_id() -> None:
 
     Done in Python (not dialect SQL) so the same code runs on SQLite tests and
     PostgreSQL production, and so a payload that is not valid JSON is skipped
-    rather than aborting the migration.
+    rather than aborting the migration. Reads a bounded page at a time — the
+    table can hold hundreds of megabytes of payload text, so materializing it
+    all at once would be a needless memory spike during a live migration — and
+    pages by the ``(session_id, id)`` primary key rather than by "still NULL",
+    which would re-read rows whose payload has no itemId forever.
     """
 
     bind = op.get_bind()
-    rows = bind.execute(
-        sa.text(
-            "SELECT session_id, id, payload_json FROM timeline_items "
-            "WHERE native_item_id IS NULL"
-        )
-    ).fetchall()
-    updates: list[dict[str, str]] = []
-    for session_id, item_id, payload_json in rows:
-        native_item_id = _native_item_id_from_payload(payload_json)
-        if native_item_id is None:
-            continue
-        updates.append(
-            {"session_id": session_id, "id": item_id, "native_item_id": native_item_id}
-        )
-    for start in range(0, len(updates), _BACKFILL_BATCH):
-        bind.execute(
-            sa.text(
-                "UPDATE timeline_items SET native_item_id = :native_item_id "
-                "WHERE session_id = :session_id AND id = :id"
-            ),
-            updates[start : start + _BACKFILL_BATCH],
-        )
+    select_sql = sa.text(
+        "SELECT session_id, id, payload_json FROM timeline_items "
+        "WHERE session_id > :after_session "
+        "OR (session_id = :after_session AND id > :after_id) "
+        "ORDER BY session_id, id LIMIT :limit"
+    )
+    update_sql = sa.text(
+        "UPDATE timeline_items SET native_item_id = :native_item_id "
+        "WHERE session_id = :session_id AND id = :id"
+    )
+    after_session = ""
+    after_id = ""
+    while True:
+        rows = bind.execute(
+            select_sql,
+            {"after_session": after_session, "after_id": after_id, "limit": _BACKFILL_BATCH},
+        ).fetchall()
+        if not rows:
+            return
+        updates: list[dict[str, str]] = []
+        for session_id, item_id, payload_json in rows:
+            after_session, after_id = session_id, item_id
+            native_item_id = _native_item_id_from_payload(payload_json)
+            if native_item_id is None:
+                continue
+            updates.append(
+                {"session_id": session_id, "id": item_id, "native_item_id": native_item_id}
+            )
+        if updates:
+            bind.execute(update_sql, updates)
 
 
 def upgrade() -> None:

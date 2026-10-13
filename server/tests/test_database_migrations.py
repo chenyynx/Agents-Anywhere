@@ -2531,3 +2531,58 @@ def test_v2_35_replaces_the_session_item_time_index(tmp_path) -> None:
         assert "updated_seq DESC" in definition
     finally:
         engine.dispose()
+
+
+def test_v2_42_backfill_pages_without_skipping_or_looping(tmp_path, monkeypatch) -> None:
+    """The backfill pages by ``(session_id, id)`` so a tiny page size still
+    covers every row (and a payload with no itemId cannot stall the loop)."""
+
+    from migrations.versions import v2_42
+
+    monkeypatch.setattr(v2_42, "_BACKFILL_BATCH", 1)
+
+    path = tmp_path / "native-item-id-paged.sqlite3"
+    url = _sqlite_url(path)
+    upgrade_database(db_url=url, revision="v2_41")
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO sessions "
+                    "(id, connector_id, runtime, runtime_id, status, takeover, "
+                    " seq, updated_seq, seq_allocated_high, created_at, updated_at) "
+                    "VALUES ('s1', 'c1', 'claude', 'claude', 'idle', 0, 1, 1, 1, "
+                    " '2026-10-12T00:00:00Z', '2026-10-12T00:00:00Z')"
+                )
+            )
+            for idx in range(4):
+                has_item = idx != 2  # row 2 has no itemId (must be skipped)
+                iid = f',"itemId":"N{idx}"' if has_item else ""
+                connection.execute(
+                    text(
+                        "INSERT INTO timeline_items "
+                        "(session_id, id, type, status, role, order_seq, updated_seq, "
+                        " payload_json) VALUES "
+                        "(:sid, :iid, 'message', 'done', 'assistant', :ord, :ord, "
+                        " '{\"id\":\"m' || :i || '\",\"source\":{\"runtime\":\"claude\"' || :src || '}}')"
+                    ),
+                    {"sid": "s1", "iid": f"m{idx}", "ord": idx + 1, "i": str(idx), "src": iid},
+                )
+    finally:
+        engine.dispose()
+
+    upgrade_database(db_url=url)
+
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        with engine.connect() as connection:
+            rows = {
+                row[0]: row[1]
+                for row in connection.execute(
+                    text("SELECT id, native_item_id FROM timeline_items")
+                )
+            }
+        assert rows == {"m0": "N0", "m1": "N1", "m2": None, "m3": "N3"}
+    finally:
+        engine.dispose()

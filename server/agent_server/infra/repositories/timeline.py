@@ -1038,6 +1038,13 @@ class TimelineRepositoryMixin:
                     session_id=session_id,
                     source_observed_at=source_observed_at,
                 )
+                if converged_deletions:
+                    # Remove the converged twin BEFORE the order pass, so a row
+                    # about to disappear is never counted as a second body row
+                    # of the group (which would move it and waste a revision).
+                    await self.timeline.delete_items(
+                        conn, session_id, converged_deletions
+                    )
                 if unchanged:
                     result = existing
                     if converged_deletions:
@@ -1094,14 +1101,6 @@ class TimelineRepositoryMixin:
                         revision=next_timeline_item_revision(item, existing),
                     )
                     await self.timeline.upsert_one(conn, result)
-                if converged_deletions:
-                    # The canonical row is written above (or already held the
-                    # state); the stale twin is removed in this same
-                    # transaction so a client can never observe a gap between
-                    # the canonical write and the twin's removal.
-                    await self.timeline.delete_items(
-                        conn, session_id, converged_deletions
-                    )
         return TimelineItemWriteResult(
             item=result,
             changed=not unchanged,

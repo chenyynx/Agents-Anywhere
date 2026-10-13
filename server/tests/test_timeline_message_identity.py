@@ -115,6 +115,20 @@ async def _rows_by_id(store: Store, session_id: str) -> dict[str, Any]:
     return {item.id: item for item in await store.timeline.read(session_id)}
 
 
+async def _last_read_seq(store: Store, session_id: str) -> int:
+    """Read the session's unread cursor directly (not exposed on the read model)."""
+
+    async with store.engine.connect() as conn:
+        value = (
+            await conn.execute(
+                select(sessions_t.c.last_read_seq).where(
+                    sessions_t.c.id == session_id
+                )
+            )
+        ).scalar()
+    return int(value or 0)
+
+
 def _fingerprint(item: Any) -> tuple[int, int, int]:
     return (item.orderSeq, item.updatedSeq, item.revision)
 

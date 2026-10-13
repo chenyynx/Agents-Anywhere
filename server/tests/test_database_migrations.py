@@ -1365,6 +1365,74 @@ def test_v2_42_index_check_ignores_an_unusable_index(monkeypatch) -> None:
         assert "relkind" in bind.statements[-1]
 
 
+def test_v2_42_upgrade_keeps_ddl_out_of_the_chain_transaction(monkeypatch) -> None:
+    """``ADD COLUMN`` / backfill / ``CREATE INDEX CONCURRENTLY`` must each run in
+    their own committed ``autocommit_block``.
+
+    The whole Alembic chain is one transaction, so an ``ADD COLUMN`` inside it
+    would hold ACCESS EXCLUSIVE on ``timeline_items`` until the backfill and
+    index build finished. The build also cannot run inside a transaction at all.
+    Losing either wrapper is a silent table-lock regression the SQLite tests do
+    not otherwise catch, so pin the structure: each of the three steps must
+    happen inside an entered autocommit block.
+    """
+
+    from migrations.versions import v2_42
+
+    events: list[str] = []
+
+    class _Context:
+        def autocommit_block(self):
+            events.append("enter-block")
+
+            class _CM:
+                def __enter__(self):
+                    return None
+
+                def __exit__(self, *_exc):
+                    events.append("exit-block")
+                    return False
+
+            return _CM()
+
+    class _Op:
+        def get_context(self):
+            return _Context()
+
+        def get_bind(self):
+            return type("B", (), {"dialect": type("D", (), {"name": "sqlite"})()})()
+
+        def add_column(self, *_a, **_k):
+            events.append("add_column")
+
+        def create_index(self, *_a, **_k):
+            events.append("create_index")
+
+    monkeypatch.setattr(v2_42, "op", _Op())
+    # Column/index already present so the guarded steps still run their block.
+    monkeypatch.setattr(v2_42, "_column_names", lambda: {"native_item_id"})
+    monkeypatch.setattr(v2_42, "_index_is_usable", lambda _name: False)
+    monkeypatch.setattr(v2_42, "_index_exists", lambda _name: False)
+    monkeypatch.setattr(v2_42, "_backfill_native_item_id", lambda: events.append("backfill"))
+
+    v2_42.upgrade()
+
+    # The backfill and the index build each sit inside an entered block.
+    def _inside(name: str) -> bool:
+        depth = 0
+        for event in events:
+            if event == "enter-block":
+                depth += 1
+            elif event == "exit-block":
+                depth -= 1
+            elif event == name:
+                return depth > 0
+        raise AssertionError(f"{name} never ran: {events}")
+
+    assert _inside("backfill")
+    assert _inside("create_index")
+
+
 def test_v2_41_drops_the_sidebar_order_table(tmp_path) -> None:
     path = tmp_path / "sidebar-order.sqlite3"
     url = _sqlite_url(path)

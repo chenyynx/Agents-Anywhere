@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 from sqlalchemy import text
 from test_timeline_message_identity import (
+    _last_read_seq,
     _rows_by_id,
     _seed_row,
     _store_with_session,
@@ -28,7 +29,10 @@ from test_timeline_message_identity import (
     reasoning_input,
 )
 
-from agent_server.core.timeline import native_item_id_from_payload
+from agent_server.core.timeline import (
+    native_item_id_from_payload,
+    timeline_item_from_runtime_input,
+)
 from agent_server.infra.repositories.timeline import _intra_message_kind
 
 # ---------------------------------------------------------------------------
@@ -43,37 +47,42 @@ async def test_pure_heal_removes_twin_bumps_session_and_reports_deletion(
     store, session = await _store_with_session(tmp_path)
     try:
         # A canonical live row and a stored twin, byte-identical content, so the
-        # incoming write is the "unchanged" fast path.
+        # incoming write is the "unchanged" fast path. The twin's content hash
+        # must equal the canonical's (the hash is the unchanged predicate), and
+        # the live/history pair genuinely shares one because both paths hash the
+        # same message text — model that explicitly here.
+        canonical = message_input(session.id, "live_1", native_item_id="X", order_seq=1)
+        twin = message_input(
+            session.id, "hist_1", native_item_id="X", order_seq=2
+        ).model_copy(update={"contentHash": canonical.contentHash})
         await _seed_row(
-            store,
-            session.id,
-            message_input(session.id, "live_1", native_item_id="X", order_seq=1),
-            order_seq=1,
-            updated_seq=1,
+            store, session.id, canonical, order_seq=1, updated_seq=1
         )
-        await _seed_row(
-            store,
-            session.id,
-            message_input(session.id, "hist_1", native_item_id="X", order_seq=2),
-            order_seq=2,
-            updated_seq=2,
-        )
+        await _seed_row(store, session.id, twin, order_seq=2, updated_seq=2)
         before_seq = await store.get_session_seq(session.id)
+        before_read = await _last_read_seq(store, session.id)
         before = await _rows_by_id(store, session.id)
         assert set(before) == {"live_1", "hist_1"}
 
         result = await store.upsert_timeline_item(
             session_id=session.id,
-            item=message_input(session.id, "hist_1", native_item_id="X", order_seq=2),
+            item=twin,
         )
 
         after = await _rows_by_id(store, session.id)
         assert set(after) == {"live_1"}
+        # A pure heal is not a content change: the canonical row already held
+        # this state, so the caller is told nothing changed even though a twin
+        # was removed (`deleted` carries that separately).
+        assert result.changed is False
         # The deletion is stated on the result (the publisher turns it into a
         # `deleted` field), and the session advanced so a refetch reaches a
         # client holding the removed id.
         assert result.deleted == ("hist_1",)
         assert await store.get_session_seq(session.id) > before_seq
+        # Removing a duplicate row is not content the user has now seen: the
+        # heal bump must not consume the unread badge.
+        assert await _last_read_seq(store, session.id) == before_read
     finally:
         await store.close()
 
@@ -310,6 +319,51 @@ async def test_deletion_is_stated_in_the_published_envelope(tmp_path) -> None:
         assert payloads, "a deletion must publish something"
         envelope = payloads[-1]
         assert envelope["deleted"] == ["ghost_row"]
+        assert envelope.get("refetch") is True
+    finally:
+        await buffer.close()
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_deletion_with_a_surviving_item_still_forces_refetch(tmp_path) -> None:
+    """The production shape: a write converges a twin AND keeps a surviving row.
+
+    The envelope then carries ``items`` (the canonical row) together with
+    ``deleted`` (the removed twin). A client that ignores ``deleted`` must still
+    drop the twin, so the removal must force ``refetch`` even though ``items``
+    is non-empty — the exact case a deletion-only test would miss.
+    """
+
+    import json
+
+    from test_timeline_write_buffer import create_buffer
+
+    from agent_server.core.timeline import TimelineItemWriteResult
+
+    store, broker, buffer, _connector, session = await create_buffer(tmp_path)
+    payloads: list[dict[str, Any]] = []
+
+    async def record(_session_id: str, message: str) -> None:
+        payloads.append(json.loads(message))
+
+    broker.publish_message = record  # type: ignore[method-assign]
+    try:
+        survivor = message_input(session.id, "live_1", native_item_id="X", order_seq=1)
+        stored = timeline_item_from_runtime_input(
+            survivor, updated_seq=1, now="2026-10-12T00:00:00Z", order_seq=1
+        )
+        await buffer.publish_revision_result(
+            session.id,
+            operation="upsert_timeline_item",
+            result=TimelineItemWriteResult(
+                item=stored, changed=False, deleted=("hist_1",)
+            ),
+        )
+        assert payloads
+        envelope = payloads[-1]
+        assert [item["id"] for item in envelope["items"]] == ["live_1"]
+        assert envelope["deleted"] == ["hist_1"]
         assert envelope.get("refetch") is True
     finally:
         await buffer.close()

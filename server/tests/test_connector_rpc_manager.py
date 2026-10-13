@@ -435,20 +435,26 @@ def test_stale_owner_cannot_delete_replacement_lease() -> None:
 def test_connector_heartbeat_renews_distributed_lease() -> None:
     async def exercise() -> None:
         fake_server = FakeServer()
+        # The lease TTL is a wall clock (fakeredis), so a sub-100ms timeout
+        # turns the test into a race with the scheduler: under load the sleeps
+        # below overshoot the TTL, the lease expires, and `touch` reports
+        # ownership lost. A 1s TTL leaves ~20x headroom over a 50ms sleep while
+        # still exercising the same path (register -> touch -> a second owner
+        # is refused).
         owner = ConnectorRpcManager(
             _coordinator(fake_server),
             instance_id="server-a",
-            heartbeat_timeout_seconds=0.05,
+            heartbeat_timeout_seconds=1.0,
         )
         other = ConnectorRpcManager(
             _coordinator(fake_server),
             instance_id="server-b",
-            heartbeat_timeout_seconds=0.05,
+            heartbeat_timeout_seconds=1.0,
         )
         connection = await owner.register("conn_1", FakeWebSocket())  # type: ignore[arg-type]
-        await asyncio.sleep(0.03)
+        await asyncio.sleep(0.05)
         assert await owner.touch("conn_1", connection)
-        await asyncio.sleep(0.03)
+        await asyncio.sleep(0.05)
 
         with pytest.raises(DuplicateConnectorConnectionError):
             await other.register("conn_1", FakeWebSocket())  # type: ignore[arg-type]

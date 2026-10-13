@@ -76,25 +76,30 @@ CONNECTOR_PRESENCE_SWEEP_SECONDS = 5
 async def _backfill_native_item_ids(app: FastAPI) -> None:
     """One-time, best-effort timeline maintenance at startup.
 
-    Two passes: refill NULL ``native_item_id`` rows the migration did not cover
-    (a row written by an older worker during a rolling upgrade is otherwise
-    invisible to the intra-message corrector), then remove stored duplicate
+    Three passes, in order: refill NULL ``native_item_id`` rows the migration
+    did not cover (a row written by an older worker during a rolling upgrade is
+    otherwise invisible to the intra-message corrector); remove stored duplicate
     message rows (a pre-fix live/history twin whose key is never written again
-    would otherwise keep both rows visible). Neither blocks startup nor fails
-    the process — a failure just leaves the work for the next restart.
+    would otherwise keep both rows visible); then repair stored reasoning/body
+    order the write paths never saw again (a group already stored body-first
+    that is never rewritten keeps the broken order forever). None blocks
+    startup or fails the process — a failure just leaves the work for the next
+    restart.
     """
 
     try:
         refilled = await app.state.store.backfill_native_item_ids()
         removed = await app.state.store.deduplicate_message_identities()
+        repaired = await app.state.store.repair_intra_message_order()
     except Exception:  # noqa: BLE001 - a maintenance pass must not break boot
         logger.exception("timeline startup maintenance failed")
         return
-    if refilled or removed:
+    if refilled or removed or repaired:
         logger.info(
-            "timeline startup maintenance refilled={} deduplicated={}",
+            "timeline startup maintenance refilled={} deduplicated={} repaired={}",
             refilled,
             removed,
+            repaired,
         )
 
 

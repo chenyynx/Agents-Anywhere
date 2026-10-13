@@ -244,6 +244,167 @@ class TimelineRepositoryMixin:
                 removed += len(doomed)
         return removed
 
+    async def repair_intra_message_order(
+        self,
+        *,
+        batch_size: int = 500,
+        max_batches: int = 10_000,
+    ) -> int:
+        """Repair stored reasoning/body order the write paths never saw again.
+
+        The intra-message corrector only runs on a write. A message whose rows
+        are already stored with the body before its reasoning — and which is
+        never written again — keeps the broken order forever (production: 57
+        groups across history-rebuilt rows). This one-time sweep finds those
+        groups and repacks them with the same ``_repack_intra_message_group``
+        the live paths use, so a repaired group is indistinguishable from one a
+        write had healed.
+
+        Bounded, quiet and idempotent. Group keys are paged by
+        ``(session_id, native_item_id)`` (the migration's index serves the
+        scan) and each page's rows are read in ONE query; the expensive write
+        path (a per-session lock plus a repack) runs only for the handful of
+        actually-broken groups — a healthy database does a linear read and no
+        writes. Re-running finds nothing broken (the corrector is strict).
+        Returns the number of rows moved.
+        """
+
+        moved = 0
+        after_session = ""
+        after_native = ""
+        for _ in range(max_batches):
+            async with self._engine.connect() as conn:
+                keys = (
+                    await conn.execute(
+                        select(
+                            timeline_items_t.c.session_id,
+                            timeline_items_t.c.native_item_id,
+                        )
+                        .where(
+                            timeline_items_t.c.native_item_id.is_not(None),
+                            or_(
+                                timeline_items_t.c.session_id > after_session,
+                                and_(
+                                    timeline_items_t.c.session_id == after_session,
+                                    timeline_items_t.c.native_item_id > after_native,
+                                ),
+                            ),
+                        )
+                        .group_by(
+                            timeline_items_t.c.session_id,
+                            timeline_items_t.c.native_item_id,
+                        )
+                        .order_by(
+                            timeline_items_t.c.session_id,
+                            timeline_items_t.c.native_item_id,
+                        )
+                        .limit(batch_size)
+                    )
+                ).all()
+                if not keys:
+                    return moved
+                after_session = keys[-1][0]
+                after_native = keys[-1][1]
+                # One read for every row in this page's groups, classified in
+                # memory so only genuinely broken groups reach the write path.
+                broken = await self._broken_groups_in_page(conn, keys)
+            for session_id, native_item_id in broken:
+                moved += await self._repair_one_intra_message_group(
+                    session_id, native_item_id
+                )
+        return moved
+
+    async def _broken_groups_in_page(
+        self,
+        conn: AsyncConnection,
+        keys: list[tuple[str, str]],
+    ) -> list[tuple[str, str]]:
+        """The page's ``(session_id, native_item_id)`` groups whose stored
+        reasoning does not strictly precede their stored body."""
+
+        native_ids = {native for _session, native in keys}
+        wanted = set(keys)
+        rows = (
+            await conn.execute(
+                select(
+                    timeline_items_t.c.session_id,
+                    timeline_items_t.c.native_item_id,
+                    timeline_items_t.c.type,
+                    timeline_items_t.c.order_seq,
+                    timeline_items_t.c.payload_json,
+                ).where(
+                    timeline_items_t.c.native_item_id.in_(native_ids),
+                )
+            )
+        ).all()
+        groups: dict[tuple[str, str], dict[str, list[int]]] = {}
+        for session_id, native_item_id, row_type, order_seq, payload_json in rows:
+            key = (session_id, native_item_id)
+            if key not in wanted:
+                continue
+            kind = _stored_intra_message_kind(row_type, payload_json)
+            if kind is None:
+                continue
+            groups.setdefault(key, {"reasoning": [], "message": []})[kind].append(
+                int(order_seq)
+            )
+        broken: list[tuple[str, str]] = []
+        for key, kinds in groups.items():
+            reasoning, messages = kinds["reasoning"], kinds["message"]
+            if reasoning and messages and max(reasoning) >= min(messages):
+                broken.append(key)
+        return broken
+
+    async def _repair_one_intra_message_group(
+        self,
+        session_id: str,
+        native_item_id: str,
+    ) -> int:
+        """Repack one stored group in place, if it is broken. Returns rows moved."""
+
+        async with self._timeline_lock(session_id), self._engine.begin() as conn:
+            group = await self._load_intra_message_group(
+                conn, session_id, native_item_id
+            )
+            if not group:
+                return 0
+            corrected = await self._repack_intra_message_group(
+                conn,
+                session_id,
+                [{row.id: row for row in group}],
+                logger_context=(session_id, native_item_id),
+            )
+            if corrected is None:
+                return 0  # healthy: the corrector is strict
+            # The corrected rows are stored siblings; rewrite them with a fresh
+            # revision so an incrementally reading client replays the move, and
+            # bump the session so a publisher carries the change.
+            first_seq = await self._reserve_session_revisions(
+                conn,
+                session_id,
+                count=len(corrected),
+                mark_read=False,
+                touch_updated_at=False,
+            )
+            by_id = {row.id: row for row in group}
+            moved: list[TimelineItem] = []
+            for offset, (row_id, new_order_seq) in enumerate(sorted(corrected.items())):
+                stored = by_id[row_id].stored
+                if stored is None:
+                    continue
+                moved.append(
+                    stored.model_copy(
+                        update={
+                            "orderSeq": new_order_seq,
+                            "updatedSeq": first_seq + offset,
+                        }
+                    )
+                )
+            if moved:
+                await self.timeline.upsert_many(conn, moved)
+                await self._bump_session(conn, session_id, mark_read=False)
+            return len(moved)
+
     async def _next_duplicate_key(self) -> tuple[str | None, str, str | None]:
         """The next ``(session, native_item_id, role)`` message group with more
         than one stored id, or ``(None, "", None)`` when none remains."""
@@ -389,10 +550,6 @@ class TimelineRepositoryMixin:
                         item for item in changed_items if item.id not in mover_ids
                     ] + siblings
                 await self.timeline.upsert_many(conn, changed_items)
-                if converged_deletions and not changed_items:
-                    # Pure heal (the twin was already removed above): a fresh
-                    # revision so the published set is not skipped as unchanged.
-                    await self._bump_session(conn, session_id, mark_read=False)
                 # The push must carry the corrected order, so rebuild the
                 # published set from the corrected rows (the corrector replaced
                 # the in-batch entries wholesale; ``persistable_items`` still
@@ -432,6 +589,19 @@ class TimelineRepositoryMixin:
                         .where(sessions_t.c.id == session_id)
                         .values(**session_values)
                     )
+                if converged_deletions:
+                    # A removal must always advance the session revision, and
+                    # this runs AFTER the accepted-watermark write so it cannot
+                    # be undone by it. The publisher skips an envelope whose
+                    # ``nextSeq`` does not exceed ``published_through`` (a no-op
+                    # flush), and the buffered accept path has already published
+                    # and marked the changed rows' revision — so without this
+                    # bump a flush that removes a twin *and* carries changed
+                    # rows would publish nothing, and the client would never
+                    # hear the deletion (no refetch, no gap). Pure heal needs it
+                    # too: a removal with no surviving item has nothing else to
+                    # carry it.
+                    await self._bump_session(conn, session_id, mark_read=False)
         return TimelineBatchWriteResult(
             items=tuple(published_items),
             changed=bool(changed_items),
@@ -598,11 +768,14 @@ class TimelineRepositoryMixin:
                         item for item in changed_items if item.id not in mover_ids
                     ] + sibling_movers
                 await self.timeline.upsert_many(conn, changed_items)
-                if converged_deletions and not changed_items:
-                    # Pure heal (the twin was removed at the top of this
-                    # transaction): a fresh revision so the deletion is
-                    # delivered — the prune precedent, mark_read=False because
-                    # removing a duplicate row is not content the user has seen.
+                if converged_deletions:
+                    # A removal always advances the session revision so the
+                    # deletion is delivered — the prune precedent, mark_read=
+                    # False because removing a duplicate row is not content the
+                    # user has seen. Unconditional (not only the pure heal): a
+                    # flush that removes a twin *and* carries changed rows must
+                    # still move ``nextSeq`` past ``published_through`` or the
+                    # publisher skips the envelope and the deletion is lost.
                     await self._bump_session(conn, session_id, mark_read=False)
                 if prune_orphan_agent_calls:
                     await self._prune_orphan_agent_call_rows(

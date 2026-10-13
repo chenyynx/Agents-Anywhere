@@ -364,3 +364,152 @@ def test_classifier_is_protocol_shaped_not_provider_named() -> None:
     assert _intra_message_kind("system", {"kind": "reasoning"}) == "reasoning"
     assert _intra_message_kind("system", {"kind": "thinking"}) is None
     assert _intra_message_kind("message", None) == "message"
+
+
+# ---------------------------------------------------------------------------
+# Finding C-R2: the startup pass repairs stored order with NO write to trigger.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_startup_pass_repairs_stored_order_without_a_write(tmp_path) -> None:
+    """A group already stored body-first, never written again, is healed by the
+    startup sweep alone — the write-path corrector can never reach it."""
+
+    store, session = await _store_with_session(tmp_path)
+    try:
+        # Stored broken: body@5, reasoning@6 (both durable, no in-flight write).
+        await _seed_row(
+            store,
+            session.id,
+            message_input(session.id, "body", native_item_id="X", order_seq=5),
+            order_seq=5,
+            updated_seq=5,
+        )
+        await _seed_row(
+            store,
+            session.id,
+            reasoning_input(session.id, "rsn", native_item_id="X", order_seq=6),
+            order_seq=6,
+            updated_seq=6,
+        )
+        rows = await _rows_by_id(store, session.id)
+        assert rows["rsn"].orderSeq > rows["body"].orderSeq  # broken to start
+
+        moved = await store.repair_intra_message_order()
+
+        assert moved > 0
+        rows = await _rows_by_id(store, session.id)
+        assert rows["rsn"].orderSeq < rows["body"].orderSeq
+        # Idempotent: a healthy session is untouched and moves nothing.
+        assert await store.repair_intra_message_order() == 0
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_startup_pass_leaves_healthy_groups_untouched(tmp_path) -> None:
+    store, session = await _store_with_session(tmp_path)
+    try:
+        await _seed_row(
+            store,
+            session.id,
+            reasoning_input(session.id, "rsn", native_item_id="X", order_seq=5),
+            order_seq=5,
+            updated_seq=5,
+        )
+        await _seed_row(
+            store,
+            session.id,
+            message_input(session.id, "body", native_item_id="X", order_seq=6),
+            order_seq=6,
+            updated_seq=6,
+        )
+        before = {
+            i: (v.orderSeq, v.updatedSeq)
+            for i, v in (await _rows_by_id(store, session.id)).items()
+        }
+        assert await store.repair_intra_message_order() == 0
+        after = {
+            i: (v.orderSeq, v.updatedSeq)
+            for i, v in (await _rows_by_id(store, session.id)).items()
+        }
+        assert after == before
+    finally:
+        await store.close()
+
+
+# ---------------------------------------------------------------------------
+# Finding A-1: a flush that removes a twin AND carries changed rows still
+# advances the revision, so the publisher cannot skip the deletion envelope.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_buffered_delete_with_changed_rows_advances_the_revision(
+    tmp_path,
+) -> None:
+    """The buffered write-buffer path's mixed case.
+
+    The live accept path publishes a changed row at its own seq and marks that
+    seq as ``published_through``; the durable session seq then equals the row's
+    ``updatedSeq``. A later flush that converges a duplicate twin in the same
+    batch computes ``accepted_watermark == row.seq`` (no change), so the ONLY
+    thing that can move ``nextSeq`` past ``published_through`` is the deletion
+    bump. Without it the publisher skips the whole envelope and the client never
+    hears the deletion (no refetch, no gap). The unrelated new row is
+    deliberately absent: this is the exact case the pure-heal bump must cover.
+    """
+
+    from test_timeline_intra_message_order_paths import _to_stored
+
+    store, session = await _store_with_session(tmp_path)
+    try:
+        # Canonical live row for native X already published at the session's
+        # durable seq, plus a stored twin of the same message.
+        await _seed_row(
+            store,
+            session.id,
+            message_input(session.id, "live_1", native_item_id="X", order_seq=1),
+            order_seq=1,
+            updated_seq=1,
+        )
+        await _seed_row(
+            store,
+            session.id,
+            message_input(session.id, "hist_1", native_item_id="X", order_seq=2),
+            order_seq=2,
+            updated_seq=2,
+        )
+        # The flush re-sends the canonical row at its already-published seq but
+        # with changed content (a streaming update landing on the canonical id).
+        # Equal updatedSeq + different content = a *changed* row whose
+        # updatedSeq does NOT exceed the durable seq, so the accepted-watermark
+        # write is a no-op and only the deletion bump can advance nextSeq.
+        changed_row = _to_stored(
+            store,
+            message_input(
+                session.id, "live_1", native_item_id="X", order_seq=1, text="v2"
+            ),
+            order_seq=1,
+            updated_seq=1,
+        )
+        before_seq = await store.get_session_seq(session.id)
+
+        result = await store.persist_buffered_timeline_items(
+            session_id=session.id,
+            items=[changed_row],
+        )
+
+        assert result.deleted == ("hist_1",)  # the twin was removed
+        assert result.changed  # and a surviving row changed (the mixed case)
+        # The changed row's own updatedSeq does NOT exceed the durable seq, so
+        # the accepted-watermark write is a no-op — the only thing that can move
+        # nextSeq is the deletion bump.
+        assert max(item.updatedSeq for item in result.items) <= before_seq
+        after_seq = await store.get_session_seq(session.id)
+        # The deletion bump must move nextSeq past the changed rows' own seq —
+        # otherwise the publisher's `nextSeq > published_through` gate stays shut.
+        assert after_seq > before_seq
+    finally:
+        await store.close()

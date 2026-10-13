@@ -83,6 +83,37 @@ Removed compatibility event types:
 Use `runtime.state.updated`, `runtime.capability.updated`,
 `runtime.notice.updated`, and `runtime.notice.snapshot` for live Runtime facts.
 
+### Row removal and resync
+
+The persisted timeline is upsert-only from a client's view: an event either
+carries a row to upsert (`timeline.item_created` / `timeline.item_updated`) or
+tells the client the stored timeline changed underneath it. Two Server-side
+envelope keys drive the latter, and neither is a protocol event type on its own:
+
+- `refetch` — the durable timeline moved in a way the incremental stream cannot
+  express, so the client must re-pull `/sessions/{id}/snapshot`. The Server
+  projects it to `session.refetch_required`. This is the signal every shipped
+  client already reacts to.
+- `timelineReset` — the envelope's `items` array is the **complete** new
+  timeline (a replace, not a merge), projected to `timeline.snapshot`. An empty
+  array is meaningful: it clears the view. A `replace_timeline_snapshot` write
+  always uses this form.
+- `deleted` — the ids of rows removed by a write that had no surviving row to
+  carry the change (a converged duplicate, a snapshot that omitted rows). It is
+  a **Server-reserved field**: clients MAY ignore it and rely on `refetch`, and
+  every currently shipped client does exactly that. It is bounded
+  (`MAX_STATED_DELETIONS`); above that bound the Server omits the array and the
+  envelope stays a bare `refetch`. Do not assume its presence, and do not treat
+  an unknown `deleted` key as an error.
+
+When a write both removes rows and upserts rows, the envelope carries `items`
+**and** forces `refetch`, so a client that ignores `deleted` still converges by
+re-pulling. `refetch` always wins over every other signal in the same envelope.
+
+The `replace_timeline_snapshot` envelope is deliberately never downgraded to a
+bare `refetch`: its `deleted` list is just "rows the new snapshot omits", and the
+complete new timeline travels in `timelineReset` + `items` (empty included).
+
 ### Recovery rules
 
 - Event cursor format is `seq:{number}`.

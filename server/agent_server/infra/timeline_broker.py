@@ -38,6 +38,14 @@ def timeline_envelope_message(
     The hot path serializes each item once for the pending projection and then
     splices that same encoding into the envelope, instead of dumping the model
     a second time just to publish it.
+
+    This envelope carries only ``items`` — no ``deleted`` / ``refetch`` /
+    ``timelineReset``. It exists for the live accept fast path, which only ever
+    upserts, never removes. If a removal is ever routed here it will be
+    silently dropped: a deletion must go through ``publish_revision_result`` /
+    ``_flush_locked``, which know how to state ``deleted`` and force the
+    ``refetch`` the client acts on. Extend this builder before adding any
+    remove-capable caller.
     """
 
     return (

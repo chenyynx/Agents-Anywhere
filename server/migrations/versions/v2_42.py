@@ -36,6 +36,31 @@ depends_on: str | Sequence[str] | None = None
 
 NATIVE_ITEM_INDEX = "idx_timeline_items_session_native_item"
 _BACKFILL_BATCH = 1000
+# A CONCURRENTLY build that cannot take its lock (a long-running unrelated
+# transaction, a stuck idle-in-transaction) waits forever by default. Bound it
+# so the migration fails fast and visibly instead of hanging the deploy; the
+# failed build leaves an INVALID index that the retry path (above) clears and
+# rebuilds.
+_LOCK_TIMEOUT = "5s"
+
+
+def _bound_lock_wait() -> None:
+    """Cap how long a CONCURRENTLY build waits for its lock.
+
+    ``CREATE INDEX CONCURRENTLY`` waits without limit for the lock it needs at
+    its start and finish phases. A long-running unrelated transaction (or an
+    idle-in-transaction session) therefore hangs the whole deploy with no
+    output. ``lock_timeout`` turns that into a fast, visible failure; the retry
+    path drops the INVALID shell and rebuilds. Session-scoped ``SET`` (not
+    ``SET LOCAL``): the autocommit block commits between statements, so a
+    transaction-local setting would not survive to the ``CREATE INDEX``. Only
+    PostgreSQL has the GUC; SQLite ignores ``SET`` entirely, so it is skipped
+    there.
+    """
+
+    if op.get_bind().dialect.name != "postgresql":
+        return
+    op.execute(sa.text(f"SET lock_timeout = '{_LOCK_TIMEOUT}'"))
 
 
 def _column_names() -> set[str]:
@@ -110,16 +135,22 @@ def _backfill_native_item_id() -> None:
     PostgreSQL production, and so a payload that is not valid JSON is skipped
     rather than aborting the migration. Reads a bounded page at a time — the
     table can hold hundreds of megabytes of payload text, so materializing it
-    all at once would be a needless memory spike during a live migration — and
-    pages by the ``(session_id, id)`` primary key rather than by "still NULL",
-    which would re-read rows whose payload has no itemId forever.
+    all at once would be a needless memory spike during a live migration.
+
+    The scan is restricted to rows still NULL and still pages by the
+    ``(session_id, id)`` primary key. Both matter: the ``IS NULL`` predicate
+    keeps a re-run from re-reading every payload to find the rows a previous
+    attempt already filled, while the keyset cursor is what guarantees
+    termination — a row whose payload has no itemId stays NULL forever, so
+    "still NULL" alone would loop on it; the cursor always advances past it.
     """
 
     bind = op.get_bind()
     select_sql = sa.text(
         "SELECT session_id, id, payload_json FROM timeline_items "
-        "WHERE session_id > :after_session "
-        "OR (session_id = :after_session AND id > :after_id) "
+        "WHERE native_item_id IS NULL "
+        "AND (session_id > :after_session "
+        "OR (session_id = :after_session AND id > :after_id)) "
         "ORDER BY session_id, id LIMIT :limit"
     )
     update_sql = sa.text(
@@ -178,6 +209,7 @@ def upgrade() -> None:
             # Either the index is absent, or a previous CONCURRENTLY build left
             # it INVALID (present but unusable). Both mean "build it"; the drop
             # clears the invalid shell so the name is free.
+            _bound_lock_wait()
             if _index_exists(NATIVE_ITEM_INDEX):
                 _drop_index_concurrently(NATIVE_ITEM_INDEX)
             op.create_index(
@@ -214,6 +246,7 @@ def _drop_index_concurrently(name: str) -> None:
 def downgrade() -> None:
     if _index_exists(NATIVE_ITEM_INDEX):
         with op.get_context().autocommit_block():
+            _bound_lock_wait()
             _drop_index_concurrently(NATIVE_ITEM_INDEX)
     if "native_item_id" in _column_names():
         op.drop_column("timeline_items", "native_item_id")

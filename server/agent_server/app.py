@@ -6,6 +6,7 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
@@ -73,7 +74,7 @@ from agent_server.services.workspace import WorkspaceServiceError
 CONNECTOR_PRESENCE_SWEEP_SECONDS = 5
 
 
-async def _backfill_native_item_ids(app: FastAPI) -> None:
+async def _timeline_startup_maintenance(app: FastAPI) -> None:
     """One-time, best-effort timeline maintenance at startup.
 
     Three passes, in order: refill NULL ``native_item_id`` rows the migration
@@ -82,25 +83,40 @@ async def _backfill_native_item_ids(app: FastAPI) -> None:
     message rows (a pre-fix live/history twin whose key is never written again
     would otherwise keep both rows visible); then repair stored reasoning/body
     order the write paths never saw again (a group already stored body-first
-    that is never rewritten keeps the broken order forever). None blocks
-    startup or fails the process — a failure just leaves the work for the next
-    restart.
+    that is never rewritten keeps the broken order forever).
+
+    Each pass is isolated: the passes address independent defects, so a failure
+    in one is recorded and the later passes still run rather than being skipped
+    by a single wrapping catch. The maintenance is always reported honestly —
+    if any pass failed it is logged as INCOMPLETE, never as a completed repair.
+    None of this blocks startup or fails the process; a failed pass just leaves
+    its work for the next restart.
     """
 
-    try:
-        refilled = await app.state.store.backfill_native_item_ids()
-        removed = await app.state.store.deduplicate_message_identities()
-        repaired = await app.state.store.repair_intra_message_order()
-    except Exception:  # noqa: BLE001 - a maintenance pass must not break boot
-        logger.exception("timeline startup maintenance failed")
-        return
-    if refilled or removed or repaired:
-        logger.info(
-            "timeline startup maintenance refilled={} deduplicated={} repaired={}",
-            refilled,
-            removed,
-            repaired,
+    store = app.state.store
+    operations: tuple[tuple[str, Any], ...] = (
+        ("backfill_native_item_ids", store.backfill_native_item_ids),
+        ("deduplicate_message_identities", store.deduplicate_message_identities),
+        ("repair_intra_message_order", store.repair_intra_message_order),
+    )
+    results: dict[str, int] = {}
+    failed: list[str] = []
+    for name, operation in operations:
+        try:
+            results[name] = await operation()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - a maintenance pass must not break boot
+            failed.append(name)
+            logger.exception("timeline startup maintenance pass failed pass={}", name)
+    if failed:
+        logger.warning(
+            "timeline startup maintenance incomplete failed_passes={} results={}",
+            failed,
+            results,
         )
+    elif any(results.values()):
+        logger.info("timeline startup maintenance applied results={}", results)
 
 
 async def _connector_presence_watchdog(app: FastAPI) -> None:
@@ -151,6 +167,7 @@ def create_app(
         presence_task: asyncio.Task[None] | None = None
         deletion_task: asyncio.Task[None] | None = None
         janitor_task: asyncio.Task[None] | None = None
+        maintenance_task: asyncio.Task[None] | None = None
         try:
             logger.info(
                 "server concurrency pid={} workers={} event_workers={}",
@@ -172,7 +189,10 @@ def create_app(
             # carry a NULL native_item_id and be invisible to the intra-message
             # corrector; refill any such rows once, best-effort, off the
             # startup path so a slow scan cannot delay serving.
-            asyncio.create_task(_backfill_native_item_ids(app))
+            maintenance_task = asyncio.create_task(
+                _timeline_startup_maintenance(app),
+                name="timeline-startup-maintenance",
+            )
             if app.state.timeline_janitor.enabled:
                 janitor_task = asyncio.create_task(app.state.timeline_janitor.run())
             else:
@@ -182,6 +202,12 @@ def create_app(
                 await SetupTokenService(app.state.setup_token, app.state.redis).snapshot()
             yield
         finally:
+            if maintenance_task is not None:
+                # Stop the best-effort maintenance before any store/Redis below
+                # it is closed: it must never keep running against a closed
+                # engine or a closed coordinator.
+                maintenance_task.cancel()
+                await asyncio.gather(maintenance_task, return_exceptions=True)
             if janitor_task is not None:
                 janitor_task.cancel()
                 await asyncio.gather(janitor_task, return_exceptions=True)

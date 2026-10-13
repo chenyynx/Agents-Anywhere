@@ -1883,3 +1883,74 @@ async def test_lane_registry_stays_within_its_cap(tmp_path) -> None:
     finally:
         await buffer.close()
         await store.close()
+
+
+@pytest.mark.anyio
+async def test_session_fence_reentrancy_is_scoped_to_the_owning_task(tmp_path) -> None:
+    """A child task that INHERITS the fence ContextVar must not be mistaken for
+    the owner.
+
+    The re-entrancy guard skips when the current task already holds the fence
+    for this session. A child spawned inside a fenced section inherits the
+    ContextVar, but is a DIFFERENT task: it must therefore acquire the lane and
+    Redis locks and run its own flush rather than silently skipping them.
+    """
+
+    db_path = tmp_path / "timeline-buffer-reentrancy.sqlite3"
+    upgrade_database(sqlite_path=db_path)
+    store = Store(db_path)
+    connector, _, _ = await store.create_connector(name="dev", user_id="user_1")
+    session = await create_session_with_project(store, connector_id=connector.id)
+    redis = FakeAsyncRedis(decode_responses=True)
+    coordinator = RedisCoordinator(client=redis, prefix="test")
+    buffer = TimelineWriteBuffer(
+        store,
+        TimelineBroker(coordinator),
+        coordinator,
+        flush_interval_seconds=60,
+        revision_lease_size=8,
+    )
+
+    flush_calls = 0
+    original_flush = buffer._flush_locked
+
+    async def counting_flush(session_id: str) -> None:
+        nonlocal flush_calls
+        flush_calls += 1
+        await original_flush(session_id)
+
+    buffer._flush_locked = counting_flush  # type: ignore[method-assign]
+
+    child_owner_is_none = {}
+
+    async def child_reenter() -> None:
+        # Inherited context: the parent's session id is present, but this task
+        # is NOT the owner.
+        owners = buffer._active_session_fences.get() or {}
+        child_owner_is_none[session.id] = owners.get(session.id) is not asyncio.current_task()
+        acquired = asyncio.Event()
+
+        async with buffer.session_fence(session.id):
+            assert (
+                buffer._active_session_fences.get() or {}
+            ).get(session.id) is asyncio.current_task()
+            acquired.set()
+
+    try:
+        async with buffer.session_fence(session.id):
+            # This is the parent's own flush.
+            assert flush_calls == 1
+            child = asyncio.create_task(child_reenter())
+            # Give the child a chance to run; it must NOT complete inside the
+            # parent's fence (it is blocked on the lane lock this parent holds).
+            await asyncio.sleep(0.05)
+            assert not child.done()
+        # Parent released the fence; the child can now acquire it.
+        await asyncio.wait_for(child, timeout=5)
+        assert child_owner_is_none[session.id] is True
+        # Parent flushed once, child flushed once — the child did NOT skip.
+        assert flush_calls == 2
+    finally:
+        await buffer.close()
+        await redis.aclose()
+        await store.close()

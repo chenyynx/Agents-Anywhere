@@ -537,12 +537,12 @@ class TimelineRepositoryMixin:
                         )
                     if moved:
                         await self.timeline.upsert_many(conn, moved)
-                        # A maintenance move must not count as the session being
-                        # talked about: do not refresh ``sessions.updated_at``
-                        # (the age janitor's silence guard reads it).
-                        await self._bump_session(
-                            conn, session_id, mark_read=False, touch_updated_at=False
-                        )
+                        # No extra session bump: ``_reserve_session_revisions``
+                        # above already advanced ``sessions.seq`` to (and past)
+                        # every moved row's ``updatedSeq``, so ``seq >= max(updated_seq)``
+                        # already holds and the revision is spent. A further bump
+                        # (which the dedup path needs, because a removal has no
+                        # surviving row to carry it) would only waste a revision.
                 if moved:
                     # Publish the moves after the transaction commits but while the
                     # revision fence is still held, so an incrementally reading

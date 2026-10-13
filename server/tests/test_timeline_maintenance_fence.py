@@ -682,3 +682,54 @@ async def test_maintenance_does_not_touch_updated_at(tmp_path) -> None:
         assert await _updated_at(store, session.id) == before
     finally:
         await fixture.aclose()
+
+
+@pytest.mark.anyio
+async def test_order_repair_spends_exactly_the_moved_rows_revisions(tmp_path) -> None:
+    """The order repair reserves one revision per moved row and NO extra bump:
+    after the sweep ``sessions.seq == max(updated_seq)`` over the session's rows
+    (``seq >=`` the reserved range, no wasted revision), and ``updated_at`` is
+    left alone."""
+
+    from sqlalchemy import func, select
+
+    from agent_server.infra.db import sessions as sessions_t
+    from agent_server.infra.db import timeline_items as timeline_items_t
+
+    store, session = await _store_with_session(tmp_path)
+    fixture = await _production_buffer(store, tmp_path)
+    try:
+        await _seed_row(
+            store,
+            session.id,
+            message_input(session.id, "body", native_item_id="X", order_seq=5),
+            order_seq=5,
+            updated_seq=5,
+        )
+        await _seed_row(
+            store,
+            session.id,
+            reasoning_input(session.id, "rsn", native_item_id="X", order_seq=6),
+            order_seq=6,
+            updated_seq=6,
+        )
+        updated_at_before = await _updated_at(store, session.id)
+
+        moved = await store.repair_intra_message_order()
+        assert moved > 0
+
+        async with store.engine.connect() as conn:
+            seq = (await conn.execute(
+                select(sessions_t.c.seq).where(sessions_t.c.id == session.id)
+            )).scalar()
+            max_updated = (await conn.execute(
+                select(func.max(timeline_items_t.c.updated_seq)).where(
+                    timeline_items_t.c.session_id == session.id
+                )
+            )).scalar()
+        # seq advanced to exactly the newest moved row's updated_seq — no extra
+        # bump beyond the reserved range.
+        assert seq == max_updated
+        assert await _updated_at(store, session.id) == updated_at_before
+    finally:
+        await fixture.aclose()

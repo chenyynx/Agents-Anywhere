@@ -225,9 +225,15 @@ class TimelineWriteBuffer:
         self._local_sources: dict[str, str] = {}
         self._local_mark_read: set[str] = set()
         self._local_dirty: set[str] = set()
-        self._active_session_fences: ContextVar[frozenset[str]] = ContextVar(
-            f"timeline-write-buffer-fences-{id(self)}",
-            default=frozenset(),
+        # Session id -> the task that currently holds the fence, so re-entrancy
+        # is scoped to the OWNING task. A child task that inherits this ContextVar
+        # must NOT be mistaken for the owner — it would otherwise skip the lane
+        # and Redis locks and the flush. None default keeps it cheap until used.
+        self._active_session_fences: ContextVar[dict[str, asyncio.Task[Any]] | None] = (
+            ContextVar(
+                f"timeline-write-buffer-fences-{id(self)}",
+                default=None,
+            )
         )
         self._sweeper_task: asyncio.Task[None] | None = None
         self._closing = False
@@ -461,14 +467,24 @@ class TimelineWriteBuffer:
     async def session_fence(self, session_id: str) -> AsyncIterator[None]:
         """Flush and exclude another accepted item for one stable operation."""
 
-        active_fences = self._active_session_fences.get()
-        if session_id in active_fences:
+        owners = self._active_session_fences.get() or {}
+        if owners.get(session_id) is asyncio.current_task():
+            # Same task re-entering its own fence: the lane lock, Redis lock,
+            # flush and floor are already held by the caller of this fence, so
+            # this is a no-op. A DIFFERENT task (e.g. a child spawned inside a
+            # fenced section, which inherits this ContextVar) is not the owner
+            # and must NOT take this path — it would silently skip the
+            # sealed-range guarantee. Such a child must be fire-and-forget: a
+            # parent that awaits a re-entering child WHILE still holding the
+            # fence would block on the lane/Redis lock it itself holds.
             yield
             return
 
         lane = await self._lane(session_id)
         async with lane.lock, self._sequences.session_fence(session_id):
-            token = self._active_session_fences.set(active_fences | {session_id})
+            token = self._active_session_fences.set(
+                {**owners, session_id: asyncio.current_task()}
+            )
             try:
                 try:
                     durable_before = await self._store.get_session_seq(session_id)

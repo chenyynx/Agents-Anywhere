@@ -13,6 +13,14 @@ import Foundation
 // its body), so any fallback to it re-creates the exact "reasoning below its
 // body" defect the server's v2_42 fix removed (2026-10-14). A missing
 // ``orderSeq`` means the row is dropped rather than shown in the wrong place.
+//
+// TODO(clients): this iOS decoder no longer guesses an orderSeq, but the other
+// clients still do — Web/Desktop accept it unvalidated (`payload as T`, so a
+// missing orderSeq sorts as `undefined`) and Android reads `optInt("orderSeq",
+// 0)` then rewrites `<= 0` to `maxOrderSeq + 1` (row pushed to the end). All
+// three silently mis-place a row that the contract says must carry `orderSeq`.
+// Align them to "required / never guessed" later; tracked in docs/api/realtime.md
+// ("Client behaviour on a malformed row") and .local-dev/aa-backlog.md.
 enum V2TimelineItemType: String, Codable, Hashable {
     case turnStart = "turn.start"
     case turnEnd = "turn.end"

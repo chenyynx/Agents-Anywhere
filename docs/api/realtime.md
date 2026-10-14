@@ -135,21 +135,24 @@ pins the model-level path while `test_backend_mvp.py`'s end-to-end guard pins
 the actual route responses.
 
 **Client behaviour on a malformed row is per-client and not contractual, and
-the clients do NOT agree.** Every container key that holds items (`items` on
-the snapshot, history page and live reset, and `activeAgents`) is required and
-must be an array in the contract; only the *elements* are read leniently, and
-how a bad element is handled differs by client today:
+the clients do NOT agree.** Where a published schema covers the container
+(`session-snapshot-response` fixes `items` and `activeAgents` as required
+arrays), the key must be present and be an array; the history page and the live
+reset carry their `items` inside payloads that have no published schema. In all
+cases only the *elements* are read leniently, and how a bad element is handled
+differs by client today:
 
 - **iOS** drops the malformed row and renders the rest (`LossyElements`), so one
   bad row never costs the session open.
 - **Web / Desktop** apply no runtime validation (`payload as T` is a TypeScript
   identity cast), so a row missing `orderSeq` is accepted with `orderSeq ===
   undefined` and sorts unpredictably.
-- **Android** reads `optInt("orderSeq", 0)` — a row missing it is accepted as
-  `orderSeq = 0` and sorts first, silently.
+- **Android** reads `optInt("orderSeq", 0)` and then rewrites any `orderSeq <= 0`
+  to `maxOrderSeq + 1` (order normalisation in the session projection), so a row
+  missing it is pushed to the **end** of the timeline, silently.
 
-So the failure modes differ: iOS drops, Web/Desktop mis-sort, Android defaults
-to 0. The contract does not mandate one behaviour; aligning the clients is a
+So the failure modes differ: iOS drops, Web/Desktop mis-sort, Android pushes to
+the end. The contract does not mandate one behaviour; aligning the clients is a
 follow-up, not a requirement of the current contract.
 
 ### Recovery rules

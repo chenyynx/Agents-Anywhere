@@ -15,14 +15,16 @@ struct V2SessionTimelinePage: Decodable, Hashable {
 }
 
 extension V2SessionTimelinePage {
-    /// One history page. A single row that fails to decode (e.g. a server that
-    /// dropped a required field) is dropped, never failing the page — the same
-    /// rule as the snapshot's timeline and the SubAgent sidecar. Declared in an
+    /// One history page. A row *inside* `items` that fails to decode (e.g. a
+    /// server that dropped a required field) is dropped, never failing the
+    /// page. The `items` key itself stays required and must be an array: a
+    /// missing key or a non-array is a contract violation and still throws, as
+    /// it always did — only the elements are read lossily. Declared in an
     /// extension so the synthesized memberwise initializer survives.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         sessionId = try container.decode(V2SessionID.self, forKey: .sessionId)
-        items = ((try? container.decode(LossyElements<V2TimelineItem>.self, forKey: .items))?.elements) ?? []
+        items = try container.decode(LossyElements<V2TimelineItem>.self, forKey: .items).elements
         nextSeq = try container.decode(Int.self, forKey: .nextSeq)
         hasMore = try container.decode(Bool.self, forKey: .hasMore)
         serverTime = try container.decodeIfPresent(String.self, forKey: .serverTime)
@@ -136,13 +138,14 @@ struct V2TimelineSnapshot: Decodable, Hashable {
 }
 
 extension V2TimelineSnapshot {
-    /// The snapshot's timeline page. Identical lossy rule to a history page: a
-    /// single row that fails to decode is dropped, never failing the session
-    /// open (see `LossyElements`). Declared in an extension so the synthesized
-    /// memberwise initializer survives.
+    /// The snapshot's timeline page. Identical rule to a history page: a row
+    /// *inside* `items` that fails to decode is dropped, never failing the
+    /// session open; the `items` key itself stays required and must be an array
+    /// (a missing key or a non-array still throws, as it always did). Declared
+    /// in an extension so the synthesized memberwise initializer survives.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        items = ((try? container.decode(LossyElements<V2TimelineItem>.self, forKey: .items))?.elements) ?? []
+        items = try container.decode(LossyElements<V2TimelineItem>.self, forKey: .items).elements
         nextSeq = try container.decode(Int.self, forKey: .nextSeq)
         hasMore = try container.decode(Bool.self, forKey: .hasMore)
     }

@@ -173,11 +173,23 @@ def test_snapshot_schema_requires_the_ordering_truth() -> None:
     ids=["timeline-response", "session-snapshot-response"],
 )
 def test_snapshot_serialization_never_drops_a_required_timeline_field(model) -> None:
-    """No HTTP snapshot/timeline path may serialize an item missing a required field.
+    """The response *models* serialize every required timeline field.
 
-    Guards the response-model serialization (``model_dump(mode="json")``) that
-    actually feeds the wire: a future ``exclude=`` or a narrowed item model that
-    dropped ``orderSeq`` would be caught here rather than on a client screen.
+    Scope, stated honestly (a red-team pass caught the earlier wording
+    overclaiming): this asserts the model layer — that ``TimelineItem`` keeps
+    every required field (``orderSeq`` included) when a response model dumps it
+    defaults-included. It therefore catches:
+
+    - the field being dropped from the model / contract, and
+    - the model being narrowed to a smaller item type that lacks it.
+
+    It does NOT reach a *route-level* ``model_dump(exclude=...)`` — that runs on
+    top of the model and this test dumps the model itself with no exclude, so a
+    route that excluded a field would still show it here. Today the only route
+    exclusion is ``api/shares.py``'s ``exclude_none``, and ``orderSeq`` is a
+    non-Optional ``int``, so nothing current drops. A future route-level exclude
+    would need an end-to-end (TestClient) assertion to catch; recorded as a
+    known gap rather than silently assumed covered.
     """
 
     item = _wire_timeline_item()

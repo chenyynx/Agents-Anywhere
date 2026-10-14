@@ -110,7 +110,7 @@ struct V2SessionProjection {
             // to isolate within. Only item *collections* below are lossy.
             outcome = merge([try payload("item", in: event)], history: false).first
         case "timeline.snapshot":
-            let items: [V2TimelineItem] = lossyItems(in: event)
+            let items: [V2TimelineItem] = try lossyItems(in: event)
             replaceTimeline(items, hasMore: false)
         case "runtime.notice.snapshot":
             data.notices = try payload("notices", in: event)
@@ -223,12 +223,14 @@ struct V2SessionProjection {
         }
     }
 
-    /// The items of a `timeline.snapshot` frame, decoded leniently: malformed
-    /// rows are dropped, a malformed whole array reads as empty. Same rule as
-    /// the HTTP snapshot's `timeline.items` — a single bad row must not fail
-    /// the reset that clears and rebuilds the whole timeline.
-    private func lossyItems(in event: V2SessionEvent) -> [V2TimelineItem] {
-        guard let raw = event.payload["items"] else { return [] }
-        return (try? decoder.decode(LossyElements<V2TimelineItem>.self, from: JSONEncoder().encode(raw)))?.elements ?? []
+    /// The items of a `timeline.snapshot` frame, decoded leniently *within* the
+    /// array: malformed rows are dropped, so a single bad row never fails the
+    /// reset that clears and rebuilds the whole timeline. The `items` key
+    /// itself stays required and must be an array — a missing key or a
+    /// non-array still throws, exactly as the previous `payload("items")` did,
+    /// so a broken frame cannot silently read as an empty timeline.
+    private func lossyItems(in event: V2SessionEvent) throws -> [V2TimelineItem] {
+        let raw: JSONValue = try payload("items", in: event)
+        return try decoder.decode(LossyElements<V2TimelineItem>.self, from: JSONEncoder().encode(raw)).elements
     }
 }

@@ -44,15 +44,18 @@ import Testing
     }
 
     @Test func theSnapshotDropsOnlyTheMalformedRow() throws {
-        let good = try itemObject(id: "good", order: 1)
+        // Two survivors with distinct orders, so the assertion exercises the
+        // ordering dimension and not just "one row left".
+        let first = try itemObject(id: "first", order: 1)
         let broken = try itemObjectWithout("orderSeq")
+        let third = try itemObject(id: "third", order: 3)
 
-        let snapshot = try snapshot(items: [good, broken])
-        #expect(snapshot.timeline.items.map(\.id) == [V2TimelineItemID("good")])
+        let snapshot = try snapshot(items: [first, broken, third])
+        #expect(snapshot.timeline.items.map(\.id) == [V2TimelineItemID("first"), V2TimelineItemID("third")])
 
         // The session still opens with the surviving rows in the right order.
         let projection = V2SessionProjection(snapshot: snapshot, maximumItems: 100)
-        #expect(projection.data.items.map(\.orderSeq) == [1])
+        #expect(projection.data.items.map(\.orderSeq) == [1, 3])
     }
 
     @Test func theSnapshotKeepsEveryRowWhenAllAreWellFormed() throws {
@@ -95,5 +98,41 @@ import Testing
         let snapshot = try snapshot(items: [good, broken])
         #expect(snapshot.timeline.items.count == 1)
         #expect(snapshot.timeline.items.first?.id == V2TimelineItemID("body"))
+    }
+
+    // MARK: - Only the ELEMENTS are lossy; the container stays strict
+
+    /// A `timeline.items` key that is missing or not an array is a contract
+    /// violation, not "an empty timeline". It must still throw, so a broken
+    /// frame can never silently clear the view.
+    @Test func aSnapshotWhoseItemsKeyIsMissingOrNotAnArrayStillThrows() throws {
+        for broken in [nil as Any?, "not-an-array", ["nope": true]] {
+            var object = try fixtureObject("snapshot")
+            var timeline = object["timeline"] as! [String: Any]
+            if let broken { timeline["items"] = broken } else { timeline.removeValue(forKey: "items") }
+            object["timeline"] = timeline
+            #expect(throws: (any Error).self) {
+                _ = try decode(object, as: V2SessionSnapshot.self)
+            }
+        }
+    }
+
+    @Test func aHistoryPageWhoseItemsKeyIsMissingOrNotAnArrayStillThrows() throws {
+        for broken in [nil as Any?, "not-an-array", 7] {
+            var page = try fixtureObject("timeline")
+            if let broken { page["items"] = broken } else { page.removeValue(forKey: "items") }
+            #expect(throws: (any Error).self) {
+                _ = try decode(page, as: V2SessionTimelinePage.self)
+            }
+        }
+    }
+
+    @Test func aSnapshotFrameWithAMissingItemsKeyStillThrowsThroughTheProjection() throws {
+        // The live reset path: a frame with no `items` array must throw out of
+        // `apply` (the recovery path surfaces it), never silently read empty.
+        var projection = V2SessionProjection(snapshot: try snapshot(), maximumItems: 100)
+        #expect(throws: (any Error).self) {
+            _ = try projection.apply(event("timeline.snapshot", seq: 20, payload: ["items": "nope"]))
+        }
     }
 }

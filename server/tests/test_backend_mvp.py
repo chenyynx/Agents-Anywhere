@@ -12809,3 +12809,75 @@ def test_dashboard_snapshot_includes_projects_and_refreshes_after_create(tmp_pat
         session for session in refreshed["sessions"] if session["id"] == session_id
     )
     assert refreshed_session["projectId"] == existing_project_id
+
+
+def _order_preserving_item(item_id: str, session_id: str, order_seq: int) -> dict:
+    return {
+        "id": item_id,
+        "sessionId": session_id,
+        "type": "message",
+        "status": "done",
+        "role": "assistant",
+        "content": {"text": f"item {order_seq}", "format": "markdown"},
+        "source": {"runtime": "codex", "itemId": item_id},
+        "orderSeq": order_seq,
+        "revision": 1,
+        "contentHash": f"sha256:{item_id}",
+    }
+
+
+def test_timeline_endpoints_serialize_order_seq_end_to_end(tmp_path):
+    """Contract guard, route level: the wire JSON of both timeline routes must
+    carry `orderSeq` on every item.
+
+    The unit-level guard (``test_protocol_contracts.py``) dumps the response
+    *model* itself, so it cannot see a route that applies ``model_dump(exclude=
+    ...)`` on top. This one goes through the real HTTP endpoint and asserts on
+    the actual response bytes — closing that blind spot (red team round 3).
+    """
+    from agent_server.core.models import TimelineItemIn
+
+    client = make_client(tmp_path)
+    _, _, session_id, headers = create_connector_and_session(client)
+
+    async def seed_timeline_items() -> None:
+        store = client.app.state.store
+        for order_seq in range(1, 4):
+            await store.upsert_timeline_item(
+                session_id=session_id,
+                item=TimelineItemIn.model_validate(
+                    _order_preserving_item(f"tl_{order_seq}", session_id, order_seq)
+                ),
+            )
+
+    asyncio.run(seed_timeline_items())
+
+    # The required field set the contract pins for a timeline item.
+    required = {
+        "id",
+        "sessionId",
+        "type",
+        "status",
+        "source",
+        "orderSeq",
+        "contentHash",
+        "createdAt",
+        "updatedAt",
+        "updatedSeq",
+    }
+
+    timeline = client.get(f"/sessions/{session_id}/timeline", headers=headers)
+    assert timeline.status_code == 200, timeline.text
+    timeline_items = timeline.json()["items"]
+    assert timeline_items, "the timeline route must return the seeded items"
+    for item in timeline_items:
+        missing = required - set(item)
+        assert not missing, f"timeline route dropped {sorted(missing)}"
+
+    snapshot = client.get(f"/sessions/{session_id}/snapshot", headers=headers)
+    assert snapshot.status_code == 200, snapshot.text
+    snapshot_items = snapshot.json()["timeline"]["items"]
+    assert snapshot_items, "the snapshot route must return the seeded items"
+    for item in snapshot_items:
+        missing = required - set(item)
+        assert not missing, f"snapshot route dropped {sorted(missing)}"

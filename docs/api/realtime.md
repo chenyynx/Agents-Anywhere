@@ -131,25 +131,26 @@ A row whose `orderSeq` the client cannot read is treated as malformed: the
 collection reader drops it rather than showing it in a guessed position. The
 Server is responsible for never dropping the field — the contract keeps
 `orderSeq` in `TimelineItem.required`, and `server/tests/test_protocol_contracts.py`
-pins that every serialization path emits it.
+pins the model-level path while `test_backend_mvp.py`'s end-to-end guard pins
+the actual route responses.
 
-**Client behaviour on a malformed row is per-client, not contractual.** Where
-a container key is required and must be an array (`items` on the snapshot,
-history page and live reset), only the *elements* are read leniently, and how a
-bad element is handled differs by client today. (`activeAgents` is the separate
-case: the key itself is optional and an absent key or a non-array reads as
-empty, so an older server without it is fine.)
+**Client behaviour on a malformed row is per-client and not contractual, and
+the clients do NOT agree.** Every container key that holds items (`items` on
+the snapshot, history page and live reset, and `activeAgents`) is required and
+must be an array in the contract; only the *elements* are read leniently, and
+how a bad element is handled differs by client today:
 
-- **iOS** reads item collections lossily — a malformed row is *dropped* and the
-  rest of the page renders (`LossyElements`), so one bad row never costs the
-  session open.
-- **Web / Desktop / Android** currently fail the whole batch on a malformed row
-  (their generated types make `orderSeq` required and their collection decode is
-  all-or-nothing).
+- **iOS** drops the malformed row and renders the rest (`LossyElements`), so one
+  bad row never costs the session open.
+- **Web / Desktop** apply no runtime validation (`payload as T` is a TypeScript
+  identity cast), so a row missing `orderSeq` is accepted with `orderSeq ===
+  undefined` and sorts unpredictably.
+- **Android** reads `optInt("orderSeq", 0)` — a row missing it is accepted as
+  `orderSeq = 0` and sorts first, silently.
 
-The contract does not yet mandate one behaviour; a client MAY choose to drop or
-to fail. Aligning this across clients is tracked as a follow-up, not a
-requirement of the current contract.
+So the failure modes differ: iOS drops, Web/Desktop mis-sort, Android defaults
+to 0. The contract does not mandate one behaviour; aligning the clients is a
+follow-up, not a requirement of the current contract.
 
 ### Recovery rules
 

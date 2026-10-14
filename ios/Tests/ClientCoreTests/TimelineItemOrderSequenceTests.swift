@@ -44,22 +44,28 @@ import Testing
     }
 
     @Test func theSnapshotDropsOnlyTheMalformedRow() throws {
-        // Feed the survivors OUT OF ORDER. `snapshot.timeline.items` keeps
-        // arrival order (the lossy reader preserves the array order), but the
-        // projection sorts by orderSeq — and a descending feed can only read
-        // back as [1, 3] if that sort really ran (an ascending feed would pass
-        // even with the sort removed; the red team proved that).
-        let third = try itemObject(id: "third", order: 3)
+        // Feed the survivors in strict DESCENDING order. `snapshot.timeline.items`
+        // keeps arrival order (the lossy reader preserves the array order), but
+        // the projection sorts by orderSeq — so the readback is ascending only
+        // if that sort really ran. Six rows, not two: with the sort removed the
+        // output falls back to Swift dictionary iteration order, so a two-row
+        // case could pass by luck (~50%); six rows make the false-green chance
+        // ~1/720 (red team round 3 flagged the two-row version as probabilistic).
         let broken = try itemObjectWithout("orderSeq")
-        let first = try itemObject(id: "first", order: 1)
+        var fed: [[String: Any]] = []
+        for order in stride(from: 6, through: 1, by: -1) {
+            let row = try itemObject(id: "item-\(order)", order: order)
+            fed.append(row)
+            if order == 3 { fed.append(broken) }  // the bad row, in the middle
+        }
 
-        let snapshot = try snapshot(items: [third, broken, first])
-        // Only the malformed row is gone; the survivors keep arrival order here.
-        #expect(snapshot.timeline.items.map(\.id) == [V2TimelineItemID("third"), V2TimelineItemID("first")])
+        let snapshot = try snapshot(items: fed)
+        // Only the malformed row is gone; the survivors keep arrival (descending) order.
+        #expect(snapshot.timeline.items.map(\.orderSeq) == [6, 5, 4, 3, 2, 1])
 
         // The projection sorts the survivors by orderSeq, not arrival order.
         let projection = V2SessionProjection(snapshot: snapshot, maximumItems: 100)
-        #expect(projection.data.items.map(\.orderSeq) == [1, 3])
+        #expect(projection.data.items.map(\.orderSeq) == [1, 2, 3, 4, 5, 6])
     }
 
     @Test func theSnapshotKeepsEveryRowWhenAllAreWellFormed() throws {
@@ -115,7 +121,9 @@ import Testing
             var timeline = object["timeline"] as! [String: Any]
             if let broken { timeline["items"] = broken } else { timeline.removeValue(forKey: "items") }
             object["timeline"] = timeline
-            #expect(throws: (any Error).self) {
+            // Pinned to DecodingError (not `any Error`) so a fixture that broke
+            // for an unrelated reason could not pass this as a false positive.
+            #expect(throws: DecodingError.self) {
                 _ = try decode(object, as: V2SessionSnapshot.self)
             }
         }
@@ -125,7 +133,7 @@ import Testing
         for broken in [nil as Any?, "not-an-array", 7] {
             var page = try fixtureObject("timeline")
             if let broken { page["items"] = broken } else { page.removeValue(forKey: "items") }
-            #expect(throws: (any Error).self) {
+            #expect(throws: DecodingError.self) {
                 _ = try decode(page, as: V2SessionTimelinePage.self)
             }
         }
@@ -135,7 +143,7 @@ import Testing
         // The live reset path: a frame with no `items` array must throw out of
         // `apply` (the recovery path surfaces it), never silently read empty.
         var projection = V2SessionProjection(snapshot: try snapshot(), maximumItems: 100)
-        #expect(throws: (any Error).self) {
+        #expect(throws: DecodingError.self) {
             _ = try projection.apply(event("timeline.snapshot", seq: 20, payload: ["items": "nope"]))
         }
     }

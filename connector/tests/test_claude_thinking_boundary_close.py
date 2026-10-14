@@ -463,10 +463,14 @@ def test_main_block_closed_by_a_subagent_boundary_keeps_no_parent() -> None:
     The LiteLLM bridge omits the thinking ``content_block_stop``; a background
     subagent's ``message_start`` is then the boundary that closes the
     main-chain block. The row must keep its own (main) parent — none — even
-    though the closing frame belongs to the subagent. Before the ownership fix
-    `drive_turn` stamped the closing frame's parent on the whole batch, so this
-    is the accumulator half of that regression (the turn-level assertion lives
-    in ``test_claude_subagent_progress.py``).
+    though the closing frame belongs to the subagent.
+
+    This is a REGRESSION GUARD, not a discriminating test for the 2026-10-14
+    fix: the accumulator never applied the ambient parent, so this assertion
+    held before the fix too (the mis-attribution lived in `drive_turn`). The
+    discriminating assertions are the turn-level
+    ``test_claude_subagent_progress.py::test_subagent_stream_boundary_does_not_parent_a_main_reasoning_row``
+    and the mirror below, both red on the pre-fix tree.
     """
 
     acc = ClaudeStreamAccumulator()

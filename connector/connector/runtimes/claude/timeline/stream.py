@@ -20,6 +20,15 @@ class ClaudeStreamAccumulator:
     partial_message_id: str | None = None
     partial_text_blocks: dict[int, str] = field(default_factory=dict)
     partial_revision: int = 0
+    # The dispatch tool use the message being streamed came from, captured at
+    # its `message_start`. The text partial is a MESSAGE-scoped row (unlike a
+    # thinking block, which is per-index): its parent must be the frame that
+    # OPENED the message, not whichever frame emits the next delta —
+    # `message_delta` refreshes usage and a subagent frame can deliver it, so
+    # reading the consumed frame there would re-stamp a main row with the
+    # subagent's card (adversarial review 2026-10-14, same root as the thinking
+    # rows). `None` (main chain) is stored explicitly. Cleared with the blocks.
+    partial_text_parent: str | None = None
     partial_thinking_blocks: dict[int, str] = field(default_factory=dict)
     partial_thinking_revision: int = 0
     # Which open thinking blocks came from a subagent sidechain frame. Tracked
@@ -99,6 +108,9 @@ class ClaudeStreamAccumulator:
                 self.partial_thinking_sidechain.clear()
                 self.partial_thinking_parent.clear()
                 self.partial_thinking_revision = 0
+                # The opener's parent, so the message's text partial keeps it
+                # across later `message_delta`s emitted by other frames.
+                self.partial_text_parent = _parent_tool_use_id(message)
             self.partial_message_id = message_id
             self.partial_usage = _message_start_usage(message, payload)
             self.partial_model = (
@@ -235,6 +247,7 @@ class ClaudeStreamAccumulator:
         self.partial_message_id = None
         self.partial_text_blocks.clear()
         self.partial_revision = 0
+        self.partial_text_parent = None
         self.partial_thinking_blocks.clear()
         self.partial_thinking_sidechain.clear()
         self.partial_thinking_parent.clear()
@@ -371,12 +384,11 @@ class ClaudeStreamAccumulator:
             usage=None if _is_sidechain(message) else self.partial_usage,
             usage_model=None if _is_sidechain(message) else self.partial_model,
         )
-        # Like the reasoning row above, the streamed text partial carries the
-        # parent of the frame that streamed it, not an ambient parent applied
-        # later by the caller — a subagent frame can be the one being consumed
-        # when this partial is published (stream.py's `content_block_stop`
-        # route hands the row straight back to `drive_turn`).
-        return _with_origin_parent(item, session, _parent_tool_use_id(message))
+        # Like the reasoning row above, the text partial carries the parent of
+        # the frame that OPENED its message (`partial_text_parent`), not the
+        # frame currently being consumed — a subagent frame can deliver a later
+        # `message_delta` for this message.
+        return _with_origin_parent(item, session, self.partial_text_parent)
 
     def _note_thinking_origin(self, index: int, message: Any) -> None:
         """Remember which frame opened the thinking block under `index`.

@@ -1993,3 +1993,137 @@ def test_main_reasoning_stopped_by_a_subagent_frame_keeps_no_parent() -> None:
             await runtime.stop()
 
     asyncio.run(run())
+
+
+class _MainTextTouchedBySubagentDeltaClient(_ScheduledClaudeClient):
+    """A main text block, then a subagent frame delivers its `message_delta`.
+
+    The text partial is message-scoped: `message_delta` (which only refreshes
+    usage) can arrive on a different frame than the `message_start`. Here that
+    frame is the subagent's, and the main text row must stay unparented.
+    """
+
+    async def _complete_query(self, prompt: str) -> None:
+        await _FakeClaudeClient.query(self, prompt)
+        frames = [
+            StreamEvent(
+                uuid="u1", session_id=self.native_id,
+                event={"type": "message_start", "message": {"id": "msg_text_mdelta"}},
+            ),
+            StreamEvent(
+                uuid="u1", session_id=self.native_id,
+                event={
+                    "type": "content_block_start", "index": 0,
+                    "content_block": {"type": "text", "text": "主代理正文"},
+                },
+            ),
+            # A subagent-parented frame refreshes usage for the SAME message.
+            StreamEvent(
+                uuid="u2", session_id=self.native_id, parent_tool_use_id=DISPATCH_TUID,
+                event={"type": "message_delta", "usage": {"output_tokens": 1}},
+            ),
+            SimpleNamespace(
+                type="assistant", uuid="a1", session_id=self.native_id,
+                parent_tool_use_id=None,
+                message={"id": "msg_text_mdelta", "role": "assistant",
+                         "content": [{"type": "text", "text": "主代理正文"}]},
+            ),
+            SimpleNamespace(type="result", session_id=self.native_id),
+        ]
+        for frame in frames:
+            await self.incoming.put(frame)
+
+
+def test_main_text_partial_touched_by_subagent_delta_stays_unparented() -> None:
+    """The `message_delta` text route must not take the consuming frame's parent."""
+
+    async def run() -> None:
+        client = _MainTextTouchedBySubagentDeltaClient()
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            await runtime.start_turn("textdelta", None, "go")
+            session = runtime._sessions["textdelta"]
+            await asyncio.wait_for(session.active_task, 5)
+
+            rows = [
+                item
+                for item in host.timeline_item_upserts
+                if dict(getattr(item, "source", {}) or {}).get("itemId")
+                == "msg_text_mdelta"
+                and (item.source or {}).get("event") == "claude.turn.assistant.partial"
+            ]
+            assert rows, "no streamed text partial was published"
+            assert all((item.content or {}).get("parentItemId") is None for item in rows), (
+                "a main text partial carried a parent "
+                f"(last={rows[-1].content.get('parentItemId')})"
+            )
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+class _SubagentTextStreamClient(_ScheduledClaudeClient):
+    """A subagent streams its own text block (parented stream frames)."""
+
+    async def _complete_query(self, prompt: str) -> None:
+        await _FakeClaudeClient.query(self, prompt)
+        frames = [
+            StreamEvent(
+                uuid="u1", session_id=self.native_id, parent_tool_use_id=DISPATCH_TUID,
+                event={"type": "message_start", "message": {"id": "msg_sub_text"}},
+            ),
+            StreamEvent(
+                uuid="u1", session_id=self.native_id, parent_tool_use_id=DISPATCH_TUID,
+                event={
+                    "type": "content_block_start", "index": 0,
+                    "content_block": {"type": "text", "text": "子代理正文"},
+                },
+            ),
+            SimpleNamespace(
+                type="assistant", uuid="a1", session_id=self.native_id,
+                parent_tool_use_id=None,
+                message={"id": "msg_main_reply", "role": "assistant",
+                         "content": [{"type": "text", "text": "main reply"}]},
+            ),
+            SimpleNamespace(type="result", session_id=self.native_id),
+        ]
+        for frame in frames:
+            await self.incoming.put(frame)
+
+
+def test_subagent_text_partial_keeps_its_card() -> None:
+    """A subagent's streamed text partial must carry its dispatch card.
+
+    Load-bearing: the accumulator stamps the text partial and `drive_turn` no
+    longer applies an ambient parent, so without the stamp a subagent's
+    streamed text would leak into the main timeline (mutation `_partial_item ->
+    return item` makes this red).
+    """
+
+    async def run() -> None:
+        client = _SubagentTextStreamClient()
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            await runtime.start_turn("subtext", None, "go")
+            session = runtime._sessions["subtext"]
+            await asyncio.wait_for(session.active_task, 5)
+
+            card = stable_tool_item_id(session, DISPATCH_TUID)
+            rows = [
+                item
+                for item in host.timeline_item_upserts
+                if dict(getattr(item, "source", {}) or {}).get("itemId")
+                == "msg_sub_text"
+                and (item.source or {}).get("event") == "claude.turn.assistant.partial"
+            ]
+            assert rows, "no subagent text partial was published"
+            assert all(
+                (item.content or {}).get("parentItemId") == card for item in rows
+            ), f"a subagent text partial lost its card: {[i.content for i in rows]}"
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())

@@ -133,6 +133,24 @@ Server is responsible for never dropping the field — the contract keeps
 `orderSeq` in `TimelineItem.required`, and `server/tests/test_protocol_contracts.py`
 pins that every serialization path emits it.
 
+**Client behaviour on a malformed row is per-client, not contractual.** Where
+a container key is required and must be an array (`items` on the snapshot,
+history page and live reset), only the *elements* are read leniently, and how a
+bad element is handled differs by client today. (`activeAgents` is the separate
+case: the key itself is optional and an absent key or a non-array reads as
+empty, so an older server without it is fine.)
+
+- **iOS** reads item collections lossily — a malformed row is *dropped* and the
+  rest of the page renders (`LossyElements`), so one bad row never costs the
+  session open.
+- **Web / Desktop / Android** currently fail the whole batch on a malformed row
+  (their generated types make `orderSeq` required and their collection decode is
+  all-or-nothing).
+
+The contract does not yet mandate one behaviour; a client MAY choose to drop or
+to fail. Aligning this across clients is tracked as a follow-up, not a
+requirement of the current contract.
+
 ### Recovery rules
 
 - Event cursor format is `seq:{number}`.

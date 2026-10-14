@@ -227,8 +227,11 @@ struct V2SessionProjection {
     /// array: malformed rows are dropped, so a single bad row never fails the
     /// reset that clears and rebuilds the whole timeline. The `items` key
     /// itself stays required and must be an array — a missing key or a
-    /// non-array still throws, exactly as the previous `payload("items")` did,
-    /// so a broken frame cannot silently read as an empty timeline.
+    /// non-array still throws, so a broken frame cannot silently read as an
+    /// empty timeline. (The thrown *type* differs from the previous
+    /// `payload("items")` — a bare `DecodingError` here vs the wrapper's
+    /// `HTTPError.decoding` — but both surface as the same client failure, so
+    /// the behaviour the caller sees is unchanged.)
     private func lossyItems(in event: V2SessionEvent) throws -> [V2TimelineItem] {
         let raw: JSONValue = try payload("items", in: event)
         return try decoder.decode(LossyElements<V2TimelineItem>.self, from: JSONEncoder().encode(raw)).elements

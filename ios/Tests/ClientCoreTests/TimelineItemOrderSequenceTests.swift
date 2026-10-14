@@ -44,16 +44,20 @@ import Testing
     }
 
     @Test func theSnapshotDropsOnlyTheMalformedRow() throws {
-        // Two survivors with distinct orders, so the assertion exercises the
-        // ordering dimension and not just "one row left".
-        let first = try itemObject(id: "first", order: 1)
-        let broken = try itemObjectWithout("orderSeq")
+        // Feed the survivors OUT OF ORDER. `snapshot.timeline.items` keeps
+        // arrival order (the lossy reader preserves the array order), but the
+        // projection sorts by orderSeq — and a descending feed can only read
+        // back as [1, 3] if that sort really ran (an ascending feed would pass
+        // even with the sort removed; the red team proved that).
         let third = try itemObject(id: "third", order: 3)
+        let broken = try itemObjectWithout("orderSeq")
+        let first = try itemObject(id: "first", order: 1)
 
-        let snapshot = try snapshot(items: [first, broken, third])
-        #expect(snapshot.timeline.items.map(\.id) == [V2TimelineItemID("first"), V2TimelineItemID("third")])
+        let snapshot = try snapshot(items: [third, broken, first])
+        // Only the malformed row is gone; the survivors keep arrival order here.
+        #expect(snapshot.timeline.items.map(\.id) == [V2TimelineItemID("third"), V2TimelineItemID("first")])
 
-        // The session still opens with the surviving rows in the right order.
+        // The projection sorts the survivors by orderSeq, not arrival order.
         let projection = V2SessionProjection(snapshot: snapshot, maximumItems: 100)
         #expect(projection.data.items.map(\.orderSeq) == [1, 3])
     }

@@ -17,7 +17,10 @@ struct ChatErrorToasts: View {
                     ForEach(Array(store.items.enumerated()), id: \.element.id) { index, item in
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 8) {
-                                AppSymbol("exclamationmark.circle").foregroundStyle(.secondary)
+                                // A runtime that is starting up is not an error:
+                                // no warning glyph, no retry button. The card is
+                                // the same surface, read as state instead of fault.
+                                AppSymbol(item.isRecovering ? "info.circle" : "exclamationmark.circle").foregroundStyle(.secondary)
                                 Text(item.title).font(.subheadline.weight(.medium)).lineLimit(1)
                                 Spacer(minLength: 0)
                                 if store.items.count > 1 {

@@ -84,4 +84,48 @@ import Testing
         store.dismiss("runtime")
         #expect(store.items.map(\.id) == ["session"])
     }
+
+    /// A runtime coming up after a connector restart is not a failure the user
+    /// should answer. The card stays, but it reads as state: neutral icon, no
+    /// retry, and the connector's own diagnostic sentence nowhere in sight.
+    @Test func aStartingRuntimeReadsAsStateNotFailure() {
+        let store = ChatToastStore()
+        store.update(
+            source: "session",
+            failure: V2ClientFailure(
+                kind: .transient,
+                message: "runtime instance 'rti_x' is not running (status='starting')",
+                code: "runtime_unavailable",
+                runtimeStatus: "starting"
+            )
+        )
+        #expect(store.items.map(\.id) == ["session"])
+        let card = store.items.first
+        #expect(card?.isRecovering == true)
+        #expect(card?.canRetry == false)
+        #expect(card?.title == String(localized: "运行时正在启动"))
+        #expect(card?.message.contains("runtime instance") == false)
+    }
+
+    @Test func anUnregisteredInstanceAlsoReadsAsRecovery() {
+        let store = ChatToastStore()
+        store.update(
+            source: "session",
+            failure: V2ClientFailure(
+                kind: .transient,
+                message: "unknown runtime instance 'rti_x'",
+                code: "runtime_invalid_request",
+                runtimeStatus: "unregistered"
+            )
+        )
+        #expect(store.items.first?.isRecovering == true)
+    }
+
+    /// A real failure keeps the ordinary treatment: this fix must not soften
+    /// errors that are genuinely the user's to resolve.
+    @Test func aPlainFailureKeepsTheErrorCard() {
+        let store = ChatToastStore()
+        store.update(source: "session", failure: V2ClientFailure(kind: .transient, message: "boom"))
+        #expect(store.items.first?.isRecovering == false)
+    }
 }

@@ -18,6 +18,14 @@ enum HTTPError: LocalizedError {
         return nil
     }
 
+    /// The runtime lifecycle state the Server reported with the failure, when
+    /// it knows one. This is structured truth (`starting`, `stopped`, …), not
+    /// a sentence to be parsed — the Server owns both the state and the copy.
+    var runtimeStatus: String? {
+        if case let .server(_, _, detail) = self { return detail?["runtimeStatus"]?.stringValue }
+        return nil
+    }
+
     var errorDescription: String? {
         switch self {
         case let .invalidRequestURL(path):

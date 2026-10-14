@@ -6,6 +6,38 @@ struct ChatToast: Identifiable, Equatable {
     let title: String
     let message: String
     let canRetry: Bool
+    /// The state is coming up (or has been stopped) rather than broken. The
+    /// surface stays the same card; only its reading changes — neutral icon,
+    /// no retry, and copy that names the state instead of a failure.
+    var isRecovering: Bool = false
+}
+
+extension V2ClientFailure {
+    /// A runtime that is starting up (or whose instance the connector has not
+    /// registered yet, right after a restart) is not a fault the user caused
+    /// and has nothing for them to retry. Reporting it as an error would
+    /// announce a failure for work nobody asked for.
+    var isRuntimeStartingUp: Bool {
+        switch runtimeStatus {
+        case "starting", "stopping", "unregistered": return true
+        default: return false
+        }
+    }
+
+    /// The card copy for a runtime state that is not a fault, or nil when the
+    /// failure is a genuine error and keeps the ordinary treatment.
+    var runtimeStateCard: (title: String, message: String)? {
+        switch runtimeStatus {
+        case "starting", "stopping", "unregistered":
+            return (String(localized: "运行时正在启动"),
+                    String(localized: "设备上的运行时正在启动，完成后会自动继续。"))
+        case "stopped":
+            return (String(localized: "运行时已停止"),
+                    String(localized: "可在设备管理中启动这个运行时。"))
+        default:
+            return nil
+        }
+    }
 }
 
 /// One current issue per source. Dismissing an issue does not change connection
@@ -23,6 +55,13 @@ struct ChatToast: Identifiable, Equatable {
         latest[source] = failure
         items.removeAll { $0.id == source }
         guard let failure, failure.kind != .cancelled else { return }
+        // A runtime state that is not a fault reads as that state, not as a
+        // failure: the card remains, with honest copy and no retry, because
+        // there is nothing the user did wrong and nothing to refresh.
+        if let state = failure.runtimeStateCard {
+            items.append(ChatToast(id: source, title: state.title, message: state.message, canRetry: false, isRecovering: true))
+            return
+        }
         let heading: String
         switch failure.kind {
         case .invalidResponse: heading = String(localized: "会话数据格式不兼容")

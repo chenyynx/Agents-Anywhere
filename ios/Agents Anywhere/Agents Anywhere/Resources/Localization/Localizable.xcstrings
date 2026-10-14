@@ -9142,6 +9142,74 @@
         }
       }
     },
+    "运行时正在启动": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Runtime is starting"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "运行时正在启动"
+          }
+        }
+      }
+    },
+    "设备上的运行时正在启动，完成后会自动继续。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The runtime on this device is starting. It will continue automatically."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设备上的运行时正在启动，完成后会自动继续。"
+          }
+        }
+      }
+    },
+    "运行时已停止": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Runtime is stopped"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "运行时已停止"
+          }
+        }
+      }
+    },
+    "可在设备管理中启动这个运行时。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You can start this runtime in device management."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可在设备管理中启动这个运行时。"
+          }
+        }
+      }
+    },
     "上一级目录": {
       "comment": "Shared with Web: common.parent. Sync with ios/scripts/web_copy.py.",
       "extractionState": "manual",

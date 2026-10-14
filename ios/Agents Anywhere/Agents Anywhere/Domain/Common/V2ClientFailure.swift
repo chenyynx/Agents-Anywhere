@@ -6,17 +6,23 @@ struct V2ClientFailure: Error, Hashable, LocalizedError {
     let kind: Kind
     let message: String
     let code: String?
+    /// The runtime lifecycle state the Server named, when it named one. It is
+    /// the difference between "this failed" and "this is still coming up":
+    /// `starting`/`unregistered` describe a normal restart window, not a fault.
+    let runtimeStatus: String?
 
-    init(kind: Kind, message: String, code: String? = nil) {
+    init(kind: Kind, message: String, code: String? = nil, runtimeStatus: String? = nil) {
         self.kind = kind
         self.message = message
         self.code = code
+        self.runtimeStatus = runtimeStatus
     }
 
     init(_ error: Error) {
         if let failure = error as? Self { self = failure; return }
         message = (error as? DecodingError)?.v2Description ?? error.localizedDescription
         code = (error as? HTTPError)?.serverCode ?? (error as? V2RuntimeError)?.code
+        runtimeStatus = (error as? HTTPError)?.runtimeStatus
         if error is CancellationError || (error as? URLError)?.code == .cancelled {
             kind = .cancelled
         } else if let error = error as? URLError {

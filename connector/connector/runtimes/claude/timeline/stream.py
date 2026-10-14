@@ -358,7 +358,7 @@ class ClaudeStreamAccumulator:
             return None
         self.partial_revision += 1
         item_id = stable_message_item_id(session, message_id)
-        return projector.message_item(
+        item = projector.message_item(
             session=session,
             turn_id=turn_id,
             role="assistant",
@@ -371,6 +371,12 @@ class ClaudeStreamAccumulator:
             usage=None if _is_sidechain(message) else self.partial_usage,
             usage_model=None if _is_sidechain(message) else self.partial_model,
         )
+        # Like the reasoning row above, the streamed text partial carries the
+        # parent of the frame that streamed it, not an ambient parent applied
+        # later by the caller — a subagent frame can be the one being consumed
+        # when this partial is published (stream.py's `content_block_stop`
+        # route hands the row straight back to `drive_turn`).
+        return _with_origin_parent(item, session, _parent_tool_use_id(message))
 
     def _note_thinking_origin(self, index: int, message: Any) -> None:
         """Remember which frame opened the thinking block under `index`.

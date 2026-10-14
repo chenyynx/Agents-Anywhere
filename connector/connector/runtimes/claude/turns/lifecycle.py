@@ -2488,9 +2488,15 @@ class ClaudeTurnRunner:
                     )
                     user_message_published = True
                 if stream_item is not None:
+                    # The row already carries the parent of the frame that
+                    # produced it (stream.py `_partial_item` /
+                    # `_thinking_partial_item`), so no ambient parent is applied
+                    # here: the `content_block_stop` route hands a reasoning row
+                    # straight back through this publish, and a subagent frame
+                    # could be the one consumed at that moment.
                     await self.publish_items(
                         execution,
-                        (_with_parent_card(stream_item, frame_parent_item_id),),
+                        (stream_item,),
                         counted=counts_this_frame,
                     )
                 if boundary_items:
@@ -2518,7 +2524,6 @@ class ClaudeTurnRunner:
                             turn_id=turn_id,
                             message=message,
                             stream_accumulator=stream_accumulator,
-                            parent_item_id=frame_parent_item_id,
                             counted=counts_this_frame,
                         )
                     if declined_any and not unowned_terminal:
@@ -2658,7 +2663,6 @@ class ClaudeTurnRunner:
                     turn_id=turn_id,
                     message=declined_message,
                     stream_accumulator=stream_accumulator,
-                    parent_item_id=None,
                     counted=False,
                 )
             if terminal is None:
@@ -2921,7 +2925,6 @@ class ClaudeTurnRunner:
         turn_id: str,
         message: Any,
         stream_accumulator: ClaudeStreamAccumulator,
-        parent_item_id: str | None,
         counted: bool,
     ) -> bool:
         """Publish a terminal frame's own text as this turn's final bubble.
@@ -2956,23 +2959,20 @@ class ClaudeTurnRunner:
         await self.publish_items(
             execution,
             (
-                _with_parent_card(
-                    self.timeline.message_item(
-                        session=session,
-                        turn_id=turn_id,
-                        role="assistant",
-                        text=text,
-                        event="claude.turn.result",
-                        native_item_id=message_id(message),
-                        item_id=stream_accumulator.final_item_id(
-                            session,
-                            turn_id,
-                        ),
-                        revision=stream_accumulator.next_final_revision(),
-                        usage=stream_accumulator.result_text_usage(),
-                        usage_model=stream_accumulator.result_usage_model(),
+                self.timeline.message_item(
+                    session=session,
+                    turn_id=turn_id,
+                    role="assistant",
+                    text=text,
+                    event="claude.turn.result",
+                    native_item_id=message_id(message),
+                    item_id=stream_accumulator.final_item_id(
+                        session,
+                        turn_id,
                     ),
-                    parent_item_id,
+                    revision=stream_accumulator.next_final_revision(),
+                    usage=stream_accumulator.result_text_usage(),
+                    usage_model=stream_accumulator.result_usage_model(),
                 ),
             ),
             counted=counted,
@@ -2983,7 +2983,7 @@ class ClaudeTurnRunner:
         if settled_items:
             await self.publish_items(
                 execution,
-                _with_parent_cards(settled_items, parent_item_id),
+                settled_items,
                 counted=counted,
             )
         return True

@@ -1913,3 +1913,83 @@ def test_subagent_stream_boundary_does_not_parent_a_main_reasoning_row() -> None
             await runtime.stop()
 
     asyncio.run(run())
+
+
+class _MainBlockStoppedBySubagentClient(_ScheduledClaudeClient):
+    """A main thinking block whose ``content_block_stop`` lands on a subagent frame.
+
+    The bridge that omits ``content_block_stop`` is one wire; a bridge that
+    SENDS it (ccr) can deliver it on a frame carrying a subagent's
+    ``parent_tool_use_id`` (a parented ``StreamEvent``). The accumulator's
+    ``content_block_stop`` route returns the closed row straight to
+    ``drive_turn``, so the row must still keep its OWN (main) parent.
+    """
+
+    async def _complete_query(self, prompt: str) -> None:
+        await _FakeClaudeClient.query(self, prompt)
+        frames = [
+            StreamEvent(
+                uuid="u1", session_id=self.native_id,
+                event={"type": "message_start", "message": {"id": "msg_main_stop"}},
+            ),
+            StreamEvent(
+                uuid="u1", session_id=self.native_id,
+                event={
+                    "type": "content_block_start", "index": 0,
+                    "content_block": {"type": "thinking", "thinking": "主代理推理"},
+                },
+            ),
+            # The stop arrives on a subagent-parented frame.
+            StreamEvent(
+                uuid="u2", session_id=self.native_id, parent_tool_use_id=DISPATCH_TUID,
+                event={"type": "content_block_stop", "index": 0},
+            ),
+            SimpleNamespace(
+                type="assistant", uuid="a1", session_id=self.native_id,
+                parent_tool_use_id=None,
+                message={"id": "msg_main_stop", "role": "assistant",
+                         "content": [{"type": "text", "text": "reply"}]},
+            ),
+            SimpleNamespace(type="result", session_id=self.native_id),
+        ]
+        for frame in frames:
+            await self.incoming.put(frame)
+
+
+def test_main_reasoning_stopped_by_a_subagent_frame_keeps_no_parent() -> None:
+    """The ``content_block_stop`` route must not re-parent a main row either.
+
+    Fourth reasoning-producing path: the accumulator returns the closed row
+    from ``content_block_stop`` directly, and a parented StreamEvent can carry
+    it. The row keeps its own (main) parent.
+    """
+
+    async def run() -> None:
+        client = _MainBlockStoppedBySubagentClient()
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            await runtime.start_turn("stopmix", None, "go")
+            session = runtime._sessions["stopmix"]
+            await asyncio.wait_for(session.active_task, 5)
+
+            row = [
+                item
+                for item in host.timeline_item_upserts
+                if dict(getattr(item, "source", {}) or {}).get("itemId")
+                == "msg_main_stop"
+                and (item.content or {}).get("blockType") == "thinking"
+            ]
+            assert row, "the main reasoning row was never published"
+            parent_card = stable_tool_item_id(session, DISPATCH_TUID)
+            assert all((item.content or {}).get("parentItemId") is None for item in row), (
+                "a main reasoning row closed by a subagent content_block_stop "
+                f"carries a parent: {[(i.id, i.content.get('parentItemId')) for i in row]}"
+            )
+            assert not any(
+                (item.content or {}).get("parentItemId") == parent_card for item in row
+            )
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())

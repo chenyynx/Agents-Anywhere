@@ -523,3 +523,40 @@ def test_subagent_block_closed_at_a_main_boundary_keeps_its_parent() -> None:
     assert (closed[0].content or {}).get("parentItemId") == stable_tool_item_id(
         _SESSION, "tool_dispatch"
     ), "a subagent reasoning row lost its card parent"
+
+
+def test_reused_index_after_stop_does_not_inherit_the_old_parent() -> None:
+    """An index closed by `content_block_stop` starts clean when reopened.
+
+    Same message: a subagent block opens index 0 and stops, then a main-chain
+    block reuses index 0. The main row must NOT inherit the subagent block's
+    parent (regression the "first writer wins" guard would otherwise cause —
+    adversarial review 2026-10-14 round 5).
+    """
+
+    acc = ClaudeStreamAccumulator()
+    proj = ClaudeMessageProjector()
+    acc.item_from_stream_event(
+        session=_SESSION, turn_id=_TURN, projector=proj,
+        message=_evt(_msg_start("m1")),
+    )
+    # A subagent block opens and CLOSES index 0.
+    acc.item_from_stream_event(
+        session=_SESSION, turn_id=_TURN, projector=proj,
+        message=_evt(
+            _thinking_start(0, "sub"), parent_tool_use_id="tool_dispatch"
+        ),
+    )
+    acc.item_from_stream_event(
+        session=_SESSION, turn_id=_TURN, projector=proj,
+        message=_evt(_block_stop(0)),
+    )
+    # A main-chain block reuses index 0 in the SAME message.
+    main_row = acc.item_from_stream_event(
+        session=_SESSION, turn_id=_TURN, projector=proj,
+        message=_evt(_thinking_start(0, "main")),
+    )
+    assert main_row is not None, "the reused block must be published"
+    assert (main_row.content or {}).get("parentItemId") is None, (
+        "a main-chain row reused an index whose old parent was not cleared"
+    )

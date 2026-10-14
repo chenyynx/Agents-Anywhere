@@ -170,7 +170,7 @@ class ClaudeStreamAccumulator:
             thinking = self.partial_thinking_blocks.pop(index, None)
             if not thinking:
                 return None
-            return self._thinking_partial_item(
+            item = self._thinking_partial_item(
                 session,
                 turn_id,
                 projector,
@@ -179,6 +179,15 @@ class ClaudeStreamAccumulator:
                 text=thinking,
                 usage=self._stream_frame_usage(message),
             )
+            # The block is closed: drop its per-index marks too, so a block
+            # that REUSES this index in the same message starts clean. Without
+            # this the "first writer wins" guard would let a reused index
+            # inherit the closed block's parent/usage mark — a main-chain row
+            # stamped with a subagent's card (adversarial review 2026-10-14,
+            # round 5). Cleared AFTER the item is built, which reads the mark.
+            self.partial_thinking_parent.pop(index, None)
+            self.partial_thinking_sidechain.discard(index)
+            return item
         if event_type == "message_stop":
             # The message is complete: every block it opened is done, whether
             # or not its own `content_block_stop` ever arrived (the LiteLLM

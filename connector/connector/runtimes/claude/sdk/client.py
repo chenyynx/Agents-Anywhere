@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
+import os
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from typing import Any
 
@@ -211,21 +213,71 @@ async def query_client(client: Any, content: str) -> None:
     await maybe_await(query(content))
 
 
+def _raw_frame_dump_path() -> str | None:
+    """Diagnostic switch (default OFF): dump every raw CLI frame to a file.
+
+    Set ``AA_RAW_FRAME_DUMP`` to a path to capture the exact frame sequence the
+    CLI emits (one JSON object per line). Used to pin the real trigger shape of
+    the subagent-attribution bug; costs one frame-sized write per frame.
+    """
+
+    path = os.environ.get("AA_RAW_FRAME_DUMP")
+    return path or None
+
+
+def _dump_raw_frame(path: str, message: Any) -> None:
+    try:
+        record = {
+            "cls": type(message).__name__,
+            "parent_tool_use_id": getattr(message, "parent_tool_use_id", None),
+            "session_id": getattr(message, "session_id", None),
+            "uuid": getattr(message, "uuid", None),
+        }
+        event = getattr(message, "event", None)
+        if isinstance(event, Mapping):
+            record["event"] = event
+        else:
+            nested = getattr(message, "message", None)
+            if isinstance(nested, Mapping):
+                record["message_id"] = nested.get("id")
+                record["role"] = nested.get("role")
+                content = nested.get("content")
+                if isinstance(content, list):
+                    record["blocks"] = [
+                        {
+                            "type": (b.get("type") if isinstance(b, Mapping) else None),
+                            "id": (b.get("id") if isinstance(b, Mapping) else None),
+                        }
+                        for b in content
+                    ]
+            record["type"] = getattr(message, "type", None)
+            record["result"] = type(message).__name__ == "ResultMessage"
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+    except Exception:  # noqa: BLE001, S110
+        pass  # a diagnostic dump must never break the stream
+
+
 async def receive_response_messages(client: Any) -> AsyncIterator[Any]:
     receive_response = getattr(client, "receive_messages", None) or getattr(
         client, "receive_response", None
     )
     if not callable(receive_response):
         return
+    dump_path = _raw_frame_dump_path()
     response = receive_response()
     if hasattr(response, "__aiter__"):
         async for message in response:
+            if dump_path is not None:
+                _dump_raw_frame(dump_path, message)
             yield message
         return
     messages = await maybe_await(response)
     if messages is None:
         return
     for message in messages:
+        if dump_path is not None:
+            _dump_raw_frame(dump_path, message)
         yield message
 
 

@@ -377,7 +377,8 @@ class RuntimeRpcHandler:
         if entry is None:
             if require_entry:
                 raise RuntimeInvalidRequestError(
-                    f"unknown runtime instance {scope.runtime_id!r}"
+                    f"unknown runtime instance {scope.runtime_id!r}",
+                    status="unregistered",
                 )
             return
         if entry.runtime_type != scope.runtime_type:

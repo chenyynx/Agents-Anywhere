@@ -23,6 +23,7 @@ from connector.runtime_protocol import (
     RuntimeTypeDescriptor,
     RuntimeUnavailableError,
 )
+from connector.runtime_protocol.supervisor_models import error_payload
 
 
 class FakeHost(RuntimeHostClient):
@@ -929,3 +930,43 @@ def test_stopped_config_validation_does_not_reserve_running_resources() -> None:
 
 async def _append(target: list[Any], value: Any) -> None:
     target.append(value)
+
+
+def test_unavailable_error_carries_the_instance_lifecycle_state() -> None:
+    """The Server speaks the state, so the state must travel as data.
+
+    `starting` and `stopped` share one code; a client cannot tell them apart
+    from the sentence, and re-reading the sentence is exactly the coupling
+    this field removes.
+    """
+
+    error = RuntimeUnavailableError("boom", status="starting")
+    assert error.status == "starting"
+    assert error_payload(error)["status"] == "starting"
+
+    # No state known is not the same as a defaulted state: the key is absent,
+    # never filled with a guess.
+    unknown = RuntimeUnavailableError("boom")
+    assert "status" not in error_payload(unknown)
+
+
+def test_unregistered_instance_reports_its_own_state() -> None:
+    supervisor = RuntimeSupervisor((FakeProvider(),), FakeHost())
+    with pytest.raises(RuntimeInvalidRequestError) as caught:
+        supervisor.resolve_runtime("rti_never_registered")
+    assert caught.value.status == "unregistered"
+    assert error_payload(caught.value)["status"] == "unregistered"
+
+
+def test_resolve_runtime_reports_the_entry_status() -> None:
+    async def run() -> None:
+        provider = FakeProvider()
+        supervisor = RuntimeSupervisor((provider,), FakeHost())
+        await supervisor.start("fake", {"mode": "auto"})
+        # A live instance that is not running reports the state it holds.
+        await supervisor.report_status("fake", "starting")
+        with pytest.raises(RuntimeUnavailableError) as caught:
+            supervisor.resolve_runtime("fake")
+        assert caught.value.status == "starting"
+
+    asyncio.run(run())

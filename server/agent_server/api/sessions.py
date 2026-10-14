@@ -709,6 +709,7 @@ async def session_runtime_capabilities(
         raise HTTPException(status_code=404, detail="session not found") from None
     session = await with_effective_session_connector_status(manager, session)
     runtime_capabilities = await read_session_capabilities_from_connector(
+        db,
         manager,
         session,
     )
@@ -746,6 +747,7 @@ async def session_runtime_model_catalog(
     except DeviceRuntimeError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     result = await request_session_runtime_catalog(
+        db,
         manager,
         session,
         method="runtime.modelCatalog",
@@ -780,6 +782,7 @@ async def session_runtime_permission_catalog(
     except DeviceRuntimeError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     result = await request_session_runtime_catalog(
+        db,
         manager,
         session,
         method="runtime.permissionCatalog",
@@ -1005,7 +1008,7 @@ async def session_snapshot(
         log_snapshot_stage("authorization", stage_started_at)
 
         stage_started_at = time.monotonic()
-        notices = await read_session_notices_for_snapshot(manager, session)
+        notices = await read_session_notices_for_snapshot(db, manager, session)
         log_snapshot_stage("notices", stage_started_at)
 
         stage_started_at = time.monotonic()
@@ -1325,7 +1328,7 @@ async def _require_session_action_capability(
     user_id: str,
 ) -> None:
     effective_session = await with_effective_session_connector_status(manager, session)
-    runtime_capabilities = await read_session_capabilities_from_connector(manager, session)
+    runtime_capabilities = await read_session_capabilities_from_connector(db, manager, session)
     effective = derive_session_effective_capabilities(
         session=effective_session,
         runtime_capabilities=runtime_capabilities,
@@ -1641,7 +1644,7 @@ async def list_session_runtime_notices(
         session = await db.get_session(session_id, user_id=user_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="session not found") from None
-    notices = await read_session_notices_from_connector(manager, session)
+    notices = await read_session_notices_from_connector(db, manager, session)
     return RuntimeNoticeListResponse(
         notices=notices,
         serverTime=utc_now(),
@@ -1768,8 +1771,81 @@ async def sync_session(
     except ConnectorOfflineError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ConnectorRpcError as exc:
-        raise HTTPException(status_code=502, detail=exc.message or exc.code) from exc
+        status_code, detail = await _runtime_probe_failure(db, session, exc)
+        raise HTTPException(status_code=status_code, detail=detail) from exc
     return RpcResponsePayload(ok=True, result=result)
+
+
+async def _runtime_probe_failure(
+    db: Store,
+    session: SessionView,
+    exc: ConnectorRpcError,
+) -> tuple[int, dict[str, Any]]:
+    """Classify a failed session-level runtime probe into a client-facing detail.
+
+    The Connector's own English sentence is diagnostic, not product copy, so it
+    never leaves this Server: it is logged here and the response carries a
+    Server-owned state instead. `starting`/`stopping`/`stopped`/`error` come
+    straight from the Connector, which owns the lifecycle and is the only live
+    witness. `unregistered` means the Connector has no such instance in this
+    process; whether that is legitimate depends on facts the Server holds —
+    an active, still-present runtime row means the instance is coming online
+    after a restart, while anything else is a genuinely invalid request.
+    """
+
+    logger.info(
+        "session runtime probe failed session_id={} connector_id={} "
+        "runtime_id={} code={} status={}",
+        session.id,
+        session.connectorId,
+        _session_runtime_id(session),
+        exc.code,
+        exc.status,
+    )
+    status = exc.status
+    if status == "unregistered":
+        active = await _runtime_row_is_active(
+            db, session.connectorId, _session_runtime_id(session)
+        )
+        status = "unregistered" if active else None
+    if status in {"starting", "stopping", "unregistered"}:
+        # Not a fault: the runtime is coming up. Rendering a failure here would
+        # make the app report an error for work the user never asked for.
+        return 409, {
+            "code": "runtime_not_started",
+            "message": "runtime is starting",
+            "runtimeStatus": status,
+        }
+    if status == "stopped":
+        return 409, {
+            "code": "runtime_not_started",
+            "message": "runtime is stopped",
+            "runtimeStatus": "stopped",
+        }
+    if status == "error":
+        return 502, {
+            "code": exc.code,
+            "message": "runtime reported an error",
+            "runtimeStatus": "error",
+        }
+    # Unknown state: keep a failure, but still never surface the raw Connector
+    # sentence. The code is what a client may key on.
+    return 502, {"code": exc.code, "message": "runtime is unavailable"}
+
+
+async def _runtime_row_is_active(
+    db: Store,
+    connector_id: str,
+    runtime_id: str,
+) -> bool:
+    try:
+        row = await db.get_device_runtime(connector_id, runtime_id)
+    except KeyError:
+        return False
+    # Only the existence facts are read here — never the `status`, which is
+    # notification-driven and can still hold the pre-restart value while the
+    # instance is coming back.
+    return bool(row.get("present")) and bool(row.get("active"))
 
 
 async def read_runtime_state_live(
@@ -1815,7 +1891,7 @@ async def read_session_capabilities_with_fallback(
 
     if await manager.is_online(session.connectorId):
         try:
-            return await read_session_capabilities_from_connector(manager, session)
+            return await read_session_capabilities_from_connector(db, manager, session)
         except HTTPException:
             pass
     return ProtocolCapabilitySet.model_validate(
@@ -1855,6 +1931,7 @@ async def read_runtime_state_from_connector(
 
 
 async def read_session_capabilities_from_connector(
+    db: Store,
     manager: ConnectorRpcManager,
     session: SessionView,
 ) -> ProtocolCapabilitySet:
@@ -1873,10 +1950,8 @@ async def read_session_capabilities_from_connector(
             },
         ) from exc
     except ConnectorRpcError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail={"code": exc.code, "message": exc.message or exc.code},
-        ) from exc
+        status_code, detail = await _runtime_probe_failure(db, session, exc)
+        raise HTTPException(status_code=status_code, detail=detail) from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=502,
@@ -1888,6 +1963,7 @@ async def read_session_capabilities_from_connector(
 
 
 async def request_session_runtime_catalog(
+    db: Store,
     manager: ConnectorRpcManager,
     session: SessionView,
     method: str,
@@ -1913,13 +1989,12 @@ async def request_session_runtime_catalog(
     except ConnectorOfflineError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ConnectorRpcError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail={"code": exc.code, "message": exc.message or exc.code},
-        ) from exc
+        status_code, detail = await _runtime_probe_failure(db, session, exc)
+        raise HTTPException(status_code=status_code, detail=detail) from exc
 
 
 async def read_session_notices_from_connector(
+    db: Store,
     manager: ConnectorRpcManager,
     session: SessionView,
 ) -> list[NoticeIn]:
@@ -1948,10 +2023,8 @@ async def read_session_notices_from_connector(
             },
         ) from exc
     except ConnectorRpcError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail={"code": exc.code, "message": exc.message or exc.code},
-        ) from exc
+        status_code, detail = await _runtime_probe_failure(db, session, exc)
+        raise HTTPException(status_code=status_code, detail=detail) from exc
     raw_notices = result.get("notices") if isinstance(result, dict) else None
     if not isinstance(raw_notices, list):
         raise HTTPException(
@@ -2040,11 +2113,12 @@ def merge_interaction_input(
 
 
 async def read_session_notices_for_snapshot(
+    db: Store,
     manager: ConnectorRpcManager,
     session: SessionView,
 ) -> list[NoticeIn]:
     try:
-        return await read_session_notices_from_connector(manager, session)
+        return await read_session_notices_from_connector(db, manager, session)
     except HTTPException:
         return []
 

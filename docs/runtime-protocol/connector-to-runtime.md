@@ -553,6 +553,10 @@ class RuntimeUnsupportedError(RuntimeProtocolError):
 class RuntimeInvalidRequestError(RuntimeProtocolError):
     code = "runtime_invalid_request"
 
+    def __init__(self, message: str, *, status: str | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
 
 class RuntimeConflictError(RuntimeProtocolError):
     code = "runtime_conflict"
@@ -562,7 +566,24 @@ class RuntimeUnavailableError(RuntimeProtocolError):
     code = "runtime_unavailable"
     retryable = True
 
+    def __init__(self, message: str, *, status: str | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
 
 class RuntimeUpstreamError(RuntimeProtocolError):
     code = "runtime_upstream_error"
 ```
+
+`status` is the runtime lifecycle state the error was raised from
+(`starting`, `stopping`, `stopped`, `error`, or `unregistered` for an instance
+the connector has not registered in this process). It is optional: an error
+that does not carry a lifecycle state omits the field, and a consumer must read
+absence as "unknown" rather than substitute a default.
+
+The state travels as a field, not inside `message`. `RuntimeUnavailableError`
+is raised for both a starting and a stopped instance, and those are different
+events to a user; the sentence is diagnostic and is not a contract. When the
+connector returns an error, the error body is
+`{"code", "message", "retryable", "status"?}` and the server reads `status`
+directly so the client never has to parse English to learn the state.

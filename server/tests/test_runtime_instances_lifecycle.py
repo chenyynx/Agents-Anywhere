@@ -4,6 +4,7 @@ import asyncio
 from typing import Any
 
 from agent_server.app import create_app
+from agent_server.infra.connector_rpc import ConnectorRpcError
 from agent_server.infra.db import device_runtimes
 from agent_server.services.device_runtimes import (
     DeviceRuntimeService,
@@ -25,6 +26,9 @@ class FakeRuntimeRpc:
         self.start_result: dict[str, Any] = {"ok": True}
         self.requests: list[tuple[str, str, dict[str, Any]]] = []
         self.session_create_result: dict[str, Any] | None = None
+        # When set, session-level runtime probes raise this instead of
+        # answering — the shape the Connector produces on a failed read.
+        self.session_probe_error: ConnectorRpcError | None = None
 
     async def is_online(self, _connector_id: str) -> bool:
         return self.online
@@ -37,6 +41,11 @@ class FakeRuntimeRpc:
         **_: Any,
     ) -> dict[str, Any]:
         self.requests.append((connector_id, method, params))
+        if (
+            self.session_probe_error is not None
+            and method in {"session.capabilities", "session.notices", "session.state"}
+        ):
+            raise self.session_probe_error
         if method == "runtime.start":
             return self.start_result
         if method == "runtime.discover":
@@ -1068,3 +1077,111 @@ def test_active_runtime_preserves_waiting_status_until_bridge_recovers(tmp_path)
     assert recovered.status == "running"
     assert recovered.active is True
     assert recovered.error is None
+
+
+def _session_for_probe(
+    client: TestClient,
+    connector_id: str,
+    headers: dict[str, str],
+) -> str:
+    """Create an active runtime instance and a session bound to it."""
+
+    _discover_types(client, connector_id, headers)
+    created = client.post(
+        f"/connectors/{connector_id}/runtimes",
+        headers=headers,
+        json={
+            "runtimeType": "codex",
+            "name": "Codex",
+            "config": {"home": "/tmp/codex"},
+            "active": True,
+        },
+    )
+    assert created.status_code == 201, created.text
+    runtime_id = created.json()["runtimeId"]
+    project_id = client.post(
+        "/projects",
+        headers=headers,
+        json={"connectorId": connector_id, "name": "Work", "workspacePath": "/w"},
+    ).json()["project"]["id"]
+    session = client.post(
+        "/sessions/create-and-start",
+        headers=headers,
+        json={
+            "connectorId": connector_id,
+            "runtime": "codex",
+            "runtimeId": runtime_id,
+            "content": "hello",
+            "projectId": project_id,
+        },
+    )
+    assert session.status_code == 200, session.text
+    return session.json()["session"]["id"]
+
+
+def test_probe_reports_starting_as_a_non_fault_state(tmp_path: Any) -> None:
+    """A starting runtime is not a user error and must not carry Connector prose."""
+
+    client, rpc, connector_id, headers = _make_client(tmp_path, _v2_discovery())
+    session_id = _session_for_probe(client, connector_id, headers)
+    rpc.session_probe_error = ConnectorRpcError(
+        "runtime_unavailable",
+        "runtime instance 'rti_x' is not running (status='starting')",
+        status="starting",
+    )
+
+    response = client.get(
+        f"/sessions/{session_id}/runtime/capabilities",
+        headers=headers,
+    )
+
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["runtimeStatus"] == "starting"
+    assert detail["code"] == "runtime_not_started"
+    # The Connector's English sentence never reaches a client.
+    assert "is not running" not in response.text
+    assert "rti_x" not in response.text
+
+
+def test_probe_unregistered_with_active_row_is_recovery(tmp_path: Any) -> None:
+    """An unregistered instance whose row is active is coming back online."""
+
+    client, rpc, connector_id, headers = _make_client(tmp_path, _v2_discovery())
+    session_id = _session_for_probe(client, connector_id, headers)
+    rpc.session_probe_error = ConnectorRpcError(
+        "runtime_invalid_request",
+        "unknown runtime instance 'rti_x'",
+        status="unregistered",
+    )
+
+    response = client.get(
+        f"/sessions/{session_id}/runtime/capabilities",
+        headers=headers,
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["runtimeStatus"] == "unregistered"
+    assert "unknown runtime instance" not in response.text
+
+
+def test_probe_without_connector_status_never_leaks_the_message(
+    tmp_path: Any,
+) -> None:
+    """No status known still means: keep a failure, never the raw sentence."""
+
+    client, rpc, connector_id, headers = _make_client(tmp_path, _v2_discovery())
+    session_id = _session_for_probe(client, connector_id, headers)
+    rpc.session_probe_error = ConnectorRpcError(
+        "runtime_unavailable",
+        "runtime instance 'rti_x' is not running (status='error')",
+    )
+
+    response = client.get(
+        f"/sessions/{session_id}/runtime/notices",
+        headers=headers,
+    )
+
+    assert response.status_code == 502, response.text
+    assert response.json()["detail"]["code"] == "runtime_unavailable"
+    assert "is not running" not in response.text

@@ -53,11 +53,18 @@ class RuntimeSupervisorEntry:
 
 
 def error_payload(exc: BaseException) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "code": getattr(exc, "code", None) or exc.__class__.__name__,
         "message": str(exc) or exc.__class__.__name__,
         "retryable": bool(getattr(exc, "retryable", False)),
     }
+    # Only present when the error actually knows its lifecycle state. An
+    # absent key means "unknown", never a default: a filled-in guess would be
+    # a sentence the system cannot back (product rule: 宁缺勿假).
+    status = getattr(exc, "status", None)
+    if isinstance(status, str) and status:
+        payload["status"] = status
+    return payload
 
 
 def same_effective_config(left: RuntimeConfig | None, right: RuntimeConfig) -> bool:

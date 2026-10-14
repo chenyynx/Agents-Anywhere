@@ -177,10 +177,14 @@ class ConnectorRpcChannel:
                 lambda exc=exc: sanitize_rpc_log_value({"code": exc.code, "message": str(exc)}),
             )
             if generation == self._generation:
-                await self.send_response(
-                    request_id, ok=False,
-                    error={"code": exc.code, "message": str(exc)},
-                )
+                error: dict[str, Any] = {"code": exc.code, "message": str(exc)}
+                # The lifecycle state travels beside the message, never inside
+                # it: the Server speaks the state and owns the copy, so it must
+                # not have to parse an English sentence to learn it.
+                status = getattr(exc, "status", None)
+                if isinstance(status, str) and status:
+                    error["status"] = status
+                await self.send_response(request_id, ok=False, error=error)
         except Exception as exc:  # noqa: BLE001
             logger.exception("connector request failed method={} id={}", method, request_id)
             code = getattr(exc, "code", None) or exc.__class__.__name__

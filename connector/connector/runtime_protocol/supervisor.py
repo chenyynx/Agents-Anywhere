@@ -423,7 +423,8 @@ class RuntimeSupervisor:
         if entry.status != "running" or entry.runtime is None:
             raise RuntimeUnavailableError(
                 f"runtime instance {runtime_id!r} is not running "
-                f"(status={entry.status!r})"
+                f"(status={entry.status!r})",
+                status=entry.status,
             )
         return entry.runtime
 
@@ -529,7 +530,14 @@ class RuntimeSupervisor:
     def _entry(self, runtime_id: str) -> RuntimeSupervisorEntry:
         entry = self._entries.get(runtime_id)
         if entry is None:
-            raise RuntimeInvalidRequestError(f"unknown runtime instance {runtime_id!r}")
+            # `unregistered` is its own truth, not a flavour of `starting`: the
+            # instance is not merely coming up in this process, it is not here
+            # yet. Only the Server can tell a legitimate not-yet-registered
+            # instance (it has an active row) from a stale reference.
+            raise RuntimeInvalidRequestError(
+                f"unknown runtime instance {runtime_id!r}",
+                status="unregistered",
+            )
         return entry
 
     @staticmethod

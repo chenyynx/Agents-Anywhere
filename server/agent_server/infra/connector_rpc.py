@@ -24,10 +24,14 @@ class DuplicateConnectorConnectionError(RuntimeError):
 
 
 class ConnectorRpcError(RuntimeError):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, status: str | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        # The runtime lifecycle state the Connector reported alongside the
+        # failure, when it knows one. `None` means the Connector did not say —
+        # callers must treat that as unknown rather than assume a state.
+        self.status = status
 
 
 @dataclass
@@ -509,9 +513,11 @@ class ConnectorRpcManager:
         if response.get("ok") is True:
             return response.get("result")
         error = response.get("error") or {}
+        status = error.get("status")
         raise ConnectorRpcError(
             error.get("code", "connector_error"),
             error.get("message", "connector error"),
+            status if isinstance(status, str) and status else None,
         )
 
     async def _route(
@@ -551,7 +557,12 @@ class ConnectorRpcManager:
             raise ConnectorOfflineError(message)
         if error_type == "timeout":
             raise TimeoutError(message)
-        raise ConnectorRpcError(error.get("code", "connector_error"), message)
+        status = error.get("status")
+        raise ConnectorRpcError(
+            error.get("code", "connector_error"),
+            message,
+            status if isinstance(status, str) and status else None,
+        )
 
     async def _listen(self) -> None:
         assert self._pubsub is not None
@@ -629,7 +640,9 @@ class ConnectorRpcManager:
                 request_id, "timeout", "connector_timeout", "connector RPC timed out"
             )
         except ConnectorRpcError as exc:
-            response = self._route_error(request_id, "rpc", exc.code, exc.message)
+            response = self._route_error(
+                request_id, "rpc", exc.code, exc.message, status=exc.status
+            )
         except Exception:  # noqa: BLE001 - isolate malformed cross-instance requests
             logger.exception(
                 "failed to handle routed connector RPC request_id={}", request_id
@@ -750,13 +763,21 @@ class ConnectorRpcManager:
 
     @staticmethod
     def _route_error(
-        request_id: str, error_type: str, code: str, message: str
+        request_id: str,
+        error_type: str,
+        code: str,
+        message: str,
+        *,
+        status: str | None = None,
     ) -> dict[str, Any]:
+        error: dict[str, Any] = {"type": error_type, "code": code, "message": message}
+        if status:
+            error["status"] = status
         return {
             "type": "response",
             "requestId": request_id,
             "ok": False,
-            "error": {"type": error_type, "code": code, "message": message},
+            "error": error,
         }
 
     @staticmethod

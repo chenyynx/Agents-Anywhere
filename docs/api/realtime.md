@@ -114,6 +114,25 @@ The `replace_timeline_snapshot` envelope is deliberately never downgraded to a
 bare `refetch`: its `deleted` list is just "rows the new snapshot omits", and the
 complete new timeline travels in `timelineReset` + `items` (empty included).
 
+### Row ordering: `orderSeq` is the single ordering truth
+
+Every `TimelineItem` carries `orderSeq`, and it is **required** on every path
+(snapshot, history page, live frame, archive). Clients must sort rows by
+`orderSeq` and by nothing else.
+
+`orderSeq` must never be approximated from another field. In particular
+`updatedSeq` is a *revision* counter, not a position: for one message the Server
+may repack a reasoning row above its body, which leaves the reasoning row with a
+*higher* `updatedSeq` than the body. A client that fell back to `updatedSeq`
+would therefore show the reasoning *below* its body — the defect the Server's
+`v2_42` intra-message order fix removed (2026-10-14).
+
+A row whose `orderSeq` the client cannot read is treated as malformed: the
+collection reader drops it rather than showing it in a guessed position. The
+Server is responsible for never dropping the field — the contract keeps
+`orderSeq` in `TimelineItem.required`, and `server/tests/test_protocol_contracts.py`
+pins that every serialization path emits it.
+
 ### Recovery rules
 
 - Event cursor format is `seq:{number}`.

@@ -1,5 +1,18 @@
 import Foundation
 
+// The wire model for one timeline row. Decoding is deliberately lenient for
+// every field EXCEPT the three that anchor a row's identity and order —
+// ``id``, ``sessionId`` and ``orderSeq`` are required and a row missing any of
+// them fails to decode (and is dropped by the lossy array reader, never
+// retried with a substituted value).
+//
+// ``orderSeq`` in particular is the ONLY ordering truth any client sorts on.
+// It must never be approximated from another field: ``updatedSeq`` is a
+// revision counter that runs the OPPOSITE way for a message's reasoning rows
+// (an intra-message repack gives the reasoning row a higher ``updatedSeq`` than
+// its body), so any fallback to it re-creates the exact "reasoning below its
+// body" defect the server's v2_42 fix removed (2026-10-14). A missing
+// ``orderSeq`` means the row is dropped rather than shown in the wrong place.
 enum V2TimelineItemType: String, Codable, Hashable {
     case turnStart = "turn.start"
     case turnEnd = "turn.end"
@@ -89,9 +102,9 @@ struct V2TimelineItem: Decodable, Identifiable, Hashable {
         let rawContent = try container.decodeIfPresent(JSONValue.self, forKey: .content) ?? .object([:])
         content = V2TimelineItemContent(type: type, rawContent: rawContent)
         source = try container.decodeIfPresent(JSONValue.self, forKey: .source) ?? .object([:])
-        orderSeq = try container.decodeIfPresent(Int.self, forKey: .orderSeq)
-            ?? container.decodeIfPresent(Int.self, forKey: .updatedSeq)
-            ?? 0
+        // Required, never approximated: a row with no orderSeq fails to decode
+        // and the lossy array reader drops it (see the file header).
+        orderSeq = try container.decode(Int.self, forKey: .orderSeq)
         revision = try container.decodeIfPresent(Int.self, forKey: .revision) ?? 1
         contentHash = try container.decodeIfPresent(String.self, forKey: .contentHash) ?? ""
         updatedSeq = try container.decodeIfPresent(Int.self, forKey: .updatedSeq) ?? 0

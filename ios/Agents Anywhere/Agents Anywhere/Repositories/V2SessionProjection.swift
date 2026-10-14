@@ -104,9 +104,13 @@ struct V2SessionProjection {
         case "runtime.capability.updated":
             data.capabilities = try payload("capabilitySet", in: event)
         case "timeline.item_created", "timeline.item_updated":
+            // A single-item frame still decodes strictly: a malformed row here
+            // is a stream-level failure the recovery path is designed to
+            // surface (see RecoverySelfHealTests), and it carries no collection
+            // to isolate within. Only item *collections* below are lossy.
             outcome = merge([try payload("item", in: event)], history: false).first
         case "timeline.snapshot":
-            let items: [V2TimelineItem] = try payload("items", in: event)
+            let items: [V2TimelineItem] = lossyItems(in: event)
             replaceTimeline(items, hasMore: false)
         case "runtime.notice.snapshot":
             data.notices = try payload("notices", in: event)
@@ -217,5 +221,14 @@ struct V2SessionProjection {
         catch let error as DecodingError {
             throw HTTPError.decoding(message: "\(event.type) · \(key): \(error.v2Description)")
         }
+    }
+
+    /// The items of a `timeline.snapshot` frame, decoded leniently: malformed
+    /// rows are dropped, a malformed whole array reads as empty. Same rule as
+    /// the HTTP snapshot's `timeline.items` — a single bad row must not fail
+    /// the reset that clears and rebuilds the whole timeline.
+    private func lossyItems(in event: V2SessionEvent) -> [V2TimelineItem] {
+        guard let raw = event.payload["items"] else { return [] }
+        return (try? decoder.decode(LossyElements<V2TimelineItem>.self, from: JSONEncoder().encode(raw)))?.elements ?? []
     }
 }

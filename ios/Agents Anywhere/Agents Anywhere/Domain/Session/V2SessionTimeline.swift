@@ -14,6 +14,29 @@ struct V2SessionTimelinePage: Decodable, Hashable {
     let serverTime: String?
 }
 
+extension V2SessionTimelinePage {
+    /// One history page. A single row that fails to decode (e.g. a server that
+    /// dropped a required field) is dropped, never failing the page — the same
+    /// rule as the snapshot's timeline and the SubAgent sidecar. Declared in an
+    /// extension so the synthesized memberwise initializer survives.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionId = try container.decode(V2SessionID.self, forKey: .sessionId)
+        items = ((try? container.decode(LossyElements<V2TimelineItem>.self, forKey: .items))?.elements) ?? []
+        nextSeq = try container.decode(Int.self, forKey: .nextSeq)
+        hasMore = try container.decode(Bool.self, forKey: .hasMore)
+        serverTime = try container.decodeIfPresent(String.self, forKey: .serverTime)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionId
+        case items
+        case nextSeq
+        case hasMore
+        case serverTime
+    }
+}
+
 struct V2SessionSnapshot: Decodable, Hashable {
     let session: V2SessionMeta
     let state: V2RuntimeState?
@@ -51,11 +74,11 @@ struct V2SessionSnapshot: Decodable, Hashable {
 }
 
 extension V2SessionSnapshot {
-    /// Defensive decode in the `V2TimelineItem` style. `activeAgents` alone is
-    /// lenient: an absent key (老服务端) or a non-array reads `[]`, and one
-    /// card that fails to decode is dropped instead of failing the whole
-    /// snapshot — a single malformed card must never cost the session open.
-    /// Every other field keeps exactly its previous requirement.
+    /// Defensive decode in the `V2TimelineItem` style. The item collections —
+    /// `timeline.items` and `activeAgents` — are lossy: one row/card that fails
+    /// to decode is dropped instead of failing the whole snapshot, and an absent
+    /// `activeAgents` key (老服务端) reads `[]`. Every other field keeps exactly
+    /// its previous requirement.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         session = try container.decode(V2SessionMeta.self, forKey: .session)
@@ -76,7 +99,14 @@ extension V2SessionSnapshot {
 /// cannot. Each element is read behind a wrapper that never throws, so the
 /// unkeyed container always advances past a bad element — the element decoder
 /// itself would leave its index unmoved after a failure.
-private struct LossyElements<Element: Decodable>: Decodable {
+///
+/// Used for every collection of `V2TimelineItem` on the wire (snapshot
+/// timeline, history page, active SubAgent cards, archived rows): a row missing
+/// a required field (`id`/`sessionId`/`orderSeq`) is dropped rather than
+/// failing the whole page — one malformed row must never cost the session open.
+/// This is the "宁缺勿假" rule for ordering: a row whose orderSeq we cannot
+/// trust is not shown at all, never shown in a guessed position.
+struct LossyElements<Element: Decodable>: Decodable {
     let elements: [Element]
 
     private struct LossyElement<Value: Decodable>: Decodable {
@@ -103,6 +133,25 @@ struct V2TimelineSnapshot: Decodable, Hashable {
     let items: [V2TimelineItem]
     let nextSeq: Int
     let hasMore: Bool
+}
+
+extension V2TimelineSnapshot {
+    /// The snapshot's timeline page. Identical lossy rule to a history page: a
+    /// single row that fails to decode is dropped, never failing the session
+    /// open (see `LossyElements`). Declared in an extension so the synthesized
+    /// memberwise initializer survives.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        items = ((try? container.decode(LossyElements<V2TimelineItem>.self, forKey: .items))?.elements) ?? []
+        nextSeq = try container.decode(Int.self, forKey: .nextSeq)
+        hasMore = try container.decode(Bool.self, forKey: .hasMore)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case items
+        case nextSeq
+        case hasMore
+    }
 }
 
 struct V2Approval: Decodable, Identifiable, Hashable {

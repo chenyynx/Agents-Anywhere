@@ -25,7 +25,10 @@ from types import SimpleNamespace
 from typing import Any
 
 from connector.runtimes.claude.domain.session import ClaudeSession
-from connector.runtimes.claude.timeline.messages import ClaudeMessageProjector
+from connector.runtimes.claude.timeline.messages import (
+    ClaudeMessageProjector,
+    stable_tool_item_id,
+)
 from connector.runtimes.claude.timeline.stream import ClaudeStreamAccumulator
 
 
@@ -447,3 +450,72 @@ def test_reset_recovers_unconfirmed_boundary_rows() -> None:
     carried = acc.reset(_SESSION, _TURN, proj)
     assert carried, "reset must carry out the unconfirmed boundary rows"
     assert carried[-1].status == "done"
+
+
+# ---------------------------------------------------------------------------
+# C. A closed block keeps its OWN frame's parent (2026-10-14 ownership fix)
+# ---------------------------------------------------------------------------
+
+
+def test_main_block_closed_by_a_subagent_boundary_keeps_no_parent() -> None:
+    """A main-chain thinking block closed at a SUBAGENT boundary stays main.
+
+    The LiteLLM bridge omits the thinking ``content_block_stop``; a background
+    subagent's ``message_start`` is then the boundary that closes the
+    main-chain block. The row must keep its own (main) parent — none — even
+    though the closing frame belongs to the subagent. Before the ownership fix
+    `drive_turn` stamped the closing frame's parent on the whole batch, so this
+    is the accumulator half of that regression (the turn-level assertion lives
+    in ``test_claude_subagent_progress.py``).
+    """
+
+    acc = ClaudeStreamAccumulator()
+    proj = ClaudeMessageProjector()
+    acc.item_from_stream_event(
+        session=_SESSION, turn_id=_TURN, projector=proj,
+        message=_evt(_msg_start("m_main")),
+    )
+    acc.item_from_stream_event(
+        session=_SESSION, turn_id=_TURN, projector=proj,
+        message=_evt(_thinking_start(0, "main thought")),
+    )
+    acc.item_from_stream_event(
+        session=_SESSION, turn_id=_TURN, projector=proj,
+        message=_evt(_msg_start("m_sub"), parent_tool_use_id="tool_dispatch"),
+    )
+    closed = _reasoning(acc.peek_pending_items())
+    assert closed, "the main block must still be closed by the boundary"
+    assert (closed[0].content or {}).get("parentItemId") is None, (
+        "a main-chain reasoning row took the closing subagent frame's parent"
+    )
+
+
+def test_subagent_block_closed_at_a_main_boundary_keeps_its_parent() -> None:
+    """The mirror: a subagent thinking block keeps its card's parent.
+
+    A sidechain block whose stop never arrived, closed by a main-chain
+    ``message_start``, must still carry the dispatch card id so it keeps
+    folding into the SubAgent capsule.
+    """
+
+    acc = ClaudeStreamAccumulator()
+    proj = ClaudeMessageProjector()
+    acc.item_from_stream_event(
+        session=_SESSION, turn_id=_TURN, projector=proj,
+        message=_evt(_msg_start("m_main")),
+    )
+    acc.item_from_stream_event(
+        session=_SESSION, turn_id=_TURN, projector=proj,
+        message=_evt(
+            _thinking_start(0, "sub thought"), parent_tool_use_id="tool_dispatch"
+        ),
+    )
+    acc.item_from_stream_event(
+        session=_SESSION, turn_id=_TURN, projector=proj,
+        message=_evt(_msg_start("m_next")),
+    )
+    closed = _reasoning(acc.peek_pending_items())
+    assert closed, "the subagent block must be closed"
+    assert (closed[0].content or {}).get("parentItemId") == stable_tool_item_id(
+        _SESSION, "tool_dispatch"
+    ), "a subagent reasoning row lost its card parent"

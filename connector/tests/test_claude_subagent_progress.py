@@ -34,6 +34,7 @@ wake frames in the L1 file.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 from claude_agent_sdk._internal.message_parser import parse_message
@@ -43,6 +44,7 @@ from test_claude_compact_ghost import (
     _wait_until,
 )
 from test_claude_runtime import (
+    StreamEvent,
     _FakeClaudeClient,
     _RecordingHost,
     _ScheduledClaudeClient,
@@ -1806,6 +1808,107 @@ def test_task_updated_after_a_false_done_still_closes() -> None:
             await asyncio.sleep(0.05)
             assert len(_card_items(host, card_id)) == published
             assert _card_items(host, card_id)[-1].status == "done"
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------
+# A background subagent's stream boundary must not re-parent a MAIN row
+# --------------------------------------------------------------------------
+
+
+class _MainThenSubagentStreamClient(_ScheduledClaudeClient):
+    """A main-chain thinking block left open, then a subagent stream frame.
+
+    Real wire 2026-10-14 (pp session ``sess_3vglLn61-wPSSg``): the bridge
+    (LiteLLM) omits a thinking block's ``content_block_stop``, so the block
+    stays open until the next ``message_start``. A background subagent's
+    stream frame leaking into the parent stream carries ``parent_tool_use_id``
+    and its own (differing) message id, so its ``message_start`` is the
+    boundary that closes the main-chain block. The closing frame is the
+    subagent's — that is the whole trap.
+    """
+
+    async def _complete_query(self, prompt: str) -> None:
+        await _FakeClaudeClient.query(self, prompt)
+        frames = [
+            StreamEvent(
+                uuid="u1", session_id=self.native_id,
+                event={"type": "message_start", "message": {"id": "msg_main_mix"}},
+            ),
+            # The main agent's thinking block — NO content_block_stop follows.
+            StreamEvent(
+                uuid="u1", session_id=self.native_id,
+                event={
+                    "type": "content_block_delta", "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": "主代理的推理"},
+                },
+            ),
+            # A background subagent's stream frame: its message_start is the
+            # boundary that closes the main block, and it carries the parent.
+            StreamEvent(
+                uuid="u2", session_id=self.native_id, parent_tool_use_id=DISPATCH_TUID,
+                event={"type": "message_start", "message": {"id": "msg_sub_mix"}},
+            ),
+            # The main agent's final reply frame, then the terminal.
+            SimpleNamespace(
+                type="assistant", uuid="a1", session_id=self.native_id,
+                parent_tool_use_id=None,
+                message={"id": "msg_main_mix", "role": "assistant",
+                         "content": [{"type": "text", "text": "reply"}]},
+            ),
+            SimpleNamespace(type="result", session_id=self.native_id),
+        ]
+        for frame in frames:
+            await self.incoming.put(frame)
+
+
+def test_subagent_stream_boundary_does_not_parent_a_main_reasoning_row() -> None:
+    """The 2026-10-14 mis-attribution, end to end through ``drive_turn``.
+
+    A main-chain thinking block, opened by the main agent and closed by a
+    background subagent's stream boundary, must stay in the main timeline
+    (no ``parentItemId``). Before the fix, ``drive_turn`` stamped the closed
+    batch with the closing frame's parent — the subagent's card — and iOS
+    folded the row into the SubAgent capsule, so pp's reasoning vanished from
+    the main chat. Verified red before the fix (parent == the card) and green
+    after.
+    """
+
+    async def run() -> None:
+        client = _MainThenSubagentStreamClient()
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            await runtime.start_turn("mix", None, "go")
+            session = runtime._sessions["mix"]
+            await asyncio.wait_for(session.active_task, 5)
+
+            main_reasoning = [
+                item
+                for item in host.timeline_item_upserts
+                if dict(getattr(item, "source", {}) or {}).get("itemId")
+                == "msg_main_mix"
+                and (item.content or {}).get("blockType") == "thinking"
+            ]
+            assert main_reasoning, "the main thinking row was never published"
+            parent_card = stable_tool_item_id(
+                session, DISPATCH_TUID
+            )
+            leaked = [
+                item for item in main_reasoning
+                if (item.content or {}).get("parentItemId") == parent_card
+            ]
+            assert not leaked, (
+                "a main-agent reasoning row carries the subagent's parentItemId: "
+                f"{[(i.id, i.content.get('parentItemId')) for i in leaked]}"
+            )
+            assert all(
+                (item.content or {}).get("parentItemId") is None
+                for item in main_reasoning
+            ), "a main-agent reasoning row carries an unexpected parentItemId"
         finally:
             await runtime.stop()
 

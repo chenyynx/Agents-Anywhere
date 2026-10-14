@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from connector.logging import logger
-from connector.runtime_protocol import RuntimeTimelineItem
+from connector.runtime_protocol import RuntimeTimelineItem, timeline_content_hash
 from connector.runtimes.claude.domain.session import ClaudeSession
 from connector.runtimes.claude.timeline.messages import (
     ClaudeMessageProjector,
     stable_message_item_id,
+    stable_tool_item_id,
     usage_counts,
 )
 
@@ -27,6 +28,18 @@ class ClaudeStreamAccumulator:
     # main-chain one once the originating frame is gone, and a sidechain row
     # must never carry the main chain's usage. Cleared with the block maps.
     partial_thinking_sidechain: set[int] = field(default_factory=set)
+    # The dispatch tool use each open thinking block came from, keyed by
+    # index, so the block's parentItemId follows the FRAME THAT OPENED IT.
+    # A boundary close (and the settle-time flush) runs on a later frame —
+    # real wire 2026-10-14: a background subagent's stream frame closed a
+    # main-agent thinking block whose `content_block_stop` the bridge never
+    # sent, and the row was stamped with the subagent's card (the closing
+    # frame's parent), dropping a main-agent reasoning row into the SubAgent
+    # capsule (pp session sess_3vglLn61-wPSSg, seq 1323/1424/1460). The
+    # border must ride the block, never the frame that happens to close it.
+    # `None` (main chain) is stored explicitly so the mark is authoritative
+    # either way. Cleared with the block maps.
+    partial_thinking_parent: dict[int, str | None] = field(default_factory=dict)
     # Rows a message boundary closed but could not return from
     # `item_from_stream_event` (which yields at most one item). A boundary can
     # close several blocks at once, so the done rows ride here and the caller
@@ -84,6 +97,7 @@ class ClaudeStreamAccumulator:
                 self.partial_revision = 0
                 self.partial_thinking_blocks.clear()
                 self.partial_thinking_sidechain.clear()
+                self.partial_thinking_parent.clear()
                 self.partial_thinking_revision = 0
             self.partial_message_id = message_id
             self.partial_usage = _message_start_usage(message, payload)
@@ -99,7 +113,7 @@ class ClaudeStreamAccumulator:
             thinking = _thinking_text_from_stream_delta(block)
             if index is not None and thinking:
                 self.partial_thinking_blocks[index] = thinking
-                self._note_thinking_sidechain(index, message)
+                self._note_thinking_origin(index, message)
                 return self._thinking_partial_item(
                     session,
                     turn_id,
@@ -121,7 +135,7 @@ class ClaudeStreamAccumulator:
                 self.partial_thinking_blocks[index] = (
                     f"{self.partial_thinking_blocks.get(index, '')}{thinking}"
                 )
-                self._note_thinking_sidechain(index, message)
+                self._note_thinking_origin(index, message)
                 return self._thinking_partial_item(
                     session,
                     turn_id,
@@ -223,6 +237,7 @@ class ClaudeStreamAccumulator:
         self.partial_revision = 0
         self.partial_thinking_blocks.clear()
         self.partial_thinking_sidechain.clear()
+        self.partial_thinking_parent.clear()
         self.partial_thinking_revision = 0
         self.partial_usage = None
         self.partial_model = None
@@ -357,16 +372,19 @@ class ClaudeStreamAccumulator:
             usage_model=None if _is_sidechain(message) else self.partial_model,
         )
 
-    def _note_thinking_sidechain(self, index: int, message: Any) -> None:
-        """Remember whether the block opened under `index` is a sidechain's.
+    def _note_thinking_origin(self, index: int, message: Any) -> None:
+        """Remember which frame opened the thinking block under `index`.
 
         The index is authoritative for the block's lifetime: a boundary close
         runs after the originating frame is gone, so this is what lets it keep
-        the main chain's usage off a subagent's row. A main-chain delta for the
-        same index clears the mark, so one index can never carry both.
+        the main chain's usage off a subagent's row (and, for the ownership
+        mark below, the parent off a main-chain row). A later delta for the
+        same index overwrites the mark, so one index can never carry two.
         """
 
-        if _is_sidechain(message):
+        parent = _parent_tool_use_id(message)
+        self.partial_thinking_parent[index] = parent
+        if parent is not None:
             self.partial_thinking_sidechain.add(index)
         else:
             self.partial_thinking_sidechain.discard(index)
@@ -399,7 +417,7 @@ class ClaudeStreamAccumulator:
         if not text or not text.strip():
             return None
         self.partial_thinking_revision += 1
-        return projector.reasoning_item(
+        item = projector.reasoning_item(
             session=session,
             turn_id=turn_id,
             native_message_id=message_id,
@@ -409,6 +427,12 @@ class ClaudeStreamAccumulator:
             revision=self.partial_thinking_revision,
             usage=usage,
             usage_model=self.partial_model,
+        )
+        # The row carries the parent of the FRAME THAT OPENED THIS BLOCK (its
+        # own index's mark), never a caller-supplied ambient parent — a later
+        # boundary close runs on a different, possibly subagent, frame.
+        return _with_origin_parent(
+            item, session, self.partial_thinking_parent.get(index)
         )
 
     def _close_open_thinking(
@@ -452,6 +476,7 @@ class ClaudeStreamAccumulator:
                 items.append(item)
         self.partial_thinking_blocks.clear()
         self.partial_thinking_sidechain.clear()
+        self.partial_thinking_parent.clear()
         return tuple(items)
 
     def finalize_pending_thinking(
@@ -511,6 +536,51 @@ def _is_sidechain(message: Any) -> bool:
     """Whether a frame belongs to a subagent sidechain (never gets usage)."""
 
     return _extract(message, "parent_tool_use_id", "parentToolUseId") is not None
+
+
+def _parent_tool_use_id(message: Any) -> str | None:
+    """The dispatch tool use a sidechain frame is parented to, else None.
+
+    Read straight off the frame that opened a thinking block; a main-chain
+    frame carries none, so this is `None` for it.
+    """
+
+    value = _extract(message, "parent_tool_use_id", "parentToolUseId")
+    return value if isinstance(value, str) and value else None
+
+
+def _with_origin_parent(
+    item: RuntimeTimelineItem,
+    session: ClaudeSession,
+    parent_tool_use_id: str | None,
+) -> RuntimeTimelineItem:
+    """Stamp a reasoning row with its OWN frame's parentItemId (or leave it).
+
+    Mirrors `lifecycle.py`'s `_with_parent_card`, but for a streaming
+    reasoning row whose parent has to be read from the frame that opened the
+    block, not from whatever frame is being processed when the row is
+    published. A main-chain block (`parent_tool_use_id is None`) is returned
+    byte-identical — no `parentItemId` — so it stays in the main timeline. A
+    sidechain block gets the dispatch card id, so iOS folds it into the
+    SubAgent capsule exactly as before.
+    """
+
+    if parent_tool_use_id is None or item.type not in {"system", "message"}:
+        return item
+    content = {
+        **dict(item.content),
+        "parentItemId": stable_tool_item_id(session, parent_tool_use_id),
+    }
+    return replace(
+        item,
+        content=content,
+        content_hash=timeline_content_hash(
+            item_type=item.type,  # type: ignore[arg-type]
+            status=item.status,  # type: ignore[arg-type]
+            role=item.role,  # type: ignore[arg-type]
+            content=content,
+        ),
+    )
 
 
 def is_stream_event(message: Any) -> bool:

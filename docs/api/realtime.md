@@ -145,15 +145,18 @@ differs by client today:
 - **iOS** drops the malformed row and renders the rest (`LossyElements`), so one
   bad row never costs the session open.
 - **Web / Desktop** apply no runtime validation (`payload as T` is a TypeScript
-  identity cast), so a row missing `orderSeq` is accepted with `orderSeq ===
-  undefined` and sorts unpredictably.
+  identity cast, so a missing `orderSeq` stays `undefined`). Their comparator
+  `a.orderSeq - b.orderSeq || a.updatedSeq - b.updatedSeq || …` then computes
+  `undefined - x === NaN`, which is falsy, so the comparison falls through to
+  `updatedSeq` — i.e. it silently orders by the *revision* counter, the exact
+  fallback this section forbids.
 - **Android** reads `optInt("orderSeq", 0)` and then rewrites any `orderSeq <= 0`
   to `maxOrderSeq + 1` (order normalisation in the session projection), so a row
   missing it is pushed to the **end** of the timeline, silently.
 
-So the failure modes differ: iOS drops, Web/Desktop mis-sort, Android pushes to
-the end. The contract does not mandate one behaviour; aligning the clients is a
-follow-up, not a requirement of the current contract.
+So the failure modes differ: iOS drops, Web/Desktop fall back to `updatedSeq`,
+Android pushes to the end. The contract does not mandate one behaviour;
+aligning the clients is a follow-up, not a requirement of the current contract.
 
 ### Recovery rules
 

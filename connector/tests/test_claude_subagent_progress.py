@@ -2127,3 +2127,75 @@ def test_subagent_text_partial_keeps_its_card() -> None:
             await runtime.stop()
 
     asyncio.run(run())
+
+
+class _MainThinkingTouchedBySubagentDeltaClient(_ScheduledClaudeClient):
+    """A main thinking block whose same-index delta arrives from a subagent frame.
+
+    Within one message the block's owner is the frame that opened it; a later
+    same-index delta from another frame (a subagent's stream) must not steal
+    the mark.
+    """
+
+    async def _complete_query(self, prompt: str) -> None:
+        await _FakeClaudeClient.query(self, prompt)
+        frames = [
+            StreamEvent(
+                uuid="u1", session_id=self.native_id,
+                event={"type": "message_start", "message": {"id": "msg_think_delta"}},
+            ),
+            StreamEvent(
+                uuid="u1", session_id=self.native_id,
+                event={
+                    "type": "content_block_start", "index": 0,
+                    "content_block": {"type": "thinking", "thinking": "主代理推理"},
+                },
+            ),
+            # A subagent frame delivers a same-index thinking delta.
+            StreamEvent(
+                uuid="u2", session_id=self.native_id, parent_tool_use_id=DISPATCH_TUID,
+                event={
+                    "type": "content_block_delta", "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": "（续）"},
+                },
+            ),
+            SimpleNamespace(
+                type="assistant", uuid="a1", session_id=self.native_id,
+                parent_tool_use_id=None,
+                message={"id": "msg_think_delta", "role": "assistant",
+                         "content": [{"type": "text", "text": "reply"}]},
+            ),
+            SimpleNamespace(type="result", session_id=self.native_id),
+        ]
+        for frame in frames:
+            await self.incoming.put(frame)
+
+
+def test_main_thinking_touched_by_subagent_same_index_delta_stays_unparented() -> None:
+    """The opener of a thinking index owns it; a later subagent delta must not re-stamp it."""
+
+    async def run() -> None:
+        client = _MainThinkingTouchedBySubagentDeltaClient()
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            await runtime.start_turn("thinkdelta", None, "go")
+            session = runtime._sessions["thinkdelta"]
+            await asyncio.wait_for(session.active_task, 5)
+
+            rows = [
+                item
+                for item in host.timeline_item_upserts
+                if dict(getattr(item, "source", {}) or {}).get("itemId")
+                == "msg_think_delta"
+                and (item.content or {}).get("blockType") == "thinking"
+            ]
+            assert rows, "no reasoning row was published"
+            assert all((item.content or {}).get("parentItemId") is None for item in rows), (
+                "a main reasoning row was re-stamped by a subagent same-index delta "
+                f"(last={rows[-1].content.get('parentItemId')})"
+            )
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())

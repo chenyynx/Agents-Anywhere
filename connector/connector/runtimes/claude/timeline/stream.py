@@ -391,15 +391,21 @@ class ClaudeStreamAccumulator:
         return _with_origin_parent(item, session, self.partial_text_parent)
 
     def _note_thinking_origin(self, index: int, message: Any) -> None:
-        """Remember which frame opened the thinking block under `index`.
+        """Remember which frame OPENED the thinking block under `index`.
 
-        The index is authoritative for the block's lifetime: a boundary close
-        runs after the originating frame is gone, so this is what lets it keep
-        the main chain's usage off a subagent's row (and, for the ownership
-        mark below, the parent off a main-chain row). A later delta for the
-        same index overwrites the mark, so one index can never carry two.
+        The index is authoritative for the block's lifetime, and the frame
+        that first touched it is its owner: a later delta can arrive from a
+        different frame (a subagent's stream leaking into the parent message's
+        stream is the whole bug this guards), and overwriting the mark there
+        would re-stamp a main-chain row with the subagent's card — the same
+        mis-attribution, one frame later (adversarial review 2026-10-14, round
+        4). So the FIRST writer wins; later calls for the same index are
+        ignored. The mark keeps the main chain's usage off a subagent's row for
+        the same reason. Cleared with the block maps at every message boundary.
         """
 
+        if index in self.partial_thinking_parent:
+            return
         parent = _parent_tool_use_id(message)
         self.partial_thinking_parent[index] = parent
         if parent is not None:

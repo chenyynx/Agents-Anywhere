@@ -3437,7 +3437,7 @@ class ClaudeTurnRunner:
                     # boundary close that only watched `message_stop` would
                     # find the block already cleared here.
                     settled_items = stream_accumulator.reset(
-                        session, turn_id, self.timeline
+                        session, turn_id, self.timeline, reason="assistant_frame"
                     )
                     if settled_items:
                         # `reset()` closes only this message's own open thinking
@@ -3787,7 +3787,9 @@ class ClaudeTurnRunner:
         )
         # The turn's final text is out; the streamed message is over, so close
         # (and publish) any thinking block still open rather than dropping it.
-        settled_items = stream_accumulator.reset(session, turn_id, self.timeline)
+        settled_items = stream_accumulator.reset(
+            session, turn_id, self.timeline, reason="result_text"
+        )
         if settled_items:
             await self.publish_items(
                 execution,

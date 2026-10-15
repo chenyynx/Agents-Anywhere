@@ -79,6 +79,18 @@ yarn workspace agents-anywhere-desktop-renderer protocol:check
 
 Server 测试应使用隔离测试环境，不要把生产数据库 URL 带入测试进程。Headless 检查通过不代表真实安装、OAuth 回调或远程 Runtime 会话已验证；这些按变更影响单独记录。
 
+`uv run pytest -q` 会跑整个 Server 套件（约 1200 个用例），在普通开发机上既慢又吃内存。日常只跑与改动相关的文件，例如：
+
+```bash
+cd server
+uv run pytest tests/test_timeline.py -q        # 单个文件
+uv run pytest -k "order or seq" -q             # 按关键字
+```
+
+完整套件放到内部资源更充足的测试机上跑；别在本机串行跑全量。
+
+CI（`.github/workflows/backend-ci.yml`）在 push 到 `dev` 或开 PR 时对 Server 与 Connector 跑 ruff + pytest，以它为准。注意本仓库不提交 lockfile，依赖按版本下界解析，本地环境与 CI 的版本可能不同：**本地绿不等于 CI 绿**。
+
 ## 构建安装包
 
 在 `desktop-workbench/` 运行：

@@ -1,11 +1,13 @@
 """Stream drop observation is per-turn, not per-frame (2026-10-15).
 
 The identity-drop gate used to log a WARNING for every refused delta: the
-incident that exposed the subagent-reset bug was 3 days ≈ 52k journal lines,
-which buried the very signal they carried. These tests pin the replacement --
-one warning on the FIRST drop of a kind, a single per-turn summary with the
-counts, and (once a reset is the cause) the reset call site named -- so the next
-incident is legible from one line instead of a flood.
+incident that exposed the subagent-reset bug filled the journal with them --
+on 2026-10-14 alone `journalctl -u moonveil-connector.service` recorded
+23,610 thinking + 4,736 text drop warnings -- burying the very signal they
+carried. These tests pin the replacement -- one warning on the FIRST drop of
+a kind, a single per-turn summary with the counts, and (once a reset is the
+cause) the reset call site named -- so the next incident is legible from one
+line instead of a flood.
 
 The last two tests are the integration ones the unit tests cannot give: one
 drives the real turn loop to prove the `reset_causes` wiring from the reset call
@@ -77,7 +79,7 @@ def _text_delta(index: int, text: str) -> dict[str, Any]:
 
 
 def test_drop_warning_fires_once_per_turn_not_per_frame() -> None:
-    """The 52k-line flood becomes one line per turn."""
+    """The per-frame flood becomes one line per turn."""
 
     session = ClaudeSession(session_id="s_obs", external_session_id="e_obs")
     acc = ClaudeStreamAccumulator()
@@ -242,10 +244,12 @@ def test_drop_summary_omits_reset_cause_when_none_cleared_identity() -> None:
 class _MainEarlyAggregateClient(_ScheduledClaudeClient):
     """A MAIN aggregated frame arrives mid-stream, then more main deltas.
 
-    The LiteLLM wire can emit the aggregated assistant frame before the stream's
-    own delta tail (this session's capture shows exactly that shape). The reset
-    it runs clears the live identity, so the tail is dropped and the summary
-    must name the path -- `assistant_frame` -- through the REAL turn loop.
+    This shape is not confirmed in production: the committed fixture
+    (`claude_clean_stream_slice.json`) is 26 frames, all StreamEvent, zero
+    `AssistantMessage`. The case is worth keeping for a narrower reason -- it
+    proves the `reason=` the reset call site passes reaches the summary through
+    the REAL turn loop. The reset clears the live identity, so the tail is
+    dropped and the summary must name the path -- `assistant_frame`.
     """
 
     async def _complete_query(self, prompt: str) -> None:
@@ -308,11 +312,13 @@ def test_reset_reason_from_drive_turn_reaches_the_summary() -> None:
 # Real-wire replay: a captured production slice must stay drop-free.
 # ---------------------------------------------------------------------------
 #
-# NOTE on the fixture: it is trimmed from the live dump session `d5ae5036-*`,
-# which recorded each stream frame TWICE (the same uuid redelivered on the wire,
-# ~50% of frames -- a dump-observed wire artefact, kept as-is so the replay is
-# faithful). The assertions below therefore check DROPS and stable row identity,
-# not exact text, so the redelivery does not make them vacuous.
+# NOTE on the fixture: it is a HAND-TRIMMED extract from the live dump session
+# `d5ae5036-*`, not a faithful replay. The 26 frames carry no `uuid` (the dump
+# does; it is stripped here), the `message_start`/`message_stop` pair appears
+# once (the real wire redelivers each frame), and the text is truncated: the
+# thinking snippet `' jus'` appears 0 times in the source session, whose value
+# is `' just'`. This is a reduced slice, so the assertions below check DROPS and
+# stable row identity, not exact wire shape or text.
 
 
 def _replay_capture() -> ClaudeStreamAccumulator:
@@ -343,10 +349,10 @@ def _replay_capture() -> ClaudeStreamAccumulator:
 def test_clean_production_slice_replays_with_zero_drops() -> None:
     """A real captured message must lose NOTHING: zero thinking/text drops.
 
-    Load-bearing against the change: the per-turn drop counters are read AFTER
-    a full replay of a clean capture, and the tidy-up (the settle flush) is the
-    same path the fix touches. A regression that dropped a delta on this wire
-    would move these counts off zero.
+    This guards the counter mechanism, not the reset guard: the replay never
+    calls ``reset()`` mid-stream, so deleting the guard leaves this green. It
+    pins that a clean wire moves neither per-turn counter off zero and that the
+    settle flush drains without inventing a drop.
     """
 
     acc = _replay_capture()

@@ -3411,7 +3411,23 @@ class ClaudeTurnRunner:
                     ),
                     counted=counts_this_frame,
                 )
-                if role == "assistant":
+                if role == "assistant" and frame_parent_tool_use_id is None:
+                    # Only a MAIN-chain assistant frame ends the turn's streamed
+                    # message. A subagent's aggregated frame is published above
+                    # (with its card) but must NOT touch the main stream's state:
+                    # `reset()` nulls `partial_message_id`, so letting a
+                    # background subagent's frame run it destroyed the identity
+                    # of the message the MAIN chain was still streaming, and
+                    # every later main thinking/text delta was dropped as
+                    # "without message_start id" until the main chain opened its
+                    # next message (2026-10-15; the live incident published a
+                    # parented assistant row 0.42s before the drop wave, and the
+                    # fix's red test reproduces both journal lines). The same
+                    # guard also keeps `emitted_final_assistant_content` honest:
+                    # set by a subagent frame it suppressed the main turn's
+                    # result-text fallback, losing the reply outright. The
+                    # `assistant_usage` block above already guards exactly this
+                    # way; the reset and the flag simply never got the guard.
                     emitted_final_assistant_content = True
                     # The final assistant frame ends the streamed message, so
                     # resetting is a boundary: close (and publish) any thinking

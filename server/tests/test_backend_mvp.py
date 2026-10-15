@@ -315,7 +315,6 @@ def session_view_for_assertions(
     )
     timeline_response.raise_for_status()
     timeline = timeline_response.json()
-    notices = []
     approvals = []
 
     return {
@@ -5721,41 +5720,6 @@ def test_send_message_rejects_running_state(tmp_path):
     assert not any(method == "session.send_message" for _, method, _, _ in fake_rpc.requests)
 
 
-@pytest.mark.skip(reason="legacy persisted notice behavior was removed; notices are runtime-owned live facts")
-def test_stored_execution_error_notice_does_not_override_runtime_send_capability(
-    tmp_path,
-):
-    client = make_client(tmp_path)
-    connector_id, _, session_id, headers = create_connector_and_session(client)
-    fake_rpc = FakeLocalRpc()
-    client.app.state.rpc = fake_rpc
-    asyncio.run(client.app.state.store.set_connector_status(connector_id, "online"))
-    client.post(f"/sessions/{session_id}/takeover", headers=headers).raise_for_status()
-    notice = asyncio.run(
-        upsert_execution_error_interaction(
-            client.app.state.store,
-            session_id=session_id,
-            error={"code": "runtime_error", "message": "boom"},
-        )
-    )
-
-    response = client.post(
-        f"/sessions/{session_id}/runtime/messages",
-        headers=headers,
-        json={"content": "try again"},
-    )
-
-    assert response.status_code == 200, response.text
-    turn_start_params = wait_for_rpc_method(fake_rpc, "session.send_message")[2]
-    assert turn_start_params["content"] == "try again"
-    assert asyncio.run(
-        client.app.state.store.get_notice(notice.noticeId)
-    ).status == "open"
-    snapshot = client.get(f"/sessions/{session_id}/snapshot", headers=headers)
-    assert snapshot.status_code == 200, snapshot.text
-    assert snapshot.json()["session"]["status"] == "idle"
-
-
 def test_send_message_forwards_uploaded_attachment_metadata_to_connector(tmp_path):
     client = make_client(tmp_path)
     connector_id, _, session_id, headers = create_connector_and_session(client)
@@ -10957,33 +10921,6 @@ def test_failed_approval_interaction_can_retry(tmp_path):
     assert notice.resolvedAt is not None
 
 
-@pytest.mark.skip(reason="legacy persisted notice behavior was removed; notices are runtime-owned live facts")
-def test_interaction_status_compare_and_set_rejects_stale_transition(tmp_path):
-    client = make_client(tmp_path)
-    _, _, session_id, _ = create_connector_and_session(client)
-    notice = asyncio.run(
-        upsert_execution_error_interaction(
-            client.app.state.store,
-            session_id=session_id,
-            error={"code": "runtime_error", "message": "boom"},
-        )
-    )
-    sequence_before = asyncio.run(client.app.state.store.get_session_seq(session_id))
-
-    with pytest.raises(ValueError, match="interaction status changed"):
-        asyncio.run(
-            client.app.state.store.update_notice_status(
-                notice.noticeId,
-                "resolved",
-                expected_status="failed",
-            )
-        )
-
-    current = asyncio.run(client.app.state.store.get_notice(notice.noticeId))
-    assert current.status == "open"
-    assert asyncio.run(client.app.state.store.get_session_seq(session_id)) == sequence_before
-
-
 def test_session_status_compare_and_set_rejects_stale_transition(tmp_path):
     client = make_client(tmp_path)
     _, _, session_id, _ = create_connector_and_session(client)
@@ -11001,31 +10938,6 @@ def test_session_status_compare_and_set_rejects_stale_transition(tmp_path):
     current = asyncio.run(client.app.state.store.get_session(session_id))
     assert current.status == "idle"
     assert asyncio.run(client.app.state.store.get_session_seq(session_id)) == sequence_before
-
-
-@pytest.mark.skip(reason="legacy persisted notice behavior was removed; notices are runtime-owned live facts")
-def test_session_stays_blocked_until_all_blocking_interactions_resolve(tmp_path):
-    client = make_client(tmp_path)
-    _, access_token, session_id, headers = create_connector_and_session(client)
-    ingest_pending_command_approval(client, access_token, session_id)
-    error_notice = asyncio.run(
-        upsert_execution_error_interaction(
-            client.app.state.store,
-            session_id=session_id,
-            error={"code": "runtime_error", "message": "boom"},
-        )
-    )
-
-    response = client.post(
-        f"/sessions/{session_id}/runtime/notices/{error_notice.noticeId}/respond",
-        headers=headers,
-        json={"actionId": "continue"},
-    )
-
-    assert response.status_code == 200, response.text
-    snapshot = client.get(f"/sessions/{session_id}/snapshot", headers=headers).json()
-    assert snapshot["session"]["status"] == "idle"
-    assert [notice["interactionType"] for notice in snapshot["notices"]] == ["approval"]
 
 
 def test_runtime_interruption_closes_pending_approval_tool_item(tmp_path):

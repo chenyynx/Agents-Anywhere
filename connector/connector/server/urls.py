@@ -7,7 +7,7 @@ API_V2_PREFIX = "/api/v2"
 
 
 def api_v2_path(path: str) -> str:
-    if path.startswith("http://") or path.startswith("https://"):
+    if path.startswith(("http://", "https://")):
         return path
     normalized = path if path.startswith("/") else f"/{path}"
     if normalized == API_V2_PREFIX or normalized.startswith(f"{API_V2_PREFIX}/"):
@@ -16,7 +16,7 @@ def api_v2_path(path: str) -> str:
 
 
 def api_v2_url(server_url: str, path: str) -> str:
-    if path.startswith("http://") or path.startswith("https://"):
+    if path.startswith(("http://", "https://")):
         return path
     return urljoin(server_url + "/", api_v2_path(path).lstrip("/"))
 

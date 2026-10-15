@@ -1,0 +1,91 @@
+name: Backend CI
+
+# Lint + test gate for the Python backend (server + connector) on the `dev`
+# line. Until now only iOS had CI (ios-build.yml); server/ and connector/ were
+# gated by nothing but whoever remembered to run pytest locally. This workflow
+# is that missing gate: a red suite on a push to dev, or on a PR, blocks the
+# change from looking "green".
+#
+# It runs the same commands AGENTS.md documents for local use, so the local and
+# CI definitions of "passing" cannot drift:
+#   server:    ruff check . --exclude .venv && pytest -q
+#   connector: ruff check connector tests && pytest -q
+#
+# The `server` suite imports the `connector` package (tests/test_connector_pipeline.py
+# inserts ../../connector on sys.path), so the server job installs connector in
+# editable mode — otherwise its dependencies (e.g. psutil) are missing and a
+# whole test module fails to collect.
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - "server/**"
+      - "connector/**"
+      - ".github/workflows/backend-ci.yml"
+  pull_request:
+    paths:
+      - "server/**"
+      - "connector/**"
+      - ".github/workflows/backend-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync server dependencies
+        working-directory: server
+        run: uv sync
+
+      - name: Install connector (server tests import it)
+        working-directory: server
+        run: |
+          uv pip install pytest-xdist
+          uv pip install -e ../connector
+
+      - name: Lint (ruff)
+        working-directory: server
+        run: .venv/bin/ruff check .
+
+      - name: Test (pytest)
+        working-directory: server
+        run: .venv/bin/pytest -q -n auto
+
+  connector:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync connector dependencies
+        working-directory: connector
+        run: uv sync
+
+      - name: Install test runner
+        working-directory: connector
+        run: uv pip install pytest-xdist
+
+      - name: Lint (ruff)
+        working-directory: connector
+        run: .venv/bin/ruff check connector tests
+
+      - name: Test (pytest)
+        working-directory: connector
+        run: .venv/bin/pytest -q -n auto

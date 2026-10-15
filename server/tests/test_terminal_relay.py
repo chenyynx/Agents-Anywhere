@@ -268,7 +268,7 @@ def test_relay_ingress_attaches_existing_terminal_and_bypasses_notification_disp
                     self.received += 1
                     return frame
                 except StopIteration:
-                    raise WebSocketDisconnect() from None
+                    raise WebSocketDisconnect from None
 
         relay = Relay()
         try:

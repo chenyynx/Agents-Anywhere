@@ -22,7 +22,7 @@ from typing import Any
 
 import pytest
 from session_fixtures import create_session_with_project
-from sqlalchemy import select, update
+from sqlalchemy import update
 
 from agent_server.core.models import TimelineItemIn
 from agent_server.infra.db import sessions as sessions_t

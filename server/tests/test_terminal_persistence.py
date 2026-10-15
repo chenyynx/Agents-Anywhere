@@ -76,7 +76,7 @@ class _RelayWebSocket:
         self.sent.append(payload)
 
     async def receive_json(self) -> dict[str, Any]:
-        raise WebSocketDisconnect()
+        raise WebSocketDisconnect
 
 
 def test_terminal_create_request_defaults_to_non_persistent() -> None:

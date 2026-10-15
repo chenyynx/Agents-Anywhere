@@ -33,5 +33,29 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 
+[tool.ruff]
+# Retired subtrees kept for reference; not maintained, not linted.
+extend-exclude = [
+    "_deprecated",
+    "_reference",
+    "agent-server-probe.files",
+    "agent-server-moonveil.files",
+]
+
+[tool.ruff.lint]
+# Ratchet baseline, not the full pycodestyle set: these are the rules the tree
+# already satisfies, so the gate starts green and can only get stricter. Widen
+# `select` when a family's existing violations have been cleared.
+select = ["E4", "E7", "E9", "F", "W", "PIE", "RSE", "DTZ"]
+# The `infra/repositories/*` facades deliberately re-export their module's
+# surface with `import *`; F403/F405 flag every re-exported name as "undefined
+# local". The pattern is intentional, so the two star-import rules are off.
+ignore = ["F403", "F405"]
+
+[tool.ruff.lint.per-file-ignores]
+# Standalone scripts set sys.path (and env) before importing agent_server, so
+# their imports are necessarily below module level.
+"scripts/*.py" = ["E402"]
+
 [tool.uv.sources]
 httpx-s3-client = { git = "https://github.com/t4wefan/httpx-s3-client.git" }

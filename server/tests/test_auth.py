@@ -8,7 +8,6 @@ import datetime as dt
 import hashlib
 from urllib.parse import parse_qs, urlparse
 
-from agent_server.app import create_app
 from agent_server.core.auth import hash_password
 from agent_server.core.setup_token import SetupToken
 from agent_server.services.oauth import OAuthIdentity, create_pending_token

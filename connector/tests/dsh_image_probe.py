@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from connector.core import runtime_owner
-from connector.runtime_protocol import RuntimeAttachment, RuntimeAttachmentContent, RuntimeConfig, RuntimeInvalidRequestError
+from connector.runtime_protocol import RuntimeAttachment, RuntimeAttachmentContent, RuntimeConfig
 from connector.runtimes.dsh import provider_config
 from connector.runtimes.dsh.bridge.client import BridgeClient
 from connector.runtimes.dsh.discovery import load_endpoint

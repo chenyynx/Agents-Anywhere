@@ -377,7 +377,17 @@ def _switch_runtime(
     )
 
 
-def test_selection_change_waits_for_background_and_then_runs_the_next_turn() -> None:
+def test_selection_change_runs_next_turn_immediately_and_lands_after_drain() -> None:
+    """Reversed 2026-10-15 (model-switch-in-process-tasks.md §3.1b): a turn is
+    never held behind a selection change.
+
+    This used to assert the queued turn WAITED for the transport's background
+    work (the "wall"). `_StoppingClient` has no `set_model` seam, so the change
+    cannot be applied in place: the next turn now runs IMMEDIATELY on the live
+    transport (old selection, AC2), and the deferred landing rebuilds once the
+    background work drains.
+    """
+
     async def run() -> None:
         client = _StoppingClient()
         host = _RecordingHost()
@@ -403,14 +413,20 @@ def test_selection_change_waits_for_background_and_then_runs_the_next_turn() -> 
             assert update.ok is True
             assert (await runtime.start_turn("switch", None, "next")).ok is True
 
-            # The queued turn waits: the transport still hosts the background
-            # work the do-not-retire invariant protects.
-            await asyncio.sleep(0.2)
-            assert [end["outcome"] for end in host.session_turn_ends] == ["interrupted"]
-            assert factory.calls == 1  # not rebuilt yet
+            # The next turn runs to completion RIGHT AWAY: it is not held
+            # behind the live background work, and nothing is rebuilt under it.
+            next_task = runtime._sessions["switch"].active_task
+            assert next_task is not None
+            await asyncio.wait_for(next_task, 10)
+            assert [end["outcome"] for end in host.session_turn_ends] == [
+                "interrupted",
+                "completed",
+            ]
+            assert factory.calls == 1  # no rebuild while the worker is live
+            assert "bg_1" in connection.background.active_ids  # and nothing killed it
 
-            # The last background task reports terminal: the queued turn
-            # proceeds, on a rebuilt transport carrying the new selection.
+            # The last background task reports terminal: the deferred landing
+            # rebuilds the transport on the new selection.
             await client.incoming.put(
                 SystemMessage(
                     subtype="task_updated",
@@ -419,36 +435,17 @@ def test_selection_change_waits_for_background_and_then_runs_the_next_turn() -> 
                     data={"task_id": "bg_1"},
                 )
             )
-            await asyncio.wait_for(runtime._sessions["switch"].active_task, 10)
-
-            assert [end["outcome"] for end in host.session_turn_ends] == [
-                "interrupted",
-                "completed",
-            ]
-            assert factory.calls == 2  # the rebuild happened after the drain
+            await _wait_until(lambda: factory.calls == 2)
             connection_now = runtime._turns.runner.connections["switch"]
             assert connection_now.selections["model"] == second_choice
-            # Honest states only: between the queued turn's "waiting" and the
-            # turn's own "running" there is no fabricated idle.
+            # Honest states only: no fabricated idle anywhere in the switch,
+            # and the completed turn still settles to idle.
             statuses = [
                 update["status"]
                 for update in host.session_state_updates
                 if update["session_id"] == "switch"
             ]
-            last_waiting = max(
-                index
-                for index, update in enumerate(host.session_state_updates)
-                if update["session_id"] == "switch" and update["status"] == "waiting"
-            )
-            first_running = next(
-                index
-                for index in range(last_waiting + 1, len(statuses))
-                if statuses[index] == "running"
-            )
-            # Waiting in the wall publishes nothing else: no fabricated idle
-            # while the transport drains, so no client sees a fake end.
-            assert "idle" not in statuses[last_waiting:first_running]
-            assert statuses[-1] == "idle"  # the completed turn still settles to idle
+            assert statuses[-1] == "idle"
         finally:
             _reset_declaration()
             await runtime.stop()
@@ -456,11 +453,28 @@ def test_selection_change_waits_for_background_and_then_runs_the_next_turn() -> 
     asyncio.run(run())
 
 
-def test_selection_change_wait_is_cancelled_by_a_stop() -> None:
+def test_selection_change_never_blocks_a_stop_or_kills_background_work() -> None:
+    """Reversed 2026-10-15: there is no message-side "wait" left to cancel.
+
+    This used to assert a stop cancelled the queued turn's wait in the wall.
+    The turn no longer waits (AC2), so the shape pinned here is the one that
+    still matters: the follow-up message runs immediately on the live
+    transport, a stop interrupts that running turn like any other, and the
+    background worker keeps its process (no rebuild under live work).
+
+    The discriminator is that the follow-up turn's prompt actually REACHES the
+    CLI (a second "wait" query) inside a window well under the drain ceiling —
+    under the old wall the turn would be parked in `connection_for` and the
+    prompt would never leave (red team Q-5: `not task.done()` alone was true
+    under the wall too, so it could not tell the two apart).
+    """
+
     async def run() -> None:
         client = _StoppingClient()
         host = _RecordingHost()
         factory = _CountingFactory(client)
+        # A drain ceiling far above the observation window: if the turn were
+        # still waiting in the wall, the prompt could not reach the CLI.
         runtime = _switch_runtime(host, factory)
         stop_affordance._declared = True
         try:
@@ -477,13 +491,24 @@ def test_selection_change_wait_is_cancelled_by_a_stop() -> None:
                 "switch", reason="switch", preserve_background=True
             )
             await runtime.update_session_selections("switch", None, {"model": second_choice})
-            await runtime.start_turn("switch", None, "next")
+            # A follow-up that stays open ("wait"). It must reach the CLI
+            # promptly — the live transport serves it without waiting for the
+            # background work.
+            await runtime.start_turn("switch", None, "wait")
             queued_task = runtime._sessions["switch"].active_task
             assert queued_task is not None
-            await asyncio.sleep(0.2)
-            assert factory.calls == 1  # waiting in the wall
+            # Event-driven, bounded well under the drain ceiling (5 s): the
+            # second "wait" prompt reaching the client proves the turn was not
+            # parked. The 3 s window is generous under load yet still discriminates
+            # — under the wall the prompt could not arrive until the ceiling.
+            await _wait_until(
+                lambda: client.queries.count("wait") >= 2,
+                timeout=3.0,
+            )
+            assert factory.calls == 1  # no rebuild under the live worker
+            assert not queued_task.done()  # the turn is open (awaiting a reply)
 
-            # A stop cancels the queued turn's wait like any other turn work.
+            # A stop interrupts the running turn.
             await runtime.interrupt_session("switch", reason="user")
             await asyncio.wait_for(queued_task, 10)
 
@@ -491,7 +516,7 @@ def test_selection_change_wait_is_cancelled_by_a_stop() -> None:
                 "interrupted",
                 "interrupted",
             ]
-            assert factory.calls == 1  # never rebuilt: the wait was cut short
+            assert factory.calls == 1  # never rebuilt: nothing was pinned
             assert "bg_1" in connection.background.active_ids  # and nothing killed it
         finally:
             _reset_declaration()
@@ -520,10 +545,13 @@ def test_selection_change_reuses_the_transport_when_the_switch_is_reverted() -> 
             await runtime.interrupt_session(
                 "switch", reason="switch", preserve_background=True
             )
+            # No in-place seam, so the switch to second is deferred (not waited).
             await runtime.update_session_selections("switch", None, {"model": second_choice})
             await runtime.start_turn("switch", None, "next")
-            await asyncio.sleep(0.1)
-            # The user switches back while the queued turn waits.
+            next_task = runtime._sessions["switch"].active_task
+            assert next_task is not None
+            await asyncio.wait_for(next_task, 10)
+            # The user switches back before the deferral lands.
             await runtime.update_session_selections("switch", None, {"model": first_choice})
             await client.incoming.put(
                 SystemMessage(
@@ -533,9 +561,11 @@ def test_selection_change_reuses_the_transport_when_the_switch_is_reverted() -> 
                     data={"task_id": "bg_1"},
                 )
             )
-            await asyncio.wait_for(runtime._sessions["switch"].active_task, 10)
+            await _wait_until(lambda: not connection.background.active_ids)
+            await asyncio.sleep(0.1)
 
-            # No rebuild: the transport already carries the selection.
+            # No rebuild: the switch back to the transport's current selection
+            # cancels the deferral outright.
             assert factory.calls == 1
             assert [end["outcome"] for end in host.session_turn_ends] == [
                 "interrupted",
@@ -596,14 +626,13 @@ def test_drain_wait_is_false_at_the_ceiling_and_true_when_drained() -> None:
     asyncio.run(run())
 
 
-def test_drain_wait_is_bounded_and_the_switch_proceeds() -> None:
-    """The red-team F-B probe, converted: a stale id cannot pin the queued
-    turn forever.
+def test_stale_drain_id_cannot_block_the_message_or_hang_the_landing() -> None:
+    """The red-team F-B probe, carried forward onto the new semantics.
 
-    The drain phase now shares the settle ceiling; on it the wall logs and
-    proceeds to the rebuild (no error, no fabricated state), so the user's
-    next message runs instead of waiting silently behind an id whose
-    terminal frame never arrives.
+    A stale background id whose terminal frame never arrives must not pin the
+    user's message (it no longer waits at all — AC2), and it must not hang the
+    deferred landing: the landing wait shares the settle ceiling, returns on
+    it, and simply cannot rebuild while the id is still (falsely) live.
     """
 
     async def run() -> None:
@@ -644,22 +673,18 @@ def test_drain_wait_is_bounded_and_the_switch_proceeds() -> None:
             queued_task = runtime._sessions["switch"].active_task
             assert queued_task is not None
 
-            # Inside the ceiling the wait is real: with a live background id
-            # the queued turn must not have started.
-            await asyncio.sleep(0.1)
-            assert not queued_task.done(), (
-                "the wall must still wait for real background work"
-            )
-
-            # Past the drain ceiling the wall proceeds to the rebuild, which
-            # is the explicit path — no error, no fake state, and the queued
-            # turn runs on the new transport.
+            # The message is NOT held behind the stale id: the turn completes
+            # right away on the live transport (AC2).
             await asyncio.wait_for(queued_task, 10)
             assert [end["outcome"] for end in host.session_turn_ends] == [
                 "interrupted",
                 "completed",
             ]
-            assert factory.calls == 2  # the transport was rebuilt
+            # The stale id is (falsely) still live, so the deferred landing
+            # cannot rebuild under it: the transport is kept, not killed.
+            await asyncio.sleep(0.4)  # past the drain ceiling
+            assert factory.calls == 1
+            assert "bg_no_terminal" in connection.background.active_ids
             assert not [
                 update
                 for update in host.session_state_updates

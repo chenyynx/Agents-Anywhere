@@ -123,6 +123,20 @@ class ClaudeToolBlock:
     is_synthetic: bool = False
     parent_tool_use_id: str | None = None
     tool_result_metadata: Mapping[str, Any] | None = None
+    # Where this call sits inside its own message: the enclosing assistant
+    # message id and the call's in-message index. Declared on the wire as
+    # `source.nativeMessageId` / `source.blockIndex` so the server can order a
+    # group of tool rows by truth instead of arrival time
+    # (tool-order-inversion). The index is the running tool_use count for the
+    # message — the engine streams one block per frame in model order, so the
+    # count equals the model order — assigned by the projector, not the
+    # frame's own `content` index (which is always 0). Carried on the block —
+    # not just the item — so a later `tool_result` frame, which rebuilds the
+    # row from the pending call, still restores both (the same reason `usage`
+    # rides the block). Only a `tool_use` block carries them; a bare
+    # `tool_result` frame has neither and degrades to None.
+    block_index: int | None = None
+    native_message_id: str | None = None
     # The per-call usage of the assistant frame this `tool_use` arrived on,
     # already enriched with the model/window keys (`enrich_usage`). Carried on
     # the block (not just the item) so the pending call keeps it: the later
@@ -180,6 +194,19 @@ class ClaudeMessageProjector:
         self._next_order_seq = 1
         self._tool_calls: dict[str, ClaudePendingToolCall] = {}
         self._tool_call_lookup = dict(tool_call_lookup or {})
+        # In-message tool ordering (tool-order-inversion). The engine streams
+        # one content block per frame, so a frame's `message.content` holds a
+        # single `tool_use` and its index inside that frame is always 0 —
+        # useless for ordering a message's tool rows against each other. The
+        # engine does emit a message's tool_use blocks in model order, one frame
+        # each, so arrival order is model order: `_tool_index_by_message` is the
+        # running count of tool_use blocks seen for each message id, and
+        # `_block_index_by_tool_use` remembers the index assigned to each
+        # tool_use id so a re-projected frame (the same call published again,
+        # e.g. the live frame then a history rebuild) reuses its index instead
+        # of taking a fresh one — the assignment is idempotent per call.
+        self._tool_index_by_message: dict[str, int] = {}
+        self._block_index_by_tool_use: dict[str, int] = {}
         self._hidden_tool_use_ids: set[str] = set(hidden_tool_use_ids or ())
         # Wall-clock seam for the launch stamp on Agent cards (F5): the
         # never-started grace needs an age, and the wire frames carry none.
@@ -507,6 +534,35 @@ class ClaudeMessageProjector:
             )
         return tuple(items)
 
+    def _assign_block_index(self, block: ClaudeToolBlock) -> ClaudeToolBlock:
+        """Return ``block`` stamped with its in-message tool index (tool_use).
+
+        A tool row must declare where its call sits inside its assistant
+        message so the server can order a message's tool rows by truth rather
+        than arrival time (``source.blockIndex``). The engine streams one
+        content block per frame, so the frame's own ``content`` index is always
+        0 and cannot carry that truth; the engine does emit a message's
+        ``tool_use`` blocks in model order, one frame each, so the running
+        count of ``tool_use`` blocks for a message id *is* the model order.
+
+        The count is taken once per call: ``_block_index_by_tool_use`` keys the
+        id so a re-projected frame (the same call published again) and the
+        later ``tool_result`` rebuild — which recovers the block from the
+        pending call via ``_tool_calls`` — both reuse the index already
+        assigned. A call with no message id cannot be ordered against siblings;
+        it is returned unchanged (declares nothing — 宁缺勿假).
+        """
+
+        message = block.native_message_id
+        if message is None:
+            return block
+        remembered = self._block_index_by_tool_use.get(block.tool_use_id)
+        if remembered is None:
+            remembered = self._tool_index_by_message.get(message, 0)
+            self._tool_index_by_message[message] = remembered + 1
+            self._block_index_by_tool_use[block.tool_use_id] = remembered
+        return replace(block, block_index=remembered)
+
     def tool_item(
         self,
         session: ClaudeSession,
@@ -529,6 +585,16 @@ class ClaudeMessageProjector:
                 parent_item_id = _parent_tool_item_id(session, block)
             content = _tool_result_content(block, call, parent_item_id)
             status = "failed" if block.is_error else "done"
+            # The in-message position comes from the call this result closes:
+            # the tool_use frame recorded it, and a row first materialised by
+            # its result (the running frame never persisted) must still declare
+            # it. A result with no recoverable call declares nothing.
+            if call is not None:
+                block = replace(
+                    block,
+                    block_index=call.block_index,
+                    native_message_id=call.native_message_id,
+                )
             if (
                 call is not None
                 and call.tool_name == "Agent"
@@ -544,6 +610,13 @@ class ClaudeMessageProjector:
                 # toolUseResult at all (2026-10-05 findings §A).
                 status = "running"
         else:
+            # The tool_use frame: assign this call its in-message index. The
+            # engine emits one block per frame in model order, so the running
+            # count of tool_use blocks seen for this message id *is* the model
+            # order the server sorts a message's tool rows by. Assigned once
+            # per call: a re-projected frame (or a result that later rebuilds
+            # the row from the pending call) keeps the index it already holds.
+            block = self._assign_block_index(block)
             self._tool_calls[item_id] = ClaudePendingToolCall(
                 block=block, turn_id=turn_id
             )
@@ -562,6 +635,8 @@ class ClaudeMessageProjector:
                 content,
                 session_id=session.session_id,
                 tool_use_id=block.tool_use_id,
+                native_message_id=block.native_message_id,
+                block_index=block.block_index,
             )
             self._learn_agent_lineage(content, tool_use_id=block.tool_use_id)
             if status in AGENT_CARD_TERMINAL_STATUSES and has_running_agent_tasks(
@@ -598,6 +673,8 @@ class ClaudeMessageProjector:
                 native_item_id=block.tool_use_id,
                 native_item_type=block.block_type,
                 event=f"claude.{block.block_type}",
+                native_message_id=block.native_message_id,
+                block_index=block.block_index,
             ),
         ).to_platform_item(session_id=session.session_id, order_seq=order_seq)
 
@@ -610,6 +687,8 @@ class ClaudeMessageProjector:
         *,
         session_id: str,
         tool_use_id: str,
+        native_message_id: str | None = None,
+        block_index: int | None = None,
     ) -> tuple[str, AgentCallToolContent]:
         """Remember one wire-projected Agent card and merge live task state.
 
@@ -619,6 +698,13 @@ class ClaudeMessageProjector:
         Keeping this wire content and the event overlay apart makes every
         publication convergent, and the resolved status keeps the most final
         one (the terminal closure is idempotent).
+
+        ``native_message_id``/``block_index`` record the dispatch frame's
+        in-message position on the card so every later fold that rebuilds the
+        tool row can republish it. They are written only when non-None: the
+        frames that fold here without one (the receipt projection, a task-event
+        mint) must not erase the position an earlier dispatch frame learned —
+        a ``None`` from a position-less frame never overwrites a known value.
         """
 
         card = self._agent_card(item_id)
@@ -626,6 +712,10 @@ class ClaudeMessageProjector:
         card.content = content
         card.session_id = session_id
         card.tool_use_id = tool_use_id
+        if native_message_id is not None:
+            card.native_message_id = native_message_id
+        if block_index is not None:
+            card.block_index = block_index
         card.status = resolve_agent_card_status(card.status, status)
         return card.status, card.overlay.apply(content)
 
@@ -1126,6 +1216,8 @@ class ClaudeMessageProjector:
                     native_item_id=tool_use_id,
                     native_item_type="tool_use",
                     event="claude.agent.task",
+                    native_message_id=card.native_message_id,
+                    block_index=card.block_index,
                 ),
             ).to_platform_item(session_id=session.session_id, order_seq=order_seq),
             reopened,
@@ -1520,6 +1612,8 @@ class ClaudeMessageProjector:
                 native_item_id=card.tool_use_id,
                 native_item_type="tool_use",
                 event=event,
+                native_message_id=card.native_message_id,
+                block_index=card.block_index,
             ),
         ).to_platform_item(
             session_id=session.session_id,
@@ -2202,6 +2296,14 @@ def message_tool_blocks(message: Any) -> tuple[ClaudeToolBlock, ...]:
         _extract(message, "parent_tool_use_id", "parentToolUseId")
     )
     result_metadata = _mapping(_extract(message, "tool_use_result", "toolUseResult"))
+    # The assistant message this frame's tool calls belong to. A `tool_use`
+    # block records it so the row can declare its position inside one message
+    # regardless of arrival order; a bare `tool_result` frame is a different
+    # (user) message and declares neither. The block index is *not* set here:
+    # the engine streams one block per frame, so this frame's `content` index
+    # is always 0 and useless — the projector assigns the real in-message index
+    # when it projects the tool_use (see `ClaudeMessageProjector`).
+    native_message_id = message_id(message)
     blocks: list[ClaudeToolBlock] = []
     for block in content:
         block_type = _block_type(block)
@@ -2218,6 +2320,7 @@ def message_tool_blocks(message: Any) -> tuple[ClaudeToolBlock, ...]:
                     tool_input=_extract(block, "input", "tool_input", "toolInput")
                     or {},
                     parent_tool_use_id=parent_tool_use_id,
+                    native_message_id=native_message_id,
                 )
             )
         elif block_type == "tool_result":

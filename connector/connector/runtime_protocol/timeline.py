@@ -84,6 +84,12 @@ class TimelineSource:
     event: str | None = None
     derived_key: str | None = None
     client_message_id: str | None = None
+    # Declared position of a tool row inside its own message (see
+    # tool-order-inversion): the assistant message id and the block's index in
+    # that message's content. Both optional — a runtime or frame that cannot
+    # name them simply omits them and takes no part in in-message ordering.
+    native_message_id: str | None = None
+    block_index: int | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def to_mapping(self) -> Mapping[str, Any]:
@@ -104,6 +110,10 @@ class TimelineSource:
             payload["derivedKey"] = self.derived_key
         if self.client_message_id is not None:
             payload["clientMessageId"] = self.client_message_id
+        if self.native_message_id is not None:
+            payload["nativeMessageId"] = self.native_message_id
+        if self.block_index is not None:
+            payload["blockIndex"] = self.block_index
         payload.update(self.metadata)
         return payload
 

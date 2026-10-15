@@ -525,6 +525,18 @@ class ClaudeAgentCallCard:
     #: (content None) needs the raw id to synthesize a base.
     tool_use_id: str | None = None
     session_id: str | None = None
+    #: The in-message position of the dispatch `tool_use` block — the enclosing
+    #: assistant message id and the block's index in that message's `content`,
+    #: the same declaration `ClaudeToolBlock` carries. Carried on the card so
+    #: every fold that rebuilds the tool row (the task-event folds and the
+    #: evidence/stop closures) republishes the ``source.nativeMessageId`` /
+    #: ``source.blockIndex`` the dispatch frame declared — without it the
+    #: rebuilt row loses its message-group key and drops out of in-message
+    #: ordering (tool-order-inversion). Exactly the role ``usage`` plays, but
+    #: for position; both stay None when the frame that minted the card named
+    #: neither (宁缺勿假).
+    native_message_id: str | None = None
+    block_index: int | None = None
     #: Wall-clock seconds when this card was first seen (its dispatch frame
     #: landed). The wire frames carry no timestamps, so this is the live path's
     #: only launch time — the input the never-started grace needs when a task

@@ -25,6 +25,7 @@ from agent_server.core.timeline import (
     timeline_item_from_runtime_input,
     timeline_item_from_snapshot,
     timeline_item_state_is_unchanged,
+    timeline_message_group_key,
     timeline_snapshot_is_unchanged,
 )
 from agent_server.core.utc import utc_now
@@ -362,53 +363,57 @@ class TimelineRepositoryMixin:
         batch_size: int = 500,
         max_batches: int = 10_000,
     ) -> int:
-        """Repair stored reasoning/body order the write paths never saw again.
+        """Repair stored message-group order the write paths never saw again.
 
         The intra-message corrector only runs on a write. A message whose rows
-        are already stored with the body before its reasoning — and which is
-        never written again — keeps the broken order forever (production: 57
-        groups across history-rebuilt rows). This one-time sweep finds those
-        groups and repacks them with the same ``_repack_intra_message_group``
-        the live paths use, so a repaired group is indistinguishable from one a
-        write had healed.
+        are already stored out of ``RBT`` order (body before its reasoning, or
+        a tool row before the body, or tools out of ``blockIndex`` order) — and
+        which is never written again — keeps the broken order forever
+        (production: 57 groups across history-rebuilt rows). This one-time
+        sweep finds those groups and repacks them with the same
+        ``_repack_intra_message_group`` the live paths use, so a repaired group
+        is indistinguishable from one a write had healed.
 
         Bounded, quiet and idempotent. Group keys are paged by
-        ``(session_id, native_item_id)`` (the migration's index serves the
-        scan) and each page's rows are read in ONE query; the expensive write
-        path (a per-session lock plus a repack) runs only for the handful of
-        actually-broken groups — a healthy database does a linear read and no
-        writes. Re-running finds nothing broken (the corrector is strict).
-        Returns the number of rows moved.
+        ``(session_id, coalesce(native_message_id, native_item_id))`` —
+        ``timeline_message_group_key`` — so a message's tool rows (keyed by
+        ``native_message_id``) and its body/reasoning rows (keyed by
+        ``native_item_id``) page as one group. Each page's rows are read in ONE
+        query; the expensive write path (a per-session lock plus a repack) runs
+        only for the handful of actually-broken groups — a healthy database does
+        a linear read and no writes. Re-running finds nothing broken (the
+        corrector is strict). Returns the number of rows moved.
         """
 
+        group_key_expr = _timeline_message_group_key_expr()
         moved = 0
         after_session = ""
-        after_native = ""
+        after_key = ""
         for _ in range(max_batches):
             async with self._engine.connect() as conn:
                 keys = (
                     await conn.execute(
                         select(
                             timeline_items_t.c.session_id,
-                            timeline_items_t.c.native_item_id,
+                            group_key_expr,
                         )
                         .where(
-                            timeline_items_t.c.native_item_id.is_not(None),
+                            group_key_expr.is_not(None),
                             or_(
                                 timeline_items_t.c.session_id > after_session,
                                 and_(
                                     timeline_items_t.c.session_id == after_session,
-                                    timeline_items_t.c.native_item_id > after_native,
+                                    group_key_expr > after_key,
                                 ),
                             ),
                         )
                         .group_by(
                             timeline_items_t.c.session_id,
-                            timeline_items_t.c.native_item_id,
+                            group_key_expr,
                         )
                         .order_by(
                             timeline_items_t.c.session_id,
-                            timeline_items_t.c.native_item_id,
+                            group_key_expr,
                         )
                         .limit(batch_size)
                     )
@@ -416,26 +421,26 @@ class TimelineRepositoryMixin:
                 if not keys:
                     return moved
                 after_session = keys[-1][0]
-                after_native = keys[-1][1]
+                after_key = keys[-1][1]
                 # One read for every row in this page's groups, classified in
                 # memory so only genuinely broken groups reach the write path.
                 broken = await self._broken_groups_in_page(conn, keys)
-            for session_id, native_item_id in broken:
+            for session_id, group_key in broken:
                 # Isolate each broken group: a fence-acquire timeout, DB error,
                 # or repack failure is logged and the page continues, so one
                 # stubborn group cannot abort the rest of the sweep.
                 try:
                     moved += await self._repair_one_intra_message_group(
-                        session_id, native_item_id
+                        session_id, group_key
                     )
                 except asyncio.CancelledError:
                     raise
                 except Exception:  # noqa: BLE001 - see comment above
                     logger.exception(
                         "timeline order repair group failed session_id={} "
-                        "native_item_id={}",
+                        "group_key={}",
                         session_id,
-                        native_item_id,
+                        group_key,
                     )
         return moved
 
@@ -444,49 +449,72 @@ class TimelineRepositoryMixin:
         conn: AsyncConnection,
         keys: list[tuple[str, str]],
     ) -> list[tuple[str, str]]:
-        """The page's ``(session_id, native_item_id)`` groups whose stored
-        reasoning does not strictly precede their stored body.
+        """The page's message groups whose stored order is not the target order.
 
-        Filters by the composite key (``tuple_ IN``), not ``native_item_id``
-        alone, so the ``(session_id, native_item_id)`` index serves it and the
-        query touches only this page's rows.
+        Filters by the composite key (``tuple_ IN`` over
+        ``(session_id, group_key)``), not the group key alone, so the query
+        touches only this page's rows. Rows are re-keyed in Python from their
+        own two ids (``timeline_message_group_key``) and classified with the
+        same ``_intra_message_target_rows`` the writer uses, so a group the
+        sweep flags as broken is exactly one the repack will move — and a group
+        the target helper refuses (a tool row missing its block index, or an
+        already-correct group) is never flagged.
         """
 
+        group_key_expr = _timeline_message_group_key_expr()
         rows = (
             await conn.execute(
                 select(
                     timeline_items_t.c.session_id,
-                    timeline_items_t.c.native_item_id,
+                    timeline_items_t.c.id,
                     timeline_items_t.c.type,
                     timeline_items_t.c.order_seq,
+                    timeline_items_t.c.native_message_id,
+                    timeline_items_t.c.native_item_id,
                     timeline_items_t.c.payload_json,
                 ).where(
                     tuple_(
                         timeline_items_t.c.session_id,
-                        timeline_items_t.c.native_item_id,
+                        group_key_expr,
                     ).in_(keys),
                 )
             )
         ).all()
-        groups: dict[tuple[str, str], dict[str, list[int]]] = {}
-        for session_id, native_item_id, row_type, order_seq, payload_json in rows:
-            kind = _stored_intra_message_kind(row_type, payload_json)
+        groups: dict[tuple[str, str], dict[str, _IntraMessageGroupRow]] = {}
+        for (
+            session_id,
+            row_id,
+            row_type,
+            order_seq,
+            native_message_id,
+            native_item_id,
+            payload_json,
+        ) in rows:
+            group_key = timeline_message_group_key(native_message_id, native_item_id)
+            if group_key is None:
+                continue
+            kind, block_index = _stored_intra_message_row(row_type, payload_json)
             if kind is None:
                 continue
-            groups.setdefault(
-                (session_id, native_item_id), {"reasoning": [], "message": []}
-            )[kind].append(int(order_seq))
+            groups.setdefault((session_id, group_key), {})[row_id] = (
+                _IntraMessageGroupRow(
+                    id=row_id,
+                    kind=kind,
+                    order_seq=int(order_seq),
+                    stored=None,
+                    block_index=block_index,
+                )
+            )
         broken: list[tuple[str, str]] = []
-        for key, kinds in groups.items():
-            reasoning, messages = kinds["reasoning"], kinds["message"]
-            if reasoning and messages and max(reasoning) >= min(messages):
+        for key, group in groups.items():
+            if _intra_message_target_rows(group) is not None:
                 broken.append(key)
         return broken
 
     async def _repair_one_intra_message_group(
         self,
         session_id: str,
-        native_item_id: str,
+        group_key: str,
     ) -> int:
         """Repack one stored group in place, if it is broken. Returns rows moved."""
 
@@ -498,7 +526,7 @@ class TimelineRepositoryMixin:
             async with self._session_write_fence(session_id):
                 async with self._timeline_lock(session_id), self._engine.begin() as conn:
                     group = await self._load_intra_message_group(
-                        conn, session_id, native_item_id
+                        conn, session_id, group_key
                     )
                     if not group:
                         return 0
@@ -506,7 +534,7 @@ class TimelineRepositoryMixin:
                         conn,
                         session_id,
                         [{row.id: row for row in group}],
-                        logger_context=(session_id, native_item_id),
+                        logger_context=(session_id, group_key),
                     )
                     if corrected is None:
                         return 0  # healthy: the corrector is strict
@@ -562,9 +590,9 @@ class TimelineRepositoryMixin:
                     except Exception:  # noqa: BLE001 - see the dedup publish guard
                         logger.exception(
                             "timeline order repair publish failed session_id={} "
-                            "native_item_id={} moved={}",
+                            "group_key={} moved={}",
                             session_id,
-                            native_item_id,
+                            group_key,
                             len(moved),
                         )
         except asyncio.CancelledError:
@@ -574,9 +602,9 @@ class TimelineRepositoryMixin:
             # durable, so log and still report the rows this group moved.
             logger.exception(
                 "timeline order repair fence failed session_id={} "
-                "native_item_id={} moved={}",
+                "group_key={} moved={}",
                 session_id,
-                native_item_id,
+                group_key,
                 len(moved),
             )
         return len(moved)
@@ -1909,17 +1937,19 @@ class TimelineRepositoryMixin:
         item: TimelineItemIn,
         order_seq: int,
     ) -> int:
-        """Keep one message's reasoning rows strictly before its body row.
+        """Keep one message's rows in the ``RBT`` order (reasoning, body, tools).
 
-        A message group is the set of stored rows sharing ``source.itemId``:
-        the body row (``type == "message"``) and its reasoning rows
-        (``type == "system" and content.kind == "reasoning"``). A client
+        A message group is the set of stored rows that resolve to the same
+        assistant message (``timeline_message_group_key``): the body row
+        (``type == "message"``), its reasoning rows (``type == "system" and
+        content.kind == "reasoning"``) and its tool rows (``type == "tool"``,
+        gathered by their declared ``source.nativeMessageId``). A client
         keyset-paginates on the *stored* ``order_seq`` and renders in that
-        order, so a reasoning row that lands after its body row renders below
-        the answer. This is a strict corrector, not a normalizer: it runs on
-        every write but returns the incoming ``order_seq`` untouched and
-        writes nothing unless the invariant is actually broken (some reasoning
-        row's ``order_seq`` is not strictly below some message row's) — the
+        order, so a reasoning row that lands after its body row — or a tool row
+        that lands before it, or tool rows out of ``blockIndex`` order — renders
+        wrong. This is a strict corrector, not a normalizer: it runs on every
+        write but returns the incoming ``order_seq`` untouched and writes
+        nothing unless the stored order differs from the target order — the
         99.5% fast path. Re-applying it is therefore a no-op.
 
         Returns the (possibly corrected) ``order_seq`` for the incoming row and
@@ -1934,25 +1964,22 @@ class TimelineRepositoryMixin:
         arrive in one batch has no on-disk sibling for this query to find.
         """
 
-        incoming_kind = _intra_message_kind(item.type, item.content)
-        native_item_id = item.source.itemId
-        if not native_item_id or incoming_kind is None:
+        incoming = _intra_message_input_group_row(
+            item, order_seq=order_seq, stored=None
+        )
+        group_key = _intra_message_input_group_key(item)
+        if incoming is None or group_key is None:
             return order_seq, []
         group: dict[str, _IntraMessageGroupRow] = {}
-        for row in await self._load_intra_message_group(conn, session_id, native_item_id):
+        for row in await self._load_intra_message_group(conn, session_id, group_key):
             if row.id != item.id:
                 group[row.id] = row
-        group[item.id] = _IntraMessageGroupRow(
-            id=item.id,
-            kind=incoming_kind,
-            order_seq=order_seq,
-            stored=None,
-        )
+        group[item.id] = incoming
         corrected = await self._repack_intra_message_group(
             conn,
             session_id,
             [group],
-            logger_context=(session_id, native_item_id),
+            logger_context=(session_id, group_key),
         )
         if corrected is None:
             return order_seq, []
@@ -1970,45 +1997,46 @@ class TimelineRepositoryMixin:
         Runs after the loop has computed every item's ``order_seq``: a group
         whose rows all arrive in one batch has no on-disk sibling during the
         loop, so the per-item helper cannot see it. This pass groups the
-        batch's own rows by ``source.itemId`` (the in-batch value winning over
-        any stored row of the same id), folds in on-disk siblings, and repacks
-        only the groups whose invariant is broken. ``base`` is the loop's
-        running high-water mark (no batch row is written yet, so the on-disk
-        maximum would undercount it). Corrected in-batch rows are mutated on
-        ``items``; corrected on-disk siblings are returned so the caller can
-        upsert them together with ``items`` (the caller dedupes by id). Groups
-        that already hold the invariant are never touched, so an unrelated
-        write cannot perturb a healthy group.
+        batch's own rows by the assistant message they resolve to
+        (``timeline_message_group_key`` — a body/reasoning row by its
+        ``native_item_id``, a tool row by its ``nativeMessageId``; the in-batch
+        value wins over any stored row of the same id), folds in on-disk
+        siblings, and repacks only the groups whose invariant is broken.
+        ``base`` is the loop's running high-water mark (no batch row is written
+        yet, so the on-disk maximum would undercount it). Corrected in-batch
+        rows are mutated on ``items``; corrected on-disk siblings are returned
+        so the caller can upsert them together with ``items`` (the caller
+        dedupes by id). Groups that already hold the invariant are never
+        touched, so an unrelated write cannot perturb a healthy group.
         """
 
-        batch_by_native: dict[str, dict[str, TimelineItem]] = {}
+        batch_by_group: dict[str, dict[str, TimelineItem]] = {}
         for item in items:
-            native_item_id = item.source.itemId
-            if not native_item_id:
+            group_key = _intra_message_input_group_key(item)
+            if group_key is None:
                 continue
             if _intra_message_kind(item.type, item.content) is None:
                 continue
-            batch_by_native.setdefault(native_item_id, {})[item.id] = item
-        if not batch_by_native:
+            batch_by_group.setdefault(group_key, {})[item.id] = item
+        if not batch_by_group:
             return []
         groups: list[dict[str, _IntraMessageGroupRow]] = []
         batch_ids: set[str] = set()
-        for native_item_id, batch_rows in batch_by_native.items():
+        for group_key, batch_rows in batch_by_group.items():
             group: dict[str, _IntraMessageGroupRow] = {}
             for row in await self._load_intra_message_group(
-                conn, session_id, native_item_id
+                conn, session_id, group_key
             ):
                 if row.id in batch_rows:
                     continue  # the in-batch value supersedes the stored row
                 group[row.id] = row
             for row_id, batch_item in batch_rows.items():
-                kind = _intra_message_kind(batch_item.type, batch_item.content)
-                group[row_id] = _IntraMessageGroupRow(
-                    id=row_id,
-                    kind=kind or "message",
-                    order_seq=batch_item.orderSeq,
-                    stored=None,
+                row = _intra_message_input_group_row(
+                    batch_item, order_seq=batch_item.orderSeq, stored=None
                 )
+                if row is None:  # unreachable: kind checked above
+                    continue
+                group[row_id] = row
                 batch_ids.add(row_id)
             groups.append(group)
         corrected = await self._repack_intra_message_group(
@@ -2050,23 +2078,20 @@ class TimelineRepositoryMixin:
         """
 
         groups: list[dict[str, _IntraMessageGroupRow]] = []
-        by_native: dict[str, dict[str, _IntraMessageGroupRow]] = {}
+        by_group: dict[str, dict[str, _IntraMessageGroupRow]] = {}
         slots: set[int] = set()
         for item in items:
             slots.add(item.orderSeq)
-            native_item_id = item.source.itemId
-            kind = _intra_message_kind(item.type, item.content)
-            if not native_item_id or kind is None:
-                continue
-            by_native.setdefault(native_item_id, {})[item.id] = _IntraMessageGroupRow(
-                id=item.id,
-                kind=kind,
-                order_seq=item.orderSeq,
-                stored=None,
+            row = _intra_message_input_group_row(
+                item, order_seq=item.orderSeq, stored=None
             )
-        if not by_native:
+            group_key = _intra_message_input_group_key(item)
+            if row is None or group_key is None:
+                continue
+            by_group.setdefault(group_key, {})[item.id] = row
+        if not by_group:
             return
-        groups.extend(by_native.values())
+        groups.extend(by_group.values())
         corrected = await self._repack_intra_message_group(
             conn,
             session_id,
@@ -2085,9 +2110,20 @@ class TimelineRepositoryMixin:
         self,
         conn: AsyncConnection,
         session_id: str,
-        native_item_id: str,
+        group_key: str,
     ) -> list[_IntraMessageGroupRow]:
-        """The stored reasoning/message rows of one native-item group."""
+        """The stored rows of one assistant-message group.
+
+        The group key is the message id every kind of row resolves to
+        (``timeline_message_group_key``): a body/reasoning row stores it as its
+        own ``native_item_id``, a tool row as its ``native_message_id``. The
+        query therefore gathers both — a row whose ``native_message_id`` is the
+        key, or a row with no ``native_message_id`` whose ``native_item_id`` is
+        the key — so a message's tool rows join its body/reasoning rows in one
+        group. Every row is re-keyed in Python from its own two ids and dropped
+        if that resolves elsewhere, so a surprising SQL match can never smuggle
+        a foreign row into the group.
+        """
 
         rows = (
             await conn.execute(
@@ -2095,16 +2131,33 @@ class TimelineRepositoryMixin:
                     timeline_items_t.c.id,
                     timeline_items_t.c.type,
                     timeline_items_t.c.order_seq,
+                    timeline_items_t.c.native_message_id,
+                    timeline_items_t.c.native_item_id,
                     timeline_items_t.c.payload_json,
                 ).where(
                     timeline_items_t.c.session_id == session_id,
-                    timeline_items_t.c.native_item_id == native_item_id,
+                    or_(
+                        timeline_items_t.c.native_message_id == group_key,
+                        and_(
+                            timeline_items_t.c.native_message_id.is_(None),
+                            timeline_items_t.c.native_item_id == group_key,
+                        ),
+                    ),
                 )
             )
         ).all()
         group: list[_IntraMessageGroupRow] = []
-        for row_id, row_type, row_order_seq, payload_json in rows:
-            kind = _stored_intra_message_kind(row_type, payload_json)
+        for (
+            row_id,
+            row_type,
+            row_order_seq,
+            native_message_id,
+            native_item_id,
+            payload_json,
+        ) in rows:
+            if timeline_message_group_key(native_message_id, native_item_id) != group_key:
+                continue
+            kind, block_index = _stored_intra_message_row(row_type, payload_json)
             if kind is None:
                 continue
             group.append(
@@ -2113,6 +2166,7 @@ class TimelineRepositoryMixin:
                     kind=kind,
                     order_seq=int(row_order_seq),
                     stored=TimelineItem.model_validate_json(payload_json),
+                    block_index=block_index,
                 )
             )
         return group
@@ -2193,36 +2247,25 @@ class TimelineRepositoryMixin:
         A broken group is repacked **in place** whenever a run of free slots
         exists at the group's own position: the group keeps its place in the
         conversation and only its rows' relative order changes — reasoning
-        rows first in their stored relative order, then the message rows in
-        theirs. When no in-place run fits, the group falls back to a fresh
-        contiguous block above ``base`` (the highest occupied slot); the
-        running base advances past each block so two corrected groups can
-        never share a slot.
+        rows first in their stored relative order, then the body, then the tool
+        rows by declared block index. When no in-place run fits, the group falls
+        back to a fresh contiguous block above ``base`` (the highest occupied
+        slot); the running base advances past each block so two corrected groups
+        can never share a slot.
         """
 
         corrected: dict[str, int] = {}
-        repaired: list[tuple[int, int]] = []
+        repaired: list[tuple[int, int, int]] = []
 
-        # Classify first; find the broken groups and their in-order row lists.
-        # Nothing is written and no session-wide query runs when every group is
-        # already correct — the 99.5% fast path must cost zero DB work.
-        broken: list[tuple[list[_IntraMessageGroupRow], list[_IntraMessageGroupRow]]] = []
+        # Classify first; find the broken groups and their target-ordered row
+        # lists. Nothing is written and no session-wide query runs when every
+        # group is already correct — the 99.5% fast path must cost zero DB work.
+        broken: list[list[_IntraMessageGroupRow]] = []
         for group in groups:
-            reasoning = sorted(
-                (row for row in group.values() if row.kind == "reasoning"),
-                key=lambda row: (row.order_seq, row.id),
-            )
-            messages = sorted(
-                (row for row in group.values() if row.kind == "message"),
-                key=lambda row: (row.order_seq, row.id),
-            )
-            if not reasoning or not messages:
-                continue  # singleton group: nothing to order
-            if max(row.order_seq for row in reasoning) < min(
-                row.order_seq for row in messages
-            ):
-                continue  # already correct: strict corrector, no write
-            broken.append((reasoning, messages))
+            target = _intra_message_target_rows(group)
+            if target is None:
+                continue  # not orderable, or already correct: strict, no write
+            broken.append(target)
         if not broken:
             return None
 
@@ -2260,8 +2303,7 @@ class TimelineRepositoryMixin:
             [max(occupation, default=0), *own_slots, *(extra_occupied or set())]
         )
         base = ceiling
-        for reasoning, messages in broken:
-            ordered = [*reasoning, *messages]
+        for ordered in broken:
             start = min(row.order_seq for row in ordered)
             # This group may reclaim its OWN current slots but nothing else:
             # not a foreign slot, not an in-flight batch slot, not a slot an
@@ -2284,9 +2326,15 @@ class TimelineRepositoryMixin:
                 if row.order_seq != new_order_seq:
                     corrected[row.id] = new_order_seq
                 claimed.add(new_order_seq)
-            repaired.append((len(reasoning), len(messages)))
+            repaired.append(
+                (
+                    sum(1 for row in ordered if row.kind == "reasoning"),
+                    sum(1 for row in ordered if row.kind == "message"),
+                    sum(1 for row in ordered if row.kind == "tool"),
+                )
+            )
         logger.debug(
-            "Timeline intra-message order repaired session_id={} native_item_id={} groups={}",
+            "Timeline intra-message order repaired session_id={} group_key={} groups={}",
             logger_context[0],
             logger_context[1],
             repaired,
@@ -2421,20 +2469,42 @@ def session_timeline_lock_key(session_id: str) -> int:
     return int.from_bytes(digest[:8], "big", signed=True)
 
 
+def _timeline_message_group_key_expr() -> Any:
+    """SQL for ``timeline_message_group_key``: the message a row belongs to.
+
+    ``coalesce(native_message_id, native_item_id)`` — a tool row resolves to
+    its ``native_message_id`` and a body/reasoning row to its (non-NULL)
+    ``native_item_id``. Centralised so the sweep's key expression is defined
+    once and cannot drift from the Python helper the writer uses. Returns a
+    nullable expression: a row with neither id yields NULL and drops out.
+    """
+
+    return func.coalesce(
+        timeline_items_t.c.native_message_id,
+        timeline_items_t.c.native_item_id,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _IntraMessageGroupRow:
     """One stored row of a message's intra-message order group.
 
-    ``kind`` is ``"reasoning"`` or ``"message"`` (the only two kinds the
-    invariant speaks about). ``stored`` is the full row for a sibling already
-    on disk, or ``None`` for the in-flight row whose stored payload/model is
-    supplied by the caller — the caller only needs its id and kind.
+    ``kind`` is ``"reasoning"``, ``"message"`` or ``"tool"`` (the kinds the
+    message-group invariant speaks about). ``stored`` is the full row for a
+    sibling already on disk, or ``None`` for the in-flight row whose stored
+    payload/model is supplied by the caller — the caller only needs its id and
+    kind. ``block_index`` is the tool block's index inside its message's
+    ``content`` (``source.blockIndex``), the truth a tool row is ordered by; it
+    is ``None`` for every non-tool row and for a tool row whose Runtime did not
+    declare it (v2_43), in which case the whole group is left untouched (see
+    ``_intra_message_target_rows``).
     """
 
     id: str
     kind: str
     order_seq: int
     stored: TimelineItem | None
+    block_index: int | None = None
 
 
 # The Runtime protocol's ``SystemContentKind`` reasoning member. Named and
@@ -2444,14 +2514,15 @@ _REASONING_CONTENT_KINDS = frozenset({"reasoning"})
 
 
 def _intra_message_kind(item_type: str, content: Any) -> str | None:
-    """Classify one item as ``"reasoning"``, ``"message"`` or neither.
+    """Classify one item as ``"reasoning"``, ``"message"``, ``"tool"`` or none.
 
     Generic on purpose: reasoning is ``type == "system"`` with a
-    ``content.kind`` in ``_REASONING_CONTENT_KINDS`` and a message body is
-    ``type == "message"`` — the same free-JSON ``content.kind`` convention the
-    agent-card readers use (``_agent_call_task_ids``). No provider or runtime is
-    consulted, so a Runtime that never reports a native item id (no group) is
-    untouched and a future Runtime is classified by shape alone.
+    ``content.kind`` in ``_REASONING_CONTENT_KINDS``, a message body is
+    ``type == "message"`` and a tool row is ``type == "tool"`` — the same
+    free-JSON ``content.kind`` convention the agent-card readers use
+    (``_agent_call_task_ids``). No provider or runtime is consulted, so a
+    Runtime that never reports a native item id (no group) is untouched and a
+    future Runtime is classified by shape alone.
 
     Provider boundary (verified in production): the Runtimes we ship — Claude
     and Codex — both store their reasoning as ``type == "system"`` with
@@ -2463,6 +2534,12 @@ def _intra_message_kind(item_type: str, content: Any) -> str | None:
 
     if item_type == "message":
         return "message"
+    if item_type == "tool":
+        # A tool row is orderable only by its declared ``source.blockIndex``;
+        # whether that index is present is decided by the group (see
+        # ``_intra_message_target_rows``), which leaves the whole group alone
+        # when any tool row omits it.
+        return "tool"
     if item_type == "system" and isinstance(content, Mapping) and content.get(
         "kind"
     ) in _REASONING_CONTENT_KINDS:
@@ -2470,20 +2547,145 @@ def _intra_message_kind(item_type: str, content: Any) -> str | None:
     return None
 
 
-def _stored_intra_message_kind(row_type: str, payload_json: str) -> str | None:
-    """Classify one stored timeline row; ``None`` for any other item.
+def _intra_message_block_index(value: Any) -> int | None:
+    """A declared tool block index, or ``None`` when it is not a plain int.
 
-    Total by construction: a payload that cannot be read as a mapping yields
-    ``None`` (an unreadable row is never ordered).
+    ``bool`` is an ``int`` subclass but is never a real block index, so it is
+    rejected like any other non-int. Every other shape (missing, a string, a
+    float) yields ``None`` and the group it lives in is left untouched.
+    """
+
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def _stored_intra_message_row(
+    row_type: str,
+    payload_json: str,
+) -> tuple[str | None, int | None]:
+    """``(kind, block_index)`` for one stored row; ``(None, None)`` otherwise.
+
+    Total by construction: a payload that cannot be read as a mapping — or a
+    row of no orderable kind — yields ``(None, None)`` (an unreadable row is
+    never ordered). The block index is read from ``source.blockIndex`` of the
+    same payload, so a stored tool row and an in-flight one classify
+    identically.
     """
 
     try:
         payload = json.loads(payload_json)
     except (TypeError, ValueError):
-        return None
+        return None, None
     if not isinstance(payload, dict):
+        return None, None
+    kind = _intra_message_kind(row_type, payload.get("content"))
+    if kind is None:
+        return None, None
+    source = payload.get("source")
+    block_index = (
+        _intra_message_block_index(source.get("blockIndex"))
+        if isinstance(source, dict)
+        else None
+    )
+    return kind, block_index
+
+
+def _intra_message_input_group_key(item: TimelineItem | TimelineItemIn) -> str | None:
+    """The assistant-message key an in-flight row belongs to.
+
+    ``source.nativeMessageId`` for a tool row (its own ``itemId`` is the call
+    id), ``source.itemId`` for a body/reasoning row — the same resolution the
+    stored rows use via ``_row_values``'s two columns. ``None`` when neither id
+    is present, in which case the row cannot join a group and is left alone.
+    """
+
+    return timeline_message_group_key(
+        item.source.nativeMessageId, item.source.itemId
+    )
+
+
+def _intra_message_input_group_row(
+    item: TimelineItem | TimelineItemIn,
+    *,
+    order_seq: int,
+    stored: TimelineItem | None,
+) -> _IntraMessageGroupRow | None:
+    """Classify one in-flight row for its group; ``None`` for no orderable kind.
+
+    Mirrors ``_stored_intra_message_row`` so a row is classified identically
+    whether it arrives in flight or is read back from disk: the block index
+    comes from ``source.blockIndex`` and is present only on a tool row that
+    declares one.
+    """
+
+    kind = _intra_message_kind(item.type, item.content)
+    if kind is None:
         return None
-    return _intra_message_kind(row_type, payload.get("content"))
+    return _IntraMessageGroupRow(
+        id=item.id,
+        kind=kind,
+        order_seq=order_seq,
+        stored=stored,
+        block_index=(
+            _intra_message_block_index(item.source.blockIndex)
+            if kind == "tool"
+            else None
+        ),
+    )
+
+
+def _intra_message_target_rows(
+    group: Mapping[str, _IntraMessageGroupRow],
+) -> list[_IntraMessageGroupRow] | None:
+    """``group``'s rows in target order, or ``None`` when it must not move.
+
+    The target order of one assistant message is ``RBT``:
+
+    - **reasoning** rows first, keeping their stored ``(order_seq, id)`` order;
+    - then the **body** (``message``) rows, likewise;
+    - then the **tool** rows by declared ``blockIndex`` ascending (ties broken
+      by the same stable ``(order_seq, id)`` key).
+
+    ``None`` is returned — meaning "leave this group byte-identical, write
+    nothing" — in exactly three cases, so the caller's strict-corrector fast
+    path and the "never guess" rule both hold:
+
+    1. the group has nothing to order (no two kinds among reasoning/body/tool
+       coexist, i.e. every row is a singleton), so no invariant applies;
+    2. a **tool** row is present but lacks a ``blockIndex`` — the group's target
+       order cannot be known from truth, and the rule is to guess nothing
+       rather than fall back to ``order_seq`` (which is the very value that is
+       untrustworthy here);
+    3. the group's stored order already equals the target order (already
+       correct: no write).
+
+    Only a group whose current ``order_seq`` order actually differs from the
+    target order (a genuine inversion) returns a list — the sole case that
+    triggers the (query-costing) repack.
+    """
+
+    reasoning = sorted(
+        (row for row in group.values() if row.kind == "reasoning"),
+        key=lambda row: (row.order_seq, row.id),
+    )
+    messages = sorted(
+        (row for row in group.values() if row.kind == "message"),
+        key=lambda row: (row.order_seq, row.id),
+    )
+    tools = [row for row in group.values() if row.kind == "tool"]
+    # A tool row without a declared block index makes the whole group's target
+    # order unknown; "宁缺勿假": leave it alone rather than order by arrival.
+    if tools and any(row.block_index is None for row in tools):
+        return None
+    tools.sort(key=lambda row: (row.block_index, row.order_seq, row.id))
+    if len(reasoning) + len(messages) + len(tools) < 2:
+        return None  # singleton group: no invariant to enforce
+    target = [*reasoning, *messages, *tools]
+    current = sorted(group.values(), key=lambda row: (row.order_seq, row.id))
+    if [row.id for row in current] == [row.id for row in target]:
+        return None  # already in target order: strict corrector, no write
+    return target
 
 
 def _agent_call_task_ids(content: Any) -> set[str]:

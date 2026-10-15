@@ -474,6 +474,11 @@ def _timeline_source_payload(item: RuntimeTimelineItem) -> dict[str, Any]:
             "event": source.get("event"),
             "derivedKey": source.get("derivedKey"),
             "clientMessageId": source.get("clientMessageId"),
+            # In-message position of a tool row (tool-order-inversion): passed
+            # through so the server can order a group of tool rows by truth
+            # rather than arrival. Absent on frames that declare neither.
+            "nativeMessageId": source.get("nativeMessageId"),
+            "blockIndex": source.get("blockIndex"),
         }
     )
 

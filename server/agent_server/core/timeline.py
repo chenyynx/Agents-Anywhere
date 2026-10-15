@@ -59,6 +59,36 @@ def native_item_id_from_payload(payload_json: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def timeline_message_group_key(
+    native_message_id: str | None,
+    native_item_id: str | None,
+) -> str | None:
+    """The group key that gathers every row of one assistant message.
+
+    Rows written from one assistant message arrive through different paths and
+    carry two distinct Runtime-native identities:
+
+    - a **tool row** carries the enclosing message's id, ``nativeMessageId``
+      (its own ``itemId`` is the tool call's id, which is unique per row and so
+      cannot gather a message's tool rows) — key = ``nativeMessageId``;
+
+    - a **body or reasoning row** carries the message id as its ``itemId`` (the
+      v2_42 invariant groups them on ``native_item_id``) — key =
+      ``native_item_id``.
+
+    Both therefore resolve to the same key — the assistant message the row
+    belongs to — which is what lets a later pass gather a whole message (tool
+    rows plus body/reasoning) into one group. The tool-row identity wins when
+    both are present, because a row that declares its enclosing message id
+    knows its group directly.
+
+    Returns None when neither id is present: the row cannot be assigned to a
+    message group and callers must leave it out, never guess one.
+    """
+
+    return native_message_id or native_item_id
+
+
 def timeline_item_from_runtime_input(
     item: TimelineItemIn,
     *,

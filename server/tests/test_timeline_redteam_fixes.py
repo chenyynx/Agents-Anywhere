@@ -277,9 +277,10 @@ def test_classifier_covers_shipped_runtime_shapes() -> None:
     assert _intra_message_kind("system", {"kind": "reasoning"}) == "reasoning"
     # A body row is a message row.
     assert _intra_message_kind("message", {"kind": "markdown"}) == "message"
-    # Other system kinds / tools are out of scope.
+    # A tool row is orderable by its declared block index (RBT order).
+    assert _intra_message_kind("tool", {"kind": "tool_result"}) == "tool"
+    # Other system kinds and non-orderable row types are out of scope.
     assert _intra_message_kind("system", {"kind": "notice"}) is None
-    assert _intra_message_kind("tool", {"kind": "tool_result"}) is None
     assert _intra_message_kind("marker", {"kind": "compact"}) is None
 
 

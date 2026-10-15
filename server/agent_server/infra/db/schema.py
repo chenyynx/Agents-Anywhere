@@ -507,6 +507,13 @@ timeline_items = Table(
     # invariant (v2_42) groups on it. NULL for rows written before v2_42 (no
     # backfill) and for items whose Runtime never reported one.
     Column("native_item_id", Text),
+    # The Runtime's native *message* id (``source.nativeMessageId``), the
+    # identity a message's tool rows share: each tool row's own
+    # ``native_item_id`` is its call id, not the enclosing message's, so it
+    # cannot group them. NULL for rows written before the connector declared
+    # the field (v2_43 has no way to derive it) and for items whose Runtime
+    # never reported one.
+    Column("native_message_id", Text),
     Column("item_time", Text),
     Column("payload_json", Text, nullable=False),
     PrimaryKeyConstraint("session_id", "id"),
@@ -515,6 +522,11 @@ timeline_items = Table(
         "idx_timeline_items_session_native_item",
         "session_id",
         "native_item_id",
+    ),
+    Index(
+        "idx_timeline_items_session_native_message",
+        "session_id",
+        "native_message_id",
     ),
     Index(
         "idx_timeline_items_session_latest",

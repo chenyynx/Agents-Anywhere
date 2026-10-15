@@ -353,6 +353,12 @@ class SqlTimelineStore:
             # reasoning rows: the repository's intra-message order invariant
             # (v2_42) groups on it. ``source`` is required, ``itemId`` optional.
             "native_item_id": item.source.itemId,
+            # The Runtime native *message* id (``source.nativeMessageId``): the
+            # identity a message's tool rows share, mirrored to a column (v2_43)
+            # for indexed grouping. ``source`` is required, ``nativeMessageId``
+            # optional — absent on rows whose Runtime does not declare it, which
+            # then store NULL, exactly as ``native_item_id`` does.
+            "native_message_id": item.source.nativeMessageId,
             "item_time": _item_time(item),
             "payload_json": _json_dumps(item.model_dump(exclude_none=True)),
         }

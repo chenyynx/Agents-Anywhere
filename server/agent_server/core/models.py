@@ -985,6 +985,13 @@ class TimelineSource(BaseModel):
     event: str | None = None
     derivedKey: str | None = None
     clientMessageId: str | None = None
+    # The enclosing assistant message's Runtime-native id and this item's index
+    # inside that message's content, declared by the connector on a tool row so
+    # the server can group and order a message's tool rows by truth instead of
+    # arrival time (v2_43 stores ``nativeMessageId`` for that grouping). Absent
+    # on rows a Runtime does not declare them for.
+    nativeMessageId: str | None = None
+    blockIndex: int | None = None
 
 
 class TimelineItemIn(BaseModel):

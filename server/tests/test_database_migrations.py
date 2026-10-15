@@ -1126,9 +1126,9 @@ def test_unversioned_runtime_schema_is_classified_by_actual_columns(
     )
 
 
-def test_current_schema_version_is_v2_42() -> None:
-    assert CURRENT_SCHEMA_REVISION == "v2_42"
-    assert CURRENT_SCHEMA_VERSION == "2.42"
+def test_current_schema_version_is_v2_43() -> None:
+    assert CURRENT_SCHEMA_REVISION == "v2_43"
+    assert CURRENT_SCHEMA_VERSION == "2.43"
 
 
 def test_v2_42_adds_the_native_item_id_column_and_index(tmp_path) -> None:
@@ -2840,5 +2840,260 @@ def test_v2_42_backfill_pages_without_skipping_or_looping(tmp_path, monkeypatch)
                 )
             }
         assert rows == {"m0": "N0", "m1": "N1", "m2": None, "m3": "N3"}
+    finally:
+        engine.dispose()
+
+
+def test_v2_43_adds_the_native_message_id_column_and_index(tmp_path) -> None:
+    path = tmp_path / "native-message-id.sqlite3"
+    url = _sqlite_url(path)
+    upgrade_database(db_url=url, revision="v2_42")
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        assert "native_message_id" not in {
+            column["name"]
+            for column in inspect(engine).get_columns("timeline_items")
+        }
+    finally:
+        engine.dispose()
+
+    upgrade_database(db_url=url)
+
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        columns = {
+            column["name"]: column
+            for column in inspect(engine).get_columns("timeline_items")
+        }
+        assert "native_message_id" in columns
+        assert columns["native_message_id"]["nullable"] is True
+        with engine.connect() as connection:
+            index_names = {
+                row[0]
+                for row in connection.execute(
+                    text(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type = 'index' AND tbl_name = 'timeline_items'"
+                    )
+                )
+            }
+        assert "idx_timeline_items_session_native_message" in index_names
+    finally:
+        engine.dispose()
+
+    # Idempotent: a second upgrade is a no-op.
+    upgrade_database(db_url=url)
+
+
+def test_v2_43_backfills_native_message_id_from_the_payload(tmp_path) -> None:
+    """The tool-row grouping reads ``native_message_id``; a row whose payload
+    already declares ``source.nativeMessageId`` must carry it after the
+    migration. A row without the field (every row written before the connector
+    declared it) stays NULL — the correct outcome, never guessed from the row's
+    own id."""
+
+    path = tmp_path / "native-message-id-backfill.sqlite3"
+    url = _sqlite_url(path)
+    # Seed rows under the pre-column schema, exactly as a live deployment would
+    # have them, then upgrade.
+    upgrade_database(db_url=url, revision="v2_42")
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO sessions "
+                    "(id, connector_id, runtime, runtime_id, status, takeover, "
+                    " seq, updated_seq, seq_allocated_high, created_at, updated_at) "
+                    "VALUES ('s1', 'c1', 'claude', 'r1', 'active', 0, 1, 1, 1, "
+                    " '2026-10-15T00:00:00Z', '2026-10-15T00:00:00Z')"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO timeline_items "
+                    "(session_id, id, type, status, role, order_seq, updated_seq, "
+                    " payload_json) VALUES "
+                    "('s1', 't1', 'system', 'done', 'assistant', 1, 1, "
+                    " '{\"id\":\"t1\",\"source\":{\"runtime\":\"claude\","
+                    "\"itemId\":\"call-A\",\"nativeMessageId\":\"msg-A\"}}'), "
+                    "('s1', 't2', 'system', 'done', 'assistant', 2, 2, "
+                    " '{\"id\":\"t2\",\"source\":{\"runtime\":\"claude\","
+                    "\"itemId\":\"call-B\",\"nativeMessageId\":\"msg-A\"}}'), "
+                    "('s1', 'p1', 'message', 'done', 'user', 3, 3, "
+                    " '{\"id\":\"p1\",\"source\":{\"runtime\":\"claude\","
+                    "\"itemId\":\"old-body\"}}')"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    upgrade_database(db_url=url)
+
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        with engine.connect() as connection:
+            rows = {
+                row[0]: row[1]
+                for row in connection.execute(
+                    text("SELECT id, native_message_id FROM timeline_items")
+                )
+            }
+        assert rows["t1"] == "msg-A"
+        assert rows["t2"] == "msg-A"
+        # No nativeMessageId in the payload -> stays NULL, never reconstructed
+        # from the row's own itemId.
+        assert rows["p1"] is None
+    finally:
+        engine.dispose()
+
+
+def test_v2_43_downgrade_then_upgrade_round_trips(tmp_path) -> None:
+    """The migration's DDL is not in the alembic chain's single transaction.
+
+    Each step runs in its own ``autocommit_block`` so a large ``timeline_items``
+    is never locked end-to-end, which means a partially applied run is recovered
+    by re-running, not by an automatic rollback. A downgrade followed by an
+    upgrade must therefore land back on the same schema — column, index and
+    backfilled values — with no manual repair.
+    """
+
+    path = tmp_path / "native-message-id-roundtrip.sqlite3"
+    url = _sqlite_url(path)
+    upgrade_database(db_url=url, revision="v2_42")
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO sessions "
+                    "(id, connector_id, runtime, runtime_id, status, takeover, "
+                    " seq, updated_seq, seq_allocated_high, created_at, updated_at) "
+                    "VALUES ('s1', 'c1', 'claude', 'claude', 'idle', 0, 1, 1, 1, "
+                    " '2026-10-15T00:00:00Z', '2026-10-15T00:00:00Z')"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO timeline_items "
+                    "(session_id, id, type, status, role, order_seq, updated_seq, "
+                    " payload_json) VALUES "
+                    "('s1', 't1', 'system', 'done', 'assistant', 1, 1, "
+                    " '{\"id\":\"t1\",\"source\":{\"runtime\":\"claude\","
+                    "\"itemId\":\"call-A\",\"nativeMessageId\":\"msg-A\"}}')"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    def _columns() -> set[str]:
+        engine = create_engine(f"sqlite:///{path}")
+        try:
+            return {
+                column["name"]
+                for column in inspect(engine).get_columns("timeline_items")
+            }
+        finally:
+            engine.dispose()
+
+    def _native_message_id() -> str | None:
+        engine = create_engine(f"sqlite:///{path}")
+        try:
+            with engine.connect() as connection:
+                return connection.execute(
+                    text(
+                        "SELECT native_message_id FROM timeline_items WHERE id = 't1'"
+                    )
+                ).scalar()
+        finally:
+            engine.dispose()
+
+    def _index_names() -> set[str]:
+        engine = create_engine(f"sqlite:///{path}")
+        try:
+            with engine.connect() as connection:
+                return {
+                    row[0]
+                    for row in connection.execute(
+                        text(
+                            "SELECT name FROM sqlite_master WHERE type = 'index' "
+                            "AND tbl_name = 'timeline_items'"
+                        )
+                    )
+                }
+        finally:
+            engine.dispose()
+
+    upgrade_database(db_url=url)
+    assert _native_message_id() == "msg-A"
+    assert "idx_timeline_items_session_native_message" in _index_names()
+
+    command.downgrade(_alembic_config(url), "v2_42")
+    assert "native_message_id" not in _columns()
+    assert "idx_timeline_items_session_native_message" not in _index_names()
+
+    upgrade_database(db_url=url)
+    assert _native_message_id() == "msg-A"
+    assert "idx_timeline_items_session_native_message" in _index_names()
+
+
+def test_v2_43_backfill_pages_without_skipping_or_looping(tmp_path, monkeypatch) -> None:
+    """The backfill pages by ``(session_id, id)`` so a tiny page size still
+    covers every row (and a payload with no nativeMessageId cannot stall the
+    loop)."""
+
+    from migrations.versions import v2_43
+
+    monkeypatch.setattr(v2_43, "_BACKFILL_BATCH", 1)
+
+    path = tmp_path / "native-message-id-paged.sqlite3"
+    url = _sqlite_url(path)
+    upgrade_database(db_url=url, revision="v2_42")
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO sessions "
+                    "(id, connector_id, runtime, runtime_id, status, takeover, "
+                    " seq, updated_seq, seq_allocated_high, created_at, updated_at) "
+                    "VALUES ('s1', 'c1', 'claude', 'claude', 'idle', 0, 1, 1, 1, "
+                    " '2026-10-15T00:00:00Z', '2026-10-15T00:00:00Z')"
+                )
+            )
+            for idx in range(4):
+                has_message = idx != 2  # row 2 has no nativeMessageId (skipped)
+                extra = f',"nativeMessageId":"M{idx}"' if has_message else ""
+                connection.execute(
+                    text(
+                        "INSERT INTO timeline_items "
+                        "(session_id, id, type, status, role, order_seq, updated_seq, "
+                        " payload_json) VALUES "
+                        "(:sid, :iid, 'system', 'done', 'assistant', :ord, :ord, "
+                        " '{\"id\":\"m' || :i || '\",\"source\":{\"runtime\":\"claude\"' || :src || '}}')"
+                    ),
+                    {
+                        "sid": "s1",
+                        "iid": f"m{idx}",
+                        "ord": idx + 1,
+                        "i": str(idx),
+                        "src": extra,
+                    },
+                )
+    finally:
+        engine.dispose()
+
+    upgrade_database(db_url=url)
+
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        with engine.connect() as connection:
+            rows = {
+                row[0]: row[1]
+                for row in connection.execute(
+                    text("SELECT id, native_message_id FROM timeline_items")
+                )
+            }
+        assert rows == {"m0": "M0", "m1": "M1", "m2": None, "m3": "M3"}
     finally:
         engine.dispose()

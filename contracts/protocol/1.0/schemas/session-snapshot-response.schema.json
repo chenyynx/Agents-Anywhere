@@ -1197,6 +1197,18 @@
     },
     "TimelineSource": {
       "properties": {
+        "blockIndex": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Blockindex"
+        },
         "clientMessageId": {
           "anyOf": [
             {
@@ -1256,6 +1268,18 @@
           ],
           "default": null,
           "title": "Itemtype"
+        },
+        "nativeMessageId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Nativemessageid"
         },
         "runtime": {
           "anyOf": [

@@ -78,6 +78,10 @@ jobs:
         working-directory: connector
         run: uv sync
 
+      - name: Build the server environment (cross-suite e2e reads its venv)
+        working-directory: server
+        run: uv sync
+
       - name: Install test runner
         working-directory: connector
         run: uv pip install pytest-xdist

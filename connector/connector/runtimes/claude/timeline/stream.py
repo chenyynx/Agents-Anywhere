@@ -293,9 +293,14 @@ class ClaudeStreamAccumulator:
         closed.extend(self.pending_items)
         self.pending_items = []
         # Remember which path cleared the identity, so a following drop can name
-        # its cause. Any `message_start` that opens a message overwrites this,
-        # so a stale reason never lingers past the next message.
-        self.last_reset_reason = reason
+        # its cause. Only a reset that ACTUALLY cleared a live identity is a
+        # cause: a reset while `partial_message_id` is already None (a turn with
+        # no `message_start`) cleared nothing, so recording its reason here would
+        # pin a later drop on a non-culprit. Any `message_start` that opens a
+        # message clears this, so a stale reason never lingers past the next
+        # message.
+        if self.partial_message_id is not None:
+            self.last_reset_reason = reason
         self.partial_message_id = None
         self.partial_text_blocks.clear()
         self.partial_revision = 0

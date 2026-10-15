@@ -183,6 +183,40 @@ def test_drop_summary_names_the_reset_path_that_caused_it() -> None:
     assert "reset_causes=result_text" in summary[0], summary[0]
 
 
+def test_drop_summary_omits_reset_cause_when_identity_was_never_open() -> None:
+    """A reset that cleared NO live identity is not named as the drop's cause.
+
+    ``reset()`` records its reason, but that reason only *causes* a drop when the
+    reset actually cleared a live identity (`partial_message_id is not None`).
+    When the identity was already empty -- a turn that never saw a
+    ``message_start`` -- a later boxed-and-discarded frame must not be pinned on
+    a reset that cleared nothing, or the summary names a non-culprit.
+    """
+
+    session = ClaudeSession(session_id="s_obs6", external_session_id="e_obs6")
+    acc = ClaudeStreamAccumulator()
+    proj = ClaudeMessageProjector()
+    with _LogCapture() as capture:
+        # No message_start: the identity is empty from the outset.
+        acc.item_from_stream_event(
+            session=session, turn_id="t_obs6",
+            message=_evt(_thinking_delta(1, "first")), projector=proj,
+        )
+        assert acc.partial_message_id is None
+        # A reset arrives, but there is no live identity for it to clear.
+        acc.reset(session, "t_obs6", proj, reason="result_text")
+        # The stream keeps producing -> dropped, but the reset cleared nothing.
+        acc.item_from_stream_event(
+            session=session, turn_id="t_obs6",
+            message=_evt(_thinking_delta(1, "after")), projector=proj,
+        )
+        acc.finalize_pending_thinking(session, "t_obs6", proj)
+
+    summary = [line for line in capture.lines if "at turn end" in line]
+    assert len(summary) == 1, capture.lines
+    assert "reset_causes=-" in summary[0], summary[0]
+
+
 def test_drop_summary_omits_reset_cause_when_none_cleared_identity() -> None:
     """A drop with no intervening reset (no message_start at all) has no cause."""
 

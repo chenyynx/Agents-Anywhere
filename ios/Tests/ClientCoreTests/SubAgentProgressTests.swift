@@ -459,6 +459,69 @@ import Testing
         #expect(SubAgentProgress.activityRows(of: try card(parentCard), in: items).isEmpty)
     }
 
+    // MARK: Final output vs. the activity stream (pp 2026-10-15: 同文两遍)
+
+    /// The 真机 defect: a finished card's final reply text is carried on TWO
+    /// channels — the subagent's own message row (already in `activityRows`)
+    /// and the notification receipt's `summary` (the pinned 「最终输出」). The
+    /// panel rendered both, so the reply showed verbatim twice. The gate must
+    /// suppress the pinned section exactly while a rendered row already holds
+    /// that same text.
+    @Test func theFinalOutputIsNotRepeatedWhenTheActivityStreamAlreadyShowsIt() throws {
+        let reply = "我来支撑。已定位根因并给出方案。"
+        let finished = try cardItem("card", order: 1, status: "done", summary: reply)
+        let replyRow = try item("m1", type: "message", status: "done", order: 2, role: "assistant",
+                                content: ["text": reply, "parentItemId": "card"])
+        // The reply row is in the stream, so the section is suppressed.
+        #expect(SubAgentProgress.finalOutputSummary(of: try card(finished), in: [finished, replyRow]) == nil)
+        // The stream still shows the reply exactly once.
+        #expect(SubAgentProgress.activityRows(of: try card(finished), in: [finished, replyRow]).map(\.id) == ["m1"])
+    }
+
+    /// 宁缺勿假 — the reply is the only copy when no rendered row carries it,
+    /// so it must still render: the row sits outside the loaded window, a
+    /// killed notice carries no row, or the reply never became a row at all.
+    @Test func theFinalOutputStillRendersWhenNoActivityRowCarriesIt() throws {
+        let reply = "Recovered and verified."
+        let finished = try cardItem("card", order: 1, status: "done", summary: reply)
+        // No rows at all (a killed notice / a card loaded without its rows).
+        #expect(SubAgentProgress.finalOutputSummary(of: try card(finished), in: [finished]) == reply)
+        // A row exists but carries different text (the last line was a tool or
+        // a shorter interim message, not the verbatim result).
+        let tool = try item("t1", status: "done", order: 2,
+                            content: ["kind": "command", "command": "ls", "parentItemId": "card"])
+        let interim = try item("m1", type: "message", status: "done", order: 3, role: "assistant",
+                               content: ["text": "let me check", "parentItemId": "card"])
+        #expect(SubAgentProgress.finalOutputSummary(of: try card(finished), in: [finished, tool, interim]) == reply)
+        // A row exists outside the card (belongs to another card): not shown.
+        let otherRow = try item("o1", type: "message", status: "done", order: 4, role: "assistant",
+                                content: ["text": reply, "parentItemId": "other"])
+        #expect(SubAgentProgress.finalOutputSummary(of: try card(finished), in: [finished, otherRow]) == reply)
+    }
+
+    /// The comparison is text, not structure: whatever kind of visible row
+    /// carries the verbatim reply — a plain message or a reasoning row that
+    /// happens to hold it — the section is suppressed. A nil or blank summary
+    /// never pins anything.
+    @Test func theFinalOutputGateMatchesAnyRowCarryingTheText() throws {
+        let reply = "Done."
+        let finished = try cardItem("card", order: 1, status: "done", summary: reply)
+        let reasoning = try item("r1", type: "reasoning", status: "done", order: 2,
+                                 content: ["text": reply, "parentItemId": "card"])
+        #expect(SubAgentProgress.finalOutputSummary(of: try card(finished), in: [finished, reasoning]) == nil)
+        // Trailing whitespace the connector's tag strip vs. the row's newline
+        // must not defeat the equal-text test.
+        let padded = try cardItem("card", order: 1, status: "done", summary: "  \(reply)\n")
+        let row = try item("m1", type: "message", status: "done", order: 2, role: "assistant",
+                           content: ["text": reply, "parentItemId": "card"])
+        #expect(SubAgentProgress.finalOutputSummary(of: try card(padded), in: [padded, row]) == nil)
+        // No summary, or a blank one, pins nothing.
+        let none = try cardItem("card", order: 1, status: "done")
+        #expect(SubAgentProgress.finalOutputSummary(of: try card(none), in: [none]) == nil)
+        let blank = try cardItem("card", order: 1, status: "done", summary: "   ")
+        #expect(SubAgentProgress.finalOutputSummary(of: try card(blank), in: [blank]) == nil)
+    }
+
     // MARK: Lineage merge (pp 2026-10-09: 恢复别名卡)
 
     /// The two-card shape a legacy connector minted for a resumed task: the

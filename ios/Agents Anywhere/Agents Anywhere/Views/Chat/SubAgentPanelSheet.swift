@@ -310,7 +310,13 @@ struct SubAgentPanelSheet: View {
     }
 
     @ViewBuilder private func outputSection(_ card: SubAgentCard) -> some View {
-        if let summary = card.summary, !summary.isEmpty, !card.phase.isActive {
+        // `finalOutputSummary` returns nil exactly while the activity stream
+        // above already renders this same reply, so a finished card shows its
+        // final answer once, not twice (pp 2026-10-15 真机). When the reply is
+        // not visible as a row (it sits outside the loaded window, a killed
+        // notice carries none), the summary is the only copy and still renders.
+        if let summary = SubAgentProgress.finalOutputSummary(of: card, in: window),
+           !card.phase.isActive {
             VStack(alignment: .leading, spacing: 8) {
                 sectionLabel(String(localized: "最终输出"))
                 ChatMarkdownView(text: summary)

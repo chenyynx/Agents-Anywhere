@@ -315,6 +315,34 @@ enum SubAgentProgress {
             .sorted { ($0.orderSeq, $0.id) < ($1.orderSeq, $1.id) }
     }
 
+    /// The subagent's final reply to pin under the panel's 「最终输出」, or nil
+    /// when the panel would otherwise render that same text twice.
+    ///
+    /// `card.summary` is the task-notification receipt's `<result>` — the
+    /// subagent's **verbatim final reply** (`agent_calls.py`). The panel's
+    /// activity stream (`activityRows`) already renders the subagent's own
+    /// message rows, and since those rows entered the stream (967ddbf6) a
+    /// finished card shows the reply there, so the pinned section became a
+    /// second, identical copy (pp 2026-10-15 真机: 正文流末尾该句紧接
+    /// 「最终输出」又整篇渲染一遍, 逐字一样).
+    ///
+    /// The rule is **text, not structure**: suppress the section exactly while
+    /// a rendered row already carries the same text. When no row does — the
+    /// reply row sits outside the loaded window, a killed notice carries no
+    /// row, the reply never became a row — the summary is the only copy and
+    /// still renders (宁缺勿假: never hide the final output merely to avoid a
+    /// duplicate). Comparison trims surrounding whitespace because the
+    /// connector strips the tag while the projected row may keep a trailing
+    /// newline.
+    static func finalOutputSummary(of card: SubAgentCard, in items: [V2TimelineItem]) -> String? {
+        guard let summary = card.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !summary.isEmpty else { return nil }
+        let alreadyShown = activityRows(of: card, in: items).contains {
+            $0.displayText.trimmingCharacters(in: .whitespacesAndNewlines) == summary
+        }
+        return alreadyShown ? nil : summary
+    }
+
     // MARK: Flat panel (pp 2026-10-08: 不分回合)
 
     /// Every top-level card the session holds, from the same window ∪ sidecar

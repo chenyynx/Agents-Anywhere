@@ -522,6 +522,78 @@ import Testing
         #expect(SubAgentProgress.finalOutputSummary(of: try card(blank), in: [blank]) == nil)
     }
 
+    // MARK: The gate's comparison surface (independent re-verification, 2026-10-16)
+
+    /// The gate compares the **rendered** reply, not the raw wire payload: it
+    /// runs `displayText` (which normalizes a message row through
+    /// `TimelineText.message`) before the equal-text test. So a message whose
+    /// stored text carries the connector's `\n\n[Attached file: …]` tail still
+    /// matches a plain `summary` once the tail is stripped — the pinned section
+    /// is suppressed, and the reply shows exactly once (the row), not twice.
+    ///
+    /// This is the boundary pp flagged: the tail must NOT defeat the dedup.
+    /// Measured: `TimelineText.message(reply + tail) == reply`
+    /// (`TimelineEntryPresentation.swift:191-195`), so the two sides agree.
+    @Test func theFinalOutputGateMatchesDespiteAnAttachmentTailOnTheRow() throws {
+        let reply = "已定位根因并给出方案。"
+        let tail = "\n\n[Attached file: log.txt (text/plain, 12 bytes) at /tmp/log.txt]"
+        let finished = try cardItem("card", order: 1, status: "done", summary: reply)
+        let replyRow = try item("m1", type: "message", status: "done", order: 2, role: "assistant",
+                                content: ["text": reply + tail, "parentItemId": "card"])
+        // The row's rendered text drops the tail, so the plain summary still
+        // matches and the section is suppressed.
+        #expect(replyRow.displayText == reply)
+        #expect(SubAgentProgress.finalOutputSummary(of: try card(finished), in: [finished, replyRow]) == nil)
+        // The stream still carries exactly one copy — the row.
+        #expect(SubAgentProgress.activityRows(of: try card(finished), in: [finished, replyRow]).map(\.id) == ["m1"])
+        // …and the one shown copy is the reply text (what the gate compared).
+        #expect(replyRow.displayText.trimmingCharacters(in: .whitespacesAndNewlines) == reply)
+    }
+
+    /// The other direction of that boundary, pinned as measured behaviour: when
+    /// the `summary` *itself* carries the attachment tail (so it differs from
+    /// the row's tail-stripped `displayText`), the gate does not dedup and the
+    /// section renders. This shape has no known producer — the tail is an
+    /// attachment reference note minted for a **user** turn's content (Codex:
+    /// `reference_note()` at `connector/runtimes/codex/sdk/runtime_client.py:29`;
+    /// the Claude side mints the different, unbracketed `\n\nAttached files:\n-`
+    /// list at `connector/runtimes/claude/turns/attachments.py:81`, which
+    /// `displayText` does not strip), whereas `summary` folds a subagent's
+    /// **assistant** `<result>` reply. So it is a documentation boundary, not a
+    /// live defect. If a future producer ever writes the tail into the result,
+    /// the visible reply would repeat once and this expectation is where that
+    /// flips.
+    @Test func theFinalOutputGateDoesNotDedupWhenSummaryKeepsTheTail() throws {
+        let reply = "Recovered and verified."
+        let tail = "\n\n[Attached file: log.txt (text/plain, 12 bytes) at /tmp/log.txt]"
+        let finished = try cardItem("card", order: 1, status: "done", summary: reply + tail)
+        let replyRow = try item("m1", type: "message", status: "done", order: 2, role: "assistant",
+                                content: ["text": reply + tail, "parentItemId": "card"])
+        // displayText keeps only `reply`; the summary keeps the tail → unequal.
+        #expect(replyRow.displayText == reply)
+        #expect(SubAgentProgress.finalOutputSummary(of: try card(finished), in: [finished, replyRow]) == reply + tail)
+    }
+
+    /// The gate reads its candidate rows through `activityRows`, i.e. the same
+    /// set the panel renders — nothing else. A visible row that carries the
+    /// reply text but is *not* one of the card's activity rows (an unrelated
+    /// main-agent row, or a hidden child) never suppresses the section, because
+    /// the panel would not be rendering it in the activity stream.
+    @Test func theFinalOutputGateOnlyConsultsThePanelsOwnActivityRows() throws {
+        let reply = "All green."
+        let finished = try cardItem("card", order: 1, status: "done", summary: reply)
+        // A main-agent message row (no parentItemId) carries the same text but
+        // is not part of this card's stream.
+        let mainRow = try item("main", type: "message", status: "done", order: 2, role: "assistant",
+                               content: ["text": reply])
+        #expect(SubAgentProgress.finalOutputSummary(of: try card(finished), in: [finished, mainRow]) == reply)
+        // A hidden child row carrying the text is dropped by isVisibleInChat, so
+        // it is not in activityRows and cannot suppress either.
+        let hidden = try item("h1", type: "message", status: "hidden", order: 3, role: "assistant",
+                              content: ["text": reply, "parentItemId": "card"])
+        #expect(SubAgentProgress.finalOutputSummary(of: try card(finished), in: [finished, hidden]) == reply)
+    }
+
     // MARK: Lineage merge (pp 2026-10-09: 恢复别名卡)
 
     /// The two-card shape a legacy connector minted for a resumed task: the

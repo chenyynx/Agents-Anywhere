@@ -7,6 +7,7 @@ import os
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from typing import Any
 
+from connector.logging import logger
 from connector.runtimes.claude.domain.models import model_selection_from_selection_id
 from connector.runtimes.claude.domain.permissions import (
     permission_mode_from_selection_id,
@@ -203,6 +204,125 @@ async def interrupt_client(
     result = interrupt()
     if inspect.isawaitable(result):
         await asyncio.wait_for(result, timeout=timeout)
+    return True
+
+
+# A runtime selection change (model / permission) can be applied to the live
+# CLI process instead of rebuilding it. The SDK exposes that as the
+# `set_model` / `set_permission_mode` control requests (client.py:341/314,
+# _internal/query.py 805/796; the earlier 10-05 recon that "the model is a
+# launch argument" predates them). Measured against CLI 2.1.285/2.1.296 on
+# 2026-10-15: acceptance settles in ~1.6-2.7 s, and a refusal arrives near the
+# CLI's own 15 s model-validation deadline — `set_model` first spends a 1-token
+# `model_validation` probe request against the API, and answers "Couldn't
+# confirm model…" (`retryable: true`) when that probe stalls.
+#
+# So the bound here must sit ABOVE that 15 s deadline: a shorter wait would cut
+# off a validation that was about to succeed, leaving this process's belief
+# (`False`) and the CLI's (`applied`) disagreeing. The upstream
+# `_send_control_request` default is 60 s, which would hold the selection-change
+# path on a silent CLI for a full minute; 20 s keeps the headroom over the CLI
+# deadline while staying inside the server's 30 s RPC budget for THIS call.
+# (The budget is per call, not per PATCH: a PATCH that changes both halves runs
+# this and `set_permission_mode_client` CONCURRENTLY — see the runner's
+# `_apply_selection_in_process` — so one PATCH stays inside a single 20 s
+# window rather than stacking two.)
+CLAUDE_SELECTION_CONTROL_TIMEOUT_SECONDS = 20.0
+
+
+def client_supports_set_model(client: Any) -> bool:
+    """Whether this connection can change model in place.
+
+    Checked on the attribute (the capability), never by version number: the
+    request only exists where the client object actually carries the method
+    (the shape of `sdk/stop_affordance.sdk_supports_stop_task`).
+    """
+
+    return callable(getattr(client, "set_model", None))
+
+
+def client_supports_set_permission_mode(client: Any) -> bool:
+    """Whether this connection can change permission mode in place."""
+
+    return callable(getattr(client, "set_permission_mode", None))
+
+
+async def set_model_client(client: Any, model: str | None) -> bool:
+    """Apply `model` to the live connection; True when the CLI accepted it.
+
+    `model=None` is forwarded verbatim (the SDK reads it as "use the CLI
+    default"), so the caller can express the same reset the launch argument
+    would. Fail-soft: a missing seam, a refusal, or a silent CLI is a False —
+    never an exception into the turn — and the failure is logged so the
+    fallback is observable. Log text carries the target value only, never a
+    credential.
+    """
+
+    return await _apply_selection_control(
+        client,
+        "set_model",
+        model,
+        model,
+        timeout=CLAUDE_SELECTION_CONTROL_TIMEOUT_SECONDS,
+    )
+
+
+async def set_permission_mode_client(client: Any, mode: str) -> bool:
+    """Apply `mode` to the live connection; True when the CLI accepted it.
+
+    Same fail-soft contract as `set_model_client`: refusal/timeout/missing
+    seam return False with a warning, so the caller can fall back to the
+    rebuild path.
+    """
+
+    return await _apply_selection_control(
+        client,
+        "set_permission_mode",
+        mode,
+        mode,
+        timeout=CLAUDE_SELECTION_CONTROL_TIMEOUT_SECONDS,
+    )
+
+
+async def _apply_selection_control(
+    client: Any,
+    method_name: str,
+    argument: Any,
+    failure_value: Any,
+    *,
+    timeout: float,
+) -> bool:
+    method = getattr(client, method_name, None)
+    if not callable(method):
+        logger.warning(
+            "Claude {} unavailable: client has no {} seam; falling back",
+            method_name,
+            method_name,
+        )
+        return False
+    try:
+        result = method(argument)
+        if inspect.isawaitable(result):
+            await asyncio.wait_for(result, timeout=timeout)
+    except TimeoutError:
+        # asyncio.TimeoutError is TimeoutError (3.11+); named explicitly so
+        # the bounded-wait failure is distinguishable from an upstream refusal.
+        logger.warning(
+            "Claude {} timed out after {}s for {}; falling back",
+            method_name,
+            timeout,
+            failure_value,
+        )
+        return False
+    except Exception as exc:  # noqa: BLE001 - fail-soft by contract
+        logger.warning(
+            "Claude {} failed for {}: {}: {}; falling back",
+            method_name,
+            failure_value,
+            type(exc).__name__,
+            exc,
+        )
+        return False
     return True
 
 

@@ -65,12 +65,6 @@ class ClaudeTurnController:
             notifications=self.notifications,
             has_active_turn=self.has_active_turn,
         )
-        self.selections = ClaudeSelectionController(
-            session_states=self.session_states,
-            session_store=self.session_store,
-            catalogs=self.catalogs,
-            notifications=self.notifications,
-        )
         self.runner = ClaudeTurnRunner(
             config=self.config,
             host=self.host,
@@ -83,6 +77,16 @@ class ClaudeTurnController:
             sdk_loader=self.sdk_loader,
             client_factory=self.client_factory,
             oracle=self.oracle,
+        )
+        # The runner owns the connection table, so it supplies the in-process
+        # selection seam (model-switch-in-process-tasks.md §3.1): a selection
+        # change is applied to the live transport instead of rebuilding it.
+        self.selections = ClaudeSelectionController(
+            session_states=self.session_states,
+            session_store=self.session_store,
+            catalogs=self.catalogs,
+            notifications=self.notifications,
+            apply_to_live=self.runner.apply_selection_to_live,
         )
         self.actions = ClaudeTurnActionHandler(
             session_states=self.session_states,

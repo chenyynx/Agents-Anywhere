@@ -6,21 +6,26 @@ import secrets
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, Literal
 
 from connector.logging import logger
 from connector.runtime_protocol import (
     RuntimeAttachment,
     RuntimeConfig,
     RuntimeTimelineItem,
+    SessionNotice,
     timeline_content_hash,
 )
 from connector.runtime_protocol.host import RuntimeHostClient
 from connector.runtimes.claude.catalogs.reader import ClaudeCatalogReader
 from connector.runtimes.claude.domain.context_report import ClaudeContextProbe
+from connector.runtimes.claude.domain.models import model_selection_from_selection_id
 from connector.runtimes.claude.domain.pending_messages import (
     ClaudePendingClientMessageRegistry,
     client_message_text_matches,
+)
+from connector.runtimes.claude.domain.permissions import (
+    permission_mode_from_selection_id,
 )
 from connector.runtimes.claude.domain.session import ClaudeExecution, ClaudeSession
 from connector.runtimes.claude.notifications.projector import (
@@ -29,11 +34,15 @@ from connector.runtimes.claude.notifications.projector import (
 from connector.runtimes.claude.sdk.client import (
     ClaudeClientFactory,
     SdkLoader,
+    client_supports_set_model,
+    client_supports_set_permission_mode,
     connect_client,
     load_sdk,
     new_sdk_client,
     query_client,
     receive_response_messages,
+    set_model_client,
+    set_permission_mode_client,
 )
 from connector.runtimes.claude.sdk.connection import (
     ClaudeConnection,
@@ -95,6 +104,7 @@ from connector.runtimes.claude.turns.attachments import (
     materialize_claude_attachments,
 )
 from connector.runtimes.claude.turns.interactions import ClaudeInteractionController
+from connector.runtimes.claude.turns.selections import SelectionApplyResult
 
 # The execution-lock circuit breaker (pp verdict, 2026-10-02, product-level):
 # guarding a minted-from-silence turn is invariant-shaped, not trigger-shaped,
@@ -226,6 +236,139 @@ PROCESS_RETIRED_UNCONFIRMED_MESSAGE = (
     "shutdown could not be confirmed. This turn produced no result. Please "
     "try again."
 )
+
+# In-process selection change: the deferral disclosure
+# (model-switch-in-process-tasks.md §3.1b). When a model / permission change
+# cannot be applied to the live transport (no SDK seam, an effort change, or
+# the `bypassPermissions` exception) AND that transport hosts live background
+# work a rebuild would kill, the change is deferred until the work drains and
+# the user is told rather than the change going silent.
+#
+# The notice id is stable per session so re-issuing the deferral for a second
+# change (or the give-up disclosure below) updates the same row instead of
+# stacking duplicates, and the resolve can retire it by id.
+SELECTION_DEFERRED_SOURCE = "claude.selection.deferred"
+SELECTION_DEFERRED_MESSAGE = (
+    "有后台任务在跑。切换到「完全访问权限」将在任务结束后生效。"
+)
+SELECTION_RESTART_DEFERRED_MESSAGE = (
+    "有后台任务在跑。本次切换将在任务结束后生效。"
+)
+# A neutral deferral disclosure for a change that could NOT be applied in place
+# and is NOT (any longer) blocked by background work — the give-up path, whose
+# reason may be the bounded-retry ceiling rather than live background. It names
+# no cause (and, for the bypass case, no mode: the selection is already visible
+# in the session UI), so it can never assert a reason that has stopped holding.
+SELECTION_UNLANDED_MESSAGE = "切换尚未生效。会话空闲后将自动生效。"
+
+# Why a deferral notice is being issued. The call site decides it from the
+# LIVE fact at that moment, never a stale one (a drain can land between two
+# checks): "background" = background work is live now; "unlanded" = it is not,
+# the change is deferred for another reason (the retry ceiling).
+SelectionDeferredCause = Literal["background", "unlanded"]
+
+# In-process selection change: a transient refusal
+# (model-switch-in-process-tasks.md §3.1, real-CLI probe 2026-10-15). The SDK
+# answers `set_model` only after a 1-token `model_validation` probe against the
+# API (15 s deadline); when that probe stalls the CLI refuses with
+# `"Couldn't confirm model …" (retryable: true)`. The refusal is THEREFORE NOT
+# the same fact as "this transport cannot take the change": rebuilding would
+# kill the background work this whole change exists to protect, for a failure
+# that a later attempt clears. So a retryable refusal keeps the session on the
+# old selection, records the pending target, and retries at the next event
+# (background drain, or the next turn) — bounded, event-driven, never a poll.
+# Real-CLI evidence: 4 bounded attempts were enough to settle reliably.
+SELECTION_IN_PROCESS_MAX_ATTEMPTS = 4
+# Between two in-place attempts of a transiently-refused change. The refusal
+# is time-bounded (~5 s, the CLI's own model-validation deadline), so a short
+# spacing clears it in a couple of tries; the loop is bounded by the attempt
+# ceiling, so this is a bounded backoff, not an idle poll.
+SELECTION_IN_PROCESS_RETRY_DELAY_SECONDS = 2.0
+SELECTION_PENDING_SOURCE = "claude.selection.pending"
+
+
+@dataclass(slots=True)
+class _PendingSelection:
+    """One selection change whose in-place apply is still being retried.
+
+    `attempts` counts the in-place attempts already spent; the ceiling
+    (`SELECTION_IN_PROCESS_MAX_ATTEMPTS`) is what keeps the retry from
+    becoming an unbounded loop. `target` is the selection the user asked for,
+    retained so a retry applies the request even after `session.selections`
+    moved on under a newer change.
+    """
+
+    target: dict[str, str | None]
+    attempts: int = 0
+
+
+def _selection_deferred_notice_id(session_id: str) -> str:
+    return f"notice_claude_selection_deferred_{session_id}"
+
+
+def _selection_deferred_notice(
+    session: ClaudeSession,
+    *,
+    cause: SelectionDeferredCause,
+    switching_bypass: bool,
+) -> SessionNotice:
+    # The message must state a reason that still holds. `cause="background"`
+    # means background work is live RIGHT NOW (checked at the call site);
+    # `cause="unlanded"` means it is not, so the neutral text is used instead —
+    # claiming "有后台任务在跑" there would be a lie (the drain can land inside
+    # the retry interval between the active-ids check and the give-up).
+    if cause == "unlanded":
+        message = SELECTION_UNLANDED_MESSAGE
+    elif switching_bypass:
+        message = SELECTION_DEFERRED_MESSAGE
+    else:
+        message = SELECTION_RESTART_DEFERRED_MESSAGE
+    return SessionNotice(
+        notice_id=_selection_deferred_notice_id(session.session_id),
+        session_id=session.session_id,
+        runtime="claude",
+        type="notification",
+        title="切换已延后",
+        message=message,
+        severity="info",
+        status="open",
+        source={
+            "kind": "selection_deferred",
+            "cause": cause,
+            "bypass": switching_bypass,
+            **(
+                {"sessionId": session.external_session_id}
+                if session.external_session_id
+                else {}
+            ),
+        },
+        context={"sessionId": session.session_id},
+    )
+
+
+def _resolved_selection_notice(session: ClaudeSession) -> SessionNotice:
+    # This notice is NEVER RENDERED by any client: all four render
+    # `type="notification"` notices only when `status == "open"`
+    # (ios/.../Models/Chat/SessionNoticeStore.swift:25,
+    # android/.../feature/sessiondetail/SessionRuntimeState.kt:157,
+    # web-next/src/components/session-detail.tsx:2837,
+    # desktop-workbench/renderer/src/components/session-detail.tsx:2817). Its
+    # ONLY effect is to close the still-shown `status="open"` deferral card,
+    # which it does by reusing that card's notice id (readers key by id and
+    # drop terminal statuses). Do not spend effort polishing this title/message
+    # — nobody sees it; keep it only so the terminal upsert is well-formed.
+    return SessionNotice(
+        notice_id=_selection_deferred_notice_id(session.session_id),
+        session_id=session.session_id,
+        runtime="claude",
+        type="notification",
+        title="切换已生效",
+        message="会话现在使用新的设置。",
+        severity="success",
+        status="resolved",
+        source={"kind": "selection_deferred"},
+        context={"sessionId": session.session_id},
+    )
 
 
 def _raw_transcript_scan(session: ClaudeSession) -> RawTranscriptScan | None:
@@ -369,6 +512,22 @@ class ClaudeTurnRunner:
     agent_card_sweep_task: asyncio.Task[None] | None = field(
         default=None, init=False
     )
+    #: Deferred selection-change landings (model-switch-in-process-tasks.md
+    #: §3.1b): one background task per session, armed when a selection change
+    #: could not be applied to the live transport because it still hosts
+    #: background work. The task waits — event-driven — for that work to drain
+    #: and then lands the change by rebuilding. Cancelled on `stop`.
+    _selection_landing_tasks: dict[str, asyncio.Task[None]] = field(
+        default_factory=dict, init=False
+    )
+    #: Selection changes whose in-place apply is still being retried, keyed by
+    #: session. A transient refusal (the CLI's model-validation probe stalled,
+    #: `retryable: true`) is NOT a capability failure: it is kept here and
+    #: retried at the next event with a bounded attempt count, never by
+    #: rebuilding the process under live background work.
+    _pending_selections: dict[str, _PendingSelection] = field(
+        default_factory=dict, init=False
+    )
 
     def __post_init__(self) -> None:
         # One allocator for the whole timeline: a compaction separator must
@@ -409,6 +568,13 @@ class ClaudeTurnRunner:
         if card_sweep is not None and not card_sweep.done():
             card_sweep.cancel()
             await asyncio.gather(card_sweep, return_exceptions=True)
+        landings = tuple(self._selection_landing_tasks.values())
+        self._selection_landing_tasks.clear()
+        for landing in landings:
+            if not landing.done():
+                landing.cancel()
+        if landings:
+            await asyncio.gather(*landings, return_exceptions=True)
         for connection in tuple(self.connections.values()):
             await connection.close()
 
@@ -1433,14 +1599,18 @@ class ClaudeTurnRunner:
         session: ClaudeSession,
         connection: ClaudeConnection,
     ) -> None:
-        """Wait out a transport's background work instead of refusing to rebuild.
+        """Wait out a transport's background work before landing a rebuild.
 
-        The model is a CLI launch argument, so a selection change must rebuild
-        the process; the do-not-retire invariant forbids killing live
-        background work. This used to refuse — the next turn failed with
-        `RuntimeError("Claude selection change requires background work to
-        finish")` and the user's message never ran (measured 2026-10-05 in
-        ~/aa-test/model-switch-composer-harness). Wait instead:
+        This is now the DEFERRED-LANDING wait, not the message path: since
+        `model-switch-in-process-tasks.md` (2026-10-15) a selection change is
+        applied to the live transport in place (`apply_selection_to_live`), and
+        when it cannot be — no SDK seam, an effort change, or the
+        `bypassPermissions` exception — the user's next turn runs on the live
+        transport with the selections it already carries
+        (`connection_for` never blocks). This method is only called by the
+        landing task that fires once the transport's background work drains,
+        so it can no longer pin a user's message; it waits, then the caller
+        (`_land_selection_after_background`) rebuilds on the new selection.
 
         - the drain is event-driven — the last terminal task frame is the
           signal (`ClaudeBackgroundTasks.drained`);
@@ -1448,18 +1618,13 @@ class ClaudeTurnRunner:
           (red team F-B): a real background task that keeps working is
           waited for as long as its terminal frames keep coming, but an id
           that never drains — a stale snapshot id, a lost terminal — cannot
-          pin the user's next message forever. On either ceiling the wait
-          logs and proceeds to the rebuild below, which is the explicit
-          path (the CLI's own exit ends its tasks);
+          pin the landing forever. On either ceiling the wait logs and
+          returns; the caller re-checks before rebuilding;
         - a second switch during the wait is seen on the next pass, and the
-          caller re-checks the selections when this returns;
-        - the wait is cancellable: a stop cancels the driving turn's task and
-          the `CancelledError` propagates into the interrupted terminal the
-          turn machinery already publishes.
-
-        State is never republished from here: the queued turn's "waiting"
-        state (published by `start_turn`) stays the honest one until the turn
-        actually runs, so no client sees a fake idle or a re-locked composer.
+          caller re-checks the selections when this returns (a switch back to
+          what the transport already carries needs no rebuild);
+        - the wait is cancellable: a runtime stop cancels the landing task and
+          the `CancelledError` propagates.
         """
 
         settle = float(self.config.values.get("selectionChangeSettleSeconds", 1.0))
@@ -1471,7 +1636,7 @@ class ClaudeTurnRunner:
                 raise asyncio.CancelledError
             if not await connection.wait_background_drained(ceiling=ceiling):
                 logger.warning(
-                    "Claude selection change proceeding without drained "
+                    "Claude selection change landing without drained "
                     "background work session_id={} background_tasks={}",
                     session.session_id,
                     len(connection.background.active_ids),
@@ -1481,7 +1646,7 @@ class ClaudeTurnRunner:
                 raise asyncio.CancelledError
             if not await connection.wait_settled(grace=settle, ceiling=ceiling):
                 logger.warning(
-                    "Claude selection change proceeding without a settled "
+                    "Claude selection change landing without a settled "
                     "transport session_id={} background_tasks={}",
                     session.session_id,
                     len(connection.background.active_ids),
@@ -1493,6 +1658,601 @@ class ClaudeTurnRunner:
                 return
             # Otherwise loop: the wake turn may have dispatched fresh
             # background work, and that new batch owns the transport too.
+
+    async def apply_selection_to_live(
+        self,
+        session: ClaudeSession,
+        selections: Mapping[str, str | None],
+    ) -> SelectionApplyResult:
+        """Apply a selection change to this session's live transport in place.
+
+        The main path of `model-switch-in-process-tasks.md` §3.1: a model /
+        permission change reaches the running CLI process through the SDK's
+        `set_model` / `set_permission_mode` control requests, so the next turn
+        runs on the new selection with no process rebuild and no message held.
+
+        The three-way outcome (`SelectionApplyResult`) is the whole point of
+        the real-CLI probe of 2026-10-15: a refusal the CLI marks retryable
+        (its model-validation probe stalled) must NOT be answered by rebuilding
+        the process — that kills the background work this change protects — so
+        it is kept as a bounded retry, while a genuine capability failure (no
+        seam / effort change / bypass) falls back as before. Never blocks,
+        never rebuilds here.
+        """
+
+        connection = self.connections.get(session.session_id)
+        if connection is None or connection.closing:
+            return SelectionApplyResult.UNAVAILABLE
+        target = dict(selections)
+        if connection.selections == target:
+            # Nothing selection-relevant changed: the transport already
+            # carries the target.
+            self._pending_selections.pop(session.session_id, None)
+            return SelectionApplyResult.APPLIED
+        if not self._selection_applies_in_process(connection, target, session):
+            # The change cannot be applied in place at all. A pending retry
+            # makes no sense here (no attempt can ever succeed), so drop it.
+            self._pending_selections.pop(session.session_id, None)
+            if connection.background.active_ids:
+                # The transport hosts background work the do-not-retire
+                # invariant protects, so it cannot be rebuilt without killing
+                # it. Disclose the deferral and arm the landing; the caller's
+                # next turn runs on the live transport as-is (AC2). The cause
+                # is "background" — `active_ids` was checked just above.
+                await self._defer_selection_change(
+                    session, connection, target, cause="background"
+                )
+                self._ensure_selection_landing(session, connection)
+            return SelectionApplyResult.UNAVAILABLE
+        result = await self._apply_selection_in_process(connection, target, session)
+        if result is SelectionApplyResult.APPLIED:
+            self._pending_selections.pop(session.session_id, None)
+            return SelectionApplyResult.APPLIED
+        # DEFERRED: the CLI refused a change it is allowed to take (its
+        # model-validation probe stalled, `retryable: true`). A rebuild would
+        # kill any live background work for a refusal a later attempt clears,
+        # so it is only acceptable when there is no background work to lose.
+        if not connection.background.active_ids:
+            # Cheap, side-effect-free: let the controller's idle rebuild land
+            # the selection instead of holding a retry for a transport nobody
+            # is protecting.
+            return SelectionApplyResult.UNAVAILABLE
+        self._pending_selections[session.session_id] = _PendingSelection(target=target)
+        await self._pending_selection_status(session, target)
+        # Retry at the next event: the background drain (event-driven), or the
+        # next turn (`connection_for`). Bounded by SELECTION_IN_PROCESS_MAX_ATTEMPTS.
+        self._ensure_selection_landing(session, connection)
+        return SelectionApplyResult.DEFERRED
+
+    def _selection_applies_in_process(
+        self,
+        connection: ClaudeConnection,
+        target: Mapping[str, str | None],
+        session: ClaudeSession,
+    ) -> bool:
+        """Whether the whole `target` can be applied to the live transport.
+
+        Both halves must be applicable — a model change the CLI accepts still
+        cannot stand in for an effort change (the SDK has no seam for effort),
+        and `bypassPermissions` is refused in place by upstream. When any half
+        is not, the caller falls back rather than applying a partial one. This
+        is purely the CAPABILITY question (the SDK seam + the launch-argument
+        shapes); a transient upstream refusal discovered while calling the seam
+        is `DEFERRED`, not this.
+        """
+
+        client = connection.client
+        return self._model_applies_in_process(
+            connection, target, session
+        ) and self._permission_applies_in_process(connection, target, client)
+
+    def _model_applies_in_process(
+        self,
+        connection: ClaudeConnection,
+        target: Mapping[str, str | None],
+        session: ClaudeSession,
+    ) -> bool:
+        if target.get("model") == connection.selections.get("model"):
+            return True
+        if not client_supports_set_model(connection.client):
+            return False
+        try:
+            target_selection = model_selection_from_selection_id(
+                target.get("model"),
+                self.catalogs.custom_models,
+                self.catalogs.cli_models,
+            )
+            current_selection = model_selection_from_selection_id(
+                connection.selections.get("model"),
+                self.catalogs.custom_models,
+                self.catalogs.cli_models,
+            )
+        except Exception:  # noqa: BLE001 - unknown selection: fall back
+            return False
+        # `set_model` carries the model only. An effort change needs the launch
+        # argument, so it is not applicable in place.
+        target_effort = target_selection.effort_id if target_selection else None
+        current_effort = current_selection.effort_id if current_selection else None
+        return target_effort == current_effort
+
+    def _permission_applies_in_process(
+        self,
+        connection: ClaudeConnection,
+        target: Mapping[str, str | None],
+        client: Any,
+    ) -> bool:
+        if target.get("permission") == connection.selections.get("permission"):
+            return True
+        if not client_supports_set_permission_mode(client):
+            return False
+        try:
+            mode = permission_mode_from_selection_id(target.get("permission"))
+        except Exception:  # noqa: BLE001 - unknown selection: fall back
+            return False
+        # Upstream refuses to enter all-permissions in place on a process that
+        # was not launched with `--dangerously-skip-permissions`; that is a
+        # capability shape (§3.2), handled by the caller's deferral/rebuild.
+        return mode != "bypassPermissions"
+
+    async def _apply_selection_in_process(
+        self,
+        connection: ClaudeConnection,
+        target: Mapping[str, str | None],
+        session: ClaudeSession,
+    ) -> SelectionApplyResult:
+        """Run the SDK control requests and update `connection.selections`.
+
+        The model and permission halves are applied CONCURRENTLY. Each control
+        request is bounded by `CLAUDE_SELECTION_CONTROL_TIMEOUT_SECONDS`
+        (`sdk/client.py`), and a single PATCH can carry both; running them in
+        sequence would stack two full timeouts (~40 s) past the server's 30 s
+        RPC budget (`server/agent_server/services/session_run.py`). Gather
+        keeps one PATCH inside a single bounded window.
+
+        A refusal on either half is not extrapolated into a lie — the
+        connection records only what the CLI actually accepted. A refusal is
+        retryable (`DEFERRED`): the pending target is recorded for a bounded
+        retry rather than a rebuild, and the session stays usable on whatever
+        the transport actually carries.
+        """
+
+        client = connection.client
+        applied_model = target.get("model") == connection.selections.get("model")
+        applied_permission = (
+            target.get("permission") == connection.selections.get("permission")
+        )
+        model_call = self._set_model_call(client, target) if not applied_model else None
+        permission_call = (
+            self._set_permission_call(client, target)
+            if not applied_permission
+            else None
+        )
+        calls = [call for call in (model_call, permission_call) if call is not None]
+        if calls:
+            results = await asyncio.gather(*calls)
+            index = 0
+            if model_call is not None:
+                applied_model = results[index]
+                index += 1
+            if permission_call is not None:
+                applied_permission = results[index]
+        if applied_model and applied_permission:
+            connection.selections = dict(target)
+            logger.info(
+                "Claude selection change applied in process session_id={}",
+                session.session_id,
+            )
+            return SelectionApplyResult.APPLIED
+        # A half-applied pair is a partial success: record what the CLI truly
+        # accepted so `connection_for` sees the remaining mismatch.
+        applied = dict(connection.selections)
+        if applied_model:
+            applied["model"] = target.get("model")
+        if applied_permission:
+            applied["permission"] = target.get("permission")
+        connection.selections = applied
+        # The caller gated this call on `_selection_applies_in_process`, so
+        # every mismatched half was attempted through a present seam. A refusal
+        # is therefore the transient, retryable shape (real-CLI probe
+        # 2026-10-15): the caller records the pending target and retries; this
+        # core never rebuilds and never manages the pending state itself.
+        logger.warning(
+            "Claude in-process selection change refused session_id={} "
+            "model_applied={} permission_applied={}",
+            session.session_id,
+            applied_model,
+            applied_permission,
+        )
+        return SelectionApplyResult.DEFERRED
+
+    async def _set_model_call(
+        self,
+        client: Any,
+        target: Mapping[str, str | None],
+    ) -> bool:
+        model_selection = model_selection_from_selection_id(
+            target.get("model"),
+            self.catalogs.custom_models,
+            self.catalogs.cli_models,
+        )
+        return await set_model_client(
+            client,
+            model_selection.cli_model if model_selection else None,
+        )
+
+    async def _set_permission_call(
+        self,
+        client: Any,
+        target: Mapping[str, str | None],
+    ) -> bool:
+        mode = permission_mode_from_selection_id(target.get("permission"))
+        return await set_permission_mode_client(client, mode)
+
+    async def _pending_selection_status(
+        self,
+        session: ClaudeSession,
+        target: Mapping[str, str | None],
+    ) -> None:
+        """Publish machine-readable "selection not yet in effect" state.
+
+        A marker for diagnostics: the metadata carries `selectionPending`, the
+        pending `selectionTarget`, and a `statusReason`. The session's own
+        status is preserved verbatim (never a fabricated idle — AC2). No client
+        consumes these keys today (nothing reads them, and claude's
+        `session_state_update` has no `status_reason` parameter, so the reason
+        never reaches a top-level field); the user-facing signal is the notice
+        (`_defer_selection_change`), not this.
+        """
+
+        state = self.notifications.session_states.get(session.session_id)
+        await self.notifications.session_state.session_state_update(
+            session,
+            state.status if state is not None else "idle",
+            metadata={
+                "source": SELECTION_PENDING_SOURCE,
+                "selectionPending": True,
+                "selectionTarget": dict(target),
+                "statusReason": "selection_change_retrying",
+            },
+        )
+
+    async def _clear_pending_selection_status(
+        self,
+        session: ClaudeSession,
+    ) -> None:
+        """Retire the "selection not yet in effect" runtime state.
+
+        Metadata merges stickily (`runtime_protocol/state_cache.py`), so
+        flipping `selectionPending` alone would leave `selectionTarget` /
+        `statusReason` behind forever, re-announcing a deferral on every later
+        update. All three keys are therefore overwritten explicitly (to `None`
+        for the two that carry a value).
+        """
+
+        state = self.notifications.session_states.get(session.session_id)
+        await self.notifications.session_state.session_state_update(
+            session,
+            state.status if state is not None else "idle",
+            metadata={
+                "source": SELECTION_PENDING_SOURCE,
+                "selectionPending": False,
+                "selectionTarget": None,
+                "statusReason": None,
+            },
+        )
+
+    async def _resolve_selection_notice(self, session: ClaudeSession) -> None:
+        """Retire an OPEN deferral notice once the selection is in effect.
+
+        The deferral notice (capability / bypass) is resolved wherever the
+        change actually lands — the in-place retry, the landing task's rebuild,
+        OR the next turn's `connection_for` rebuild. Centralizing it here
+        (gated on an open notice) is what keeps that last path from leaving a
+        `status=open` row hanging forever (red team Q-4).
+        """
+
+        for notice in self.notifications.notices.current_for_session(
+            session.session_id
+        ):
+            if notice.source.get("kind") == "selection_deferred":
+                await self.notifications.notice_handler.notice_upsert(
+                    _resolved_selection_notice(session)
+                )
+                return
+
+    async def _defer_selection_change(
+        self,
+        session: ClaudeSession,
+        connection: ClaudeConnection,
+        target: Mapping[str, str | None],
+        *,
+        cause: SelectionDeferredCause,
+    ) -> None:
+        """Disclose a selection change that cannot land yet, and why.
+
+        `cause` is decided by the CALLER from the live fact at its own moment,
+        so the message can never assert a reason that has stopped holding (a
+        background drain can land inside the retry interval). "background" =
+        background work is live now; "unlanded" = it is not. The notice names
+        the deferral; the landing (or the next turn's rebuild) lands it.
+        """
+
+        bypass = target.get("permission") != connection.selections.get(
+            "permission"
+        )
+        try:
+            permission_mode = permission_mode_from_selection_id(
+                target.get("permission")
+            )
+        except Exception:  # noqa: BLE001
+            permission_mode = None
+        switching_bypass = bypass and permission_mode == "bypassPermissions"
+        await self.notifications.notice_handler.notice_upsert(
+            _selection_deferred_notice(
+                session,
+                cause=cause,
+                switching_bypass=switching_bypass,
+            )
+        )
+
+    def _ensure_selection_landing(
+        self,
+        session: ClaudeSession,
+        connection: ClaudeConnection,
+    ) -> None:
+        """Arm the one background task that lands a deferred selection change.
+
+        Idempotent per session: a second turn arriving while the change is
+        still deferred must not spawn a parallel landing.
+        """
+
+        if self.stopping:
+            return
+        existing = self._selection_landing_tasks.get(session.session_id)
+        if existing is not None and not existing.done():
+            return
+        self._selection_landing_tasks[session.session_id] = asyncio.create_task(
+            self._land_selection_after_background(session, connection)
+        )
+
+    async def _land_selection_after_background(
+        self,
+        session: ClaudeSession,
+        connection: ClaudeConnection,
+    ) -> None:
+        """Land a deferred selection change without ever blocking a message.
+
+        Bounded and event-driven — never an idle poll. Two phases, by the kind
+        of deferral:
+
+        * Phase 1 (transient refusal, `_pending_selections`): retry the
+          in-place apply WHILE background work is still live — the whole
+          reason a retryable refusal must not rebuild. The CLI's refusal is
+          time-bounded (its model-validation probe), so attempts are spaced by
+          `SELECTION_IN_PROCESS_RETRY_DELAY_SECONDS` and capped by
+          `SELECTION_IN_PROCESS_MAX_ATTEMPTS`: a finite, bounded retry that a
+          persistently-refusing CLI cannot turn into a spin. On success (or the
+          ceiling) the pending state is cleared.
+        * Phase 2 (capability deferral): wait for the transport's background
+          work to drain (event-driven, `wait_for_selection_change`), then
+          rebuild on the new selection via the idle refresh.
+
+        If the transport changed under it, the user switched back, or the drain
+        ceiling is reached with work still live, this returns and leaves the
+        mismatch to the next `connection_for` — which rebuilds once the
+        background work is gone. A STALE id (a terminal frame that never
+        arrives) blocks that too; that case is an accepted, observable legacy
+        documented at the ceiling branch below.
+        """
+
+        started = time.monotonic()
+        try:
+            # Phase 1: bounded in-place retry of a transient refusal, only
+            # while background work is still live (the reason not to rebuild).
+            while self._pending_selections.get(session.session_id) is not None:
+                if not self._selection_landing_transport_intact(session, connection):
+                    return
+                if not connection.background.active_ids:
+                    # Background drained while a refusal stood: fall through
+                    # to phase 2, where a rebuild lands the change cheaply.
+                    break
+                await asyncio.sleep(
+                    float(
+                        self.config.values.get(
+                            "selectionInProcessRetryDelaySeconds",
+                            SELECTION_IN_PROCESS_RETRY_DELAY_SECONDS,
+                        )
+                    )
+                )
+                if not self._selection_landing_transport_intact(session, connection):
+                    return
+                await self._attempt_pending_selection(session, connection)
+            # Phase 2: land any remaining mismatch by rebuilding, but only once
+            # the background work the rebuild would kill is gone.
+            if not self._selection_landing_transport_intact(session, connection):
+                return
+            if connection.selections == dict(session.selections):
+                return
+            if connection.background.active_ids:
+                await self.wait_for_selection_change(session, connection)
+                if not self._selection_landing_transport_intact(
+                    session, connection
+                ):
+                    return
+            if connection.background.active_ids:
+                # The drain ceiling was reached with work still live. Do not
+                # rebuild under it (that would kill the work). `connection_for`
+                # will land it on a later turn ONLY IF `active_ids` has emptied
+                # by then — it re-checks the same condition before rebuilding.
+                #
+                # ACCEPTED RESIDUAL (pp 2026-10-15, decision recorded here;
+                # this comment is the tracked record). A genuinely-running task
+                # drains and the change lands later. But a STALE id — one whose
+                # terminal frame never arrives (CLI resume/notification gap) —
+                # never empties, and blocks the landing at all three points that
+                # gate on `active_ids`:
+                #   * this phase 2,
+                #   * `connection_for`'s rebuild (it too requires no active
+                #     background),
+                #   * idle reclaim (`reclaim_idle_connection` lists
+                #     `connection.background.active_ids` among its keep-alive
+                #     conditions), so the transport is never recycled either.
+                # The session then runs its OLD selection while the client
+                # shows the new one and this deferral notice stays `open`.
+                # The id CAN still be released by three existing paths, none of
+                # which rebuild: (1) the task's real terminal frame finally
+                # arriving; (2) the zombie-card evidence sweep's
+                # `ClaudeBackgroundTasks.release` (sdk/background.py); (3)
+                # session stop / connector restart, which ends the process.
+                # ACCEPTED, not hidden: the alternative (force-rebuild on the
+                # ceiling) would kill live background work, which pp judged far
+                # worse than a late switch. The only cost control is this
+                # observability (red team P2-3): the WARNING below.
+                logger.warning(
+                    "Claude selection landing deferred: drain ceiling reached "
+                    "with live background work session_id={} active_ids={} "
+                    "elapsed_s={:.1f}",
+                    session.session_id,
+                    len(connection.background.active_ids),
+                    time.monotonic() - started,
+                )
+                return
+            if connection.selections == dict(session.selections):
+                return
+            await self.refresh_idle_connection(session)
+            landed = self.connections.get(session.session_id)
+            if landed is not None and landed.selections == dict(session.selections):
+                self._pending_selections.pop(session.session_id, None)
+                # The change is now in effect; clear the honest "not yet
+                # applied" state. The notice is retired by `connection_for`
+                # (the rebuild this delegates to), so it is resolved there.
+                await self._clear_pending_selection_status(session)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Claude deferred selection landing failed session_id={}",
+                session.session_id,
+            )
+        finally:
+            if (
+                self._selection_landing_tasks.get(session.session_id)
+                is asyncio.current_task()
+            ):
+                self._selection_landing_tasks.pop(session.session_id, None)
+
+    def _selection_landing_transport_intact(
+        self,
+        session: ClaudeSession,
+        connection: ClaudeConnection,
+    ) -> bool:
+        """Whether the landing may still act on this transport."""
+
+        return not (
+            self.stopping
+            or connection.closing
+            or self.connections.get(session.session_id) is not connection
+        )
+
+    async def _attempt_pending_selection(
+        self,
+        session: ClaudeSession,
+        connection: ClaudeConnection,
+    ) -> None:
+        """Make ONE bounded re-attempt of a transiently-refused change.
+
+        The attempt counter is the ceiling; when it is spent (or the target
+        stopped being applicable in place) the pending state is dropped, so a
+        persistently-refusing CLI cannot spin. The caller spaces attempts and
+        bounds their number.
+        """
+
+        pending = self._pending_selections.get(session.session_id)
+        if pending is None:
+            return
+        if connection.selections == pending.target:
+            self._pending_selections.pop(session.session_id, None)
+            await self._clear_pending_selection_status(session)
+            return
+        if pending.attempts >= SELECTION_IN_PROCESS_MAX_ATTEMPTS:
+            await self._give_up_pending_selection(
+                session,
+                connection,
+                reason="attempt_ceiling",
+                attempts=pending.attempts,
+            )
+            return
+        if not self._selection_applies_in_process(
+            connection, pending.target, session
+        ):
+            # The target is no longer applicable in place at all (e.g. it
+            # became an effort change under a newer request): stop retrying,
+            # but do not go silent about the mismatch.
+            await self._give_up_pending_selection(
+                session,
+                connection,
+                reason="no_longer_applicable",
+                attempts=pending.attempts,
+            )
+            return
+        pending.attempts += 1
+        result = await self._apply_selection_in_process(
+            connection, pending.target, session
+        )
+        # Only APPLIED falls through to a retry-ending action here; any
+        # non-APPLIED outcome is DEFERRED (`_apply_selection_in_process`
+        # returns exactly APPLIED or DEFERRED — a seam failure surfaces as
+        # DEFERRED and the real backstop is the attempt ceiling above, not a
+        # rebuild). So there is deliberately no UNAVAILABLE branch: it would be
+        # dead code.
+        if result is SelectionApplyResult.APPLIED:
+            self._pending_selections.pop(session.session_id, None)
+            await self._clear_pending_selection_status(session)
+
+    async def _give_up_pending_selection(
+        self,
+        session: ClaudeSession,
+        connection: ClaudeConnection,
+        *,
+        reason: str,
+        attempts: int,
+    ) -> None:
+        """Stop retrying a refused change, visibly.
+
+        Two obligations, both from the red-team P2-2: the sticky pending state
+        must be cleared (or `selectionPending` and its reason would ride every
+        future update), and the user must be TOLD — the controller already
+        published the new selection at PATCH time, so the client shows the new
+        model while the transport still runs the old one. Silence there is the
+        "displays new, runs old" lie this whole change exists to avoid.
+
+        The disclosure's cause is read from the LIVE `active_ids` here, not
+        assumed: the retry loop that leads here sleeps for
+        `SELECTION_IN_PROCESS_RETRY_DELAY_SECONDS` between the active-ids check
+        and this point, so background work can drain in that gap. Claiming
+        "有后台任务在跑" then would be false (red team: this exact race).
+        """
+
+        self._pending_selections.pop(session.session_id, None)
+        await self._clear_pending_selection_status(session)
+        logger.warning(
+            "Claude in-process selection change abandoned session_id={} "
+            "reason={} attempts={}",
+            session.session_id,
+            reason,
+            attempts,
+        )
+        # Disclose the still-standing deferral (the in-place path could not
+        # land it). The transport keeps running the old selection until the
+        # next `connection_for` rebuilds once no background work blocks it.
+        await self._defer_selection_change(
+            session,
+            connection,
+            session.selections,
+            cause=(
+                "background" if connection.background.active_ids else "unlanded"
+            ),
+        )
 
     def subagent_control_supported(self) -> bool:
         """Whether the loaded SDK offers the per-task stop control at all.
@@ -1534,11 +2294,34 @@ class ClaudeTurnRunner:
             if not existing.closing and existing.selections == session.selections:
                 existing.cancel_idle()
                 return existing
-            if existing.background.active_ids:
-                await self.wait_for_selection_change(session, existing)
-            if not existing.closing and existing.selections == session.selections:
-                # A second switch during the wait may land back on the
-                # selection this transport already carries.
+            if (
+                not existing.closing
+                and existing.background.active_ids
+                and existing.selections != session.selections
+            ):
+                # The transport carries a different selection and hosts live
+                # background work a rebuild would kill. Since the in-process
+                # path (model-switch-in-process-tasks.md, 2026-10-15) applied
+                # every applicable change to the live transport at update time,
+                # a mismatch here is one of:
+                #   * a transient refusal waiting on a bounded retry
+                #     (`_pending_selections`, retried by the event-driven
+                #     landing task — NOT on this message path), or
+                #   * a change that cannot be applied in place (no seam / effort
+                #     change / the bypass exception).
+                #
+                # Either way the user's message must not be held behind the
+                # background work (AC2, pp's hard requirement), and no retry
+                # belongs on this path: an in-place attempt here could block
+                # the turn for up to the seam's control timeout. Run this turn
+                # on the live transport as-is; the landing task lands the
+                # change on its own once the work drains.
+                logger.warning(
+                    "Claude turn running on a transport with a pending "
+                    "selection change session_id={} background_tasks={}",
+                    session.session_id,
+                    len(existing.background.active_ids),
+                )
                 existing.cancel_idle()
                 return existing
             await existing.close()
@@ -1635,6 +2418,15 @@ class ClaudeTurnRunner:
             ),
         )
         self.connections[session.session_id] = connection
+        # The rebuild carries the new selection, so any pending marker / open
+        # deferral notice for this session is now stale: clear both here,
+        # whether the rebuild was reached from the idle refresh, the next turn,
+        # or the landing task (red team Q-4 — this is the path where a notice
+        # would otherwise hang open forever). With no pending state and no open
+        # deferral notice this is a no-op, so a routine rebuild pays nothing.
+        if self._pending_selections.pop(session.session_id, None) is not None:
+            await self._clear_pending_selection_status(session)
+        await self._resolve_selection_notice(session)
         return connection
 
     async def refresh_idle_connection(self, session: ClaudeSession) -> None:

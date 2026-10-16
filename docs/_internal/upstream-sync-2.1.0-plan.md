@@ -80,3 +80,21 @@ d03066cf  relay 保活，任务不再静默死
   - v1 相关：`test_unversioned_v1_database_archives_then_removes_legacy_storage`、`test_runtime_sqlite_environment_is_rejected`、`test_explicit_sqlite_url_remains_available_for_legacy_tools`、`test_v1_rehearsal_requires_postgres_target`（v1 工具已随上游移除，可能整体作废）
 - 迁移号已重编号：我们 v2_42/43（已上生产）保留；上游 → **v2_44/45/46**；`CURRENT_SCHEMA_REVISION=v2_46`。
 - 迁移号重编号后必须验：空库→v2_46→降级→升级往返（上游自验法，见 test_every_adjacent_schema_upgrade）。
+
+## 块 7 · 独立审查后的修复（pp 2026-10-16 令"可以"）
+
+三个 reviewer（A iOS 语义 / B 数据链 / C 跨端契约）审完，复现属实的 P2 修复：
+
+### F1 · 发送队列 echo 对账被上游门控吃掉（iOS）
+- **根因**：合并取了上游版 `V2SessionModel.swift` 的 `if !pendingMessages.isEmpty { for item in items { confirmEcho(item) } }`；上游无发送队列故等价，我们有队列故不等价。队列在途时 `pendingMessages` 为空，批量读取路径（hydrate/loadLatest/applyHistory/snapshotRequired）的对账被跳过 → 队列头滞留至 `demoteStaleAwaitingEcho`（60s）。
+- **修法**：门控补 `|| !sendQueue.items.isEmpty`；补一条经 `update()` 驱动、无 pending、队列在途的对账用例（现有用例直调 `confirmEcho` 绕过该行）。
+
+### F3 · recoveryDiagnostics 新增项可能不落盘（iOS）
+- **根因**：上游把 `emit` 改成写入门控（`persist==true` 才标脏）、`flushCache` 只写 `isDirty` 条目；dev 二者都无条件。`recordRecoveryDiagnostic` 记完低于阈值就 `return`，不标脏 → 若前次 flush 已清 dirty，新诊断不落盘。
+- **修法**：`recordRecoveryDiagnostic` 记录后标脏并 `schedulePersistence()`；补一条"先 flush → 记诊断 → 再读 archive"的用例。
+
+### F2 · "显示中断/空回复"端到端未达成（**待 pp 决策，未动**）
+- 复现：iOS 隐藏逻辑确已删净（`TimelineEntryPresentation.swift:228-231`）；**connector 源头仍丢**（`runtimes/claude/sessions/reader.py:625`、`runtimes/claude/turns/lifecycle.py:3366`）。
+- **修正 A 的判断**：connector 抑制**在 dev 上已有**（非合并引入）；上游 `44fd79fc` 只改 iOS 三文件。故"显示"从头只做了 iOS 半边。
+- 要真显示需一并放开 connector 抑制（跨端 + 需论证不复发幽灵回合）→ 等 pp 拍板。
+

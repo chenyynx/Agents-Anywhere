@@ -41,7 +41,7 @@ Agents Anywhere 是一个跨设备的 Agent 工作台。工作设备上的 **Con
 - 本地联调用 `./local-up.sh`（Server + Web，可加 `--with-connector`）或 `./desktop-local-up.sh`。**不要**使用 `--reset-data`，除非用户明确要求，因为它会删除本地数据库。
 - Server 测试不能连接生产数据库，也不要把生产 URL 带进测试进程。
 - Headless 检查通过，不等于真实安装、OAuth 回调或远程 Runtime 会话已经验证。汇报时要说明哪些验证没有做。
-- CI 覆盖：`.github/workflows/backend-ci.yml` 跑 Server 与 Connector 的 ruff + pytest（push 到 `dev` 或 PR 涉及 `server/`、`connector/` 时触发）；`.github/workflows/ios-build.yml` 跑 iOS 单测与 unsigned IPA。Web、Desktop、Android 仍要靠本地检查。
+- CI 覆盖：`.github/workflows/backend-ci.yml` 跑 Server 与 Connector 的 ruff + pytest（push 到 `dev` 或 PR 涉及 `server/`、`connector/` 时触发）；`.github/workflows/ios-build.yml` 跑 iOS 单测与 unsigned IPA。Web、Desktop、Android、dsh-bridge-next 仍要靠本地检查。
 - **测试跑在哪儿**：本地只跑与改动相关的测试文件（如 `uv run pytest tests/test_timeline.py -q`）。Server 全量套件（约 1200 个用例）在普通开发机上很慢且吃内存，放到资源更充足的内部测试机上跑全套；不要在本机串行跑全量。
 - **CI 是权威门禁**：push 到 `dev`（或开 PR）后以 `backend-ci.yml` 的结果为准。注意本仓库**不提交 lockfile**，依赖按版本下界解析，本地环境与 CI 拉到的版本可能不同——**本地绿不等于 CI 绿**，反之亦然。
 

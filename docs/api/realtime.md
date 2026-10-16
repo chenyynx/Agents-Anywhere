@@ -306,7 +306,7 @@ step a non-error status is in, for example `syncing` while a DSH instance is
 `starting`. A phase is progress, not a fault: the Server stores it on the
 runtime instance (`phase` in `RuntimeInstanceStatus`), does not re-issue
 `runtime.start` while an instance reports a starting phase (session operations
-get a retryable `409 runtime_starting` instead), and clients render it as
+get a retryable `409 runtime_starting` instead), and Web and Desktop render it as
 progress text next to the `starting` badge.
 
 `runtime.discover` includes runtime-native capability inputs. They are not the

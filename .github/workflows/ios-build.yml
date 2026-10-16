@@ -72,8 +72,11 @@ jobs:
     needs: test
     # Verification-only dispatches (feature branches) run the test job alone:
     # only the dev line publishes an installable IPA, so a branch dispatch can
-    # never clobber the `ipa-dev` release with a half-finished build.
-    if: github.ref == 'refs/heads/dev'
+    # never clobber the `ipa-dev` release with a half-finished build. The
+    # controlled upstream-merge branch is the one exception, and even it publishes
+    # to its own `ipa-sync` release (see the release step) rather than `ipa-dev`,
+    # so the dev-tagged package set stays dev-only.
+    if: github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/sync/upstream-2.1.0'
     runs-on: macos-26
     timeout-minutes: 90
     steps:
@@ -161,9 +164,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SHA_SHORT: ${{ github.sha }}
         run: |
-          TAG="ipa-dev"
-          NAME="AgentsAnywhere-dev-${SHA_SHORT:0:7}.ipa"
+          # dev keeps the long-standing `ipa-dev` release; the controlled
+          # upstream-merge branch publishes to its own `ipa-sync` so the two
+          # package sets never mix.
+          if [ "${GITHUB_REF}" = "refs/heads/dev" ]; then
+            TAG="ipa-dev"; TITLE="Agents Anywhere unsigned builds — dev"; BRANCH="the dev branch"
+          else
+            TAG="ipa-sync"; TITLE="Agents Anywhere unsigned builds — upstream merge"; BRANCH="${GITHUB_REF#refs/heads/}"
+          fi
+          NAME="AgentsAnywhere-${TAG#ipa-}-${SHA_SHORT:0:7}.ipa"
           cp agents-anywhere.ipa "$NAME"
-          gh release create "$TAG" --title "Agents Anywhere unsigned builds — dev" \
-            --notes "Built from the dev branch. Unsigned — re-sign on-device with KSign." || true
+          gh release create "$TAG" --title "$TITLE" \
+            --notes "Built from ${BRANCH}. Unsigned — re-sign on-device with KSign." || true
           gh release upload "$TAG" "$NAME" --clobber

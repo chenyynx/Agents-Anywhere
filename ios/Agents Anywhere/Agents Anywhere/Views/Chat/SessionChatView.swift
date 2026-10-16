@@ -196,11 +196,13 @@ struct SessionChatView: View, Equatable {
                         ChatErrorToasts(store: toasts, isRetrying: session.isLoading,
                             onRetry: { _ in await session.refresh() },
                             onDismiss: { source in
-                                // A closed notification is one-shot: persist its
-                                // identity so the same notice cannot replay on the
-                                // next visit, while a bumped revision may.
+                                // A closed notification is one-shot for this open
+                                // episode: record the acknowledgement so the same
+                                // notice cannot replay on the next visit. A later
+                                // episode at the same id (after it resolves and
+                                // re-opens) surfaces again.
                                 guard let notification = toasts.notification(for: source) else { return }
-                                session.acknowledgeNotification(noticeId: notification.id, revision: notification.revision)
+                                session.acknowledgeNotification(noticeId: notification.id)
                             })
                         if let success = model.commandSuccess {
                             CommandSuccessToast(feedback: success) { model.commandSuccess = nil }
@@ -329,20 +331,14 @@ struct SessionChatView: View, Equatable {
         // Notification-type notices ("切换已延后") float as top toasts instead of
         // seating in the timeline; the timeline's own render points exclude them
         // (ChatTimelineView / SessionTimelineEventView). `pendingNotifications`
-        // is pre-filtered by the session's durable acknowledgements, so a notice
-        // the user already closed does not come back on the next page visit; the
-        // store pins a dismissal to the same `(id, revision)` within one visit.
+        // is pre-filtered by the session's durable per-episode acknowledgements,
+        // so a notice the user already closed in this open episode does not come
+        // back on the next page visit; reconciling the store against the same
+        // set also withdraws a toast whose notice has left its open episode.
         .onChange(of: pendingNotifications, initial: true) { _, notifications in
-            for notification in notifications {
-                toasts.update(source: Self.notificationSource(notification.id), notification: notification)
-            }
+            toasts.reconcileNotifications(notifications)
         }
     }
-
-    /// The toast slot for a notification notice. Prefixed so it can never
-    /// collide with the failure/notice sources (`session`, `runtime`, …), which
-    /// occupy the same store.
-    private static func notificationSource(_ noticeId: String) -> String { "notif:\(noticeId)" }
 
     private var openingMask: some View {
         ZStack {

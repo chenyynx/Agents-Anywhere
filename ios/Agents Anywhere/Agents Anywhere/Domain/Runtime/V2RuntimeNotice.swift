@@ -36,6 +36,12 @@ struct V2RuntimeNotice: Decodable, Identifiable, Hashable {
 
     var id: V2NoticeID { noticeId }
 
+    /// Whether this is an open notification-type notice — the state in which it
+    /// is "surfaced" as a toast. A notification's open episode runs while its
+    /// status is `open`; the connector drops it from the list on a terminal
+    /// status, so both "now resolved" and "gone from the list" end the episode.
+    var isOpenNotification: Bool { type == "notification" && status == .open }
+
     enum CodingKeys: String, CodingKey {
         case noticeId
         case type

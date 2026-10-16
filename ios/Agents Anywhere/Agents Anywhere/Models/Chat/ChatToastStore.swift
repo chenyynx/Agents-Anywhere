@@ -34,31 +34,26 @@ struct ChatToast: Identifiable, Equatable {
 }
 
 /// One notification-type notice rendered as a toast: a pure notice with no
-/// response surface. Its identity is `(id, revision)` because the server
-/// re-issues the same notice id with a bumped revision for a genuinely new
-/// event — a fresh revision must be able to open a toast the user already
-/// dismissed.
+/// response surface. Its identity is the notice id alone — production never
+/// advances the revision (the server default is a constant 1 and nothing raises
+/// it), so a `(id, revision)` identity would collapse to `(id, 1)` and a single
+/// close would silence the id forever. One-shot is instead an *episode*
+/// property: the span during which the notice is open, ended when the notice
+/// leaves the open set and its acknowledgement is dropped (see
+/// `V2NotificationAcknowledgements`).
 struct ChatNotification: Equatable {
-    struct Identity: Hashable {
-        let id: String
-        let revision: Int
-    }
-
     let id: String
-    let revision: Int
     let title: String
     let message: String
     let severity: ChatToastSeverity
 
-    var identity: Identity { Identity(id: id, revision: revision) }
-
-    /// The toast payload for a notification-type notice, or nil for any other
-    /// notice. The contract's severity maps onto the skin: an error or warning
-    /// notification keeps the alarm mark, a neutral info/success one does not.
+    /// The toast payload for an open notification-type notice, or nil for any
+    /// other notice. The contract's severity maps onto the skin: an error or
+    /// warning notification keeps the alarm mark, a neutral info/success one
+    /// does not.
     init?(notice: V2RuntimeNotice) {
-        guard notice.type == "notification" else { return nil }
+        guard notice.isOpenNotification else { return nil }
         id = notice.noticeId
-        revision = notice.revision
         title = notice.title
         message = notice.message ?? ""
         switch notice.severity {
@@ -69,16 +64,16 @@ struct ChatNotification: Equatable {
     }
 
     /// The notifications a session page should surface as toasts, in list
-    /// order: open notification-type notices whose identity the user has not
-    /// already acknowledged. The acknowledgement record is what makes the
+    /// order: open notification notices whose id the user has not acknowledged
+    /// in the current episode. The acknowledgement record is what makes the
     /// notice one-shot across page visits — the toast store is rebuilt every
     /// time the page appears, so the filter must be answered from durable
     /// state, not from the store.
     static func pending(in notices: [SessionNoticeModel], acknowledged: V2NotificationAcknowledgements) -> [ChatNotification] {
         notices.compactMap { model in
-            guard model.isVisible, model.notice.type == "notification" else { return nil }
-            guard (acknowledged[model.notice.noticeId] ?? 0) < model.notice.revision else { return nil }
-            return ChatNotification(notice: model.notice)
+            guard let notification = ChatNotification(notice: model.notice) else { return nil }
+            guard !acknowledged.contains(notification.id) else { return nil }
+            return notification
         }
     }
 }
@@ -135,22 +130,47 @@ struct ChatNotification: Equatable {
         items.append(ChatToast(id: source, title: notice.title, message: notice.message, canRetry: notice.canRetry))
     }
 
-    /// Notification-type notices, deduplicated and dismissal-pinned by
-    /// `(id, revision)` exactly like the runtime channel: re-feeding the same
-    /// revision cannot revive a dismissed toast, while a bumped revision — a
-    /// genuinely new event at the same id — re-opens it. The notification is
-    /// retained so `notification(for:)` can answer after a dismissal.
-    func update(source: String, notification: ChatNotification) {
-        guard latestNotifications[source]?.identity != notification.identity else { return }
-        latestNotifications[source] = notification
-        items.removeAll { $0.id == source }
-        items.append(ChatToast(id: source, title: notification.title, message: notification.message,
-            canRetry: false, severity: notification.severity))
+    /// Syncs the notification toasts to the currently-open set (`pending`: open
+    /// notification notices the user has not acknowledged in this episode).
+    ///
+    /// A toast is shown for each pending notification, refreshed if its copy
+    /// changed, and withdrawn when its notice leaves the set — either the notice
+    /// left its open episode (it resolved, so a leftover "已延后" toast would now
+    /// claim an effect that is no longer true) or the user acknowledged it. The
+    /// store is deliberately a pure projection of `pending`: dedup is by notice
+    /// id (production never advances the revision), and "stays dismissed" is
+    /// answered by the acknowledgement behind `pending`, not by state within the
+    /// store. A later episode at the same id re-opens because the repository
+    /// drops the acknowledgement when it observes the notice leave the open set,
+    /// so the id is pending again — see `V2SessionRepository`.
+    func reconcileNotifications(_ pending: [ChatNotification]) {
+        let wanted = Set(pending.map(\.id))
+        let stale = latestNotifications.filter { !wanted.contains($0.value.id) }.map(\.key)
+        for source in stale {
+            latestNotifications[source] = nil
+            items.removeAll { $0.id == source }
+        }
+        for notification in pending {
+            let source = Self.notificationSource(notification.id)
+            let toast = ChatToast(id: source, title: notification.title, message: notification.message,
+                canRetry: false, severity: notification.severity)
+            latestNotifications[source] = notification
+            if let index = items.firstIndex(where: { $0.id == source }) {
+                if items[index] != toast { items[index] = toast }
+            } else {
+                items.append(toast)
+            }
+        }
     }
 
     /// The notification a toast belongs to, so a dismissal can be persisted
-    /// against the right identity. Nil for every non-notification toast.
+    /// against the right notice. Nil for every non-notification toast.
     func notification(for source: String) -> ChatNotification? { latestNotifications[source] }
+
+    /// The toast slot for a notification notice. Prefixed so it can never
+    /// collide with the failure/notice sources (`session`, `runtime`, …), which
+    /// occupy the same store.
+    static func notificationSource(_ noticeId: String) -> String { "notif:\(noticeId)" }
 
     func dismiss(_ id: String) { items.removeAll { $0.id == id } }
 }

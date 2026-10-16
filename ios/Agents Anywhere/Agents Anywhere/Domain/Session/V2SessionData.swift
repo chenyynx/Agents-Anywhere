@@ -81,29 +81,34 @@ struct V2SessionRecoveryNotice: Hashable {
     let message: String
 }
 
-/// The notification-type notices this session has already acknowledged, keyed
-/// by notice id and holding the highest acknowledged revision. Notifications
-/// are one-shot by identity: a notice the user closed must not resurface on the
-/// next page visit, while the same id at a higher revision is a new event and
-/// surfaces again. Tracked per id (not as a set of `(id, revision)` pairs) and
-/// persisted with the session archive so the acknowledgement outlives a page
-/// rebuild and a relaunch — the toast store itself is view-scoped and cannot be
-/// the record.
+/// The notification-type notices this session has acknowledged within their
+/// current open episode, by notice id. A notification is one-shot per *episode*
+/// — the span during which it is `status == "open"` — not per `(id, revision)`:
+/// production never bumps the revision (the server default is a constant 1 and
+/// nothing raises it), so an id-keyed record is the only honest identity. An
+/// acknowledgement is meaningful only while its notice is open; when the notice
+/// resolves or vanishes its episode has ended and the acknowledgement is
+/// dropped (see `V2SessionRepository.reconcileNotificationAcknowledgements`), so
+/// a later episode at the same id surfaces again. Persisted with the session
+/// archive so a close outlives a page rebuild and a relaunch — the toast store
+/// is view-scoped and cannot be the record.
 nonisolated struct V2NotificationAcknowledgements: Codable, Hashable {
-    private var revisions: [String: Int] = [:]
+    private var acknowledged: Set<String> = []
 
     init() {}
 
-    /// The highest acknowledged revision for `noticeId`, or nil if none.
-    subscript(noticeId: String) -> Int? { revisions[noticeId] }
+    func contains(_ noticeId: String) -> Bool { acknowledged.contains(noticeId) }
 
-    var isEmpty: Bool { revisions.isEmpty }
+    var isEmpty: Bool { acknowledged.isEmpty }
 
-    /// Records `revision` as acknowledged. Monotone: an older revision can
-    /// never lower the bar and reopen a notice a newer revision already closed.
-    mutating func acknowledge(noticeId: String, revision: Int) {
-        if revision > (revisions[noticeId] ?? 0) { revisions[noticeId] = revision }
-    }
+    mutating func acknowledge(_ noticeId: String) { acknowledged.insert(noticeId) }
+
+    /// Drops every acknowledgement outside `live` — the ids still open as
+    /// notifications. Reconciling against the authoritative open set is what
+    /// ends an episode: a notice that is no longer open loses its
+    /// acknowledgement, so the next time the same id opens it is a fresh
+    /// episode that surfaces again.
+    mutating func retain(_ live: Set<String>) { acknowledged.formIntersection(live) }
 }
 
 struct V2SessionObservation: Hashable {

@@ -143,18 +143,32 @@ final class V2SessionRepository {
         emit(entry)
     }
 
-    /// Records a notification as acknowledged once its toast is closed. The
-    /// notice is one-shot: writing the highest revision on the entry (and
-    /// emitting so the model observes it) means a page rebuild or a relaunch
-    /// cannot replay a notice already closed, while the same id at a higher
-    /// revision re-surfaces. A no-op when the revision is not newer, so a
-    /// repeated close cannot lower the bar.
-    func acknowledgeNotification(sessionId: V2SessionID, noticeId: String, revision: Int) {
+    /// Records a notification as acknowledged within its current open episode
+    /// once its toast is closed. The notice is one-shot per episode: recording
+    /// the id (and emitting so the model observes it) means a page rebuild or a
+    /// relaunch cannot replay a notice already closed, while the next episode
+    /// at the same id — after `reconcileNotificationAcknowledgements` drops this
+    /// bar — surfaces again. No-op when already acknowledged.
+    func acknowledgeNotification(sessionId: V2SessionID, noticeId: String) {
         guard let entry = entries[sessionId] else { return }
-        let previous = entry.acknowledgedNotifications[noticeId]
-        entry.acknowledgedNotifications.acknowledge(noticeId: noticeId, revision: revision)
-        guard entry.acknowledgedNotifications[noticeId] != previous else { return }
+        guard !entry.acknowledgedNotifications.contains(noticeId) else { return }
+        entry.acknowledgedNotifications.acknowledge(noticeId)
         emit(entry)
+    }
+
+    /// Ends the episodes of notification notices no longer open, so a fresh
+    /// episode at the same id can surface again, and drops the acknowledgement
+    /// of any notice that left the open set. Only an authoritative notice list
+    /// may end an episode: while the projection's live facts are not fresh (a
+    /// cold cache restore, an offline session) `notices` is empty for lack of
+    /// data, not because every notice resolved, and reconciling against it would
+    /// wrongly wipe a durable acknowledgement. So the reconcile is gated on
+    /// `liveStateIsFresh`; a notice that resolved while the facts were stale is
+    /// reconciled on the first fresh read instead.
+    private func reconcileNotificationAcknowledgements(_ entry: Entry) {
+        guard entry.projection?.data.liveStateIsFresh == true else { return }
+        let open = Set((entry.projection?.data.notices ?? []).filter(\.isOpenNotification).map(\.noticeId))
+        entry.acknowledgedNotifications.retain(open)
     }
 
     /// Returns cached durable content immediately. Observe to keep live facts fresh.
@@ -1151,6 +1165,10 @@ final class V2SessionRepository {
 
     private func emit(_ entry: Entry) {
         guard isCurrent(entry) else { return }
+        // End any notification episode that resolved before publishing, so the
+        // observation (and the page that reads it) never carries a stale
+        // acknowledgement for a notice that is no longer open.
+        reconcileNotificationAcknowledgements(entry)
         entry.model.update(observation(entry), network: network)
         for observer in entry.observers.values { observer.yield(observation(entry)) }
         schedulePersistence()

@@ -521,13 +521,14 @@ final class V2SessionModel: Identifiable {
         repository?.clearRecoveryNotice(sessionId: id)
     }
 
-    /// Records a notification as acknowledged once the user has closed its
-    /// toast. The notice is one-shot: writing the highest revision through to
-    /// the repository means re-entering the session page — or relaunching —
-    /// cannot replay a notice already closed, while the same id at a higher
-    /// revision is a new event that surfaces once more.
-    func acknowledgeNotification(noticeId: String, revision: Int) {
-        repository?.acknowledgeNotification(sessionId: id, noticeId: noticeId, revision: revision)
+    /// Records a notification as acknowledged within its current open episode
+    /// once the user has closed its toast. The notice is one-shot per episode:
+    /// writing the id through to the repository means re-entering the session
+    /// page — or relaunching — cannot replay a notice already closed in this
+    /// episode, while the next episode at the same id surfaces once more (the
+    /// acknowledgement is dropped when the notice leaves the open set).
+    func acknowledgeNotification(noticeId: String) {
+        repository?.acknowledgeNotification(sessionId: id, noticeId: noticeId)
     }
 
     func confirmEcho(_ item: V2TimelineItem) {

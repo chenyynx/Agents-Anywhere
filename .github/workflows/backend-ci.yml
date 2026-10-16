@@ -37,6 +37,24 @@ jobs:
   server:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: agents_anywhere_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # The suite runs against a real PostgreSQL database and truncates it
+      # between tests; the name must contain "test" (see server/tests/conftest.py).
+      AGENT_SERVER_TEST_DB_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/agents_anywhere_test
     steps:
       - uses: actions/checkout@v4
 
@@ -61,11 +79,29 @@ jobs:
 
       - name: Test (pytest)
         working-directory: server
-        run: .venv/bin/pytest -q -n auto
+        run: .venv/bin/pytest -q
 
   connector:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: agents_anywhere_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # The suite runs against a real PostgreSQL database and truncates it
+      # between tests; the name must contain "test" (see server/tests/conftest.py).
+      AGENT_SERVER_TEST_DB_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/agents_anywhere_test
     steps:
       - uses: actions/checkout@v4
 
@@ -92,4 +128,4 @@ jobs:
 
       - name: Test (pytest)
         working-directory: connector
-        run: .venv/bin/pytest -q -n auto
+        run: .venv/bin/pytest -q

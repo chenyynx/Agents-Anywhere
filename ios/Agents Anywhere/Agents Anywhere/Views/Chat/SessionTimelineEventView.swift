@@ -48,9 +48,14 @@ struct SessionTimelineGroupView: View {
             ForEach(group.rows) { row in
                 SessionTimelineRow(row: row, chat: chat, onAttachment: onAttachment, cwd: chat.session.metadata?.cwd,
                     disclosures: chat.disclosures, onFile: onFile, onSubAgent: onSubAgent)
-                ForEach(chat.session.notices.notices.filter {
-                    $0.isVisible && !$0.blocks(chat.session.id) && $0.timelineTargetID == row.id
-                }) { notice in SessionInteractionCard(item: notice, chat: chat) }
+                // Only interaction notices anchor to a row. A notification-type
+                // notice has no timeline anchor and is a top toast instead; the
+                // type check keeps that true even if a future one carried an
+                // anchor.
+                ForEach(SessionNoticeRouting.notices(chat.session.notices.notices,
+                    sessionID: chat.session.id, anchoredTo: row.id)) { notice in
+                    SessionInteractionCard(item: notice, chat: chat)
+                }
             }
         }
     }

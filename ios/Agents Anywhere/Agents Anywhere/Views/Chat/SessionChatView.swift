@@ -116,6 +116,13 @@ struct SessionChatView: View, Equatable {
         }
     }
     @State private var toasts = ChatToastStore()
+    /// The notification-type notices this page should surface as toasts: open
+    /// notifications whose identity the user has not already acknowledged. The
+    /// acknowledgement record lives on the session (and its archive), so a
+    /// notice closed once does not replay on the next visit.
+    private var pendingNotifications: [ChatNotification] {
+        ChatNotification.pending(in: session.notices.notices, acknowledged: session.acknowledgedNotifications)
+    }
     @State private var pendingTakeover: Bool?
     @State private var hasStartedLoading = false
     @Environment(\.colorScheme) private var colorScheme
@@ -186,7 +193,15 @@ struct SessionChatView: View, Equatable {
                         // the only place the queue resumes from.
                         SendQueueBanner(model: model)
                             .traceChatLayout("send-queue-banner")
-                        ChatErrorToasts(store: toasts, isRetrying: session.isLoading, onRetry: { _ in await session.refresh() })
+                        ChatErrorToasts(store: toasts, isRetrying: session.isLoading,
+                            onRetry: { _ in await session.refresh() },
+                            onDismiss: { source in
+                                // A closed notification is one-shot: persist its
+                                // identity so the same notice cannot replay on the
+                                // next visit, while a bumped revision may.
+                                guard let notification = toasts.notification(for: source) else { return }
+                                session.acknowledgeNotification(noticeId: notification.id, revision: notification.revision)
+                            })
                         if let success = model.commandSuccess {
                             CommandSuccessToast(feedback: success) { model.commandSuccess = nil }
                                 .frame(maxWidth: .infinity, alignment: .center)
@@ -311,7 +326,23 @@ struct SessionChatView: View, Equatable {
                           title: notice.title)
             session.clearRecoveryNotice()
         }
+        // Notification-type notices ("切换已延后") float as top toasts instead of
+        // seating in the timeline; the timeline's own render points exclude them
+        // (ChatTimelineView / SessionTimelineEventView). `pendingNotifications`
+        // is pre-filtered by the session's durable acknowledgements, so a notice
+        // the user already closed does not come back on the next page visit; the
+        // store pins a dismissal to the same `(id, revision)` within one visit.
+        .onChange(of: pendingNotifications, initial: true) { _, notifications in
+            for notification in notifications {
+                toasts.update(source: Self.notificationSource(notification.id), notification: notification)
+            }
+        }
     }
+
+    /// The toast slot for a notification notice. Prefixed so it can never
+    /// collide with the failure/notice sources (`session`, `runtime`, …), which
+    /// occupy the same store.
+    private static func notificationSource(_ noticeId: String) -> String { "notif:\(noticeId)" }
 
     private var openingMask: some View {
         ZStack {

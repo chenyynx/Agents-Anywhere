@@ -81,6 +81,31 @@ struct V2SessionRecoveryNotice: Hashable {
     let message: String
 }
 
+/// The notification-type notices this session has already acknowledged, keyed
+/// by notice id and holding the highest acknowledged revision. Notifications
+/// are one-shot by identity: a notice the user closed must not resurface on the
+/// next page visit, while the same id at a higher revision is a new event and
+/// surfaces again. Tracked per id (not as a set of `(id, revision)` pairs) and
+/// persisted with the session archive so the acknowledgement outlives a page
+/// rebuild and a relaunch — the toast store itself is view-scoped and cannot be
+/// the record.
+nonisolated struct V2NotificationAcknowledgements: Codable, Hashable {
+    private var revisions: [String: Int] = [:]
+
+    init() {}
+
+    /// The highest acknowledged revision for `noticeId`, or nil if none.
+    subscript(noticeId: String) -> Int? { revisions[noticeId] }
+
+    var isEmpty: Bool { revisions.isEmpty }
+
+    /// Records `revision` as acknowledged. Monotone: an older revision can
+    /// never lower the bar and reopen a notice a newer revision already closed.
+    mutating func acknowledge(noticeId: String, revision: Int) {
+        if revision > (revisions[noticeId] ?? 0) { revisions[noticeId] = revision }
+    }
+}
+
 struct V2SessionObservation: Hashable {
     let sessionId: V2SessionID
     let data: V2SessionData?
@@ -90,4 +115,8 @@ struct V2SessionObservation: Hashable {
     /// rebuild has happened. Defaulted so observations without one keep
     /// constructing exactly as before.
     var recoveryNotice: V2SessionRecoveryNotice? = nil
+    /// The notification acknowledgements this session carries (see
+    /// `V2NotificationAcknowledgements`). Defaulted so existing construction
+    /// sites keep compiling.
+    var acknowledgedNotifications = V2NotificationAcknowledgements()
 }

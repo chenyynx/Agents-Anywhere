@@ -143,6 +143,20 @@ final class V2SessionRepository {
         emit(entry)
     }
 
+    /// Records a notification as acknowledged once its toast is closed. The
+    /// notice is one-shot: writing the highest revision on the entry (and
+    /// emitting so the model observes it) means a page rebuild or a relaunch
+    /// cannot replay a notice already closed, while the same id at a higher
+    /// revision re-surfaces. A no-op when the revision is not newer, so a
+    /// repeated close cannot lower the bar.
+    func acknowledgeNotification(sessionId: V2SessionID, noticeId: String, revision: Int) {
+        guard let entry = entries[sessionId] else { return }
+        let previous = entry.acknowledgedNotifications[noticeId]
+        entry.acknowledgedNotifications.acknowledge(noticeId: noticeId, revision: revision)
+        guard entry.acknowledgedNotifications[noticeId] != previous else { return }
+        emit(entry)
+    }
+
     /// Returns cached durable content immediately. Observe to keep live facts fresh.
     func load(sessionId: V2SessionID) async throws -> V2SessionData {
         let entry = entry(for: sessionId)
@@ -210,6 +224,7 @@ final class V2SessionRepository {
         // A failure that outlived the process is still on record: the ring is
         // restored beside the projection it belongs to.
         entry.recoveryDiagnostics = saved.recoveryDiagnostics ?? []
+        entry.acknowledgedNotifications = saved.acknowledgedNotifications ?? V2NotificationAcknowledgements()
         entry.model.restoreLocal(saved)
         emit(entry)
     }
@@ -221,6 +236,7 @@ final class V2SessionRepository {
             entry.projection.map { projection in
                 var archive = V2SessionArchive(data: projection.data, model: entry.model)
                 archive.recoveryDiagnostics = entry.recoveryDiagnostics.isEmpty ? nil : entry.recoveryDiagnostics
+                archive.acknowledgedNotifications = entry.acknowledgedNotifications.isEmpty ? nil : entry.acknowledgedNotifications
                 return archive
             }
         }
@@ -1129,7 +1145,8 @@ final class V2SessionRepository {
 
     private func observation(_ entry: Entry) -> V2SessionObservation {
         V2SessionObservation(sessionId: entry.id, data: entry.projection?.data, connection: entry.connection, error: entry.error,
-                             recoveryNotice: entry.recoveryNotice)
+                             recoveryNotice: entry.recoveryNotice,
+                             acknowledgedNotifications: entry.acknowledgedNotifications)
     }
 
     private func emit(_ entry: Entry) {
@@ -1264,6 +1281,10 @@ private final class Entry {
     /// `clearRecoveryNotice(sessionId:)` once shown, and a later rebuild
     /// replaces it with a fresh, higher-numbered value.
     var recoveryNotice: V2SessionRecoveryNotice?
+    /// The notification-type notices this session has already acknowledged (see
+    /// `V2NotificationAcknowledgements`). Persisted with the archive so the
+    /// one-shot semantics survive a page rebuild and a relaunch.
+    var acknowledgedNotifications = V2NotificationAcknowledgements()
     var connectionTask: Task<Void, Never>?
     /// The observed-session heal loop. Cancelled by `stop()`; the id lets a
     /// round that is ending clear its own registration only.

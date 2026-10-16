@@ -47,6 +47,10 @@ nonisolated struct V2SessionArchive: Codable {
     /// outlives a relaunch is still on record. Optional: archives written
     /// before this field existed decode without it.
     var recoveryDiagnostics: [V2SessionRecoveryDiagnostic]? = nil
+    /// The notification acknowledgements the session had recorded, so closing
+    /// a notification toast stays one-shot across a relaunch. Optional: bytes
+    /// written before this field existed decode without it.
+    var acknowledgedNotifications: V2NotificationAcknowledgements? = nil
 
     @MainActor init(data: V2SessionData, model: V2SessionModel) {
         session = data.session; items = data.items.map(\.raw); cursor = data.cursor

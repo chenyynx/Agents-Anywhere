@@ -93,8 +93,10 @@ d03066cf  relay 保活，任务不再静默死
 - **根因**：上游把 `emit` 改成写入门控（`persist==true` 才标脏）、`flushCache` 只写 `isDirty` 条目；dev 二者都无条件。`recordRecoveryDiagnostic` 记完低于阈值就 `return`，不标脏 → 若前次 flush 已清 dirty，新诊断不落盘。
 - **修法**：`recordRecoveryDiagnostic` 记录后标脏并 `schedulePersistence()`；补一条"先 flush → 记诊断 → 再读 archive"的用例。
 
-### F2 · "显示中断/空回复"端到端未达成（**待 pp 决策，未动**）
+### F2 · "显示中断/空回复"端到端未达成（**判定：保持现状 (a)，pp 2026-10-16 拍**）
 - 复现：iOS 隐藏逻辑确已删净（`TimelineEntryPresentation.swift:228-231`）；**connector 源头仍丢**（`runtimes/claude/sessions/reader.py:625`、`runtimes/claude/turns/lifecycle.py:3366`）。
-- **修正 A 的判断**：connector 抑制**在 dev 上已有**（非合并引入）；上游 `44fd79fc` 只改 iOS 三文件。故"显示"从头只做了 iOS 半边。
-- 要真显示需一并放开 connector 抑制（跨端 + 需论证不复发幽灵回合）→ 等 pp 拍板。
+- **归属更正（复现后修正 A 与我的初判）**：connector 的抑制 `41c52312 fix(claude): hide synthetic interruption messages` 是**上游自己 2026-08-28 引入**的；上游 2.1.0（`58d98da2`）connector 同样在各处 continue 掉这些行。上游 `44fd79fc`（2026-10-13）只删 iOS 侧 ⇒ **"iOS 显示 + connector 抑制"就是上游 2.1.0 的形态，我们跟上即与上游一致**。
+- **动不得的承重墙**：`is_synthetic_control_message`（`timeline/messages.py:2224`）是**共用**闸门，同时挡 ①中断/空回复标记 ②**task-notification** ③**HookEventMessage**（hook 生命周期旁白）。②③ 是幽灵回合防线的承重墙（注释：hook 事件曾在回合结算后到达，"minting an execution from silence that hung forever"）。放开需拆开共用判定，**与幽灵回合防线冲突**。
+- **(a) 实际交付**：iOS 不再二次隐藏；中断对用户可见但形态是**回合状态（已中断）**，非 `[Request interrupted by user]` 合成正文气泡。与上游一致、不动承重墙。
+- **(b)/(c) 未采纳**：跨端放开需拆共用闸 + 论证不复发幽灵回合，收益（一个合成文本气泡）不抵风险。
 

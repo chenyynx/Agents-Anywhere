@@ -71,6 +71,28 @@ class ClaudeStreamAccumulator:
     # is stashed alongside for the same reason.
     last_usage: dict[str, int] | None = None
     last_model: str | None = None
+    # Turn-scoped drop observation (2026-10-15). The gate that discards a
+    # delta whose message has no identity used to log a WARNING per frame --
+    # the incident that exposed the reset bug was 3 days ≈ 52k journal lines,
+    # which buried the signal it meant to raise. These count the frames the
+    # turn lost and a single summary line reports them at turn settle
+    # (`finalize_pending_thinking`), so a turn that loses nothing is silent and
+    # a turn that loses something is legible in one line. The count is per gate
+    # hit (including the settle-time close re-attempt, as the old per-frame
+    # warning counted it), so it stays comparable across the change.
+    dropped_thinking_frames: int = 0
+    dropped_text_frames: int = 0
+    drop_summary_logged: bool = False
+    # Which `reset()` call site cleared a LIVE identity most recently, held until
+    # the next `message_start` re-opens a message. The only thing that nulls
+    # `partial_message_id` mid-turn is a `reset()`, so a delta then refused by the
+    # identity gate was caused by that reset: the reason is folded into
+    # `drop_cause_reasons` and named in the turn's drop summary. There is more
+    # than one reset call site (the assistant frame and the result-text
+    # fallback), and the live incident could not be attributed to the first --
+    # the summary must name the path, not be inferred (2026-10-15).
+    last_reset_reason: str | None = None
+    drop_cause_reasons: set[str] = field(default_factory=set)
 
     def item_from_stream_event(
         self,
@@ -112,6 +134,10 @@ class ClaudeStreamAccumulator:
                 # across later `message_delta`s emitted by other frames.
                 self.partial_text_parent = _parent_tool_use_id(message)
             self.partial_message_id = message_id
+            if message_id is not None:
+                # A real message is open again: whatever reset cleared before is
+                # no longer the cause of any future drop, so forget it.
+                self.last_reset_reason = None
             self.partial_usage = _message_start_usage(message, payload)
             self.partial_model = (
                 None
@@ -229,6 +255,8 @@ class ClaudeStreamAccumulator:
         session: ClaudeSession | None = None,
         turn_id: str | None = None,
         projector: ClaudeMessageProjector | None = None,
+        *,
+        reason: str = "unknown",
     ) -> tuple[RuntimeTimelineItem, ...]:
         """Close this message's open thinking blocks, then clear the accumulator.
 
@@ -242,6 +270,17 @@ class ClaudeStreamAccumulator:
         publish failed) are folded in too, so they are recoverable from the
         settle-time flush instead of being dropped here. Idempotent: a second
         call finds nothing open and returns ().
+
+        ``reason`` names the call site (`assistant_frame` / `result_text`). It is
+        only used for observation. A reset clears a LIVE identity; if a delta is
+        then refused by the identity gate, that reset CAUSED the loss -- so the
+        reason is stashed here and folded into `drop_cause_reasons` when a drop
+        actually happens (see `dropped_thinking_frames` / `_log_turn_drop_summary`).
+        Recording the reason only when a drop follows keeps the signal
+        flood-free: on the LiteLLM wire EVERY message's thinking block lacks
+        `content_block_stop`, so a reset that runs while content is still open
+        is the NORM (measured: 436/436 thinking blocks in a clean capture), and
+        only a FOLLOWING drop is evidence.
         """
 
         closed: list[RuntimeTimelineItem] = []
@@ -253,6 +292,15 @@ class ClaudeStreamAccumulator:
         # cannot silently swallow them.
         closed.extend(self.pending_items)
         self.pending_items = []
+        # Remember which path cleared the identity, so a following drop can name
+        # its cause. Only a reset that ACTUALLY cleared a live identity is a
+        # cause: a reset while `partial_message_id` is already None (a turn with
+        # no `message_start`) cleared nothing, so recording its reason here would
+        # pin a later drop on a non-culprit. Any `message_start` that opens a
+        # message clears this, so a stale reason never lingers past the next
+        # message.
+        if self.partial_message_id is not None:
+            self.last_reset_reason = reason
         self.partial_message_id = None
         self.partial_text_blocks.clear()
         self.partial_revision = 0
@@ -373,10 +421,17 @@ class ClaudeStreamAccumulator:
             return None
         message_id = self.partial_message_id
         if message_id is None:
-            logger.warning(
-                "dropping Claude stream text without message_start id turn_id={}",
-                turn_id,
-            )
+            self.dropped_text_frames += 1
+            self._note_drop_cause()
+            if self.dropped_text_frames == 1:
+                # First drop this turn: one line. The rest are counted and
+                # summarized at turn end (`finalize_pending_thinking`) rather
+                # than flooding the journal -- the flood was itself part of the
+                # 2026-10-15 incident.
+                logger.warning(
+                    "dropping Claude stream text without message_start id turn_id={}",
+                    turn_id,
+                )
             return None
         self.partial_revision += 1
         item_id = stable_message_item_id(session, message_id)
@@ -435,10 +490,16 @@ class ClaudeStreamAccumulator:
     ) -> RuntimeTimelineItem | None:
         message_id = self.partial_message_id
         if message_id is None:
-            logger.warning(
-                "dropping Claude stream thinking without message_start id turn_id={}",
-                turn_id,
-            )
+            self.dropped_thinking_frames += 1
+            self._note_drop_cause()
+            if self.dropped_thinking_frames == 1:
+                # First drop this turn: one line. The rest are counted and
+                # summarized at turn end (`finalize_pending_thinking`).
+                logger.warning(
+                    "dropping Claude stream thinking without message_start id "
+                    "turn_id={}",
+                    turn_id,
+                )
             return None
         if text is None:
             text = self.partial_thinking_blocks.get(index, "")
@@ -529,7 +590,47 @@ class ClaudeStreamAccumulator:
         closed = list(self._close_open_thinking(session, turn_id, projector))
         closed.extend(self.pending_items)
         self.pending_items = []
+        self._log_turn_drop_summary(turn_id)
         return tuple(closed)
+
+    def _note_drop_cause(self) -> None:
+        """Fold the reset path that most recently cleared the identity in.
+
+        A delta is refused only when `partial_message_id` is None, and the only
+        thing that sets it None mid-turn is a `reset()` -- so the last reset
+        reason is the cause of this and any following drop until a fresh
+        `message_start` opens a message again. Recorded as a set so the turn
+        summary can name every path that cost this turn frames.
+        """
+
+        if self.last_reset_reason is not None:
+            self.drop_cause_reasons.add(self.last_reset_reason)
+
+    def _log_turn_drop_summary(self, turn_id: str) -> None:
+        """Publish one line naming every frame this turn lost, or nothing.
+
+        Called from the turn-settle flush so the per-turn totals land exactly
+        once: a turn that dropped nothing stays silent, a turn that dropped
+        frames states the whole story in a single line (the old code emitted one
+        WARNING per frame). The reset path that caused the loss rides along, so
+        the next incident self-describes rather than being inferred. Idempotent
+        -- a second flush logs nothing.
+        """
+
+        if self.drop_summary_logged:
+            return
+        if not self.dropped_thinking_frames and not self.dropped_text_frames:
+            return
+        self.drop_summary_logged = True
+        causes = ",".join(sorted(self.drop_cause_reasons)) or "-"
+        logger.warning(
+            "Claude stream drop summary at turn end turn_id={} "
+            "dropped_thinking={} dropped_text={} reset_causes={}",
+            turn_id,
+            self.dropped_thinking_frames,
+            self.dropped_text_frames,
+            causes,
+        )
 
 
 def _stream_event(message: Any) -> Mapping[str, Any] | None:

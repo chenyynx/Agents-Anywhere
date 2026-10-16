@@ -59,7 +59,8 @@ Agents Anywhere 是一个跨设备的 Agent 工作台。工作设备上的 **Con
 
 ## 提交与 PR
 
-- 从最新的 `main` 创建分支；Agent 分支通常使用 `codex/<topic>` 这样的前缀。
+- **从最新的 `dev` 创建分支**。本仓库是上游 `anywhere-labs/Agents-Anywhere` 的下游镜像，`dev` 才是本仓库的集成线（当前比 `main` 领先 329 个提交、不落后），部署面也是从 `dev` 同步的；`main` 只用来同步上游，不要从它建分支。
+- 分支名用朴素名（`fix/<topic>`、`feat/<topic>`、`docs/<topic>`），**不带工具或署名前缀**（`codex/`、`cc/` 都不用）。
 - 提交信息使用 Conventional Commits，并带上作用域，例如 `fix(dsh): ...`、`feat(android): ...`、`docs(ios): ...`。正文可以用中文或英文。
 - 一个 PR 只做一件事。不要顺手提交与任务无关的本地改动、部署检查点或调试产物（`.local-dev/`、截图、日志）。
 - 不要提交凭据、签名证书、`.env` 文件或生产地址中的密钥。签名、公证和发布流程见各子项目的 README。

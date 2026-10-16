@@ -23,7 +23,6 @@ import pytest
 from session_fixtures import create_session_with_project
 
 from agent_server.core.models import TimelineItemIn
-from agent_server.infra.db.migrations import upgrade_database
 from agent_server.infra.repositories.facade import Store
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "repair_stranded_running_items.py"
@@ -82,15 +81,14 @@ def _thinking_row(
 
 
 async def _store_with_session(tmp_path):
-    db_path = tmp_path / "repair.sqlite3"
-    upgrade_database(sqlite_path=db_path)
-    store = Store(db_path)
+    store = Store()
     connector, _, _ = await store.create_connector(name="dev", user_id="user_1")
     session = await create_session_with_project(
         store,
         connector_id=connector.id,
         runtime="claude",
         external_session_id="claude_ext_1",
+        project_name="P-repair",
     )
     return store, session
 

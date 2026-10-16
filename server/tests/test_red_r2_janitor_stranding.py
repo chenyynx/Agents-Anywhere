@@ -25,7 +25,6 @@ from sqlalchemy import select, update
 
 from agent_server.core.models import TimelineItemIn
 from agent_server.infra.db import sessions as sessions_t
-from agent_server.infra.db.migrations import upgrade_database
 from agent_server.infra.repositories.facade import Store
 from agent_server.services.timeline_janitor import (
     DEFAULT_CANDIDATE_LIMIT,
@@ -69,15 +68,14 @@ def tool_row(
 
 
 async def _store(tmp_path: Any, *, tag: str) -> tuple[Store, Any]:
-    db_path = tmp_path / f"r2-strand-{tag}.sqlite3"
-    upgrade_database(sqlite_path=db_path)
-    store = Store(db_path)
+    store = Store()
     connector, _, _ = await store.create_connector(name="dev", user_id="user_1")
     session = await create_session_with_project(
         store,
         connector_id=connector.id,
         runtime="claude",
         external_session_id=f"claude_ext_{tag}",
+        project_name=f"P-{tag}",
     )
     return store, session
 
@@ -166,6 +164,7 @@ async def test_C2_global_cap_drains_both_sessions_without_starving_either(
             connector_id=session_a.connectorId,
             runtime="claude",
             external_session_id="claude_ext_sB",
+            project_name="P-sB",
         )
         per_session = 300
         for session, prefix in ((session_a, "a"), (session_b, "b")):

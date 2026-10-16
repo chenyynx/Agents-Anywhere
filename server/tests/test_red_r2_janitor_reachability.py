@@ -21,7 +21,6 @@ from sqlalchemy import update
 
 from agent_server.core.models import TimelineItemIn
 from agent_server.infra.db import sessions as sessions_t
-from agent_server.infra.db.migrations import upgrade_database
 from agent_server.infra.redis_coordinator import RedisCoordinator
 from agent_server.infra.repositories.facade import Store
 from agent_server.infra.timeline_broker import TimelineBroker
@@ -73,15 +72,14 @@ async def test_A6_closure_envelope_carries_the_closed_row(tmp_path) -> None:
     changed, so the change was self-concealing.
     """
 
-    db_path = tmp_path / "r2-reach.sqlite3"
-    upgrade_database(sqlite_path=db_path)
-    store = Store(db_path)
+    store = Store()
     connector, _, _ = await store.create_connector(name="dev", user_id="user_1")
     session = await create_session_with_project(
         store,
         connector_id=connector.id,
         runtime="claude",
         external_session_id="claude_ext_1",
+        project_name="P-a6",
     )
     coordinator = RedisCoordinator()
     broker = TimelineBroker(coordinator)
@@ -169,15 +167,14 @@ async def test_A6c_a_large_closure_publishes_a_refetch_instead_of_items(
     for ``refetch: True``. Either way the client is told something changed.
     """
 
-    db_path = tmp_path / "r2-reach-bulk.sqlite3"
-    upgrade_database(sqlite_path=db_path)
-    store = Store(db_path)
+    store = Store()
     connector, _, _ = await store.create_connector(name="dev", user_id="user_1")
     session = await create_session_with_project(
         store,
         connector_id=connector.id,
         runtime="claude",
         external_session_id="claude_ext_1",
+        project_name="P-a6c",
     )
     coordinator = RedisCoordinator()
     broker = TimelineBroker(coordinator)
@@ -264,15 +261,14 @@ async def test_A6b_prune_path_does_emit_refetch_for_comparison(tmp_path) -> None
     timelineReset flag. This is the shape the janitor does NOT produce.
     """
 
-    db_path = tmp_path / "r2-prune.sqlite3"
-    upgrade_database(sqlite_path=db_path)
-    store = Store(db_path)
+    store = Store()
     connector, _, _ = await store.create_connector(name="dev", user_id="user_1")
     session = await create_session_with_project(
         store,
         connector_id=connector.id,
         runtime="claude",
         external_session_id="claude_ext_1",
+        project_name="P-a6b",
     )
     coordinator = RedisCoordinator()
     broker = TimelineBroker(coordinator)

@@ -1859,9 +1859,7 @@ async def test_session_fence_reentrancy_is_scoped_to_the_owning_task(tmp_path) -
     Redis locks and run its own flush rather than silently skipping them.
     """
 
-    db_path = tmp_path / "timeline-buffer-reentrancy.sqlite3"
-    upgrade_database(sqlite_path=db_path)
-    store = Store(db_path)
+    store = Store()
     connector, _, _ = await store.create_connector(name="dev", user_id="user_1")
     session = await create_session_with_project(store, connector_id=connector.id)
     redis = FakeAsyncRedis(decode_responses=True)

@@ -449,7 +449,11 @@ def test_revoke_connector_rotates_token_and_disconnects(tmp_path):
     assert new_auth.status_code == 200
 
 
-def wait_for(predicate, *, attempts: int = 20, interval: float = 0.01):
+def wait_for(predicate, *, attempts: int = 100, interval: float = 0.05):
+    # 5 s ceiling: the predicate polls the live server, and a shared-PostgreSQL
+    # test tick (mint → ingest → publish) can exceed the old 0.2 s window on a
+    # loaded box even though the state does arrive. Every caller waits for a
+    # thing to *appear*, so a longer window only removes false negatives.
     for _ in range(attempts):
         value = predicate()
         if value:

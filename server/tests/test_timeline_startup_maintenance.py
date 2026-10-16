@@ -123,7 +123,7 @@ async def test_lifespan_cancels_maintenance_task_before_closing_store(
     monkeypatch.setattr(
         app_module, "_timeline_startup_maintenance", slow_maintenance
     )
-    app = app_module.create_app(tmp_path / "startup-maintenance.sqlite3")
+    app = app_module.create_app()
     async with app.router.lifespan_context(app):
         await asyncio.wait_for(started.wait(), timeout=10)
         assert not seen["task"].done()

@@ -30,7 +30,6 @@ from sqlalchemy import update
 from agent_server.core.models import TimelineItemIn
 from agent_server.infra.db import sessions as sessions_t
 from agent_server.infra.db import timeline_items as timeline_items_t
-from agent_server.infra.db.migrations import upgrade_database
 from agent_server.infra.repositories.facade import Store
 from agent_server.services.timeline_janitor import (
     DEFAULT_CANDIDATE_LIMIT,
@@ -86,15 +85,14 @@ def tool_row(
 
 
 async def _store_with_session(tmp_path: Any, *, tag: str = "main") -> tuple[Store, Any]:
-    db_path = tmp_path / f"r2-janitor-{tag}.sqlite3"
-    upgrade_database(sqlite_path=db_path)
-    store = Store(db_path)
+    store = Store()
     connector, _, _ = await store.create_connector(name="dev", user_id="user_1")
     session = await create_session_with_project(
         store,
         connector_id=connector.id,
         runtime="claude",
         external_session_id=f"claude_ext_{tag}",
+        project_name=f"P-{tag}",
     )
     return store, session
 

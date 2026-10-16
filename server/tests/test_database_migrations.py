@@ -1014,9 +1014,9 @@ def test_unversioned_runtime_schema_is_classified_by_actual_columns(tmp_path,
     )
 
 
-def test_current_schema_version_is_v2_44() -> None:
-    assert CURRENT_SCHEMA_REVISION == "v2_44"
-    assert CURRENT_SCHEMA_VERSION == "2.44"
+def test_current_schema_version_is_v2_46() -> None:
+    assert CURRENT_SCHEMA_REVISION == "v2_46"
+    assert CURRENT_SCHEMA_VERSION == "2.46"
 
 
 def _insert_required(connection, table: str, values: dict) -> None:
@@ -1032,9 +1032,9 @@ def _insert_required(connection, table: str, values: dict) -> None:
     connection.execute(text(f"INSERT INTO {table} ({names}) VALUES ({params})"), row)
 
 
-def test_v2_44_drops_unconfigured_runtime_placeholders(fresh_database_url) -> None:
+def test_v2_46_drops_unconfigured_runtime_placeholders(fresh_database_url) -> None:
     url = fresh_database_url
-    upgrade_database(db_url=url, revision="v2_43")
+    upgrade_database(db_url=url, revision="v2_45")
     engine = create_engine(_sync_url(url))
     try:
         with engine.begin() as connection:
@@ -1079,9 +1079,9 @@ def test_v2_44_drops_unconfigured_runtime_placeholders(fresh_database_url) -> No
 
 
 
-def test_v2_43_adds_the_runtime_phase_column(fresh_database_url) -> None:
+def test_v2_45_adds_the_runtime_phase_column(fresh_database_url) -> None:
     url = fresh_database_url
-    upgrade_database(db_url=url, revision="v2_42")
+    upgrade_database(db_url=url, revision="v2_44")
     engine = create_engine(_sync_url(url))
     try:
         columns = {column["name"] for column in inspect(engine).get_columns("device_runtimes")}
@@ -1100,9 +1100,9 @@ def test_v2_43_adds_the_runtime_phase_column(fresh_database_url) -> None:
         engine.dispose()
 
 
-def test_v2_42_replaces_dashboard_tables_with_usage_events(fresh_database_url) -> None:
+def test_v2_44_replaces_dashboard_tables_with_usage_events(fresh_database_url) -> None:
     url = fresh_database_url
-    upgrade_database(db_url=url, revision="v2_41")
+    upgrade_database(db_url=url, revision="v2_43")
     engine = create_engine(_sync_url(url))
     try:
         inspector = inspect(engine)
@@ -1133,7 +1133,7 @@ def test_v2_42_replaces_dashboard_tables_with_usage_events(fresh_database_url) -
     finally:
         engine.dispose()
 
-    command.downgrade(_alembic_config(url), "v2_41")
+    command.downgrade(_alembic_config(url), "v2_43")
 
     engine = create_engine(_sync_url(url))
     try:
@@ -2315,3 +2315,443 @@ def test_v2_35_replaces_the_session_item_time_index(fresh_database_url) -> None:
         assert "updated_seq DESC" in definition
     finally:
         engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# v2_42 / v2_43 (our own migrations, kept at their production numbers).
+# Ported from the pre-merge SQLite suite to the shared PostgreSQL fixture.
+# ---------------------------------------------------------------------------
+
+
+def test_v2_42_adds_the_native_item_id_column_and_index(fresh_database_url) -> None:
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_41")
+    engine = create_engine(_sync_url(url))
+    try:
+        assert "native_item_id" not in {
+            column["name"] for column in inspect(engine).get_columns("timeline_items")
+        }
+    finally:
+        engine.dispose()
+
+    upgrade_database(db_url=url)
+
+    engine = create_engine(_sync_url(url))
+    try:
+        columns = {c["name"]: c for c in inspect(engine).get_columns("timeline_items")}
+        assert "native_item_id" in columns
+        assert columns["native_item_id"]["nullable"] is True
+        index_names = {i["name"] for i in inspect(engine).get_indexes("timeline_items")}
+        assert "idx_timeline_items_session_native_item" in index_names
+    finally:
+        engine.dispose()
+
+    # Idempotent: a second upgrade is a no-op.
+    upgrade_database(db_url=url)
+
+
+def test_v2_42_backfills_native_item_id_from_the_payload(fresh_database_url) -> None:
+    """The corrector groups on ``native_item_id``; a pre-v2_42 row left NULL
+    would be invisible to it, so the migration must copy ``source.itemId`` out
+    of the stored payload. A row whose payload has no itemId stays NULL."""
+
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_41")
+    engine = create_engine(_sync_url(url))
+    try:
+        with engine.begin() as connection:
+            _insert_required(connection, "connectors", {"id": "c1", "revoked": 0})
+            _insert_required(connection, "sessions", {
+                "id": "s1", "connector_id": "c1", "runtime": "claude", "runtime_id": "r1",
+            })
+            for iid, payload in (
+                ("m1", '{"id":"m1","source":{"runtime":"claude","itemId":"native-A"}}'),
+                ("r1", '{"id":"r1","source":{"runtime":"claude","itemId":"native-A"}}'),
+                ("p1", '{"id":"p1","source":{"runtime":"platform"}}'),
+            ):
+                _insert_required(connection, "timeline_items", {
+                    "session_id": "s1", "id": iid, "payload_json": payload,
+                })
+    finally:
+        engine.dispose()
+
+    upgrade_database(db_url=url)
+
+    engine = create_engine(_sync_url(url))
+    try:
+        with engine.connect() as connection:
+            rows = {
+                row[0]: row[1]
+                for row in connection.execute(
+                    text("SELECT id, native_item_id FROM timeline_items")
+                )
+            }
+        assert rows["m1"] == "native-A"
+        assert rows["r1"] == "native-A"
+        assert rows["p1"] is None  # no itemId in the payload -> stays NULL
+    finally:
+        engine.dispose()
+
+
+def test_v2_42_backfill_pages_without_skipping_or_looping(fresh_database_url, monkeypatch) -> None:
+    """The backfill pages by ``(session_id, id)`` so a tiny page size still
+    covers every row (and a payload with no itemId cannot stall the loop)."""
+
+    from migrations.versions import v2_42
+
+    monkeypatch.setattr(v2_42, "_BACKFILL_BATCH", 1)
+
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_41")
+    engine = create_engine(_sync_url(url))
+    try:
+        with engine.begin() as connection:
+            _insert_required(connection, "connectors", {"id": "c1", "revoked": 0})
+            _insert_required(connection, "sessions", {
+                "id": "s1", "connector_id": "c1", "runtime": "claude", "runtime_id": "claude",
+            })
+            for idx in range(4):
+                extra = f',"itemId":"N{idx}"' if idx != 2 else ""
+                _insert_required(connection, "timeline_items", {
+                    "session_id": "s1", "id": f"m{idx}",
+                    "payload_json": '{"id":"m%d","source":{"runtime":"claude"%s}}' % (idx, extra),
+                })
+    finally:
+        engine.dispose()
+
+    upgrade_database(db_url=url)
+
+    engine = create_engine(_sync_url(url))
+    try:
+        with engine.connect() as connection:
+            rows = {
+                row[0]: row[1]
+                for row in connection.execute(
+                    text("SELECT id, native_item_id FROM timeline_items")
+                )
+            }
+        assert rows == {"m0": "N0", "m1": "N1", "m2": None, "m3": "N3"}
+    finally:
+        engine.dispose()
+
+
+def test_v2_42_index_check_ignores_an_unusable_index(monkeypatch) -> None:
+    """``CREATE INDEX CONCURRENTLY`` that fails leaves an index the planner
+    ignores; the check must ask whether the index is usable (``indisvalid``)."""
+
+    from types import SimpleNamespace
+
+    from migrations.versions import v2_42
+
+    class _Result:
+        def __init__(self, row) -> None:
+            self._row = row
+
+        def first(self):
+            return self._row
+
+    class _Bind:
+        dialect = SimpleNamespace(name="postgresql")
+
+        def __init__(self, row) -> None:
+            self.row = row
+            self.statements: list[str] = []
+
+        def execute(self, statement, _parameters):
+            self.statements.append(str(statement))
+            return _Result(self.row)
+
+    class _Op:
+        def __init__(self, bind) -> None:
+            self._bind = bind
+
+        def get_bind(self):
+            return self._bind
+
+    for row, expected in (
+        ((True,), True),
+        ((False,), False),
+        (None, False),
+    ):
+        bind = _Bind(row)
+        monkeypatch.setattr(v2_42, "op", _Op(bind))
+        assert v2_42._index_is_usable("idx_x") is expected
+        assert "indisvalid" in bind.statements[-1]
+        assert "relkind" in bind.statements[-1]
+
+
+def test_v2_42_upgrade_keeps_ddl_out_of_the_chain_transaction(monkeypatch) -> None:
+    """``ADD COLUMN`` / backfill / ``CREATE INDEX CONCURRENTLY`` must each run in
+    their own committed ``autocommit_block``, so a large ``timeline_items`` is
+    never locked end-to-end and a partial run is recovered by re-running."""
+
+    from migrations.versions import v2_42
+
+    events: list[str] = []
+
+    class _Context:
+        def autocommit_block(self):
+            events.append("enter-block")
+
+            class _CM:
+                def __enter__(self):
+                    return None
+
+                def __exit__(self, *_exc):
+                    events.append("exit-block")
+                    return False
+
+            return _CM()
+
+    class _Op:
+        def get_context(self):
+            return _Context()
+
+        def get_bind(self):
+            return type(
+                "B", (),
+                {"dialect": type("D", (), {"name": "postgresql"})()},
+            )()
+
+        def execute(self, *_a, **_k):
+            events.append("execute")
+
+        def add_column(self, *_a, **_k):
+            events.append("add_column")
+
+        def create_index(self, *_a, **_k):
+            events.append("create_index")
+
+    monkeypatch.setattr(v2_42, "op", _Op())
+    monkeypatch.setattr(v2_42, "_column_names", lambda: {"native_item_id"})
+    monkeypatch.setattr(v2_42, "_index_is_usable", lambda _name: False)
+    monkeypatch.setattr(v2_42, "_index_exists", lambda _name: False)
+    monkeypatch.setattr(v2_42, "_backfill_native_item_id", lambda: events.append("backfill"))
+
+    v2_42.upgrade()
+
+    # The backfill and the index build each sit inside an entered block.
+    assert events.count("enter-block") >= 2
+    assert events.count("exit-block") >= 2
+
+
+def test_v2_43_adds_the_native_message_id_column_and_index(fresh_database_url) -> None:
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_42")
+    engine = create_engine(_sync_url(url))
+    try:
+        assert "native_message_id" not in {
+            column["name"] for column in inspect(engine).get_columns("timeline_items")
+        }
+    finally:
+        engine.dispose()
+
+    upgrade_database(db_url=url)
+
+    engine = create_engine(_sync_url(url))
+    try:
+        columns = {c["name"]: c for c in inspect(engine).get_columns("timeline_items")}
+        assert "native_message_id" in columns
+        assert columns["native_message_id"]["nullable"] is True
+        index_names = {i["name"] for i in inspect(engine).get_indexes("timeline_items")}
+        assert "idx_timeline_items_session_native_message" in index_names
+    finally:
+        engine.dispose()
+
+    upgrade_database(db_url=url)
+
+
+def test_v2_43_backfills_native_message_id_from_the_payload(fresh_database_url) -> None:
+    """A row whose payload declares ``source.nativeMessageId`` must carry it
+    after the migration; a row without it stays NULL, never guessed."""
+
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_42")
+    engine = create_engine(_sync_url(url))
+    try:
+        with engine.begin() as connection:
+            _insert_required(connection, "connectors", {"id": "c1", "revoked": 0})
+            _insert_required(connection, "sessions", {
+                "id": "s1", "connector_id": "c1", "runtime": "claude", "runtime_id": "r1",
+            })
+            for iid, payload in (
+                ("t1", '{"id":"t1","source":{"runtime":"claude","itemId":"call-A","nativeMessageId":"msg-A"}}'),
+                ("t2", '{"id":"t2","source":{"runtime":"claude","itemId":"call-B","nativeMessageId":"msg-A"}}'),
+                ("p1", '{"id":"p1","source":{"runtime":"claude","itemId":"old-body"}}'),
+            ):
+                _insert_required(connection, "timeline_items", {
+                    "session_id": "s1", "id": iid, "payload_json": payload,
+                })
+    finally:
+        engine.dispose()
+
+    upgrade_database(db_url=url)
+
+    engine = create_engine(_sync_url(url))
+    try:
+        with engine.connect() as connection:
+            rows = {
+                row[0]: row[1]
+                for row in connection.execute(
+                    text("SELECT id, native_message_id FROM timeline_items")
+                )
+            }
+        assert rows["t1"] == "msg-A"
+        assert rows["t2"] == "msg-A"
+        assert rows["p1"] is None
+    finally:
+        engine.dispose()
+
+
+def test_v2_43_backfill_pages_without_skipping_or_looping(fresh_database_url, monkeypatch) -> None:
+    """The backfill pages by ``(session_id, id)`` so a tiny page size still
+    covers every row (and a payload with no nativeMessageId cannot stall)."""
+
+    from migrations.versions import v2_43
+
+    monkeypatch.setattr(v2_43, "_BACKFILL_BATCH", 1)
+
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_42")
+    engine = create_engine(_sync_url(url))
+    try:
+        with engine.begin() as connection:
+            _insert_required(connection, "connectors", {"id": "c1", "revoked": 0})
+            _insert_required(connection, "sessions", {
+                "id": "s1", "connector_id": "c1", "runtime": "claude", "runtime_id": "claude",
+            })
+            for idx in range(4):
+                extra = f',"nativeMessageId":"M{idx}"' if idx != 2 else ""
+                _insert_required(connection, "timeline_items", {
+                    "session_id": "s1", "id": f"m{idx}",
+                    "payload_json": '{"id":"m%d","source":{"runtime":"claude"%s}}' % (idx, extra),
+                })
+    finally:
+        engine.dispose()
+
+    upgrade_database(db_url=url)
+
+    engine = create_engine(_sync_url(url))
+    try:
+        with engine.connect() as connection:
+            rows = {
+                row[0]: row[1]
+                for row in connection.execute(
+                    text("SELECT id, native_message_id FROM timeline_items")
+                )
+            }
+        assert rows == {"m0": "M0", "m1": "M1", "m2": None, "m3": "M3"}
+    finally:
+        engine.dispose()
+
+
+def test_v2_42_downgrade_then_upgrade_round_trips(fresh_database_url) -> None:
+    """Each step runs in its own ``autocommit_block``, so a partial run is
+    recovered by re-running rather than automatic rollback; a downgrade then an
+    upgrade must land back on the same schema with no manual repair."""
+
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_41")
+    engine = create_engine(_sync_url(url))
+    try:
+        with engine.begin() as connection:
+            _insert_required(connection, "connectors", {"id": "c1", "revoked": 0})
+            _insert_required(connection, "sessions", {
+                "id": "s1", "connector_id": "c1", "runtime": "claude", "runtime_id": "r1",
+            })
+            _insert_required(connection, "timeline_items", {
+                "session_id": "s1", "id": "m1",
+                "payload_json": '{"id":"m1","source":{"runtime":"claude","itemId":"native-A"}}',
+            })
+    finally:
+        engine.dispose()
+
+    def _columns() -> set[str]:
+        e = create_engine(_sync_url(url))
+        try:
+            return {c["name"] for c in inspect(e).get_columns("timeline_items")}
+        finally:
+            e.dispose()
+
+    def _native_item_id() -> str | None:
+        e = create_engine(_sync_url(url))
+        try:
+            with e.connect() as connection:
+                return connection.execute(
+                    text("SELECT native_item_id FROM timeline_items WHERE id = 'm1'")
+                ).scalar()
+        finally:
+            e.dispose()
+
+    def _index_names() -> set[str]:
+        e = create_engine(_sync_url(url))
+        try:
+            return {i["name"] for i in inspect(e).get_indexes("timeline_items")}
+        finally:
+            e.dispose()
+
+    upgrade_database(db_url=url)
+    assert _native_item_id() == "native-A"
+    assert "idx_timeline_items_session_native_item" in _index_names()
+
+    command.downgrade(_alembic_config(url), "v2_41")
+    assert "native_item_id" not in _columns()
+    assert "idx_timeline_items_session_native_item" not in _index_names()
+
+    upgrade_database(db_url=url)
+    assert _native_item_id() == "native-A"
+    assert "idx_timeline_items_session_native_item" in _index_names()
+
+
+def test_v2_43_downgrade_then_upgrade_round_trips(fresh_database_url) -> None:
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_42")
+    engine = create_engine(_sync_url(url))
+    try:
+        with engine.begin() as connection:
+            _insert_required(connection, "connectors", {"id": "c1", "revoked": 0})
+            _insert_required(connection, "sessions", {
+                "id": "s1", "connector_id": "c1", "runtime": "claude", "runtime_id": "claude",
+            })
+            _insert_required(connection, "timeline_items", {
+                "session_id": "s1", "id": "t1",
+                "payload_json": '{"id":"t1","source":{"runtime":"claude","itemId":"call-A","nativeMessageId":"msg-A"}}',
+            })
+    finally:
+        engine.dispose()
+
+    def _columns() -> set[str]:
+        e = create_engine(_sync_url(url))
+        try:
+            return {c["name"] for c in inspect(e).get_columns("timeline_items")}
+        finally:
+            e.dispose()
+
+    def _native_message_id() -> str | None:
+        e = create_engine(_sync_url(url))
+        try:
+            with e.connect() as connection:
+                return connection.execute(
+                    text("SELECT native_message_id FROM timeline_items WHERE id = 't1'")
+                ).scalar()
+        finally:
+            e.dispose()
+
+    def _index_names() -> set[str]:
+        e = create_engine(_sync_url(url))
+        try:
+            return {i["name"] for i in inspect(e).get_indexes("timeline_items")}
+        finally:
+            e.dispose()
+
+    upgrade_database(db_url=url)
+    assert _native_message_id() == "msg-A"
+    assert "idx_timeline_items_session_native_message" in _index_names()
+
+    command.downgrade(_alembic_config(url), "v2_42")
+    assert "native_message_id" not in _columns()
+    assert "idx_timeline_items_session_native_message" not in _index_names()
+
+    upgrade_database(db_url=url)
+    assert _native_message_id() == "msg-A"
+    assert "idx_timeline_items_session_native_message" in _index_names()

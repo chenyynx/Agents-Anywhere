@@ -50,9 +50,24 @@ for _site in (_SERVER / ".venv" / "lib").glob("python*/site-packages"):
         sys.path.append(str(_site))
 
 from agent_server.core.models import TimelineItemIn
-from agent_server.infra.db.migrations import upgrade_database
 from agent_server.infra.repositories.facade import Store
 from session_fixtures import create_session_with_project
+
+# The server suite's conftest owns the shared PostgreSQL test database: it
+# migrates once and truncates before each test. Load it by file path — the
+# connector has its own ``conftest`` module, so a bare ``import conftest``
+# would resolve to the wrong one.
+import importlib.util as _ilu
+
+_spec = _ilu.spec_from_file_location(
+    "_server_conftest", _SERVER / "tests" / "conftest.py"
+)
+_server_conftest = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(_server_conftest)
+_ensure_migrated = _server_conftest._ensure_migrated
+_truncate_async = _server_conftest._truncate
+_asyncpg_url = _server_conftest._asyncpg_url
+SERVER_TEST_DATABASE_URL = _server_conftest.TEST_DATABASE_URL
 
 SESSION = "tool-order-e2e"
 EXTERNAL_SESSION = "claude_ext_e2e"
@@ -103,9 +118,12 @@ def _tool_result_frame(tool_use_id: str, text: str = "ok") -> Any:
 
 
 async def _store_with_session(tmp_path: Path) -> tuple[Store, Any]:
-    db_path = tmp_path / "tool-order-e2e.sqlite3"
-    upgrade_database(sqlite_path=db_path)
-    store = Store(db_path)
+    # Isolate against the shared PostgreSQL test database. ``reset_shared_database``
+    # wraps ``asyncio.run`` (unusable inside this test's running loop), so drive
+    # the same truncate directly here.
+    _ensure_migrated()
+    await _truncate_async(_asyncpg_url(SERVER_TEST_DATABASE_URL))
+    store = Store()
     connector, _, _ = await store.create_connector(name="dev", user_id="user_1")
     session = await create_session_with_project(
         store,

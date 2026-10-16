@@ -26,7 +26,6 @@ from test_backend_mvp import (
 )
 
 from agent_server.core.models import TimelineItemIn
-from agent_server.infra.db.migrations import upgrade_database
 from agent_server.infra.repositories.facade import Store
 
 
@@ -87,15 +86,14 @@ def plain_tool_input(item_id: str, *, order_seq: int, session_id: str) -> Timeli
 
 
 async def _store_with_session(tmp_path: Any) -> tuple[Store, Any]:
-    db_path = tmp_path / "timeline-agent-prune.sqlite3"
-    upgrade_database(sqlite_path=db_path)
-    store = Store(db_path)
+    store = Store()
     connector, _, _ = await store.create_connector(name="dev", user_id="user_1")
     session = await create_session_with_project(
         store,
         connector_id=connector.id,
         runtime="claude",
         external_session_id="claude_ext_1",
+        project_name="P-prune",
     )
     return store, session
 

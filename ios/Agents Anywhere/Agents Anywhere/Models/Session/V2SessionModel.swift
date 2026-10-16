@@ -158,6 +158,11 @@ final class V2SessionModel: Identifiable {
     /// it, while a later rebuild (a higher `snapshotRecoveryCount`) publishes a
     /// fresh value that opens again.
     private(set) var recoveryNotice: V2SessionRecoveryNotice?
+    /// The notification-type notices this session has already acknowledged (see
+    /// `V2NotificationAcknowledgements`). Carried on the observation beside the
+    /// recovery disclosure so the one-shot filter reads durable state rather
+    /// than the view-scoped toast store.
+    private(set) var acknowledgedNotifications = V2NotificationAcknowledgements()
     private(set) var hasOlderItems = false
     private(set) var hasNewerItems = false
     /// The projection's active SubAgent cards, mirroring the same field on
@@ -480,6 +485,9 @@ final class V2SessionModel: Identifiable {
         if self.network != network { self.network = network }
         if failure != observation.error { failure = observation.error }
         if recoveryNotice != observation.recoveryNotice { recoveryNotice = observation.recoveryNotice }
+        if acknowledgedNotifications != observation.acknowledgedNotifications {
+            acknowledgedNotifications = observation.acknowledgedNotifications
+        }
         runtime.update(data, connection: connection)
         notices.update(runtime.notices, sessionID: id)
         if hasOlderItems != (data?.hasOlderItems ?? false) { hasOlderItems = data?.hasOlderItems ?? false }
@@ -536,6 +544,16 @@ final class V2SessionModel: Identifiable {
     func clearRecoveryNotice() {
         recoveryNotice = nil
         repository?.clearRecoveryNotice(sessionId: id)
+    }
+
+    /// Records a notification as acknowledged within its current open episode
+    /// once the user has closed its toast. The notice is one-shot per episode:
+    /// writing the id through to the repository means re-entering the session
+    /// page — or relaunching — cannot replay a notice already closed in this
+    /// episode, while the next episode at the same id surfaces once more (the
+    /// acknowledgement is dropped when the notice leaves the open set).
+    func acknowledgeNotification(noticeId: String) {
+        repository?.acknowledgeNotification(sessionId: id, noticeId: noticeId)
     }
 
     func confirmEcho(_ item: V2TimelineItem) {
@@ -610,7 +628,7 @@ final class V2SessionModel: Identifiable {
         awaitingEchoSince = nil
         sendQueue.replaceAll([])
         metadata = nil; timeline = []; rowsByID = [:]; pendingMessages = []; awaitingReplyID = nil; draft = ""; draftAttachmentIDs = []
-        activeAgentCards = []; recoveryNotice = nil
+        activeAgentCards = []; recoveryNotice = nil; acknowledgedNotifications = V2NotificationAcknowledgements()
         composer.invalidate()
         attachmentPreviews.clear()
         notices.clear()

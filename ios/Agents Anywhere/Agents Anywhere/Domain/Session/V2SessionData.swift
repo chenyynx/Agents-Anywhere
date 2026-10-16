@@ -81,6 +81,36 @@ struct V2SessionRecoveryNotice: Hashable {
     let message: String
 }
 
+/// The notification-type notices this session has acknowledged within their
+/// current open episode, by notice id. A notification is one-shot per *episode*
+/// — the span during which it is `status == "open"` — not per `(id, revision)`:
+/// production never bumps the revision (the server default is a constant 1 and
+/// nothing raises it), so an id-keyed record is the only honest identity. An
+/// acknowledgement is meaningful only while its notice is open; when the notice
+/// resolves or vanishes its episode has ended and the acknowledgement is
+/// dropped (see `V2SessionRepository.reconcileNotificationAcknowledgements`), so
+/// a later episode at the same id surfaces again. Persisted with the session
+/// archive so a close outlives a page rebuild and a relaunch — the toast store
+/// is view-scoped and cannot be the record.
+nonisolated struct V2NotificationAcknowledgements: Codable, Hashable {
+    private var acknowledged: Set<String> = []
+
+    init() {}
+
+    func contains(_ noticeId: String) -> Bool { acknowledged.contains(noticeId) }
+
+    var isEmpty: Bool { acknowledged.isEmpty }
+
+    mutating func acknowledge(_ noticeId: String) { acknowledged.insert(noticeId) }
+
+    /// Drops every acknowledgement outside `live` — the ids still open as
+    /// notifications. Reconciling against the authoritative open set is what
+    /// ends an episode: a notice that is no longer open loses its
+    /// acknowledgement, so the next time the same id opens it is a fresh
+    /// episode that surfaces again.
+    mutating func retain(_ live: Set<String>) { acknowledged.formIntersection(live) }
+}
+
 nonisolated struct V2SessionObservation: Hashable {
     let sessionId: V2SessionID
     let data: V2SessionData?
@@ -90,4 +120,8 @@ nonisolated struct V2SessionObservation: Hashable {
     /// rebuild has happened. Defaulted so observations without one keep
     /// constructing exactly as before.
     var recoveryNotice: V2SessionRecoveryNotice? = nil
+    /// The notification acknowledgements this session carries (see
+    /// `V2NotificationAcknowledgements`). Defaulted so existing construction
+    /// sites keep compiling.
+    var acknowledgedNotifications = V2NotificationAcknowledgements()
 }

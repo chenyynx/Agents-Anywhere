@@ -143,6 +143,34 @@ final class V2SessionRepository {
         emit(entry)
     }
 
+    /// Records a notification as acknowledged within its current open episode
+    /// once its toast is closed. The notice is one-shot per episode: recording
+    /// the id (and emitting so the model observes it) means a page rebuild or a
+    /// relaunch cannot replay a notice already closed, while the next episode
+    /// at the same id — after `reconcileNotificationAcknowledgements` drops this
+    /// bar — surfaces again. No-op when already acknowledged.
+    func acknowledgeNotification(sessionId: V2SessionID, noticeId: String) {
+        guard let entry = entries[sessionId] else { return }
+        guard !entry.acknowledgedNotifications.contains(noticeId) else { return }
+        entry.acknowledgedNotifications.acknowledge(noticeId)
+        emit(entry)
+    }
+
+    /// Ends the episodes of notification notices no longer open, so a fresh
+    /// episode at the same id can surface again, and drops the acknowledgement
+    /// of any notice that left the open set. Only an authoritative notice list
+    /// may end an episode: while the projection's live facts are not fresh (a
+    /// cold cache restore, an offline session) `notices` is empty for lack of
+    /// data, not because every notice resolved, and reconciling against it would
+    /// wrongly wipe a durable acknowledgement. So the reconcile is gated on
+    /// `liveStateIsFresh`; a notice that resolved while the facts were stale is
+    /// reconciled on the first fresh read instead.
+    private func reconcileNotificationAcknowledgements(_ entry: Entry) {
+        guard entry.projection?.data.liveStateIsFresh == true else { return }
+        let open = Set((entry.projection?.data.notices ?? []).filter(\.isOpenNotification).map(\.noticeId))
+        entry.acknowledgedNotifications.retain(open)
+    }
+
     /// Returns cached durable content immediately. Observe to keep live facts fresh.
     func load(sessionId: V2SessionID) async throws -> V2SessionData {
         let entry = entry(for: sessionId)
@@ -212,6 +240,7 @@ final class V2SessionRepository {
         // A failure that outlived the process is still on record: the ring is
         // restored beside the projection it belongs to.
         entry.recoveryDiagnostics = archive.recoveryDiagnostics ?? []
+        entry.acknowledgedNotifications = archive.acknowledgedNotifications ?? V2NotificationAcknowledgements()
         entry.model.restoreLocal(archive)
         emit(entry, persist: false)
     }
@@ -228,6 +257,7 @@ final class V2SessionRepository {
             entry.isDirty = false
             var archive = V2SessionArchive(data: projection.data, model: entry.model)
             archive.recoveryDiagnostics = entry.recoveryDiagnostics.isEmpty ? nil : entry.recoveryDiagnostics
+            archive.acknowledgedNotifications = entry.acknowledgedNotifications.isEmpty ? nil : entry.acknowledgedNotifications
             await localStore.saveSession(archive)
         }
     }
@@ -1146,7 +1176,8 @@ final class V2SessionRepository {
 
     private func observation(_ entry: Entry) -> V2SessionObservation {
         V2SessionObservation(sessionId: entry.id, data: entry.projection?.data, connection: entry.connection, error: entry.error,
-                             recoveryNotice: entry.recoveryNotice)
+                             recoveryNotice: entry.recoveryNotice,
+                             acknowledgedNotifications: entry.acknowledgedNotifications)
     }
 
     /// Frames buffered during a reconnect or a long reconcile are delivered
@@ -1167,6 +1198,10 @@ final class V2SessionRepository {
     /// Connection and connectivity transitions republish without an archive write.
     private func emit(_ entry: Entry, persist: Bool = true) {
         guard isCurrent(entry) else { return }
+        // End any notification episode that resolved before publishing, so the
+        // observation (and the page that reads it) never carries a stale
+        // acknowledgement for a notice that is no longer open.
+        reconcileNotificationAcknowledgements(entry)
         entry.model.update(observation(entry), network: network)
         for observer in entry.observers.values { observer.yield(observation(entry)) }
         if persist, entry.projection != nil {
@@ -1302,6 +1337,10 @@ private final class Entry {
     /// `clearRecoveryNotice(sessionId:)` once shown, and a later rebuild
     /// replaces it with a fresh, higher-numbered value.
     var recoveryNotice: V2SessionRecoveryNotice?
+    /// The notification-type notices this session has already acknowledged (see
+    /// `V2NotificationAcknowledgements`). Persisted with the archive so the
+    /// one-shot semantics survive a page rebuild and a relaunch.
+    var acknowledgedNotifications = V2NotificationAcknowledgements()
     var connectionTask: Task<Void, Never>?
     /// The observed-session heal loop. Cancelled by `stop()`; the id lets a
     /// round that is ending clear its own registration only.

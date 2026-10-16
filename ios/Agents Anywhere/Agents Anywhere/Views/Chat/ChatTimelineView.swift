@@ -626,9 +626,12 @@ private struct ChatTimelineContent: View, Equatable {
                         }
                     }
             }
-            ForEach(visibleNotices.filter { notice in
-                notice.timelineTargetID.map { !rowIDs.contains($0) } ?? true
-            }) { item in SessionInteractionCard(item: item, chat: model) }
+            // Notification-type notices are not timeline cards: they float as
+            // top toasts (SessionChatView). Only interaction notices seat here.
+            ForEach(SessionNoticeRouting.tailNotices(model.session.notices.notices,
+                sessionID: model.session.id, timelineRowIDs: rowIDs)) { item in
+                SessionInteractionCard(item: item, chat: model)
+            }
             ForEach(model.timeline.pendingMessages) { pending in
                 PendingMessageRow(pending: pending, chat: model, onAttachment: onAttachment,
                     onDismiss: { model.session.dismissPendingMessage(id: pending.id) })

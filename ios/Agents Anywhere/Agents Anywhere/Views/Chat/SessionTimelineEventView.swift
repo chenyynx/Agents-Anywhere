@@ -58,7 +58,14 @@ struct SessionTimelineGroupView: View, Equatable {
             ForEach(group.rows) { row in
                 SessionTimelineRow(row: row, chat: chat, onAttachment: onAttachment, cwd: chat.session.metadata?.cwd,
                     disclosures: chat.disclosures, onFile: onFile, onSubAgent: onSubAgent)
-                ForEach(inlineNotices.filter { $0.timelineTargetID == row.id }) { notice in
+                // Only interaction notices anchor to a row. A notification-type
+                // notice has no timeline anchor and is a top toast instead; the
+                // type check keeps that true even if a future one carried an
+                // anchor. Routing the group's pre-sliced `inlineNotices` (not the
+                // full list) keeps the equatable narrowing ChatTimelineView
+                // gained: this group re-renders only when its own notices change.
+                ForEach(SessionNoticeRouting.notices(inlineNotices,
+                    sessionID: chat.session.id, anchoredTo: row.id)) { notice in
                     SessionInteractionCard(item: notice, chat: chat)
                 }
             }

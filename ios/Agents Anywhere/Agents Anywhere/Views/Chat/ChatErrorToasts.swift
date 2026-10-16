@@ -6,6 +6,11 @@ struct ChatErrorToasts: View {
     let store: ChatToastStore
     let isRetrying: Bool
     let onRetry: (String) async -> Void
+    /// Runs when a toast is closed, so the owning view can persist anything the
+    /// dismissal has to remember (a notification's acknowledgement). The store
+    /// is dismissed here regardless, so a missing handler cannot leave a toast
+    /// stuck on screen.
+    var onDismiss: (String) -> Void = { _ in }
     @State private var selected: String?
     @ScaledMetric(relativeTo: .footnote) private var lineHeight: CGFloat = 18
     private var height: CGFloat { min(220, max(136, lineHeight * 4 + 74)) }
@@ -17,13 +22,16 @@ struct ChatErrorToasts: View {
                     ForEach(Array(store.items.enumerated()), id: \.element.id) { index, item in
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 8) {
-                                AppSymbol("exclamationmark.circle").foregroundStyle(.secondary)
+                                AppSymbol(item.severity.symbolName).foregroundStyle(.secondary)
                                 Text(item.title).font(.subheadline.weight(.medium)).lineLimit(1)
                                 Spacer(minLength: 0)
                                 if store.items.count > 1 {
                                     Text("\(index + 1)/\(store.items.count)").font(.caption2).monospacedDigit().foregroundStyle(.secondary)
                                 }
-                                Button { store.dismiss(item.id) } label: {
+                                Button {
+                                    store.dismiss(item.id)
+                                    onDismiss(item.id)
+                                } label: {
                                     AppSymbol("xmark", size: 11).frame(width: 44, height: 44)
                                 }.buttonStyle(.plain).accessibilityLabel(String(localized: "关闭此提示"))
                             }

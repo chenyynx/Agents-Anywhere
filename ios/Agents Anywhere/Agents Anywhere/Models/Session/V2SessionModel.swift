@@ -269,7 +269,7 @@ final class V2SessionModel: Identifiable {
         }
         composer.attachments.append(contentsOf: item.attachments)
         draftAttachmentIDs = composer.attachments.compactMap { $0.uploaded?.fileId }
-        repository?.draftDidChange()
+        repository?.draftDidChange(sessionID: id)
         repository?.localWorkDidChange(sessionID: id)
         evaluateSendQueue()
     }

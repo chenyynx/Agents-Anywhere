@@ -79,7 +79,7 @@ struct SessionChatView: View, Equatable {
                 contextUsage: model.contextUsage,
                 onSend: model.send, onStop: model.interrupt, onLoadSettings: model.loadSettings,
                 onApplySettings: model.applySettings, applyError: { model.settingsError },
-                onDraftChange: { model.repository.draftDidChange() },
+                onDraftChange: { model.repository.draftDidChange(sessionID: model.session.id) },
                 canQueueSend: model.canQueueSend, queueEnqueueTick: model.queueEnqueueTick,
                 onQueueSend: { await model.enqueueComposer() })
                 .traceChatLayout("composer-dock")

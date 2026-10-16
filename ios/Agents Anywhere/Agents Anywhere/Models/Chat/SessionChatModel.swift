@@ -569,7 +569,7 @@ final class SessionChatModel {
                 guard session.isValid, !Task.isCancelled else { throw CancellationError() }
                 guard let file = uploaded.first else { throw HTTPError.invalidResponse }
                 session.bindQueueUpload(itemID: item.id, localID: attachment.id, file: file)
-                repository.draftDidChange()
+                repository.draftDidChange(sessionID: session.id)
             }
             return true
         } catch {

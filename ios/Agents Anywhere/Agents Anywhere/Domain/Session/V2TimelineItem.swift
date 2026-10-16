@@ -132,7 +132,7 @@ nonisolated struct V2TimelineItem: Decodable, Identifiable, Hashable {
         // "reasoning below its body" defect the server's v2_42 fix removed.
         // (see the file header; expected form is Int, like the rest of the wire.)
         guard let orderSeqValue = raw["orderSeq"]?.intValue else {
-            throw DecodingError.keyNotFound(.orderSeq, .init(codingPath: [],
+            throw DecodingError.keyNotFound(CodingKeys.orderSeq, .init(codingPath: [],
                 debugDescription: "Missing 'orderSeq' in timeline item."))
         }
         orderSeq = orderSeqValue

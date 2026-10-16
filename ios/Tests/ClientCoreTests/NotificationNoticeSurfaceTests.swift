@@ -4,24 +4,36 @@ import Testing
 
 /// The notification-type notice ("切换已延后") as a one-shot top toast: it must
 /// not seat in the timeline, it must float on the shared toast surface with its
-/// own severity skin, and closing it must stay closed across a page rebuild
-/// while a bumped revision re-opens it (pp 2026-10-16).
+/// own severity skin, and closing it must stay closed for *one open episode*
+/// while a later episode at the same id surfaces again (pp 2026-10-16).
+///
+/// The identity is deliberately the notice id, not `(id, revision)`: production
+/// never advances the revision (the server default is a constant 1), so a
+/// revision-keyed identity would silence an id forever after one close. One-shot
+/// is an episode property, ended when the notice leaves the open set.
 @Suite @MainActor struct NotificationNoticeSurfaceTests {
     // MARK: Fixtures
 
-    private func runtimeNotice(id: String = "notice", type: String = "notification", severity: String = "info",
-                               status: String = "open", revision: Int = 1, timelineItemId: String? = nil) throws -> V2RuntimeNotice {
+    private func noticeObject(id: String = "deferred", type: String = "notification", severity: String = "info",
+                              status: String = "open", timelineItemId: String? = nil) throws -> [String: Any] {
         var value = (try fixtureObject("notices")["notices"] as! [[String: Any]])[0]
-        value["noticeId"] = id; value["type"] = type; value["severity"] = severity
-        value["status"] = status; value["revision"] = revision
+        value["noticeId"] = id; value["type"] = type; value["severity"] = severity; value["status"] = status
         if let timelineItemId { value["source"] = ["timelineItemId": timelineItemId] }
-        return try decode(value)
+        return value
     }
 
-    private func model(id: String = "notice", type: String = "notification", severity: String = "info",
-                       status: String = "open", revision: Int = 1, timelineItemId: String? = nil) throws -> SessionNoticeModel {
-        SessionNoticeModel(try runtimeNotice(id: id, type: type, severity: severity, status: status,
-                                             revision: revision, timelineItemId: timelineItemId))
+    private func runtimeNotice(id: String = "deferred", type: String = "notification", severity: String = "info",
+                               status: String = "open", timelineItemId: String? = nil) throws -> V2RuntimeNotice {
+        try decode(noticeObject(id: id, type: type, severity: severity, status: status, timelineItemId: timelineItemId))
+    }
+
+    private func model(id: String = "deferred", type: String = "notification", severity: String = "info",
+                       status: String = "open", timelineItemId: String? = nil) throws -> SessionNoticeModel {
+        SessionNoticeModel(try runtimeNotice(id: id, type: type, severity: severity, status: status, timelineItemId: timelineItemId))
+    }
+
+    private func notification(id: String = "deferred", severity: String = "info", status: String = "open") throws -> ChatNotification {
+        try #require(ChatNotification(notice: try runtimeNotice(id: id, severity: severity, status: status)))
     }
 
     // MARK: Rendering routing
@@ -49,73 +61,122 @@ import Testing
         #expect(tail.isEmpty)
     }
 
-    /// A notification the server has resolved is not visible and so does not
-    /// seat anywhere; an open one is visible to the notification channel.
-    @Test func aResolvedNotificationIsNotPending() throws {
-        let resolved = try model(id: "deferred", type: "notification", status: "resolved", revision: 2)
-        #expect(ChatNotification.pending(in: [resolved], acknowledged: V2NotificationAcknowledgements()).isEmpty)
+    /// Only an open notification is surfaced; a resolved one is not an open
+    /// episode and produces no toast.
+    @Test func aResolvedNotificationIsNotAnOpenEpisode() throws {
+        #expect(ChatNotification(notice: try runtimeNotice(status: "resolved")) == nil)
+        #expect(ChatNotification.pending(in: [try model(status: "resolved")], acknowledged: V2NotificationAcknowledgements()).isEmpty)
     }
 
-    // MARK: One-shot semantics
+    // MARK: Episode semantics
 
-    /// The pending filter excludes any notification whose identity the user has
-    /// already acknowledged, and re-includes it at a bumped revision — a
-    /// genuinely new event at the same id.
-    @Test func anAcknowledgedNotificationStaysClosedUntilItsRevisionBumps() throws {
-        let open = try model(id: "deferred", type: "notification", revision: 1)
+    /// An open notification surfaces once; acknowledging it (closing the toast)
+    /// keeps it closed for the rest of the episode — the same open notice no
+    /// longer surfaces, whatever its revision.
+    @Test func anAcknowledgedNotificationStaysClosedWithinItsEpisode() throws {
+        let open = try model(status: "open")
         var acknowledged = V2NotificationAcknowledgements()
         #expect(ChatNotification.pending(in: [open], acknowledged: acknowledged).map(\.id) == ["deferred"])
 
-        acknowledged.acknowledge(noticeId: "deferred", revision: 1)
+        acknowledged.acknowledge("deferred")
         #expect(ChatNotification.pending(in: [open], acknowledged: acknowledged).isEmpty)
-
-        // A higher revision is a new event and surfaces again.
-        let bumped = try model(id: "deferred", type: "notification", revision: 2)
-        #expect(ChatNotification.pending(in: [bumped], acknowledged: acknowledged).map(\.revision) == [2])
     }
 
-    /// The acknowledgement is monotone: closing an older revision after a newer
-    /// one cannot lower the recorded bar and reopen the notice.
-    @Test func theAcknowledgementNeverMovesBackwards() {
+    /// Ending the episode — the notice leaving the open set — drops its
+    /// acknowledgement, so a *new* episode at the same id surfaces again. This
+    /// is the fix for the "silenced forever" defect: an id-keyed acknowledgement
+    /// with no episode boundary would swallow every future deferral.
+    @Test func aNewEpisodeAfterTheNoticeLeavesTheOpenSetSurfacesAgain() throws {
+        let open = try model(status: "open")
         var acknowledged = V2NotificationAcknowledgements()
-        acknowledged.acknowledge(noticeId: "deferred", revision: 2)
-        acknowledged.acknowledge(noticeId: "deferred", revision: 1)
-        #expect(acknowledged["deferred"] == 2)
-    }
-
-    /// The end-to-end one-shot: acknowledging through a session model is
-    /// persisted to the archive, so a freshly reconstructed page — modelled by
-    /// a new repository restoring from disk, the "退会再进" case — reads the
-    /// acknowledgement back and filters the notice out. Without the durable
-    /// record (the toast store is view-scoped) it would replay.
-    @Test func anAcknowledgedNotificationDoesNotReplayAfterARebuiltRepository() async throws {        let url = FileManager.default.temporaryDirectory.appendingPathComponent("aa-notif-" + UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: url) }
-        let store = V2LocalStore(directory: url)
-        let http = TestHTTPTransport(); let runtime = V2RuntimeAPI(transport: http)
-        func make() -> V2SessionRepository {
-            .init(scope: .init(serverURL: URL(string: "https://example.test")!, accountID: "account"),
-                detail: .init(sessionAPI: V2SessionAPI(transport: http), runtimeAPI: runtime, realtimeAPI: TestRealtimeAPI()),
-                interactions: .init(runtimeAPI: runtime), localStore: store)
-        }
-        let first = make()
-        _ = try await first.load(sessionId: "session")
-        first.session(id: "session").acknowledgeNotification(noticeId: "deferred", revision: 1)
-        #expect(first.session(id: "session").acknowledgedNotifications["deferred"] == 1)
-        await first.flushCache(); first.reset()
-
-        // A new page (fresh repository instance) reads the persisted record.
-        let restored = make()
-        restored.updateConnectivity(.init(availability: .offline))
-        _ = try await restored.load(sessionId: "session")
-        let acknowledged = restored.session(id: "session").acknowledgedNotifications
-        #expect(acknowledged["deferred"] == 1)
-        let open = try model(id: "deferred", type: "notification", revision: 1)
+        acknowledged.acknowledge("deferred")
         #expect(ChatNotification.pending(in: [open], acknowledged: acknowledged).isEmpty)
 
-        // A bumped revision still surfaces after the rebuild.
-        let bumped = try model(id: "deferred", type: "notification", revision: 2)
-        #expect(ChatNotification.pending(in: [bumped], acknowledged: acknowledged).map(\.revision) == [2])
-        restored.reset(); await store.close(removing: true)
+        // The notice resolved (or vanished): the episode ended.
+        acknowledged.retain([])
+        #expect(acknowledged.isEmpty)
+        // A fresh open at the same id is a new episode and surfaces again.
+        #expect(ChatNotification.pending(in: [open], acknowledged: acknowledged).map(\.id) == ["deferred"])
+    }
+
+    /// Reconciling against the open set is a retain, not a wipe: an id still
+    /// open keeps its acknowledgement, and only the ids that left are dropped.
+    @Test func reconcileRetainsOnlyTheIdsStillOpen() {
+        var acknowledged = V2NotificationAcknowledgements()
+        acknowledged.acknowledge("first"); acknowledged.acknowledge("second")
+        acknowledged.retain(["second"])
+        #expect(acknowledged.contains("second"))
+        #expect(!acknowledged.contains("first"))
+    }
+
+    /// Multiple notifications carry independent acknowledgements.
+    @Test func acknowledgementsArePerNoticeID() {
+        var acknowledged = V2NotificationAcknowledgements()
+        acknowledged.acknowledge("first")
+        #expect(acknowledged.contains("first") && !acknowledged.contains("second"))
+        acknowledged.retain(["first", "second"])
+        #expect(acknowledged.contains("first"))
+    }
+
+    // MARK: Toast store — notification channel
+
+    /// The store projects the pending set: it adds a toast per pending
+    /// notification, refreshes its copy, and withdraws the toast of a notice
+    /// that left the set (resolved) — the P2 fix that stops a leftover toast
+    /// claiming an effect that is no longer true. Re-entering the episode later
+    /// re-adds it.
+    @Test func reconcileAddsRefreshesAndWithdrawsNotificationToasts() throws {
+        let store = ChatToastStore()
+        let first = try notification(id: "deferred", severity: "info")
+        store.reconcileNotifications([first])
+        #expect(store.items.map(\.id) == ["notif:deferred"])
+        #expect(store.items.first?.severity == .info)
+        #expect(store.notification(for: "notif:deferred") == first)
+
+        // A changed copy refreshes the same toast in place.
+        let renamed = try #require(ChatNotification(notice: try decode(noticeObject(id: "deferred", severity: "warning"))))
+        store.reconcileNotifications([renamed])
+        #expect(store.items.map(\.id) == ["notif:deferred"])
+        #expect(store.items.first?.severity == .warning)
+
+        // The notice left the open set: its toast is withdrawn.
+        store.reconcileNotifications([])
+        #expect(store.items.isEmpty)
+        #expect(store.notification(for: "notif:deferred") == nil)
+
+        // A later episode re-adds it.
+        store.reconcileNotifications([first])
+        #expect(store.items.map(\.id) == ["notif:deferred"])
+    }
+
+    /// The store never re-adds a notification the user acknowledged, because
+    /// `pending` already excludes it; reconcile is a pure projection of the
+    /// durable, per-episode acknowledgement, not remembered state in the store.
+    @Test func anAcknowledgedNotificationIsNotInThePendingSetSoTheStoreCannotReviveIt() throws {
+        let store = ChatToastStore()
+        let open = try model(status: "open")
+        var acknowledged = V2NotificationAcknowledgements()
+        store.reconcileNotifications(ChatNotification.pending(in: [open], acknowledged: acknowledged))
+        #expect(store.items.map(\.id) == ["notif:deferred"])
+
+        store.dismiss("notif:deferred")
+        acknowledged.acknowledge("deferred")
+        // The page re-pushes from the durable set: the notice is acknowledged,
+        // so it is not pending — the store must not re-open it.
+        store.reconcileNotifications(ChatNotification.pending(in: [open], acknowledged: acknowledged))
+        #expect(store.items.isEmpty)
+    }
+
+    /// The notification channel does not share a slot with the failure or
+    /// runtime channels even for the same logical subject: it is keyed by its
+    /// own `notif:` source.
+    @Test func theNotificationChannelDoesNotCollideWithOtherSources() throws {
+        let store = ChatToastStore()
+        store.update(source: "session", failure: V2ClientFailure(kind: .transient, message: "boom"))
+        store.reconcileNotifications([try notification()])
+        #expect(Set(store.items.map(\.id)) == ["session", "notif:deferred"])
+        store.reconcileNotifications([])
+        #expect(store.items.map(\.id) == ["session"])
     }
 
     // MARK: Severity skin
@@ -123,20 +184,13 @@ import Testing
     /// A notification's severity maps onto the skin: info (and success) take
     /// the neutral glyph, error and warning keep the alarm mark.
     @Test func severitySelectsTheToastSkin() throws {
-        let info = try #require(ChatNotification(notice: try runtimeNotice(severity: "info")))
-        #expect(info.severity == .info)
-        #expect(info.severity.symbolName == "info.circle")
-
-        let success = try #require(ChatNotification(notice: try runtimeNotice(severity: "success")))
-        #expect(success.severity == .info)
-
-        let warning = try #require(ChatNotification(notice: try runtimeNotice(severity: "warning")))
-        #expect(warning.severity == .warning)
-        #expect(warning.severity.symbolName == "exclamationmark.circle")
-
-        let error = try #require(ChatNotification(notice: try runtimeNotice(severity: "error")))
-        #expect(error.severity == .error)
-        #expect(error.severity.symbolName == "exclamationmark.circle")
+        #expect(try notification(severity: "info").severity == .info)
+        #expect(try notification(severity: "info").severity.symbolName == "info.circle")
+        #expect(try notification(severity: "success").severity == .info)
+        #expect(try notification(severity: "warning").severity == .warning)
+        #expect(try notification(severity: "warning").severity.symbolName == "exclamationmark.circle")
+        #expect(try notification(severity: "error").severity == .error)
+        #expect(try notification(severity: "error").severity.symbolName == "exclamationmark.circle")
     }
 
     /// Only a notification-type notice becomes a `ChatNotification`; every other
@@ -160,44 +214,88 @@ import Testing
         #expect(store.items.allSatisfy { $0.severity == .error })
     }
 
-    // MARK: Toast store — notification channel
+    // MARK: End-to-end through the repository
 
-    /// The notification channel pins a dismissal to `(id, revision)`: the same
-    /// revision cannot revive a closed toast, a bumped revision re-opens it,
-    /// and the notification is recoverable by source for the caller to persist.
-    @Test func theNotificationChannelPinsDismissalToIdentity() throws {
-        let store = ChatToastStore()
-        let first = try #require(ChatNotification(notice: try runtimeNotice(severity: "info", revision: 1)))
-        store.update(source: "notif:deferred", notification: first)
-        #expect(store.items.map(\.id) == ["notif:deferred"])
-        #expect(store.items.first?.severity == .info)
-        #expect(store.notification(for: "notif:deferred")?.identity == first.identity)
-
-        // The same revision observed again is one toast, not two.
-        store.update(source: "notif:deferred", notification: first)
-        #expect(store.items.count == 1)
-
-        store.dismiss("notif:deferred")
-        #expect(store.items.isEmpty)
-        // A dismissal speaks for the revision it acknowledged.
-        store.update(source: "notif:deferred", notification: first)
-        #expect(store.items.isEmpty)
-
-        // A bumped revision is a new event and re-opens the toast.
-        let bumped = try #require(ChatNotification(notice: try runtimeNotice(severity: "info", revision: 2)))
-        store.update(source: "notif:deferred", notification: bumped)
-        #expect(store.items.map(\.id) == ["notif:deferred"])
+    /// The notice list the connector serves on a live read; mutable so a test
+    /// can resolve the notice and later re-open it.
+    @MainActor private final class LiveNotices {
+        var value: [[String: Any]]
+        init(_ value: [[String: Any]]) { self.value = value }
     }
 
-    /// The notification channel does not share a slot with the failure or
-    /// runtime channels even for the same logical subject: it is keyed by its
-    /// own `notif:` source.
-    @Test func theNotificationChannelDoesNotCollideWithOtherSources() throws {
-        let store = ChatToastStore()
-        store.update(source: "session", failure: V2ClientFailure(kind: .transient, message: "boom"))
-        store.update(source: "notif:deferred", notification: try #require(ChatNotification(notice: try runtimeNotice())))
-        #expect(Set(store.items.map(\.id)) == ["session", "notif:deferred"])
-        store.dismiss("notif:deferred")
-        #expect(store.items.map(\.id) == ["session"])
+    /// The full episode cycle, driven through the real repository paths (live
+    /// reads → `applyLive` → `emit` → the model the page observes):
+    /// an open notification surfaces; closing it stays closed while it is still
+    /// open — including across a rebuilt, disk-restored page (the "退会再进"
+    /// case); when the notice leaves the open set the acknowledgement is
+    /// dropped; and a fresh episode at the same id surfaces again. Without the
+    /// episode boundary the id-keyed acknowledgement would silence the id
+    /// forever — the production defect this pins.
+    @Test func anAcknowledgedNotificationStaysClosedUntilItsEpisodeEndsThenSurfacesAgain() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("aa-notif-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let localStore = V2LocalStore(directory: url)
+        let http = TestHTTPTransport()
+        let live = LiveNotices([try noticeObject(id: "deferred", status: "open")])
+        http.respond = { call in
+            if call.path.hasSuffix("/notices") {
+                return try JSONSerialization.data(withJSONObject: ["notices": live.value, "serverTime": "2026-09-05T12:00:00Z"])
+            }
+            return try http.defaultResponse(call)
+        }
+        let runtime = V2RuntimeAPI(transport: http)
+        func make() -> V2SessionRepository {
+            .init(scope: .init(serverURL: URL(string: "https://example.test/api/v2")!, accountID: "account"),
+                detail: .init(sessionAPI: V2SessionAPI(transport: http), runtimeAPI: runtime, realtimeAPI: TestRealtimeAPI()),
+                interactions: .init(runtimeAPI: runtime), localStore: localStore)
+        }
+        let repo = make()
+        _ = try await repo.load(sessionId: "session")
+        let session = repo.session(id: "session")
+
+        func pending() -> [String] {
+            ChatNotification.pending(in: session.notices.notices, acknowledged: session.acknowledgedNotifications).map(\.id)
+        }
+
+        // 1. A live read surfaces the open notification.
+        try await repo.sync(sessionId: "session")
+        #expect(pending() == ["deferred"])
+
+        // 2. Closing it records the acknowledgement.
+        session.acknowledgeNotification(noticeId: "deferred")
+        #expect(session.acknowledgedNotifications.contains("deferred"))
+        #expect(pending().isEmpty)
+
+        // 3. Still open on the next live read: stays closed.
+        try await repo.sync(sessionId: "session")
+        #expect(session.acknowledgedNotifications.contains("deferred"))
+        #expect(pending().isEmpty)
+
+        // 4. A rebuilt, disk-restored page keeps it closed. The archive does
+        //    not persist notices, so the notice only returns with a live read —
+        //    which is exactly the "退会再进 + 重新拉到通知" case: the durable
+        //    acknowledgement must suppress it.
+        await repo.flushCache(); repo.reset()
+        let restored = make()
+        _ = try await restored.load(sessionId: "session")
+        let restoredSession = restored.session(id: "session")
+        #expect(restoredSession.acknowledgedNotifications.contains("deferred"))
+        try await restored.sync(sessionId: "session")
+        #expect(ChatNotification.pending(in: restoredSession.notices.notices,
+            acknowledged: restoredSession.acknowledgedNotifications).isEmpty)
+
+        // 5. The notice leaves the open set: the episode ends and the
+        //    acknowledgement is dropped.
+        live.value = []
+        try await restored.sync(sessionId: "session")
+        #expect(!restoredSession.acknowledgedNotifications.contains("deferred"))
+
+        // 6. A fresh episode at the same id surfaces again.
+        live.value = [try noticeObject(id: "deferred", status: "open")]
+        try await restored.sync(sessionId: "session")
+        #expect(ChatNotification.pending(in: restoredSession.notices.notices,
+            acknowledged: restoredSession.acknowledgedNotifications).map(\.id) == ["deferred"])
+
+        restored.reset(); await localStore.close(removing: true)
     }
 }

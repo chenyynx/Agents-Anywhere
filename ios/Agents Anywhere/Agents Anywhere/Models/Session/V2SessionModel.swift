@@ -193,6 +193,7 @@ final class V2SessionModel: Identifiable {
     }
     var draftAttachmentIDs: [V2AttachmentID] = []
     @ObservationIgnored private weak var repository: V2SessionRepository?
+    @ObservationIgnored private var rowsByID: [V2TimelineItemID: V2TimelineItemModel] = [:]
 
     init(id: V2SessionID, scope: V2ClientScope, repository: V2SessionRepository) {
         self.id = id; self.scope = scope; self.repository = repository
@@ -438,7 +439,9 @@ final class V2SessionModel: Identifiable {
             try await upload?(pending)
             guard isValid, !Task.isCancelled else { throw CancellationError() }
             attachmentPreviews.remember(pending.attachments, clientID: pending.id)
-            await repository.flushCache()
+            // The staged bubble must be durable before the request leaves, but
+            // only this session's archive needs writing, not every cached one.
+            await repository.flushCache(sessionID: id)
             guard isValid, !Task.isCancelled else { throw CancellationError() }
             didSubmit = true
             _ = try await repository.send(sessionId: id, content: content, attachmentIDs: pending.attachmentIDs, clientMessageID: pending.id)
@@ -483,14 +486,30 @@ final class V2SessionModel: Identifiable {
         if hasNewerItems != (data?.hasNewerItems ?? false) { hasNewerItems = data?.hasNewerItems ?? false }
         let activeCards = data?.activeAgentCards ?? []
         if activeAgentCards != activeCards { activeAgentCards = activeCards }
-        let existing = Dictionary(uniqueKeysWithValues: timeline.map { ($0.id, $0) })
-        let rows = (data?.items ?? []).map { item in
-            let row = existing[item.id] ?? V2TimelineItemModel(item)
-            row.update(item)
-            return row
+        // A streamed token updates one existing row. Keep the id index across
+        // ticks and only republish the array when membership or order changed.
+        let items = data?.items ?? []
+        var rows: [V2TimelineItemModel] = []
+        rows.reserveCapacity(items.count)
+        var orderChanged = items.count != timeline.count
+        for (index, item) in items.enumerated() {
+            let row: V2TimelineItemModel
+            if let existing = rowsByID[item.id] {
+                row = existing
+                existing.update(item)
+            } else {
+                row = V2TimelineItemModel(item)
+                rowsByID[item.id] = row
+            }
+            if !orderChanged, timeline[index] !== row { orderChanged = true }
+            rows.append(row)
         }
-        if timeline.map(\.id) != rows.map(\.id) { timeline = rows }
-        for item in data?.items ?? [] { confirmEcho(item) }
+        }
+        if orderChanged {
+            timeline = rows
+            rowsByID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+        }
+        if !pendingMessages.isEmpty { for item in items { confirmEcho(item) } }
         if let id = awaitingReplyID, let data {
             let agentStarted = data.liveStateIsFresh && [.running, .waiting, .pending, .error].contains(data.state?.status ?? .unknown)
             let user = data.items.first { $0.role == .user && $0.source["clientMessageId"]?.stringValue == id }
@@ -550,7 +569,7 @@ final class V2SessionModel: Identifiable {
         draft = pending.content; composer.attachments = pending.attachments; draftAttachmentIDs = pending.attachmentIDs
         pending.didRestoreDraft = true
         composer.isFocused = true
-        repository?.draftDidChange()
+        repository?.draftDidChange(sessionID: id)
         return true
     }
 
@@ -584,7 +603,7 @@ final class V2SessionModel: Identifiable {
         queueDrainTask?.cancel(); queueDrainTask = nil
         awaitingEchoSince = nil
         sendQueue.replaceAll([])
-        metadata = nil; timeline = []; pendingMessages = []; awaitingReplyID = nil; draft = ""; draftAttachmentIDs = []
+        metadata = nil; timeline = []; rowsByID = [:]; pendingMessages = []; awaitingReplyID = nil; draft = ""; draftAttachmentIDs = []
         activeAgentCards = []; recoveryNotice = nil
         composer.invalidate()
         attachmentPreviews.clear()

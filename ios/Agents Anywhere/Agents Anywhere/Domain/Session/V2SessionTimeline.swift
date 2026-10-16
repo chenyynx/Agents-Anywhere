@@ -1,12 +1,12 @@
 import Foundation
 
-enum V2TimelineMode: String {
+nonisolated enum V2TimelineMode: String {
     case latest
     case changes
     case history
 }
 
-struct V2SessionTimelinePage: Decodable, Hashable {
+nonisolated struct V2SessionTimelinePage: Decodable, Hashable {
     let sessionId: V2SessionID
     let items: [V2TimelineItem]
     let nextSeq: Int
@@ -40,6 +40,7 @@ extension V2SessionTimelinePage {
 }
 
 struct V2SessionSnapshot: Decodable, Hashable {
+nonisolated struct V2SessionSnapshot: Decodable, Hashable {
     let session: V2SessionMeta
     let state: V2RuntimeState?
     let timeline: V2TimelineSnapshot
@@ -131,7 +132,7 @@ struct LossyElements<Element: Decodable>: Decodable {
     }
 }
 
-struct V2TimelineSnapshot: Decodable, Hashable {
+nonisolated struct V2TimelineSnapshot: Decodable, Hashable {
     let items: [V2TimelineItem]
     let nextSeq: Int
     let hasMore: Bool
@@ -158,6 +159,7 @@ extension V2TimelineSnapshot {
 }
 
 struct V2Approval: Decodable, Identifiable, Hashable {
+nonisolated struct V2Approval: Decodable, Identifiable, Hashable {
     let id: String
     let sessionId: V2SessionID
     let turnId: V2TurnID?

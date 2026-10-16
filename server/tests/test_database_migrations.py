@@ -5,13 +5,7 @@ import hashlib
 import json
 
 import pytest
-from alembic import command
-from sqlalchemy import BigInteger, create_engine, inspect, text
-from sqlalchemy.dialects.postgresql import asyncpg as postgresql_asyncpg
-from sqlalchemy.ext.asyncio import create_async_engine
-
 from agent_server.infra.db.engine import build_engine, resolve_db_url
-from agent_server.infra.db.legacy_import import rehearse_v1_import
 from agent_server.infra.db.migrations import (
     CURRENT_SCHEMA_REVISION,
     CURRENT_SCHEMA_VERSION,
@@ -31,11 +25,17 @@ from agent_server.infra.db.schema import (
     sessions,
     timeline_items,
 )
+from alembic import command
 from migrations.versions import v2_24
+from sqlalchemy import BigInteger, create_engine, inspect, text
+from sqlalchemy.dialects.postgresql import asyncpg as postgresql_asyncpg
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
 
 
-def _sqlite_url(path) -> str:
-    return f"sqlite+aiosqlite:///{path}"
+def _sync_url(url: str) -> str:
+    """The asyncpg test URL as a synchronous psycopg URL for inspection."""
+    return url.replace("postgresql+asyncpg://", "postgresql+psycopg://", 1)
 
 
 def test_protocol_clock_revisions_use_64_bit_columns() -> None:
@@ -67,35 +67,22 @@ def test_v2_24_protocol_limit_uses_postgresql_bigint_bind() -> None:
 
 def test_runtime_database_url_is_required(monkeypatch) -> None:
     monkeypatch.delenv("AGENT_SERVER_DB_URL", raising=False)
-    monkeypatch.delenv("AGENT_SERVER_DB_BACKEND", raising=False)
-    monkeypatch.delenv("AGENT_SERVER_DB", raising=False)
 
     with pytest.raises(ValueError, match="AGENT_SERVER_DB_URL is required"):
         resolve_db_url()
 
 
-def test_runtime_sqlite_environment_is_rejected(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("AGENT_SERVER_DB_URL", _sqlite_url(tmp_path / "runtime.sqlite3"))
-    monkeypatch.delenv("AGENT_SERVER_DB_BACKEND", raising=False)
-
-    with pytest.raises(
-        ValueError, match="SQLite runtime configuration is no longer supported"
-    ):
-        resolve_db_url()
+def test_non_postgresql_database_url_is_rejected() -> None:
+    with pytest.raises(ValueError, match="unsupported AGENT_SERVER_DB_URL scheme"):
+        resolve_db_url("mysql+aiomysql://agents:secret@127.0.0.1:3306/agents")
 
 
-def test_explicit_sqlite_url_remains_available_for_legacy_tools(tmp_path) -> None:
-    url = _sqlite_url(tmp_path / "legacy.sqlite3")
+def test_empty_database_upgrades_to_current_schema(fresh_database_url) -> None:
+    url = fresh_database_url
 
-    assert resolve_db_url(url=url) == ("sqlite", url)
+    upgrade_database(db_url=url)
 
-
-def test_empty_database_upgrades_to_current_schema(tmp_path) -> None:
-    path = tmp_path / "empty.sqlite3"
-
-    upgrade_database(db_url=_sqlite_url(path))
-
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         tables = set(inspect(engine).get_table_names())
         assert {
@@ -110,7 +97,7 @@ def test_empty_database_upgrades_to_current_schema(tmp_path) -> None:
         assert "app_releases" not in tables
     finally:
         engine.dispose()
-    async_engine = create_async_engine(_sqlite_url(path))
+    async_engine = create_async_engine(url, poolclass=NullPool)
     try:
         assert asyncio.run(database_revision(async_engine)) == CURRENT_SCHEMA_REVISION
         asyncio.run(require_current_database(async_engine))
@@ -118,105 +105,9 @@ def test_empty_database_upgrades_to_current_schema(tmp_path) -> None:
         asyncio.run(async_engine.dispose())
 
 
-def test_unversioned_v1_database_archives_then_removes_legacy_storage(
-    tmp_path,
-) -> None:
-    path = tmp_path / "legacy.sqlite3"
-    _create_legacy_v1_database(path)
-
-    upgrade_database(db_url=_sqlite_url(path))
-
-    engine = create_engine(f"sqlite:///{path}")
-    try:
-        inspector = inspect(engine)
-        assert not inspector.has_table("device_agent_settings")
-        assert not inspector.has_table("agent_modes")
-        assert not inspector.has_table("approvals")
-        assert inspector.has_table("device_runtimes")
-        session_columns = {
-            column["name"] for column in inspector.get_columns("sessions")
-        }
-        assert {"model_selection_id", "permission_selection_id"}.issubset(
-            session_columns
-        )
-        assert "runtime_settings_override" not in session_columns
-        connector_columns = {
-            column["name"] for column in inspector.get_columns("connectors")
-        }
-        assert {"presence_instance_id", "presence_connection_id"}.issubset(
-            connector_columns
-        )
-        assert "runtime_capabilities" not in connector_columns
-        with engine.connect() as connection:
-            session_status = connection.execute(
-                text("SELECT status FROM sessions WHERE id = 'sess_legacy'")
-            ).scalar_one()
-            runtime = (
-                connection.execute(
-                    text(
-                        "SELECT runtime.runtime_id, runtime_type.present, runtime.active, "
-                        "runtime.status, runtime_type.discovery_json, runtime.config_json "
-                        "FROM device_runtimes AS runtime "
-                        "JOIN connector_runtime_types AS runtime_type "
-                        "ON runtime_type.connector_id = runtime.connector_id "
-                        "AND runtime_type.runtime_type = runtime.runtime_type "
-                        "WHERE runtime.connector_id = 'conn_legacy' "
-                        "AND runtime.runtime_id = 'codex'"
-                    )
-                )
-                .mappings()
-                .one()
-            )
-            revision = connection.execute(
-                text("SELECT version_num FROM alembic_version")
-            ).scalar_one()
-        assert session_status == "blocked"
-        assert revision == CURRENT_SCHEMA_REVISION
-        assert runtime["runtime_id"] == "codex"
-        assert runtime["present"] == 1
-        assert runtime["active"] == 1
-        assert runtime["status"] == "unknown"
-        assert (
-            json.loads(runtime["discovery_json"])["selected"] == "/usr/local/bin/codex"
-        )
-        assert json.loads(runtime["config_json"]) == {
-            "model": "gpt-5.4",
-            "permissionMode": "ask",
-        }
-        with engine.connect() as connection:
-            selections = (
-                connection.execute(
-                    text(
-                        "SELECT model_selection_id, permission_selection_id "
-                        "FROM sessions WHERE id = 'sess_legacy'"
-                    )
-                )
-                .mappings()
-                .one()
-            )
-        assert selections == {
-            "model_selection_id": "gpt-5.4",
-            "permission_selection_id": "ask",
-        }
-        with engine.connect() as connection:
-            archived_sources = set(
-                connection.execute(
-                    text("SELECT source_table FROM legacy_import_archive")
-                ).scalars()
-            )
-        assert archived_sources == {
-            "agent_modes",
-            "connectors.runtime_capabilities",
-            "device_agent_settings",
-            "sessions.runtime_settings_override",
-        }
-    finally:
-        engine.dispose()
-
-
-def test_unversioned_v2_database_is_stamped_without_rebuilding(tmp_path) -> None:
-    path = tmp_path / "unversioned-v2.sqlite3"
-    engine = create_engine(f"sqlite:///{path}")
+def test_unversioned_v2_database_is_stamped_without_rebuilding(fresh_database_url) -> None:
+    url = fresh_database_url
+    engine = create_engine(_sync_url(url))
     metadata.create_all(engine)
     try:
         with engine.begin() as connection:
@@ -231,9 +122,9 @@ def test_unversioned_v2_database_is_stamped_without_rebuilding(tmp_path) -> None
     finally:
         engine.dispose()
 
-    upgrade_database(db_url=_sqlite_url(path))
+    upgrade_database(db_url=url)
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         with engine.connect() as connection:
             revision = connection.execute(
@@ -248,19 +139,19 @@ def test_unversioned_v2_database_is_stamped_without_rebuilding(tmp_path) -> None
         engine.dispose()
 
 
-def test_unversioned_v2_2_database_is_stamped_then_upgraded(tmp_path) -> None:
-    path = tmp_path / "unversioned-v2-2.sqlite3"
-    upgrade_database(db_url=_sqlite_url(path), revision="v2_2")
-    engine = create_engine(f"sqlite:///{path}")
+def test_unversioned_v2_2_database_is_stamped_then_upgraded(fresh_database_url) -> None:
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_2")
+    engine = create_engine(_sync_url(url))
     try:
         with engine.begin() as connection:
             connection.execute(text("DROP TABLE alembic_version"))
     finally:
         engine.dispose()
 
-    upgrade_database(db_url=_sqlite_url(path))
+    upgrade_database(db_url=url)
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         inspector = inspect(engine)
         assert "approvals" not in inspector.get_table_names()
@@ -276,22 +167,22 @@ def test_unversioned_v2_2_database_is_stamped_then_upgraded(tmp_path) -> None:
 
 
 @pytest.mark.parametrize("source_revision", ["v2_7", "v2_8", "v2_9"])
-def test_unversioned_recent_v2_database_runs_remaining_migrations(
-    tmp_path,
+def test_unversioned_recent_v2_database_runs_remaining_migrations(tmp_path,
     source_revision: str,
+    fresh_database_url,
 ) -> None:
-    path = tmp_path / f"unversioned-{source_revision}.sqlite3"
-    upgrade_database(db_url=_sqlite_url(path), revision=source_revision)
-    engine = create_engine(f"sqlite:///{path}")
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision=source_revision)
+    engine = create_engine(_sync_url(url))
     try:
         with engine.begin() as connection:
             connection.execute(text("DROP TABLE alembic_version"))
     finally:
         engine.dispose()
 
-    upgrade_database(db_url=_sqlite_url(path))
+    upgrade_database(db_url=url)
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         inspector = inspect(engine)
         assert "timeline_reset_seq" in {
@@ -314,11 +205,11 @@ def test_unversioned_recent_v2_database_runs_remaining_migrations(
         engine.dispose()
 
 
-def test_v2_0_database_upgrades_through_current_revision(tmp_path) -> None:
-    path = tmp_path / "versioned-v2-0.sqlite3"
-    upgrade_database(db_url=_sqlite_url(path), revision="v2_0")
+def test_v2_0_database_upgrades_through_current_revision(fresh_database_url) -> None:
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_0")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         columns = {
             column["name"] for column in inspect(engine).get_columns("connectors")
@@ -327,9 +218,9 @@ def test_v2_0_database_upgrades_through_current_revision(tmp_path) -> None:
     finally:
         engine.dispose()
 
-    upgrade_database(db_url=_sqlite_url(path))
+    upgrade_database(db_url=url)
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         columns = {
             column["name"] for column in inspect(engine).get_columns("connectors")
@@ -350,7 +241,6 @@ def test_v2_0_database_upgrades_through_current_revision(tmp_path) -> None:
 @pytest.mark.parametrize(
     ("source_revision", "target_revision"),
     [
-        ("v1_legacy", "v2_0"),
         ("v2_0", "v2_1"),
         ("v2_1", "v2_2"),
         ("v2_2", "v2_3"),
@@ -386,17 +276,17 @@ def test_v2_0_database_upgrades_through_current_revision(tmp_path) -> None:
         ("v2_32", "v2_33"),
     ],
 )
-def test_every_adjacent_schema_upgrade(
-    tmp_path,
+def test_every_adjacent_schema_upgrade(tmp_path,
     source_revision: str,
     target_revision: str,
+    fresh_database_url,
 ) -> None:
-    path = tmp_path / f"{source_revision}-{target_revision}.sqlite3"
-    upgrade_database(db_url=_sqlite_url(path), revision=source_revision)
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision=source_revision)
 
-    upgrade_database(db_url=_sqlite_url(path), revision=target_revision)
+    upgrade_database(db_url=url, revision=target_revision)
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         with engine.connect() as connection:
             assert (
@@ -410,14 +300,14 @@ def test_every_adjacent_schema_upgrade(
 
 
 @pytest.mark.parametrize("previous_control_version", ["1.0", "2.0"])
-def test_v2_33_removes_negotiation_state_and_preserves_runtime_data(
-    tmp_path,
+def test_v2_33_removes_negotiation_state_and_preserves_runtime_data(tmp_path,
     previous_control_version: str,
+    fresh_database_url,
 ) -> None:
-    path = tmp_path / "v2_33-runtime-state.sqlite3"
-    _seed_v2_13_runtime_storage(path)
-    upgrade_database(db_url=_sqlite_url(path), revision="v2_32")
-    engine = create_engine(f"sqlite:///{path}")
+    url = fresh_database_url
+    _seed_v2_13_runtime_storage(url)
+    upgrade_database(db_url=url, revision="v2_32")
+    engine = create_engine(_sync_url(url))
     tables = (
         "connectors",
         "connector_runtime_types",
@@ -452,7 +342,7 @@ def test_v2_33_removes_negotiation_state_and_preserves_runtime_data(
             )
         before = snapshot()
         assert before["device_runtimes"] and before["sessions"]
-        upgrade_database(db_url=_sqlite_url(path), revision="v2_33")
+        upgrade_database(db_url=url, revision="v2_33")
         assert "runtime_control_version" not in {
             column["name"] for column in inspect(engine).get_columns("connectors")
         }
@@ -461,11 +351,11 @@ def test_v2_33_removes_negotiation_state_and_preserves_runtime_data(
         engine.dispose()
 
 
-def test_v2_8_removes_turn_id_from_active_session_runs(tmp_path) -> None:
-    path = tmp_path / "v2_8-active-runs.sqlite3"
-    upgrade_database(db_url=_sqlite_url(path), revision="v2_7")
+def test_v2_8_removes_turn_id_from_active_session_runs(fresh_database_url) -> None:
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_7")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         assert "turn_id" in {
             column["name"]
@@ -475,14 +365,15 @@ def test_v2_8_removes_turn_id_from_active_session_runs(tmp_path) -> None:
         engine.dispose()
 
 
-def test_v2_9_removes_turn_data_from_timelines(tmp_path) -> None:
-    path = tmp_path / "v2_9-timelines.sqlite3"
-    upgrade_database(db_url=_sqlite_url(path), revision="v2_8")
+def test_v2_9_removes_turn_data_from_timelines(fresh_database_url) -> None:
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_8")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         with engine.begin() as connection:
-            connection.execute(text("PRAGMA foreign_keys = OFF"))
+            # Historical rows without their parents; disable FK enforcement for this transaction.
+            connection.execute(text("SET LOCAL session_replication_role = 'replica'"))
             connection.execute(
                 text(
                     "INSERT INTO dashboard_daily_metrics "
@@ -537,9 +428,9 @@ def test_v2_9_removes_turn_data_from_timelines(tmp_path) -> None:
     finally:
         engine.dispose()
 
-    upgrade_database(db_url=_sqlite_url(path), revision="v2_9")
+    upgrade_database(db_url=url, revision="v2_9")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         assert "turn_id" not in {
             column["name"] for column in inspect(engine).get_columns("timeline_items")
@@ -583,9 +474,9 @@ def test_v2_9_removes_turn_data_from_timelines(tmp_path) -> None:
     finally:
         engine.dispose()
 
-    upgrade_database(db_url=_sqlite_url(path), revision="v2_8")
+    upgrade_database(db_url=url, revision="v2_8")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         assert "turn_id" not in {
             column["name"]
@@ -595,11 +486,11 @@ def test_v2_9_removes_turn_data_from_timelines(tmp_path) -> None:
         engine.dispose()
 
 
-def test_v2_10_adds_timeline_reset_watermark(tmp_path) -> None:
-    path = tmp_path / "v2_10-timeline-reset.sqlite3"
-    upgrade_database(db_url=_sqlite_url(path), revision="v2_9")
+def test_v2_10_adds_timeline_reset_watermark(fresh_database_url) -> None:
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_9")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         assert "timeline_reset_seq" not in {
             column["name"] for column in inspect(engine).get_columns("sessions")
@@ -607,9 +498,9 @@ def test_v2_10_adds_timeline_reset_watermark(tmp_path) -> None:
     finally:
         engine.dispose()
 
-    upgrade_database(db_url=_sqlite_url(path), revision="v2_10")
+    upgrade_database(db_url=url, revision="v2_10")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         columns = {
             column["name"]: column for column in inspect(engine).get_columns("sessions")
@@ -626,13 +517,13 @@ def test_v2_10_adds_timeline_reset_watermark(tmp_path) -> None:
         engine.dispose()
 
 
-def test_v2_11_adds_dsh_facts_and_runtime_metadata(tmp_path) -> None:
-    path = tmp_path / "v2_11-dsh.sqlite3"
-    upgrade_database(db_url=_sqlite_url(path), revision="v2_10")
+def test_v2_11_adds_dsh_facts_and_runtime_metadata(fresh_database_url) -> None:
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_10")
 
-    upgrade_database(db_url=_sqlite_url(path), revision="v2_11")
+    upgrade_database(db_url=url, revision="v2_11")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         inspector = inspect(engine)
         fact_columns = {
@@ -655,10 +546,10 @@ def test_v2_11_adds_dsh_facts_and_runtime_metadata(tmp_path) -> None:
         engine.dispose()
 
 
-def test_v2_12_adds_dsh_source_state_without_rewriting_archives(tmp_path) -> None:
-    path = tmp_path / "v2_12-dsh-source-state.sqlite3"
-    upgrade_database(db_url=_sqlite_url(path), revision="v2_11")
-    engine = create_engine(f"sqlite:///{path}")
+def test_v2_12_adds_dsh_source_state_without_rewriting_archives(fresh_database_url) -> None:
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_11")
+    engine = create_engine(_sync_url(url))
     try:
         with engine.begin() as connection:
             connection.execute(
@@ -683,9 +574,9 @@ def test_v2_12_adds_dsh_source_state_without_rewriting_archives(tmp_path) -> Non
     finally:
         engine.dispose()
 
-    upgrade_database(db_url=_sqlite_url(path), revision="v2_12")
+    upgrade_database(db_url=url, revision="v2_12")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         columns = {column["name"] for column in inspect(engine).get_columns("sessions")}
         assert {"source_state", "source_state_at", "source_scan_token"}.issubset(
@@ -709,10 +600,10 @@ def test_v2_12_adds_dsh_source_state_without_rewriting_archives(tmp_path) -> Non
         engine.dispose()
 
 
-def test_v2_13_marks_only_existing_dsh_archives_as_legacy(tmp_path) -> None:
-    path = tmp_path / "v2_13-dsh-legacy-archive.sqlite3"
-    upgrade_database(db_url=_sqlite_url(path), revision="v2_12")
-    engine = create_engine(f"sqlite:///{path}")
+def test_v2_13_marks_only_existing_dsh_archives_as_legacy(fresh_database_url) -> None:
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_12")
+    engine = create_engine(_sync_url(url))
     try:
         with engine.begin() as connection:
             connection.execute(
@@ -747,9 +638,9 @@ def test_v2_13_marks_only_existing_dsh_archives_as_legacy(tmp_path) -> None:
     finally:
         engine.dispose()
 
-    upgrade_database(db_url=_sqlite_url(path), revision="v2_13")
+    upgrade_database(db_url=url, revision="v2_13")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         columns = {column["name"] for column in inspect(engine).get_columns("sessions")}
         assert "dsh_archive_legacy" in columns
@@ -774,13 +665,13 @@ def test_v2_13_marks_only_existing_dsh_archives_as_legacy(tmp_path) -> None:
         engine.dispose()
 
 
-def test_v2_14_splits_runtime_storage_without_losing_dsh_state(tmp_path) -> None:
-    path = tmp_path / "v2_14-runtime-instances.sqlite3"
-    _seed_v2_13_runtime_storage(path)
+def test_v2_14_splits_runtime_storage_without_losing_dsh_state(fresh_database_url) -> None:
+    url = fresh_database_url
+    _seed_v2_13_runtime_storage(url)
 
-    upgrade_database(db_url=_sqlite_url(path), revision="v2_14")
+    upgrade_database(db_url=url, revision="v2_14")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         inspector = inspect(engine)
         assert inspector.has_table("connector_runtime_types")
@@ -933,15 +824,14 @@ def test_v2_14_splits_runtime_storage_without_losing_dsh_state(tmp_path) -> None
         engine.dispose()
 
 
-def test_v2_14_compatible_data_downgrades_to_v2_13(tmp_path) -> None:
-    path = tmp_path / "v2_14-compatible-downgrade.sqlite3"
-    _seed_v2_13_runtime_storage(path)
-    url = _sqlite_url(path)
+def test_v2_14_compatible_data_downgrades_to_v2_13(fresh_database_url) -> None:
+    url = fresh_database_url
+    _seed_v2_13_runtime_storage(url)
     upgrade_database(db_url=url, revision="v2_14")
 
     command.downgrade(_alembic_config(url), "v2_13")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         inspector = inspect(engine)
         assert not inspector.has_table("connector_runtime_types")
@@ -1034,15 +924,14 @@ def test_v2_14_compatible_data_downgrades_to_v2_13(tmp_path) -> None:
         ),
     ],
 )
-def test_v2_14_downgrade_rejects_instance_specific_data(
-    tmp_path,
+def test_v2_14_downgrade_rejects_instance_specific_data(tmp_path,
     incompatible_sql: str,
+    fresh_database_url,
 ) -> None:
-    path = tmp_path / "v2_14-incompatible-downgrade.sqlite3"
-    _seed_v2_13_runtime_storage(path)
-    url = _sqlite_url(path)
+    url = fresh_database_url
+    _seed_v2_13_runtime_storage(url)
     upgrade_database(db_url=url, revision="v2_14")
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         with engine.begin() as connection:
             connection.execute(text(incompatible_sql))
@@ -1052,7 +941,7 @@ def test_v2_14_downgrade_rejects_instance_specific_data(
     with pytest.raises(RuntimeError, match="cannot downgrade v2_14"):
         command.downgrade(_alembic_config(url), "v2_13")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         with engine.connect() as connection:
             assert (
@@ -1091,14 +980,13 @@ def test_v2_14_downgrade_rejects_instance_specific_data(
         "v2_31",
     ],
 )
-def test_unversioned_runtime_schema_is_classified_by_actual_columns(
-    tmp_path,
+def test_unversioned_runtime_schema_is_classified_by_actual_columns(tmp_path,
     revision: str,
+    fresh_database_url,
 ) -> None:
-    path = tmp_path / f"unversioned-{revision}.sqlite3"
-    url = _sqlite_url(path)
+    url = fresh_database_url
     upgrade_database(db_url=url, revision=revision)
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         with engine.begin() as connection:
             if revision == "v2_10":
@@ -1126,318 +1014,140 @@ def test_unversioned_runtime_schema_is_classified_by_actual_columns(
     )
 
 
-def test_current_schema_version_is_v2_43() -> None:
-    assert CURRENT_SCHEMA_REVISION == "v2_43"
-    assert CURRENT_SCHEMA_VERSION == "2.43"
+def test_current_schema_version_is_v2_44() -> None:
+    assert CURRENT_SCHEMA_REVISION == "v2_44"
+    assert CURRENT_SCHEMA_VERSION == "2.44"
 
 
-def test_v2_42_adds_the_native_item_id_column_and_index(tmp_path) -> None:
-    path = tmp_path / "native-item-id.sqlite3"
-    url = _sqlite_url(path)
-    upgrade_database(db_url=url, revision="v2_41")
-    engine = create_engine(f"sqlite:///{path}")
-    try:
-        assert "native_item_id" not in {
-            column["name"]
-            for column in inspect(engine).get_columns("timeline_items")
-        }
-    finally:
-        engine.dispose()
-
-    upgrade_database(db_url=url)
-
-    engine = create_engine(f"sqlite:///{path}")
-    try:
-        columns = {
-            column["name"]: column
-            for column in inspect(engine).get_columns("timeline_items")
-        }
-        assert "native_item_id" in columns
-        assert columns["native_item_id"]["nullable"] is True
-        with engine.connect() as connection:
-            index_names = {
-                row[0]
-                for row in connection.execute(
-                    text(
-                        "SELECT name FROM sqlite_master "
-                        "WHERE type = 'index' AND tbl_name = 'timeline_items'"
-                    )
-                )
-            }
-        assert "idx_timeline_items_session_native_item" in index_names
-    finally:
-        engine.dispose()
-
-    # Idempotent: a second upgrade is a no-op.
-    upgrade_database(db_url=url)
+def _insert_required(connection, table: str, values: dict) -> None:
+    """Insert a row, filling other NOT NULL columns without defaults."""
+    row = {
+        column["name"]: 0 if "INT" in str(column["type"]).upper() else "x"
+        for column in inspect(connection).get_columns(table)
+        if not column["nullable"] and column["default"] is None
+    }
+    row.update(values)
+    names = ", ".join(row)
+    params = ", ".join(f":{name}" for name in row)
+    connection.execute(text(f"INSERT INTO {table} ({names}) VALUES ({params})"), row)
 
 
-def test_v2_42_backfills_native_item_id_from_the_payload(tmp_path) -> None:
-    """The corrector groups on ``native_item_id``; a pre-v2_42 row left NULL
-    would be invisible to it, so the migration must copy ``source.itemId`` out
-    of the stored payload. A row whose payload has no itemId stays NULL."""
-
-    path = tmp_path / "native-item-id-backfill.sqlite3"
-    url = _sqlite_url(path)
-    # Seed rows under the pre-column schema, exactly as a live deployment would
-    # have them, then upgrade.
-    upgrade_database(db_url=url, revision="v2_41")
-    engine = create_engine(f"sqlite:///{path}")
+def test_v2_44_drops_unconfigured_runtime_placeholders(fresh_database_url) -> None:
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_43")
+    engine = create_engine(_sync_url(url))
     try:
         with engine.begin() as connection:
-            connection.execute(
-                text(
-                    "INSERT INTO sessions "
-                    "(id, connector_id, runtime, runtime_id, status, takeover, "
-                    " seq, updated_seq, seq_allocated_high, created_at, updated_at) "
-                    "VALUES ('s1', 'c1', 'claude', 'r1', 'active', 0, 1, 1, 1, "
-                    " '2026-10-12T00:00:00Z', '2026-10-12T00:00:00Z')"
-                )
-            )
-            connection.execute(
-                text(
-                    "INSERT INTO timeline_items "
-                    "(session_id, id, type, status, role, order_seq, updated_seq, "
-                    " payload_json) VALUES "
-                    "('s1', 'm1', 'message', 'done', 'assistant', 1, 1, "
-                    " '{\"id\":\"m1\",\"source\":{\"runtime\":\"claude\","
-                    "\"itemId\":\"native-A\"}}'), "
-                    "('s1', 'r1', 'system', 'done', 'system', 2, 2, "
-                    " '{\"id\":\"r1\",\"source\":{\"runtime\":\"claude\","
-                    "\"itemId\":\"native-A\"}}'), "
-                    "('s1', 'p1', 'message', 'done', 'user', 3, 3, "
-                    " '{\"id\":\"p1\",\"source\":{\"runtime\":\"platform\"}}')"
-                )
-            )
+            # Placeholder rows only need the columns the migration looks at.
+            connection.execute(text("SET LOCAL session_replication_role = 'replica'"))
+            _insert_required(connection, "connectors", {"id": "conn", "revoked": 0})
+            _insert_required(connection, "connector_runtime_types", {
+                "connector_id": "conn", "runtime_type": "codex",
+            })
+            for runtime_id, config in (
+                ("rti_placeholder", None),
+                ("rti_configured", "{}"),
+                ("rti_with_session", None),
+            ):
+                _insert_required(connection, "device_runtimes", {
+                    "connector_id": "conn",
+                    "runtime_id": runtime_id,
+                    "runtime_type": "codex",
+                    "name": runtime_id,
+                    "name_key": runtime_id,
+                    "config_json": config,
+                    "error_json": None,
+                })
+            _insert_required(connection, "sessions", {
+                "id": "sess", "connector_id": "conn", "runtime": "codex",
+                "runtime_id": "rti_with_session",
+            })
     finally:
         engine.dispose()
 
     upgrade_database(db_url=url)
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         with engine.connect() as connection:
-            rows = {
-                row[0]: row[1]
-                for row in connection.execute(
-                    text("SELECT id, native_item_id FROM timeline_items")
-                )
-            }
-        assert rows["m1"] == "native-A"
-        assert rows["r1"] == "native-A"
-        assert rows["p1"] is None  # no itemId in the payload -> stays NULL
+            remaining = set(connection.execute(
+                text("SELECT runtime_id FROM device_runtimes")
+            ).scalars())
+        assert remaining == {"rti_configured", "rti_with_session"}
     finally:
         engine.dispose()
 
 
-def test_v2_42_downgrade_then_upgrade_round_trips(tmp_path) -> None:
-    """The migration's DDL is not in the alembic chain's single transaction.
 
-    Each step runs in its own ``autocommit_block`` so a large ``timeline_items``
-    is never locked end-to-end, which means a partially applied run is recovered
-    by re-running, not by an automatic rollback. A downgrade followed by an
-    upgrade must therefore land back on the same schema — column, index and
-    backfilled values — with no manual repair.
-    """
-
-    path = tmp_path / "native-item-id-roundtrip.sqlite3"
-    url = _sqlite_url(path)
-    upgrade_database(db_url=url, revision="v2_41")
-    engine = create_engine(f"sqlite:///{path}")
+def test_v2_43_adds_the_runtime_phase_column(fresh_database_url) -> None:
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_42")
+    engine = create_engine(_sync_url(url))
     try:
-        with engine.begin() as connection:
-            connection.execute(
-                text(
-                    "INSERT INTO sessions "
-                    "(id, connector_id, runtime, runtime_id, status, takeover, "
-                    " seq, updated_seq, seq_allocated_high, created_at, updated_at) "
-                    "VALUES ('s1', 'c1', 'claude', 'r1', 'active', 0, 1, 1, 1, "
-                    " '2026-10-12T00:00:00Z', '2026-10-12T00:00:00Z')"
-                )
-            )
-            connection.execute(
-                text(
-                    "INSERT INTO timeline_items "
-                    "(session_id, id, type, status, role, order_seq, updated_seq, "
-                    " payload_json) VALUES "
-                    "('s1', 'm1', 'message', 'done', 'assistant', 1, 1, "
-                    " '{\"id\":\"m1\",\"source\":{\"runtime\":\"claude\","
-                    "\"itemId\":\"native-A\"}}')"
-                )
-            )
+        columns = {column["name"] for column in inspect(engine).get_columns("device_runtimes")}
+        assert "phase_json" not in columns
     finally:
         engine.dispose()
-
-    def _columns() -> set[str]:
-        engine = create_engine(f"sqlite:///{path}")
-        try:
-            return {
-                column["name"]
-                for column in inspect(engine).get_columns("timeline_items")
-            }
-        finally:
-            engine.dispose()
-
-    def _native_item_id() -> str | None:
-        engine = create_engine(f"sqlite:///{path}")
-        try:
-            with engine.connect() as connection:
-                return connection.execute(
-                    text("SELECT native_item_id FROM timeline_items WHERE id = 'm1'")
-                ).scalar()
-        finally:
-            engine.dispose()
-
-    def _index_names() -> set[str]:
-        engine = create_engine(f"sqlite:///{path}")
-        try:
-            with engine.connect() as connection:
-                return {
-                    row[0]
-                    for row in connection.execute(
-                        text(
-                            "SELECT name FROM sqlite_master WHERE type = 'index' "
-                            "AND tbl_name = 'timeline_items'"
-                        )
-                    )
-                }
-        finally:
-            engine.dispose()
 
     upgrade_database(db_url=url)
-    assert _native_item_id() == "native-A"
-    assert "idx_timeline_items_session_native_item" in _index_names()
+    upgrade_database(db_url=url)
+
+    engine = create_engine(_sync_url(url))
+    try:
+        columns = {column["name"] for column in inspect(engine).get_columns("device_runtimes")}
+        assert "phase_json" in columns
+    finally:
+        engine.dispose()
+
+
+def test_v2_42_replaces_dashboard_tables_with_usage_events(fresh_database_url) -> None:
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_41")
+    engine = create_engine(_sync_url(url))
+    try:
+        inspector = inspect(engine)
+        assert inspector.has_table("dashboard_daily_metrics")
+        assert inspector.has_table("platform_user_activity")
+        assert not inspector.has_table("usage_events")
+    finally:
+        engine.dispose()
+
+    upgrade_database(db_url=url)
+    upgrade_database(db_url=url)
+
+    engine = create_engine(_sync_url(url))
+    try:
+        inspector = inspect(engine)
+        for table in (
+            "dashboard_daily_metrics",
+            "dashboard_user_daily_facts",
+            "dashboard_settings",
+            "platform_user_activity",
+        ):
+            assert not inspector.has_table(table)
+        event_columns = {column["name"] for column in inspector.get_columns("usage_events")}
+        assert {"hour_bucket", "event_type", "dedupe_key", "duration_ms"}.issubset(event_columns)
+        index_names = {index["name"] for index in inspector.get_indexes("usage_events")}
+        assert "idx_usage_events_type_hour" in index_names
+        assert inspector.has_table("usage_inventory_snapshots")
+    finally:
+        engine.dispose()
 
     command.downgrade(_alembic_config(url), "v2_41")
-    assert "native_item_id" not in _columns()
-    assert "idx_timeline_items_session_native_item" not in _index_names()
 
-    upgrade_database(db_url=url)
-    assert _native_item_id() == "native-A"
-    assert "idx_timeline_items_session_native_item" in _index_names()
-
-
-def test_v2_42_index_check_ignores_an_unusable_index(monkeypatch) -> None:
-    """``CREATE INDEX CONCURRENTLY`` that fails leaves an index the planner
-    ignores. Checking mere existence would then report "already built" forever
-    and silently leave the column unindexed, so the check must ask whether the
-    index is usable — and on PostgreSQL that answer comes from ``indisvalid``.
-    """
-
-    from types import SimpleNamespace
-
-    from migrations.versions import v2_42
-
-    class _Result:
-        def __init__(self, row) -> None:
-            self._row = row
-
-        def first(self):
-            return self._row
-
-    class _Bind:
-        dialect = SimpleNamespace(name="postgresql")
-
-        def __init__(self, row) -> None:
-            self.row = row
-            self.statements: list[str] = []
-
-        def execute(self, statement, _parameters):
-            self.statements.append(str(statement))
-            return _Result(self.row)
-
-    class _Op:
-        def __init__(self, bind) -> None:
-            self._bind = bind
-
-        def get_bind(self):
-            return self._bind
-
-    for row, expected in (
-        ((True,), True),  # a real, usable index
-        ((False,), False),  # the invalid shell a failed CONCURRENTLY leaves
-        (None, False),  # no such index at all
-    ):
-        bind = _Bind(row)
-        monkeypatch.setattr(v2_42, "op", _Op(bind))
-        assert v2_42._index_is_usable("idx_x") is expected
-        assert "indisvalid" in bind.statements[-1]
-        assert "relkind" in bind.statements[-1]
+    engine = create_engine(_sync_url(url))
+    try:
+        inspector = inspect(engine)
+        assert inspector.has_table("dashboard_daily_metrics")
+        assert not inspector.has_table("usage_events")
+    finally:
+        engine.dispose()
 
 
-def test_v2_42_upgrade_keeps_ddl_out_of_the_chain_transaction(monkeypatch) -> None:
-    """``ADD COLUMN`` / backfill / ``CREATE INDEX CONCURRENTLY`` must each run in
-    their own committed ``autocommit_block``.
-
-    The whole Alembic chain is one transaction, so an ``ADD COLUMN`` inside it
-    would hold ACCESS EXCLUSIVE on ``timeline_items`` until the backfill and
-    index build finished. The build also cannot run inside a transaction at all.
-    Losing either wrapper is a silent table-lock regression the SQLite tests do
-    not otherwise catch, so pin the structure: each of the three steps must
-    happen inside an entered autocommit block.
-    """
-
-    from migrations.versions import v2_42
-
-    events: list[str] = []
-
-    class _Context:
-        def autocommit_block(self):
-            events.append("enter-block")
-
-            class _CM:
-                def __enter__(self):
-                    return None
-
-                def __exit__(self, *_exc):
-                    events.append("exit-block")
-                    return False
-
-            return _CM()
-
-    class _Op:
-        def get_context(self):
-            return _Context()
-
-        def get_bind(self):
-            return type("B", (), {"dialect": type("D", (), {"name": "sqlite"})()})()
-
-        def add_column(self, *_a, **_k):
-            events.append("add_column")
-
-        def create_index(self, *_a, **_k):
-            events.append("create_index")
-
-    monkeypatch.setattr(v2_42, "op", _Op())
-    # Column/index already present so the guarded steps still run their block.
-    monkeypatch.setattr(v2_42, "_column_names", lambda: {"native_item_id"})
-    monkeypatch.setattr(v2_42, "_index_is_usable", lambda _name: False)
-    monkeypatch.setattr(v2_42, "_index_exists", lambda _name: False)
-    monkeypatch.setattr(v2_42, "_backfill_native_item_id", lambda: events.append("backfill"))
-
-    v2_42.upgrade()
-
-    # The backfill and the index build each sit inside an entered block.
-    def _inside(name: str) -> bool:
-        depth = 0
-        for event in events:
-            if event == "enter-block":
-                depth += 1
-            elif event == "exit-block":
-                depth -= 1
-            elif event == name:
-                return depth > 0
-        raise AssertionError(f"{name} never ran: {events}")
-
-    assert _inside("backfill")
-    assert _inside("create_index")
-
-
-def test_v2_41_drops_the_sidebar_order_table(tmp_path) -> None:
-    path = tmp_path / "sidebar-order.sqlite3"
-    url = _sqlite_url(path)
+def test_v2_41_drops_the_sidebar_order_table(fresh_database_url) -> None:
+    url = fresh_database_url
     upgrade_database(db_url=url, revision="v2_40")
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         assert inspect(engine).has_table("user_sidebar_orders")
     finally:
@@ -1446,24 +1156,27 @@ def test_v2_41_drops_the_sidebar_order_table(tmp_path) -> None:
     upgrade_database(db_url=url)
     upgrade_database(db_url=url)
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         assert not inspect(engine).has_table("user_sidebar_orders")
     finally:
         engine.dispose()
 
 
-def test_v2_40_removes_auto_archive_and_restores_swept_sessions(tmp_path) -> None:
-    path = tmp_path / "session-auto-archive.sqlite3"
-    url = _sqlite_url(path)
+def test_v2_40_removes_auto_archive_and_restores_swept_sessions(fresh_database_url) -> None:
+    url = fresh_database_url
     upgrade_database(db_url=url, revision="v2_39")
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         with engine.begin() as connection:
+            # Placeholder rows only need the columns the migration touches.
+            connection.execute(text("SET LOCAL session_replication_role = 'replica'"))
             required = [
-                (row[1], row[2])
-                for row in connection.execute(text("PRAGMA table_info(sessions)"))
-                if row[3] and row[4] is None and row[1] not in {"id", "archived", "auto_archived"}
+                (column["name"], str(column["type"]))
+                for column in inspect(connection).get_columns("sessions")
+                if not column["nullable"]
+                and column["default"] is None
+                and column["name"] not in {"id", "archived", "auto_archived"}
             ]
             for session_id, auto_archived in (("swept", 1), ("by-user", 0)):
                 values = {
@@ -1486,7 +1199,7 @@ def test_v2_40_removes_auto_archive_and_restores_swept_sessions(tmp_path) -> Non
     upgrade_database(db_url=url, revision="v2_40")
     upgrade_database(db_url=url)
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         inspector = inspect(engine)
         columns = {column["name"] for column in inspector.get_columns("sessions")}
@@ -1503,11 +1216,10 @@ def test_v2_40_removes_auto_archive_and_restores_swept_sessions(tmp_path) -> Non
     assert archived == {"swept": 0, "by-user": 1}
 
 
-def test_v2_37_adds_session_title_source(tmp_path) -> None:
-    path = tmp_path / "session-title-source.sqlite3"
-    url = _sqlite_url(path)
+def test_v2_37_adds_session_title_source(fresh_database_url) -> None:
+    url = fresh_database_url
     upgrade_database(db_url=url, revision="v2_36")
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         before = {column["name"] for column in inspect(engine).get_columns("sessions")}
         assert "title_source" not in before
@@ -1520,11 +1232,10 @@ def test_v2_37_adds_session_title_source(tmp_path) -> None:
     assert "title_source" in after
 
 
-def test_v2_36_adds_retired_runtime_identity_storage(tmp_path) -> None:
-    path = tmp_path / "retired-runtimes.sqlite3"
-    url = _sqlite_url(path)
+def test_v2_36_adds_retired_runtime_identity_storage(fresh_database_url) -> None:
+    url = fresh_database_url
     upgrade_database(db_url=url, revision="v2_35")
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         assert "retired_device_runtimes" not in inspect(engine).get_table_names()
         upgrade_database(db_url=url)
@@ -1538,11 +1249,10 @@ def test_v2_36_adds_retired_runtime_identity_storage(tmp_path) -> None:
         engine.dispose()
 
 
-def test_retiring_releases_preserves_history(tmp_path) -> None:
-    path = tmp_path / "retired-releases.sqlite3"
-    url = _sqlite_url(path)
+def test_retiring_releases_preserves_history(fresh_database_url) -> None:
+    url = fresh_database_url
     upgrade_database(db_url=url, revision="v2_31")
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         with engine.begin() as connection:
             connection.execute(
@@ -1569,13 +1279,12 @@ def test_retiring_releases_preserves_history(tmp_path) -> None:
         engine.dispose()
 
 
-def test_v2_20_adds_session_source_observation_details(tmp_path) -> None:
-    path = tmp_path / "session-source-observation.sqlite3"
-    url = _sqlite_url(path)
+def test_v2_20_adds_session_source_observation_details(fresh_database_url) -> None:
+    url = fresh_database_url
     upgrade_database(db_url=url, revision="v2_19")
     upgrade_database(db_url=url, revision="v2_20")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         columns = {column["name"] for column in inspect(engine).get_columns("sessions")}
     finally:
@@ -1584,12 +1293,11 @@ def test_v2_20_adds_session_source_observation_details(tmp_path) -> None:
     assert {"source_state_reason", "source_observation_origin"}.issubset(columns)
 
 
-def test_v2_22_retires_session_message_queue_schema(tmp_path) -> None:
-    path = tmp_path / "retired-session-message-queue.sqlite3"
-    url = _sqlite_url(path)
+def test_v2_22_retires_session_message_queue_schema(fresh_database_url) -> None:
+    url = fresh_database_url
     upgrade_database(db_url=url, revision="v2_21")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         inspector = inspect(engine)
         assert inspector.has_table("session_message_queue")
@@ -1601,7 +1309,7 @@ def test_v2_22_retires_session_message_queue_schema(tmp_path) -> None:
 
     upgrade_database(db_url=url, revision="v2_22")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         inspector = inspect(engine)
         assert not inspector.has_table("session_message_queue")
@@ -1619,12 +1327,11 @@ def test_v2_22_retires_session_message_queue_schema(tmp_path) -> None:
         engine.dispose()
 
 
-def test_v2_23_adds_immutable_session_shares(tmp_path) -> None:
-    path = tmp_path / "session-shares.sqlite3"
-    url = _sqlite_url(path)
+def test_v2_23_adds_immutable_session_shares(fresh_database_url) -> None:
+    url = fresh_database_url
     upgrade_database(db_url=url, revision="v2_22")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         assert "session_shares" not in inspect(engine).get_table_names()
     finally:
@@ -1632,7 +1339,7 @@ def test_v2_23_adds_immutable_session_shares(tmp_path) -> None:
 
     upgrade_database(db_url=url, revision="v2_23")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         inspector = inspect(engine)
         assert inspector.has_table("session_shares")
@@ -1656,12 +1363,11 @@ def test_v2_23_adds_immutable_session_shares(tmp_path) -> None:
         engine.dispose()
 
 
-def test_v2_24_adds_sequence_allocation_high_watermark(tmp_path) -> None:
-    path = tmp_path / "session-sequence-high-watermark.sqlite3"
-    url = _sqlite_url(path)
+def test_v2_24_adds_sequence_allocation_high_watermark(fresh_database_url) -> None:
+    url = fresh_database_url
     upgrade_database(db_url=url, revision="v2_23")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         with engine.begin() as connection:
             connection.execute(
@@ -1681,8 +1387,7 @@ def test_v2_24_adds_sequence_allocation_high_watermark(tmp_path) -> None:
                     "archived, last_read_seq, latest_turn_end_seq, timeline_reset_seq, "
                     "seq, updated_seq, created_at, updated_at) VALUES "
                     "('sess_seq', 'conn_seq', 'codex', 'codex', 'connector_import', 'idle', "
-                    "0, 0, 0, 2147483650, 2147483651, 2147483652, 2147483653, "
-                    "2147483654, :now, :now)"
+                    "0, 0, 0, 50, 51, 52, 53, 54, :now, :now)"
                 ),
                 {"now": "2026-09-02T00:00:00Z"},
             )
@@ -1691,8 +1396,7 @@ def test_v2_24_adds_sequence_allocation_high_watermark(tmp_path) -> None:
                     "INSERT INTO timeline_items "
                     "(session_id, id, type, status, order_seq, updated_seq, "
                     "payload_json) VALUES "
-                    "('sess_seq', 'item_seq', 'message', 'completed', 1, "
-                    "2147483655, '{}')"
+                    "('sess_seq', 'item_seq', 'message', 'completed', 1, 55, '{}')"
                 )
             )
     finally:
@@ -1700,7 +1404,7 @@ def test_v2_24_adds_sequence_allocation_high_watermark(tmp_path) -> None:
 
     upgrade_database(db_url=url, revision="v2_24")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         columns = {
             column["name"]: column for column in inspect(engine).get_columns("sessions")
@@ -1714,14 +1418,7 @@ def test_v2_24_adds_sequence_allocation_high_watermark(tmp_path) -> None:
                     "WHERE id = 'sess_seq'"
                 )
             ).one()
-            assert tuple(row) == (
-                2147483650,
-                2147483651,
-                2147483652,
-                2147483655,
-                2147483655,
-                2147483655,
-            )
+            assert tuple(row) == (50, 51, 52, 55, 55, 55)
             assert (
                 connection.execute(
                     text(
@@ -1729,7 +1426,7 @@ def test_v2_24_adds_sequence_allocation_high_watermark(tmp_path) -> None:
                         "WHERE session_id = 'sess_seq' AND id = 'item_seq'"
                     )
                 ).scalar_one()
-                == 2147483655
+                == 55
             )
             assert (
                 connection.execute(
@@ -1740,10 +1437,30 @@ def test_v2_24_adds_sequence_allocation_high_watermark(tmp_path) -> None:
     finally:
         engine.dispose()
 
+    # The widened columns accept clocks beyond the signed 32-bit range, which
+    # a downgrade must refuse to truncate.
+    engine = create_engine(_sync_url(url))
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE sessions SET seq = 2147483655, seq_allocated_high = 2147483655, "
+                    "updated_seq = 2147483655 WHERE id = 'sess_seq'"
+                )
+            )
+            connection.execute(
+                text(
+                    "UPDATE timeline_items SET updated_seq = 2147483655 "
+                    "WHERE session_id = 'sess_seq'"
+                )
+            )
+    finally:
+        engine.dispose()
+
     with pytest.raises(RuntimeError, match="signed 32-bit range"):
         command.downgrade(_alembic_config(url), "v2_23")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         with engine.begin() as connection:
             connection.execute(
@@ -1766,7 +1483,7 @@ def test_v2_24_adds_sequence_allocation_high_watermark(tmp_path) -> None:
     with pytest.raises(RuntimeError, match="allocated sequence ranges are ahead"):
         command.downgrade(_alembic_config(url), "v2_23")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         with engine.begin() as connection:
             connection.execute(
@@ -1778,7 +1495,7 @@ def test_v2_24_adds_sequence_allocation_high_watermark(tmp_path) -> None:
         engine.dispose()
 
     command.downgrade(_alembic_config(url), "v2_23")
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         assert "seq_allocated_high" not in {
             column["name"] for column in inspect(engine).get_columns("sessions")
@@ -1799,18 +1516,14 @@ def test_v2_24_adds_sequence_allocation_high_watermark(tmp_path) -> None:
     "negative_target",
     ["last_read_seq", "timeline_items.updated_seq"],
 )
-def test_v2_24_rejects_negative_sequence_clocks(
-    tmp_path,
+def test_v2_24_rejects_negative_sequence_clocks(tmp_path,
     negative_target: str,
+    fresh_database_url,
 ) -> None:
-    path = (
-        tmp_path
-        / f"session-negative-sequence-{negative_target.replace('.', '-')}.sqlite3"
-    )
-    url = _sqlite_url(path)
+    url = fresh_database_url
     upgrade_database(db_url=url, revision="v2_23")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         with engine.begin() as connection:
             connection.execute(
@@ -1859,12 +1572,11 @@ def test_v2_24_rejects_negative_sequence_clocks(
         upgrade_database(db_url=url, revision="v2_24")
 
 
-def test_v2_26_adds_connector_kind_and_backfills_cli(tmp_path) -> None:
-    path = tmp_path / "connector-kind.sqlite3"
-    url = _sqlite_url(path)
+def test_v2_26_adds_connector_kind_and_backfills_cli(fresh_database_url) -> None:
+    url = fresh_database_url
     upgrade_database(db_url=url, revision="v2_23")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         with engine.begin() as connection:
             connection.execute(
@@ -1885,7 +1597,7 @@ def test_v2_26_adds_connector_kind_and_backfills_cli(tmp_path) -> None:
 
     upgrade_database(db_url=url, revision="v2_26")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         columns = {
             column["name"]: column
@@ -1912,14 +1624,13 @@ def test_v2_26_adds_connector_kind_and_backfills_cli(tmp_path) -> None:
         engine.dispose()
 
 
-def test_v2_27_adds_projects_and_session_binding(tmp_path) -> None:
-    path = tmp_path / "projects.sqlite3"
-    url = _sqlite_url(path)
+def test_v2_27_adds_projects_and_session_binding(fresh_database_url) -> None:
+    url = fresh_database_url
     upgrade_database(db_url=url, revision="v2_26")
 
     upgrade_database(db_url=url, revision="v2_27")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         inspector = inspect(engine)
         assert "projects" in inspector.get_table_names()
@@ -1980,14 +1691,13 @@ def test_v2_27_adds_projects_and_session_binding(tmp_path) -> None:
         engine.dispose()
 
 
-def test_v2_28_allows_projects_to_share_a_workspace(tmp_path) -> None:
-    path = tmp_path / "shared-project-workspace.sqlite3"
-    url = _sqlite_url(path)
+def test_v2_28_allows_projects_to_share_a_workspace(fresh_database_url) -> None:
+    url = fresh_database_url
     upgrade_database(db_url=url, revision="v2_27")
 
     upgrade_database(db_url=url, revision="v2_28")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         inspector = inspect(engine)
         assert "uq_projects_user_connector_workspace" not in {
@@ -2046,12 +1756,11 @@ def test_v2_28_allows_projects_to_share_a_workspace(tmp_path) -> None:
         engine.dispose()
 
 
-def test_v2_29_backfills_projects_and_restricts_project_deletion(tmp_path) -> None:
-    path = tmp_path / "required-session-projects.sqlite3"
-    url = _sqlite_url(path)
+def test_v2_29_backfills_projects_and_restricts_project_deletion(fresh_database_url) -> None:
+    url = fresh_database_url
     upgrade_database(db_url=url, revision="v2_28")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         now = "2026-09-03T00:00:00Z"
         with engine.begin() as connection:
@@ -2116,7 +1825,7 @@ def test_v2_29_backfills_projects_and_restricts_project_deletion(tmp_path) -> No
 
     upgrade_database(db_url=url, revision="v2_29")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         inspector = inspect(engine)
         project_fk = next(
@@ -2173,12 +1882,11 @@ def test_v2_29_backfills_projects_and_restricts_project_deletion(tmp_path) -> No
         engine.dispose()
 
 
-def test_v2_30_consolidates_workspaces_and_deduplicates_names(tmp_path) -> None:
-    path = tmp_path / "unique-project-workspaces.sqlite3"
-    url = _sqlite_url(path)
+def test_v2_30_consolidates_workspaces_and_deduplicates_names(fresh_database_url) -> None:
+    url = fresh_database_url
     upgrade_database(db_url=url, revision="v2_29")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         now = "2026-09-03T00:00:00Z"
         with engine.begin() as connection:
@@ -2251,7 +1959,7 @@ def test_v2_30_consolidates_workspaces_and_deduplicates_names(tmp_path) -> None:
 
     upgrade_database(db_url=url, revision="v2_30")
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         inspector = inspect(engine)
         assert {
@@ -2301,10 +2009,10 @@ def test_v2_30_consolidates_workspaces_and_deduplicates_names(tmp_path) -> None:
         engine.dispose()
 
 
-def test_current_schema_drops_legacy_approval_notice_storage(tmp_path) -> None:
-    path = tmp_path / "approval-v2-2.sqlite3"
-    upgrade_database(db_url=_sqlite_url(path), revision="v2_2")
-    engine = create_engine(f"sqlite:///{path}")
+def test_current_schema_drops_legacy_approval_notice_storage(fresh_database_url) -> None:
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_2")
+    engine = create_engine(_sync_url(url))
     try:
         with engine.begin() as connection:
             notice_id = (
@@ -2390,9 +2098,9 @@ def test_current_schema_drops_legacy_approval_notice_storage(tmp_path) -> None:
     finally:
         engine.dispose()
 
-    upgrade_database(db_url=_sqlite_url(path))
+    upgrade_database(db_url=url)
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         inspector = inspect(engine)
         assert "approvals" not in inspector.get_table_names()
@@ -2401,9 +2109,9 @@ def test_current_schema_drops_legacy_approval_notice_storage(tmp_path) -> None:
         engine.dispose()
 
 
-def test_unknown_unversioned_database_is_rejected(tmp_path) -> None:
-    path = tmp_path / "unknown.sqlite3"
-    engine = create_engine(f"sqlite:///{path}")
+def test_unknown_unversioned_database_is_rejected(fresh_database_url) -> None:
+    url = fresh_database_url
+    engine = create_engine(_sync_url(url))
     try:
         with engine.begin() as connection:
             connection.execute(text("CREATE TABLE unrelated (id TEXT PRIMARY KEY)"))
@@ -2411,20 +2119,20 @@ def test_unknown_unversioned_database_is_rejected(tmp_path) -> None:
         engine.dispose()
 
     with pytest.raises(DatabaseMigrationError, match="does not match"):
-        upgrade_database(db_url=_sqlite_url(path))
+        upgrade_database(db_url=url)
 
 
 def test_postgres_pool_settings_are_configurable(monkeypatch) -> None:
+    monkeypatch.delenv("AGENT_SERVER_DB_NULL_POOL", raising=False)
     monkeypatch.setenv("AGENT_SERVER_DB_POOL_SIZE", "7")
     monkeypatch.setenv("AGENT_SERVER_DB_MAX_OVERFLOW", "3")
     monkeypatch.setenv("AGENT_SERVER_DB_POOL_TIMEOUT", "4.5")
     monkeypatch.setenv("AGENT_SERVER_DB_POOL_RECYCLE", "600")
 
-    backend, engine = build_engine(
+    engine = build_engine(
         url="postgresql+asyncpg://agents:secret@127.0.0.1:5432/agents"
     )
     try:
-        assert backend == "postgres"
         assert engine.pool.size() == 7
         assert engine.pool._max_overflow == 3
         assert engine.pool._timeout == 4.5
@@ -2435,88 +2143,33 @@ def test_postgres_pool_settings_are_configurable(monkeypatch) -> None:
 
 
 def test_invalid_postgres_pool_setting_is_rejected(monkeypatch) -> None:
+    monkeypatch.delenv("AGENT_SERVER_DB_NULL_POOL", raising=False)
     monkeypatch.setenv("AGENT_SERVER_DB_POOL_SIZE", "0")
 
     with pytest.raises(ValueError, match="AGENT_SERVER_DB_POOL_SIZE"):
         build_engine(url="postgresql+asyncpg://agents:secret@127.0.0.1:5432/agents")
 
 
-def test_invalid_migration_lock_timeout_is_rejected(tmp_path, monkeypatch) -> None:
+def test_invalid_migration_lock_timeout_is_rejected(tmp_path, monkeypatch, fresh_database_url) -> None:
     monkeypatch.setenv("AGENT_SERVER_MIGRATION_LOCK_TIMEOUT", "never")
 
     with pytest.raises(DatabaseMigrationError, match="must be a number"):
-        upgrade_database(db_url=_sqlite_url(tmp_path / "invalid-lock.sqlite3"))
+        upgrade_database(db_url=fresh_database_url)
 
 
-def test_postgres_migration_lock_holder_uses_autocommit(monkeypatch) -> None:
-    """The migration lock holder must not sit ``idle in transaction``.
-
-    SQLAlchemy autobegins a transaction on the first statement. A holder left
-    in transaction keeps a snapshot alive for the whole migration, and a
-    ``CREATE INDEX CONCURRENTLY`` (v2_42) on another connection waits for it to
-    end — a deadlock that hangs the migration forever. A real-PostgreSQL drill
-    caught exactly this, so the AUTOCOMMIT isolation is pinned here: it is
-    invisible on the SQLite test backend, which never runs the holder at all.
-    """
-
-    import agent_server.infra.db.migrations as migrations_module
-
-    captured: dict = {}
-
-    class _Result:
-        def scalar_one(self) -> int:
-            return 1  # "lock acquired"
-
-    class _Connection:
-        async def execute(self, _statement, _parameters=None):
-            return _Result()
-
-    class _ConnectContext:
-        async def __aenter__(self) -> _Connection:
-            return _Connection()
-
-        async def __aexit__(self, *_exc) -> bool:
-            return False
-
-    class _Engine:
-        def connect(self) -> _ConnectContext:
-            return _ConnectContext()
-
-        async def dispose(self) -> None:
-            return None
-
-    def spy_create(_url, **kwargs):  # type: ignore[no-untyped-def]
-        captured.update(kwargs)
-        return _Engine()
-
-    monkeypatch.setattr(migrations_module, "create_async_engine", spy_create)
-
-    # The holder thread blocks on ``release`` until the context manager exits,
-    # so drive it fully: enter, then let the ``with`` unwind.
-    with migrations_module.postgres_migration_lock(
-        "postgresql+asyncpg://unused", timeout_seconds=5
-    ):
-        pass
-
-    assert captured.get("isolation_level") == "AUTOCOMMIT"
-
-
-def test_v1_rehearsal_requires_postgres_target(tmp_path) -> None:
-    source = tmp_path / "legacy.sqlite3"
-    _create_legacy_v1_database(source)
-
-    with pytest.raises(DatabaseMigrationError, match="must be a PostgreSQL"):
-        rehearse_v1_import(
-            source_sqlite=source,
-            target_url=_sqlite_url(tmp_path / "target.sqlite3"),
-        )
-
-
-def _seed_v2_13_runtime_storage(path) -> None:
-    upgrade_database(db_url=_sqlite_url(path), revision="v2_13")
-    engine = create_engine(f"sqlite:///{path}")
+def _seed_v2_13_runtime_storage(url) -> None:
+    upgrade_database(db_url=url, revision="v2_13")
+    engine = create_engine(_sync_url(url))
     try:
         with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO users "
+                    "(id, password_hash, role, disabled, created_at, updated_at) "
+                    "VALUES ('user_runtime_storage', 'hash', 'member', 0, :now, :now)"
+                ),
+                {"now": "2026-08-24T13:38:00Z"},
+            )
             connection.execute(
                 text(
                     "INSERT INTO connectors "
@@ -2613,145 +2266,20 @@ def _seed_v2_13_runtime_storage(path) -> None:
         engine.dispose()
 
 
-def _create_legacy_v1_database(path) -> None:
-    engine = create_engine(f"sqlite:///{path}")
-    metadata.create_all(engine)
-    with engine.begin() as connection:
-        # Current metadata contains tables and columns introduced after v1.
-        # Remove them before constructing the historical legacy fixture so
-        # their real Alembic revisions can create them during the upgrade.
-        connection.execute(text("DROP TABLE email_verification_codes"))
-        connection.execute(text("DROP TABLE email_verification_limits"))
-        connection.execute(text("DROP INDEX idx_users_email"))
-        connection.execute(text("ALTER TABLE users DROP COLUMN email"))
-        connection.execute(text("ALTER TABLE users DROP COLUMN email_verified_at"))
-        connection.execute(text("ALTER TABLE users DROP COLUMN display_name"))
-        connection.execute(text("DROP TABLE session_shares"))
-        connection.execute(text("ALTER TABLE sessions DROP COLUMN seq_allocated_high"))
-        connection.execute(
-            text(
-                "CREATE TABLE approvals ("
-                "id TEXT PRIMARY KEY, session_id TEXT NOT NULL, turn_id TEXT, status TEXT NOT NULL, "
-                "kind TEXT NOT NULL, target_item_id TEXT, title TEXT NOT NULL, description TEXT, "
-                "payload_json TEXT NOT NULL, choices_json TEXT NOT NULL, source_json TEXT NOT NULL, "
-                "updated_seq INTEGER NOT NULL, created_at TEXT NOT NULL, resolved_at TEXT)"
-            )
-        )
-        connection.execute(text("DROP TABLE IF EXISTS notices"))
-        connection.execute(text("DROP TABLE connector_protocol_capabilities"))
-        connection.execute(text("DROP TABLE connector_runtime_catalogs"))
-        connection.execute(text("DROP TABLE device_runtimes"))
-        connection.execute(text("DROP TABLE connector_runtime_types"))
-        connection.execute(text("DROP TABLE IF EXISTS session_states"))
-        connection.execute(
-            text("ALTER TABLE connectors ADD COLUMN runtime_capabilities TEXT")
-        )
-        connection.execute(
-            text("ALTER TABLE sessions ADD COLUMN runtime_settings_override TEXT")
-        )
-        connection.execute(text("ALTER TABLE sessions DROP COLUMN model_selection_id"))
-        connection.execute(
-            text("ALTER TABLE sessions DROP COLUMN permission_selection_id")
-        )
-        connection.execute(text("ALTER TABLE sessions DROP COLUMN runtime_id"))
-        connection.execute(
-            text("ALTER TABLE session_active_runs DROP COLUMN runtime_id")
-        )
-        connection.execute(
-            text("ALTER TABLE connectors DROP COLUMN presence_instance_id")
-        )
-        connection.execute(
-            text("ALTER TABLE connectors DROP COLUMN presence_connection_id")
-        )
-        connection.execute(text("ALTER TABLE connectors DROP COLUMN connector_kind"))
-        connection.execute(
-            text(
-                "CREATE TABLE device_agent_settings ("
-                "connector_id TEXT NOT NULL, runtime TEXT NOT NULL, settings_json TEXT NOT NULL, "
-                "schema_version INTEGER NOT NULL, updated_at TEXT NOT NULL, "
-                "PRIMARY KEY (connector_id, runtime))"
-            )
-        )
-        connection.execute(
-            text("CREATE TABLE agent_modes (id TEXT PRIMARY KEY, label TEXT NOT NULL)")
-        )
-        connection.execute(
-            text("INSERT INTO agent_modes (id, label) VALUES ('mode_legacy', 'Legacy')")
-        )
-        connection.execute(
-            text(
-                "INSERT INTO connectors "
-                "(id, user_id, name, status, token_hash, token_prefix, revoked, created_at, updated_at, "
-                "runtime_capabilities) VALUES "
-                "('conn_legacy', 'user_legacy', 'Legacy', 'offline', 'hash', 'cxt_', 0, :now, :now, :state)"
-            ),
-            {
-                "now": "2026-07-20T00:00:00Z",
-                "state": json.dumps(
-                    {
-                        "version": 3,
-                        "lastDiscoveredAt": "2026-07-20T00:00:00Z",
-                        "observed": {
-                            "codex": {
-                                "report": {
-                                    "selected": "/usr/local/bin/codex",
-                                    "execution": "ok",
-                                },
-                                "observedAt": "2026-07-20T00:00:00Z",
-                            }
-                        },
-                        "desired": {
-                            "codex": {
-                                "enabled": True,
-                                "updatedAt": "2026-07-20T00:00:00Z",
-                            }
-                        },
-                    }
-                ),
-            },
-        )
-        connection.execute(
-            text(
-                "INSERT INTO sessions "
-                "(id, connector_id, runtime, origin, external_session_id, cwd, "
-                "status, takeover, pinned, "
-                "archived, last_read_seq, seq, updated_seq, created_at, updated_at, runtime_settings_override) "
-                "VALUES ('sess_legacy', 'conn_legacy', 'codex', 'connector_import', 'thread_legacy', "
-                "'/legacy', 'waiting_approval', 0, 0, 0, 0, 1, 1, :now, :now, :settings)"
-            ),
-            {
-                "now": "2026-07-20T00:00:00Z",
-                "settings": json.dumps({"model": "gpt-5.4", "permissionMode": "ask"}),
-            },
-        )
-        connection.execute(
-            text(
-                "INSERT INTO device_agent_settings "
-                "(connector_id, runtime, settings_json, schema_version, updated_at) "
-                "VALUES ('conn_legacy', 'codex', :settings, 3, :now)"
-            ),
-            {
-                "settings": json.dumps({"model": "gpt-5.4", "permissionMode": "ask"}),
-                "now": "2026-07-20T00:00:00Z",
-            },
-        )
-
-
-def test_v2_35_replaces_the_session_item_time_index(tmp_path) -> None:
-    path = tmp_path / "timeline-latest-index.sqlite3"
-    url = _sqlite_url(path)
+def test_v2_35_replaces_the_session_item_time_index(fresh_database_url) -> None:
+    url = fresh_database_url
     upgrade_database(db_url=url, revision="v2_34")
 
     def index_names() -> set[str]:
-        engine = create_engine(f"sqlite:///{path}")
+        engine = create_engine(_sync_url(url))
         try:
             with engine.connect() as connection:
                 return {
                     row[0]
                     for row in connection.execute(
                         text(
-                            "SELECT name FROM sqlite_master "
-                            "WHERE type = 'index' AND tbl_name = 'timeline_items'"
+                            "SELECT indexname FROM pg_indexes "
+                            "WHERE tablename = 'timeline_items'"
                         )
                     )
                 }
@@ -2773,327 +2301,17 @@ def test_v2_35_replaces_the_session_item_time_index(tmp_path) -> None:
         "idx_timeline_items_item_time_type_role",
     }.issubset(names)
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(_sync_url(url))
     try:
         with engine.connect() as connection:
             definition = connection.execute(
                 text(
-                    "SELECT sql FROM sqlite_master WHERE type = 'index' "
-                    "AND name = 'idx_timeline_items_session_latest'"
+                    "SELECT indexdef FROM pg_indexes "
+                    "WHERE indexname = 'idx_timeline_items_session_latest'"
                 )
             ).scalar_one()
-        assert "coalesce(item_time, '') DESC" in definition
+        assert "COALESCE(item_time, ''::text) DESC" in definition
         assert "order_seq DESC" in definition
         assert "updated_seq DESC" in definition
-    finally:
-        engine.dispose()
-
-
-def test_v2_42_backfill_pages_without_skipping_or_looping(tmp_path, monkeypatch) -> None:
-    """The backfill pages by ``(session_id, id)`` so a tiny page size still
-    covers every row (and a payload with no itemId cannot stall the loop)."""
-
-    from migrations.versions import v2_42
-
-    monkeypatch.setattr(v2_42, "_BACKFILL_BATCH", 1)
-
-    path = tmp_path / "native-item-id-paged.sqlite3"
-    url = _sqlite_url(path)
-    upgrade_database(db_url=url, revision="v2_41")
-    engine = create_engine(f"sqlite:///{path}")
-    try:
-        with engine.begin() as connection:
-            connection.execute(
-                text(
-                    "INSERT INTO sessions "
-                    "(id, connector_id, runtime, runtime_id, status, takeover, "
-                    " seq, updated_seq, seq_allocated_high, created_at, updated_at) "
-                    "VALUES ('s1', 'c1', 'claude', 'claude', 'idle', 0, 1, 1, 1, "
-                    " '2026-10-12T00:00:00Z', '2026-10-12T00:00:00Z')"
-                )
-            )
-            for idx in range(4):
-                has_item = idx != 2  # row 2 has no itemId (must be skipped)
-                iid = f',"itemId":"N{idx}"' if has_item else ""
-                connection.execute(
-                    text(
-                        "INSERT INTO timeline_items "
-                        "(session_id, id, type, status, role, order_seq, updated_seq, "
-                        " payload_json) VALUES "
-                        "(:sid, :iid, 'message', 'done', 'assistant', :ord, :ord, "
-                        " '{\"id\":\"m' || :i || '\",\"source\":{\"runtime\":\"claude\"' || :src || '}}')"
-                    ),
-                    {"sid": "s1", "iid": f"m{idx}", "ord": idx + 1, "i": str(idx), "src": iid},
-                )
-    finally:
-        engine.dispose()
-
-    upgrade_database(db_url=url)
-
-    engine = create_engine(f"sqlite:///{path}")
-    try:
-        with engine.connect() as connection:
-            rows = {
-                row[0]: row[1]
-                for row in connection.execute(
-                    text("SELECT id, native_item_id FROM timeline_items")
-                )
-            }
-        assert rows == {"m0": "N0", "m1": "N1", "m2": None, "m3": "N3"}
-    finally:
-        engine.dispose()
-
-
-def test_v2_43_adds_the_native_message_id_column_and_index(tmp_path) -> None:
-    path = tmp_path / "native-message-id.sqlite3"
-    url = _sqlite_url(path)
-    upgrade_database(db_url=url, revision="v2_42")
-    engine = create_engine(f"sqlite:///{path}")
-    try:
-        assert "native_message_id" not in {
-            column["name"]
-            for column in inspect(engine).get_columns("timeline_items")
-        }
-    finally:
-        engine.dispose()
-
-    upgrade_database(db_url=url)
-
-    engine = create_engine(f"sqlite:///{path}")
-    try:
-        columns = {
-            column["name"]: column
-            for column in inspect(engine).get_columns("timeline_items")
-        }
-        assert "native_message_id" in columns
-        assert columns["native_message_id"]["nullable"] is True
-        with engine.connect() as connection:
-            index_names = {
-                row[0]
-                for row in connection.execute(
-                    text(
-                        "SELECT name FROM sqlite_master "
-                        "WHERE type = 'index' AND tbl_name = 'timeline_items'"
-                    )
-                )
-            }
-        assert "idx_timeline_items_session_native_message" in index_names
-    finally:
-        engine.dispose()
-
-    # Idempotent: a second upgrade is a no-op.
-    upgrade_database(db_url=url)
-
-
-def test_v2_43_backfills_native_message_id_from_the_payload(tmp_path) -> None:
-    """The tool-row grouping reads ``native_message_id``; a row whose payload
-    already declares ``source.nativeMessageId`` must carry it after the
-    migration. A row without the field (every row written before the connector
-    declared it) stays NULL — the correct outcome, never guessed from the row's
-    own id."""
-
-    path = tmp_path / "native-message-id-backfill.sqlite3"
-    url = _sqlite_url(path)
-    # Seed rows under the pre-column schema, exactly as a live deployment would
-    # have them, then upgrade.
-    upgrade_database(db_url=url, revision="v2_42")
-    engine = create_engine(f"sqlite:///{path}")
-    try:
-        with engine.begin() as connection:
-            connection.execute(
-                text(
-                    "INSERT INTO sessions "
-                    "(id, connector_id, runtime, runtime_id, status, takeover, "
-                    " seq, updated_seq, seq_allocated_high, created_at, updated_at) "
-                    "VALUES ('s1', 'c1', 'claude', 'r1', 'active', 0, 1, 1, 1, "
-                    " '2026-10-15T00:00:00Z', '2026-10-15T00:00:00Z')"
-                )
-            )
-            connection.execute(
-                text(
-                    "INSERT INTO timeline_items "
-                    "(session_id, id, type, status, role, order_seq, updated_seq, "
-                    " payload_json) VALUES "
-                    "('s1', 't1', 'system', 'done', 'assistant', 1, 1, "
-                    " '{\"id\":\"t1\",\"source\":{\"runtime\":\"claude\","
-                    "\"itemId\":\"call-A\",\"nativeMessageId\":\"msg-A\"}}'), "
-                    "('s1', 't2', 'system', 'done', 'assistant', 2, 2, "
-                    " '{\"id\":\"t2\",\"source\":{\"runtime\":\"claude\","
-                    "\"itemId\":\"call-B\",\"nativeMessageId\":\"msg-A\"}}'), "
-                    "('s1', 'p1', 'message', 'done', 'user', 3, 3, "
-                    " '{\"id\":\"p1\",\"source\":{\"runtime\":\"claude\","
-                    "\"itemId\":\"old-body\"}}')"
-                )
-            )
-    finally:
-        engine.dispose()
-
-    upgrade_database(db_url=url)
-
-    engine = create_engine(f"sqlite:///{path}")
-    try:
-        with engine.connect() as connection:
-            rows = {
-                row[0]: row[1]
-                for row in connection.execute(
-                    text("SELECT id, native_message_id FROM timeline_items")
-                )
-            }
-        assert rows["t1"] == "msg-A"
-        assert rows["t2"] == "msg-A"
-        # No nativeMessageId in the payload -> stays NULL, never reconstructed
-        # from the row's own itemId.
-        assert rows["p1"] is None
-    finally:
-        engine.dispose()
-
-
-def test_v2_43_downgrade_then_upgrade_round_trips(tmp_path) -> None:
-    """The migration's DDL is not in the alembic chain's single transaction.
-
-    Each step runs in its own ``autocommit_block`` so a large ``timeline_items``
-    is never locked end-to-end, which means a partially applied run is recovered
-    by re-running, not by an automatic rollback. A downgrade followed by an
-    upgrade must therefore land back on the same schema — column, index and
-    backfilled values — with no manual repair.
-    """
-
-    path = tmp_path / "native-message-id-roundtrip.sqlite3"
-    url = _sqlite_url(path)
-    upgrade_database(db_url=url, revision="v2_42")
-    engine = create_engine(f"sqlite:///{path}")
-    try:
-        with engine.begin() as connection:
-            connection.execute(
-                text(
-                    "INSERT INTO sessions "
-                    "(id, connector_id, runtime, runtime_id, status, takeover, "
-                    " seq, updated_seq, seq_allocated_high, created_at, updated_at) "
-                    "VALUES ('s1', 'c1', 'claude', 'claude', 'idle', 0, 1, 1, 1, "
-                    " '2026-10-15T00:00:00Z', '2026-10-15T00:00:00Z')"
-                )
-            )
-            connection.execute(
-                text(
-                    "INSERT INTO timeline_items "
-                    "(session_id, id, type, status, role, order_seq, updated_seq, "
-                    " payload_json) VALUES "
-                    "('s1', 't1', 'system', 'done', 'assistant', 1, 1, "
-                    " '{\"id\":\"t1\",\"source\":{\"runtime\":\"claude\","
-                    "\"itemId\":\"call-A\",\"nativeMessageId\":\"msg-A\"}}')"
-                )
-            )
-    finally:
-        engine.dispose()
-
-    def _columns() -> set[str]:
-        engine = create_engine(f"sqlite:///{path}")
-        try:
-            return {
-                column["name"]
-                for column in inspect(engine).get_columns("timeline_items")
-            }
-        finally:
-            engine.dispose()
-
-    def _native_message_id() -> str | None:
-        engine = create_engine(f"sqlite:///{path}")
-        try:
-            with engine.connect() as connection:
-                return connection.execute(
-                    text(
-                        "SELECT native_message_id FROM timeline_items WHERE id = 't1'"
-                    )
-                ).scalar()
-        finally:
-            engine.dispose()
-
-    def _index_names() -> set[str]:
-        engine = create_engine(f"sqlite:///{path}")
-        try:
-            with engine.connect() as connection:
-                return {
-                    row[0]
-                    for row in connection.execute(
-                        text(
-                            "SELECT name FROM sqlite_master WHERE type = 'index' "
-                            "AND tbl_name = 'timeline_items'"
-                        )
-                    )
-                }
-        finally:
-            engine.dispose()
-
-    upgrade_database(db_url=url)
-    assert _native_message_id() == "msg-A"
-    assert "idx_timeline_items_session_native_message" in _index_names()
-
-    command.downgrade(_alembic_config(url), "v2_42")
-    assert "native_message_id" not in _columns()
-    assert "idx_timeline_items_session_native_message" not in _index_names()
-
-    upgrade_database(db_url=url)
-    assert _native_message_id() == "msg-A"
-    assert "idx_timeline_items_session_native_message" in _index_names()
-
-
-def test_v2_43_backfill_pages_without_skipping_or_looping(tmp_path, monkeypatch) -> None:
-    """The backfill pages by ``(session_id, id)`` so a tiny page size still
-    covers every row (and a payload with no nativeMessageId cannot stall the
-    loop)."""
-
-    from migrations.versions import v2_43
-
-    monkeypatch.setattr(v2_43, "_BACKFILL_BATCH", 1)
-
-    path = tmp_path / "native-message-id-paged.sqlite3"
-    url = _sqlite_url(path)
-    upgrade_database(db_url=url, revision="v2_42")
-    engine = create_engine(f"sqlite:///{path}")
-    try:
-        with engine.begin() as connection:
-            connection.execute(
-                text(
-                    "INSERT INTO sessions "
-                    "(id, connector_id, runtime, runtime_id, status, takeover, "
-                    " seq, updated_seq, seq_allocated_high, created_at, updated_at) "
-                    "VALUES ('s1', 'c1', 'claude', 'claude', 'idle', 0, 1, 1, 1, "
-                    " '2026-10-15T00:00:00Z', '2026-10-15T00:00:00Z')"
-                )
-            )
-            for idx in range(4):
-                has_message = idx != 2  # row 2 has no nativeMessageId (skipped)
-                extra = f',"nativeMessageId":"M{idx}"' if has_message else ""
-                connection.execute(
-                    text(
-                        "INSERT INTO timeline_items "
-                        "(session_id, id, type, status, role, order_seq, updated_seq, "
-                        " payload_json) VALUES "
-                        "(:sid, :iid, 'system', 'done', 'assistant', :ord, :ord, "
-                        " '{\"id\":\"m' || :i || '\",\"source\":{\"runtime\":\"claude\"' || :src || '}}')"
-                    ),
-                    {
-                        "sid": "s1",
-                        "iid": f"m{idx}",
-                        "ord": idx + 1,
-                        "i": str(idx),
-                        "src": extra,
-                    },
-                )
-    finally:
-        engine.dispose()
-
-    upgrade_database(db_url=url)
-
-    engine = create_engine(f"sqlite:///{path}")
-    try:
-        with engine.connect() as connection:
-            rows = {
-                row[0]: row[1]
-                for row in connection.execute(
-                    text("SELECT id, native_message_id FROM timeline_items")
-                )
-            }
-        assert rows == {"m0": "M0", "m1": "M1", "m2": None, "m3": "M3"}
     finally:
         engine.dispose()

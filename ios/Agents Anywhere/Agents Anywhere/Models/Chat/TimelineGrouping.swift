@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-struct ChatTimelineGroup: Identifiable {
+struct ChatTimelineGroup: Identifiable, Equatable {
     // `.agents` no longer reaches the main timeline since L2.1 (the grouping
     // filter in `groups` keeps SubAgent child rows out). It stays declared
     // because `TimelineRowStructure` still classifies those rows and the
@@ -10,6 +10,9 @@ struct ChatTimelineGroup: Identifiable {
     enum Kind: Equatable { case single, tools, reconnect, agents(String) }
     let kind: Kind
     let rows: [ChatTimelineRowModel]
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.kind == rhs.kind && lhs.rows.elementsEqual(rhs.rows, by: ===)
+    }
     // The first row owns the group, even as the second tool arrives. A group
     // growing during a stream does not replace the scroll target or its state.
     var id: String { rows[0].id }

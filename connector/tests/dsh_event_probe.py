@@ -1,7 +1,8 @@
 """Headless integration probe called by the plugin's real SDK fixture.
 
-Uses the unchanged backend app through ASGI and a temporary SQLite database.
-No dev server, user credentials, or actual model provider is used.
+Uses the unchanged backend app through ASGI and a throwaway PostgreSQL
+database created from AGENT_SERVER_TEST_DB_URL. No dev server, user
+credentials, or actual model provider is used.
 """
 # Import the app only after isolating its database URL and local module paths.
 # ruff: noqa: E402
@@ -16,11 +17,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT / "server"), str(ROOT / "connector")]
-# The test must never resolve an inherited development database URL.
+# The probe must never touch an inherited development database; it creates its
+# own database from AGENT_SERVER_TEST_DB_URL below.
 os.environ.pop("AGENT_SERVER_DB_URL", None)
 
 import httpx
 from jsonschema import Draft202012Validator
+from dsh_probe_database import fresh_server_database
 from dsh_probe_transport import IngestTransport
 
 from agent_server.app import create_app
@@ -52,7 +55,7 @@ async def until(check, label: str) -> None:
 
 
 async def main(home: Path) -> None:
-    app = create_app(home / "server-test.sqlite3")
+    app = create_app()
     await app.state.store.create_user(user_id="dsh-test", password_hash="test-only")
     async with app.router.lifespan_context(app):
         store = app.state.store
@@ -76,7 +79,7 @@ async def main(home: Path) -> None:
 
             checkpoint_path = home / "connector-state.json"
             base_host = ConnectorRuntimeHost(connector.id, notify, download,
-                sync_state_store=JsonSyncStateStore(checkpoint_path), ingest_notifications=ingest.ingest_notifications)
+                sync_state_store=JsonSyncStateStore(checkpoint_path), ingest_notifications=ingest.ingest_notifications, ingest_snapshot=ingest.ingest_snapshot)
             host = await base_host.prepare_runtime_host("dsh")
             config = await DshProvider().validate_config({"dshHome": str(home), "restartBackoffMs": 100})
             runtime = CheckedRuntime(config, host)
@@ -142,7 +145,7 @@ async def main(home: Path) -> None:
                 offset = len(transport.notifications)
                 count = completed_inventories()
                 base_host = ConnectorRuntimeHost(connector.id, notify, download,
-                    sync_state_store=JsonSyncStateStore(checkpoint_path), ingest_notifications=ingest.ingest_notifications)
+                    sync_state_store=JsonSyncStateStore(checkpoint_path), ingest_notifications=ingest.ingest_notifications, ingest_snapshot=ingest.ingest_snapshot)
                 host = await base_host.prepare_runtime_host("dsh")
                 runtime = CheckedRuntime(config, host)
                 await runtime.start()
@@ -158,7 +161,7 @@ async def main(home: Path) -> None:
                 offset = len(transport.notifications)
                 count = completed_inventories()
                 base_host = ConnectorRuntimeHost(connector.id, notify, download,
-                    sync_state_store=JsonSyncStateStore(checkpoint_path), ingest_notifications=ingest.ingest_notifications)
+                    sync_state_store=JsonSyncStateStore(checkpoint_path), ingest_notifications=ingest.ingest_notifications, ingest_snapshot=ingest.ingest_snapshot)
                 host = await base_host.prepare_runtime_host("dsh")
                 runtime = CheckedRuntime(config, host)
                 await runtime.start()
@@ -283,4 +286,5 @@ async def main(home: Path) -> None:
 if __name__ == "__main__":
     # The Host fixture uses this directory as the user home for the bridge endpoint.
     runtime_owner.system_home = lambda: Path(sys.argv[1])
-    asyncio.run(main(Path(sys.argv[1])))
+    with fresh_server_database():
+        asyncio.run(main(Path(sys.argv[1])))

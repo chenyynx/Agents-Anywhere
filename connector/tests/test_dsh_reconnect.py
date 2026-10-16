@@ -139,7 +139,7 @@ def test_initially_offline_runtime_recovers_through_supervisor(monkeypatch):
             assert kwargs["endpoint"] is endpoint
             return client
 
-        async def status_sink(runtime_id, status, error):
+        async def status_sink(runtime_id, status, error, phase=None):
             statuses.append(status)
             if status == "running":
                 recovered.set()
@@ -152,7 +152,7 @@ def test_initially_offline_runtime_recovers_through_supervisor(monkeypatch):
         )
         monkeypatch.setattr(runtime_module.discovery, "load_endpoints", load_endpoint)
         monkeypatch.setattr(runtime_module, "BridgeClient", make_client)
-        monkeypatch.setattr(runtime_module, "SyncRelay", lambda *args: relay)
+        monkeypatch.setattr(runtime_module, "SyncRelay", lambda *args, **kwargs: relay)
         monkeypatch.setattr(runtime_module, "BRIDGE_POLL_INTERVAL_SECONDS", 0.001)
         try:
             from connector.server.runtime_rpc import RuntimeRpcHandler
@@ -168,10 +168,13 @@ def test_initially_offline_runtime_recovers_through_supervisor(monkeypatch):
                 },
             )
             assert result["status"] == "starting"
-            assert result["error"]["retryable"] is True
+            assert "error" not in result
+            assert result["phase"]["code"] == "waiting_bridge"
+            assert result["phase"]["retryable"] is True
             bound = supervisor.entry("dsh").runtime
             assert supervisor.entry("dsh").status == "starting"
-            assert supervisor.entry("dsh").error["retryable"] is True
+            assert supervisor.entry("dsh").error is None
+            assert supervisor.entry("dsh").phase["code"] == "waiting_bridge"
             assert supervisor.entry("dsh").runtime is bound
             assert "running" not in statuses
             online = True

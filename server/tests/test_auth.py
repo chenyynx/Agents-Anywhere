@@ -15,7 +15,7 @@ from conftest import ApiV2TestClient as TestClient, make_test_client
 
 
 def make_client(tmp_path) -> TestClient:
-    return make_test_client(tmp_path / "test.sqlite3")
+    return make_test_client()
 
 
 # ---------- helpers ----------------------------------------------------------

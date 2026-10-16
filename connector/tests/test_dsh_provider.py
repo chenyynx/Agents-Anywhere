@@ -521,7 +521,9 @@ def test_initial_catalog_error_does_not_close_other_runtime_requests(monkeypatch
             await runtime.start()
             health = host.runtime_health_update.await_args_list
             assert [call.args[0] for call in health] == ["starting", "running"]
-            assert health[0].args[1]["code"] == "runtime_initializing"
+            # Sync progress is a phase of "starting", never an error payload.
+            assert health[0].args[1:] == ()
+            assert health[0].kwargs["phase"]["code"] == "connecting"
             assert await runtime._request("ping") == {"ok": True}
             client.close.assert_not_awaited()
             broken = False

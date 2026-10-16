@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct RootView: View {
-    @EnvironmentObject private var appState: AppState
+    @Environment(AppState.self) private var appState
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.default.rawValue
     @State private var showingManualLogin = false
@@ -68,5 +68,5 @@ struct RootView: View {
 
 #Preview {
     RootView()
-        .environmentObject(AppState())
+        .environment(AppState())
 }

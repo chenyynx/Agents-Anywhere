@@ -34,6 +34,8 @@ from connector.runtimes.dsh.bridge.client import BridgeClient, BridgeRpcError
 from connector.runtimes.dsh.bridge.sync import SyncRelay
 
 BRIDGE_POLL_INTERVAL_SECONDS = 5.0
+# A relay that died from a bug is rebuilt after this pause, not in a tight loop.
+RELAY_RESTART_DELAY_SECONDS = 2.0
 
 
 class DshRuntime(AgentRuntime):
@@ -56,6 +58,7 @@ class DshRuntime(AgentRuntime):
         self._stopping = False
         self._restart_task: asyncio.Task[None] | None = None
         self._sync: SyncRelay | None = None
+        self._relay_restart_task: asyncio.Task[None] | None = None
         self._sync_mode = "events"
 
     @property
@@ -71,7 +74,7 @@ class DshRuntime(AgentRuntime):
             if self._sync is not None:
                 await self._sync.close()
             if not self._stopping and self._client is not None and self.sync_mode == "events":
-                self._sync = SyncRelay(self._client, self.host)
+                self._sync = SyncRelay(self._client, self.host, on_exit=self._relay_exited)
                 self._sync.start()
 
     @property
@@ -80,8 +83,8 @@ class DshRuntime(AgentRuntime):
 
     async def start(self) -> None:
         self._stopping = False
-        await self.host.runtime_health_update("starting", {
-            "code": "runtime_initializing", "message": "正在连接 DSH 并同步会话…", "retryable": True,
+        await self.host.runtime_health_update("starting", phase={
+            "code": "connecting", "message": "正在连接 DSH 并同步会话…", "retryable": True,
         })
         try:
             await self._ensure_client()
@@ -89,8 +92,8 @@ class DshRuntime(AgentRuntime):
             with suppress(Exception):
                 await self.host.runtime_health_update(
                     "starting",
-                    {
-                        "code": "runtime_unavailable",
+                    phase={
+                        "code": "waiting_bridge",
                         "message": "正在等待本地 DSH Bridge；请启动 DSH 并启用手机连接插件。",
                         "retryable": True,
                     },
@@ -452,10 +455,10 @@ class DshRuntime(AgentRuntime):
             self._client = client
             self._sync_mode = "events" if result.get("features", {}).get("syncMode") == "events" else "polling"
             if self._sync_mode == "events":
-                await self.host.runtime_health_update("starting", {
-                    "code": "runtime_initializing", "message": "正在同步 DSH 会话…", "retryable": True,
+                await self.host.runtime_health_update("starting", phase={
+                    "code": "syncing", "message": "正在同步 DSH 会话…", "retryable": True,
                 })
-                self._sync = SyncRelay(client, self.host)
+                self._sync = SyncRelay(client, self.host, on_exit=self._relay_exited)
                 self._sync.start()
             else:
                 with suppress(Exception):
@@ -550,6 +553,31 @@ class DshRuntime(AgentRuntime):
             data = params.get("data")
             stream_id = data.get("streamId") if isinstance(data, dict) else None
             self._sync.restart(stream_id if isinstance(stream_id, str) else None)
+
+    def _relay_exited(self, relay: SyncRelay, error: BaseException | None) -> None:
+        # The relay only returns on its own when the bridge socket is gone, and
+        # _handle_exit rebuilds it after the reconnect. Anything else is a bug
+        # in the relay; keep syncing rather than leaving the runtime "starting"
+        # until the Connector is restarted (#293).
+        if error is None or self._stopping or self._sync is not relay:
+            return
+        if self._client is None or not self._client.connected:
+            return
+        if self._relay_restart_task is None or self._relay_restart_task.done():
+            self._relay_restart_task = asyncio.create_task(self._restart_relay(relay), name="dsh-event-sync-restart")
+
+    async def _restart_relay(self, failed: SyncRelay) -> None:
+        await asyncio.sleep(RELAY_RESTART_DELAY_SECONDS)
+        async with self._connect_lock:
+            client = self._client
+            if self._stopping or self._sync is not failed or client is None or not client.connected:
+                return
+            with suppress(Exception):
+                await self.host.runtime_health_update("starting", phase={
+                    "code": "sync_interrupted", "message": "DSH 会话同步中断，正在重试…", "retryable": True,
+                })
+            self._sync = SyncRelay(client, self.host, on_exit=self._relay_exited)
+            self._sync.start()
 
     async def _handle_exit(self, return_code: int | None) -> None:
         self._client = None

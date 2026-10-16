@@ -7,7 +7,7 @@ export function startupFailure(error: unknown): BridgeStatus {
   const cause = record(value.cause)
   const code = typeof value.code === 'string' ? value.code : typeof cause.code === 'string' ? cause.code : undefined
   const message = error instanceof Error ? error.message : ''
-  if (code === 'EADDRINUSE' || /Another DSH bridge owns|另一个插件实例正在管理/.test(message)) return {
+  if (code === 'MANAGER_LOCK_HELD' || code === 'EADDRINUSE' || /Another DSH bridge owns|另一个插件实例正在管理/.test(message)) return {
     state: 'failed', code: 'BRIDGE_IN_USE', canRetry: true,
     message: '本机连接被占用，无法启动。',
     hint: '请退出其他正在运行的 DSH，再点击“尝试重启”。如果只开了一个 DSH，请检查是否重复启用了插件。',

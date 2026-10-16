@@ -189,6 +189,9 @@ nonisolated enum TimelineText {
         return normalized.hasPrefix(root + "/") ? String(normalized.dropFirst(root.count + 1)) : path
     }
     static func message(_ value: String) -> String {
+        // Every streamed version of a reply passes through here; one scan for
+        // the shared marker prefix answers the common case without three searches.
+        guard value.contains("\n\n[") else { return value }
         let ends = ["\n\n[Attached file: ", "\n\n[Failed to load attachment ", "\n\n[Attachments dropped "]
             .compactMap { value.range(of: $0)?.lowerBound }
         return ends.min().map { String(value[..<$0]).replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression) } ?? value
@@ -224,11 +227,9 @@ extension V2TimelineItem {
             // (connector gate); existing DB rows disappear here instead.
             return false
         }
-        if type == .message, source["runtime"] == .string("claude") {
-            let text = displayText.trimmingCharacters(in: .whitespacesAndNewlines)
-            if role == .user && ["[Request interrupted by user]", "[Request interrupted by user for tool use]"].contains(text) { return false }
-            if role == .assistant && text == "No response requested." { return false }
-        }
+        // Claude's "[Request interrupted by user]" / "No response requested."
+        // messages are shown as timeline records (upstream #269 / 44fd79fc);
+        // the text-match hide they used to get is gone by decision (pp 2026-10-16).
         return true
     }
 }

@@ -18,7 +18,7 @@ from redis.exceptions import RedisError
 
 from agent_server.api import (
     admin,
-    admin_dashboard,
+    admin_usage,
     agents,
     announcements,
     auth,
@@ -69,6 +69,8 @@ from agent_server.services.setup_tokens import SetupTokenService
 from agent_server.services.shell_tasks import ShellTaskManager
 from agent_server.services.timeline_janitor import TimelineJanitor
 from agent_server.services.timeline_write_buffer import TimelineWriteBuffer
+from agent_server.services.usage_events import UsageRecorder
+from agent_server.services.usage_maintenance import UsageMaintenanceLoop
 from agent_server.services.workspace import WorkspaceServiceError
 
 CONNECTOR_PRESENCE_SWEEP_SECONDS = 5
@@ -151,14 +153,19 @@ async def _connector_presence_watchdog(app: FastAPI) -> None:
 
 
 def create_app(
-    db_path: str | Path | None = None,
     *,
-    migrate_database: bool | None = None,
+    migrate_database: bool = False,
     redis_url: str | None = None,
 ) -> FastAPI:
+    """Build the FastAPI app against ``AGENT_SERVER_DB_URL``.
+
+    Production deployments migrate the database before starting the Server
+    (see the Compose ``migrate-next`` step), so ``migrate_database`` is off by
+    default; the test suite migrates its own database once per session.
+    """
     process_settings = ProcessSettings.from_environment()
     resolved_redis_url = redis_url
-    if resolved_redis_url is None and db_path is None:
+    if resolved_redis_url is None:
         resolved_redis_url = os.environ.get("AGENT_SERVER_REDIS_URL")
     process_settings.validate_shared_state(redis_configured=bool(resolved_redis_url))
 
@@ -168,6 +175,7 @@ def create_app(
         deletion_task: asyncio.Task[None] | None = None
         janitor_task: asyncio.Task[None] | None = None
         maintenance_task: asyncio.Task[None] | None = None
+        usage_task: asyncio.Task[None] | None = None
         try:
             logger.info(
                 "server concurrency pid={} workers={} event_workers={}",
@@ -183,6 +191,7 @@ def create_app(
             await app.state.terminal_stream_hub.start()
             await app.state.terminal_broker.start()
             await app.state.rpc.start()
+            await app.state.usage_recorder.start()
             presence_task = asyncio.create_task(_connector_presence_watchdog(app))
             deletion_task = asyncio.create_task(app.state.connector_deletion_recovery.run())
             # A row written by an older worker during a rolling upgrade can
@@ -197,6 +206,7 @@ def create_app(
                 janitor_task = asyncio.create_task(app.state.timeline_janitor.run())
             else:
                 logger.info("timeline age janitor disabled by configuration")
+            usage_task = asyncio.create_task(app.state.usage_maintenance.run())
             # Generate the bootstrap token early so operators see it in logs.
             if await app.state.store.count_users() == 0:
                 await SetupTokenService(app.state.setup_token, app.state.redis).snapshot()
@@ -211,6 +221,9 @@ def create_app(
             if janitor_task is not None:
                 janitor_task.cancel()
                 await asyncio.gather(janitor_task, return_exceptions=True)
+            if usage_task is not None:
+                usage_task.cancel()
+                await asyncio.gather(usage_task, return_exceptions=True)
             if deletion_task is not None:
                 deletion_task.cancel()
                 await asyncio.gather(deletion_task, return_exceptions=True)
@@ -220,6 +233,11 @@ def create_app(
                     await presence_task
                 except asyncio.CancelledError:
                     pass
+            try:
+                # Flush buffered usage events while the database is still open.
+                await app.state.usage_recorder.close()
+            except Exception:  # noqa: BLE001 - shutdown must continue
+                logger.exception("failed to flush usage events on shutdown")
             try:
                 await app.state.rpc.close()
             finally:
@@ -260,12 +278,9 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    should_migrate = (
-        db_path is not None if migrate_database is None else migrate_database
-    )
-    if should_migrate:
-        upgrade_database(sqlite_path=db_path)
-    app.state.store = Store(db_path)
+    if migrate_database:
+        upgrade_database()
+    app.state.store = Store()
     app.state.database_schema_version = "unknown"
     app.state.redis = RedisCoordinator(
         resolved_redis_url,
@@ -336,6 +351,17 @@ def create_app(
         app.state.timeline_write_buffer, app.state.session_runtime_state_cache, app.state.timeline_broker,
     )
     app.state.timeline_janitor = TimelineJanitor.from_environment(app.state.store)
+    app.state.usage_recorder = UsageRecorder(
+        app.state.store,
+        flush_interval_seconds=float(
+            os.environ.get("AGENT_SERVER_USAGE_FLUSH_INTERVAL_SECONDS", "1")
+        ),
+    )
+    app.state.usage_maintenance = UsageMaintenanceLoop(
+        app.state.store,
+        app.state.redis,
+        retention_days=int(os.environ.get("AGENT_SERVER_USAGE_RETENTION_DAYS", "400")),
+    )
     app.state.ws_tickets = ClientWsTicketManager(app.state.redis)
     app.state.setup_token = SetupToken()
     app.state.started_at_iso = utc_now()
@@ -407,7 +433,7 @@ def create_app(
     app.include_router(admin.router, prefix=API_V2_PREFIX)
     app.include_router(announcements.router, prefix=API_V2_PREFIX)
     app.include_router(announcements.admin_router, prefix=API_V2_PREFIX)
-    app.include_router(admin_dashboard.router, prefix=API_V2_PREFIX)
+    app.include_router(admin_usage.router, prefix=API_V2_PREFIX)
     app.include_router(dashboard_stream.router, prefix=API_V2_PREFIX)
     app.include_router(service.router, prefix=API_V2_PREFIX)
     app.include_router(shares.router, prefix=API_V2_PREFIX)

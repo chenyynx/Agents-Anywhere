@@ -88,7 +88,13 @@ nonisolated struct V2SessionArchive: Codable {
         // longer decodes (older payload missing a now-required field) is dropped
         // instead of failing the whole cache restore — the same "a single
         // malformed row must never cost the open" rule as the wire path.
-        let decoded = items.compactMap { try? JSONDecoder().decode(V2TimelineItem.self, from: JSONEncoder().encode($0)) }
+        projection(
+            items: items.compactMap { try? JSONDecoder().decode(V2TimelineItem.self, from: JSONEncoder().encode($0)) },
+            maximumItems: maximumItems, now: now,
+        )
+    }
+
+    @MainActor func projection(items decoded: [V2TimelineItem], maximumItems: Int, now: @escaping () -> Date = Date.init) -> V2SessionProjection {
         let empty = V2RuntimeCapabilitySnapshot(revision: 0, capabilities: [])
         let snapshot = V2SessionSnapshot(session: session, state: nil,
             timeline: .init(items: decoded, nextSeq: V2SessionProjection.sequence(cursor), hasMore: hasOlderItems),
@@ -96,6 +102,12 @@ nonisolated struct V2SessionArchive: Codable {
             catalogs: [:], eventCursor: cursor, serverTime: "")
         return V2SessionProjection(archive: snapshot, hasNewerItems: hasNewerItems, maximumItems: maximumItems, now: now)
     }
+}
+
+/// An archive plus its timeline already decoded by the store actor.
+nonisolated struct V2SessionRestore {
+    let archive: V2SessionArchive
+    let items: [V2TimelineItem]
 }
 
 extension ChatAttachment {

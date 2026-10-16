@@ -42,7 +42,7 @@ from agent_server.core.models import (
     UserView,
 )
 from agent_server.core.utc import utc_now
-from agent_server.deps import current_user, current_user_id, get_store
+from agent_server.deps import current_user, get_store, user_id_from_authorization
 from agent_server.infra.repositories.email_accounts import (
     EmailRateLimitError,
     EmailVerificationError,
@@ -197,7 +197,7 @@ async def send_email_code(
 ) -> EmailCodeResponse:
     user = None
     if request.headers.get("authorization"):
-        user = await current_user(current_user_id(request.headers.get("authorization")), db)
+        user = await current_user(user_id_from_authorization(request.headers.get("authorization")), db)
     if payload.purpose == "bind" and user is None:
         raise HTTPException(status_code=401, detail="authentication required")
     if payload.purpose == "register":
@@ -438,7 +438,7 @@ async def change_password(
     if authorization is None and payload.email and payload.code:
         await _reset_password(payload, db)
         return
-    user = await current_user(current_user_id(authorization), db)
+    user = await current_user(user_id_from_authorization(authorization), db)
     if not payload.newPassword and not payload.newPasswordVerifier:
         raise HTTPException(status_code=422, detail="new password is required")
     await db.update_user_password(

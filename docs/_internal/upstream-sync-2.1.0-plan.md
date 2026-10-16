@@ -62,3 +62,21 @@ d03066cf  relay 保活，任务不再静默死
 - github 操作绕本机代理（直连超时切 `127.0.0.1:8118`）
 - 提交：Conventional Commits + 作用域（`fix(dsh): …`），**不带 [cc] 前缀**
 - 该文件在被追踪的 `docs/_internal/`，会随分支提交
+
+## 块 2 待办（延后）：测试套件 Postgres 化 + 丢失的 v2_42/43 测试
+- 采纳上游后，server 测试套件必须跑真 Postgres（conftest 强制 `AGENT_SERVER_TEST_DB_URL`）。19 个文件仍用 `_sqlite_url`。
+- **块 2 待办**：把下列**仅我们有、随合并丢失**的 v2_42/43 及 v1 测试**按上游 Postgres fixture 重写补回**（目前 `test_database_migrations.py` 取了上游 PG 版，这些丢了）：
+  - `test_current_schema_version_is_v2_43`（现应为 v2_46）
+  - `test_v2_42_adds_the_native_item_id_column_and_index`
+  - `test_v2_42_backfills_native_item_id_from_the_payload`
+  - `test_v2_42_downgrade_then_upgrade_round_trips`
+  - `test_v2_42_index_check_ignores_an_unusable_index`
+  - `test_v2_42_upgrade_keeps_ddl_out_of_the_chain_transaction`
+  - `test_v2_42_backfill_pages_without_skipping_or_looping`
+  - `test_v2_43_adds_the_native_message_id_column_and_index`
+  - `test_v2_43_backfills_native_message_id_from_the_payload`
+  - `test_v2_43_downgrade_then_upgrade_round_trips`
+  - `test_v2_43_backfill_pages_without_skipping_or_looping`
+  - v1 相关：`test_unversioned_v1_database_archives_then_removes_legacy_storage`、`test_runtime_sqlite_environment_is_rejected`、`test_explicit_sqlite_url_remains_available_for_legacy_tools`、`test_v1_rehearsal_requires_postgres_target`（v1 工具已随上游移除，可能整体作废）
+- 迁移号已重编号：我们 v2_42/43（已上生产）保留；上游 → **v2_44/45/46**；`CURRENT_SCHEMA_REVISION=v2_46`。
+- 迁移号重编号后必须验：空库→v2_46→降级→升级往返（上游自验法，见 test_every_adjacent_schema_upgrade）。

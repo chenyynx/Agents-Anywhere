@@ -15,8 +15,12 @@ struct V2SessionProjection {
     private(set) var data: V2SessionData
     private let maximumItems: Int
     private var eventIDs: Set<String> = []
+    /// Fixed-size ring of recent durable event IDs; replacing the oldest slot
+    /// avoids shifting the whole window for every event once it is full.
     private var eventOrder: [String] = []
     private let now: () -> Date
+    private var eventOrderNext = 0
+    private static let dedupeWindow = 2048
     private let decoder = JSONDecoder()
 
     init(snapshot: V2SessionSnapshot, maximumItems: Int, now: @escaping () -> Date = Date.init) {
@@ -59,11 +63,15 @@ struct V2SessionProjection {
         data.liveStateIsFresh = data.session.connectorStatus == .online
     }
 
-    mutating func applyMeta(_ session: V2SessionMeta) {
-        guard session.id == data.session.id, session.updatedSeq >= data.session.updatedSeq else { return }
+    /// Returns false when the metadata was stale or identical, so callers can
+    /// skip republishing the whole projection.
+    @discardableResult mutating func applyMeta(_ session: V2SessionMeta) -> Bool {
+        guard session.id == data.session.id, session.updatedSeq >= data.session.updatedSeq,
+              session != data.session else { return false }
         let changedRuntime = session.effectiveRuntimeId != data.session.effectiveRuntimeId
         data.session = session
         if changedRuntime || session.connectorStatus != .online { markStale() }
+        return true
     }
 
     mutating func applyState(_ state: V2RuntimeState) {
@@ -132,8 +140,13 @@ struct V2SessionProjection {
         advanceCursor(event.cursor)
         if !event.isLiveProjection {
             eventIDs.insert(event.eventId)
-            eventOrder.append(event.eventId)
-            if eventOrder.count > 2048 { eventIDs.remove(eventOrder.removeFirst()) }
+            if eventOrder.count < Self.dedupeWindow {
+                eventOrder.append(event.eventId)
+            } else {
+                eventIDs.remove(eventOrder[eventOrderNext])
+                eventOrder[eventOrderNext] = event.eventId
+                eventOrderNext = (eventOrderNext + 1) % Self.dedupeWindow
+            }
         }
         return outcome
     }
@@ -211,6 +224,28 @@ struct V2SessionProjection {
             data.hasOlderItems = data.hasOlderItems || sorted.count > maximumItems
         }
         return outcomes
+    }
+
+
+
+    private func item(_ key: String, in event: V2SessionEvent) throws -> V2TimelineItem {
+        guard let raw = event.payload[key] else {
+            throw HTTPError.decoding(message: String(localized: "Missing '\(key)' in \(event.type)."))
+        }
+        do { return try V2TimelineItem(json: raw) }
+        catch let error as DecodingError {
+            throw HTTPError.decoding(message: "\(event.type) · \(key): \(error.v2Description)")
+        }
+    }
+
+    private func items(_ key: String, in event: V2SessionEvent) throws -> [V2TimelineItem] {
+        guard let raw = event.payload[key]?.arrayValue else {
+            throw HTTPError.decoding(message: String(localized: "Missing '\(key)' in \(event.type)."))
+        }
+        do { return try raw.map { try V2TimelineItem(json: $0) } }
+        catch let error as DecodingError {
+            throw HTTPError.decoding(message: "\(event.type) · \(key): \(error.v2Description)")
+        }
     }
 
     private func payload<Value: Decodable>(_ key: String, in event: V2SessionEvent) throws -> Value {

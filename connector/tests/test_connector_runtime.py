@@ -1885,6 +1885,20 @@ def test_connector_reauths_and_retries_ingest_on_401() -> None:
     asyncio.run(_exercise_ingest_reauth_on_401())
 
 
+def test_connector_logs_the_401_refresh() -> None:
+    # The refresh that recovers a 401 is otherwise invisible, so a rising rate
+    # of an expiring credential shows up only in this warning. Keep it logged.
+    from connector.logging import logger as connector_logger
+
+    captured: list[str] = []
+    sink_id = connector_logger.add(captured.append, level="WARNING", format="{message}")
+    try:
+        asyncio.run(_exercise_ingest_reauth_on_401())
+    finally:
+        connector_logger.remove(sink_id)
+    assert any("token rejected" in message for message in captured)
+
+
 def test_connector_ingest_network_error_is_explicit() -> None:
     asyncio.run(_exercise_ingest_network_error_is_explicit())
 

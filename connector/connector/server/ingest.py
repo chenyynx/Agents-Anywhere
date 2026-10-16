@@ -259,6 +259,12 @@ class ConnectorIngestClient:
         try:
             response = await send(token)
             if getattr(response, "status_code", None) == 401:
+                # Keep the operational signal dev logged here: a 401 that a
+                # refresh recovers from is otherwise invisible, and a rising
+                # rate of it is how an expiring credential shows up.
+                logger.warning(
+                    "connector ingest token rejected; refreshing access token and retrying"
+                )
                 token = await self._access_token_provider(True)
                 response = await send(token)
                 if getattr(response, "status_code", None) == 401:

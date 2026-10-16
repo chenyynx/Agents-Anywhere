@@ -627,10 +627,3 @@ enum SubAgentUsageFormat {
 }
 
 // MARK: - Local JSON accessors
-
-extension JSONValue {
-    nonisolated var intValue: Int? {
-        guard case let .number(value) = self, value.rounded() == value else { return nil }
-        return Int(exactly: value)
-    }
-}

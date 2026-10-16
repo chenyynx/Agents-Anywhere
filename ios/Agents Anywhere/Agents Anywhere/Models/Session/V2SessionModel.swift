@@ -504,7 +504,6 @@ final class V2SessionModel: Identifiable {
             if !orderChanged, timeline[index] !== row { orderChanged = true }
             rows.append(row)
         }
-        }
         if orderChanged {
             timeline = rows
             rowsByID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })

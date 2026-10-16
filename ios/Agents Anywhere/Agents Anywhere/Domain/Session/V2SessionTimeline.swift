@@ -39,7 +39,6 @@ extension V2SessionTimelinePage {
     }
 }
 
-struct V2SessionSnapshot: Decodable, Hashable {
 nonisolated struct V2SessionSnapshot: Decodable, Hashable {
     let session: V2SessionMeta
     let state: V2RuntimeState?
@@ -158,7 +157,6 @@ extension V2TimelineSnapshot {
     }
 }
 
-struct V2Approval: Decodable, Identifiable, Hashable {
 nonisolated struct V2Approval: Decodable, Identifiable, Hashable {
     let id: String
     let sessionId: V2SessionID

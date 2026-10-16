@@ -178,6 +178,27 @@ import Testing
         #expect(http.count("messages") == 1)
     }
 
+    @Test func bulkReadReconcilesAQueueEchoWithNoPendingBubble() async throws {
+        let http = TestHTTPTransport()
+        let (repo, model) = makeSession(http)
+        defer { repo.reset() }
+        let item = try enqueueWhileRunning(model, "hello")
+        try applyLive(model, status: .idle, sendAvailable: true)
+        #expect(await model.drainSendQueueIfPossible())
+        #expect(item.state == .awaitingEcho)
+        // A queued message in flight has a queue row but no pending bubble, so
+        // the echo gate keys on the queue too. Deliver the echo only through a
+        // bulk read (as a reconnect catch-up or snapshot rebuild would): the
+        // item rides in the observation's data, never through confirmEcho.
+        #expect(model.pendingMessages.isEmpty)
+        var data = V2SessionData(snapshot: try decode(try fixtureObject("snapshot")))
+        data.items = [try echo(clientID: item.id)]
+        model.update(V2SessionObservation(sessionId: "session", data: data, connection: .connected, error: nil),
+                     network: V2NetworkStatus(availability: .online))
+        #expect(model.sendQueue.isEmpty)
+        #expect(model.awaitingReplyID == nil)
+    }
+
     @Test func echoReconcilesAQueuedMessageWithoutAPendingBubble() async throws {
         let http = TestHTTPTransport()
         let (repo, model) = makeSession(http)

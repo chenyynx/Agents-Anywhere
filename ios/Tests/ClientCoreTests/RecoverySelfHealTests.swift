@@ -246,6 +246,38 @@ private struct TestRecoveryReadFailure: Error {}
         #expect(restored.recoveryDiagnostics(sessionId: "session") == records)
     }
 
+    /// A diagnostic recorded before the failure streak reaches the rebuild
+    /// threshold still persists. The threshold path returns without publishing,
+    /// so the record must mark the entry dirty itself: an entry whose dirty
+    /// flag a preceding flush just cleared would otherwise drop its first
+    /// diagnostic and lose it across a relaunch.
+    @Test func aSubThresholdDiagnosticPersistsDespiteAClearedDirtyFlag() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("aa-recovery-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let http = TestHTTPTransport(); let realtime = TestRealtimeAPI()
+        var date = Date()
+        let first = localRepository(http, realtime: realtime, local: V2LocalStore(directory: url), now: { date })
+        _ = try await first.open(sessionId: "session")
+        // Clear the flag `open()` left set, so the only thing that can mark the
+        // entry dirty again is the diagnostic below.
+        await first.flushCache()
+        let poisoned = try poisonedRecovery()
+        realtime.onRecover = { poisoned }
+        // One failure records a diagnostic but stays under the rebuild
+        // threshold, so it never reaches a publishing emit.
+        #expect(await syncRound(first) == false)
+        #expect(first.recoveryDiagnostics(sessionId: "session").count == 1)
+        await first.flushCache()
+        first.reset()
+
+        let restored = localRepository(TestHTTPTransport(), realtime: TestRealtimeAPI(),
+                                       local: V2LocalStore(directory: url), now: { date })
+        defer { restored.reset() }
+        restored.updateConnectivity(V2NetworkStatus(availability: .offline))
+        _ = try await restored.load(sessionId: "session")
+        #expect(restored.recoveryDiagnostics(sessionId: "session").count == 1)
+    }
+
     /// The disclosure is one-shot. Once the session page has shown it, the
     /// field is cleared (on the model and, through it, the repository entry),
     /// so re-entering the page cannot replay a notice already acknowledged.

@@ -1095,6 +1095,12 @@ final class V2SessionRepository {
         entry.recoveryDiagnostics.append(record)
         let excess = entry.recoveryDiagnostics.count - Self.recoveryDiagnosticLimit
         if excess > 0 { entry.recoveryDiagnostics.removeFirst(excess) }
+        // Diagnostics ride on the archive, so recording one is a durable change:
+        // mark the entry dirty even on the sub-threshold path that returns
+        // without publishing. Otherwise an entry whose dirty flag a prior flush
+        // just cleared would drop the first diagnostic of a failure streak.
+        entry.isDirty = true
+        schedulePersistence()
     }
 
     private func requireRecoveryEpoch(_ entry: Entry, epoch: UUID) throws {

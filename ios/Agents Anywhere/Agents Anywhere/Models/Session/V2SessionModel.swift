@@ -508,7 +508,14 @@ final class V2SessionModel: Identifiable {
             timeline = rows
             rowsByID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
         }
-        if !pendingMessages.isEmpty { for item in items { confirmEcho(item) } }
+        // Reconcile authoritative echoes against both the optimistic bubbles and
+        // the send queue. A queued message in flight has a sendQueue row but no
+        // pending bubble, so gating on `pendingMessages` alone would skip a
+        // queue echo that only arrives through a bulk read (hydrate / reconnect
+        // catch-up / paging) and leave the head stuck until the stale timeout.
+        if !pendingMessages.isEmpty || !sendQueue.items.isEmpty {
+            for item in items { confirmEcho(item) }
+        }
         if let id = awaitingReplyID, let data {
             let agentStarted = data.liveStateIsFresh && [.running, .waiting, .pending, .error].contains(data.state?.status ?? .unknown)
             let user = data.items.first { $0.role == .user && $0.source["clientMessageId"]?.stringValue == id }

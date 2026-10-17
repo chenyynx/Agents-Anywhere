@@ -29,7 +29,7 @@ struct ChatMetricsTests {
     @Test("code block leading stays positive")
     func codeBlockLeading() {
         #expect(ChatMetrics.blockCodeLineHeight > ChatMetrics.blockCodeSize)
-        #expect(abs(ChatMetrics.blockCodeLineSpacingRatio - (14.33 - 12.3) / 14) < 0.0001)
+        #expect(abs(ChatMetrics.codeBlockLineSpacingRatio - (14.33 - 12.3) / 14) < 0.0001)
     }
 
     @Test("the table cap leaves room for a padded cell")

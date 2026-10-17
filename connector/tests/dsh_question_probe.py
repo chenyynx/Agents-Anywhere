@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from dsh_event_probe import CheckedRuntime, until
+from dsh_probe_database import fresh_server_database
 from dsh_probe_transport import IngestTransport
 import httpx
 from jsonschema import Draft202012Validator
@@ -26,7 +27,7 @@ from connector.server.runtime_turn_rpc import dispatch_interaction_respond
 
 
 async def main(home: Path) -> None:
-    app = create_app(home / "questions-test.sqlite3")
+    app = create_app()
     await app.state.store.create_user(user_id="question-test", password_hash="test-only")
     async with app.router.lifespan_context(app):
         connector, credential, _ = await app.state.store.create_connector(name="question-test", user_id="question-test")
@@ -49,7 +50,7 @@ async def main(home: Path) -> None:
             async def download(*_args):
                 raise AssertionError("Questions must not download files")
 
-            host = ConnectorRuntimeHost(connector.id, notify, download, ingest_notifications=ingest.ingest_notifications)
+            host = ConnectorRuntimeHost(connector.id, notify, download, ingest_notifications=ingest.ingest_notifications, ingest_snapshot=ingest.ingest_snapshot)
             runtime = CheckedRuntime(await DshProvider().validate_config({"dshHome": str(home)}), host)
             original_rpc = app.state.rpc
 
@@ -133,4 +134,5 @@ async def main(home: Path) -> None:
 if __name__ == "__main__":
     # The Host fixture uses this directory as the user home for the bridge endpoint.
     runtime_owner.system_home = lambda: Path(sys.argv[1])
-    asyncio.run(main(Path(sys.argv[1])))
+    with fresh_server_database():
+        asyncio.run(main(Path(sys.argv[1])))

@@ -8,6 +8,16 @@ import UIKit
 extension ChatPalette.Token {
     var color: Color { Color(uiColor: uiColor) }
 
+    /// `StructuredText.HighlighterTheme` takes a `DynamicColor` for its two
+    /// base slots. Textual's initialiser wants a light/dark pair, which is
+    /// exactly what a token already holds.
+    var dynamicColor: DynamicColor {
+        DynamicColor(
+            light: Color(uiColor: UIColor(hex: light)),
+            dark: Color(uiColor: UIColor(hex: dark))
+        )
+    }
+
     var uiColor: UIColor {
         UIColor { traits in
             UIColor(hex: traits.userInterfaceStyle == .dark ? dark : light)
@@ -20,8 +30,8 @@ extension ChatPalette.Token {
     static func foreground(_ token: ChatPalette.Token) -> Color { token.color }
 }
 
-private extension UIColor {
-    convenience init(hex: UInt32) {
+extension UIColor {
+    fileprivate convenience init(hex: UInt32) {
         self.init(red: CGFloat((hex >> 16) & 0xFF) / 255,
                   green: CGFloat((hex >> 8) & 0xFF) / 255,
                   blue: CGFloat(hex & 0xFF) / 255,

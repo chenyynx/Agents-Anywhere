@@ -86,10 +86,16 @@ struct ChatMarkdownCodeBlock<Code: View>: View {
         (language?.isEmpty == false ? language! : "code").lowercased()
     }
 
-    private func headerButton(_ symbol: String, label: String, tint: Color, action: @escaping () -> Void) -> some View {
+    private func headerButton(
+        _ symbol: String,
+        label: String,
+        tint: Color? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        let ink = tint ?? ChatPalette.codeHeaderIcon.color
         Button(action: action) {
             AppSymbol(symbol, size: 15)
-                .foregroundStyle(tint)
+                .foregroundStyle(ink)
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }

@@ -38,18 +38,24 @@ struct SessionTurnReviewFooter: View, Equatable {
             let review = review
             if !review.files.isEmpty {
                 Button { showsReview = true } label: {
+                    // `[pp 2026-10-17]` the whole row was a step small and its
+                    // counts read washed out. Glyph and text match the action
+                    // row (14pt), the row takes the action row's ink, and the
+                    // counts go back to the system green/red the pre-refresh
+                    // build used — those carry more weight than the sampled
+                    // tokens at this size.
                     HStack(spacing: 6) {
                         AppSymbol("doc.text", size: 14)
                         Text(String(localized: "\(review.files.count) 个文件"))
                         Text("·")
-                        Text("+\(review.additions)").foregroundStyle(ChatPalette.diffAdd.color)
-                        Text("−\(review.deletions)").foregroundStyle(ChatPalette.diffRemove.color)
-                        AppSymbol("chevron.right", size: 10)
+                        Text("+\(review.additions)").foregroundStyle(.green)
+                        Text("−\(review.deletions)").foregroundStyle(.red)
+                        AppSymbol("chevron.right", size: 14)
                     }
-                    .font(.footnote).monospacedDigit().lineLimit(1)
+                    .font(.system(size: ChatMetrics.timestampSize + 2)).monospacedDigit().lineLimit(1)
                     .frame(minHeight: 44).contentShape(Rectangle())
                 }
-                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .buttonStyle(.plain).foregroundStyle(ChatPalette.iconSecondary.color)
                 .accessibilityHint(String(localized: "查看本轮文件和 diff"))
                 .accessibilityIdentifier("chat.turn.review")
                 .sheet(isPresented: $showsReview, onDismiss: {

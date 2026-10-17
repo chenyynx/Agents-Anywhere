@@ -160,17 +160,17 @@ struct TimelineMarkerRow: View {
     var body: some View {
         HStack(spacing: 8) {
             if let expanded { AppSymbol(expanded ? "chevron.down" : "chevron.right", size: 10).frame(width: 10) }
-            AppSymbol(symbol, size: 12).frame(width: 14)
-            Text(title)
-                .font(.system(size: ChatMetrics.blockCodeSize, design: .monospaced))
-                .lineLimit(1).truncationMode(.tail)
+            // `[pp 2026-10-17]` shrink reverted: the tool-row glyph keeps the
+            // pre-refresh size so it still reads at a glance in the timeline.
+            AppSymbol(symbol, size: 15).frame(width: 18)
+            Text(title).font(.system(.subheadline, design: .monospaced)).lineLimit(1).truncationMode(.tail)
                 .modifier(StatusShimmer(active: status.isActive && !status.isFailure))
                 .frame(maxWidth: .infinity, alignment: .leading)
             if let accessory { AppSymbol(accessory, size: 14) }
         }
         .foregroundStyle(status.isFailure ? Color.red : ChatPalette.iconSecondary.color)
         // Consecutive tool rows read as one list; the full-width row stays tappable.
-        .frame(minHeight: 28).contentShape(Rectangle())
+        .frame(minHeight: 32).contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityValue(status.label)
     }

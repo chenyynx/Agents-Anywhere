@@ -21,14 +21,10 @@ struct ChatMarkdownTable: View {
                     }
                 }
             }
-            // The frame hugs the grid, so a narrow table has no empty panel
-            // beside it and a wide one scrolls with its border.
-            .clipShape(.rect(cornerRadius: ChatMetrics.tableRadius))
-            .overlay(
-                RoundedRectangle(cornerRadius: ChatMetrics.tableRadius)
-                    .stroke(ChatPalette.hairline.color, lineWidth: ChatMetrics.codeBorder)
-                    .allowsHitTesting(false)
-            )
+            // Borderless Claude style (moonveil's `TableScrollView`): no card
+            // outline and no corner radius — just one hairline colour for the
+            // header underline and every body row seam.
+            .clipShape(.rect(cornerRadius: 0))
         }
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
         .fixedSize(horizontal: false, vertical: true)
@@ -44,18 +40,13 @@ struct ChatMarkdownTable: View {
             .padding(.horizontal, ChatMetrics.tableCellPadHorizontal)
             .padding(.vertical, ChatMetrics.tableCellPadVertical)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: Alignment(horizontal: alignment(column), vertical: .top))
-            .background(row == 0 ? ChatPalette.codeFill.color : .clear)
-            .overlay(alignment: .trailing) {
-                if column < columnCount - 1 {
-                    Rectangle().fill(ChatPalette.hairline.color)
-                        .frame(width: ChatMetrics.codeBorder)
-                        .allowsHitTesting(false)
-                }
-            }
+            .background(row == 0 ? ChatPalette.tableHeaderFill.color : .clear)
+            // One line colour everywhere; no vertical seams in the borderless
+            // style, so columns are separated by spacing alone.
             .overlay(alignment: .bottom) {
                 if row < rows.count - 1 {
-                    Rectangle().fill(ChatPalette.hairline.color)
-                        .frame(height: ChatMetrics.codeBorder)
+                    Rectangle().fill(ChatPalette.tableLine.color)
+                        .frame(height: 1 / UIScreen.main.scale)
                         .allowsHitTesting(false)
                 }
             }

@@ -63,6 +63,10 @@ struct AccountSettingsSheet: View {
                             value: String(localized: OrbPalette.resolve(id: orbPaletteValue,
                                 customHex: OrbSettingsKeys.decodeCustomHex(orbCustomHexValue)).name))
                     }
+                    NavigationLink { ChatColorSettingsView() } label: {
+                        SettingsRow(title: String(localized: "聊天文字颜色"), symbol: "textformat",
+                            value: String(localized: "正文与链接"))
+                    }
                     NavigationLink { SettingsLanguageView() } label: {
                         SettingsRow(title: String(localized: "Language"), symbol: "globe", value: SettingsLanguageView.currentLanguage)
                     }

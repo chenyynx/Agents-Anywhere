@@ -81,13 +81,14 @@ struct UserMessageBubble: View {
                     ChatMessageAttachments(files: attachments, onOpen: onAttachment, loadThumbnail: loadThumbnail, isOutgoing: true)
                 }
                 if !text.isEmpty {
-                    ChatSelectableText(text: text).font(.system(size: ChatMetrics.bodySize))
+                    // `[pp 2026-10-17]` the reference-sized bubble read too
+                    // tight on device; the pre-refresh geometry is restored.
+                    ChatSelectableText(text: text).font(.body)
                         .foregroundStyle(AppTheme.accentTextColor(accent, colorScheme))
-                        .padding(.horizontal, ChatMetrics.bubblePadHorizontal)
-                        .padding(.vertical, ChatMetrics.bubblePadVertical)
+                        .padding(.horizontal, 17).padding(.vertical, 12)
                         .background(
                             AppTheme.accentBubbleBackground(accent, colorScheme),
-                            in: .rect(cornerRadius: ChatMetrics.bubbleRadius, style: .continuous)
+                            in: .rect(cornerRadius: 24)
                         )
                 }
             }

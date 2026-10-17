@@ -10,7 +10,7 @@ struct ChatMetricsTests {
     @Test("the reference body size matches the measured text")
     func referenceBodySizeMatchesMeasurement() {
         #expect(abs(ChatMetrics.referenceBodySize - 14) < 0.0001)
-        #expect(abs(ChatMetrics.bodySize - 14) < 0.0001)
+        #expect(abs(ChatMetrics.bodySize - 13) < 0.0001)
     }
 
     @Test("body line spacing is the line box minus the font size")

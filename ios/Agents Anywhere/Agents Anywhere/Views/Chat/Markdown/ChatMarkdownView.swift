@@ -229,15 +229,39 @@ private struct ChatMarkdownStyle: StructuredText.Style {
 /// on the code run itself. Applying it to all code keeps the two cases visually
 /// identical to the capture, where only the URL case existed.
 private enum ChatInlineStyle {
+    /// Both inks are user-tunable, so this is rebuilt per block evaluation
+    /// rather than cached: reading `UserDefaults` is cheap next to parsing, and
+    /// a cached copy would ignore a colour change until the view is rebuilt.
     static var standard: InlineStyle {
         InlineStyle()
             .code(
                 .monospaced,
                 .fontScale(ChatMetrics.inlineCodeSize / ChatMetrics.bodySize),
-                .foregroundColor(ChatPalette.textSecondary.color)
+                .foregroundColor(ChatTextInk.bodyTemplate)
             )
-            .link(.foregroundColor(ChatPalette.link.color))
+            .link(.foregroundColor(ChatTextInk.link))
             .strong(.fontWeight(.semibold))
+    }
+}
+
+/// Resolves the two user-tunable inks into `Color`. Lives beside the renderer
+/// because it needs the iOS colour bridge, unlike `ChatColorStore`.
+enum ChatTextInk {
+    static var bodyTemplate: Color { color(ChatColorStore.bodyTemplate) }
+    static var link: Color { color(ChatColorStore.link) }
+
+    private static func color(_ pair: ChatColorSettings.Pair) -> Color {
+        Color(uiColor: UIColor { traits in
+            UIColor(hexString: traits.userInterfaceStyle == .dark ? pair.dark : pair.light)
+                ?? .label
+        })
+    }
+}
+
+private extension UIColor {
+    convenience init?(hexString: String) {
+        guard let (r, g, b) = ChatColorSettings.parse(hexString) else { return nil }
+        self.init(red: CGFloat(r) / 255, green: CGFloat(g) / 255, blue: CGFloat(b) / 255, alpha: 1)
     }
 }
 
@@ -255,7 +279,7 @@ private struct ChatParagraphStyle: StructuredText.ParagraphStyle {
 private struct ChatBlockQuoteStyle: StructuredText.BlockQuoteStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .foregroundStyle(ChatPalette.textSecondary.color)
+            .foregroundStyle(ChatTextInk.bodyTemplate)
             .frame(maxWidth: .infinity, alignment: .leading)
             .textual.padding(.leading, .fontScaled(ChatMetrics.scaled(12)))
             .overlay(alignment: .leading) {

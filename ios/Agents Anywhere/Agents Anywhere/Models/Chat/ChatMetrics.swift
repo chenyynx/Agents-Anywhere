@@ -17,18 +17,22 @@ nonisolated enum ChatMetrics {
 
     // MARK: Body text
 
-    /// Running text. `[measured]` 26 CJK glyphs per 360pt column, verified at
-    /// 42px glyph pitch in the 393pt reference capture.
-    static let bodySize: CGFloat = 14
-    /// Line box height. `[measured]` 66px baseline pitch.
-    static let bodyLineHeight: CGFloat = 22
+    /// Running text. `[pp 2026-10-17]` the measured 14pt read a step large on
+    /// device, so the body sits one point under the reference. Everything that
+    /// derives from `referenceBodySize` keeps its original proportion.
+    static let bodySize: CGFloat = 13
+    /// Line box height. `[measured]` 66px baseline pitch at the 14pt reference;
+    /// kept in step with `bodySize` so the 8pt of leading scales with the text.
+    static var bodyLineHeight: CGFloat { bodySize + bodyLineSpacing }
     /// Textual adds space *between* line fragments, so the extra is the line
-    /// height minus the font's own leading.
-    static var bodyLineSpacing: CGFloat { bodyLineHeight - bodySize }
+    /// height minus the font's own leading. `[measured]` 22 − 14 at the
+    /// reference; held as a constant so shrinking the body tightens the box
+    /// only by the text, never by the leading.
+    static let bodyLineSpacing: CGFloat = 8
 
     /// Inline code. `[calibrated]` back-derived from the character advance
     /// width; the reference set it slightly *larger* than running text.
-    static let inlineCodeSize: CGFloat = 14.8
+    static var inlineCodeSize: CGFloat { bodySize * 14.8 / referenceBodySize }
 
     // MARK: Blocks
 
@@ -72,7 +76,9 @@ nonisolated enum ChatMetrics {
     /// the same greyscale and border rules as the code block.
     static let tableRadius: CGFloat = 12
     static let tableCellPadHorizontal: CGFloat = 12
-    static let tableCellPadVertical: CGFloat = 8
+    /// moonveil's table cell vertical padding; one point roomier than the
+    /// first pass so wrapped cells breathe.
+    static let tableCellPadVertical: CGFloat = 10
     static let tableCellSize: CGFloat = 13
     static let tableCellLineHeight: CGFloat = 18
     /// Ceiling for one content-sized column. Without it a single long cell

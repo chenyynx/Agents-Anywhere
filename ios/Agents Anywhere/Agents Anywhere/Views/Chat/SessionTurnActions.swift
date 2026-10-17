@@ -50,7 +50,10 @@ struct SessionTurnActions: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .frame(height: ChatMetrics.actionRowHeight, alignment: .topLeading)
-        .padding(.top, ChatMetrics.actionRowTopGap)
+        // `[pp 2026-10-17]` the row sat too low. Its top gap now matches the
+        // gap between the prose and the file-summary line (16pt), so the
+        // footer block reads as one rhythm instead of two.
+        .padding(.top, 16)
         .padding(.bottom, ChatMetrics.actionRowBottomGap)
         .disabled(text.isEmpty)
         .accessibilityIdentifier("chat.turn.actions")

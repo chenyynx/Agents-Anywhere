@@ -93,7 +93,7 @@ struct ChatMarkdownCodeBlock<Code: View>: View {
         action: @escaping () -> Void
     ) -> some View {
         let ink = tint ?? ChatPalette.codeHeaderIcon.color
-        Button(action: action) {
+        return Button(action: action) {
             AppSymbol(symbol, size: 15)
                 .foregroundStyle(ink)
                 .frame(width: 44, height: 44)

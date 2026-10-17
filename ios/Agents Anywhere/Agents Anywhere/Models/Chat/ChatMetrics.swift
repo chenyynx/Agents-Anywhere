@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 
 /// Visual metrics for the chat surface, matched against the Claude iOS app
 /// reference screenshots (2026-10-17). Values were read per-pixel from 3x

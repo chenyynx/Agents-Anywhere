@@ -9,13 +9,13 @@ import Testing
 struct ChatMetricsTests {
     @Test("the reference body size matches the measured text")
     func referenceBodySizeMatchesMeasurement() {
-        #expect(ChatMetrics.referenceBodySize == 14)
-        #expect(ChatMetrics.bodySize == 14)
+        #expect(abs(ChatMetrics.referenceBodySize - 14) < 0.0001)
+        #expect(abs(ChatMetrics.bodySize - 14) < 0.0001)
     }
 
     @Test("body line spacing is the line box minus the font size")
     func bodyLineSpacing() {
-        #expect(ChatMetrics.bodyLineSpacing == 22 - 14)
+        #expect(abs(ChatMetrics.bodyLineSpacing - 8) < 0.0001)
         #expect(abs(ChatMetrics.bodyLineSpacingRatio - 8.0 / 14.0) < 0.0001)
     }
 

@@ -45,6 +45,10 @@ nonisolated enum ChatTimestamp {
         let formatter = DateFormatter()
         formatter.locale = locale
         formatter.calendar = calendar
+        // The reply date is rendered in the reader's own zone. Assigning the
+        // calendar also assigns its zone, but `DateFormatter` otherwise falls
+        // back to the process default, so it is set explicitly.
+        formatter.timeZone = calendar.timeZone
         formatter.dateFormat = format
         return formatter
     }

@@ -8,7 +8,7 @@ import Testing
 @Suite("Chat visual metrics")
 struct ChatMetricsTests {
     @Test("the reference body size matches the measured text")
-    func referenceBodySize() {
+    func referenceBodySizeMatchesMeasurement() {
         #expect(ChatMetrics.referenceBodySize == 14)
         #expect(ChatMetrics.bodySize == 14)
     }

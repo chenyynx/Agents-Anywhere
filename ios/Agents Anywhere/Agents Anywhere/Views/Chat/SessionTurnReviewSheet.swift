@@ -42,8 +42,8 @@ struct SessionTurnReviewFooter: View, Equatable {
                         AppSymbol("doc.text", size: 14)
                         Text(String(localized: "\(review.files.count) 个文件"))
                         Text("·")
-                        Text("+\(review.additions)").foregroundStyle(.green)
-                        Text("−\(review.deletions)").foregroundStyle(.red)
+                        Text("+\(review.additions)").foregroundStyle(ChatPalette.diffAdd.color)
+                        Text("−\(review.deletions)").foregroundStyle(ChatPalette.diffRemove.color)
                         AppSymbol("chevron.right", size: 10)
                     }
                     .font(.footnote).monospacedDigit().lineLimit(1)

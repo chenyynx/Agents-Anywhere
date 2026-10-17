@@ -8,7 +8,12 @@ struct ChatMarkdownTable: View {
     var body: some View {
         let columnCount = max(1, rows.map(\.count).max() ?? 0)
         ScrollView(.horizontal) {
-            TableGridLayout(columns: columnCount, minWidth: 76, maxWidth: 260) {
+            // Reference tables size each column to its content and scroll
+            // sideways; the cap only exists so one runaway cell cannot make
+            // the row unreachable, not to force uniform widths.
+            TableGridLayout(columns: columnCount,
+                            minWidth: ChatMetrics.tableCellPadHorizontal * 2,
+                            maxWidth: ChatMetrics.tableContentWidthCap) {
                 ForEach(rows.indices, id: \.self) { row in
                     ForEach(0..<columnCount, id: \.self) { column in
                         cell(rows[row].indices.contains(column) ? rows[row][column] : AttributedString(),
@@ -18,9 +23,12 @@ struct ChatMarkdownTable: View {
             }
             // The frame hugs the grid, so a narrow table has no empty panel
             // beside it and a wide one scrolls with its border.
-            .background(Color(uiColor: .secondarySystemBackground))
-            .clipShape(.rect(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(.primary.opacity(0.12), lineWidth: 0.5).allowsHitTesting(false))
+            .clipShape(.rect(cornerRadius: ChatMetrics.tableRadius))
+            .overlay(
+                RoundedRectangle(cornerRadius: ChatMetrics.tableRadius)
+                    .stroke(ChatPalette.hairline.color, lineWidth: ChatMetrics.codeBorder)
+                    .allowsHitTesting(false)
+            )
         }
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
         .fixedSize(horizontal: false, vertical: true)
@@ -30,19 +38,25 @@ struct ChatMarkdownTable: View {
         InlineText(String(content.hashValue), parser: ParsedMarkdownText(content: content))
             .textual.textSelection(.enabled)
             .modifier(StreamingGlyphReveal())
+            .font(.system(size: ChatMetrics.tableCellSize))
             .fontWeight(row == 0 ? .semibold : .regular)
             .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 10).padding(.vertical, 6)
+            .padding(.horizontal, ChatMetrics.tableCellPadHorizontal)
+            .padding(.vertical, ChatMetrics.tableCellPadVertical)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: Alignment(horizontal: alignment(column), vertical: .top))
-            .background(row == 0 ? Color.primary.opacity(0.04) : .clear)
+            .background(row == 0 ? ChatPalette.codeFill.color : .clear)
             .overlay(alignment: .trailing) {
                 if column < columnCount - 1 {
-                    Rectangle().fill(.primary.opacity(0.12)).frame(width: 0.5).allowsHitTesting(false)
+                    Rectangle().fill(ChatPalette.hairline.color)
+                        .frame(width: ChatMetrics.codeBorder)
+                        .allowsHitTesting(false)
                 }
             }
             .overlay(alignment: .bottom) {
                 if row < rows.count - 1 {
-                    Rectangle().fill(.primary.opacity(0.12)).frame(height: 0.5).allowsHitTesting(false)
+                    Rectangle().fill(ChatPalette.hairline.color)
+                        .frame(height: ChatMetrics.codeBorder)
+                        .allowsHitTesting(false)
                 }
             }
     }

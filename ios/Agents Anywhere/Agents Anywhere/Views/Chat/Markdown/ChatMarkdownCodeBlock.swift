@@ -14,7 +14,10 @@ struct ChatMarkdownCodeBlock<Code: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
-                Text(verbatim: language ?? "text").font(.caption.weight(.medium)).lineLimit(1)
+                Text(verbatim: language ?? "text")
+                    .font(.system(size: ChatMetrics.codeLabelSize, weight: .medium))
+                    .foregroundStyle(ChatPalette.codeLabel.color)
+                    .lineLimit(1)
                 Spacer(minLength: 8)
                 Button {
                     UIPasteboard.general.string = code
@@ -35,21 +38,28 @@ struct ChatMarkdownCodeBlock<Code: View>: View {
                     do { try await Task.sleep(for: .seconds(2)); copied = false } catch {}
                 }
             }
-            .foregroundStyle(.secondary).padding(.horizontal, 14)
-            .background(.primary.opacity(0.04))
-            Divider().opacity(0.5)
+            .padding(.horizontal, ChatMetrics.codePadHorizontal)
+            .frame(height: ChatMetrics.codeHeaderHeight)
+            .background(ChatPalette.codeFill.color)
+            Rectangle().fill(ChatPalette.hairline.color).frame(height: ChatMetrics.codeBorder)
             ScrollView(.horizontal) {
                 highlightedCode()
                     .textual.textSelectionScope()
                     .fixedSize(horizontal: true, vertical: false)
-                    .padding(12)
+                    .padding(.horizontal, ChatMetrics.codePadHorizontal)
+                    .padding(.top, ChatMetrics.codePadTop)
+                    .padding(.bottom, ChatMetrics.codePadBottom)
             }
             .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
             .fixedSize(horizontal: false, vertical: true)
         }
-        .background(Color(uiColor: .secondarySystemBackground))
-        .clipShape(.rect(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.primary.opacity(0.07), lineWidth: 0.5).allowsHitTesting(false))
+        .background(ChatPalette.codeFill.color)
+        .clipShape(.rect(cornerRadius: ChatMetrics.codeRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: ChatMetrics.codeRadius)
+                .stroke(ChatPalette.hairline.color, lineWidth: ChatMetrics.codeBorder)
+                .allowsHitTesting(false)
+        )
     }
 
     private func copyLabel(copied: Bool) -> some View {

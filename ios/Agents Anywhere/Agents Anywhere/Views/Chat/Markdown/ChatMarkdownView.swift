@@ -3,8 +3,10 @@ import Textual
 
 extension EnvironmentValues {
     @Entry var chatLayoutTraceOwner = "markdown"
-    /// One Dynamic Type step below body; every block scales from this.
-    @Entry var chatMarkdownFont: Font = .callout
+    /// Running-text size for every block. `ChatMetrics.bodySize` is the
+    /// reference snapshot; Dynamic Type still scales it, because this is a
+    /// `Font` and not a fixed `CGFloat`.
+    @Entry var chatMarkdownFont: Font = .system(size: ChatMetrics.bodySize)
 }
 
 struct ChatMarkdownView: View {
@@ -87,8 +89,18 @@ struct ChatMarkdownView: View {
         try Task.checkCancellation()
         if request.resolvesFileReferences {
             for run in document.runs {
-                if run.link == nil, run.inlinePresentationIntent?.contains(.code) == true,
-                   let reference = SessionFileReference.inlineReference(String(document[run.range].characters)) {
+                guard run.link == nil, run.inlinePresentationIntent?.contains(.code) == true else { continue }
+                let literal = String(document[run.range].characters)
+                // A URL first: the reference underlines it with dots, and the
+                // file-reference matcher would otherwise claim it as a path.
+                if let url = ChatInlineURL.url(for: literal) {
+                    // Only the link is set here. The dotted underline is applied
+                    // in the view layer (`MarkdownBlockView`), where building a
+                    // `Text.LineStyle` — which carries a `Color` — is safe.
+                    document[run.range].link = url
+                    continue
+                }
+                if let reference = SessionFileReference.inlineReference(literal) {
                     document[run.range].link = reference.link
                 }
             }
@@ -121,12 +133,29 @@ private struct MarkdownBlockView: View, Equatable {
             && lhs.revealDeadline == rhs.revealDeadline
     }
 
+    /// Adds the dotted rule under a URL that arrived inside inline code.
+    ///
+    /// The parser only records the link (it runs off the main actor, where
+    /// `Text.LineStyle` — which carries a `Color` — cannot be built). This runs
+    /// on the view side, once per block evaluation.
+    private static func styled(_ content: AttributedString) -> AttributedString {
+        var output = content
+        let rule = Text.LineStyle(pattern: .dot, color: ChatPalette.underlineDot.color)
+        for run in content.runs {
+            guard run.link != nil,
+                  run.inlinePresentationIntent?.contains(.code) == true else { continue }
+            output[run.range].underlineStyle = rule
+        }
+        return output
+    }
+
     var body: some View {
         // Only changed blocks reach Textual's parser. The complete document was
         // parsed above, so cross-block references and nested structures survive.
         MarkdownBlockLayout(dynamicType: dynamicType, displayScale: displayScale, direction: direction) {
-            StructuredText(String(block.digest), parser: ParsedMarkdownText(content: block.content))
+            StructuredText(String(block.digest), parser: ParsedMarkdownText(content: Self.styled(block.content)))
                 .textual.structuredTextStyle(ChatMarkdownStyle(headingLedger: headingLedger))
+                .textual.highlighterTheme(ChatHighlighterTheme.standard)
                 .textual.imageAttachmentLoader(ChatImageLoader())
                 // Controls own their gestures. Only paragraph/heading labels and
                 // the native code/table text areas install selection overlays.
@@ -170,12 +199,19 @@ private struct ChatMarkdownStyle: StructuredText.Style {
         headingStyle = ChatHeadingStyle(ledger: headingLedger)
     }
 
-    var inlineStyle: InlineStyle { defaults.inlineStyle }
+    var inlineStyle: InlineStyle { ChatInlineStyle.standard }
     var blockQuoteStyle: ChatBlockQuoteStyle { ChatBlockQuoteStyle() }
-    // Textual's defaults indent each level by 2em; a phone column needs ~1.4em.
-    var listItemStyle: StructuredText.DefaultListItemStyle { .default(markerSpacing: .fontScaled(0.4)) }
+    // `markerSpacing` is the gap *between* the marker and the item text, not
+    // the text's indent. Measured: item text starts 24.6pt from the column
+    // edge, the bullet is 5pt wide centred 9.6pt in, so its trailing edge is
+    // at 12.1pt and the gap is ~12.5pt.
+    var listItemStyle: StructuredText.DefaultListItemStyle {
+        .default(markerSpacing: .fontScaled(ChatMetrics.listMarkerGapRatio))
+    }
     var unorderedListMarker: StructuredText.SymbolListMarker {
-        .init(symbolName: "circle.fill", scale: 0.33, minWidth: .fontScaled(1))
+        .init(symbolName: "circle.fill",
+              scale: ChatMetrics.bulletSize / ChatMetrics.referenceBodySize,
+              minWidth: .fontScaled(ChatMetrics.bulletCenterX / ChatMetrics.referenceBodySize))
     }
     var orderedListMarker: StructuredText.DecimalListMarker { .init(minWidth: .fontScaled(1)) }
     var tableStyle: ChatTableStyle { ChatTableStyle() }
@@ -183,11 +219,33 @@ private struct ChatMarkdownStyle: StructuredText.Style {
     var thematicBreakStyle: StructuredText.DividerThematicBreakStyle { defaults.thematicBreakStyle }
 }
 
+/// Inline run styling: code, links, emphasis.
+///
+/// Only `code` and `link` differ from Textual's default — emphasis, strong and
+/// strikethrough keep the defaults so the renderer behaves exactly as before.
+///
+/// Every inline-code span gets the dotted rule, not just URLs: a URL inside
+/// code is the only code that becomes a link, and the reference draws that rule
+/// on the code run itself. Applying it to all code keeps the two cases visually
+/// identical to the capture, where only the URL case existed.
+private enum ChatInlineStyle {
+    static var standard: InlineStyle {
+        InlineStyle()
+            .code(
+                .monospaced,
+                .fontScale(ChatMetrics.inlineCodeSize / ChatMetrics.bodySize),
+                .foregroundColor(ChatPalette.textSecondary.color)
+            )
+            .link(.foregroundColor(ChatPalette.link.color))
+            .strong(.fontWeight(.semibold))
+    }
+}
+
 private struct ChatParagraphStyle: StructuredText.ParagraphStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .textual.lineSpacing(.fontScaled(0.23))
-            .textual.blockSpacing(.fontScaled(top: 0.8))
+            .textual.lineSpacing(.fontScaled(ChatMetrics.bodyLineSpacingRatio))
+            .textual.blockSpacing(.fontScaled(top: ChatMetrics.paragraphSpacingRatio))
             .modifier(StreamingGlyphReveal())
             .textual.textSelectionScope()
     }
@@ -197,11 +255,11 @@ private struct ChatParagraphStyle: StructuredText.ParagraphStyle {
 private struct ChatBlockQuoteStyle: StructuredText.BlockQuoteStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .foregroundStyle(.secondary)
+            .foregroundStyle(ChatPalette.textSecondary.color)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .textual.padding(.leading, .fontScaled(0.75))
+            .textual.padding(.leading, .fontScaled(ChatMetrics.scaled(12)))
             .overlay(alignment: .leading) {
-                Capsule().fill(.primary.opacity(0.18)).frame(width: 3).allowsHitTesting(false)
+                Capsule().fill(ChatPalette.quoteBar.color).frame(width: 2.5).allowsHitTesting(false)
             }
     }
 }
@@ -211,13 +269,23 @@ private struct ChatHeadingStyle: StructuredText.HeadingStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .textual.fontScale(configuration.headingLevel == 1 ? 1.5 : configuration.headingLevel == 2 ? 1.25 : 1.08)
+            .textual.fontScale(Self.scale(for: configuration.headingLevel))
             .fontWeight(.semibold)
-            .textual.blockSpacing(.fontScaled(top: 1.25, bottom: 0.55))
+            .textual.blockSpacing(.fontScaled(top: ChatMetrics.paragraphSpacingRatio,
+                                              bottom: ChatMetrics.scaled(8)))
             // Textual identifies headings by their changing slug. Keep births
             // in the stable outer block so an append doesn't replay the heading.
             .modifier(StreamingGlyphReveal(ledger: ledger))
             .textual.textSelectionScope()
+    }
+
+    /// Reference headings measured 18 / 16 / 14pt against a 14pt body.
+    private static func scale(for level: Int) -> CGFloat {
+        switch level {
+        case 1: return 18 / ChatMetrics.bodySize
+        case 2: return 16 / ChatMetrics.bodySize
+        default: return 1
+        }
     }
 }
 
@@ -226,17 +294,19 @@ private struct ChatCodeBlockStyle: StructuredText.CodeBlockStyle {
         ChatMarkdownCodeBlock(code: configuration.codeBlock.text, language: configuration.languageHint) {
             configuration.label
                 .monospaced()
-                .textual.fontScale(0.86)
-                .textual.lineSpacing(.fontScaled(0.35))
+                .textual.fontScale(ChatMetrics.blockCodeSize / ChatMetrics.bodySize)
+                .textual.lineSpacing(.fontScaled(ChatMetrics.scaled(ChatMetrics.blockCodeLineSpacing)))
                 .modifier(StreamingGlyphReveal())
         }
-        .textual.blockSpacing(.fontScaled(top: 0.9, bottom: 0.5))
+        .textual.blockSpacing(.fontScaled(top: ChatMetrics.codeBlockMarginRatio,
+                                          bottom: ChatMetrics.codeBlockMarginRatio))
     }
 }
 
 private struct ChatTableStyle: StructuredText.TableStyle {
     func makeBody(configuration: Configuration) -> some View {
         ChatMarkdownTable(rows: configuration.rows, columns: configuration.columns)
-            .textual.blockSpacing(.fontScaled(top: 0.9, bottom: 0.5))
+            .textual.blockSpacing(.fontScaled(top: ChatMetrics.codeBlockMarginRatio,
+                                              bottom: ChatMetrics.codeBlockMarginRatio))
     }
 }

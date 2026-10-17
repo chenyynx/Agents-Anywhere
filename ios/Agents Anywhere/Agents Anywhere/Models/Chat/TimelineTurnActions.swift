@@ -10,6 +10,21 @@ struct TimelineTurnAction: Equatable {
             .filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
     var hasReplyText: Bool { replies.contains { $0.text.contains { !$0.isWhitespace } } }
+
+    /// When the turn finished, for the action row's clock. The reference used
+    /// the moment the reply completed; a turn that never reported one falls
+    /// back to the moment it started, and an unparseable wire value renders
+    /// nothing rather than a wrong hour.
+    var replyDate: Date? {
+        let last = replies.last?.value
+        return ChatTimestamp.replyDate(completedAt: last?.completedAt, createdAt: last?.createdAt)
+    }
+
+    /// Empty when the wire carried no usable timestamp, so the row collapses
+    /// to icons instead of showing a placeholder.
+    var timestampText: String {
+        replyDate.map { ChatTimestamp.string($0) } ?? ""
+    }
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.startsMidTurn == rhs.startsMidTurn && lhs.replies.elementsEqual(rhs.replies, by: ===)
             && lhs.changes.elementsEqual(rhs.changes, by: ===)

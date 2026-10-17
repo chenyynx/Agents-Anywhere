@@ -29,7 +29,7 @@ struct SessionTimelineRow: View, Equatable {
                 if row.value.role == .user {
                     UserMessageBubble(text: row.text, attachments: files, onAttachment: onAttachment, loadThumbnail: chat.thumbnail)
                 } else {
-                    VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: ChatMetrics.paragraphSpacing) {
                         markdown
                         if !files.isEmpty {
                             ChatMessageAttachments(files: files, onOpen: onAttachment, loadThumbnail: chat.thumbnail, alignment: .leading)
@@ -81,10 +81,14 @@ struct UserMessageBubble: View {
                     ChatMessageAttachments(files: attachments, onOpen: onAttachment, loadThumbnail: loadThumbnail, isOutgoing: true)
                 }
                 if !text.isEmpty {
-                    ChatSelectableText(text: text).font(.body)
+                    ChatSelectableText(text: text).font(.system(size: ChatMetrics.bodySize))
                         .foregroundStyle(AppTheme.accentTextColor(accent, colorScheme))
-                        .padding(.horizontal, 17).padding(.vertical, 12)
-                        .background(AppTheme.accentBubbleBackground(accent, colorScheme), in: .rect(cornerRadius: 24))
+                        .padding(.horizontal, ChatMetrics.bubblePadHorizontal)
+                        .padding(.vertical, ChatMetrics.bubblePadVertical)
+                        .background(
+                            AppTheme.accentBubbleBackground(accent, colorScheme),
+                            in: .rect(cornerRadius: ChatMetrics.bubbleRadius, style: .continuous)
+                        )
                 }
             }
             .overlay(alignment: .bottomLeading) {

@@ -160,15 +160,17 @@ struct TimelineMarkerRow: View {
     var body: some View {
         HStack(spacing: 8) {
             if let expanded { AppSymbol(expanded ? "chevron.down" : "chevron.right", size: 10).frame(width: 10) }
-            AppSymbol(symbol, size: 15).frame(width: 18)
-            Text(title).font(.system(.subheadline, design: .monospaced)).lineLimit(1).truncationMode(.tail)
+            AppSymbol(symbol, size: 12).frame(width: 14)
+            Text(title)
+                .font(.system(size: ChatMetrics.blockCodeSize, design: .monospaced))
+                .lineLimit(1).truncationMode(.tail)
                 .modifier(StatusShimmer(active: status.isActive && !status.isFailure))
                 .frame(maxWidth: .infinity, alignment: .leading)
             if let accessory { AppSymbol(accessory, size: 14) }
         }
-        .foregroundStyle(status.isFailure ? Color.red : .primary)
+        .foregroundStyle(status.isFailure ? Color.red : ChatPalette.iconSecondary.color)
         // Consecutive tool rows read as one list; the full-width row stays tappable.
-        .frame(minHeight: 32).contentShape(Rectangle())
+        .frame(minHeight: 28).contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityValue(status.label)
     }
@@ -293,7 +295,7 @@ struct TimelineCodePanel: View {
     var isDiff = false
     @State private var copied = false
     @State private var memo = PanelMemo()
-    @ScaledMetric(relativeTo: .caption) private var rowHeight: CGFloat = 19
+    @ScaledMetric(relativeTo: .caption) private var rowHeight: CGFloat = ChatMetrics.blockCodeLineHeight
     /// Diff parsing and line counting repeat only when the code changes, not
     /// when the copy feedback or a neighbouring row invalidates this body.
     private final class PanelMemo {
@@ -316,14 +318,22 @@ struct TimelineCodePanel: View {
         let displayCode = panel.displayCode
         VStack(spacing: 0) {
             HStack {
-                Text(label).font(.system(.caption, design: .monospaced))
+                Text(label)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(ChatPalette.textSecondary.color)
                 Spacer()
                 Button {
                     UIPasteboard.general.string = code; copied = true
-                } label: { AppSymbol(copied ? "checkmark" : "document.on.document").frame(width: 44, height: 44) }
+                } label: {
+                    AppSymbol(copied ? "checkmark" : "document.on.document", size: 14)
+                        .foregroundStyle(ChatPalette.iconSecondary.color)
+                        .frame(width: 44, height: 44)
+                }
                 .buttonStyle(.plain).accessibilityLabel(copied ? String(localized: "已复制") : String(localized: "复制 \(label)"))
                 .task(id: copied) { if copied { try? await Task.sleep(for: .seconds(2)); copied = false } }
-            }.padding(.leading, 12).foregroundStyle(.secondary).background(.quaternary.opacity(0.3))
+            }
+            .padding(.leading, ChatMetrics.tableCellPadHorizontal)
+            .background(ChatPalette.codeFill.color)
             ScrollView([.horizontal, .vertical]) {
                 if isDiff {
                     LazyVStack(alignment: .leading, spacing: 0) {
@@ -350,6 +360,11 @@ struct TimelineCodePanel: View {
         }.background(Color(uiColor: .secondarySystemBackground))
     }
     private func diffColor(_ kind: TimelineDiff.Line.Kind) -> Color {
-        switch kind { case .add: .green; case .delete: .red; case .hunk, .file, .annotation: .secondary; case .context: .primary }
+        switch kind {
+        case .add: ChatPalette.diffAdd.color
+        case .delete: ChatPalette.diffRemove.color
+        case .hunk, .file, .annotation: ChatPalette.textSecondary.color
+        case .context: ChatPalette.text.color
+        }
     }
 }

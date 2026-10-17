@@ -10,7 +10,7 @@ import CoreGraphics
 /// at the base font size. When Dynamic Type grows the font, those measurements
 /// grow with it — the reference is a snapshot of one size, not a demand to
 /// freeze the layout at 14pt.
-enum ChatMetrics {
+nonisolated enum ChatMetrics {
     /// The reference was captured at this body size. Ratios are derived from
     /// it, so a future change here rescales every spacing constant at once.
     static let referenceBodySize: CGFloat = 14

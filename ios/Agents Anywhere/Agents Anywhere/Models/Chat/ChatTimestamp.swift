@@ -5,7 +5,7 @@ import Foundation
 /// The reference capture showed only the same-day form (`22:10`). The weekly
 /// and older forms follow the source implementation the reference was derived
 /// from; they are marked as derived because no capture exercised them.
-enum ChatTimestamp {
+nonisolated enum ChatTimestamp {
     /// - Today: `22:13`
     /// - Same week: `星期一 22:13`
     /// - Older: `3月5日 22:13`

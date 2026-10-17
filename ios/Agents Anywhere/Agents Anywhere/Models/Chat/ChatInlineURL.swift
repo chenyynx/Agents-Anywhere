@@ -8,7 +8,7 @@ import Foundation
 ///
 /// Shape follows the reference implementation: an `http(s)` scheme, or a bare
 /// host ending in a common top-level domain, with an optional port and path.
-enum ChatInlineURL {
+nonisolated enum ChatInlineURL {
     private static let pattern = #"^(?:https?://\S+|(?:[A-Za-z0-9-]+\.)+(?:com|cn|net|org|io|dev|ai|app|co|me|xyz|info|edu|gov|tv|cc)(?::\d+)?(?:/\S*)?)$"#
 
     /// NSRegularExpression is not `Sendable`; the pattern is constant, so the

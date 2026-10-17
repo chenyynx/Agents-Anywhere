@@ -11,7 +11,7 @@ import Foundation
 /// fills, table zebra stripes) are not invented here. The user bubble's fill
 /// and label are **not** here either — those follow `AppAccent` so the app's
 /// theme setting still drives them.
-enum ChatPalette {
+nonisolated enum ChatPalette {
     /// 0xRRGGBB per scheme.
     struct Token: Equatable, Sendable {
         let light: UInt32

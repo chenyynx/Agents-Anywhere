@@ -38,12 +38,12 @@ struct ChatTimestampTests {
         #expect(rendered == "10月1日 07:00")
     }
 
-    @Test("crossing a year boundary falls back to the date form")
-    func acrossYear() {
-        let now = date(2027, 1, 2, 10, 0)
-        let reply = date(2026, 12, 31, 23, 59)
+    @Test("a reply inside the last week still uses the weekday form, even across a year")
+    func acrossYearWithinAWeek() {
+        let now = date(2027, 1, 2, 10, 0)        // Saturday
+        let reply = date(2026, 12, 31, 23, 59)   // Thursday, two days earlier
         let rendered = ChatTimestamp.string(reply, now: now, calendar: calendar, locale: locale)
-        #expect(rendered == "12月31日 23:59")
+        #expect(rendered == "星期四 23:59")
     }
 
     @Test("completedAt wins over createdAt")

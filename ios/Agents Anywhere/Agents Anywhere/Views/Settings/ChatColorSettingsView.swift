@@ -28,14 +28,14 @@ struct ChatColorSettingsView: View {
             Section(String(localized: "正文辅助文字")) {
                 ColorPicker(
                     String(localized: "颜色"),
-                    selection: picker(\.bodyTemplate, raw: $bodyTemplateRaw, fallback: ChatColorSettings.defaultBodyTemplate)
+                    selection: picker(raw: $bodyTemplateRaw, fallback: ChatColorSettings.defaultBodyTemplate)
                 )
             }
 
             Section(String(localized: "链接")) {
                 ColorPicker(
                     String(localized: "颜色"),
-                    selection: picker(\.link, raw: $linkRaw, fallback: ChatColorSettings.defaultLink)
+                    selection: picker(raw: $linkRaw, fallback: ChatColorSettings.defaultLink)
                 )
             }
 
@@ -55,13 +55,12 @@ struct ChatColorSettingsView: View {
     /// slot, and the other slot keeps the value it had. Writing both to the
     /// same colour would silently flatten a deliberately paired light/dark
     /// setting the moment the user touches the well in one mode.
-    private func picker(
-        _ keyPath: KeyPath<ChatColorSettings.Pair, String>,
-        raw: Binding<String>,
-        fallback: ChatColorSettings.Pair
-    ) -> Binding<Color> {
+    private func picker(raw: Binding<String>, fallback: ChatColorSettings.Pair) -> Binding<Color> {
         Binding(
-            get: { Color(orbHex: ChatColorSettings.decode(raw.wrappedValue, fallback: fallback)[keyPath: keyPath]) },
+            get: {
+                let pair = ChatColorSettings.decode(raw.wrappedValue, fallback: fallback)
+                return Color(orbHex: colorScheme == .dark ? pair.dark : pair.light)
+            },
             set: { color in
                 var pair = ChatColorSettings.decode(raw.wrappedValue, fallback: fallback)
                 let hex = color.orbHex

@@ -18,9 +18,19 @@ nonisolated enum ChatMetrics {
     // MARK: Body text
 
     /// Running text. `[pp 2026-10-17]` the measured 14pt read a step large on
-    /// device, so the body sits one point under the reference. Everything that
-    /// derives from `referenceBodySize` keeps its original proportion.
-    static let bodySize: CGFloat = 13
+    /// device, so the body sits under the reference; `[pp 2026-10-18]` the
+    /// reader can tune it from Settings.
+    ///
+    /// Read live rather than cached: the settings sheet changes the value
+    /// while the chat is open, and a `static let` would freeze the old size
+    /// until relaunch. Ratios keep deriving from `referenceBodySize`, so
+    /// tuning the size scales the type without rescaling every spacing
+    /// constant out from under the layout.
+    static var bodySize: CGFloat {
+        ChatColorSettings.resolvedBodySize(
+            UserDefaults.standard.object(forKey: ChatColorSettings.bodySizeKey) as? Double
+        )
+    }
     /// Line box height. `[measured]` 66px baseline pitch at the 14pt reference;
     /// kept in step with `bodySize` so the 8pt of leading scales with the text.
     static var bodyLineHeight: CGFloat { bodySize + bodyLineSpacing }
@@ -74,7 +84,7 @@ nonisolated enum ChatMetrics {
 
     /// `[derived]` no table appeared in the reference captures; these follow
     /// the same greyscale and border rules as the code block.
-    static let tableRadius: CGFloat = 12
+    static let tableRadius: CGFloat = 12  // `[pp 2026-10-18]` card corner: smaller than the code card so a table reads as lighter than a code block
     static let tableCellPadHorizontal: CGFloat = 12
     /// moonveil's table cell vertical padding; one point roomier than the
     /// first pass so wrapped cells breathe.

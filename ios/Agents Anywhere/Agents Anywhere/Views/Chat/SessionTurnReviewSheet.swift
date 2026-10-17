@@ -52,7 +52,10 @@ struct SessionTurnReviewFooter: View, Equatable {
                         Text("−\(review.deletions)").foregroundStyle(.red)
                         AppSymbol("chevron.right", size: 14)
                     }
-                    .font(.system(size: ChatMetrics.timestampSize + 2)).monospacedDigit().lineLimit(1)
+                    // `[pp 2026-10-18]` the copy keeps its original size; only
+                    // the glyphs grew. The counts stay system green/red because
+                    // the sampled tokens read lighter at this size.
+                    .font(.footnote).monospacedDigit().lineLimit(1)
                     .frame(minHeight: 44).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain).foregroundStyle(ChatPalette.iconSecondary.color)

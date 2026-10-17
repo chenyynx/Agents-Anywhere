@@ -9,6 +9,11 @@ struct ChatColorSettingsView: View {
     private var bodyTemplateRaw = ChatColorSettings.encode(ChatColorSettings.defaultBodyTemplate)
     @AppStorage(ChatColorSettings.linkKey)
     private var linkRaw = ChatColorSettings.encode(ChatColorSettings.defaultLink)
+    /// `@AppStorage` writes the raw value; the resolved (clamped) size is what
+    /// the chat reads. Keeping the binding optional-free means the slider has
+    /// a stable value before the user ever touches it.
+    @AppStorage(ChatColorSettings.bodySizeKey)
+    private var bodySize = Double(ChatColorSettings.defaultBodySize)
     @Environment(\.colorScheme) private var colorScheme
 
     private var bodyTemplate: ChatColorSettings.Pair {
@@ -23,6 +28,32 @@ struct ChatColorSettingsView: View {
             Section(String(localized: "预览")) {
                 ChatColorPreview(bodyTemplate: bodyTemplate, link: link)
                     .padding(.vertical, 6)
+            }
+
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text(String(localized: "正文字号"))
+                        Spacer()
+                        Text(verbatim: String(format: "%.0f pt", bodySize))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    Slider(
+                        value: $bodySize,
+                        in: ChatColorSettings.bodySizeRange,
+                        step: 0.5
+                    ) {
+                        Text(String(localized: "正文字号"))
+                    } minimumValueLabel: {
+                        Text(verbatim: "A").font(.caption2)
+                    } maximumValueLabel: {
+                        Text(verbatim: "A").font(.title3)
+                    }
+                }
+                .padding(.vertical, 4)
+            } footer: {
+                Text(String(localized: "只影响助手回复的正文，不改气泡和界面其它文字。"))
             }
 
             Section(String(localized: "正文辅助文字")) {

@@ -21,10 +21,15 @@ struct ChatMarkdownTable: View {
                     }
                 }
             }
-            // Borderless Claude style (moonveil's `TableScrollView`): no card
-            // outline and no corner radius — just one hairline colour for the
-            // header underline and every body row seam.
-            .clipShape(.rect(cornerRadius: 0))
+            // One hairline colour for the header underline, every body row seam
+            // *and* the card outline, so the border reads as the same rule the
+            // table is drawn with rather than a second, heavier frame.
+            .clipShape(.rect(cornerRadius: ChatMetrics.tableRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: ChatMetrics.tableRadius, style: .continuous)
+                    .stroke(ChatPalette.tableLine.color, lineWidth: 1 / UIScreen.main.scale)
+                    .allowsHitTesting(false)
+            )
         }
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
         .fixedSize(horizontal: false, vertical: true)

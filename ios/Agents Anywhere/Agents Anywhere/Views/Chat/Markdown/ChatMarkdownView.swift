@@ -3,10 +3,12 @@ import Textual
 
 extension EnvironmentValues {
     @Entry var chatLayoutTraceOwner = "markdown"
-    /// Running-text size for every block. `ChatMetrics.bodySize` is the
-    /// reference snapshot; Dynamic Type still scales it, because this is a
-    /// `Font` and not a fixed `CGFloat`.
-    @Entry var chatMarkdownFont: Font = .system(size: ChatMetrics.bodySize)
+    /// Running-text size for every block. When nil the view resolves the
+    /// user's preferred size from `ChatMetrics.bodySize`, so a size change in
+    /// Settings reaches the chat without a relaunch. Callers that need a
+    /// fixed size (reasoning bodies at `.caption2`) still inject a font and
+    /// opt out.
+    @Entry var chatMarkdownFont: Font?
 }
 
 struct ChatMarkdownView: View {
@@ -126,7 +128,12 @@ private struct MarkdownBlockView: View, Equatable {
     @Environment(\.displayScale) private var displayScale
     @Environment(\.layoutDirection) private var direction
     @Environment(\.chatLayoutTraceOwner) private var traceOwner
-    @Environment(\.chatMarkdownFont) private var font
+    @Environment(\.chatMarkdownFont) private var injectedFont
+
+    /// An injected font pins the size (reasoning bodies). Otherwise resolve the
+    /// user's setting here, inside the view's evaluation, so a change in
+    /// Settings re-renders at the new size instead of waiting for a relaunch.
+    private var font: Font { injectedFont ?? .system(size: ChatMetrics.bodySize) }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.block == rhs.block && lhs.isStreaming == rhs.isStreaming && lhs.isTail == rhs.isTail
@@ -303,11 +310,14 @@ private struct ChatHeadingStyle: StructuredText.HeadingStyle {
             .textual.textSelectionScope()
     }
 
-    /// Reference headings measured 18 / 16 / 14pt against a 14pt body.
+    /// Reference headings measured 18 / 16 / 14pt against a 14pt body. The
+    /// ratio is against the *reference* size, not the current one: a reader who
+    /// raises the body size expects the heading to grow with it, not to shrink
+    /// its ratio back toward the body.
     private static func scale(for level: Int) -> CGFloat {
         switch level {
-        case 1: return 18 / ChatMetrics.bodySize
-        case 2: return 16 / ChatMetrics.bodySize
+        case 1: return 18 / ChatMetrics.referenceBodySize
+        case 2: return 16 / ChatMetrics.referenceBodySize
         default: return 1
         }
     }

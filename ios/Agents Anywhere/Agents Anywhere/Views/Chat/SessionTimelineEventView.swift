@@ -282,7 +282,7 @@ private struct TimelineFileChangeView: View {
                     Text(change.displayPath).font(.system(.caption, design: .monospaced)).lineLimit(1).truncationMode(.middle)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }.buttonStyle(.plain).disabled(change.path == nil).accessibilityHint(String(localized: "在 Web 预览中打开文件"))
-                AppSymbol("arrow.up.right", size: 12).foregroundStyle(.secondary)
+                AppSymbol("square.and.pencil", size: 12).foregroundStyle(.secondary)
             }.padding(.horizontal, 12).frame(minHeight: 44).background(.quaternary.opacity(0.4))
             if let code = change.diff ?? change.code { TimelineCodePanel(label: change.diff == nil ? "code" : "diff", code: code, isDiff: change.diff != nil) }
         }.background(Color(uiColor: .secondarySystemBackground))
@@ -317,23 +317,31 @@ struct TimelineCodePanel: View {
         let panel = prepared()
         let displayCode = panel.displayCode
         VStack(spacing: 0) {
-            HStack {
+            HStack(spacing: 0) {
                 Text(label)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(ChatPalette.textSecondary.color)
-                Spacer()
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundStyle(ChatPalette.codeHeaderLabel.color)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
                 Button {
                     UIPasteboard.general.string = code; copied = true
+                    // Copy confirms by touch as well as by glyph, matching the
+                    // card family this chrome comes from.
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
                 } label: {
-                    AppSymbol(copied ? "checkmark" : "document.on.document", size: 14)
-                        .foregroundStyle(ChatPalette.iconSecondary.color)
+                    AppSymbol(copied ? "checkmark" : "document.on.document", size: 15)
+                        .foregroundStyle(copied ? Color.green : ChatPalette.codeHeaderIcon.color)
                         .frame(width: 44, height: 44)
                 }
                 .buttonStyle(.plain).accessibilityLabel(copied ? String(localized: "已复制") : String(localized: "复制 \(label)"))
                 .task(id: copied) { if copied { try? await Task.sleep(for: .seconds(2)); copied = false } }
             }
-            .padding(.leading, ChatMetrics.tableCellPadHorizontal)
-            .background(ChatPalette.codeFill.color)
+            .padding(.horizontal, 14)
+            .frame(height: 36)
+            .background(ChatPalette.codeCardFill.color)
+            Rectangle()
+                .fill(ChatPalette.codeHeaderDivider.color)
+                .frame(height: 1 / UIScreen.main.scale)
             ScrollView([.horizontal, .vertical]) {
                 if isDiff {
                     LazyVStack(alignment: .leading, spacing: 0) {
@@ -352,12 +360,28 @@ struct TimelineCodePanel: View {
                     }.padding(.vertical, 8).fixedSize(horizontal: true, vertical: false)
                 } else {
                     ChatSelectableText(text: displayCode).font(.system(.caption, design: .monospaced))
-                        .fixedSize(horizontal: true, vertical: false).padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+            .scrollIndicators(.hidden)
             .frame(height: min(320, max(76, CGFloat(panel.lineCount) * rowHeight + 24)))
-            if displayCode.count < code.count { Text(String(localized: "预览已截断，复制可获取完整内容")).font(.caption).foregroundStyle(.secondary).padding(8) }
-        }.background(Color(uiColor: .secondarySystemBackground))
+            if displayCode.count < code.count {
+                Text(String(localized: "预览已截断，复制可获取完整内容"))
+                    .font(.caption)
+                    .foregroundStyle(ChatPalette.codeHeaderLabel.color)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 12)
+            }
+        }
+        .background(ChatPalette.codeCardFill.color)
+        .clipShape(.rect(cornerRadius: ChatMetrics.codeRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: ChatMetrics.codeRadius, style: .continuous)
+                .stroke(ChatPalette.codeCardBorder.color, lineWidth: 1 / UIScreen.main.scale)
+                .allowsHitTesting(false)
+        )
     }
     private func diffColor(_ kind: TimelineDiff.Line.Kind) -> Color {
         switch kind {

@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// User-tunable chat colours, stored the same way the Thinking orb stores its
@@ -10,6 +11,22 @@ import Foundation
 enum ChatColorSettings {
     static let bodyTemplateKey = "agentsAnywhere.chat.bodyTemplateHex"
     static let linkKey = "agentsAnywhere.chat.linkHex"
+    static let bodySizeKey = "agentsAnywhere.chat.bodySize"
+
+    // MARK: Body size
+
+    /// Clamped range for the body-size slider. Below 10 the CJK glyphs stop
+    /// resolving cleanly; above 18 the line box outgrows the bubble.
+    static let bodySizeRange: ClosedRange<CGFloat> = 10...18
+    static let defaultBodySize: CGFloat = 13
+
+    /// Reads the stored size, clamped. A value written by a future build (or a
+    /// cleared defaults domain) falls back to the default rather than leaving
+    /// the chat at an unusable size.
+    static func resolvedBodySize(_ raw: Double?) -> CGFloat {
+        guard let raw, raw.isFinite else { return defaultBodySize }
+        return min(max(CGFloat(raw), bodySizeRange.lowerBound), bodySizeRange.upperBound)
+    }
 
     /// moonveil's body template: the inline-code orange it settled on after
     /// the 2026-09-17 review. Light stays this value; dark keeps the same hue

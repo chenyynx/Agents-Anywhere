@@ -7,35 +7,39 @@ import Textual
 /// hyphenated raw values — `class-name`, `block-comment` — not the Swift
 /// property names). Textual's tokenizer is untouched; only colours change.
 ///
-/// `HighlighterTheme` takes `DynamicColor` for its two base slots but accepts a
-/// plain `Color` for each token property, which is what the palette tokens
-/// bridge to.
+/// Every entry is written as an explicit `AnyTextProperty` because the
+/// dictionary's value type cannot be inferred through the shorthand members.
 enum ChatHighlighterTheme {
+    private static func color(_ token: ChatPalette.Token, weight: Font.Weight? = nil) -> AnyTextProperty {
+        guard let weight else { return AnyTextProperty(.foregroundColor(token.color)) }
+        return AnyTextProperty(.foregroundColor(token.color), .fontWeight(weight))
+    }
+
     static let standard = StructuredText.HighlighterTheme(
         foregroundColor: ChatPalette.text.dynamicColor,
         backgroundColor: ChatPalette.codeFill.dynamicColor,
         tokenProperties: [
             // Measured in the reference capture (TOML: key / string / comment / punct).
-            .property: .foregroundColor(ChatPalette.synKey.color),
-            .variable: .foregroundColor(ChatPalette.synKey.color),
-            .string: .foregroundColor(ChatPalette.synString.color),
-            .char: .foregroundColor(ChatPalette.synString.color),
-            .regex: .foregroundColor(ChatPalette.synString.color),
-            .comment: .foregroundColor(ChatPalette.synComment.color),
-            .blockComment: .foregroundColor(ChatPalette.synComment.color),
-            .docComment: .foregroundColor(ChatPalette.synComment.color),
-            .punctuation: .foregroundColor(ChatPalette.synPunct.color),
-            .symbol: .foregroundColor(ChatPalette.synPunct.color),
+            .property: color(ChatPalette.synKey),
+            .variable: color(ChatPalette.synKey),
+            .string: color(ChatPalette.synString),
+            .char: color(ChatPalette.synString),
+            .regex: color(ChatPalette.synString),
+            .comment: color(ChatPalette.synComment),
+            .blockComment: color(ChatPalette.synComment),
+            .docComment: color(ChatPalette.synComment),
+            .punctuation: color(ChatPalette.synPunct),
+            .symbol: color(ChatPalette.synPunct),
 
             // Derived: the reference run contained no keyword, number, type or
             // call, so these follow the same family as the measured colours.
-            .keyword: AnyTextProperty(.foregroundColor(ChatPalette.synKeyword.color), .fontWeight(.semibold)),
-            .literal: AnyTextProperty(.foregroundColor(ChatPalette.synKeyword.color), .fontWeight(.semibold)),
-            .boolean: AnyTextProperty(.foregroundColor(ChatPalette.synKeyword.color), .fontWeight(.semibold)),
-            .number: .foregroundColor(ChatPalette.synNumber.color),
-            .className: .foregroundColor(ChatPalette.synType.color),
-            .function: .foregroundColor(ChatPalette.synFunction.color),
-            .functionName: .foregroundColor(ChatPalette.synFunction.color),
+            .keyword: color(ChatPalette.synKeyword, weight: .semibold),
+            .literal: color(ChatPalette.synKeyword, weight: .semibold),
+            .boolean: color(ChatPalette.synKeyword, weight: .semibold),
+            .number: color(ChatPalette.synNumber),
+            .className: color(ChatPalette.synType),
+            .function: color(ChatPalette.synFunction),
+            .functionName: color(ChatPalette.synFunction),
         ]
     )
 }

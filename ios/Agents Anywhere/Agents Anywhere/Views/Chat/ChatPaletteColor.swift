@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import Textual
 
 /// Bridges `ChatPalette`'s hex tokens to SwiftUI colours.
 ///

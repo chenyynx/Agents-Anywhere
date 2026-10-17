@@ -12,9 +12,13 @@ import UIKit
 ///
 /// Like, dislike and branch are **placeholders**: no backend exists for them
 /// yet. They render and announce themselves but do nothing.
-struct SessionTurnActions: View {
+struct SessionTurnActions: View, Equatable {
     let action: TimelineTurnAction
     @State private var copied = false
+
+    /// The timeline compares rows to skip body evaluation; the copy flash is
+    /// local state and must not force a recompare.
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.action == rhs.action }
 
     private var text: String { action.copyText }
 

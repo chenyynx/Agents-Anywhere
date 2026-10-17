@@ -41,7 +41,7 @@ struct ChatColorSettingsView: View {
                     }
                     Slider(
                         value: $bodySize,
-                        in: ChatColorSettings.bodySizeRange,
+                        in: Double(ChatColorSettings.bodySizeRange.lowerBound)...Double(ChatColorSettings.bodySizeRange.upperBound),
                         step: 0.5
                     ) {
                         Text(String(localized: "正文字号"))

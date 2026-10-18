@@ -42,6 +42,18 @@ struct ChatMetricsTests {
         // is a share of the code size so the ratio is what stays fixed.
         #expect(abs(ChatMetrics.blockCodeLineSpacing / ChatMetrics.blockCodeSize - 2.03 / 12.3) < 0.0001)
     }
+    @Test("list items sit wider than the lines inside them")
+    func listItemSpacingExceedsLeading() {
+        // A wrapped continuation line only reads as part of its own item while
+        // the next item sits wider than the line's own leading. Left at
+        // Textual's 0.25em default the items came out 2.3x tighter than the
+        // leading, so a wrap looked like a new item.
+        #expect(ChatMetrics.listItemSpacing > ChatMetrics.bodyLineSpacing)
+        #expect(abs(ChatMetrics.listItemSpacing - ChatMetrics.bodyLineSpacing
+                    - ChatMetrics.listItemExtraSpacing) < 0.0001)
+        #expect(ChatMetrics.listItemSpacingRatio > ChatMetrics.bodyLineSpacingRatio)
+    }
+
     @Test("the table cap leaves room for a padded cell")
     func tableCap() {
         #expect(ChatMetrics.tableContentWidthCap > ChatMetrics.tableCellPadHorizontal * 2)

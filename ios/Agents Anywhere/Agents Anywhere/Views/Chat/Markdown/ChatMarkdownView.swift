@@ -162,6 +162,11 @@ private struct MarkdownBlockView: View, Equatable {
         MarkdownBlockLayout(dynamicType: dynamicType, displayScale: displayScale, direction: direction) {
             StructuredText(String(block.digest), parser: ParsedMarkdownText(content: Self.styled(block.content)))
                 .textual.structuredTextStyle(ChatMarkdownStyle(headingLedger: headingLedger))
+                // Textual's own default is 0.25em, which sits *inside* the
+                // line's leading and makes a wrapped line look like a new
+                // item. The reference sets the item pitch 2pt wider than the
+                // line box; see `ChatMetrics.listItemSpacing`.
+                .textual.listItemSpacing(.fontScaled(top: ChatMetrics.listItemSpacingRatio))
                 .textual.highlighterTheme(ChatHighlighterTheme.standard)
                 .textual.imageAttachmentLoader(ChatImageLoader())
                 // Controls own their gestures. Only paragraph/heading labels and

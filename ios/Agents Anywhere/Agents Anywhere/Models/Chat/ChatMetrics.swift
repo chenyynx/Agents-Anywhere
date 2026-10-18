@@ -50,8 +50,19 @@ nonisolated enum ChatMetrics {
     static let codeBlockMargin: CGFloat = 15.5
     /// `[measured]` extra space after a list's last item.
     static let listBottomSpacing: CGFloat = 20
-    /// `[measured]` 24pt between items minus the 22pt line box.
-    static let listItemSpacing: CGFloat = 2
+    /// `[measured]` the reference sets the item pitch 2pt wider than the line
+    /// box (24pt vs 22pt). That 2pt is the whole point: a wrapped continuation
+    /// line stays attached to its own item only while the next item sits
+    /// *wider* than the line's own leading.
+    static let listItemExtraSpacing: CGFloat = 2
+    /// Space between list items.
+    ///
+    /// Textual adds its list spacing *outside* the line box, so the value it
+    /// needs is the line box's own leading plus the reference's 2pt — not the
+    /// bare 2pt, which would leave the items tighter than the lines inside
+    /// them. Left at Textual's own default (0.25em) the items came out 2.3×
+    /// tighter than the leading, so a wrapped line read as a new item.
+    static var listItemSpacing: CGFloat { bodyLineSpacing + listItemExtraSpacing }
     /// `[measured]` text offset inside a list item.
     static let listTextIndent: CGFloat = 24.4
     /// `[measured]` bullet diameter and centre offset from the item edge.
@@ -141,6 +152,7 @@ nonisolated enum ChatMetrics {
     static var paragraphSpacingRatio: CGFloat { scaled(paragraphSpacing) }
     static var codeBlockMarginRatio: CGFloat { scaled(codeBlockMargin) }
     static var listBottomRatio: CGFloat { scaled(listBottomSpacing) }
+    static var listItemSpacingRatio: CGFloat { scaled(listItemSpacing) }
     static var codeBlockLineSpacingRatio: CGFloat { scaled(blockCodeLineSpacing) }
     static var codePadLeadingRatio: CGFloat { scaled(12) }
 }

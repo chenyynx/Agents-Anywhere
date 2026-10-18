@@ -59,7 +59,7 @@ struct AccountSettingsSheet: View {
                             value: String(localized: AppAccent.resolve(accentValue).title))
                     }
                     NavigationLink { ThinkingOrbSettingsView() } label: {
-                        SettingsRow(title: String(localized: "Thinking orb"), symbol: "sparkles",
+                        SettingsRow(title: String(localized: "Thinking orb"), symbol: "circle.dashed",
                             value: String(localized: OrbPalette.resolve(id: orbPaletteValue,
                                 customHex: OrbSettingsKeys.decodeCustomHex(orbCustomHexValue)).name))
                     }

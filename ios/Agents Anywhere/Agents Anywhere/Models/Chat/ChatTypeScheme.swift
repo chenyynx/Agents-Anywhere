@@ -56,10 +56,13 @@ enum ChatTypeScheme: String, CaseIterable, Identifiable, Sendable {
 
     var id: String { rawValue }
 
+    /// Named for the shape, not for where it came from: a reader picking a
+    /// preset is choosing how tight the page looks, and "AA" or "Moonveil"
+    /// only tells them which codebase it was measured in.
     var title: String {
         switch self {
-        case .compact: return "AA 紧凑"
-        case .moonveil: return "Moonveil 标准"
+        case .compact: return "紧凑"
+        case .moonveil: return "标准"
         case .custom: return "自定义"
         }
     }

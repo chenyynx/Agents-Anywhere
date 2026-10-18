@@ -15,6 +15,7 @@ enum AppSymbolAssets {
         "arrow.trianglehead.clockwise": "aa-RefreshCw",
         "arrow.up": "aa-ArrowUp",
         "arrow.up.circle": "aa-ArrowUp",
+        "arrow.up.left.and.arrow.down.right": "aa-Maximize2",
         "arrow.up.right": "aa-ArrowUpRight",
         "arrow.up.right.square": "aa-ExternalLink",
         "arrow.uturn.backward": "aa-Undo2",

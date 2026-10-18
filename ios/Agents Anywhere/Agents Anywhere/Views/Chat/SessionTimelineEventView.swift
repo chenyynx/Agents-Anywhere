@@ -295,7 +295,7 @@ struct TimelineCodePanel: View {
     var isDiff = false
     @State private var copied = false
     @State private var memo = PanelMemo()
-    @ScaledMetric(relativeTo: .caption) private var rowHeight: CGFloat = ChatMetrics.blockCodeLineHeight
+    @ScaledMetric(relativeTo: .caption) private var rowHeight: CGFloat = 19
     /// Diff parsing and line counting repeat only when the code changes, not
     /// when the copy feedback or a neighbouring row invalidates this body.
     private final class PanelMemo {
@@ -317,31 +317,15 @@ struct TimelineCodePanel: View {
         let panel = prepared()
         let displayCode = panel.displayCode
         VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                Text(label)
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundStyle(ChatPalette.codeHeaderLabel.color)
-                    .lineLimit(1)
-                Spacer(minLength: 8)
+            HStack {
+                Text(label).font(.system(.caption, design: .monospaced))
+                Spacer()
                 Button {
                     UIPasteboard.general.string = code; copied = true
-                    // Copy confirms by touch as well as by glyph, matching the
-                    // card family this chrome comes from.
-                    UINotificationFeedbackGenerator().notificationOccurred(.success)
-                } label: {
-                    AppSymbol(copied ? "checkmark" : "document.on.document", size: 15)
-                        .foregroundStyle(copied ? Color.green : ChatPalette.codeHeaderIcon.color)
-                        .frame(width: 44, height: 44)
-                }
+                } label: { AppSymbol(copied ? "checkmark" : "document.on.document").frame(width: 44, height: 44) }
                 .buttonStyle(.plain).accessibilityLabel(copied ? String(localized: "已复制") : String(localized: "复制 \(label)"))
                 .task(id: copied) { if copied { try? await Task.sleep(for: .seconds(2)); copied = false } }
-            }
-            .padding(.horizontal, 14)
-            .frame(height: 36)
-            .background(ChatPalette.codeCardFill.color)
-            Rectangle()
-                .fill(ChatPalette.codeHeaderDivider.color)
-                .frame(height: 1 / UIScreen.main.scale)
+            }.padding(.leading, 12).foregroundStyle(.secondary).background(.quaternary.opacity(0.3))
             ScrollView([.horizontal, .vertical]) {
                 if isDiff {
                     LazyVStack(alignment: .leading, spacing: 0) {
@@ -360,35 +344,14 @@ struct TimelineCodePanel: View {
                     }.padding(.vertical, 8).fixedSize(horizontal: true, vertical: false)
                 } else {
                     ChatSelectableText(text: displayCode).font(.system(.caption, design: .monospaced))
-                        .fixedSize(horizontal: true, vertical: false)
-                        .padding(14)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: true, vertical: false).padding(12).frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            .scrollIndicators(.hidden)
             .frame(height: min(320, max(76, CGFloat(panel.lineCount) * rowHeight + 24)))
-            if displayCode.count < code.count {
-                Text(String(localized: "预览已截断，复制可获取完整内容"))
-                    .font(.caption)
-                    .foregroundStyle(ChatPalette.codeHeaderLabel.color)
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 12)
-            }
-        }
-        .background(ChatPalette.codeCardFill.color)
-        .clipShape(.rect(cornerRadius: ChatMetrics.codeRadius, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: ChatMetrics.codeRadius, style: .continuous)
-                .stroke(ChatPalette.codeCardBorder.color, lineWidth: 1 / UIScreen.main.scale)
-                .allowsHitTesting(false)
-        )
+            if displayCode.count < code.count { Text(String(localized: "预览已截断，复制可获取完整内容")).font(.caption).foregroundStyle(.secondary).padding(8) }
+        }.background(Color(uiColor: .secondarySystemBackground))
     }
     private func diffColor(_ kind: TimelineDiff.Line.Kind) -> Color {
-        switch kind {
-        case .add: ChatPalette.diffAdd.color
-        case .delete: ChatPalette.diffRemove.color
-        case .hunk, .file, .annotation: ChatPalette.textSecondary.color
-        case .context: ChatPalette.text.color
-        }
+        switch kind { case .add: .green; case .delete: .red; case .hunk, .file, .annotation: .secondary; case .context: .primary }
     }
 }

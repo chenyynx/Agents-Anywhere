@@ -140,14 +140,19 @@ private struct MarkdownBlockView: View, Equatable {
             && lhs.revealDeadline == rhs.revealDeadline
     }
 
-    /// Adds the dotted rule under a URL that arrived inside inline code.
+    /// Adds the rule under a URL that arrived inside inline code.
     ///
     /// The parser only records the link (it runs off the main actor, where
-    /// `Text.LineStyle` — which carries a `Color` — cannot be built). This runs
-    /// on the view side, once per block evaluation.
+    /// `Text.LineStyle` cannot be built). This runs on the view side, once per
+    /// block evaluation.
+    ///
+    /// A plain solid rule with no colour of its own, so it takes the run's own
+    /// ink — the same underline the settings preview draws, which is what the
+    /// reference does. The dotted grey rule this replaced read as a second,
+    /// unrelated colour on top of the link's.
     private static func styled(_ content: AttributedString) -> AttributedString {
         var output = content
-        let rule = Text.LineStyle(pattern: .dot, color: ChatPalette.underlineDot.color)
+        let rule = Text.LineStyle(pattern: .solid)
         for run in content.runs {
             guard run.link != nil,
                   run.inlinePresentationIntent?.contains(.code) == true else { continue }
@@ -249,7 +254,11 @@ private enum ChatInlineStyle {
             .code(
                 .monospaced,
                 .fontScale(ChatMetrics.inlineCodeSize / ChatMetrics.bodySize),
-                .foregroundColor(ChatTextInk.bodyTemplate)
+                .foregroundColor(ChatTextInk.bodyTemplate),
+                // `.code(...)` replaces the whole property set, so the weight
+                // has to be chosen here rather than layered on afterwards.
+                // `.regular` is the shipped look; semibold is the opt-in.
+                .fontWeight(ChatColorSettings.inlineCodeBold() ? .semibold : .regular)
             )
             .link(.foregroundColor(ChatTextInk.link))
             .strong(.fontWeight(.semibold))

@@ -9,6 +9,8 @@ struct ChatColorSettingsView: View {
     private var bodyTemplateRaw = ChatColorSettings.encode(ChatColorSettings.defaultBodyTemplate)
     @AppStorage(ChatColorSettings.linkKey)
     private var linkRaw = ChatColorSettings.encode(ChatColorSettings.defaultLink)
+    @AppStorage(ChatColorSettings.inlineCodeBoldKey)
+    private var inlineCodeBold = false
     /// `@AppStorage` writes the raw value; the resolved (clamped) size is what
     /// the chat reads. Keeping the binding optional-free means the slider has
     /// a stable value before the user ever touches it.
@@ -39,7 +41,7 @@ struct ChatColorSettingsView: View {
     var body: some View {
         List {
             Section(String(localized: "预览")) {
-                ChatColorPreview(bodyTemplate: bodyTemplate, link: link)
+                ChatColorPreview(bodyTemplate: bodyTemplate, link: link, inlineCodeBold: inlineCodeBold)
                     .padding(.vertical, 6)
             }
 
@@ -86,11 +88,16 @@ struct ChatColorSettingsView: View {
                 Text(String(localized: "关闭跟随后可单独调节；两者互不影响。"))
             }
 
-            Section(String(localized: "正文辅助文字")) {
+            Section {
                 ColorPicker(
                     String(localized: "颜色"),
                     selection: picker(raw: $bodyTemplateRaw, fallback: ChatColorSettings.defaultBodyTemplate)
                 )
+                Toggle(String(localized: "加粗"), isOn: $inlineCodeBold)
+            } header: {
+                Text(String(localized: "正文辅助文字"))
+            } footer: {
+                Text(String(localized: "行内代码默认常规字重；打开后与加粗文字同重。"))
             }
 
             Section(String(localized: "链接")) {
@@ -104,6 +111,7 @@ struct ChatColorSettingsView: View {
                 Button(String(localized: "恢复默认")) {
                     bodyTemplateRaw = ChatColorSettings.encode(ChatColorSettings.defaultBodyTemplate)
                     linkRaw = ChatColorSettings.encode(ChatColorSettings.defaultLink)
+                    inlineCodeBold = false
                 }
             } footer: {
                 Text(String(localized: "只影响聊天里的行内代码、引用等辅助文字与链接，不改动主题色和气泡。"))
@@ -261,6 +269,7 @@ struct ChatColorSettingsView: View {
 private struct ChatColorPreview: View {
     let bodyTemplate: ChatColorSettings.Pair
     let link: ChatColorSettings.Pair
+    let inlineCodeBold: Bool
     @Environment(\.colorScheme) private var colorScheme
 
     private func ink(_ pair: ChatColorSettings.Pair) -> Color {
@@ -277,7 +286,9 @@ private struct ChatColorPreview: View {
 
             HStack(spacing: 6) {
                 Text(verbatim: "config.toml")
-                    .font(.system(size: ChatMetrics.bodySize, design: .monospaced))
+                    .font(.system(size: ChatMetrics.bodySize,
+                                  weight: inlineCodeBold ? .semibold : .regular,
+                                  design: .monospaced))
                     .foregroundStyle(ink(bodyTemplate))
                 Text(verbatim: "·")
                     .foregroundStyle(.secondary)

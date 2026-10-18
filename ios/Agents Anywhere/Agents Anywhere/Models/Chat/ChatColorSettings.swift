@@ -10,14 +10,27 @@ import Foundation
 enum ChatColorSettings {
     static let bodyTemplateKey = "agentsAnywhere.chat.bodyTemplateHex"
     static let linkKey = "agentsAnywhere.chat.linkHex"
+    /// Inline code weight. Off is the regular the chat has shipped with; on is
+    /// semibold, the same weight `**` already gives a bolded run, so a turned-on
+    /// span and a `**`-wrapped one read as one family.
+    static let inlineCodeBoldKey = "agentsAnywhere.chat.inlineCodeBold"
 
-    /// moonveil's body template: the inline-code orange it settled on after
-    /// the 2026-09-17 review. Light stays this value; dark keeps the same hue
-    /// because it is the contrast-carrying colour once the pill is gone.
-    static let defaultBodyTemplate = Pair(light: "#FF6A00", dark: "#FF6A00")
+    /// `[pp 2026-10-18]` a neutral grey. The inline-code orange competed with
+    /// the link blue for the same "this is not prose" signal; grey leaves the
+    /// colour channel to the link. One value for both appearances: on the dark
+    /// chat background it measures 4.8:1, on white 3.6:1 — above the 3:1 that
+    /// large or incidental text needs, below what body copy would want.
+    static let defaultBodyTemplate = Pair(light: "#858585", dark: "#858585")
     /// Deeper than the shipped `#3377AA` so a link reads as deliberate ink
-    /// rather than a washed-out accent.
+    /// rather than a washed-out accent. 7.1:1 on white, 6.8:1 on the dark chat
+    /// background.
     static let defaultLink = Pair(light: "#1F5C8B", dark: "#6FA8D6")
+
+    /// Whether inline code renders semibold. Absent key reads as off, so an
+    /// untouched install keeps the regular it has always had.
+    static func inlineCodeBold(in defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: inlineCodeBoldKey)
+    }
 
     struct Pair: Equatable {
         let light: String

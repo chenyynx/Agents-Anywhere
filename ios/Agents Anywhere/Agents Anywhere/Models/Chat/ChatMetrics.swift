@@ -27,28 +27,27 @@ nonisolated enum ChatMetrics {
     /// until relaunch. Ratios keep deriving from `referenceBodySize`, so
     /// tuning the size scales the type without rescaling every spacing
     /// constant out from under the layout.
-    static var bodySize: CGFloat {
-        ChatColorSettings.resolvedBodySize(
-            UserDefaults.standard.object(forKey: ChatColorSettings.bodySizeKey) as? Double
-        )
-    }
+    static var bodySize: CGFloat { ChatTypeSettings.current.body }
     /// Line box height. `[measured]` 66px baseline pitch at the 14pt reference;
     /// kept in step with `bodySize` so the 8pt of leading scales with the text.
     static var bodyLineHeight: CGFloat { bodySize + bodyLineSpacing }
     /// Textual adds space *between* line fragments, so the extra is the line
-    /// height minus the font's own leading. `[measured]` 22 − 14 at the
-    /// reference; held as a constant so shrinking the body tightens the box
-    /// only by the text, never by the leading.
-    static let bodyLineSpacing: CGFloat = 8
+    /// height minus the font's own leading. Comes from the active scheme:
+    /// AA's preset holds 8pt, moonveil's holds 0.5em.
+    static var bodyLineSpacing: CGFloat { ChatTypeSettings.current.lineSpacing }
 
     /// Inline code. `[calibrated]` back-derived from the character advance
-    /// width; the reference set it slightly *larger* than running text.
-    static var inlineCodeSize: CGFloat { bodySize * 14.8 / referenceBodySize }
+    /// width; the reference set it slightly *larger* than running text. A
+    /// scheme may pin its own value; otherwise it keeps that ratio.
+    static var inlineCodeSize: CGFloat {
+        ChatTypeSettings.current.inlineCode ?? bodySize * 14.8 / referenceBodySize
+    }
 
     // MARK: Blocks
 
-    /// `[measured]` paragraph-to-paragraph pitch is 42pt = 22 line + 20 gap.
-    static let paragraphSpacing: CGFloat = 20
+    /// Space between paragraphs. A fixed design constant in both schemes —
+    /// AA holds 20, moonveil 12 — so it does not scale with the body.
+    static var paragraphSpacing: CGFloat { ChatTypeSettings.current.paragraphSpacing }
     /// `[measured]` space around a fenced code block.
     static let codeBlockMargin: CGFloat = 15.5
     /// `[measured]` extra space after a list's last item.
@@ -68,7 +67,11 @@ nonisolated enum ChatMetrics {
 
     // MARK: Code block
 
-    static let blockCodeSize: CGFloat = 12.3
+    /// Fenced code. A scheme may pin its own value (moonveil uses 0.85 of the
+    /// body); otherwise it keeps AA's ratio against the 14pt reference.
+    static var blockCodeSize: CGFloat {
+        ChatTypeSettings.current.codeBlock ?? bodySize * 12.3 / referenceBodySize
+    }
     /// `[measured]` 43px baseline pitch.
     static let blockCodeLineHeight: CGFloat = 14.33
     static var blockCodeLineSpacing: CGFloat { blockCodeLineHeight - blockCodeSize }

@@ -12,9 +12,22 @@ struct ChatColorSettingsView: View {
     /// `@AppStorage` writes the raw value; the resolved (clamped) size is what
     /// the chat reads. Keeping the binding optional-free means the slider has
     /// a stable value before the user ever touches it.
-    @AppStorage(ChatColorSettings.bodySizeKey)
-    private var bodySize = Double(ChatColorSettings.defaultBodySize)
+    @AppStorage(ChatTypeSettings.schemeKey)
+    private var schemeRaw = ChatTypeScheme.compact.rawValue
+    @AppStorage(ChatTypeSettings.bodySizeKey)
+    private var bodySize = Double(ChatTypeScheme.compactScale.body)
+    @AppStorage(ChatTypeSettings.customKey)
+    private var customRaw = ""
     @Environment(\.colorScheme) private var colorScheme
+
+    private var scheme: ChatTypeScheme { ChatTypeScheme(rawValue: schemeRaw) ?? .compact }
+
+    /// The scale the chat is actually rendering with right now.
+    private var activeScale: ChatTypeScale {
+        ChatTypeSettings.resolve(schemeRaw: schemeRaw,
+                                 bodySizeRaw: bodySize,
+                                 customRaw: customRaw)
+    }
 
     private var bodyTemplate: ChatColorSettings.Pair {
         ChatColorSettings.decode(bodyTemplateRaw, fallback: ChatColorSettings.defaultBodyTemplate)
@@ -31,29 +44,46 @@ struct ChatColorSettingsView: View {
             }
 
             Section {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text(String(localized: "正文字号"))
-                        Spacer()
-                        Text(verbatim: String(format: "%.0f pt", bodySize))
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
-                    Slider(
-                        value: $bodySize,
-                        in: Double(ChatColorSettings.bodySizeRange.lowerBound)...Double(ChatColorSettings.bodySizeRange.upperBound),
-                        step: 0.5
-                    ) {
-                        Text(String(localized: "正文字号"))
-                    } minimumValueLabel: {
-                        Text(verbatim: "A").font(.caption2)
-                    } maximumValueLabel: {
-                        Text(verbatim: "A").font(.title3)
+                Picker(String(localized: "比例方案"), selection: schemeBinding) {
+                    ForEach(ChatTypeScheme.allCases) { scheme in
+                        Text(scheme.title).tag(scheme)
                     }
                 }
-                .padding(.vertical, 4)
+                .pickerStyle(.inline)
+                .labelsHidden()
+            } header: {
+                Text(String(localized: "比例方案"))
             } footer: {
-                Text(String(localized: "只影响助手回复的正文，不改气泡和界面其它文字。"))
+                Text(String(localized: "一套方案同时决定字号、行距、标题、代码的字号比例。手动改任何一项会自动切到自定义。"))
+            }
+
+            Section {
+                slider(String(localized: "正文字号"),
+                       value: bodySizeBinding,
+                       range: ChatTypeSettings.bodySizeRange)
+            } footer: {
+                Text(String(localized: "只影响助手回复，不改气泡和界面其它文字。其余字号按方案比例跟随。"))
+            }
+
+            Section {
+                followToggle(String(localized: "行内代码跟随正文"),
+                             isOn: followsBodyBinding(\.inlineCode))
+                if !followsBody(\.inlineCode) {
+                    slider(String(localized: "行内代码字号"),
+                           value: standaloneBinding(\.inlineCode, fallbackRatio: 14.8 / 14),
+                           range: ChatTypeSettings.bodySizeRange)
+                }
+                followToggle(String(localized: "代码块跟随正文"),
+                             isOn: followsBodyBinding(\.codeBlock))
+                if !followsBody(\.codeBlock) {
+                    slider(String(localized: "代码块字号"),
+                           value: standaloneBinding(\.codeBlock, fallbackRatio: 12.3 / 14),
+                           range: 8...ChatTypeSettings.bodySizeRange.upperBound)
+                }
+            } header: {
+                Text(String(localized: "代码字号"))
+            } footer: {
+                Text(String(localized: "关闭跟随后可单独调节；两者互不影响。"))
             }
 
             Section(String(localized: "正文辅助文字")) {
@@ -80,6 +110,125 @@ struct ChatColorSettingsView: View {
             }
         }
         .settingsPage(String(localized: "聊天文字颜色"))
+    }
+
+    // MARK: Type bindings
+
+    /// Picking a preset resets the per-scheme body override, so switching
+    /// schemes always lands on that scheme's own measured size rather than
+    /// carrying the previous scheme's dial-in across.
+    private var schemeBinding: Binding<ChatTypeScheme> {
+        Binding(
+            get: { scheme },
+            set: { next in
+                schemeRaw = next.rawValue
+                bodySize = Double((next.scale(bodyOverride: nil) ?? ChatTypeScheme.compactScale).body)
+                if next == .custom {
+                    // Seed custom from whatever was on screen so the first
+                    // edit is a nudge, not a jump back to the preset.
+                    let current = ChatTypeSettings.resolve(schemeRaw: schemeRaw,
+                                                           bodySizeRaw: bodySize,
+                                                           customRaw: customRaw)
+                    customRaw = ChatTypeSettings.encodeCustom(current)
+                }
+            }
+        )
+    }
+
+    /// Dragging the body slider keeps the scheme and re-proportions it; there
+    /// is no separate custom snapshot to maintain while a preset is active,
+    /// because the preset *is* the rule.
+    private var bodySizeBinding: Binding<Double> {
+        Binding(
+            get: { Double(activeScale.body) },
+            set: { next in
+                // Re-proportioning a preset keeps that preset's identity: the
+                // user changed the size, not the shape of the scheme. The
+                // preset's own resolver re-derives the rest from `bodySize`,
+                // so nothing else needs writing.
+                bodySize = next
+                if scheme == .custom {
+                    var scale = activeScale.scalingBody(to: CGFloat(next))
+                    scale.body = CGFloat(next)
+                    customRaw = ChatTypeSettings.encodeCustom(scale)
+                }
+            }
+        )
+    }
+
+    // MARK: Per-element follow toggles
+
+    /// A `nil` slot in the active scale means "derive from the body ratio";
+    /// a value means the user pinned it. The toggle reads that distinction.
+    private func followsBody(_ keyPath: WritableKeyPath<ChatTypeScale, CGFloat?>) -> Bool {
+        activeScale[keyPath: keyPath] == nil
+    }
+
+    private func followsBodyBinding(_ keyPath: WritableKeyPath<ChatTypeScale, CGFloat?>) -> Binding<Bool> {
+        Binding(
+            get: { followsBody(keyPath) },
+            set: { follow in
+                var scale = activeScale
+                if follow {
+                    scale[keyPath: keyPath] = nil
+                } else {
+                    // Seed with whatever the ratio currently produces so
+                    // turning the toggle off does not move the text.
+                    let ratio: CGFloat = keyPath == \ChatTypeScale.inlineCode ? 14.8 / 14 : 12.3 / 14
+                    scale[keyPath: keyPath] = scale.body * ratio
+                }
+                commitCustom(scale)
+            }
+        )
+    }
+
+    private func standaloneBinding(
+        _ keyPath: WritableKeyPath<ChatTypeScale, CGFloat?>,
+        fallbackRatio: CGFloat
+    ) -> Binding<Double> {
+        Binding(
+            get: { Double(activeScale[keyPath: keyPath] ?? activeScale.body * fallbackRatio) },
+            set: { next in
+                var scale = activeScale
+                scale[keyPath: keyPath] = CGFloat(next)
+                commitCustom(scale)
+            }
+        )
+    }
+
+    /// Every manual adjustment lands in the custom snapshot and flips the
+    /// scheme picker to「自定义」, so the picker and the sliders can never
+    /// describe different scales.
+    private func commitCustom(_ scale: ChatTypeScale) {
+        customRaw = ChatTypeSettings.encodeCustom(scale)
+        schemeRaw = ChatTypeScheme.custom.rawValue
+        bodySize = Double(scale.body)
+    }
+
+    private func followToggle(_ title: String, isOn: Binding<Bool>) -> some View {
+        Toggle(title, isOn: isOn)
+    }
+
+    private func slider(_ title: String, value: Binding<Double>, range: ClosedRange<CGFloat>) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(verbatim: String(format: "%.1f pt", value.wrappedValue))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            Slider(value: value,
+                   in: Double(range.lowerBound)...Double(range.upperBound),
+                   step: 0.5) {
+                Text(title)
+            } minimumValueLabel: {
+                Text(verbatim: "A").font(.caption2)
+            } maximumValueLabel: {
+                Text(verbatim: "A").font(.title3)
+            }
+        }
+        .padding(.vertical, 4)
     }
 
     /// One appearance for both schemes: the picker edits the current scheme's

@@ -310,16 +310,16 @@ private struct ChatHeadingStyle: StructuredText.HeadingStyle {
             .textual.textSelectionScope()
     }
 
-    /// Reference headings measured 18 / 16 / 14pt against a 14pt body. The
-    /// ratio is against the *reference* size, not the current one: a reader who
-    /// raises the body size expects the heading to grow with it, not to shrink
-    /// its ratio back toward the body.
+    /// Heading sizes come from the active scheme (AA: 18 / 16 / 14pt against a
+    /// 14pt body; moonveil: 1.5 / 1.3 / 1.15 of its own body). Textual wants a
+    /// ratio, so it is expressed against the body the scheme was measured at
+    /// rather than the current one: raising the body should grow the heading
+    /// with it, not shrink the heading's own ratio back toward the body.
     private static func scale(for level: Int) -> CGFloat {
-        switch level {
-        case 1: return 18 / ChatMetrics.referenceBodySize
-        case 2: return 16 / ChatMetrics.referenceBodySize
-        default: return 1
-        }
+        let scale = ChatTypeSettings.current
+        guard scale.body > 0, !scale.headings.isEmpty else { return 1 }
+        let index = min(max(level - 1, 0), scale.headings.count - 1)
+        return scale.headings[index] / scale.body
     }
 }
 

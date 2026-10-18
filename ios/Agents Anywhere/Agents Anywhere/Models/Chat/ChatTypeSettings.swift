@@ -47,19 +47,27 @@ enum ChatTypeSettings {
     /// The custom scale is a flat JSON object so a future field can be added
     /// without invalidating stored values; unknown keys are ignored and any
     /// missing key falls back to the compact preset.
+    ///
+    /// Every field is `decodeIfPresent`-style optional so a snapshot written
+    /// by an older build still loads: the ratios were not stored back when a
+    /// code size was a single optional, so their absence means "the value the
+    /// body size already produces", not zero.
     private struct Stored: Codable {
         var body: CGFloat
         var lineSpacing: CGFloat
-        var inlineCode: CGFloat?
-        var codeBlock: CGFloat?
         var paragraphSpacing: CGFloat
         var headings: [CGFloat]
+        var inlineCodeRatio: CGFloat?
+        var codeBlockRatio: CGFloat?
+        var inlineCodePin: CGFloat?
+        var codeBlockPin: CGFloat?
     }
 
     static func encodeCustom(_ scale: ChatTypeScale) -> String {
         let stored = Stored(body: scale.body, lineSpacing: scale.lineSpacing,
-                            inlineCode: scale.inlineCode, codeBlock: scale.codeBlock,
-                            paragraphSpacing: scale.paragraphSpacing, headings: scale.headings)
+                            paragraphSpacing: scale.paragraphSpacing, headings: scale.headings,
+                            inlineCodeRatio: scale.inlineCodeRatio, codeBlockRatio: scale.codeBlockRatio,
+                            inlineCodePin: scale.inlineCodePin, codeBlockPin: scale.codeBlockPin)
         guard let data = try? JSONEncoder().encode(stored),
               let text = String(data: data, encoding: .utf8) else { return "" }
         return text
@@ -68,14 +76,17 @@ enum ChatTypeSettings {
     static func decodeCustom(_ raw: String?) -> ChatTypeScale? {
         guard let raw, let data = raw.data(using: .utf8),
               let stored = try? JSONDecoder().decode(Stored.self, from: data),
-              stored.body > 0 else { return nil }
+              stored.body > 0, !stored.headings.isEmpty else { return nil }
+        let fallback = ChatTypeScheme.compactScale
         return ChatTypeScale(
             body: stored.body,
             lineSpacing: stored.lineSpacing,
-            inlineCode: stored.inlineCode,
-            codeBlock: stored.codeBlock,
             paragraphSpacing: stored.paragraphSpacing,
-            headings: stored.headings
+            headings: stored.headings,
+            inlineCodeRatio: stored.inlineCodeRatio ?? fallback.inlineCodeRatio,
+            codeBlockRatio: stored.codeBlockRatio ?? fallback.codeBlockRatio,
+            inlineCodePin: stored.inlineCodePin,
+            codeBlockPin: stored.codeBlockPin
         )
     }
 

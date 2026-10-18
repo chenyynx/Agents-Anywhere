@@ -12,13 +12,23 @@ struct ChatTypeSettingsTests {
         #expect(scale.paragraphSpacing == 20)
     }
 
+    @Test("the AA preset keeps fenced code at the size that ships")
+    func compactCodeSizeIsUnchanged() {
+        let scale = ChatTypeSettings.resolve(schemeRaw: nil, bodySizeRaw: nil, customRaw: nil)
+        // Pinned, not derived: deriving 12.3 against a 13pt body would have
+        // shrunk it to 11.42 the moment the body dropped below the 14pt
+        // reference.
+        #expect(abs(scale.codeBlockSize - 12.3) < 0.0001)
+        #expect(abs(scale.inlineCodeSize - 13 * 14.8 / 14) < 0.0001)
+    }
+
     @Test("the moonveil preset carries its own measured ratios")
     func moonveilPreset() {
         let scale = ChatTypeSettings.resolve(schemeRaw: "moonveil", bodySizeRaw: nil, customRaw: nil)
         #expect(scale.body == 16.5)
         #expect(abs(scale.lineSpacing - 8.25) < 0.0001)
-        #expect(abs((scale.inlineCode ?? 0) - 16.5 * 0.95) < 0.0001)
-        #expect(abs((scale.codeBlock ?? 0) - 16.5 * 0.85) < 0.0001)
+        #expect(abs(scale.inlineCodeSize - 16.5 * 0.95) < 0.0001)
+        #expect(abs(scale.codeBlockSize - 16.5 * 0.85) < 0.0001)
         #expect(scale.paragraphSpacing == 12)
         #expect(scale.headings.count == 3)
     }
@@ -31,6 +41,15 @@ struct ChatTypeSettingsTests {
         #expect(abs(scale.lineSpacing - 8 * 20 / 13) < 0.0001)
         // The paragraph gap is a fixed design constant and must not drift.
         #expect(scale.paragraphSpacing == 20)
+    }
+
+    @Test("growing the body leaves a pinned code size alone")
+    func pinsDoNotFollowTheBody() {
+        let small = ChatTypeSettings.resolve(schemeRaw: "compact", bodySizeRaw: 13, customRaw: nil)
+        let large = ChatTypeSettings.resolve(schemeRaw: "compact", bodySizeRaw: 20, customRaw: nil)
+        #expect(abs(small.codeBlockSize - large.codeBlockSize) < 0.0001)
+        // The unpinned one does follow.
+        #expect(abs(large.inlineCodeSize - 20 * 14.8 / 14) < 0.0001)
     }
 
     @Test("an out-of-range body override is clamped, not rejected")
@@ -51,8 +70,8 @@ struct ChatTypeSettingsTests {
     @Test("a custom scale round-trips through storage")
     func customRoundTrip() throws {
         var scale = ChatTypeScheme.compactScale
-        scale.inlineCode = 17
-        scale.codeBlock = nil
+        scale.inlineCodePin = 17
+        scale.codeBlockPin = nil
         let raw = ChatTypeSettings.encodeCustom(scale)
         let decoded = try #require(ChatTypeSettings.decodeCustom(raw))
         #expect(decoded == scale)
@@ -67,13 +86,29 @@ struct ChatTypeSettingsTests {
                 == ChatTypeScheme.compactScale)
     }
 
+    @Test("a snapshot from before the ratio split still loads")
+    func legacyCustomSnapshot() throws {
+        // The previous build stored `inlineCode`/`codeBlock` as absolute sizes
+        // and no ratios. Those keys are ignored; the scale must resolve rather
+        // than collapse to the default.
+        let legacy = """
+        {"body":15,"lineSpacing":9,"inlineCode":14,"codeBlock":11,
+         "paragraphSpacing":18,"headings":[19,17,15]}
+        """
+        let scale = try #require(ChatTypeSettings.decodeCustom(legacy))
+        #expect(scale.body == 15)
+        // No pins: the legacy absolute values were ratios of the old body in
+        // practice, and the ratios the compact preset holds reproduce them.
+        #expect(scale.inlineCodePin == nil)
+        #expect(abs(scale.inlineCodeSize - 15 * 14.8 / 14) < 0.0001)
+    }
+
     @Test("scaling a scheme leaves pinned code sizes proportional")
     func scalingPins() {
         let doubled = ChatTypeScheme.compactScale.scalingBody(to: 26)
         #expect(doubled.body == 26)
-        // compact pins neither code size, so both stay unpinned.
-        #expect(doubled.inlineCode == nil)
-        #expect(doubled.codeBlock == nil)
+        #expect(doubled.inlineCodePin == nil)
+        #expect(doubled.codeBlockPin == ChatTypeScheme.compactScale.codeBlockPin)
         #expect(abs(doubled.headings[0] - 36) < 0.0001)
     }
 }

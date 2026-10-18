@@ -28,10 +28,13 @@ struct ChatMetricsTests {
 
     @Test("code block leading stays positive")
     func codeBlockLeading() {
+        // AA pins fenced code at its measured size, so the leading is the
+        // measured pitch minus that size — not a value that moves with the
+        // body size setting.
+        #expect(abs(ChatMetrics.blockCodeSize - 12.3) < 0.0001)
         #expect(ChatMetrics.blockCodeLineHeight > ChatMetrics.blockCodeSize)
         #expect(abs(ChatMetrics.codeBlockLineSpacingRatio - (14.33 - 12.3) / 14) < 0.0001)
     }
-
     @Test("the table cap leaves room for a padded cell")
     func tableCap() {
         #expect(ChatMetrics.tableContentWidthCap > ChatMetrics.tableCellPadHorizontal * 2)

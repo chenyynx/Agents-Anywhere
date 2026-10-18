@@ -37,11 +37,9 @@ nonisolated enum ChatMetrics {
     static var bodyLineSpacing: CGFloat { ChatTypeSettings.current.lineSpacing }
 
     /// Inline code. `[calibrated]` back-derived from the character advance
-    /// width; the reference set it slightly *larger* than running text. A
-    /// scheme may pin its own value; otherwise it keeps that ratio.
-    static var inlineCodeSize: CGFloat {
-        ChatTypeSettings.current.inlineCode ?? bodySize * 14.8 / referenceBodySize
-    }
+    /// width; the reference set it slightly *larger* than running text. The
+    /// scheme decides whether that is a ratio of the body or a pinned size.
+    static var inlineCodeSize: CGFloat { ChatTypeSettings.current.inlineCodeSize }
 
     // MARK: Blocks
 
@@ -67,14 +65,16 @@ nonisolated enum ChatMetrics {
 
     // MARK: Code block
 
-    /// Fenced code. A scheme may pin its own value (moonveil uses 0.85 of the
-    /// body); otherwise it keeps AA's ratio against the 14pt reference.
-    static var blockCodeSize: CGFloat {
-        ChatTypeSettings.current.codeBlock ?? bodySize * 12.3 / referenceBodySize
-    }
+    /// Fenced code. AA pins this at its measured 12.3pt (it has never tracked
+    /// the body); moonveil derives it at 0.85 of the body. The scheme decides.
+    static var blockCodeSize: CGFloat { ChatTypeSettings.current.codeBlockSize }
     /// `[measured]` 43px baseline pitch.
     static let blockCodeLineHeight: CGFloat = 14.33
-    static var blockCodeLineSpacing: CGFloat { blockCodeLineHeight - blockCodeSize }
+    /// Textual adds space between line fragments, so the leading is whatever
+    /// the line box has left over. Clamped at zero: a code size larger than
+    /// the measured pitch (a pinned size above ~14.3pt) would otherwise ask
+    /// for negative spacing.
+    static var blockCodeLineSpacing: CGFloat { max(0, blockCodeLineHeight - blockCodeSize) }
     static let codeRadius: CGFloat = 23
     static let codeBorder: CGFloat = 1
     static let codePadTop: CGFloat = 10

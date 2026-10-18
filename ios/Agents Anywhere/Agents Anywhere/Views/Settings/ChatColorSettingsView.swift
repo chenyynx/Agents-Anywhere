@@ -67,17 +67,17 @@ struct ChatColorSettingsView: View {
 
             Section {
                 followToggle(String(localized: "行内代码跟随正文"),
-                             isOn: followsBodyBinding(\.inlineCode))
-                if !followsBody(\.inlineCode) {
+                             isOn: followsBodyBinding(\.inlineCodePin))
+                if !followsBody(\.inlineCodePin) {
                     slider(String(localized: "行内代码字号"),
-                           value: standaloneBinding(\.inlineCode, fallbackRatio: 14.8 / 14),
+                           value: standaloneBinding(\.inlineCodePin, fallback: activeScale.inlineCodeSize),
                            range: ChatTypeSettings.bodySizeRange)
                 }
                 followToggle(String(localized: "代码块跟随正文"),
-                             isOn: followsBodyBinding(\.codeBlock))
-                if !followsBody(\.codeBlock) {
+                             isOn: followsBodyBinding(\.codeBlockPin))
+                if !followsBody(\.codeBlockPin) {
                     slider(String(localized: "代码块字号"),
-                           value: standaloneBinding(\.codeBlock, fallbackRatio: 12.3 / 14),
+                           value: standaloneBinding(\.codeBlockPin, fallback: activeScale.codeBlockSize),
                            range: 8...ChatTypeSettings.bodySizeRange.upperBound)
                 }
             } header: {
@@ -121,15 +121,16 @@ struct ChatColorSettingsView: View {
         Binding(
             get: { scheme },
             set: { next in
+                // Snapshot what is on screen *before* the scheme changes:
+                // resolving after writing `schemeRaw` would read the custom
+                // snapshot instead of the preset being left behind.
+                let onScreen = activeScale
                 schemeRaw = next.rawValue
                 bodySize = Double((next.scale(bodyOverride: nil) ?? ChatTypeScheme.compactScale).body)
                 if next == .custom {
-                    // Seed custom from whatever was on screen so the first
-                    // edit is a nudge, not a jump back to the preset.
-                    let current = ChatTypeSettings.resolve(schemeRaw: schemeRaw,
-                                                           bodySizeRaw: bodySize,
-                                                           customRaw: customRaw)
-                    customRaw = ChatTypeSettings.encodeCustom(current)
+                    // Seed from the scheme that was active, so the first edit
+                    // is a nudge rather than a jump to some stale snapshot.
+                    customRaw = ChatTypeSettings.encodeCustom(onScreen)
                 }
             }
         )
@@ -148,9 +149,9 @@ struct ChatColorSettingsView: View {
                 // so nothing else needs writing.
                 bodySize = next
                 if scheme == .custom {
-                    var scale = activeScale.scalingBody(to: CGFloat(next))
-                    scale.body = CGFloat(next)
-                    customRaw = ChatTypeSettings.encodeCustom(scale)
+                    // The custom snapshot is the rule in this mode, so the
+                    // re-proportioned copy *is* the new snapshot.
+                    customRaw = ChatTypeSettings.encodeCustom(activeScale.scalingBody(to: CGFloat(next)))
                 }
             }
         )
@@ -158,8 +159,8 @@ struct ChatColorSettingsView: View {
 
     // MARK: Per-element follow toggles
 
-    /// A `nil` slot in the active scale means "derive from the body ratio";
-    /// a value means the user pinned it. The toggle reads that distinction.
+    /// A pin on the active scale means "hold this absolute size"; no pin means
+    /// the element derives from the body through the scheme's ratio.
     private func followsBody(_ keyPath: WritableKeyPath<ChatTypeScale, CGFloat?>) -> Bool {
         activeScale[keyPath: keyPath] == nil
     }
@@ -172,10 +173,11 @@ struct ChatColorSettingsView: View {
                 if follow {
                     scale[keyPath: keyPath] = nil
                 } else {
-                    // Seed with whatever the ratio currently produces so
-                    // turning the toggle off does not move the text.
-                    let ratio: CGFloat = keyPath == \ChatTypeScale.inlineCode ? 14.8 / 14 : 12.3 / 14
-                    scale[keyPath: keyPath] = scale.body * ratio
+                    // Seed with whatever is on screen right now, so turning the
+                    // toggle off does not move the text — it only detaches it.
+                    scale[keyPath: keyPath] = keyPath == \ChatTypeScale.inlineCodePin
+                        ? scale.inlineCodeSize
+                        : scale.codeBlockSize
                 }
                 commitCustom(scale)
             }
@@ -184,10 +186,10 @@ struct ChatColorSettingsView: View {
 
     private func standaloneBinding(
         _ keyPath: WritableKeyPath<ChatTypeScale, CGFloat?>,
-        fallbackRatio: CGFloat
+        fallback: CGFloat
     ) -> Binding<Double> {
         Binding(
-            get: { Double(activeScale[keyPath: keyPath] ?? activeScale.body * fallbackRatio) },
+            get: { Double(activeScale[keyPath: keyPath] ?? fallback) },
             set: { next in
                 var scale = activeScale
                 scale[keyPath: keyPath] = CGFloat(next)

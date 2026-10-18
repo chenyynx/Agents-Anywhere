@@ -140,7 +140,14 @@ private struct MarkdownBlockView: View, Equatable {
             && lhs.revealDeadline == rhs.revealDeadline
     }
 
-    /// Adds the rule under a URL that arrived inside inline code.
+    /// Underlines the web links, and only those.
+    ///
+    /// Two kinds of link reach this view and they are not the same gesture. A
+    /// web link leaves the app, and the reference marks it with a rule. A
+    /// workspace file reference is an in-app jump to a file the connector
+    /// owns — it is drawn as plain code, no rule, because there is nowhere
+    /// else to go. Telling them apart by scheme is what keeps a path from
+    /// looking like a URL.
     ///
     /// The parser only records the link (it runs off the main actor, where
     /// `Text.LineStyle` cannot be built). This runs on the view side, once per
@@ -154,8 +161,7 @@ private struct MarkdownBlockView: View, Equatable {
         var output = content
         let rule = Text.LineStyle(pattern: .solid)
         for run in content.runs {
-            guard run.link != nil,
-                  run.inlinePresentationIntent?.contains(.code) == true else { continue }
+            guard let link = run.link, link.isWebLink else { continue }
             output[run.range].underlineStyle = rule
         }
         return output
@@ -284,6 +290,12 @@ private extension UIColor {
         guard let (r, g, b) = ChatColorSettings.parse(hexString) else { return nil }
         self.init(red: CGFloat(r) / 255, green: CGFloat(g) / 255, blue: CGFloat(b) / 255, alpha: 1)
     }
+}
+
+private extension URL {
+    /// See `ChatLink.isWeb`. Kept here so the render path reads as one
+    /// sentence.
+    var isWebLink: Bool { ChatLink.isWeb(self) }
 }
 
 private struct ChatParagraphStyle: StructuredText.ParagraphStyle {

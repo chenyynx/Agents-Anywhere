@@ -68,13 +68,16 @@ nonisolated enum ChatMetrics {
     /// Fenced code. AA pins this at its measured 12.3pt (it has never tracked
     /// the body); moonveil derives it at 0.85 of the body. The scheme decides.
     static var blockCodeSize: CGFloat { ChatTypeSettings.current.codeBlockSize }
-    /// `[measured]` 43px baseline pitch.
-    static let blockCodeLineHeight: CGFloat = 14.33
-    /// Textual adds space between line fragments, so the leading is whatever
-    /// the line box has left over. Clamped at zero: a code size larger than
-    /// the measured pitch (a pinned size above ~14.3pt) would otherwise ask
-    /// for negative spacing.
-    static var blockCodeLineSpacing: CGFloat { max(0, blockCodeLineHeight - blockCodeSize) }
+    /// `[measured]` 43px baseline pitch at the reference, i.e. 2.03pt of
+    /// leading under 12.3pt glyphs. Held as a *ratio* of the code size rather
+    /// than a fixed 2pt: pinning code at 17pt with 2pt of leading would crowd
+    /// the lines, which is the whole reason the size is adjustable.
+    static var blockCodeLineSpacing: CGFloat {
+        blockCodeSize * ChatTypeSettings.current.codeBlockLineSpacingRatio
+    }
+    /// The line box a fenced code block's text needs. Kept for callers that
+    /// size a container from it (the tool-call row measures its own height).
+    static var blockCodeLineHeight: CGFloat { blockCodeSize + blockCodeLineSpacing }
     static let codeRadius: CGFloat = 23
     static let codeBorder: CGFloat = 1
     static let codePadTop: CGFloat = 10

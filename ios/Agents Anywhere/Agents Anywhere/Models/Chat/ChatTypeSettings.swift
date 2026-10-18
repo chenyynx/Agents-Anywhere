@@ -59,6 +59,7 @@ enum ChatTypeSettings {
         var headings: [CGFloat]
         var inlineCodeRatio: CGFloat?
         var codeBlockRatio: CGFloat?
+        var codeBlockLineSpacingRatio: CGFloat?
         var inlineCodePin: CGFloat?
         var codeBlockPin: CGFloat?
     }
@@ -67,6 +68,7 @@ enum ChatTypeSettings {
         let stored = Stored(body: scale.body, lineSpacing: scale.lineSpacing,
                             paragraphSpacing: scale.paragraphSpacing, headings: scale.headings,
                             inlineCodeRatio: scale.inlineCodeRatio, codeBlockRatio: scale.codeBlockRatio,
+                            codeBlockLineSpacingRatio: scale.codeBlockLineSpacingRatio,
                             inlineCodePin: scale.inlineCodePin, codeBlockPin: scale.codeBlockPin)
         guard let data = try? JSONEncoder().encode(stored),
               let text = String(data: data, encoding: .utf8) else { return "" }
@@ -85,6 +87,7 @@ enum ChatTypeSettings {
             headings: stored.headings,
             inlineCodeRatio: stored.inlineCodeRatio ?? fallback.inlineCodeRatio,
             codeBlockRatio: stored.codeBlockRatio ?? fallback.codeBlockRatio,
+            codeBlockLineSpacingRatio: stored.codeBlockLineSpacingRatio ?? fallback.codeBlockLineSpacingRatio,
             inlineCodePin: stored.inlineCodePin,
             codeBlockPin: stored.codeBlockPin
         )

@@ -35,6 +35,13 @@ struct ChatMetricsTests {
         #expect(ChatMetrics.blockCodeLineHeight > ChatMetrics.blockCodeSize)
         #expect(abs(ChatMetrics.codeBlockLineSpacingRatio - (14.33 - 12.3) / 14) < 0.0001)
     }
+
+    @Test("code block leading grows with a pinned code size")
+    func codeBlockLeadingScales() {
+        // 2pt of leading under 17pt glyphs would crowd the lines; the leading
+        // is a share of the code size so the ratio is what stays fixed.
+        #expect(abs(ChatMetrics.blockCodeLineSpacing / ChatMetrics.blockCodeSize - 2.03 / 12.3) < 0.0001)
+    }
     @Test("the table cap leaves room for a padded cell")
     func tableCap() {
         #expect(ChatMetrics.tableContentWidthCap > ChatMetrics.tableCellPadHorizontal * 2)

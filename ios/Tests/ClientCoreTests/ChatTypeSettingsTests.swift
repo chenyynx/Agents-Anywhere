@@ -20,6 +20,9 @@ struct ChatTypeSettingsTests {
         // reference.
         #expect(abs(scale.codeBlockSize - 12.3) < 0.0001)
         #expect(abs(scale.inlineCodeSize - 13 * 14.8 / 14) < 0.0001)
+        // 43px baseline pitch minus the 12.3pt glyphs, held as a share of the
+        // code size so a pinned size keeps its proportions.
+        #expect(abs(scale.codeBlockSize * scale.codeBlockLineSpacingRatio - 2.03) < 0.0001)
     }
 
     @Test("the moonveil preset carries its own measured ratios")

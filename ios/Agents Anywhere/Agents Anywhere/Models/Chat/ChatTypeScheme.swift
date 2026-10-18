@@ -26,6 +26,11 @@ struct ChatTypeScale: Equatable, Sendable {
     var inlineCodeRatio: CGFloat
     /// Fenced code block as a multiple of the body.
     var codeBlockRatio: CGFloat
+    /// Leading inside a fenced code block, as a share of the code size.
+    /// A ratio rather than a point value: a reader who pins code at 17pt must
+    /// get proportionally more air, not the same 2pt squeezed under bigger
+    /// glyphs.
+    var codeBlockLineSpacingRatio: CGFloat
     /// Absolute overrides. When set, the element keeps this exact size no
     /// matter what the body is.
     var inlineCodePin: CGFloat?
@@ -72,13 +77,15 @@ enum ChatTypeScheme: String, CaseIterable, Identifiable, Sendable {
         // What turning「跟随正文」on produces at the shipped body size: the
         // same 12.3pt the pin holds, so the toggle never moves the text.
         codeBlockRatio: 12.3 / 13,
+        // `[measured]` 43px baseline pitch minus the 12.3pt glyphs = 2.03pt.
+        codeBlockLineSpacingRatio: (14.33 - 12.3) / 12.3,
         inlineCodePin: nil,
         codeBlockPin: 12.3
     )
 
     /// `[measured]` moonveil's local chat at its 16.5pt base: 0.5em leading,
     /// 12pt paragraph gap, headings at 1.5 / 1.3 / 1.15, inline code 0.95 and
-    /// code blocks 0.85 of the body.
+    /// code blocks 0.85 of the body, with a flat 4pt of leading in code.
     static let moonveilScale = ChatTypeScale(
         body: 16.5,
         lineSpacing: 8.25,
@@ -86,6 +93,7 @@ enum ChatTypeScheme: String, CaseIterable, Identifiable, Sendable {
         headings: [16.5 * 1.5, 16.5 * 1.3, 16.5 * 1.15],
         inlineCodeRatio: 0.95,
         codeBlockRatio: 0.85,
+        codeBlockLineSpacingRatio: 4 / (16.5 * 0.85),
         inlineCodePin: nil,
         codeBlockPin: nil
     )

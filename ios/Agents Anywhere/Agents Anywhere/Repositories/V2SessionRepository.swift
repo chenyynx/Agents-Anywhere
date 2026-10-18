@@ -801,7 +801,11 @@ final class V2SessionRepository {
         if event.type == "runtime.state.updated" || event.type == "runtime.capability.updated" {
             scheduleMismatchHeal(entry)
         }
-        emit(entry)
+        // A catch-up backlog arrives back-to-back without suspending; publishing
+        // once the main queue turns again applies the whole burst before the
+        // model and rows re-project. Restores upstream 5536261b, whose call site
+        // the 2.1.0 merge (fde5785c) dropped while keeping the helper.
+        emitAfterBacklog(entry)
         // The orb's receive pulse: only this live path consumes a merge
         // outcome — replay, snapshot, paging and cache restores never reach
         // this code, so nothing else can ring the orb (§6.3).

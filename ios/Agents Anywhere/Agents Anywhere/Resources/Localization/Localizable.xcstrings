@@ -1307,6 +1307,23 @@
         }
       }
     },
+    "Blue-violet": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Blue-violet"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "蓝紫"
+          }
+        }
+      }
+    },
     "Build": {
       "extractionState": "manual",
       "localizations": {
@@ -3275,23 +3292,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "继续编辑"
-          }
-        }
-      }
-    },
-    "Kimi blue-violet": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Kimi blue-violet"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Kimi 蓝紫"
           }
         }
       }

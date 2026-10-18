@@ -14,7 +14,7 @@ name: iOS Build & Test
 
 on:
   push:
-    branches: [dev, feat/ios-chat-visual-refresh]
+    branches: [dev]
     paths:
       - "ios/**"
       - ".github/workflows/ios-build.yml"
@@ -73,7 +73,7 @@ jobs:
     # Verification-only dispatches (feature branches) run the test job alone:
     # only the dev line publishes an installable IPA, so a branch dispatch can
     # never clobber the `ipa-dev` release with a half-finished build.
-    if: github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/feat/ios-chat-visual-refresh'
+    if: github.ref == 'refs/heads/dev'
     runs-on: macos-26
     timeout-minutes: 90
     steps:
@@ -161,12 +161,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SHA_SHORT: ${{ github.sha }}
         run: |
-          if [ "$GITHUB_REF" = "refs/heads/dev" ]; then
-            TAG="ipa-dev"; TITLE="Agents Anywhere unsigned builds — dev"; NOTES="Built from the dev branch. Unsigned — re-sign on-device with KSign."
-          else
-            TAG="ipa-visual"; TITLE="Agents Anywhere unsigned builds — visual refresh"; NOTES="Built from feat/ios-chat-visual-refresh for review. Unsigned — re-sign on-device with KSign."
-          fi
-          NAME="AgentsAnywhere-${TAG#ipa-}-${SHA_SHORT:0:7}.ipa"
+          TAG="ipa-dev"
+          NAME="AgentsAnywhere-dev-${SHA_SHORT:0:7}.ipa"
           cp agents-anywhere.ipa "$NAME"
-          gh release create "$TAG" --title "$TITLE" --notes "$NOTES" || true
+          gh release create "$TAG" --title "Agents Anywhere unsigned builds — dev" \
+            --notes "Built from the dev branch. Unsigned — re-sign on-device with KSign." || true
           gh release upload "$TAG" "$NAME" --clobber

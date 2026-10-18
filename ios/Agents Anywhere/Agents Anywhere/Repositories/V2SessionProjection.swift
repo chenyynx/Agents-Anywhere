@@ -190,6 +190,8 @@ struct V2SessionProjection {
     /// untouched.
     @discardableResult
     private mutating func merge(_ incoming: [V2TimelineItem], history: Bool) -> [V2TimelineMergeOutcome] {
+        let signpost = PerfSignpost.begin("timeline.merge")
+        defer { PerfSignpost.end("timeline.merge", signpost) }
         var byID = Dictionary(uniqueKeysWithValues: data.items.map { ($0.id, $0) })
         let start = data.items.first?.orderSeq ?? 0
         let end = data.items.last?.orderSeq ?? 0

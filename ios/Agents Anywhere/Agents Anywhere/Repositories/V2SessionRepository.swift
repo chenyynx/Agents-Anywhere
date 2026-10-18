@@ -184,6 +184,8 @@ final class V2SessionRepository {
     /// A page visit starts with the latest 100 records, including cached visits.
     /// Explicit history loads may then accumulate additional 100-record pages.
     func open(sessionId: V2SessionID) async throws -> V2SessionData {
+        let signpost = PerfSignpost.begin("session.open")
+        defer { PerfSignpost.end("session.open", signpost) }
         let entry = entry(for: sessionId)
         _ = try await load(sessionId: sessionId)
         try Task.checkCancellation()
@@ -229,6 +231,8 @@ final class V2SessionRepository {
         if entry.localReadTask == nil {
             entry.localReadTask = Task { await localStore.restoreSession(id) }
         }
+        let signpost = PerfSignpost.begin("session.restore")
+        defer { PerfSignpost.end("session.restore", signpost) }
         let saved = await entry.localReadTask?.value
         guard isCurrent(entry), entry.projection == nil, !entry.hasReadLocal else { return }
         entry.hasReadLocal = true; entry.localReadTask = nil

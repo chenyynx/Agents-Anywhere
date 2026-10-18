@@ -115,6 +115,8 @@ final class SessionTimelinePresentation {
     @ObservationIgnored private var pendingWasStaged = false
 
     func flush(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        let signpost = PerfSignpost.begin("timeline.flush")
+        defer { PerfSignpost.end("timeline.flush", signpost) }
         if let pending {
             let presented = Set(rows.map(\.id))
             let previousTail = rows.last?.value.orderSeq ?? Int.min

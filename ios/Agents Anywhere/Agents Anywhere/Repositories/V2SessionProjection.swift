@@ -116,7 +116,7 @@ struct V2SessionProjection {
             // is a stream-level failure the recovery path is designed to
             // surface (see RecoverySelfHealTests), and it carries no collection
             // to isolate within. Only item *collections* below are lossy.
-            outcome = merge([try payload("item", in: event)], history: false).first
+            outcome = mergeSingle(try payload("item", in: event))
         case "timeline.snapshot":
             let items: [V2TimelineItem] = try lossyItems(in: event)
             replaceTimeline(items, hasMore: false)
@@ -182,6 +182,59 @@ struct V2SessionProjection {
         data.hasNewerItems = false
         data.hasOlderItems = hasMore
         merge(items, history: false)
+    }
+
+    /// Single-row fast path for the live socket.
+    ///
+    /// The batch `merge` below rebuilds an id index and re-sorts the whole
+    /// window for every call. A streaming session calls it once per frame, so
+    /// a 1000-row window paid O(n log n) per delta. One row costs a scan plus
+    /// either an in-place replace or a binary-search insert; the window guards
+    /// and the supersede rule are the same as `merge`'s.
+    private mutating func mergeSingle(_ item: V2TimelineItem) -> V2TimelineMergeOutcome? {
+        guard item.sessionId == data.session.id else { return nil }
+        data.activeAgentCards = SubAgentProgress.absorbingActiveCards(
+            item, into: data.activeAgentCards, now: now())
+        if let index = data.items.firstIndex(where: { $0.id == item.id }) {
+            let old = data.items[index]
+            guard item.supersedes(old) else { return nil }
+            if item.orderSeq == old.orderSeq {
+                data.items[index] = item
+            } else {
+                // `supersedes` does not promise a stable orderSeq; a row that
+                // moved has to be relocated or the sort invariant breaks.
+                data.items.remove(at: index)
+                insertSorted(item)
+            }
+            return V2TimelineMergeOutcome(item: item, wasInserted: false)
+        }
+        let start = data.items.first?.orderSeq ?? 0
+        let end = data.items.last?.orderSeq ?? 0
+        if data.hasOlderItems, item.orderSeq < start { return nil }
+        if data.hasNewerItems, item.orderSeq > end { return nil }
+        insertSorted(item)
+        return V2TimelineMergeOutcome(item: item, wasInserted: true)
+    }
+
+    /// Keeps `data.items` ordered by `(orderSeq, id)` and applies the same
+    /// newest-`maximumItems` window rule as `merge(history: false)`.
+    private mutating func insertSorted(_ item: V2TimelineItem) {
+        var low = 0
+        var high = data.items.count
+        while low < high {
+            let mid = (low + high) / 2
+            let candidate = data.items[mid]
+            if (candidate.orderSeq, candidate.id) < (item.orderSeq, item.id) {
+                low = mid + 1
+            } else {
+                high = mid
+            }
+        }
+        data.items.insert(item, at: low)
+        if data.items.count > maximumItems {
+            data.items.removeFirst(data.items.count - maximumItems)
+            data.hasOlderItems = true
+        }
     }
 
     /// Applies incoming rows and reports, per item, whether it was inserted or

@@ -115,6 +115,36 @@ import Testing
         #expect(projection.data.items.isEmpty)
     }
 
+    /// The live socket now takes a single-row fast path instead of the batch
+    /// merge. Every invariant the batch path enforced — ordered by
+    /// `(orderSeq, id)`, unique ids, bounded window, newest revision wins —
+    /// must still hold after a random sequence of creates, updates and moves.
+    @Test func singleItemFastPathKeepsOrderUniquenessAndWindow() throws {
+        let seed = try (1...20).map { try itemObject(id: "item-\($0)", order: $0) }
+        var projection = V2SessionProjection(snapshot: try snapshot(items: seed), maximumItems: 8)
+        var expectedRevision = Dictionary(uniqueKeysWithValues: (1...20).map { ("item-\($0)", 1) })
+        var generator = SystemRandomNumberGenerator()
+        for step in 0..<300 {
+            let order = Int.random(in: 1...30, using: &generator)
+            let id = "item-\(order)"
+            let revision = Int.random(in: 2...5, using: &generator)
+            let seq = 100 + step
+            let update = try event("timeline.item_created", seq: seq, payload: [
+                "item": itemObject(id: id, order: order, revision: revision, seq: seq)])
+            try projection.apply(update)
+            expectedRevision[id] = max(expectedRevision[id] ?? 0, revision)
+        }
+        let items = projection.data.items
+        #expect(items.count <= 8)
+        #expect(Set(items.map(\.id)).count == items.count)
+        #expect(zip(items, items.dropFirst()).allSatisfy {
+            ($0.0.orderSeq, $0.0.id) < ($0.1.orderSeq, $0.1.id)
+        })
+        for item in items {
+            #expect(item.revision == expectedRevision[item.id])
+        }
+    }
+
     @Test func runtimeIdentityAndFreshnessAreSeparateFromCachedContent() throws {
         var projection = V2SessionProjection(snapshot: try snapshot(), maximumItems: 2)
         let live = V2SessionLiveState(state: try fixture("state", as: V2RuntimeStateResponse.self).state,

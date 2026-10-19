@@ -53,8 +53,6 @@ final class TimelineListLayout: UICollectionViewLayout {
         let height: CGFloat
     }
     private var deferredHeights: [String: DeferredHeight] = [:]
-    private var preferredCorrections: [IndexPath: CGFloat] = [:]
-    private var preferredContentSizeDeltas: [IndexPath: CGFloat] = [:]
 
     // Integration-gate counters. They are cheap and make the C3 assertions
     // read the real layout path instead of re-deriving it in the test.
@@ -416,57 +414,18 @@ final class TimelineListLayout: UICollectionViewLayout {
                          correction: decision.correction, contentSizeDelta: delta, state: state)
     }
 
+    /// The controller is the single writer of controlled-exception heights:
+    /// AA's hosting cells have no `heightDidChange` callback, so the
+    /// controller polls the cell's fitting height and calls
+    /// `applyPreferredHeight`. Accepting UIKit's own preferred-attributes
+    /// invalidation would race that write — the gate observed 405 applied and
+    /// then 248.7 restored by a later cell-driven pass. Reject it here; the
+    /// exception path still uses the cell's fitting height, just driven by the
+    /// controller.
     override func shouldInvalidateLayout(forPreferredLayoutAttributes preferredAttributes: UICollectionViewLayoutAttributes,
                                          withOriginalAttributes originalAttributes: UICollectionViewLayoutAttributes) -> Bool {
-        guard let original = originalAttributes as? TimelineListLayoutAttributes,
-              original.policy.acceptsPreferredHeight,
-              let item = original.item,
-              let key = original.heightKey,
-              heights.currentKey(for: item.itemID) == key else { return false }
-        let delta = preferredAttributes.frame.height - original.frame.height
-        guard abs(delta) > 0.5 else { return false }
-        let state = host?.layoutInteractionState() ?? TimelineLayoutInteractionState()
-        let decision = TimelinePreferredAttributesDecision.selfSizing(
-            delta: delta,
-            cellMinY: original.frame.minY,
-            cellMaxY: original.frame.maxY,
-            viewportTop: viewportTop,
-            viewportBottom: viewportBottom,
-            isStreaming: state.streamingItemIDs.contains(item.itemID),
-            isAutoScrollPinning: state.isAutoScrollPinning,
-            isTracking: state.isTracking,
-            isDecelerating: state.isDecelerating,
-            keyboardTransition: state.keyboardTransition,
-            hasCachedHeight: heights.hasMeasuredOrPrecalcHeight(for: key))
-        if decision.height == .deferUntilSettled {
-            deferredHeights[item.itemID] = DeferredHeight(key: key, height: preferredAttributes.frame.height)
-            return false
-        }
-        heights.set(preferredAttributes.frame.height, for: key, tier: .measured)
-        heights.noteDisplayedHeight(preferredAttributes.frame.height, for: item.itemID)
-        preferredCorrections[original.indexPath] = decision.correction ?? 0
-        preferredContentSizeDeltas[original.indexPath] = delta
-        return true
-    }
-
-    override func invalidationContext(forPreferredLayoutAttributes preferredAttributes: UICollectionViewLayoutAttributes,
-                                      withOriginalAttributes originalAttributes: UICollectionViewLayoutAttributes) -> UICollectionViewLayoutInvalidationContext {
-        let context = UICollectionViewLayoutInvalidationContext()
-        context.invalidateItems(at: [originalAttributes.indexPath])
-        let correction = preferredCorrections.removeValue(forKey: originalAttributes.indexPath) ?? 0
-        let sizeDelta = preferredContentSizeDeltas.removeValue(forKey: originalAttributes.indexPath) ?? 0
-        if sizeDelta != 0 {
-            context.contentSizeAdjustment = CGSize(width: 0, height: sizeDelta)
-        }
-        if correction != 0 {
-            let state = host?.layoutInteractionState() ?? TimelineLayoutInteractionState()
-            if isInsideUpdate, insertionOwed != nil {
-                insertionOwed?.adjustTarget(by: correction)
-            } else if !state.suppressContentOffsetAdjustment {
-                context.contentOffsetAdjustment = CGPoint(x: 0, y: correction)
-            }
-        }
-        return context
+        notePreferred("uikitPreferredRejected")
+        return false
     }
 
     // MARK: - Browsing defer
@@ -493,8 +452,6 @@ final class TimelineListLayout: UICollectionViewLayout {
     func cancelBrowsingCorrections() {
         deferral.cancel()
         deferredHeights.removeAll()
-        preferredCorrections.removeAll()
-        preferredContentSizeDeltas.removeAll()
         insertionOwed?.cancel()
         insertionOwed = nil
     }

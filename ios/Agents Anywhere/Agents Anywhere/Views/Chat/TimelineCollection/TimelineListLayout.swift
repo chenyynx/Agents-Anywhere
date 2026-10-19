@@ -312,7 +312,19 @@ final class TimelineListLayout: UICollectionViewLayout {
         let hadCommittedHeight = heights.hasMeasuredOrPrecalcHeight(for: key)
         heights.set(height, for: key, tier: .measured)
         heights.resolvePending(itemID)
-        guard let attributes = attributesByItemID[itemID], attributes.heightKey == key else { return }
+        // The layout can still carry an older key when a width/typography
+        // change has not reached a prepare yet. The measured height is the
+        // newest truth; keep it as the item's displayed fallback so the next
+        // prepare uses it even under the new key.
+        heights.noteDisplayedHeight(height, for: itemID)
+        guard let attributes = attributesByItemID[itemID] else { return }
+        guard attributes.heightKey == key else {
+            // Rebuild so the row takes the measured height instead of the
+            // stale estimate. The delta-based correction cannot be computed
+            // against a frame that belongs to another key.
+            collectionView?.collectionViewLayout.invalidateLayout()
+            return
+        }
         let delta = height - attributes.frame.height
         guard abs(delta) > 0.5 else { return }
         let state = host?.layoutInteractionState() ?? TimelineLayoutInteractionState()
@@ -331,7 +343,6 @@ final class TimelineListLayout: UICollectionViewLayout {
             deferredHeights[itemID] = DeferredHeight(key: key, height: height)
             return
         }
-        heights.noteDisplayedHeight(height, for: itemID)
         invalidateHeight(itemID: itemID, attributes: attributes,
                          correction: decision.correction, contentSizeDelta: delta, state: state)
     }

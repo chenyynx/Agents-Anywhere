@@ -221,11 +221,13 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             guard let entry = entries.first(where: { $0.kind == kind }) else { continue }
             let item = listItem(entry)
             await scrollToItem(item)
-            if [.message, .longGroup, .reasoning].contains(kind) {
-                await wait(900) // Textual parse is asynchronous.
-                controller?.remeasure(item)
-                await wait(150)
-            }
+            // The visible cell is the measurement source for every kind now
+            // that async Markdown is never pre-measured offscreen. Give the
+            // async kinds time to parse, then read the same fitting source
+            // the product uses.
+            await wait([.message, .longGroup, .reasoning].contains(kind) ? 900 : 200)
+            controller?.remeasure(item)
+            await wait(150)
             guard let controller, let sample = cellSample(controller, item: item) else {
                 failures.append("measurement: no cell for \(kind.rawValue)")
                 continue

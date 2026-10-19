@@ -88,14 +88,15 @@ enum SpikeAutoRunner {
         report["bottomInstantFromTop"] = bottomMetrics(in: cv)
 
         // ---- 4. Streaming while the tail row is visible ----
-        // `append()` moved the tail; target the current last row and keep it
-        // fully in the viewport. Otherwise its cell is never materialized and
-        // the self-sizing path cannot be exercised at all.
+        // `append()` moved the tail; target the current last row. The content
+        // ends there, so sitting at the bottom keeps that row fully visible.
+        // Otherwise its cell is never materialized and self-sizing cannot be
+        // exercised at all.
         let streamID = model.items.last?.id
         model.streamingItemID = streamID
         let inset = cv.adjustedContentInset
         let maxOffset = max(-inset.top, cv.contentSize.height - cv.bounds.height + inset.bottom)
-        cv.setContentOffset(CGPoint(x: 0, y: max(-inset.top, maxOffset - 200)), animated: false)
+        cv.setContentOffset(CGPoint(x: 0, y: maxOffset), animated: false)
         await settle(0.4)
         cv.layoutIfNeeded()
 

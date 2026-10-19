@@ -62,6 +62,10 @@ struct TimelineChatTimelineView: View {
         let _ = model.timeline.pendingMessages
         let _ = model.session.notices.notices
         let _ = model.session.sendQueue.items
+        // A queued row's own state and the queue-wide pause add/remove the
+        // trailing accessory, which changes wrapping and the tail's height.
+        let _ = model.session.sendQueue.items.map(\.state)
+        let _ = model.session.isSendQueuePaused
         let _ = model.disclosures.revision
         let _ = model.responseRevision
         let _ = model.timeline.windowRevision

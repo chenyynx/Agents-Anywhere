@@ -131,6 +131,16 @@ struct AccountSettingsSheet: View {
             }
             .listStyle(.insetGrouped)
             .onAppear { refreshTimelineMarker() }
+            .onChange(of: usesCollectionTimeline) { _, enabled in
+                // A new switch-on cycle must not inherit an old build's
+                // timestamp: clear it so the next session proves this run.
+                if enabled {
+                    UserDefaults.standard.removeObject(forKey: TimelineCollectionSwitch.lastActiveKey)
+                    timelineLastActive = nil
+                } else {
+                    refreshTimelineMarker()
+                }
+            }
             .navigationTitle(String(localized: "Settings")).navigationBarTitleDisplayMode(.inline)
             .toolbar { SheetCloseToolbar(disabled: isWorking, action: close) }
             .refreshable { _ = await appState.refreshAccount() }

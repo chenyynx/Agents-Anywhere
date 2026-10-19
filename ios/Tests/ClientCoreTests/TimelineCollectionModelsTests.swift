@@ -22,6 +22,7 @@ private func heightKey(_ itemID: String = "g:a", revision: Int = 1, width: CGFlo
 }
 
 private func groupSignature(rowRevision: Int = 1,
+                            updatedSeq: Int = 3,
                             disclosureExpanded: Bool = false,
                             inlineNotices: [TimelineInlineNoticeSignature] = [],
                             attachments: [TimelineAttachmentPreviewSignature] = [],
@@ -30,7 +31,7 @@ private func groupSignature(rowRevision: Int = 1,
                                 isRunning: false, hasNewerItems: false, hasPendingUserMessage: false))
     -> TimelineGroupContentSignature {
     TimelineGroupContentSignature(
-        rows: [TimelineRowContentSignature(id: "row-1", revision: rowRevision, updatedSeq: 3)],
+        rows: [TimelineRowContentSignature(id: "row-1", revision: rowRevision, updatedSeq: updatedSeq)],
         disclosureExpanded: disclosureExpanded,
         inlineNotices: inlineNotices,
         attachments: attachments,
@@ -345,6 +346,40 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         #expect(base.contentRevision != groupSignature(attachments: [
             TimelineAttachmentPreviewSignature(id: "a", pixelWidth: 100, pixelHeight: 50)
         ]).contentRevision)
+        // Every height input must move the revision, not only the whole
+        // synthesized signature: the controller reuses a measured height when
+        // the revision is equal.
+        #expect(base.contentRevision != groupSignature(rowRevision: 2).contentRevision)
+        #expect(base.contentRevision != groupSignature(updatedSeq: 4).contentRevision)
+        let open = groupSignature(inlineNotices: [
+            TimelineInlineNoticeSignature(id: "n", status: .open, revision: 1)
+        ])
+        #expect(open.contentRevision != groupSignature(inlineNotices: [
+            TimelineInlineNoticeSignature(id: "n", status: .resolved, revision: 1)
+        ]).contentRevision)
+        #expect(open.contentRevision != groupSignature(inlineNotices: [
+            TimelineInlineNoticeSignature(id: "n", status: .open, revision: 2)
+        ]).contentRevision)
+        let reply = TimelineTurnActionSignature(replyIDs: ["r"], changeIDs: [],
+                                                startsMidTurn: false)
+        #expect(base.contentRevision != groupSignature(turnAction: reply).contentRevision)
+        let change1 = TimelineTurnActionSignature(replyIDs: [], changeIDs: ["c"],
+            startsMidTurn: false, changeRevisions: [1])
+        let change2 = TimelineTurnActionSignature(replyIDs: [], changeIDs: ["c"],
+            startsMidTurn: false, changeRevisions: [2])
+        #expect(groupSignature(turnAction: change1).contentRevision
+            != groupSignature(turnAction: change2).contentRevision)
+        for suppression in [
+            TimelineTurnSuppression(isRunning: true, hasNewerItems: false,
+                                    hasPendingUserMessage: false),
+            TimelineTurnSuppression(isRunning: false, hasNewerItems: true,
+                                    hasPendingUserMessage: false),
+            TimelineTurnSuppression(isRunning: false, hasNewerItems: false,
+                                    hasPendingUserMessage: true),
+        ] {
+            #expect(base.contentRevision
+                != groupSignature(suppression: suppression).contentRevision)
+        }
         // Unchanged inputs keep the revision stable so a measurement is reused.
         #expect(base.contentRevision == groupSignature().contentRevision)
     }

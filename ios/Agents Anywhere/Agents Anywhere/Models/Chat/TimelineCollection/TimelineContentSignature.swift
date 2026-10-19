@@ -30,6 +30,11 @@ nonisolated struct TimelineTurnActionSignature: Equatable {
     let replyIDs: [String]
     let changeIDs: [String]
     let startsMidTurn: Bool
+    /// The footer can sit on a later group while its file-change rows belong
+    /// to an earlier one. A change row gaining a parseable path/diff changes
+    /// the footer's height without changing any ID, so carry the revisions.
+    var replyRevisions: [Int] = []
+    var changeRevisions: [Int] = []
 }
 
 /// The inputs `TimelineTurnActions.build` consumes beyond the rows themselves.
@@ -78,7 +83,9 @@ nonisolated struct TimelineGroupContentSignature: Equatable {
         if let action = turnAction {
             hasher.combine(true)
             action.replyIDs.forEach { hasher.combine($0) }
+            action.replyRevisions.forEach { hasher.combine($0) }
             hasher.combine(action.changeIDs.joined(separator: "|"))
+            action.changeRevisions.forEach { hasher.combine($0) }
             hasher.combine(action.startsMidTurn)
         } else {
             hasher.combine(false)

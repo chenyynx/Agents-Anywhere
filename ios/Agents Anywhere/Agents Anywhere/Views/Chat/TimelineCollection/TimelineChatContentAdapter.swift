@@ -185,7 +185,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         case .notice(let id): return [id]
         case .pending(let id): return [id]
         case .tail: return ["tail"]
-        case .olderPrompt, .latestPrompt: return []
+        case .olderPrompt:
+            // `historyLayout.firstRowID` is the first *timeline row*, not the
+            // prompt item (the SwiftUI path uses `timeline.rows.first?.id`).
+            // A prompt id here would make C5's loadOlder guard drop the anchor.
+            return model.timeline.rows.first.map { [$0.id] } ?? []
+        case .latestPrompt: return []
         }
     }
 
@@ -339,7 +344,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             }
             let rowAttachments = attachments(of: row.value)
             if !rowAttachments.isEmpty {
-                attachmentPreviews.append(contentsOf: attachmentSignatures(rowAttachments))
+                // Match the row renderer: an optimistic echo without wire
+                // attachments falls back to the local store keyed by
+                // `clientMessageId`. Resolving with nil here would sign a
+                // different file list than the cell draws.
+                let clientID = row.value.source["clientMessageId"]?.stringValue
+                attachmentPreviews.append(contentsOf:
+                    attachmentSignatures(rowAttachments, clientID: clientID))
             }
         }
         let action = turnActions[group.id]
@@ -350,9 +361,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             inlineNotices: inlineNotices,
             attachments: attachmentPreviews,
             turnAction: action.map {
-                TimelineTurnActionSignature(replyIDs: $0.replies.map(\.id),
-                                            changeIDs: $0.changes.map(\.id),
-                                            startsMidTurn: $0.startsMidTurn)
+                TimelineTurnActionSignature(
+                    replyIDs: $0.replies.map(\.id),
+                    changeIDs: $0.changes.map(\.id),
+                    startsMidTurn: $0.startsMidTurn,
+                    replyRevisions: $0.replies.map { $0.value.revision },
+                    changeRevisions: $0.changes.map { $0.value.revision })
             },
             turnSuppression: TimelineTurnSuppression(
                 isRunning: model.isRunning,
@@ -399,7 +413,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let cwd = model.session.metadata?.cwd
         return group.rows.contains { row in
             switch row.entry(cwd: cwd).kind {
-            case .reasoning, .compact, .tool, .marker: return true
+            case .reasoning, .compact, .tool: return true
+            case .marker:
+                // `TimelineEntryPresentation` classifies a plain message as
+                // `.marker`; only a real marker row has a fold.
+                return row.structure.type != .message
             case .artifact: return false
             }
         }

@@ -65,6 +65,8 @@ final class TimelineCollectionController: UIViewController {
     private var userScrollSettleTask: Task<Void, Never>?
     private var isPinningBottom = false
     private var isScrollingToTop = false
+    private var scrollToTopWatchdog: Task<Void, Never>?
+    private var scrollToTopToken = 0
     private var bottomArrivalCallbackScheduled = false
     /// The old path passed `nil` to `withAnimation` under Reduce Motion, so a
     /// return landed immediately. The wrapper forwards the environment value.
@@ -455,6 +457,9 @@ final class TimelineCollectionController: UIViewController {
         armedBottom.forceArm()
         mode = .returning
         snapToBottom()
+        // A no-op snap (already at the bottom) must still recycle the forced
+        // arm/mode; otherwise a later growth re-pins once as a "forced" target.
+        noteBottomArrival()
     }
 
     /// The opening's arrival check. `onApplyCompleted` can run before the
@@ -511,6 +516,12 @@ final class TimelineCollectionController: UIViewController {
         } else {
             requestBottom(animated: true, forced: true)
         }
+    }
+
+    private func endScrollToTopTracking() {
+        scrollToTopToken &+= 1
+        scrollToTopWatchdog?.cancel()
+        isScrollingToTop = false
     }
 
     /// Stops UIKit's in-flight animated return. The old view released its
@@ -807,7 +818,7 @@ final class TimelineCollectionController: UIViewController {
             armedBottom.disarm()
             mode = .reading
             readerSettledAtBottom = false
-            isScrollingToTop = false
+            endScrollToTopTracking()
         } else {
             // An interrupted animation has no completion; clear the phase so
             // the next reader gesture is not read as an animation completion.
@@ -904,7 +915,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         guard !navigationSuspended else { return }
         bottomAnimationWatchdog?.cancel()
         userScrollSettleTask?.cancel()
-        isScrollingToTop = false
+        endScrollToTopTracking()
         let transition = phase.apply(.willBeginDragging)
         onPhaseChanged?(transition)
         layout.noteDragWillBegin()
@@ -955,6 +966,17 @@ extension TimelineCollectionController: UICollectionViewDelegate {
     func scrollViewShouldScrollToTop(_ scrollView: UIScrollView) -> Bool {
         guard !navigationSuspended else { return false }
         isScrollingToTop = true
+        scrollToTopToken &+= 1
+        let token = scrollToTopToken
+        scrollToTopWatchdog?.cancel()
+        scrollToTopWatchdog = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard let self, !Task.isCancelled, self.scrollToTopToken == token,
+                  self.isScrollingToTop else { return }
+            // A no-op scroll-to-top may not call `didScrollToTop`; holding the
+            // flag would block every later bottom arrival.
+            self.isScrollingToTop = false
+        }
         let transition = phase.apply(.scrollToTopBegan)
         onPhaseChanged?(transition)
         userScrollSettleTask?.cancel()
@@ -967,7 +989,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
 
     func scrollViewDidScrollToTop(_ scrollView: UIScrollView) {
         guard !navigationSuspended else { return }
-        isScrollingToTop = false
+        endScrollToTopTracking()
         let transition = phase.apply(.scrollToTopEnded)
         onPhaseChanged?(transition)
         armedBottom.disarm()

@@ -24,7 +24,7 @@
 | 6.5 上滑锚点 | ✅ 已提交；真机：跳动减轻为"偶尔小跳" | `9060611c` |
 | 6a 懒渲染 | ❌ **已尝试并回滚**：下拉加载失效、锚点测量不触发 | `c2326744` → 回滚 `47fd9408` |
 | 5 行级存储 | ⏳ 未开始 | — |
-| 6b UICollectionView | 🔵 已立项；**M1 任务单已写，独立审查中** | `docs/perf-6b-m1-task-sheet.md` |
+| 6b UICollectionView | 🔵 已立项；**M1 任务单 v4 已写，关键原语已用模拟器原型验证** | `docs/perf-6b-m1-task-sheet.md` |
 | 7 推送 | ⏳ 待定 APNs 凭据归属 | — |
 | 8 流保活 | ⏳ 待抓包结论 | — |
 
@@ -595,11 +595,16 @@ SwiftUI 的"布局后 scrollTo"做不到同帧修正——这是**架构差异�
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
-| **M1** | `UICollectionView` + 自研 layout + 三级高度缓存 + 播种 + 尺寸修正补偿 | 任务单 v2：`docs/perf-6b-m1-task-sheet.md`，审查中 |
-| **M2** | `targetContentOffsetForProposedContentOffset` 前插补偿 + 批 1 不裁窗 | 依赖 M1 |
+| **M1** | `UICollectionView` + 自研 layout + 三级高度缓存 + 播种 + 单参数 `targetContentOffset`（append/prepend）+ 持久底部目标 | 任务单 v4：`docs/perf-6b-m1-task-sheet.md` |
+| **M2** | 取消裁窗 + 用例语义更新 | 依赖 M1 |
 
 > M1 必须包含高度播种：否则 `contentSize` 是估计值，**开屏落底无法保证**，
 > 滚动时未测行也会让内容在手指下位移。这也是原 M1/M2 合并的原因。
+
+**运行时验证（2026-10-19，模拟器，详见任务单 §12.0）**：单参数
+`targetContentOffset(forProposedContentOffset:)` 在非动画 `apply` 下被调用且 `owed` 落地
+（`proposed 0 → returned 9200`，锚点屏幕位移 0）；自测高链路 10/10 tick 到达；
+但从顶部一次性跳底短差 **365pt**——持久底部目标不是优化项，是正确性项。
 
 ---
 

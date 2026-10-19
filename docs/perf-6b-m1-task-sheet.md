@@ -1,7 +1,7 @@
-# 6b-M1 任务单 v3：时间线容器替换（UICollectionView + 布局 + 插入补偿）
+# 6b-M1 任务单 v4：时间线容器替换（UICollectionView + 布局 + 插入补偿）
 
 > 定级 **L**。依据：`docs/perf-plan-v2.md` 批 6b；官方证据 §2.6/§2.9；OpenMinis 参考见附录 C。
-> **v3 修订**：v2 经第二轮独立审查（1 P0 / 11 P1 / 14 P2），本版逐条修复。
+> **v4 修订**：v3 经第三轮独立审查（10 P1）；随后在 `spike/6b-collection` 上用 iOS 模拟器把四个运行时未知变成实测事实（§12.0），本版逐条修复，§12 为修订台账。
 > 三处架构拍板见 §0.1。
 
 ---
@@ -18,10 +18,10 @@
 
 | 决策 | 选择 | 理由 |
 |---|---|---|
-| 高度缓存键 | **稳定 item id + 宽度 + Dynamic Type 字号** | 前插会移动 `Int` 索引，索引键必然错位（P0-1） |
-| 插入补偿 | **M1 内实现 `targetContentOffsetForProposedContentOffset`（append + prepend 都做）** | 否则 `.sizeChanges` 的贴底语义补不回来，流式跟随只能异步追平（P1-3） |
-| 历史锚点修正落点 | **移进布局的 `targetContentOffset`**，不再用"布局后 `scrollTo`" | UIKit 下布局回调里没有安全的同步 `setContentOffset` 落点（P1-5）；官方同构 |
-| 底部目标 | **控制器持有"已武装的底部目标"，内容尺寸变化后重新解析，直到用户接管** | 一次性 `setContentOffset` 丢失了 `ScrollPosition` 的持久语义（P1-1） |
+| 高度缓存键 | **稳定 item id + 内容修订号 + 宽度 + Dynamic Type 字号 + 排版修订号** | 前插会移动 `Int` 索引（P0-1）；离屏行内容更新后 measured 会失真（§12.0 二轮实测：45→265） |
+| 插入补偿 | **单参数 `targetContentOffset(forProposedContentOffset:)`（append + prepend 都做）** | 模拟器已确认非动画 apply 会调用且 `owed` 能落地（§12.0 三轮）。 |
+| 历史锚点修正落点 | **移进布局的 `targetContentOffset`**，不再用"布局后 `scrollTo`" | UIKit 下布局回调里没有安全的同步 `setContentOffset` 落点（P1-5）；官方同构；三轮实测锚点屏幕位移 0 |
+| 底部目标 | **控制器持有"已武装的底部目标"，每次 contentSize/布局变化后重新解析，直到用户接管** | 一次性 `setContentOffset` 会因自测高改变内容高度而短差（§12.0 三轮实测 365pt） |
 
 > 因为 M1 已包含前插补偿，**M2 只剩"取消裁窗 + 用例语义更新"**。
 
@@ -69,8 +69,8 @@
 ## 2. 目标与非目标
 
 ### 目标（M1）
-1. `UICollectionView` + 自研 layout + 三级高度缓存（id 键）+ 播种。
-2. `targetContentOffsetForProposedContentOffset`：append、prepend、容器尺寸变化。
+1. `UICollectionView` + 自研 layout + 三级高度缓存（`TimelineHeightKey`：id + 内容修订 + 宽度 + 字号 + 排版修订）+ 播种。
+2. 单参数 `targetContentOffset(forProposedContentOffset:)`：append、prepend、容器尺寸变化。
 3. `invalidationContext`：自测高度修正的 offset 补偿。
 4. I1–I32 行为对齐；滚动性能显著优于现状。
 
@@ -133,8 +133,10 @@ enum TimelineListItem: Hashable {
 ```swift
 struct TimelineHeightKey: Hashable {
     let itemID: String
-    let width: CGFloat       // 量化到 0.5pt
-    let dynamicType: String  // UIContentSizeCategory.rawValue
+    let contentRevision: Int   // 行的 revision/updatedSeq；内容变了必须换键
+    let width: CGFloat         // 量化到 0.5pt
+    let dynamicType: String    // UIContentSizeCategory.rawValue
+    let typographyRevision: Int // ChatMetrics/ChatTypeSettings 的排版修订号
 }
 
 final class TimelineListLayout: UICollectionViewLayout {
@@ -146,7 +148,9 @@ final class TimelineListLayout: UICollectionViewLayout {
 }
 ```
 
-- **键**：三档全部用 `TimelineHeightKey`；宽度或字号变化时整档失效（`invalidateLayout` + 重播种）。
+- **键**：三档全部用 `TimelineHeightKey`。
+  - **内容修订**：`changedIDs` 命中某 item 时，要么让它的 `contentRevision` 进键（推荐），要么显式删除该 item 的所有高度档。二轮实测反例：离屏流式行文本增长时 `measured` 仍是 45；进入视口后自测到 265、内容高度 +220，直接造成回底短差 220pt（§12.0）。
+  - **字号/排版**：宽度、Dynamic Type 或 `typographyRevision` 变化时整档失效（`invalidateLayout` + 重播种）。
 - **`prepare()`**：纯算术；`measured → precalc → estimate → 200`；维护 `itemAttributes` 有序数组。
 - **`layoutAttributesForElements(in:)`**：二分定位区间，返回视口 ± 半屏；返回值用 `[UICollectionViewLayoutAttributes]`。
 - **播种**：每次 snapshot apply **之前**，为新 item 写入 precalc（`NSAttributedString.boundingRect`，按 key 缓存）
@@ -163,7 +167,7 @@ final class TimelineListLayout: UICollectionViewLayout {
 1. isUserScrolling 或 keyboardTransition → 0（只延迟补偿，不延迟尺寸）
 2. cell 完全在视口上方（maxY ≤ offsetY）→ delta
 3. cell 完全在视口下方 → 0
-4. cell 顶边越过视口顶（minY < offsetY < maxY）→ delta
+4. cell 部分可见（minY < offsetY < maxY）→ 0（部分可见补偿会每批跳一次；增长发生在视口上方已由第 2 条覆盖）
 5. cell 完全可见且非流式 → 0
 6. 流式 cell 且 isAutoScrollPinning 且 delta > 0 → delta
 7. 其余 → 0
@@ -174,7 +178,7 @@ final class TimelineListLayout: UICollectionViewLayout {
 
 #### 3.4.2 插入补偿（修正 P1-3 / P1-5）
 
-`targetContentOffsetForProposedContentOffset(_:withScrollingVelocity:)` 返回：
+单参数 `targetContentOffset(forProposedContentOffset:)`（**不是** `...withScrollingVelocity:` 重载）返回：
 
 ```
 proposed + owed
@@ -184,7 +188,9 @@ proposed + owed
 - **append**：新 item 全部在视口下方 → `owed = 0`（底部钉住由 `isAutoScrollPinning` 决定：
   钉住时 `owed = newContentHeight - oldContentHeight`，否则 0）。
 - **prepend**：布局在 `prepare(forCollectionViewUpdates:)` 记录"锚点行在新旧布局中的 y 差"，
-  `owed = oldAnchorY - newAnchorY`（正值表示内容整体下移，offset 需加上同量）。
+  `owed = newAnchorY - oldAnchorY`（正值表示内容整体下移，offset 需加上同量）。
+  - 实测（§12.0）：非动画 `apply(animatingDifferences: false)` 下该方法被调用 1 次，`proposed=0 → returned=9200`，锚点屏幕位移 0。
+  - `owed` 只在本次 update 事务内有效：`finalizeCollectionViewUpdates` 清零，且同一 `owed` 只消费一次（§7.1 第 11 条）。
 - **容器尺寸变化**：不在此处处理，走 I6 的显式重算。
 
 历史锚点（I13）由此**不再需要布局后的 `scrollTo`**：把 `TimelineHistoryPosition` 的
@@ -216,7 +222,7 @@ contentHeight   = contentSize.height
 | `scrollViewWillBeginDragging` | `.interacting`（`.tracking` 在 UIScrollView 无来源，明确不产生） |
 | `scrollViewDidEndDragging(willDecelerate:)` | 否 → `.idle`；是 → `.decelerating` |
 | `scrollViewDidEndDecelerating` | `.idle` |
-| 我们自己的 `UIViewPropertyAnimator` 开始/完成 | `.animating` / `.idle` |
+| `setContentOffset(animated:)` 开始 / `scrollViewDidEndScrollingAnimation` | `.animating` / `.idle`（模拟器实测回调 1 次；`contentOffset` 不能交给 `UIViewPropertyAnimator` 动画） |
 | 其余 | 不变 |
 
 > `.tracking` 缺失会影响 `pull.begin` 的起点吗？`phaseChanged` 的 `wasInteracting` 在 idle→interacting
@@ -231,11 +237,13 @@ contentHeight   = contentSize.height
 - **I1/I31**：相位合成见 §3.5；`settleUserScroll` 的 64ms 任务原样保留。
 - **I2/I3**：采样与发布见 §3.5；禁止在原生回调里直接写 SwiftUI `@State`。
 - **I4**：底部目标**持久化**（§0.1）：控制器保存 `armedBottomTarget`，
-  每次 contentSize/布局变化后重新解析并设置；用户接管（相位变为 interacting）时清除。
+  每次 contentSize/布局变化（**含自测高回写**）后重新解析并设置，直到用户接管（相位变为 interacting）时清除。
+  实测：从顶部跳底一次性解析短差 **365pt**；二轮离屏行自测后短差 **220pt**（§12.0）。
   400ms 兜底 = **先 `finishScrollToBottom(command)` 再 `openingPositionDidSettle()`**（P1-2）。
   两段收敛顺序：`layoutIfNeeded` → 算 → 设 → 复测；连续两次 `contentHeight` 不变且可见 cell 已测量才算稳定。
-- **I5**：`UIViewPropertyAnimator` + `UISpringTimingParameters(response:0.28, dampingRatio:1)`；
-  Reduce Motion 直接设；中断走 `stopAnimation(true)` 并结算。
+- **I5**：`setContentOffset(_:animated:)` + `scrollViewDidEndScrollingAnimation` 合成相位。
+  `UISpringTimingParameters(response:dampingRatio:)` 不存在，且 `contentOffset` 不可交给 `UIViewPropertyAnimator` 动画，不要再走这条（P1）。
+  Reduce Motion 直接设；中断用 `setContentOffset(..., animated: false)` 结算。
 - **I6**：内容或容器尺寸变化都按 `shouldPin` 语义处理；容器变化在 `viewSafeAreaInsetsDidChange`/`layoutSubviews` 后显式重算。
 - **I10/I11**：四个可见性由 `TimelineVisibilityProbe` 纯函数计算（阈值与探针尺寸见 I14/I15）。
 - **I12/I13**：见 §3.4.2。
@@ -280,8 +288,11 @@ contentHeight   = contentSize.height
 4. `TimelinePhaseMapping`：独立事件序列 → 相位；覆盖"`.tracking` 永不产生"与"动画完成"。
 5. `TimelineContentSignature`：group/提示/pending/tail 的变化检测，含"流式追加 revision 不变"用例。
 6. `TimelinePreferredAttributesDecision`：§3.4.1 的七条判据逐条。
-7. `TimelineInsertionOwed`：append/prepend 的 `owed` 计算。
-8. `TimelineHeightKeying`：宽度 0.5pt 量化、字号变化失效。
+7. `TimelineInsertionOwed`：append/prepend 的 `owed` 计算；**断言"锚点行屏幕位置不变量"（delta≈0）**，不写 `old-new` 符号假设。
+8. `TimelineHeightKeying`：宽度 0.5pt 量化、字号变化失效、**内容修订变化必须换键**。
+9. `TimelineOffscreenRevision`：模拟"离屏行内容更新 → 进入视口"，旧 measured 不得复用（复现 §12.0 二轮 45→265）。
+10. `TimelineArmedBottomTarget`：内容高度连续变化后仍贴底；用户接管后清除。
+11. `TimelineOneShotOwed`：同一 owed 只被消费一次；`finalizeCollectionViewUpdates` 后为 0。
 
 ### 7.2 真机清单（补充 P2-9）
 1. 冷开最新会话：落底、不闪
@@ -312,7 +323,7 @@ contentHeight   = contentSize.height
 - **Release 真机**（不是 Debug），机型记录在案。
 - 采集：新增 `CADisplayLink` 采帧（与官方 `FrameHitchRecorder` 同口径：>16/>25/>75/>700ms），
   `AA_PERF_SIGNPOST` 关闭时零成本。
-- 判据：1000 行窗口连续滚动 10 秒，**>16ms 的帧占比 < 5%**，无 >75ms 帧。
+- 判据：1000 行窗口连续滚动 10 秒；主判据 = **>16ms 的帧占比 < 5%**；硬失败 = 出现任一 >75ms 帧（两者不是二选一）。
 - 基线：先在当前 HEAD `47fd9408` 上采一次，PR 里贴前后数字。
 
 ---
@@ -340,10 +351,12 @@ C4/C5 后各出一次包；开关默认 off，pp 验完再翻。
 4. **前插后全行错高**：缓存仍用索引键 → 单测 8 必绿 + 真机 4。
 5. **加载 3 页后下拉失效**（6a 原样复发）→ 真机 4 合并验证。
 6. **cell 复用丢行内状态** → 真机 12。
+7. **离屏行内容更新后高度失真**：measured 不随内容修订失效 → 滚回/回底短差（二轮实测 220pt）→ §3.4 键含 revision；真机 12/14。
+8. **底部目标一次性解析**：从顶部跳底差 365pt（三轮实测）→ §0.1 持久武装 + §7.1 第 10 条。
 
 ---
 
-## 10. 审查修订对照（v3）
+## 10. 审查修订对照（v3 + v4 运行时证据）
 
 | 审查项 | 落点 |
 |---|---|
@@ -373,37 +386,61 @@ C4/C5 后各出一次包；开关默认 off，pp 验完再翻。
 | P2-12 6a 教训 | §9 第 5 条 |
 | P2-13 Catalyst | §7.2 第 18 条 |
 | P2-14 OpenMinis 证据 | 附录 C 标注"未在本工作区复核" |
+| v4 运行时四问 | §12.0（run `39204102103`） |
+| v4 回底短差 | §0.1、§4 I4、§7.1 第 10 条 |
 
 ---
 
 ## 11. 开工前置条件
 
-1. pp 审阅 v3。
+1. pp 审阅 v4（§12.1 的十项处置）。
 2. pp 确认下拉规则维持现状。
 3. 基线 `47fd9408`；先采一次性能基线（§7.4）。
-4. **完成 `spike/6b-collection` 原型，把四个运行时未知变成事实**（见 §12）。
+4. ✅ `spike/6b-collection` 原型已完成三轮模拟器运行：四个运行时问题 3 个已实测、拖拽 1 个未测（§12.0）。
+5. 拖拽项若影响 I10 的实现，再补 XCUITest；否则按 §3.4.1/§7 的保守判据推进。
 
 ---
 
-## 12. v3 第三轮审查待办（**未修复**，10 条 P1）
+## 12. v4 修订台账（运行时原型结论 + 第三轮 P1 处置）
 
-> 第三轮审查在 v3 上仍报 10 条 P1。按准则 §7 已停下汇报；pp 选择先做运行时原型。
-> 原型结果回来后，本表逐条修复，再出 v4。
+### 12.0 运行时原型结论（已实测）
 
-| # | 问题 | 修法 |
+> 环境：GitHub Actions `macos-26` / Xcode 26.5 / iPhone Air 模拟器 / iOS 26.5 / 视图 420×635。
+> 代码：`spike/6b-collection` @ `b3177dc2`（一次性分支，验完删除）。
+> 证据：run `39204102103` 的 artifact `spike-autorun.json`；前两轮 `39202055415`、`39202972950` 保留作缺陷对照。
+> 时间：2026-10-19 13:30 CST。模拟器与真机共用 UIKit，语义结论可迁移；手感/性能仍需真机验收。
+
+| # | 问题 | 实测 | 结论 |
+|---|---|---|---|
+| 1 | 无动画 diffable apply 是否调用 `targetContentOffset(forProposedContentOffset:)` | `targetOffsetCalls=1`，`proposed=0`，`returned=9200` | ✅ 调用 |
+| 2 | 一次性 `owed` 是否落地 | 锚点 `item-1` 屏幕 Y `0→0`（`anchorScreenDeltaY=0`）；内容高度 `112416→121616`（+9200） | ✅ 落地；符号 = `newAnchorY - oldAnchorY` |
+| 3 | 自测高 invalidation 是否到达 | 可见流式行 10 tick：`reconfigure=10`、`shouldInvalidate=10`、`invalidationContext=10`；measured `45→265`，content `131181→131401` | ✅ 全链路成立 |
+| 4 | 拖拽中 `contentHeight` 是否变化 | 未测（`simctl` 不能合成触摸，需 XCUITest） | ⏳ 未测；按 §3.4.1/§7 的保守判据推进 |
+| 5 | 回底是否到底 | 从顶部瞬时跳底：`shortfall=365pt`；按新 contentSize 重算后 `0` | ❌ 一次性目标不够；§0.1 持久武装必要 |
+
+补充证据（二轮 `39202972950`，流式行被挤出视口）：
+- 离屏行的 `measured=45` 未随文本增长；动画回底把它带入视口后自测到 `265`，内容 +220，`shortfall=220`。
+- 直接证明 P1 #6：**高度缓存键必须含内容修订号**，否则离屏更新会留下陈旧高度。
+- 该轮流式 `shouldInvalidate=0`、`streamingItemVisible=false`，不能用来判断自测链路；三轮已修正。
+
+计时（仅参考，不作为预算）：三轮 tick `avg=19.44ms`、`max=31.9ms`（模拟器；包含 spike 自身的 O(n) 全量重建，M1 走高度缓存 + 只动变化行，不能用这个数当验收基线）。
+
+### 12.1 十条 P1 的处置
+
+| # | 原问题 | v4 处置（落点） |
 |---|---|---|
-| 1 | 前插 owed 符号写反：`oldAnchorY - newAnchorY` 恒为负 | 改为 `newAnchorY - oldAnchorY`（与 `TimelineHistoryPositionTests.swift:27-37` 的既有语义一致） |
-| 2 | 用错重载 `targetContentOffsetForProposedContentOffset(_:withScrollingVelocity:)` | 改用单参数 `targetContentOffset(forProposedContentOffset:)`；并验证无动画 apply 是否触发 |
-| 3 | owed 没有一次性/事务闸，后续布局会重复应用 | 只在 update 窗口内有效，`finalizeCollectionViewUpdates` 清零；单测"同一 owed 只消费一次" |
-| 4 | `UISpringTimingParameters(response:dampingRatio:)` 不存在；`contentOffset` 不可用 UIViewPropertyAnimator 动画 | 改 CADisplayLink 逐帧驱动，或退回 `setContentOffset(animated:)` 并把 `scrollViewDidEndScrollingAnimation` 补进相位源 |
-| 5 | 漏 `shouldInvalidateLayout(forPreferredLayoutAttributes:)`（默认返回 false）→ 实测回写整条链不触发 | 显式 override 返回 true；补 `layoutAttributesForItem`/`contentSize`；index path 越界钳制 |
-| 6 | 高度键缺内容版本，离屏行滚回用旧 measured | 键加 `revision/updatedSeq` 或在 `changedIDs` 时清除对应 measured 并重播种 |
-| 7 | 高度键缺 App 字号/行距设置（`ChatMetrics`/`ChatTypeSettings`） | 键加排版修订号，或设置变化时清空三档 |
-| 8 | 补偿判据第 4 条（顶边越过视口顶）会每批跳一次 | 只在"完全在视口上方"或"增长发生在视口上方"时补偿；部分可见返回 0 |
-| 9 | pull 的 2pt `contentHeight` 闸会被自绘自测取消 → 上滑加载失效（6a 复发） | 浏览期 `deferSelfSizing`（官方做法），或把 pull 判据改为视口锚定 |
-| 10 | 行内本地状态（Markdown 解析、图片、reveal、选区）在 cell 回收后丢失 | 状态外置到行模型/有界缓存，或明确降低验收并写清用户可见代价 |
+| 1 | owed 符号写反 | 已改 `newAnchorY - oldAnchorY`；三轮实测 +9200 落地（§3.4.2、§12.0） |
+| 2 | 用错重载 | 改为单参数；三轮实测被调用（§3.4.2、§12.0） |
+| 3 | owed 无一次性闸 | `finalizeCollectionViewUpdates` 清零；§7.1 第 11 条单测 |
+| 4 | 动画 API 不存在/不可动画 | 改 `setContentOffset(animated:)` + `scrollViewDidEndScrollingAnimation`（实测回调 1 次）；§4 I5、§3.5 |
+| 5 | 漏 `shouldInvalidateLayout(forPreferredLayoutAttributes:)` | 显式返回 true；三轮实测 10/10（§3.4） |
+| 6 | 高度键缺内容版本 | 键加 `contentRevision`；二轮实测 45→265/短差 220 为反例；§3.4、§7.1 第 9 条 |
+| 7 | 高度键缺字号/行距 | 键加 `typographyRevision`，设置变化清空三档；§3.4（本轮未测，保留） |
+| 8 | 判据第 4 条每批跳 | 部分可见改为 0；只在"完全在视口上方"补偿；§3.4.1、§7.1 第 6 条 |
+| 9 | pull 的 2pt contentHeight 闸 | 新容器不再复用该闸：pull 判据改为视口锚定；`deferSelfSizing` 待真机 4 号证明必要再启用（拖拽项未测，§12.0 #4） |
+| 10 | cell 复用丢行内状态 | 状态外置到行模型/有界缓存；真机 12 号验收；不降低验收口径 |
 
-### 第三轮 P2 中必须一起处理的
+### 12.2 第三轮 P2（继续有效，C1–C6 各自覆盖）
 - 状态栏点按回顶缺相位源（`scrollViewShouldScrollToTop`/`DidScrollToTop`）
 - §5"offset 一律异步"与 I8 键盘逐帧钉底冲突：键盘窗口内允许同步 `setContentOffset`，带重入闸
 - `isAutoScrollPinning` 的真值来源未定义；审批卡出现（I29）后仍会贴底
@@ -413,10 +450,10 @@ C4/C5 后各出一次包；开关默认 off，pp 验完再翻。
 - 运行时开关切换会因 `TimelineScrollState.hasOpened` 卡在顶部，需要重置状态
 - 签名覆盖不全：`turnAction` footer、状态行 orb 活动
 - 历史结算 64ms/`isPositionedByUser` 的归属未交代
-- 测试 7 会与错误符号共用假设 → 改为"屏幕位置不变量"断言
+- 测试 7 已改为"屏幕位置不变量"断言（§7.1 第 7 条）
 - `safeAreaInset` 前提写错（缩的是 safe area，不是 bounds）
 - contentSize 变化会重新引入 body 风暴 → 纯测量修正走非失效通道
-- 验收口径自相矛盾（>16ms vs >75ms）；基线采帧器是本次新增，需单独埋点提交
+- 验收口径已在 §7.4 拆清：主判据 >16ms 占比 <5%，硬失败任一 >75ms；采帧器单独埋点提交
 
 ---
 

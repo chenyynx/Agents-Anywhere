@@ -482,6 +482,10 @@ final class TimelineCollectionController: UIViewController {
     /// the caller can stop. A visible cell whose Markdown has not parsed yet
     /// (no plausible fitting height) keeps the passes alive.
     private func settleVisibleCellHeightsOnce() -> Bool {
+        // A programmatic return owns the offset until it lands. Applying a
+        // row correction inside that animation would add a second offset
+        // change; the animation-end callback starts a fresh settle instead.
+        guard phase.phase != .animating else { return false }
         guard let content, !navigationSuspended, columnWidth > 0,
               !collectionView.indexPathsForVisibleItems.isEmpty else { return false }
         var needsMore = false
@@ -826,6 +830,9 @@ final class TimelineCollectionController: UIViewController {
             // `scrollViewDidEndScrollingAnimation` (measured 0 in the spike),
             // so the watchdog is the only arrival signal for that shape.
             self.noteBottomArrival()
+            // The settle passes skip while `.animating`; this is the only
+            // animation-end signal for the no-op shape.
+            self.scheduleVisibleCellSettle()
         }
     }
 
@@ -1076,7 +1083,10 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         // view has run its initial layout; the settle passes then wait for an
         // async Markdown parse.
         guard !navigationSuspended else { return }
-        DispatchQueue.main.async { [weak self] in
+        // Coalesce the burst of willDisplay calls a scroll produces. The
+        // scroll-end callbacks start their own settle, so a fast fling does
+        // not run a SwiftUI fitting pass per materialized cell.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
             guard let self, !self.navigationSuspended else { return }
             self.scheduleVisibleCellSettle()
         }

@@ -27,6 +27,10 @@ on:
         description: "Also build the unsigned IPA for this branch"
         type: boolean
         default: false
+      timeline_autorun:
+        description: "Run the 6b collection-timeline simulator gate"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -69,6 +73,157 @@ jobs:
           name: test-log
           path: ${{ runner.temp }}/test.log
           if-no-files-found: ignore
+
+  timeline-autorun:
+    # C3 gate: drive the real collection controller in a simulator and assert
+    # measurement/offset/state-machine behaviour from the JSON it writes.
+    needs: test
+    if: inputs.timeline_autorun == true
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pin Xcode
+        run: |
+          sudo xcode-select -s /Applications/${{ github.event.inputs.xcode || 'Xcode_26.5.app' }}
+          xcodebuild -version
+
+      - name: Pick an iPhone simulator
+        id: sim
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, re, subprocess
+          data = json.loads(subprocess.check_output(["xcrun", "simctl", "list", "devices", "available", "-j"]))
+          best = None
+          for runtime, devices in data.get("devices", {}).items():
+              if "iOS" not in runtime:
+                  continue
+              match = re.search(r"iOS-(\d+)-(\d+)", runtime)
+              version = (int(match.group(1)), int(match.group(2))) if match else (0, 0)
+              for device in devices:
+                  if not device.get("name", "").startswith("iPhone"):
+                      continue
+                  if not device.get("isAvailable", False):
+                      continue
+                  key = (version, device["name"])
+                  if best is None or key > best[0]:
+                      best = (key, device)
+          if best is None:
+              raise SystemExit("no available iPhone simulator runtime")
+          print(f"udid={best[1]['udid']}")
+          print(f"name={best[1]['name']}")
+          print(f"runtime={best[0][0]}.{best[0][1]}")
+          PY
+
+      - name: Boot simulator
+        run: |
+          xcrun simctl boot "${{ steps.sim.outputs.udid }}" || true
+          xcrun simctl bootstatus "${{ steps.sim.outputs.udid }}" -b
+
+      - name: Build for simulator
+        run: |
+          set -o pipefail
+          cd "ios/Agents Anywhere"
+          xcodebuild build \
+            -project "Agents Anywhere.xcodeproj" \
+            -scheme "Agents Anywhere" \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            ENABLE_DEBUG_DYLIB=NO \
+            -derivedDataPath build/DDSim \
+            2>&1 | tee "$RUNNER_TEMP/sim-build.log" | tail -40
+
+      - name: Install and run the gate
+        run: |
+          set -euo pipefail
+          UDID="${{ steps.sim.outputs.udid }}"
+          APP="ios/Agents Anywhere/build/DDSim/Build/Products/Debug-iphonesimulator/Agents Anywhere.app"
+          xcrun simctl install "$UDID" "$APP"
+          xcrun simctl terminate "$UDID" com.agentsanywhere.app || true
+          xcrun simctl launch "$UDID" com.agentsanywhere.app aa-timeline-autorun
+          CONTAINER=$(xcrun simctl get_app_container "$UDID" com.agentsanywhere.app data)
+          RESULT="$CONTAINER/Documents/timeline-autorun.json"
+          for _ in $(seq 1 180); do
+            if [ -f "$RESULT" ]; then break; fi
+            sleep 1
+          done
+          if [ ! -f "$RESULT" ]; then
+            echo "::error::timeline auto-run produced no result file"
+            xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/timeline-failure.png" || true
+            exit 1
+          fi
+          cp "$RESULT" "$RUNNER_TEMP/timeline-autorun.json"
+          cat "$RUNNER_TEMP/timeline-autorun.json"
+          xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/timeline-final.png" || true
+
+      - name: Assert gate results
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          path = os.path.join(os.environ["RUNNER_TEMP"], "timeline-autorun.json")
+          r = json.load(open(path))
+          failures = r.get("failures", [])
+          checks = []
+
+          def check(name, condition, detail=""):
+              checks.append((name, bool(condition), detail))
+
+          m = r.get("measurement", {})
+          samples = m.get("samples", [])
+          text_errors = [s.get("error", 0) for s in samples
+                         if s.get("kind") in {"message", "reasoning", "plain", "code", "table"}]
+          complex_errors = [s.get("error", 0) for s in samples
+                            if s.get("kind") not in {"message", "reasoning", "plain", "code", "table"}]
+          check("completed", r.get("completed") is True, failures)
+          check("no failures", not failures, failures)
+          check("stratified samples >= 8", len(samples) >= 8, len(samples))
+          check("text measurement <= 1pt", max(text_errors or [99]) <= 1.0, text_errors)
+          check("complex measurement <= 4pt", max(complex_errors or [99]) <= 4.0, complex_errors)
+
+          a = r.get("asyncMarkdown", {})
+          check("async markdown below anchor <= 0.5pt", a.get("belowAnchorDelta", 99) <= 0.5, a)
+          s = r.get("streaming", {})
+          check("streaming monotonic", s.get("monotonic") is True, s.get("heights"))
+          check("streaming shortfall <= 0.5pt", s.get("maxShortfall", 99) <= 0.5, s.get("maxShortfall"))
+          check("streaming one move per tick", max(s.get("movesPerTick") or [99]) <= 1, s.get("movesPerTick"))
+          b = r.get("bottom", {})
+          check("instant bottom shortfall <= 0.5", b.get("instantShortfall", 99) <= 0.5, b.get("instantShortfall"))
+          check("animated bottom shortfall <= 0.5", b.get("animatedShortfall", 99) <= 0.5, b.get("animatedShortfall"))
+          check("no-op watchdog settles", b.get("phaseAfterNoop") == "idle", b.get("phaseAfterNoop"))
+          p = r.get("prepend", {})
+          check("prepend anchor <= 0.5pt", p.get("anchorDeltaY", 99) <= 0.5, p.get("anchorDeltaY"))
+          check("prepend target queried", p.get("targetContentOffsetCalls", 0) >= 1, p.get("targetContentOffsetCalls"))
+          check("prepend double query idempotent", p.get("doubleQuerySame") is True, p)
+          check("prepend cancellation releases", p.get("cancelledUnchanged") is True, p)
+          check("history settled", p.get("settled") is True, p)
+
+          failed = [c for c in checks if not c[1]]
+          for name, ok, detail in checks:
+              print(("PASS " if ok else "FAIL ") + name + ("" if ok else f" | {detail}"))
+          if failed:
+              print("::error::timeline gate failed: " + "; ".join(c[0] for c in failed))
+              sys.exit(1)
+          PY
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: timeline-autorun
+          path: |
+            ${{ runner.temp }}/timeline-autorun.json
+            ${{ runner.temp }}/timeline-failure.png
+            ${{ runner.temp }}/timeline-final.png
+            ${{ runner.temp }}/sim-build.log
+          if-no-files-found: ignore
+
+      - name: Shut down simulator
+        if: always()
+        run: xcrun simctl shutdown "${{ steps.sim.outputs.udid }}" || true
 
   build:
     # The package is only released once the unit tests pass: a red test suite

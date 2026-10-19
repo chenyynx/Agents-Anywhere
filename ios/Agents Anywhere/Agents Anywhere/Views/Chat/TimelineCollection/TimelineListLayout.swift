@@ -49,6 +49,14 @@ final class TimelineListLayout: UICollectionViewLayout {
     private var deferredHeights: [String: DeferredHeight] = [:]
     private var preferredCorrections: [IndexPath: CGFloat] = [:]
 
+    // Integration-gate counters. They are cheap and make the C3 assertions
+    // read the real layout path instead of re-deriving it in the test.
+    private(set) var targetContentOffsetCallCount = 0
+    private(set) var lastProposedContentOffset: CGFloat = 0
+    private(set) var lastReturnedContentOffset: CGFloat = 0
+    private(set) var prepareForUpdatesCallCount = 0
+    private(set) var finalizeUpdatesCallCount = 0
+
     /// The committed scroll target from `finalizeCollectionViewUpdates` when
     /// UIKit never asked for it (v7 §3.4.5).
     var onFinalizeFallbackApplied: ((CGFloat) -> Void)?
@@ -156,19 +164,27 @@ final class TimelineListLayout: UICollectionViewLayout {
     }
 
     override func targetContentOffset(forProposedContentOffset proposedContentOffset: CGPoint) -> CGPoint {
-        guard var owed = insertionOwed else { return proposedContentOffset }
+        targetContentOffsetCallCount += 1
+        lastProposedContentOffset = proposedContentOffset.y
+        guard var owed = insertionOwed else {
+            lastReturnedContentOffset = proposedContentOffset.y
+            return proposedContentOffset
+        }
         let y = owed.targetOffset(proposed: proposedContentOffset.y)
         insertionOwed = owed
+        lastReturnedContentOffset = y
         return CGPoint(x: proposedContentOffset.x, y: y)
     }
 
     override func prepare(forCollectionViewUpdates updateItems: [UICollectionViewUpdateItem]) {
         super.prepare(forCollectionViewUpdates: updateItems)
+        prepareForUpdatesCallCount += 1
         isInsideUpdate = true
     }
 
     override func finalizeCollectionViewUpdates() {
         super.finalizeCollectionViewUpdates()
+        finalizeUpdatesCallCount += 1
         isInsideUpdate = false
         if var owed = insertionOwed, let fallback = owed.finalizeFallback() {
             insertionOwed = owed

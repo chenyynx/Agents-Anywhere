@@ -12,7 +12,18 @@ struct AgentsAnywhereApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView()
+            Group {
+                #if DEBUG
+                if ProcessInfo.processInfo.arguments.contains(TimelineAutoRunModel.launchArgument) {
+                    // C3 simulator gate; never reachable from the product UI.
+                    TimelineAutoRunRootView()
+                } else {
+                    RootView()
+                }
+                #else
+                RootView()
+                #endif
+            }
                 .environment(appState)
                 .background {
                     #if targetEnvironment(macCatalyst)

@@ -167,16 +167,17 @@ jobs:
           SHA_SHORT: ${{ github.sha }}
         run: |
           if [ "${GITHUB_REF}" = "refs/heads/dev" ]; then
-            TAG="ipa-dev"; LABEL="dev"
+            TAG="ipa-dev"; SLUG="dev"
             TITLE="Agents Anywhere unsigned builds — dev"
             NOTES="Built from the dev branch. Unsigned — re-sign on-device with KSign."
           else
+            # A branch name may contain '/', which cannot appear in a file name.
             SLUG=$(printf '%s' "${GITHUB_REF_NAME}" | tr '/' '-')
-            TAG="ipa-${SLUG}"; LABEL="${GITHUB_REF_NAME}"
+            TAG="ipa-${SLUG}"
             TITLE="Agents Anywhere unsigned builds — ${GITHUB_REF_NAME}"
             NOTES="Built from the ${GITHUB_REF_NAME} branch. Unsigned — re-sign on-device with KSign."
           fi
-          NAME="AgentsAnywhere-${LABEL}-${SHA_SHORT:0:7}.ipa"
+          NAME="AgentsAnywhere-${SLUG}-${SHA_SHORT:0:7}.ipa"
           cp agents-anywhere.ipa "$NAME"
           gh release create "$TAG" --title "$TITLE" --notes "$NOTES" || true
           gh release upload "$TAG" "$NAME" --clobber

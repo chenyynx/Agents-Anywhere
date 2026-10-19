@@ -459,8 +459,11 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
 
 @Suite struct TimelineInsertionOwedTests {
     @Test func outwardPullOriginIsClampedToTheRestingInset() {
-        let owed = TimelineInsertionOwed(generation: 7, origin: layout(), offsetY: -135, topInset: 80)
+        var owed = TimelineInsertionOwed(generation: 7, origin: layout(), offsetY: -135, topInset: 80)
+        let target = owed.update(layout: layout(first: "earlier", y: 1080))
         #expect(owed.originOffset == -80)
+        // The same 920 the SwiftUI path restores: -80 + (1080 - 80).
+        #expect(target == 920)
     }
 
     @Test func absoluteTargetIsIdempotentAcrossQueries() {

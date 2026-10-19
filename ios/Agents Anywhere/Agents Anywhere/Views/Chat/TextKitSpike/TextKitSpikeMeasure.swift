@@ -124,6 +124,11 @@ enum HostedMarkdownProbe {
         let settled: Bool
         let sampleCount: Int
         let elapsedMilliseconds: Double
+        /// Safe area captured while the hosting view was in the window. The
+        /// first run showed a constant ~68pt offset on every pure fixture —
+        /// `UIHostingController.sizeThatFits` adds the inherited safe area.
+        let hostInsets: UIEdgeInsets
+        let windowInsets: UIEdgeInsets
     }
 
     static func measure(_ markdown: String,
@@ -137,18 +142,32 @@ enum HostedMarkdownProbe {
     /// Bare SwiftUI `Text` with the same font and leading as the product's
     /// paragraph style. Separates "SwiftUI Text layout" from "Textual's block
     /// styling" when the product height disagrees with TextKit 2.
-    static func measureBareText(_ text: String,
-                                width: CGFloat,
-                                typography: TextKitSpikeTypography,
-                                in window: UIWindow,
-                                timeout: TimeInterval = 15) async -> Result {
-        let view = AnyView(
+    /// Height without a window. Synchronous SwiftUI content (bare `Text`)
+    /// measures correctly here; `ChatMarkdownView` cannot, which is the 2pt
+    /// incident this spike exists to replace.
+    static func offWindowHeight(view: AnyView, width: CGFloat) -> CGFloat {
+        let controller = UIHostingController(rootView: view)
+        return controller.sizeThatFits(
+            in: CGSize(width: width, height: .greatestFiniteMagnitude)).height
+    }
+
+    static func bareTextView(_ text: String,
+                             typography: TextKitSpikeTypography) -> AnyView {
+        AnyView(
             Text(text)
                 .font(.system(size: typography.bodySize))
                 .lineSpacing(typography.lineSpacing)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading))
-        return await measure(view: view, width: width, in: window, timeout: timeout)
+    }
+
+    static func measureBareText(_ text: String,
+                                width: CGFloat,
+                                typography: TextKitSpikeTypography,
+                                in window: UIWindow,
+                                timeout: TimeInterval = 15) async -> Result {
+        await measure(view: bareTextView(text, typography: typography),
+                      width: width, in: window, timeout: timeout)
     }
 
     static func measure(view: AnyView,
@@ -158,10 +177,15 @@ enum HostedMarkdownProbe {
         let controller = UIHostingController(rootView: view)
         guard let root = window.rootViewController, let hostView = controller.view else {
             return Result(height: -1, firstHeight: -1, settled: false,
-                          sampleCount: 0, elapsedMilliseconds: 0)
+                          sampleCount: 0, elapsedMilliseconds: 0,
+                          hostInsets: .zero, windowInsets: window.safeAreaInsets)
         }
         hostView.backgroundColor = .clear
-        hostView.frame = CGRect(x: 0, y: 0, width: width, height: 800)
+        // Place the probe below the status bar: a view fully inside the safe
+        // area has zero safe-area insets, so `sizeThatFits` cannot fold a
+        // status-bar inset into the measured text height.
+        hostView.frame = CGRect(x: 0, y: window.safeAreaInsets.top,
+                                width: width, height: 800)
         root.addChild(controller)
         root.view.addSubview(hostView)
         controller.didMove(toParent: root)
@@ -192,6 +216,7 @@ enum HostedMarkdownProbe {
             }
         }
 
+        let hostInsets = hostView.safeAreaInsets
         controller.willMove(toParent: nil)
         hostView.removeFromSuperview()
         controller.removeFromParent()
@@ -199,7 +224,9 @@ enum HostedMarkdownProbe {
                       firstHeight: firstHeight,
                       settled: settled,
                       sampleCount: sampleCount,
-                      elapsedMilliseconds: Date().timeIntervalSince(started) * 1000)
+                      elapsedMilliseconds: Date().timeIntervalSince(started) * 1000,
+                      hostInsets: hostInsets,
+                      windowInsets: window.safeAreaInsets)
     }
 }
 #endif

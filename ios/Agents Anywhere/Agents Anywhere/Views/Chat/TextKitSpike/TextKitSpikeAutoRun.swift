@@ -63,6 +63,17 @@ final class TextKitSpikeModel {
             "fontLineHeight": Double(typography.font.lineHeight),
         ] as [String: Any]
 
+        // Harness control: an empty view through the same hosting path proves
+        // the measurement adds no safe-area or controller offset of its own.
+        let zero = await HostedMarkdownProbe.measure(
+            view: AnyView(Color.clear.frame(width: width, height: 0)),
+            width: width, in: window)
+        report["harness"] = [
+            "zeroHeight": Double(zero.height),
+            "hostInsets": Self.insets(zero.hostInsets),
+            "windowInsets": Self.insets(zero.windowInsets),
+        ] as [String: Any]
+
         var rows: [[String: Any]] = []
         for fixture in Self.fixtures {
             statusLine = "measuring \(fixture.name)"
@@ -84,6 +95,7 @@ final class TextKitSpikeModel {
                     "settled": product.settled,
                     "samples": product.sampleCount,
                     "elapsedMs": Double(product.elapsedMilliseconds),
+                    "hostInsets": Self.insets(product.hostInsets),
                 ] as [String: Any],
                 "cdmarkdown": [
                     "height": Double(cd.height),
@@ -113,7 +125,13 @@ final class TextKitSpikeModel {
                     "firstHeight": Double(bare.firstHeight),
                     "settled": bare.settled,
                     "samples": bare.sampleCount,
+                    "hostInsets": Self.insets(bare.hostInsets),
                 ] as [String: Any]
+                row["productOffWindow"] = Double(HostedMarkdownProbe.offWindowHeight(
+                    view: AnyView(ChatMarkdownView(text: fixture.text)), width: width))
+                row["bareOffWindow"] = Double(HostedMarkdownProbe.offWindowHeight(
+                    view: HostedMarkdownProbe.bareTextView(fixture.text, typography: typography),
+                    width: width))
                 row["bareTextVsTk2Plain"] = abs(Double(bare.height) - tk2Plain)
                 row["productVsBareText"] = abs(Double(product.height) - Double(bare.height))
                 if !bare.settled {
@@ -207,6 +225,15 @@ final class TextKitSpikeModel {
             "heights": heights,
             "note": "parse runs on the main actor; measure includes assigning attributedText and sizeThatFits",
         ] as [String: Any]
+    }
+
+    private static func insets(_ insets: UIEdgeInsets) -> [String: Double] {
+        [
+            "top": Double(insets.top),
+            "left": Double(insets.left),
+            "bottom": Double(insets.bottom),
+            "right": Double(insets.right),
+        ]
     }
 
     private static func stats(_ values: [Double]) -> [String: Double] {

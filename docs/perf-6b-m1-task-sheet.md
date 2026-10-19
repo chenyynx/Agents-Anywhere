@@ -550,6 +550,8 @@ C3 门不过，不进 C4；C4/C5 后各出一次包，开关默认 off，pp 验�
 - **Markdown 尾部重排**从“改动段落的前一段”开始，宽度变化才全文失效；流式 TextKit 2 只重排尾部（§6.4）。这支持 v7 的增量解析方向；AA 的 Textual/离屏 hosting 仍需整行测量。
 - **滚动动画每帧重问目标**：Mover 的 `UIUpdateLink` tick 每帧调用 target 闭包；目标变化 ≥1 个物理像素才改写当前目标，并按差值平移 pace，不重新起飞（§6.6）。飞行/缓动中内容长高可以连续追赶。
 - **流式行高跟揭示进度，不跟数据到达**：`RevealDriver.clampedHeight` 把 intrinsic 高度钳在已揭示的行，每推进一段 `invalidateIntrinsicContentSize` → `heightDidChange`，揭示结束才解除（§6.7）。AA 的 Textual 揭示当前不改变 intrinsic 高度，是产品差异，不在 6b 范围。
+- **官方揭示节奏是编译期常量**：基础 320 字符/秒、积压时最多 640、目标约 2.0 秒追平、结束后 0.6 秒收尾；VoiceOver 开启时完全不做打字揭示（§6.9）。这是官方流式 UX，不作为 6b 的验收项。
+- **`rowsApplied` 先求旧/新行 ID 的最长公共前缀**：前缀行原样保留；从第一个差异开始，旧行度量按 ID 建字典，新行按 ID 复用度量，行被移动也保留实测高度（§6.9）。这与我们“稳定 id + 高度缓存”一致，也说明 `prepare` 应做前缀复用，而不是每次重建全部 attributes。
 
 ### 13.2 与 v7 的差异（有意保留，写明原因）
 
@@ -571,6 +573,7 @@ C3 门不过，不进 C4；C4/C5 后各出一次包，开关默认 off，pp 验�
 4. **流式 0.1s 节流**在 C4/C5 接线时落实；测量完成按 key 代际丢弃旧结果（`applyMeasuredHeight` 已 guard 当前 key）。底部跟随每次内容变化/帧重解析目标，阈值按 1 个物理像素（`1/displayScale`）而不是写死 0.5pt；流式揭示高度若以后做，按揭示进度而非数据到达。
 5. **历史锚点**继续用 group item + row→group 映射；group 合并时迁移 `displayedHeight`（§3.4.5）。官方没有 `firstRowID`，不据此删掉 v7 的守卫。
 6. **估算回退**：若 C2/C3 吞吐 p95 过高，再引入官方估算公式（Part Z §6.1：4000 字符上限、块距 12pt、默认 44/180）作为 pending 回退；当前不写死数字。
+7. **`TimelineListLayout.prepare` 前缀复用**：先求旧/新 `TimelineListItem` + 高度键的最长公共前缀，前缀 attributes 原样保留；只重建从第一个变化项起的后缀，并用前缀最后一项的 maxY 继续 cursor。`layoutAttributesForElements(in:)` 改为按 y 二分。这样 1000 行窗口下流式/队列每次 apply 不会重建全部 attributes。C3 gate 绿后、C4 接线前做，并复跑 gate。
 
 ---
 

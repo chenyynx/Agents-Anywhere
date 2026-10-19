@@ -41,6 +41,13 @@ nonisolated struct TimelinePhaseMapping: Equatable {
 
     private(set) var phase: TimelineScrollState.Phase = .idle
 
+    /// Whether the reader physically owns the scroll right now. `.tracking`
+    /// never comes from the native mapping but stays in the predicate so the
+    /// definition matches `TimelineScrollState.userIsScrolling`.
+    var userIsScrolling: Bool {
+        [.tracking, .interacting, .decelerating].contains(phase)
+    }
+
     @discardableResult
     mutating func apply(_ event: Event) -> Transition {
         let previous = phase

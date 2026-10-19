@@ -178,8 +178,10 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
     @Test func dragThatStopsWithoutInertiaEndsImmediately() {
         var mapping = TimelinePhaseMapping()
         mapping.apply(.willBeginDragging)
+        #expect(mapping.userIsScrolling)
         let transition = mapping.apply(.didEndDragging(willDecelerate: false))
         #expect(transition.current == .idle)
+        #expect(!mapping.userIsScrolling)
     }
 
     @Test func trackingIsNeverProduced() {

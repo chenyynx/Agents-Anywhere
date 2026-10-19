@@ -36,6 +36,23 @@
   - `ClaudeTranscriptUI.TranscriptListRowHeightEstimates`: `provide` / `cache`
 - 关键点：官方是**同一引擎测量**，不是「用 A 引擎量、B 引擎画」。
 
+### 2.1 现成 TextKit 2 实现调研（2026-10-20）
+
+结论：有现成的，但没有「官方等价、直接替换聊天页」的成品；最接近的是 **CDMarkdownKit**，足以做 M1 spike 的底座。
+
+- **CDMarkdownKit**（`chrisdhaan/CDMarkdownKit`，MIT，267★，活跃，iOS 13+ / Swift 6）
+  - Markdown → `NSAttributedString`；支持标题、列表、引用、链接、代码块、GFM 表格、图片、自定义元素。
+  - iOS 16+ 用 TextKit 2；`CDMarkdownTextView.sizeThatFits` 在**独立的 TextKit 2 stack** 里 `ensureLayout` + `usageBoundsForTextContainer` 量高（`Source/CDMarkdownTextView.swift:164-190`），与渲染同一套引擎。
+  - `CDMarkdownParser.parse` 是 async；我们可以先 off-main 解析并缓存 attributed string，再同步 measure，正好符合「apply 前有高度」。
+  - 风险：它是通用 Markdown 视图，不是 AA 的视觉层；主题、代码高亮、Git badge/文件链接、流式字形、附件交互需要移植；流式每 tick 重新 parse 的成本要测。
+- **swift-markdown-engine**（`nodes-app/swift-markdown-engine`，Apache-2.0，1222★，活跃）
+  - TextKit 2 + AST styling + 表格/代码/图片/LaTeX，但**只支持 macOS AppKit，是编辑器**；可作 AST→attributes 与 TextKit2 layout 的参考，不能直接用于 iOS 展示。
+- **STTextView**（`krzyzanowskim/STTextView`，TextKit 2 text view，iOS 16+/macOS）
+  - 文本视图底座，不是 Markdown 渲染器；许可证需单独核对（API 返回 NOASSERTION）。暂不作为首选。
+- **MarkdownView** / **MarkdownDisplayView**：SwiftUI 渲染，不是 TextKit 2；MarkdownDisplayView 的流式思路可参考。
+
+**M1 决策**：先用 CDMarkdownKit 做 spike；如果视觉 parity / 流式 / 性能过关，就 MIT vendor/fork 并移植主题；不过关再退回到自己搭 TextKit 2 stack（官方同形）。
+
 ---
 
 ## 3. 目标架构
@@ -80,7 +97,8 @@
 
 ### M1 · Spike（先证明，不接产品）
 
-- 在独立分支/临时 target 里用 TextKit 2 渲染一条真实长助手 Markdown（含标题、列表、引用、代码块、表格、inline code）。
+- 用 **CDMarkdownKit 的 `CDMarkdownTextView`** 作为底座（TextKit 2 + `sizeThatFits` 的 `usageBoundsForTextContainer`），在独立分支/临时 target 里渲染一条真实长助手 Markdown（含标题、列表、引用、代码块、表格、inline code）。
+- 同时跑一个最小自建 TextKit 2 stack 作为对照，确认 CDMarkdownKit 的测量不是特例。
 - 在同一宽度下，比较 TextKit 2 高度与当前 SwiftUI/Textual 渲染高度的差异；目标 ≤1pt（纯文本/段落）。
 - 产出：高度对照表 + 失败项清单（表格/代码块/附件）。
 - **不合并、不发包。**

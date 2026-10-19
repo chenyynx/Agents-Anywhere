@@ -97,6 +97,14 @@ nonisolated struct TimelineInsertionOwed: Equatable {
         return owed.offer(proposed: proposed)
     }
 
+    /// A measurement correction that lands inside the same update transaction
+    /// folds into the absolute target instead of posting a second
+    /// `contentOffsetAdjustment` (v7 §3.4.5 transaction gate).
+    mutating func adjustTarget(by delta: CGFloat) {
+        guard !isCancelled, let target = owed.target, delta != 0 else { return }
+        owed.replace(target: target + delta)
+    }
+
     /// `finalizeCollectionViewUpdates` fallback for an update UIKit never
     /// asked about. The controller applies it with animations disabled and
     /// retries once on the next runloop if the old content size clamped it.

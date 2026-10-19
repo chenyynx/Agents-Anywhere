@@ -76,6 +76,15 @@ nonisolated final class TimelineHeightCache {
         return entry.measured ?? entry.precalc ?? entry.estimate
     }
 
+    /// Whether the key carries a real measurement (hosting or plain-text
+    /// precalc). An estimate is a fallback, not a cache hit: the row still
+    /// needs its first measurement, and defer must let that first measurement
+    /// through.
+    func hasMeasuredOrPrecalcHeight(for key: TimelineHeightKey) -> Bool {
+        guard let entry = entries[key] else { return false }
+        return entry.measured != nil || entry.precalc != nil
+    }
+
     /// The height the layout should use for this key. A missing entry (new
     /// content revision) falls back to the item's last displayed height and
     /// only then to the kind estimate.

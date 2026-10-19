@@ -545,6 +545,16 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         #expect(asked.isSettled)
     }
 
+    @Test func inUpdateMeasurementCorrectionFoldsIntoTheAbsoluteTarget() {
+        var owed = TimelineInsertionOwed(generation: 9, origin: layout(), offsetY: 20, topInset: 80)
+        _ = owed.update(layout: layout(first: "earlier", y: 780))
+        let beforeAdjust = owed.targetOffset(proposed: 0)
+        owed.adjustTarget(by: 30)
+        let afterAdjust = owed.targetOffset(proposed: 0)
+        #expect(beforeAdjust == 720)
+        #expect(afterAdjust == 750)
+    }
+
     @Test func oneShotOwedReplacesAndClears() {
         var owed = TimelineOneShotOwed()
         let first = owed.offer(proposed: 12)
@@ -709,6 +719,51 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         #expect(cache.isPending("g:a"))
         cache.resolvePending("g:a")
         #expect(!cache.isPending("g:a"))
+    }
+
+    @Test func estimatesAreNotMeasuredCacheHits() {
+        let cache = TimelineHeightCache()
+        let key = heightKey()
+        cache.set(200, for: key, tier: .estimate)
+        #expect(!cache.hasMeasuredOrPrecalcHeight(for: key))
+        cache.set(180, for: key, tier: .precalc)
+        #expect(cache.hasMeasuredOrPrecalcHeight(for: key))
+        cache.set(170, for: key, tier: .measured)
+        #expect(cache.hasMeasuredOrPrecalcHeight(for: key))
+    }
+}
+
+@Suite struct TimelineListMetricsTests {
+    @Test func narrowLayoutUsesSixteenPointMargins() {
+        let column = TimelineListMetrics.column(containerWidth: 390)
+        #expect(TimelineListMetrics.horizontalInset(containerWidth: 390) == 16)
+        #expect(column.width == 358)
+        #expect(column.x == 16)
+    }
+
+    @Test func wideLayoutUsesTwentyPointMargins() {
+        let column = TimelineListMetrics.column(containerWidth: 430)
+        #expect(TimelineListMetrics.horizontalInset(containerWidth: 430) == 20)
+        #expect(column.width == 390)
+        #expect(column.x == 20)
+    }
+
+    @Test func columnsAreCappedAtSevenHundredSixtyPointsAndCentered() {
+        let column = TimelineListMetrics.column(containerWidth: 1024)
+        #expect(column.width == 760)
+        #expect(column.x == 132)
+    }
+
+    @Test func zeroWidthDoesNotProduceANegativeColumn() {
+        let column = TimelineListMetrics.column(containerWidth: 0)
+        #expect(column.width == 0)
+        #expect(column.x == 0)
+    }
+
+    @Test func topInsetAndItemSpacingMatchTheSwiftUILayout() {
+        #expect(TimelineListMetrics.topInset == 16)
+        #expect(TimelineListMetrics.itemSpacing == 20)
+        #expect(TimelineListMetrics.maximumColumnWidth == 760)
     }
 }
 

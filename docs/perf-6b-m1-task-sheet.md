@@ -595,18 +595,20 @@ SessionChatModel
        └─ TimelineCollectionController（C3 已有）
 ```
 
-- **刷新触发**：`SessionTimelinePresentation.flushRevision`（每次 flush 递增）、`TimelineDisclosureState.revision`（fold 切换递增），加上 wrapper body 直接读取的 `pendingMessages` / `notices` / `sendQueue.items` / `responseRevision` / `windowRevision`。SwiftUI 因这些读取重算 representable；adapter 在 `contentGeneration` getter 里重算 items+签名，只有签名/顺序变化才递增 generation，controller 只在 generation 变化时 apply。
+- **刷新触发**：`SessionTimelinePresentation.flushRevision`（每次 flush 递增）、`TimelineDisclosureState.revision`（fold 切换递增），加上 wrapper body 直接读取的 `pendingMessages` / `notices` / `sendQueue.items` / `responseRevision` / `windowRevision`、`isRunning` / `sendingPlaceholder` / `orbActivity` / `hasNewerItems` / `hasOlderItems` / `metadata.cwd`，以及 AppStorage 的 chat type scale 三个 key。SwiftUI 因这些读取重算 representable；adapter 在 `contentGeneration` getter 里重算 items+签名，只有签名/顺序变化才递增 generation，controller 只在 generation 变化时 apply。
 - **签名**：`TimelineGroupContentSignature` 覆盖 `row.value.revision` / `updatedSeq`、`disclosures.isExpanded("group:\(id)")` 与组内每行 fold、inline notice 的 `status/revision`、附件 preview 像素尺寸、turnAction/turnSuppression；tail 覆盖队列 id+state、`sendingPlaceholder`、orb activity、`hasNewerItems`。纯视图状态不进签名（§3.2）。
 - **高度策略**：`tail` → `.tail`；含 fold/inline notice 的 group、notice、pending → `.interactive`；其余 group/prompt → `.measured`。测量仍由 controller 在 apply 前完成，cell 不驱动 `.measured` 行。
 
 ### 14.2 状态归属（C4 新增）
 
 - controller 增加 `mode`（reading/following/returning）、`readerRestsAtBottom`、`interactionPresented`；`layoutInteractionState()` 把它们交给布局，补上 C3 骨架里缺失的 `mode`/`interactionPresented`。
-- **开屏**：`isOpeningReady` 后 controller 武装底部并在首次 apply 完成时无动画贴底；wrapper 保留 400ms 兜底并调用 `model.openingPositionDidSettle()`（与旧路径一致）。窗口整体替换（`windowRevision`）在 `!readerTookOver && !navigationSuspended` 时重跑开屏贴底。
+- **开屏**：`isOpeningReady` 后 controller 武装底部；`onApplyCompleted` 先 `layoutIfNeeded()`，只有实测 `viewport.measuredAtBottom` 才 `openingPositionDidSettle()`；后续测量/内容变化通过 `onBottomArrived` 再确认。wrapper 保留 400ms 兜底（与旧路径一致）。窗口整体替换（`windowRevision`）在 `!readerTookOver && !navigationSuspended` 时重跑开屏贴底。
 - **跟随**：pending/队列/`responseRevision` 走 `requestBottom(animated:)`（与旧路径相同：立即回底，不因阅读位置被拦）；到达底部后 `readerRestsAtBottom=true` 并转为 follow 武装，后续内容变化持续贴底。`!hasInteractions` 守卫只用于 pending/队列两条。
 - **松手结算**：`didEndDragging`/`didEndDecelerating` 后 64ms 用最新 viewport 判定；在底部 → following 武装，否则 reading。
 - **导航**：挂起取消目标/动画/待结算任务；恢复时若 `readerRestsAtBottom && !interactionPresented` 重新武装并贴底；`.animating` 残留走 watchdog。
-- **键盘/容器**：`keyboardWillShow/WillHide/WillChangeFrame` 驱动过渡窗口；窗口内可见键盘且读者在底部时逐帧无动画贴底（I8）；`viewDidLayoutSubviews` 检测容器高度变化 → 贴底（I6，对应旧 `.defaultScrollAnchor(.bottom, for: .sizeChanges)`）。
+- **键盘/容器**：`keyboardWillShow/WillHide/WillChangeFrame` 驱动过渡窗口；窗口内可见键盘且读者在底部时逐帧无动画贴底（I8）；`viewDidLayoutSubviews` / `viewSafeAreaInsetsDidChange` 同时比较 `bounds.height` 与 `adjustedContentInset.bottom` → 贴底（I6，对应旧 `.defaultScrollAnchor(.bottom, for: .sizeChanges)`）。布局在宽度变化时通知 controller（`layoutNeedsMeasurement`），纯旋转/分屏不依赖一次 apply 也会重测。
+- **Reduce Motion**：wrapper 把 `accessibilityReduceMotion` 下发给 controller；开启时 `requestBottom` 走无动画分支（I5 与旧路径一致）。
+- **拖拽中的修正**：native `.interacting` 映射为决策层的 `isTracking`，拖拽期间 pending 修正不会在手指下改 offset。
 
 ### 14.3 开关与第 0 步标记
 
@@ -616,9 +618,11 @@ SessionChatModel
 
 ### 14.4 C4 明确不做
 
-- I10–I13 历史 pull/锚点、I14/I15 探针、I20 浮动“到底部”、I16 内容坐标空间、I24 内容列（已由 `TimelineListMetrics` 承担）中的交互部分、I25 Markdown 外置：留 C5。新路径的 older/latest prompt 在 C4 只渲染、按钮禁用；C5 接上真实 load。
+- I10–I13 历史 pull/锚点、I14/I15 探针、I19 点空白收键盘、I20 浮动“到底部”、I16 内容坐标空间、I23 的 soft edge effect/Catalyst 注册、I24 内容列（已由 `TimelineListMetrics` 承担）中的交互部分、I25 Markdown 外置与附件 preview 状态外置：留 C5。新路径的 older/latest prompt 在 C4 只渲染、按钮禁用；C5 接上真实 load。I23 的 `isOpeningReady` 手势/无障碍门已在 C4 接上。
 - tail 的 12↔32 状态行动画在 C4 采用“先测量最终高度再 apply”，动画本身不逐帧改布局；C5 再按 §3.3 的受控例外逐帧修正。
-- C4 验证范围：CI `test`/`build` 必过 + C3 gate 复跑不变；产品路径的运行时行为**未验证**，需出默认 off 的包在真机上打开开关验收。
+- **测量预算未定**：C4 的 `TimelineMeasurementPipeline` 仍是 `.max`，开屏/旋转会对窗口内所有缺 key 的行同步离屏测量；§7.4 的吞吐预算要等 C2 实测后再写死，C4 不编数字。pending 测量当前是串行 4×150ms 重试，长 Markdown 解析可能留在估算高度；这两项随 C5 的测量/解析外置一起收敛。
+- **C4 实现偏差**：原生 delegate / `layoutDidChangeContentHeight` 里直接 `setContentOffset`，没有走 §5 写的“合并器”；`contentSize`/`adjustedContentInset` KVO 与“测量完成无条件发布探针”也未接（`onViewportChanged` 当前为 nil）。C4 的键盘/容器锚底靠 `viewDidLayoutSubviews` + `viewSafeAreaInsetsDidChange` + `didScroll` 三个入口。
+- C4 验证范围：CI `test`/`build` 必过 + C3 gate 复跑不变；**产品路径的运行时行为未验证**。真机第 0 步必须先按 §13.3 #1 并排打印 SwiftUI/UIKit viewport 五元组（差 ≤1pt），再验 I1–I9/I27–I31；旋转、动态字号中途变化、键盘 safe-area 形态都必须在真机上确认，不能拿 C3 合成行 gate 当证据。
 
 ---
 

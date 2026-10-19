@@ -467,7 +467,7 @@ final class TimelineCollectionController: UIViewController {
         guard let collectionView, !navigationSuspended else { return false }
         collectionView.layoutIfNeeded()
         beginOpeningBottom()
-        return viewport.isMeasured && viewport.measuredAtBottom
+        return viewport.isMeasured && viewport.contentHeight > 0 && viewport.measuredAtBottom
     }
 
     /// Follow requests (sending, a new pending bubble) only arm when the
@@ -605,7 +605,13 @@ final class TimelineCollectionController: UIViewController {
     }
 
     private func noteBottomArrival() {
-        guard !isScrollingToTop, !phase.userIsScrolling, viewport.measuredAtBottom else { return }
+        // A zero content height is an unprepared layout, not an arrival:
+        // `measuredAtBottom` is true for any viewport taller than the
+        // (empty) content. Arming there would pin the page on the first
+        // measured growth.
+        guard viewport.contentHeight > 0,
+              !isScrollingToTop, !phase.userIsScrolling,
+              viewport.measuredAtBottom else { return }
         readerRestsAtBottom = true
         if mode == .returning { mode = interactionPresented ? .reading : .following }
         if interactionPresented {
@@ -613,10 +619,12 @@ final class TimelineCollectionController: UIViewController {
             // opening/forced target that happened to land must not keep
             // re-pinning on later stream growth.
             armedBottom.disarm()
-        } else if armedBottom.source == .forced || armedBottom.source == nil {
-            // The explicit command has landed. Persistence from here is the
-            // reader's at-bottom follow, exactly what the old state machine
-            // did by flipping mode to `.following` on completion.
+        } else if mode != .reading,
+                  armedBottom.source == .forced || armedBottom.source == nil {
+            // Only a return (`.returning`) or an already-following page turns
+            // an arrival into persistence. A programmatic offset change while
+            // the mode is `.reading` is not a reader gesture and must not
+            // start following.
             armedBottom.disarm()
             armedBottom.readerDidRestAtBottom(readerRestsAtBottom: true,
                                               interactionPresented: false)
@@ -652,7 +660,8 @@ final class TimelineCollectionController: UIViewController {
             return
         }
         guard !navigationSuspended, mode != .returning else { return }
-        let rests = readerSettledAtBottom || viewport.measuredAtBottom
+        let rests = viewport.contentHeight > 0
+            && (readerSettledAtBottom || viewport.measuredAtBottom)
         readerSettledAtBottom = false
         readerRestsAtBottom = rests
         if rests, !interactionPresented {

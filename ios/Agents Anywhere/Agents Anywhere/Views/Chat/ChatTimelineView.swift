@@ -482,15 +482,21 @@ struct ChatTimelineView: View {
         acknowledgeInstantOpeningIfArrived()
     }
     private func historyDidLayOut(_ layout: TimelineHistoryLayout) {
-        historyUpdates.submit(layout) { layout in
-            if historyLayout != layout { historyLayout = layout }
-            guard !navigationIsSuspended, var restoration = historyPosition else { return }
+        // The correction must reach native layout in the same turn as the
+        // measurement. Publishing it through the coalescer below lands one
+        // main-queue turn later — which is exactly the frame where a prepended
+        // history page has already shifted what the reader sees.
+        if !navigationIsSuspended, var restoration = historyPosition {
             let offset = restoration.laidOut(layout, generation: scrolling.navigationGeneration)
             if historyPosition != restoration { historyPosition = restoration }
-            guard let offset else { return }
-            var transaction = Transaction(animation: nil)
-            transaction.disablesAnimations = true
-            withTransaction(transaction) { position.scrollTo(y: offset) }
+            if let offset {
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { position.scrollTo(y: offset) }
+            }
+        }
+        historyUpdates.submit(layout) { layout in
+            if historyLayout != layout { historyLayout = layout }
         }
     }
     private struct HistorySettlement: Equatable {

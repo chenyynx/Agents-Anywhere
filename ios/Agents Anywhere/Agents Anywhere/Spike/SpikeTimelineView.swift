@@ -65,14 +65,15 @@ final class SpikeCell: UICollectionViewCell {
 
 @MainActor
 final class SpikeCollectionController: UIViewController, UICollectionViewDelegate {
-    private let model: SpikeModel
-    private var collectionView: UICollectionView!
-    private var layout: SpikeTimelineLayout!
+    let model: SpikeModel
+    var collectionView: UICollectionView!
+    var layout: SpikeTimelineLayout!
     private var dataSource: UICollectionViewDiffableDataSource<Int, String>!
     private var itemsByID: [String: SpikeModel.Item] = [:]
     private var lastRevisions: [String: Int] = [:]
-    private var lastGeneration = -1
+    var lastGeneration = -1
     private var lastScrollCommand = -1
+    private var autoRunStarted = false
 
     init(model: SpikeModel) {
         self.model = model
@@ -130,6 +131,16 @@ final class SpikeCollectionController: UIViewController, UICollectionViewDelegat
         }
 
         sync()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        guard !autoRunStarted,
+              ProcessInfo.processInfo.arguments.contains(SpikeAutoRunner.launchArgument) else { return }
+        autoRunStarted = true
+        Task { @MainActor in
+            await SpikeAutoRunner.run(on: self)
+        }
     }
 
     // MARK: SwiftUI -> controller
@@ -193,7 +204,7 @@ final class SpikeCollectionController: UIViewController, UICollectionViewDelegat
         model.recordContentHeight(collectionView.contentSize.height)
     }
 
-    private func performScroll(_ target: SpikeModel.ScrollTarget) {
+    func performScroll(_ target: SpikeModel.ScrollTarget) {
         let inset = collectionView.adjustedContentInset
         switch target {
         case .top:

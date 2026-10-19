@@ -137,4 +137,9 @@ final class SpikeTimelineLayout: UICollectionViewLayout {
         let lines = item.text.split(separator: "\n", omittingEmptySubsequences: false).count
         return CGFloat(lines) * 20 + 24
     }
+
+    /// Read-only access for the auto-run probe; `measured` itself stays private.
+    func measuredHeight(of id: String) -> CGFloat? {
+        measured[id]
+    }
 }

@@ -407,11 +407,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         return ids
     }
 
-    private static let emptyGroupSignature = TimelineGroupContentSignature(
-        rows: [], disclosureExpanded: false, inlineNotices: [], attachments: [],
-        turnAction: nil,
-        turnSuppression: TimelineTurnSuppression(isRunning: false, hasNewerItems: false,
-                                                 hasPendingUserMessage: false))
+    private static var emptyGroupSignature: TimelineGroupContentSignature {
+        TimelineGroupContentSignature(
+            rows: [], disclosureExpanded: false, inlineNotices: [], attachments: [],
+            turnAction: nil,
+            turnSuppression: TimelineTurnSuppression(isRunning: false, hasNewerItems: false,
+                                                     hasPendingUserMessage: false))
+    }
 
     // MARK: - Typography
 

@@ -314,9 +314,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let visibleNotices = notices.filter { $0.isVisible && !$0.blocks(model.session.id) }
         let interactionTargets = Set(notices.filter(\.isVisible).compactMap(\.timelineTargetID))
         let groups = TimelineGrouping.groups(model.timeline.rows, interactionTargets: interactionTargets)
-        let rowIDs = Set(model.timeline.rows.map(\.id))
+        let timelineRowIDs = Set(model.timeline.rows.map(\.id))
         let tailNotices = SessionNoticeRouting.tailNotices(notices, sessionID: model.session.id,
-                                                          timelineRowIDs: rowIDs)
+                                                          timelineRowIDs: timelineRowIDs)
         let pending = model.timeline.pendingMessages
         let identity = TimelineItemIdentity.build(
             hasOlderPrompt: model.session.hasOlderItems || keepsOlderPrompt,

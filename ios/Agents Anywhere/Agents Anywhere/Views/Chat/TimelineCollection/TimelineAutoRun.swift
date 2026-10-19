@@ -287,7 +287,11 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             report["fold"] = ["collapsed": collapsed, "expanded": expanded,
                               "content": sample?.content ?? 0,
                               "diagnostics": controller.preferredDiagnostics,
-                              "layoutDiagnostics": controller.layout.preferredHeightDiagnostics]
+                              "layoutDiagnostics": controller.layout.preferredHeightDiagnostics,
+                              "prepareCount": controller.layout.prepareCount,
+                              "appliedHeight": controller.layout.lastPreferredAppliedHeight[item.itemID] ?? -1,
+                              "preparedHeight": controller.layout.lastPreparedHeight[item.itemID] ?? -1,
+                              "preparedRevision": controller.layout.lastPreparedKeyRevision[item.itemID] ?? -1]
         }
         if let entry = entries.first(where: { $0.kind == .notice }) {
             let item = listItem(entry)

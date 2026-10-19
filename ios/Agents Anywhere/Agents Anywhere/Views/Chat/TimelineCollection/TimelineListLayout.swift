@@ -82,6 +82,7 @@ final class TimelineListLayout: UICollectionViewLayout {
             contentHeight = 0
             return
         }
+        prepareCount += 1
         let width = collectionView.bounds.width
         let column = TimelineListMetrics.column(containerWidth: width)
         let count = host.layoutItemCount
@@ -106,6 +107,8 @@ final class TimelineListLayout: UICollectionViewLayout {
                 heights.markPending(item.itemID)
             }
             heights.noteDisplayedHeight(height, for: item.itemID)
+            lastPreparedHeight[item.itemID] = height
+            lastPreparedKeyRevision[item.itemID] = key.contentRevision
             items.append(item)
             keys.append(key)
             resolved.append(height)
@@ -359,6 +362,10 @@ final class TimelineListLayout: UICollectionViewLayout {
     /// invalidation are the same ones the UIKit preferred-attributes path
     /// uses.
     private(set) var preferredHeightDiagnostics: [String: Int] = [:]
+    private(set) var prepareCount = 0
+    private(set) var lastPreferredAppliedHeight: [String: CGFloat] = [:]
+    private(set) var lastPreparedHeight: [String: CGFloat] = [:]
+    private(set) var lastPreparedKeyRevision: [String: Int] = [:]
 
     private func notePreferred(_ key: String) {
         preferredHeightDiagnostics[key, default: 0] += 1
@@ -397,9 +404,12 @@ final class TimelineListLayout: UICollectionViewLayout {
             keyboardTransition: state.keyboardTransition,
             hasCachedHeight: heights.hasMeasuredOrPrecalcHeight(for: key))
         if decision.height == .deferUntilSettled {
+            notePreferred("deferred")
             deferredHeights[itemID] = DeferredHeight(key: key, height: height)
             return
         }
+        notePreferred("applied")
+        lastPreferredAppliedHeight[itemID] = height
         heights.set(height, for: key, tier: .measured)
         heights.noteDisplayedHeight(height, for: itemID)
         invalidateHeight(itemID: itemID, attributes: attributes,

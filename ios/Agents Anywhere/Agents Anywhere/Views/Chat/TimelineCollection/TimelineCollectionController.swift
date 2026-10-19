@@ -212,6 +212,9 @@ final class TimelineCollectionController: UIViewController {
             if abs(fitting - current) > 0.5 {
                 notePreferred("applyRequested")
                 layout.applyPreferredHeight(ceil(fitting), for: item.itemID)
+                // The controller owns this correction path; force the layout
+                // pass so the new value is observable in the same turn.
+                collectionView.layoutIfNeeded()
             } else {
                 notePreferred("alreadyEqual")
             }

@@ -1,4 +1,5 @@
 #if DEBUG
+import CDMarkdownKit
 import Observation
 import SwiftUI
 import UIKit

@@ -154,12 +154,27 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // rows would park a large blank block above the fold.
             let expanded = group.kind == .single || model.disclosures.isExpanded("group:\(group.id)")
             let rows = expanded ? group.rows : []
+            let cwd = model.session.metadata?.cwd
             var textRows: [TimelineHeightEstimate.TextRow] = []
             textRows.reserveCapacity(rows.count)
             for row in rows {
+                // A collapsed fold renders its header, not its body. Counting
+                // the hidden reasoning/tool text would park a large blank
+                // block above the fold until the cell fit corrects it.
+                let kind = row.entry(cwd: cwd).kind
+                let folded: Bool
+                switch kind {
+                case .reasoning, .compact, .tool:
+                    folded = !model.disclosures.isExpanded(row.id)
+                case .marker:
+                    folded = row.structure.type != .message
+                        && !model.disclosures.isExpanded(row.id)
+                case .artifact:
+                    folded = false
+                }
                 textRows.append(TimelineHeightEstimate.TextRow(
-                    text: row.text,
-                    attachmentCount: attachments(of: row.value).count))
+                    text: folded ? "" : row.text,
+                    attachmentCount: folded ? 0 : attachments(of: row.value).count))
             }
             return .text(textEstimate(for: item, rows: textRows, minimum: expanded ? 44 : 64))
         }

@@ -29,7 +29,14 @@ final class TimelineHostingCell: UICollectionViewCell {
     func configure(_ view: AnyView, policy: TimelineRowHeightPolicy) {
         self.policy = policy
         contentConfiguration = UIHostingConfiguration {
+            // The cell may still carry the estimate when the async content
+            // first parses. Without a vertical fixed size SwiftUI compresses
+            // the row into that estimate and the row's own children overlap;
+            // clip alone cannot hide that. Lay the content out at its ideal
+            // height and let the cell bounds clip until the visible-cell fit
+            // corrects the frame.
             view
+                .fixedSize(horizontal: false, vertical: true)
         }
         .margins(.all, 0)
         .minSize(width: 0, height: 0)

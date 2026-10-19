@@ -114,7 +114,10 @@ final class TimelineCollectionController: UIViewController {
         // edge effect, which reads as a solid bar over the transparent page;
         // match the old page on both edges.
         collectionView.topEdgeEffect.style = .soft
-        collectionView.bottomEdgeEffect.style = .soft
+        // The composer is a SwiftUI safe-area inset with its own material;
+        // the old ScrollView had no bottom edge effect. A bottom effect here
+        // adds a second, opaque-looking bar.
+        collectionView.bottomEdgeEffect.isHidden = true
         collectionView.alwaysBounceVertical = true
         collectionView.showsVerticalScrollIndicator = false
         collectionView.keyboardDismissMode = .interactive // I7
@@ -854,10 +857,28 @@ final class TimelineCollectionController: UIViewController {
     private func beginPulls(at viewport: TimelineViewport) {
         // The prompt flags are geometric, not model flags: a pull anywhere
         // else in the transcript must not be read as "at history edge".
-        olderPromptVisible = currentItems.first == .olderPrompt && promptIsVisible(.olderPrompt)
-        latestPromptVisible = currentItems.last == .latestPrompt && promptIsVisible(.latestPrompt)
+        olderPromptVisible = currentItems.first == .olderPrompt && canLoadOlder
+            && promptIsVisible(.olderPrompt)
+        latestPromptVisible = currentItems.last == .latestPrompt && canLoadLatest
+            && promptIsVisible(.latestPrompt)
         olderPull.begin(at: viewport, promptVisible: olderPromptVisible, canLoad: canLoadOlder)
         latestPull.begin(at: viewport, promptVisible: latestPromptVisible, canLoad: canLoadLatest)
+    }
+
+    /// A drag can start just below the top and reach the prompt mid-gesture.
+    /// The one-time arm at `scrollViewWillBeginDragging` would miss it, which
+    /// is exactly the "pull does nothing, tap works" shape.
+    private func rearmVisiblePulls(at viewport: TimelineViewport) {
+        if !olderPromptVisible, currentItems.first == .olderPrompt,
+           canLoadOlder, promptIsVisible(.olderPrompt) {
+            olderPromptVisible = true
+            olderPull.begin(at: viewport, promptVisible: true, canLoad: true)
+        }
+        if !latestPromptVisible, currentItems.last == .latestPrompt,
+           canLoadLatest, promptIsVisible(.latestPrompt) {
+            latestPromptVisible = true
+            latestPull.begin(at: viewport, promptVisible: true, canLoad: true)
+        }
     }
 
     private func promptIsVisible(_ item: TimelineListItem) -> Bool {
@@ -1131,6 +1152,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard !navigationSuspended else { return }
         let current = viewport
+        if phase.phase == .interacting { rearmVisiblePulls(at: current) }
         if phase.phase == .interacting || phase.phase == .decelerating { updatePulls(current) }
         pinBottomForKeyboardIfNeeded()
         publishViewport()

@@ -89,6 +89,10 @@ struct TimelineChatTimelineView: View {
                 if transition.gestureBegan { bridge.readerDidTakeOver() }
             },
             onControllerReady: { controller in bridge.attach(controller) })
+            // Match the SwiftUI timeline's soft navigation-bar edge. The
+            // collection view also sets its own top edge style; this covers
+            // the page-level bar treatment.
+            .scrollEdgeEffectStyle(.soft, for: .top)
             .opacity(model.openingPositionSettled ? 1 : 0)
             .allowsHitTesting(model.isOpeningReady)
             .accessibilityHidden(!model.isOpeningReady)

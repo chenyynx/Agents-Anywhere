@@ -236,6 +236,10 @@ struct SessionChatView: View, Equatable {
             subtitle: SessionHeaderSubtitle.text(metadata: session.metadata, deviceName: deviceName,
                 fallbackRuntimeName: fallbackRuntimeName),
             status: model.headerStatus, alignsTitleLeading: true, onMenu: onMenu))
+        // The collection timeline's UIScrollView owns its soft top edge
+        // effect; the navigation bar must not paint its own opaque bar over
+        // it. The SwiftUI path keeps the system default.
+        .toolbarBackground(usesCollectionTimeline ? .hidden : .automatic, for: .navigationBar)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button { sheet = .files } label: { AppSymbol("folder") }

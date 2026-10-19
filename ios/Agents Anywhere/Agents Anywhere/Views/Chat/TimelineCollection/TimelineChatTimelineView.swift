@@ -222,6 +222,9 @@ final class TimelineChatBridge: ObservableObject {
         // before the request. The adapter installs the absolute prepend
         // target on the refresh that brings the new page, before the
         // controller applies it.
+        // A history load is a browsing action; a bottom follow target left
+        // from an earlier state must not fight the prepend's anchor.
+        controller.disarmBottom()
         guard let anchor = controller.visibleAnchorRowID(),
               let before = adapter.firstRowID else { return }
         isLoadingOlder = true

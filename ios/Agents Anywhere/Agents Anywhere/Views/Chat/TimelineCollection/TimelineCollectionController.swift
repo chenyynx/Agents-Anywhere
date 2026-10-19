@@ -951,6 +951,15 @@ final class TimelineCollectionController: UIViewController {
                              edge: TimelineHistoryLayout.Edge,
                              newItems: [TimelineListItem],
                              origin: TimelineHistoryLayout) -> TimelineHistoryPosition? {
+        // Loading older is a browsing action. Stop any follow target before
+        // the prepend's content-size changes: a still-armed bottom would pin
+        // the page and the absolute anchor could never hold.
+        armedBottom.disarm()
+        mode = .reading
+        readerRestsAtBottom = false
+        readerSettledAtBottom = false
+        userScrollSettleTask?.cancel()
+        stopBottomAnimation()
         measureSynchronously(newItems, width: columnWidth)
         guard let projected = projectedHistoryLayout(items: newItems,
                                                      anchorRowID: anchorRowID, edge: edge) else { return nil }

@@ -50,4 +50,10 @@ nonisolated struct TimelineLayoutInteractionState: Equatable {
     /// called synchronously from `prepare`; the implementation must not
     /// re-enter the layout (schedule work on the next main-queue turn).
     func layoutDidChangeContentHeight(_ height: CGFloat)
+
+    /// A width change re-keyed every row and left real measurements missing.
+    /// A pure rotation/split-view resize does not run an apply, so the layout
+    /// must ask the host to schedule them; the host must not measure inside
+    /// `prepare`.
+    func layoutNeedsMeasurement(width: CGFloat)
 }

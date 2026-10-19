@@ -230,7 +230,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             hasLatestPrompt: model.session.hasNewerItems)
 
         var groupsByID: [String: ChatTimelineGroup] = [:]
-        for group in groups { groupsByID[group.id] = group }
+        for group in groups where groupsByID[group.id] == nil { groupsByID[group.id] = group }
         var tailNoticesByID: [String: SessionNoticeModel] = [:]
         for notice in tailNotices where tailNoticesByID[notice.id] == nil {
             tailNoticesByID[notice.id] = notice
@@ -436,8 +436,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                    boldText: UIAccessibility.isBoldTextEnabled)
     }
 
-    static func typography(dynamicType: String, layoutDirection: Int, boldText: Bool) -> TimelineTypographySnapshot {
-        let scale = ChatTypeSettings.current
+    static func typography(dynamicType: String, layoutDirection: Int, boldText: Bool,
+                           scale: ChatTypeScale? = nil) -> TimelineTypographySnapshot {
+        let scale = scale ?? ChatTypeSettings.current
         return TimelineTypographySnapshot(
             body: scale.body,
             lineSpacing: scale.lineSpacing,

@@ -44,15 +44,31 @@ final class TimelineCollectionController: UIViewController {
     // decisions read them through `layoutInteractionState()`.
     private(set) var mode: TimelineScrollState.Mode = .reading
     private(set) var readerRestsAtBottom = false
+    /// The at-bottom verdict at the instant the finger let go. A layout tick
+    /// inside the 64 ms settlement window can move the measured viewport; the
+    /// old state ORed this latch with the fresh measurement so a reader who
+    /// arrived still resumes following.
+    private var readerSettledAtBottom = false
     private(set) var interactionPresented = false
     private var navigationSuspended = false
+    /// Commands that arrive while the drawer owns navigation. The old state
+    /// machine refused the native command but kept the intent; resume replays
+    /// it exactly once instead of silently dropping a pending/approval return.
+    private var suspendedBottomRequest: (animated: Bool, forced: Bool)?
+    private var suspendedOpeningRequest = false
     private var lastContainerHeight: CGFloat = 0
+    private var lastBottomInset: CGFloat = 0
     private var keyboardVisible = false
     private var keyboardTransitionActive = false
     private var keyboardTransitionToken = 0
     private var keyboardTransitionTask: Task<Void, Never>?
     private var userScrollSettleTask: Task<Void, Never>?
     private var isPinningBottom = false
+    private var isScrollingToTop = false
+    private var bottomArrivalCallbackScheduled = false
+    /// The old path passed `nil` to `withAnimation` under Reduce Motion, so a
+    /// return landed immediately. The wrapper forwards the environment value.
+    private var reduceMotion = false
     private var didMarkActivation = false
     private static let log = Logger(subsystem: "agents.anywhere", category: "timeline")
 
@@ -68,6 +84,10 @@ final class TimelineCollectionController: UIViewController {
     var onPhaseChanged: ((TimelinePhaseMapping.Transition) -> Void)?
     var onViewportChanged: ((TimelineViewport) -> Void)?
     var onContentHeightChanged: ((CGFloat) -> Void)?
+    /// Fires whenever the measured viewport reaches the bottom. The product
+    /// wrapper uses it to release the cold-load mask on a real arrival instead
+    /// of on the apply completion (which can precede the first layout).
+    var onBottomArrived: (() -> Void)?
     /// Fires after a snapshot apply, before pending measurements start. The
     /// C3 gate uses it to capture the first displayed height for the async
     /// Markdown probe.
@@ -134,7 +154,10 @@ final class TimelineCollectionController: UIViewController {
         // The keyboard and the composer both arrive as safe-area changes; the
         // old timeline anchored every container-size change to the bottom
         // (`.defaultScrollAnchor(.bottom, for: .sizeChanges)`). Re-evaluate
-        // after the inset has settled as well as on bounds changes.
+        // after the inset has settled as well as on bounds changes, and run
+        // the per-frame keyboard pin here too: an inset-only change may never
+        // move `bounds.height`.
+        pinBottomForKeyboardIfNeeded()
         handleContainerHeightChange()
     }
 
@@ -182,19 +205,28 @@ final class TimelineCollectionController: UIViewController {
         // A content change and a key change are not the same set: rotation,
         // Dynamic Type and a typography setting produce a new width/key with
         // an unchanged signature. Measure anything the cache has no real
-        // height for, not only signature-changed items.
+        // height for, and reconfigure every cell whose key moved: the cell's
+        // SwiftUI text reads the type scale from UserDefaults, which is not
+        // observable, so a new height without a reconfigure would pair the
+        // new frame with the old font.
         let changed = Set(change.changed)
-        let toMeasure = items.filter { item in
-            if changed.contains(item) { return true }
+        var toMeasure: [TimelineListItem] = []
+        var reconfigure = changed
+        for item in items {
             let key = content.heightKey(for: item, width: columnWidth)
-            return !layout.heights.hasMeasuredOrPrecalcHeight(for: key)
+            if layout.heights.currentKey(for: item.itemID) != key {
+                reconfigure.insert(item)
+            }
+            if changed.contains(item) || !layout.heights.hasMeasuredOrPrecalcHeight(for: key) {
+                toMeasure.append(item)
+            }
         }
         measureSynchronously(toMeasure, width: columnWidth)
 
         var snapshot = NSDiffableDataSourceSnapshot<TimelineCollectionSection, TimelineListItem>()
         snapshot.appendSections([.main])
         snapshot.appendItems(items)
-        let existingChanges = change.changed.filter { oldIDs.contains($0) }
+        let existingChanges = items.filter { oldIDs.contains($0) && reconfigure.contains($0) }
         if !existingChanges.isEmpty { snapshot.reconfigureItems(existingChanges) }
         currentItems = items
         dataSource.apply(snapshot, animatingDifferences: animating) { [weak self] in
@@ -279,6 +311,12 @@ final class TimelineCollectionController: UIViewController {
 
     private func measureSynchronously(_ items: [TimelineListItem], width: CGFloat) {
         guard let content, let measurer, width > 0 else { return }
+        // A typography change re-keys every row in the same SwiftUI update that
+        // calls this measurement, before the next layout pass. Sync the
+        // measurer's traits now, or the new key caches an old-type height.
+        if let hosted = measurer as? TimelineHostingHeightMeasurer {
+            hosted.updateTraitOverrides(from: traitCollection)
+        }
         let requests = items.compactMap { item -> TimelineMeasurementRequest? in
             let key = content.heightKey(for: item, width: width)
             guard !layout.heights.hasMeasuredOrPrecalcHeight(for: key) else { return nil }
@@ -301,6 +339,9 @@ final class TimelineCollectionController: UIViewController {
         guard !pending.isEmpty, let measurer, columnWidth > 0 else { return }
         let width = columnWidth
         pendingMeasurementTask = Task { @MainActor [weak self] in
+            if let self, let hosted = self.measurer as? TimelineHostingHeightMeasurer {
+                hosted.updateTraitOverrides(from: self.traitCollection)
+            }
             for item in pending {
                 guard let self, !Task.isCancelled, self.currentItems.contains(item) else { return }
                 guard let content = self.content else { return }
@@ -363,9 +404,14 @@ final class TimelineCollectionController: UIViewController {
     /// Forced commands (pill / loadLatest / approval dismissed / window
     /// re-assert) arm unconditionally; follow requests use the gated arm.
     func requestBottom(animated: Bool, forced: Bool = true) {
+        if navigationSuspended {
+            suspendedBottomRequest = (animated, forced || (suspendedBottomRequest?.forced ?? false))
+            return
+        }
         guard collectionView != nil else { return }
         userScrollSettleTask?.cancel()
         bottomAnimationWatchdog?.cancel()
+        readerSettledAtBottom = false
         mode = .returning
         if forced {
             armedBottom.forceArm()
@@ -381,7 +427,7 @@ final class TimelineCollectionController: UIViewController {
             containerHeight: collectionView.bounds.height,
             topInset: collectionView.adjustedContentInset.top,
             bottomInset: collectionView.adjustedContentInset.bottom)
-        if animated {
+        if animated && !reduceMotion {
             let transition = phase.apply(.animationBegan)
             onPhaseChanged?(transition)
             collectionView.setContentOffset(CGPoint(x: collectionView.contentOffset.x, y: target), animated: true)
@@ -392,15 +438,36 @@ final class TimelineCollectionController: UIViewController {
         }
     }
 
+    func setReduceMotion(_ value: Bool) {
+        reduceMotion = value
+    }
+
     /// Opening: arm the bottom before the first snapshot so every measured
     /// content-size change pins there, then land without an animation. The
     /// wrapper's 400 ms fallback settles the cold-load mask even if the window
     /// never arrives.
     func beginOpeningBottom() {
+        if navigationSuspended {
+            suspendedOpeningRequest = true
+            return
+        }
         guard collectionView != nil else { return }
         armedBottom.forceArm()
         mode = .returning
         snapToBottom()
+    }
+
+    /// The opening's arrival check. `onApplyCompleted` can run before the
+    /// collection view has laid out the first snapshot (the C3 gate itself
+    /// calls `layoutIfNeeded` there), so force the pass, land, and report
+    /// whether the measured viewport is truly at the bottom. The caller keeps
+    /// the cold-load mask until this returns true, or its 400 ms fallback.
+    @discardableResult
+    func settleOpeningBottom() -> Bool {
+        guard let collectionView, !navigationSuspended else { return false }
+        collectionView.layoutIfNeeded()
+        beginOpeningBottom()
+        return viewport.isMeasured && viewport.measuredAtBottom
     }
 
     /// Follow requests (sending, a new pending bubble) only arm when the
@@ -408,6 +475,7 @@ final class TimelineCollectionController: UIViewController {
     /// call `requestBottom` directly, exactly like the SwiftUI state machine.
     @discardableResult
     func requestFollowingBottom(requiresNoInteraction: Bool) -> Bool {
+        guard !navigationSuspended else { return false }
         let armMode: TimelineScrollState.Mode = armedBottom.isArmed ? .following : mode
         guard armedBottom.armFollowing(readerRestsAtBottom: readerRestsAtBottom,
                                        mode: armMode,
@@ -498,12 +566,18 @@ final class TimelineCollectionController: UIViewController {
     private func handleContainerHeightChange() {
         guard let collectionView else { return }
         let height = collectionView.bounds.height
-        guard lastContainerHeight > 0, abs(height - lastContainerHeight) > 0.5 else {
-            lastContainerHeight = height
-            return
-        }
+        let heightChanged = lastContainerHeight > 0 && abs(height - lastContainerHeight) > 0.5
         lastContainerHeight = height
-        guard !navigationSuspended else { return }
+        // `.automatic` turns safe-area changes into adjusted content inset;
+        // an inset-only keyboard/composer change must anchor too.
+        let bottomInset = collectionView.adjustedContentInset.bottom
+        let insetChanged = lastBottomInset > 0 && abs(bottomInset - lastBottomInset) > 0.5
+        lastBottomInset = bottomInset
+        guard heightChanged || insetChanged, !navigationSuspended else { return }
+        // Interactive keyboard dismissal shrinks the container while the
+        // finger is down; the keyboard's own pin is muted then, and this
+        // anchor must not fight the gesture either.
+        guard !(keyboardVisible && phase.userIsScrolling) else { return }
         snapToBottom()
         noteBottomArrival()
     }
@@ -531,7 +605,7 @@ final class TimelineCollectionController: UIViewController {
     }
 
     private func noteBottomArrival() {
-        guard !phase.userIsScrolling, viewport.measuredAtBottom else { return }
+        guard !isScrollingToTop, !phase.userIsScrolling, viewport.measuredAtBottom else { return }
         readerRestsAtBottom = true
         if mode == .returning { mode = interactionPresented ? .reading : .following }
         if interactionPresented {
@@ -546,6 +620,16 @@ final class TimelineCollectionController: UIViewController {
             armedBottom.disarm()
             armedBottom.readerDidRestAtBottom(readerRestsAtBottom: true,
                                               interactionPresented: false)
+        }
+        if onBottomArrived != nil, !bottomArrivalCallbackScheduled {
+            // `noteBottomArrival` can run inside `prepare`; never mutate
+            // SwiftUI model state from a layout pass.
+            bottomArrivalCallbackScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.bottomArrivalCallbackScheduled = false
+                self.onBottomArrived?()
+            }
         }
     }
 
@@ -567,8 +651,9 @@ final class TimelineCollectionController: UIViewController {
             scheduleUserScrollSettle()
             return
         }
-        guard !navigationSuspended else { return }
-        let rests = viewport.measuredAtBottom
+        guard !navigationSuspended, mode != .returning else { return }
+        let rests = readerSettledAtBottom || viewport.measuredAtBottom
+        readerSettledAtBottom = false
         readerRestsAtBottom = rests
         if rests, !interactionPresented {
             mode = .following
@@ -597,7 +682,7 @@ final class TimelineCollectionController: UIViewController {
     }
 
     private func repinIfArmed() {
-        guard armedBottom.isArmed else { return }
+        guard !isPinningBottom, armedBottom.isArmed else { return }
         guard let target = armedBottom.contentChanged(contentHeight: layout.contentHeight,
             containerHeight: collectionView.bounds.height,
             topInset: collectionView.adjustedContentInset.top,
@@ -712,6 +797,8 @@ final class TimelineCollectionController: UIViewController {
             userScrollSettleTask?.cancel()
             armedBottom.disarm()
             mode = .reading
+            readerSettledAtBottom = false
+            isScrollingToTop = false
         } else {
             // An interrupted animation has no completion; clear the phase so
             // the next reader gesture is not read as an animation completion.
@@ -730,6 +817,14 @@ final class TimelineCollectionController: UIViewController {
                 mode = .reading
             }
             publishViewport()
+            if suspendedOpeningRequest {
+                suspendedOpeningRequest = false
+                suspendedBottomRequest = nil
+                beginOpeningBottom()
+            } else if let request = suspendedBottomRequest {
+                suspendedBottomRequest = nil
+                requestBottom(animated: request.animated, forced: request.forced)
+            }
         }
     }
 }
@@ -759,7 +854,11 @@ extension TimelineCollectionController: TimelineListLayoutHost {
     func layoutInteractionState() -> TimelineLayoutInteractionState {
         var state = content?.interactionState() ?? TimelineLayoutInteractionState()
         state.hasArmedBottomTarget = armedBottom.isArmed
-        state.isTracking = false // native drags report `.interacting`, not `.tracking`
+        // Native drags report `.interacting`; the decision's "tracking" input
+        // means "the finger is down", so map the native phase onto it. Without
+        // this, a pending-measurement correction moves the offset under the
+        // reader's finger during a drag.
+        state.isTracking = phase.phase == .interacting
         state.isDecelerating = phase.phase == .decelerating
         state.userIsScrolling = phase.userIsScrolling
         state.keyboardTransition = keyboardTransitionActive
@@ -778,22 +877,37 @@ extension TimelineCollectionController: TimelineListLayoutHost {
         noteBottomArrival()
         onContentHeightChanged?(height)
     }
+
+    /// A width change (rotation, split view) re-keyed rows without an apply.
+    /// Measure on the next turn: `prepare` must not start measurement, and
+    /// the pending set is only complete after this prepare returns.
+    func layoutNeedsMeasurement(width: CGFloat) {
+        guard width > 0 else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.navigationSuspended, !self.currentItems.isEmpty else { return }
+            self.schedulePendingMeasurements()
+        }
+    }
 }
 
 extension TimelineCollectionController: UICollectionViewDelegate {
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        guard !navigationSuspended else { return }
         bottomAnimationWatchdog?.cancel()
         userScrollSettleTask?.cancel()
+        isScrollingToTop = false
         let transition = phase.apply(.willBeginDragging)
         onPhaseChanged?(transition)
         layout.noteDragWillBegin()
         armedBottom.disarm()
         mode = .reading
         readerRestsAtBottom = false
+        readerSettledAtBottom = false
         beginPulls(at: viewport)
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard !navigationSuspended else { return }
         let current = viewport
         if phase.phase == .interacting || phase.phase == .decelerating { updatePulls(current) }
         pinBottomForKeyboardIfNeeded()
@@ -802,16 +916,20 @@ extension TimelineCollectionController: UICollectionViewDelegate {
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        guard !navigationSuspended else { return }
         let transition = phase.apply(.didEndDragging(willDecelerate: decelerate))
         onPhaseChanged?(transition)
+        if !decelerate { readerSettledAtBottom = viewport.measuredAtBottom }
         layout.noteDragDidEnd(willDecelerate: decelerate)
         scheduleUserScrollSettle()
         publishViewport()
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        guard !navigationSuspended else { return }
         let transition = phase.apply(.didEndDecelerating)
         onPhaseChanged?(transition)
+        readerSettledAtBottom = viewport.measuredAtBottom
         layout.noteDecelerationDidEnd()
         scheduleUserScrollSettle()
         publishViewport()
@@ -826,18 +944,26 @@ extension TimelineCollectionController: UICollectionViewDelegate {
     }
 
     func scrollViewShouldScrollToTop(_ scrollView: UIScrollView) -> Bool {
+        guard !navigationSuspended else { return false }
+        isScrollingToTop = true
         let transition = phase.apply(.scrollToTopBegan)
         onPhaseChanged?(transition)
         userScrollSettleTask?.cancel()
         armedBottom.disarm()
         mode = .reading
         readerRestsAtBottom = false
+        readerSettledAtBottom = false
         return true
     }
 
     func scrollViewDidScrollToTop(_ scrollView: UIScrollView) {
+        guard !navigationSuspended else { return }
+        isScrollingToTop = false
         let transition = phase.apply(.scrollToTopEnded)
         onPhaseChanged?(transition)
+        armedBottom.disarm()
+        mode = .reading
+        readerRestsAtBottom = false
         publishViewport()
     }
 }

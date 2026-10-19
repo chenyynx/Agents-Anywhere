@@ -17,8 +17,15 @@ struct TimelineChatTimelineView: View {
     @Environment(\.dynamicTypeSize) private var dynamicType
     @Environment(\.layoutDirection) private var layoutDirection
     @Environment(\.legibilityWeight) private var legibilityWeight
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.sidebarDrawerIsTransitioning) private var sidebarIsTransitioning
     @Environment(\.sidebarDrawerObscuresDetail) private var sidebarObscuresDetail
+    // The chat type scale is stored in UserDefaults, which is not observable.
+    // Reading the same keys through AppStorage makes a Settings change
+    // re-evaluate this wrapper and produce a new height key/reconfigure.
+    @AppStorage(ChatTypeSettings.schemeKey) private var typeSchemeRaw = ChatTypeScheme.compact.rawValue
+    @AppStorage(ChatTypeSettings.bodySizeKey) private var typeBodySize = 0.0
+    @AppStorage(ChatTypeSettings.customKey) private var typeCustomRaw = ""
 
     init(model: SessionChatModel,
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void,
@@ -36,10 +43,15 @@ struct TimelineChatTimelineView: View {
         sidebarIsTransitioning || sidebarObscuresDetail
     }
     private var typography: TimelineTypographySnapshot {
-        TimelineChatContentAdapter.typography(
+        let scale = ChatTypeSettings.resolve(
+            schemeRaw: typeSchemeRaw,
+            bodySizeRaw: typeBodySize > 0 ? typeBodySize : nil,
+            customRaw: typeCustomRaw)
+        return TimelineChatContentAdapter.typography(
             dynamicType: String(describing: dynamicType),
             layoutDirection: layoutDirection == .rightToLeft ? 1 : 0,
-            boldText: legibilityWeight == .bold)
+            boldText: legibilityWeight == .bold,
+            scale: scale)
     }
 
     var body: some View {
@@ -53,6 +65,16 @@ struct TimelineChatTimelineView: View {
         let _ = model.disclosures.revision
         let _ = model.responseRevision
         let _ = model.timeline.windowRevision
+        // State fields the signatures read but no row flush necessarily
+        // accompanies: a turn ending changes every group's suppression and
+        // the tail's status line, and the history prompts depend on the
+        // session's page flags.
+        let _ = model.isRunning
+        let _ = model.sendingPlaceholder
+        let _ = model.orbActivity
+        let _ = model.session.hasNewerItems
+        let _ = model.session.hasOlderItems
+        let _ = model.session.metadata?.cwd
 
         TimelineCollectionView(
             content: bridge.adapter,
@@ -70,6 +92,9 @@ struct TimelineChatTimelineView: View {
             }
             .onChange(of: navigationIsSuspended, initial: true) { _, suspended in
                 bridge.setNavigationSuspended(suspended)
+            }
+            .onChange(of: reduceMotion, initial: true) { _, value in
+                bridge.setReduceMotion(value)
             }
             .onChange(of: model.session.pendingMessages.last?.id) { _, id in
                 // A new pending bubble pulls the page to the bottom exactly as
@@ -134,6 +159,7 @@ final class TimelineChatBridge: ObservableObject {
     private(set) weak var controller: TimelineCollectionController?
     private(set) var readerTookOver = false
     private var navigationSuspended = false
+    private var reduceMotion = false
     private var openingPending = false
     private var openingSettled = false
 
@@ -150,7 +176,9 @@ final class TimelineChatBridge: ObservableObject {
         self.controller = controller
         adapter.attach(controller)
         controller.onApplyCompleted = { [weak self] in self?.applyCompleted() }
+        controller.onBottomArrived = { [weak self] in self?.openingArrived() }
         controller.setNavigationSuspended(navigationSuspended)
+        controller.setReduceMotion(reduceMotion)
         controller.setInteractionPresented(hasInteractions)
         if openingPending, !controller.items.isEmpty { applyCompleted() }
     }
@@ -167,10 +195,24 @@ final class TimelineChatBridge: ObservableObject {
     }
 
     private func applyCompleted() {
-        guard openingPending else { return }
+        guard openingPending, let controller else { return }
+        // Settle only on the measured arrival. `onApplyCompleted` can fire
+        // before the first layout; releasing the mask then would reveal the
+        // top of the window before the return lands (the old path waits for
+        // the tail/visible-bottom verdict, with 400 ms only as a fallback).
+        guard controller.settleOpeningBottom() else { return }
+        openingSettled = true
+        openingPending = false
+        model.openingPositionDidSettle()
+    }
+
+    /// The measured viewport reached the bottom after the apply completion
+    /// (e.g. pending measurements changed the content height). Release the
+    /// cold-load mask here instead of waiting for the 400 ms fallback.
+    private func openingArrived() {
+        guard openingPending, let controller, controller.viewport.measuredAtBottom else { return }
         openingPending = false
         openingSettled = true
-        controller?.beginOpeningBottom()
         model.openingPositionDidSettle()
     }
 
@@ -200,6 +242,11 @@ final class TimelineChatBridge: ObservableObject {
     func setNavigationSuspended(_ suspended: Bool) {
         navigationSuspended = suspended
         controller?.setNavigationSuspended(suspended)
+    }
+
+    func setReduceMotion(_ value: Bool) {
+        reduceMotion = value
+        controller?.setReduceMotion(value)
     }
 
     func cancel() {

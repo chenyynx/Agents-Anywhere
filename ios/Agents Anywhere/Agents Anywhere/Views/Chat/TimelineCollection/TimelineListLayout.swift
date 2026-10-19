@@ -82,6 +82,7 @@ final class TimelineListLayout: UICollectionViewLayout {
         }
         prepareCount += 1
         let width = collectionView.bounds.width
+        let widthChanged = width != lastLayoutWidth
         let column = TimelineListMetrics.column(containerWidth: width)
         let count = host.layoutItemCount
         var items: [TimelineListItem] = []
@@ -161,6 +162,11 @@ final class TimelineListLayout: UICollectionViewLayout {
         deferredHeights = deferredHeights.filter { byID[$0.key] != nil }
         if abs(previousHeight - contentHeight) > 0.5 {
             host.layoutDidChangeContentHeight(contentHeight)
+        }
+        // A pure rotation/split-view resize never runs a snapshot apply, so
+        // the controller's apply-time measurement cannot see these new keys.
+        if widthChanged, !pending.isEmpty {
+            host.layoutNeedsMeasurement(width: column.width)
         }
     }
 

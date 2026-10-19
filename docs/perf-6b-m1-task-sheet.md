@@ -650,6 +650,56 @@ SessionChatModel
 
 **不做**：不把固定 200 换成更大常数就交差；测量不可信时不启用 fixed-height 行；真实行 gate 绿之前不再发包给 pp 测试。
 
+### 15.1 复现结果与根因（2026-10-19 23:08 CST）
+
+CI run `39271249709`（commit `e23634b0`，longGroup probe）红，输出：
+
+```
+first measurement: long group stored 2.0pt before parse
+first measurement: settled 2.0 vs content 1471.0
+measurement longGroup: measured 2.0 content 1471.0 error 1469.0 > 4.0
+measurement longGroup: cell 2.0 clips content 1471.0
+```
+
+根因确认 H1（值是 2pt 的 stack spacing，不是 1pt 探针）：
+
+- `ChatMarkdownView` 的 `blocks` 初始为空，正文由 `.task` 异步解析（`ios/Agents Anywhere/Agents Anywhere/Views/Chat/Markdown/ChatMarkdownView.swift:18`、`:34-60`）。
+- 离屏 `UIHostingController` 不在 window，`.task` 不运行；`sizeThatFits` 只量到 VStack 的 2pt spacing。
+- 旧 `measure` 只拒 `<=0`，2pt 被写成 `.measured`；fixed-height 行使用 2pt。
+- H2 同时成立：旧 200pt fallback 对长行太小、对短行太大，所以重叠与大片空白同时出现。
+
+官方对照（`types.json`，module.short_name + field）：
+
+- `ClaudeTranscriptUI.TranscriptCellHost.heightDidChange: @MainActor @Sendable (CGFloat) -> ()`
+- `ClaudeTranscriptUI.TranscriptListRowHeightEstimates.provide: (Row, CGFloat) -> CGFloat?` + `cache: [RowID: CGSize]`
+- `ClaudeTranscriptUI.TranscriptListLayout.rowsOwedToNextUpdate: (ids: [RowID], arriving: [RowID: Double])?`
+
+→ 官方不依赖“离屏 hosting 预测量异步 Markdown”：行高由 cell 自报，布局把 arriving height 吸收进下一次 update。AA 按这个形状修。
+
+### 15.2 修复内容
+
+1. `TimelineHostingHeightMeasurer` 把 `height <= 1` 视为未测。
+2. controller 对非 `.plainText` 行停止同步离屏测量（离屏结果不可信且耗主线程），只保留 plain text 预测量。
+3. **可见 cell 的 `contentView.systemLayoutSizeFitting` 作为异步内容的唯一精确来源**，经 `applyMeasuredHeight` 单一写者修正；apply 完成后按 0/80/160/320/640/1200/2000/3000/5000ms 有界轮询可见 cell，滚动出现新 cell 时重启。
+4. 可信下限 `max(8, 文本估算 × 0.2)`：低于下限的拟合值不写 `.measured`，继续等待解析。
+5. 内容感知估算 `TimelineHeightEstimate`：字符宽度、CJK 双宽、行高、段落间距、附件 180pt，1.2 保守系数；首次布局用 estimate，cell 拟合后替换。旧 200pt 统一 fallback 只保留给无内容种类。
+6. cell `contentView.clipsToBounds = true`：修正到达前只截断，不叠到下一行。
+
+### 15.3 同批修复（同一次真机反馈）
+
+- **顶部/底部实心背景**：`UICollectionView.topEdgeEffect.style = .soft` / `bottomEdgeEffect.style = .soft`，对齐旧路径 `ChatTimelineView.swift:76` 的 `.scrollEdgeEffectStyle(.soft, for: .top)`。
+- **顶部不能加载**：接上 `onLoadOlder` / `onLoadLatest`、`canLoadOlder` / `canLoadLatest`、prompt 几何可见性、`beginHistoryRequest` 绝对前插目标；`loadOlder` 在 adapter refresh 中、controller apply 前安装 owed。
+
+### 15.4 验证状态
+
+- 自动化：修复提交链 `69648fad` → `8c10e380` → `b4512ef5` → `cfb74bf2` → `c248d1e4` → `fb92ce4e` → `1ae694df`；CI run `39286620583`（`1ae694df`）排队中。gate 必须满足 `firstStored >= 44`、`settled == content`、longGroup 误差 ≤4；`measureConsistency` 现在对每种行都从可见 cell 重测（`c248d1e4`）。
+- 补充修复：历史前插的 origin 在 adapter 重建 groups **之前**捕获（`fb92ce4e`）。否则新页合并锚点 group 后，旧 row 解析不到仍有布局属性的 item，绝对补偿丢失。
+- **编译红已修**：`b4512ef5`/`fb92ce4e` 的 app build 红，`TimelineChatContentAdapter.swift:382` 的局部 `rowIDs` Set 遮蔽了同名方法；`1ae694df` 改名 `timelineRowIDs`。`swift test` 的 Models 测试已绿（含新增估算测试）。
+- **无关 flaky**：`fb92ce4e` 的 test job 在 `ModelSwitchRecoveryTests.stopStaysReachableWhenADeadProjectionSaysItCannotInterrupt()`（`ModelSwitchRecoveryTests.swift:874`）失败；同一测试在 `b4512ef5` 的 test job 通过，且 `fb92ce4e` 只改 Views（SwiftPM test 不编译），按基线 flaky 记录，未改测试。
+- 审查：第一轮 reviewer 因 LiteLLM 余额/模型名错误两次未跑成；改用默认子代理模型重跑，会话结束时被停掉，**独立审查尚未完成**。
+- 真机：**未验证**。真实产品 group（`SessionTimelineGroupView`）的 cell fitting 仍要在真机长会话上确认；图片在 5s 后才加载完的高度修正、历史页面对估算高度的逐行校正不在本轮覆盖范围。
+- 旧路径：默认 off；本轮改动只在 collection timeline 内生效。`10f31100`（非 fold 行对齐）由另一会话单独 cherry-pick 到 dev（`37344c96`），与本分支改动无关。
+
 ---
 
 ## 附录 C · OpenMinis 参考（已核对上游 `b4c0661d`）

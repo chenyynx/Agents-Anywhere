@@ -37,6 +37,18 @@ final class TimelineHostingHeightMeasurer: TimelineHeightMeasuring {
         }
     }
 
+    /// The controller's traits are the authoritative Dynamic Type / RTL /
+    /// display scale once the representable is in the hierarchy. The adapter
+    /// creates this measurer before that point, so refresh them before the
+    /// first measurement instead of keeping the offscreen defaults.
+    func updateTraitOverrides(from traits: UITraitCollection) {
+        hosting.traitOverrides.preferredContentSizeCategory = traits.preferredContentSizeCategory
+        hosting.traitOverrides.layoutDirection = traits.layoutDirection
+        hosting.traitOverrides.legibilityWeight = traits.legibilityWeight
+        hosting.traitOverrides.userInterfaceStyle = traits.userInterfaceStyle
+        hosting.traitOverrides.displayScale = traits.displayScale
+    }
+
     func measure(itemID: String, width: CGFloat) -> CGFloat? {
         guard width > 0 else { return nil }
         hosting.rootView = makeView(itemID)

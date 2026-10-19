@@ -6,6 +6,10 @@ import SwiftUI
 struct TimelineCollectionView: UIViewControllerRepresentable {
     let content: TimelineCollectionContentProviding
     let measurer: any TimelineHeightMeasuring
+    /// Nil keeps the provider's own scale (the C3 gate). The product wrapper
+    /// passes the view's environment so a Dynamic Type or RTL change produces
+    /// new height keys.
+    var typography: TimelineTypographySnapshot? = nil
     var onPhaseChanged: ((TimelinePhaseMapping.Transition) -> Void)?
     var onViewportChanged: ((TimelineViewport) -> Void)?
     var onContentHeightChanged: ((CGFloat) -> Void)?
@@ -14,6 +18,7 @@ struct TimelineCollectionView: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> TimelineCollectionController {
         let controller = TimelineCollectionController()
+        if let typography { content.applyTypography(typography) }
         controller.configure(measurer: measurer, content: content)
         controller.onPhaseChanged = onPhaseChanged
         controller.onViewportChanged = onViewportChanged
@@ -23,6 +28,8 @@ struct TimelineCollectionView: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ controller: TimelineCollectionController, context: Context) {
+        content.prepareForUpdate()
+        if let typography { content.applyTypography(typography) }
         controller.configure(measurer: measurer, content: content)
         controller.onPhaseChanged = onPhaseChanged
         controller.onViewportChanged = onViewportChanged

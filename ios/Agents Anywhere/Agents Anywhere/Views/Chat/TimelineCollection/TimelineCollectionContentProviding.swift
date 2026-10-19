@@ -29,3 +29,13 @@ protocol TimelineCollectionContentProviding: AnyObject {
 
     func interactionState() -> TimelineLayoutInteractionState
 }
+
+extension TimelineCollectionContentProviding {
+    /// Marks the provider's item list stale before the representable reads
+    /// `contentGeneration`. The C3 gate's synthetic model wants no work here.
+    func prepareForUpdate() {}
+
+    /// Typography changes every height key. The C3 gate's synthetic rows keep
+    /// one fixed scale and use this default; the product adapter overrides it.
+    func applyTypography(_ snapshot: TimelineTypographySnapshot) {}
+}

@@ -9,6 +9,9 @@ final class AssistantMarkdownCell: UICollectionViewCell {
     static let reuseIdentifier = "AssistantMarkdownCell"
 
     private let stack = UIStackView()
+    private var blocks: [(view: AssistantMarkdownBlockTextView, content: NSAttributedString)] = []
+    private var heightConstraints: [NSLayoutConstraint] = []
+    private var lastLayoutWidth: CGFloat = -1
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -32,24 +35,57 @@ final class AssistantMarkdownCell: UICollectionViewCell {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func configure(_ document: AssistantMarkdownDocument) {
-        for view in stack.arrangedSubviews {
-            stack.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
+        clearContent()
         for block in document.blocks {
             guard case .text(let attributed) = block else { continue }
             let view = AssistantMarkdownBlockTextView()
             view.attributedText = attributed
             stack.addArrangedSubview(view)
+            blocks.append((view, attributed))
+        }
+        // The width may already be known from a reused cell; otherwise
+        // `layoutSubviews` installs the constraints on the first pass.
+        updateHeightConstraints(for: contentView.bounds.width)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        updateHeightConstraints(for: contentView.bounds.width)
+    }
+
+    /// `UITextView`'s intrinsic height needs a laid-out width, but Auto Layout
+    /// fitting (`systemLayoutSizeFitting`) asks before proposing one. Pin each
+    /// block to the height the shared TextKit 2 measurement returns, so the
+    /// cell's content fitting and the layout's stored height are one number.
+    private func updateHeightConstraints(for width: CGFloat) {
+        guard width > 0, abs(width - lastLayoutWidth) > 0.5 else { return }
+        lastLayoutWidth = width
+        NSLayoutConstraint.deactivate(heightConstraints)
+        heightConstraints = blocks.map { block in
+            let height = AssistantMarkdownTextLayout.height(
+                of: block.content,
+                width: width,
+                displayScale: traitCollection.displayScale)
+            let constraint = block.view.heightAnchor.constraint(equalToConstant: height)
+            constraint.isActive = true
+            return constraint
+        }
+    }
+
+    private func clearContent() {
+        NSLayoutConstraint.deactivate(heightConstraints)
+        heightConstraints = []
+        blocks = []
+        lastLayoutWidth = -1
+        for view in stack.arrangedSubviews {
+            stack.removeArrangedSubview(view)
+            view.removeFromSuperview()
         }
     }
 
     override func prepareForReuse() {
         super.prepareForReuse()
-        for view in stack.arrangedSubviews {
-            stack.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
+        clearContent()
     }
 }
 #endif

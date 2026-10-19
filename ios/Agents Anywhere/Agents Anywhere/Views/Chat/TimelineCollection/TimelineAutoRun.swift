@@ -232,7 +232,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             // sample; re-center it so the sample always reads a materialized
             // cell rather than a transient invalidation hole.
             await scrollToItem(item)
-            guard let controller, let sample = cellSample(controller, item: item) else {
+            guard let controller else { continue }
+            guard let sample = await sampleItem(controller, item: item) else {
                 failures.append("measurement: no cell for \(kind.rawValue)")
                 continue
             }
@@ -269,7 +270,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await wait(1200)
         controller.remeasure(item)
         await wait(250)
-        if let sample = cellSample(controller, item: item) {
+        if let sample = await sampleItem(controller, item: item) {
             measurement["settled"] = sample.measured
             measurement["content"] = sample.content
             if abs(sample.measured - sample.content) > 1 {
@@ -312,7 +313,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             controller.reconfigure([item])
             await wait(700)
             let expanded = cellHeight(controller, item)
-            let sample = cellSample(controller, item: item)
+            let sample = await sampleItem(controller, item: item)
             if expanded <= collapsed + 1 {
                 failures.append("fold: expanded \(expanded) not taller than collapsed \(collapsed)")
             }
@@ -504,6 +505,24 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         let cell: CGFloat
         let content: CGFloat
         let measured: CGFloat
+    }
+
+    /// A correction can invalidate the layout between the scroll and the
+    /// sample, leaving no materialized cell for a frame. Re-center and retry
+    /// before calling it a missing cell.
+    private func sampleItem(_ controller: TimelineCollectionController,
+                            item: TimelineListItem,
+                            attempts: Int = 5) async -> CellSample? {
+        for _ in 0..<attempts {
+            if let sample = cellSample(controller, item: item) { return sample }
+            if let indexPath = controller.indexPath(for: item) {
+                controller.collectionView.scrollToItem(at: indexPath,
+                    at: .centeredVertically, animated: false)
+            }
+            controller.collectionView.layoutIfNeeded()
+            await wait(100)
+        }
+        return nil
     }
 
     private func cellSample(_ controller: TimelineCollectionController, item: TimelineListItem) -> CellSample? {

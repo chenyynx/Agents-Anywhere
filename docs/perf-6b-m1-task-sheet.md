@@ -692,11 +692,19 @@ measurement longGroup: cell 2.0 clips content 1471.0
 
 ### 15.4 验证状态
 
-- 自动化：修复提交链 `69648fad` → `8c10e380` → `b4512ef5` → `cfb74bf2` → `c248d1e4` → `fb92ce4e` → `1ae694df`；CI run `39286620583`（`1ae694df`）排队中。gate 必须满足 `firstStored >= 44`、`settled == content`、longGroup 误差 ≤4；`measureConsistency` 现在对每种行都从可见 cell 重测（`c248d1e4`）。
-- 补充修复：历史前插的 origin 在 adapter 重建 groups **之前**捕获（`fb92ce4e`）。否则新页合并锚点 group 后，旧 row 解析不到仍有布局属性的 item，绝对补偿丢失。
-- **编译红已修**：`b4512ef5`/`fb92ce4e` 的 app build 红，`TimelineChatContentAdapter.swift:382` 的局部 `rowIDs` Set 遮蔽了同名方法；`1ae694df` 改名 `timelineRowIDs`。`swift test` 的 Models 测试已绿（含新增估算测试）。
-- **无关 flaky**：`fb92ce4e` 的 test job 在 `ModelSwitchRecoveryTests.stopStaysReachableWhenADeadProjectionSaysItCannotInterrupt()`（`ModelSwitchRecoveryTests.swift:874`）失败；同一测试在 `b4512ef5` 的 test job 通过，且 `fb92ce4e` 只改 Views（SwiftPM test 不编译），按基线 flaky 记录，未改测试。
-- 审查：第一轮 reviewer 因 LiteLLM 余额/模型名错误两次未跑成；改用默认子代理模型重跑，会话结束时被停掉，**独立审查尚未完成**。
+- **自动化全绿**：CI run `39299995345`（commit `5b2d6cb1`）的 `test` / `build` / `timeline-autorun` 三个 job 全部 success。gate 输出：
+  - `firstMeasurement`: `firstStored 200` → `settled 1471`，`content 1471`（修复前为 2.0）。
+  - `prepend.anchorDeltaY = 0`；`asyncMarkdown.belowAnchorDelta = 0`；fold / streaming / bottom 全部 PASS。
+  - 所有 gate checks PASS（text ≤1pt、complex ≤4pt、prepend target/double-query/cancel、history settled）。
+- 修复提交链：`69648fad` → `8c10e380` → `b4512ef5` → `cfb74bf2` → `c248d1e4` → `fb92ce4e` → `1ae694df` → `593a65c9` → `97e72562` → `40d9af14` → `e15f1ee7` → `5b2d6cb1`。
+- 关键产品修复：
+  - **stale key**（`e15f1ee7`）：测量值写入 cache 时布局仍带旧 key，原代码直接 return，cell 停在 200；现在把测量值写成 displayed 高度并强制重建。gate 的 `cell 200 / measured 1471` 由此消失。
+  - **历史前插解除底部跟随**（`593a65c9`）：加载更早消息是浏览动作；残留的 follow target 会在前插后把页面拉回底部（4327pt），现在 `beginHistoryRequest` 先 disarm/切 reading。
+  - **历史 origin 预捕获**（`fb92ce4e`）：合并锚点 group 后旧 row 不再解析到有布局属性的 item；origin 在 adapter 重建 groups 前捕获。
+  - **编译红**：`rowIDs` 局部 Set 遮蔽同名方法，`1ae694df` 改名。
+- **无关 flaky**：`ModelSwitchRecoveryTests.stopStaysReachableWhenADeadProjectionSaysItCannotInterrupt()` 曾在 `fb92ce4e` 的 test job 失败，同一测试在前后 run 均通过；未改测试。
+- **包**：`https://github.com/chenyynx/Agents-Anywhere/releases/download/ipa-perf-session-open-and-render/AgentsAnywhere-perf-session-open-and-render-5b2d6cb.ipa`（unsigned，需自行签名；默认开关 off）。
+- 审查：reviewer 子代理受 LiteLLM 余额/模型名问题影响，多次未能完成；**独立审查仍未完成**，不把 CI 绿当成审查通过。
 - 真机：**未验证**。真实产品 group（`SessionTimelineGroupView`）的 cell fitting 仍要在真机长会话上确认；图片在 5s 后才加载完的高度修正、历史页面对估算高度的逐行校正不在本轮覆盖范围。
 - 旧路径：默认 off；本轮改动只在 collection timeline 内生效。`10f31100`（非 fold 行对齐）由另一会话单独 cherry-pick 到 dev（`37344c96`），与本分支改动无关。
 

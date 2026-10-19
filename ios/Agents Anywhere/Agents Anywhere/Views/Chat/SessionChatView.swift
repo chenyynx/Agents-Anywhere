@@ -54,6 +54,21 @@ struct SessionChatView: View, Equatable {
             && model.timeline.pendingMessages.isEmpty && model.session.sendQueue.isEmpty
     }
 
+    /// The timeline branch lives in its own method for the same reason the
+    /// dock does: adding the second initializer inline pushes the enclosing
+    /// `Group` past the type checker's budget.
+    @ViewBuilder private func timelineView() -> some View {
+        if usesCollectionTimeline {
+            TimelineChatTimelineView(model: model,
+                onAttachment: openAttachment, onFile: openFile,
+                onSubAgent: { sheet = .subagents($0, fromCapsule: false) })
+        } else {
+            ChatTimelineView(model: model,
+                onAttachment: openAttachment, onFile: openFile,
+                onSubAgent: { sheet = .subagents($0, fromCapsule: false) })
+        }
+    }
+
     /// The bottom dock stack, in its own method: the composer's initializer and
     /// this chain's other closures together exceed the type checker's budget
     /// (the chain has timed it out more than once).
@@ -116,6 +131,10 @@ struct SessionChatView: View, Equatable {
         }
     }
     @State private var toasts = ChatToastStore()
+    /// Runtime A/B switch for the collection timeline (default off). Flipping
+    /// it rebuilds the branch, so the controller's `hasOpened` state starts
+    /// fresh exactly as the task sheet requires.
+    @AppStorage(TimelineCollectionSwitch.key) private var usesCollectionTimeline = false
     /// The notification-type notices this page should surface as toasts: open
     /// notifications whose identity the user has not already acknowledged. The
     /// acknowledgement record lives on the session (and its archive), so a
@@ -162,9 +181,7 @@ struct SessionChatView: View, Equatable {
         GeometryReader { geometry in
             Group {
                 if hasStartedLoading {
-                    ChatTimelineView(model: model,
-                        onAttachment: openAttachment, onFile: openFile,
-                        onSubAgent: { sheet = .subagents($0, fromCapsule: false) })
+                    timelineView()
                 } else {
                     Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
                 }

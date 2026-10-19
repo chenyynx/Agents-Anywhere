@@ -10,6 +10,8 @@ struct AccountSettingsSheet: View {
     @AppStorage(OrbSettingsKeys.palette) private var orbPaletteValue = "kimi"
     @AppStorage(OrbSettingsKeys.customHex) private var orbCustomHexValue = OrbSettingsKeys.encodeCustomHex(["#007CFF", "#00F6FF", "#DFC8F5"])
     @AppStorage(ReplyPresentation.plainFadeKey) private var plainFade = false
+    @AppStorage(TimelineCollectionSwitch.key) private var usesCollectionTimeline = false
+    @State private var timelineLastActive: Date?
     @State private var confirmsSignOut = false
     @State private var signOutError: String?
     @State private var toasts = ChatToastStore()
@@ -84,6 +86,23 @@ struct AccountSettingsSheet: View {
                     .tint(.green)
                     .disabled(!showsSessionList)
                 }
+                Section {
+                    Toggle(isOn: $usesCollectionTimeline) {
+                        Label(String(localized: "会话时间线（实验）"), appSymbol: "rectangle.stack")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .tint(.green)
+                } footer: {
+                    if usesCollectionTimeline {
+                        if let timelineLastActive {
+                            Text(String(localized: "上次生效：\(timelineLastActive.formatted(date: .abbreviated, time: .shortened))"))
+                        } else {
+                            Text(String(localized: "打开一个会话后回到这里确认新容器已生效。"))
+                        }
+                    } else {
+                        Text(String(localized: "当前使用旧滚动容器。"))
+                    }
+                }
                 revealAnimationSection
                 Section(String(localized: "Workspace")) {
                     NavigationLink { SettingsServerView() } label: {
@@ -111,6 +130,7 @@ struct AccountSettingsSheet: View {
                 }
             }
             .listStyle(.insetGrouped)
+            .onAppear { refreshTimelineMarker() }
             .navigationTitle(String(localized: "Settings")).navigationBarTitleDisplayMode(.inline)
             .toolbar { SheetCloseToolbar(disabled: isWorking, action: close) }
             .refreshable { _ = await appState.refreshAccount() }
@@ -140,6 +160,13 @@ struct AccountSettingsSheet: View {
     }
 
     private var isWorking: Bool { appState.isAccountWorking || drafts.isWorking }
+
+    /// The controller stamps this on first appearance. Showing the timestamp
+    /// (not just the switch value) is the C4 step-0 proof that a session really
+    /// rendered through the collection container.
+    private func refreshTimelineMarker() {
+        timelineLastActive = UserDefaults.standard.object(forKey: TimelineCollectionSwitch.lastActiveKey) as? Date
+    }
 
     private var revealAnimationSection: some View {
         Section {

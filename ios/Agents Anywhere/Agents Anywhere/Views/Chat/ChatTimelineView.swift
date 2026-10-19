@@ -784,7 +784,7 @@ private struct TimelineKeyboardDismissLayer: ViewModifier {
 /// timeline modifier chain. `transitionActive` marks the window in which
 /// per-frame visible-height samples and programmatic returns are withheld
 /// while the keyboard animates (K5).
-@MainActor @Observable private final class TimelineKeyboardMonitor {
+@MainActor @Observable final class TimelineKeyboardMonitor {
     private(set) var isVisible = false
     private(set) var transitionActive = false
     /// The newest keyboard event's own duration and curve, as a SwiftUI

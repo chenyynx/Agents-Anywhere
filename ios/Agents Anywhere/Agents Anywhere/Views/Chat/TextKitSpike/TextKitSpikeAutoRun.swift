@@ -27,6 +27,10 @@ final class TextKitSpikeModel {
 
     private static let fixtures: [(name: String, text: String, kind: Kind)] = [
         ("pureParagraph", TextKitSpikeFixtures.pureParagraph, .pure),
+        ("pureLatin", TextKitSpikeFixtures.pureLatin, .pure),
+        ("pureCJK", TextKitSpikeFixtures.pureCJK, .pure),
+        ("singleLineLatin", TextKitSpikeFixtures.singleLineLatin, .pure),
+        ("singleLineCJK", TextKitSpikeFixtures.singleLineCJK, .pure),
         ("paragraphs3", TextKitSpikeFixtures.paragraphs3, .paragraphs),
         ("richLong", TextKitSpikeFixtures.richLong, .rich),
         ("tableOnly", TextKitSpikeFixtures.tableOnly, .rich),
@@ -101,6 +105,20 @@ final class TextKitSpikeModel {
                 row["tk2Plain"] = tk2Plain
                 row["productVsTk2Plain"] = abs(Double(product.height) - tk2Plain)
                 row["productVsCD"] = abs(Double(product.height) - Double(cd.height))
+
+                let bare = await HostedMarkdownProbe.measureBareText(
+                    fixture.text, width: width, typography: typography, in: window)
+                row["bareSwiftUIText"] = [
+                    "height": Double(bare.height),
+                    "firstHeight": Double(bare.firstHeight),
+                    "settled": bare.settled,
+                    "samples": bare.sampleCount,
+                ] as [String: Any]
+                row["bareTextVsTk2Plain"] = abs(Double(bare.height) - tk2Plain)
+                row["productVsBareText"] = abs(Double(product.height) - Double(bare.height))
+                if !bare.settled {
+                    failures.append("bare text \(fixture.name): not settled")
+                }
             } else if fixture.kind == .paragraphs {
                 let tk2Plain0 = Double(TextKit2Probe.height(
                     of: typography.plainAttributedString(fixture.text, paragraphSpacing: 0),
@@ -149,7 +167,7 @@ final class TextKitSpikeModel {
         await streaming(typography: typography, width: width)
 
         report["coverage"] = [
-            "measured": "pure paragraph and plain paragraphs (engine parity), long assistant Markdown (shape), table and code (failure probes), per-tick CD parse+measure cost",
+            "measured": "pure Latin/CJK/mixed paragraphs and bare SwiftUI Text (line-height isolation), plain paragraphs (engine parity), long assistant Markdown (shape), table and code (failure probes), per-tick CD parse+measure cost",
             "notMeasured": "images/attachments (network + metadata), selection, links, Dynamic Type, RTL, width changes, streaming glyph reveal, Textual streaming path, real collection cell",
         ]
         finish()

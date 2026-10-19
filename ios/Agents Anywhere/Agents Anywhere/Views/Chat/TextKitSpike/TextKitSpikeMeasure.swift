@@ -130,7 +130,32 @@ enum HostedMarkdownProbe {
                         width: CGFloat,
                         in window: UIWindow,
                         timeout: TimeInterval = 15) async -> Result {
-        let controller = UIHostingController(rootView: ChatMarkdownView(text: markdown))
+        await measure(view: AnyView(ChatMarkdownView(text: markdown)),
+                      width: width, in: window, timeout: timeout)
+    }
+
+    /// Bare SwiftUI `Text` with the same font and leading as the product's
+    /// paragraph style. Separates "SwiftUI Text layout" from "Textual's block
+    /// styling" when the product height disagrees with TextKit 2.
+    static func measureBareText(_ text: String,
+                                width: CGFloat,
+                                typography: TextKitSpikeTypography,
+                                in window: UIWindow,
+                                timeout: TimeInterval = 15) async -> Result {
+        let view = AnyView(
+            Text(text)
+                .font(.system(size: typography.bodySize))
+                .lineSpacing(typography.lineSpacing)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading))
+        return await measure(view: view, width: width, in: window, timeout: timeout)
+    }
+
+    static func measure(view: AnyView,
+                        width: CGFloat,
+                        in window: UIWindow,
+                        timeout: TimeInterval = 15) async -> Result {
+        let controller = UIHostingController(rootView: view)
         guard let root = window.rootViewController, let hostView = controller.view else {
             return Result(height: -1, firstHeight: -1, settled: false,
                           sampleCount: 0, elapsedMilliseconds: 0)

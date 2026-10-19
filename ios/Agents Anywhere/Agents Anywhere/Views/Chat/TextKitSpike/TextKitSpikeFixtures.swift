@@ -21,6 +21,24 @@ enum TextKitSpikeFixtures {
     Third paragraph: the closing sentence is short.
     """
 
+    /// Latin-only control for the line-height question: same body font and
+    /// leading, no CJK fallback font in the paragraph.
+    static let pureLatin = """
+    The assistant replies in running text that has to wrap across many lines in the column, because that is where height measurement either matches the renderer or drifts by whole lines. The measurement must be the same engine that will draw the text, or the first frame will reserve the wrong height and the list will overlap the next row. Repeating the sentence a few more times makes the paragraph long enough to produce fifteen to twenty line fragments at the product column width, which is the smallest sample that makes a one-point-per-line error visible. The spike compares the Textual renderer that ships today with the TextKit 2 stack the same Markdown will move to, and the result decides whether the migration is a drop-in replacement or a re-measurement.
+    """
+
+    /// CJK-only control: PingFang fallback metrics differ from SF Pro, and
+    /// SwiftUI Text may size the line box from the fallback font.
+    static let pureCJK = """
+    助手用连续的中文正文回复，这一段刻意写得很长，用来验证在同一个列宽下换行位置与行距是否一致。测量必须由将来真正绘制文本的同一个引擎完成，否则第一帧会预留错误的高度，列表就会和下一行重叠。把这句话再重复几次，让这一段在产品的正文列宽下稳定产生十五到二十个行片段，这是让每行一磅的误差也能被看见的最小样本。这次对照把现在随产品发布的渲染器与即将迁移过去的文本引擎放在一起测量，结果决定迁移是可以直接替换，还是必须重新标定行高与段距。
+    """
+
+    /// A single line at the product width: its height is exactly one line box,
+    /// with no inter-line spacing to confuse the comparison.
+    static let singleLineLatin = "One short line of body text."
+
+    static let singleLineCJK = "一行中文正文。"
+
     static let richLong = """
     ## Assistant reply
 

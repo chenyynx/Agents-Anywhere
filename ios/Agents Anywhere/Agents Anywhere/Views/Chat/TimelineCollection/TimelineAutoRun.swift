@@ -275,7 +275,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             let collapsed = cellHeight(controller, item)
             setExpanded(entry.id, true)
             controller.reconfigure([item])
-            await wait(350)
+            await wait(500)
             let expanded = cellHeight(controller, item)
             let sample = cellSample(controller, item: item)
             if expanded <= collapsed + 1 {
@@ -293,7 +293,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             let collapsed = cellHeight(controller, item)
             setExpanded(entry.id, true)
             controller.reconfigure([item])
-            await wait(350)
+            await wait(500)
             let expanded = cellHeight(controller, item)
             if expanded <= collapsed + 1 {
                 failures.append("inline notice: expanded \(expanded) not taller than collapsed \(collapsed)")
@@ -306,7 +306,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             let resting = cellHeight(controller, item)
             setTailStatusLine(true)
             controller.reconfigure([item])
-            await wait(350)
+            await wait(500)
             let active = cellHeight(controller, item)
             if abs(resting - 12) > 1 { failures.append("tail: resting height \(resting) != 12") }
             if abs(active - 32) > 1 { failures.append("tail: status height \(active) != 32") }

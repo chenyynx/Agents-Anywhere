@@ -172,27 +172,38 @@ final class TimelineCollectionController: UIViewController {
     }
 
     private func applyPreferredHeights(for items: [TimelineListItem]) {
-        guard let content else { return }
+        settlePreferredHeights(for: items, attempt: 0)
+    }
+
+    /// The hosting content of a reconfigured exception row updates on a later
+    /// layout pass. The first gate run read the old collapsed fitting height
+    /// (248.7) while the content had already expanded (404.3); a single
+    /// immediate read is racy. Poll the cell's content fitting for a few
+    /// frames and apply when it changes. This is the explicit replacement for
+    /// the heightDidChange callback AA's hosting rows do not have.
+    private func settlePreferredHeights(for items: [TimelineListItem], attempt: Int) {
+        guard let content, attempt <= 5 else { return }
         for item in items {
             guard content.heightPolicy(for: item).acceptsPreferredHeight,
                   let indexPath = indexPath(for: item),
                   let cell = collectionView.cellForItem(at: indexPath) else { continue }
             let width = cell.contentView.bounds.width
             guard width > 0 else { continue }
-            // AA's hosting cells have no heightDidChange callback and the
-            // official surface disables automatic self-sizing invalidation.
-            // Re-measure the exception row through the same hosting layer the
-            // cell renders; fall back to the cell's fitting height only when
-            // the measurer cannot answer. (The first gate run showed the raw
-            // cell fitting can still be the old collapsed size immediately
-            // after reconfigure.)
-            let measured = measurer?.measure(itemID: item.itemID, width: width)
             let fitting = cell.contentView.systemLayoutSizeFitting(
                 CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
                 withHorizontalFittingPriority: .required,
                 verticalFittingPriority: .fittingSizeLevel).height
-            guard let height = measured ?? (fitting > 0 ? fitting : nil) else { continue }
-            layout.applyPreferredHeight(ceil(height), for: item.itemID)
+            guard fitting > 0 else { continue }
+            let current = layout.attributes(for: item.itemID)?.frame.height ?? 0
+            if abs(fitting - current) > 0.5 {
+                layout.applyPreferredHeight(ceil(fitting), for: item.itemID)
+            }
+        }
+        // Poll a few frames: the hosting content can report its old size on
+        // the first pass and the new size only after SwiftUI lays out.
+        guard attempt < 5 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            self?.settlePreferredHeights(for: items, attempt: attempt + 1)
         }
     }
 

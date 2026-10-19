@@ -23,6 +23,10 @@ on:
       xcode:
         description: "Xcode app name on the runner (e.g. Xcode_26.5.app)"
         default: "Xcode_26.5.app"
+      build:
+        description: "Also build the unsigned IPA for this branch"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -70,10 +74,11 @@ jobs:
     # The package is only released once the unit tests pass: a red test suite
     # must never produce an installable IPA.
     needs: test
-    # Verification-only dispatches (feature branches) run the test job alone:
-    # only the dev line publishes an installable IPA, so a branch dispatch can
-    # never clobber the `ipa-dev` release with a half-finished build.
-    if: github.ref == 'refs/heads/dev'
+    # Verification-only dispatches (feature branches) run the test job alone.
+    # A branch dispatch may opt into a build with `build: true`; that publishes
+    # to its own `ipa-<branch>` tag and never touches `ipa-dev`, so a
+    # half-finished branch can never clobber the dev line's installable IPA.
+    if: github.ref == 'refs/heads/dev' || inputs.build
     runs-on: macos-26
     timeout-minutes: 90
     steps:
@@ -152,7 +157,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: agents-anywhere-dev-ipa
+          name: ${{ github.ref == 'refs/heads/dev' && 'agents-anywhere-dev-ipa' || 'agents-anywhere-branch-ipa' }}
           path: agents-anywhere.ipa
           if-no-files-found: error
 
@@ -161,9 +166,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SHA_SHORT: ${{ github.sha }}
         run: |
-          TAG="ipa-dev"
-          NAME="AgentsAnywhere-dev-${SHA_SHORT:0:7}.ipa"
+          if [ "${GITHUB_REF}" = "refs/heads/dev" ]; then
+            TAG="ipa-dev"; LABEL="dev"
+            TITLE="Agents Anywhere unsigned builds — dev"
+            NOTES="Built from the dev branch. Unsigned — re-sign on-device with KSign."
+          else
+            SLUG=$(printf '%s' "${GITHUB_REF_NAME}" | tr '/' '-')
+            TAG="ipa-${SLUG}"; LABEL="${GITHUB_REF_NAME}"
+            TITLE="Agents Anywhere unsigned builds — ${GITHUB_REF_NAME}"
+            NOTES="Built from the ${GITHUB_REF_NAME} branch. Unsigned — re-sign on-device with KSign."
+          fi
+          NAME="AgentsAnywhere-${LABEL}-${SHA_SHORT:0:7}.ipa"
           cp agents-anywhere.ipa "$NAME"
-          gh release create "$TAG" --title "Agents Anywhere unsigned builds — dev" \
-            --notes "Built from the dev branch. Unsigned — re-sign on-device with KSign." || true
+          gh release create "$TAG" --title "$TITLE" --notes "$NOTES" || true
           gh release upload "$TAG" "$NAME" --clobber

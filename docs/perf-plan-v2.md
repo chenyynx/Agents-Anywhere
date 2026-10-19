@@ -24,7 +24,7 @@
 | 6.5 上滑锚点 | ✅ 已提交；真机：跳动减轻为"偶尔小跳" | `9060611c` |
 | 6a 懒渲染 | ❌ **已尝试并回滚**：下拉加载失效、锚点测量不触发 | `c2326744` → 回滚 `47fd9408` |
 | 5 行级存储 | ⏳ 未开始 | — |
-| 6b UICollectionView | 🔵 已立项；**M1 任务单 v6 已写，改为测量驱动高度（不再依赖逐 tick 自测）** | `docs/perf-6b-m1-task-sheet.md` |
+| 6b UICollectionView | 🔵 已立项；**M1 任务单 v7 已写，测量驱动 + 交互式高度例外** | `docs/perf-6b-m1-task-sheet.md` |
 | 7 推送 | ⏳ 待定 APNs 凭据归属 | — |
 | 8 流保活 | ⏳ 待抓包结论 | — |
 
@@ -361,7 +361,7 @@ SwiftUI 的"布局后 scrollTo"做不到同帧修正——这是**架构差异�
 - O. 批 6b 换 `UICollectionView` + 自研 layout（官方同构，唯一能保证同帧修正）
 
 **⚠️ 6b 的衔接**：现有锚点测量挂在锚点 group 的 `onGeometryChange` 上（`ChatTimelineView.swift:617-633`）。
-换成 collection view 后该回调不再存在；锚点必须改为布局在 `targetContentOffset` 内用新旧 attributes 求差（任务单 §3.4.2），并保留 `TimelineHistoryPosition` 的单测。
+换成 collection view 后该回调不再存在；锚点必须改为布局在 `targetContentOffset` 内用新旧 attributes 求差（任务单 §3.4.5），并保留 `TimelineHistoryPosition` 的单测。
 6a 已证明“懒容器不渲染离屏行 ⇒ 回调不触发”，这正是 6b 要正面接管的原因。
 
 ### 症状 4 · 没有后台推送；通知不落到最新
@@ -595,7 +595,7 @@ SwiftUI 的"布局后 scrollTo"做不到同帧修正——这是**架构差异�
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
-| **M1** | `UICollectionView` + 自研 layout + **测量驱动高度**（三级缓存/稳定 id 键）+ 绝对 `targetContentOffset`（append/prepend）+ 持久底部状态机 | 任务单 v6：`docs/perf-6b-m1-task-sheet.md` |
+| **M1** | `UICollectionView` + 自研 layout + **测量驱动高度**（HostingHeightMeasurer 为主/TextKit 2 纯文本 precalc；三级缓存/稳定 id 键）+ 绝对 `targetContentOffset`（append/prepend）+ 持久底部状态机 | 任务单 v7：`docs/perf-6b-m1-task-sheet.md` |
 | **M2** | 取消裁窗 + 用例语义更新（即批 1） | 依赖 M1 |
 
 > M1 必须包含高度测量/播种：否则 `contentSize` 是估计值，**开屏落底无法保证**，
@@ -606,7 +606,7 @@ SwiftUI 的"布局后 scrollTo"做不到同帧修正——这是**架构差异�
 - 绝对 owed mid-list：`originOffset 7458 → target 16658`，锚点屏幕位移 0；重复查询幂等。
 - **自测高不可靠**：10 个流式 tick 只回 1 次 preferred 高度；异步行首次 45 → settled 163。
 - 动画 no-op 回调 0；持久底部必须由状态机重解析。
-→ v6 改为测量驱动：高度在 apply 前算好，cell 固定高度；OpenMinis 上游 `b4c0661d` 的三级缓存/defer/三分支补偿已核对（任务单附录 C）。
+→ v7 改为测量驱动：Markdown 用离屏 hosting 测量（Textual 无独立测量 API），纯文本用 TextKit 2 precalc；高度在 apply 前算好，cell 固定高度（fold/tail/inline notice 为受控例外）。OpenMinis 上游 `b4c0661d` 的三级缓存/defer/三分支补偿已核对（任务单附录 C）。
 
 ---
 

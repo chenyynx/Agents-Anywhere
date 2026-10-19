@@ -337,8 +337,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 inlineNotices.append(TimelineInlineNoticeSignature(id: notice.id,
                     status: notice.notice.status, revision: notice.notice.revision))
             }
-            if !row.value.attachments.isEmpty {
-                attachments.append(contentsOf: attachmentSignatures(row.value.attachments))
+            let rowAttachments = attachments(of: row.value)
+            if !rowAttachments.isEmpty {
+                attachments.append(contentsOf: attachmentSignatures(rowAttachments))
             }
         }
         let action = turnActions[group.id]
@@ -368,6 +369,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             sendingPlaceholder: model.sendingPlaceholder,
             orbActivity: String(describing: model.orbActivity),
             hasNewerItems: model.session.hasNewerItems)
+    }
+
+    /// Attachments ride inside the typed content: a message carries a list, an
+    /// attachment item carries one. `V2TimelineItem` itself exposes neither.
+    private func attachments(of item: V2TimelineItem) -> [V2AttachmentContent] {
+        switch item.content {
+        case .message(let content): return content.attachments
+        case .attachment(let content): return [content]
+        default: return []
+        }
     }
 
     private func attachmentSignatures(_ contents: [V2AttachmentContent],

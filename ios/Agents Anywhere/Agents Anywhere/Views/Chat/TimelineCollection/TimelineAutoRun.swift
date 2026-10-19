@@ -228,6 +228,10 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             await wait([.message, .longGroup, .reasoning].contains(kind) ? 900 : 200)
             controller?.remeasure(item)
             await wait(150)
+            // A correction can move the cell out of the visible set before the
+            // sample; re-center it so the sample always reads a materialized
+            // cell rather than a transient invalidation hole.
+            await scrollToItem(item)
             guard let controller, let sample = cellSample(controller, item: item) else {
                 failures.append("measurement: no cell for \(kind.rawValue)")
                 continue
@@ -428,10 +432,17 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
 
     private func prepend() async {
         guard let controller, entries.count > 8 else { return }
-        controller.collectionView.setContentOffset(CGPoint(x: 0, y: 200), animated: false)
-        await wait(120)
         let anchor = entries[5]
         let anchorItem = listItem(anchor)
+        // Anchor at the viewport top, the shape the product uses: the first
+        // visible row. An offscreen anchor would also move when a visible row
+        // above it grows, which is not what the prepend compensation owns.
+        guard let anchorIndex = controller.indexPath(for: anchorItem) else {
+            failures.append("prepend: no anchor index path")
+            return
+        }
+        controller.collectionView.scrollToItem(at: anchorIndex, at: .top, animated: false)
+        await wait(120)
         let before = controller.screenY(for: anchorItem) ?? 0
         let newItems = prependPlain(100)
         guard var position = controller.beginHistoryRequest(generation: 42,

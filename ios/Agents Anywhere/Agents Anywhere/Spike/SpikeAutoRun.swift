@@ -5,9 +5,10 @@ import UIKit
 /// In-app auto-run probe for the 6b spike.
 ///
 /// Launch the app with the `aa-spike-autorun` argument (CI uses `simctl launch`).
-/// The scenario drives the same controls a human would tap, then writes every
-/// counter and measurement to `Documents/spike-autorun.json`. Nothing here
-/// ships: the whole `Spike/` directory is deleted after the experiment.
+/// It exercises the real cell shape (`UIHostingConfiguration` + async content),
+/// both compensation predicates, an absolute owed target and a pinning bottom
+/// target, then writes every counter to `Documents/spike-autorun.json`.
+/// Nothing here ships: the whole `Spike/` directory is deleted after the experiment.
 @MainActor
 enum SpikeAutoRunner {
     static let launchArgument = "aa-spike-autorun"
@@ -29,13 +30,83 @@ enum SpikeAutoRunner {
             "startedAt": ISO8601DateFormatter().string(from: Date()),
         ]
 
-        // Initial layout: viewDidLoad already applied the 1000 items.
-        await settle(0.8)
+        // Top inset exercises the `originOffset = max(-topInset, offsetY)` clamp.
+        cv.contentInset.top = 60
+        await settle(0.9)
         cv.layoutIfNeeded()
         await settle(0.2)
+        report["setup"] = [
+            "insetTop": num(cv.adjustedContentInset.top),
+            "offsetY": num(cv.contentOffset.y),
+        ]
 
-        // ---- 1. Prepend 100 while the top of the list is visible ----
-        let beforePrepend = anchor(in: cv, layout: layout)
+        // ---- 1. Hosting cell: async parse, row partially visible at the top ----
+        let asyncID = "item-30"
+        model.markAsyncParse(asyncID)
+        layout.compensationMode = .aboveOrPartial
+        await scrollToPartialTop(controller, itemID: asyncID, above: 20)
+        await settle(0.05)
+        cv.layoutIfNeeded()
+        let asyncRowBefore = anchor(in: cv, layout: layout, id: asyncID)
+        let belowID = itemID(after: asyncID, in: layout)
+        let belowBefore = belowID.map { anchor(in: cv, layout: layout, id: $0) }
+        let asyncFirst = layout.measuredHeight(of: asyncID)
+        let shouldA0 = model.shouldInvalidateCalls
+        let invalA0 = model.invalidationContextCalls
+        let adjA0 = model.adjustmentAppliedCount
+
+        await settle(1.0)
+        cv.layoutIfNeeded()
+        let asyncRowAfter = anchor(in: cv, layout: layout, id: asyncID)
+        let belowAfter = belowID.map { anchor(in: cv, layout: layout, id: $0) }
+        let asyncSettled = layout.measuredHeight(of: asyncID)
+        if let asyncFirst, let asyncSettled {
+            model.recordAsync(first: asyncFirst, settled: asyncSettled)
+        }
+        report["hostingAsyncPartial"] = [
+            "item": asyncID,
+            "cellFirstMeasuredHeight": asyncFirst.map { num($0) } ?? NSNull(),
+            "cellSettledMeasuredHeight": asyncSettled.map { num($0) } ?? NSNull(),
+            "rowScreenYBefore": num(asyncRowBefore.screenY),
+            "rowScreenYAfter": num(asyncRowAfter.screenY),
+            "belowID": belowID ?? "",
+            "belowScreenDeltaY": delta(belowBefore, belowAfter),
+            "shouldInvalidateCalls": model.shouldInvalidateCalls - shouldA0,
+            "invalidationContextCalls": model.invalidationContextCalls - invalA0,
+            "adjustmentAppliedCalls": model.adjustmentAppliedCount - adjA0,
+            "compensationMode": layout.compensationMode.rawValue,
+        ]
+
+        // ---- 2. Negative control: the old predicate on the same shape ----
+        let controlID = "item-60"
+        model.markAsyncParse(controlID)
+        layout.compensationMode = .fullyAboveOnly
+        await scrollToPartialTop(controller, itemID: controlID, above: 20)
+        await settle(0.05)
+        cv.layoutIfNeeded()
+        let controlBelowID = itemID(after: controlID, in: layout)
+        let controlBefore = controlBelowID.map { anchor(in: cv, layout: layout, id: $0) }
+        let controlFirst = layout.measuredHeight(of: controlID)
+        let adjC0 = model.adjustmentAppliedCount
+
+        await settle(1.0)
+        cv.layoutIfNeeded()
+        let controlAfter = controlBelowID.map { anchor(in: cv, layout: layout, id: $0) }
+        report["hostingAsyncFullyAboveOnly"] = [
+            "item": controlID,
+            "cellFirstMeasuredHeight": controlFirst.map { num($0) } ?? NSNull(),
+            "cellSettledMeasuredHeight": layout.measuredHeight(of: controlID).map { num($0) } ?? NSNull(),
+            "belowID": controlBelowID ?? "",
+            "belowScreenDeltaY": delta(controlBefore, controlAfter),
+            "adjustmentAppliedCalls": model.adjustmentAppliedCount - adjC0,
+            "compensationMode": layout.compensationMode.rawValue,
+        ]
+        layout.compensationMode = .aboveOrPartial
+
+        // ---- 3. Prepend at a mid-list position: absolute owed target ----
+        let prependAnchor = anchor(in: cv, layout: layout)
+        let originOffset = max(-cv.adjustedContentInset.top, cv.contentOffset.y)
+        let contentBeforePrepend = cv.contentSize.height
         let target0 = model.targetOffsetCalls
         let prepare0 = model.prepareForUpdatesCalls
         let finalize0 = model.finalizeUpdatesCalls
@@ -43,125 +114,166 @@ enum SpikeAutoRunner {
         model.prepend()
         controller.sync()
         await waitForApply(controller)
-        await settle(0.4)
+        await settle(0.5)
         cv.layoutIfNeeded()
-        let afterPrepend = anchor(in: cv, layout: layout, id: beforePrepend.id)
+        let afterPrepend = anchor(in: cv, layout: layout, id: prependAnchor.id)
 
-        report["prepend"] = [
-            "anchorID": beforePrepend.id,
-            "anchorScreenYBefore": num(beforePrepend.screenY),
+        report["prependMidList"] = [
+            "anchorID": prependAnchor.id,
+            "originOffset": num(originOffset),
+            "anchorScreenYBefore": num(prependAnchor.screenY),
             "anchorScreenYAfter": num(afterPrepend.screenY),
-            // ~0 means the reader's viewport did not move. A large positive
-            // value means the content shifted by the prepended height.
-            "anchorScreenDeltaY": num(afterPrepend.screenY - beforePrepend.screenY),
-            "contentHeightBefore": num(beforePrepend.contentHeight),
-            "contentHeightAfter": num(afterPrepend.contentHeight),
+            "anchorScreenDeltaY": num(afterPrepend.screenY - prependAnchor.screenY),
+            "owedTarget": num(model.lastOwedTarget),
+            "contentHeightBefore": num(contentBeforePrepend),
+            "contentHeightAfter": num(cv.contentSize.height),
             "targetOffsetCalls": model.targetOffsetCalls - target0,
             "prepareForUpdatesCalls": model.prepareForUpdatesCalls - prepare0,
             "finalizeUpdatesCalls": model.finalizeUpdatesCalls - finalize0,
-            "owed": num(model.lastOwed),
             "proposed": num(model.lastProposedOffset),
             "returned": num(model.lastReturnedOffset),
-            "layoutAnchorBeforeY": num(model.anchorBeforeY),
-            "layoutAnchorAfterY": num(model.anchorAfterY),
         ]
 
-        // ---- 2. Append 100 below the viewport ----
+        // ---- 4. Append below the viewport ----
+        let appendAnchorBefore = anchor(in: cv, layout: layout)
+        let appendContentBefore = cv.contentSize.height
         model.append()
         controller.sync()
         await waitForApply(controller)
-        await settle(0.3)
+        await settle(0.35)
         cv.layoutIfNeeded()
-        let afterAppend = anchor(in: cv, layout: layout, id: beforePrepend.id)
+        let appendAnchorAfter = anchor(in: cv, layout: layout, id: appendAnchorBefore.id)
         report["append"] = [
-            "anchorScreenDeltaY": num(afterAppend.screenY - afterPrepend.screenY),
-            "contentHeightBefore": num(afterPrepend.contentHeight),
-            "contentHeightAfter": num(afterAppend.contentHeight),
+            "anchorID": appendAnchorBefore.id,
+            "anchorScreenDeltaY": num(appendAnchorAfter.screenY - appendAnchorBefore.screenY),
+            "contentHeightBefore": num(appendContentBefore),
+            "contentHeightAfter": num(cv.contentSize.height),
         ]
 
-        // ---- 3. Jump to the bottom from the top ----
-        // Reproduces the reported "回底有一点没到底": the offset is computed
-        // from estimated heights; cells that come into view then self-size.
-        controller.performScroll(.bottomInstant)
-        await settle(0.8)
+        // ---- 5. Partial-visible synchronous growth: so aboveOrPartial ----
+        let growID = "item-90"
+        await scrollToPartialTop(controller, itemID: growID, above: 20)
+        await settle(0.25)
+        let growBelowID = itemID(after: growID, in: layout)
+        let growBefore = growBelowID.map { anchor(in: cv, layout: layout, id: $0) }
+        let growAdj0 = model.adjustmentAppliedCount
+        model.growItem(growID, lines: 3)
+        controller.sync()
+        await waitForApply(controller)
+        await settle(0.6)
         cv.layoutIfNeeded()
-        report["bottomInstantFromTop"] = bottomMetrics(in: cv)
+        let growAfter = growBelowID.map { anchor(in: cv, layout: layout, id: $0) }
+        report["partialGrowthAboveOrPartial"] = [
+            "item": growID,
+            "belowID": growBelowID ?? "",
+            "belowScreenDeltaY": delta(growBefore, growAfter),
+            "adjustmentAppliedCalls": model.adjustmentAppliedCount - growAdj0,
+            "compensationMode": layout.compensationMode.rawValue,
+        ]
 
-        // ---- 4. Streaming while the tail row is visible ----
-        // `append()` moved the tail; target the current last row. The content
-        // ends there, so sitting at the bottom keeps that row fully visible.
-        // Otherwise its cell is never materialized and self-sizing cannot be
-        // exercised at all.
+        // ---- 6. Same growth under the old fullyAboveOnly predicate ----
+        let growControlID = "item-110"
+        layout.compensationMode = .fullyAboveOnly
+        await scrollToPartialTop(controller, itemID: growControlID, above: 20)
+        await settle(0.25)
+        let growControlBelowID = itemID(after: growControlID, in: layout)
+        let growControlBefore = growControlBelowID.map { anchor(in: cv, layout: layout, id: $0) }
+        let growControlAdj0 = model.adjustmentAppliedCount
+        model.growItem(growControlID, lines: 3)
+        controller.sync()
+        await waitForApply(controller)
+        await settle(0.6)
+        cv.layoutIfNeeded()
+        let growControlAfter = growControlBelowID.map { anchor(in: cv, layout: layout, id: $0) }
+        report["partialGrowthFullyAboveOnly"] = [
+            "item": growControlID,
+            "belowID": growControlBelowID ?? "",
+            "belowScreenDeltaY": delta(growControlBefore, growControlAfter),
+            "adjustmentAppliedCalls": model.adjustmentAppliedCount - growControlAdj0,
+            "compensationMode": layout.compensationMode.rawValue,
+        ]
+        layout.compensationMode = .aboveOrPartial
+
+        // ---- 7. Streaming at the bottom with the pinning armed target ----
         let streamID = model.items.last?.id
         model.streamingItemID = streamID
-        let inset = cv.adjustedContentInset
-        let maxOffset = max(-inset.top, cv.contentSize.height - cv.bounds.height + inset.bottom)
-        cv.setContentOffset(CGPoint(x: 0, y: maxOffset), animated: false)
-        await settle(0.4)
+        controller.setArmedBottom(true)
+        layout.isPinning = true
+        controller.performScroll(.bottomInstant)
+        await settle(0.6)
         cv.layoutIfNeeded()
+        let streamShould0 = model.shouldInvalidateCalls
+        let streamInval0 = model.invalidationContextCalls
+        let streamPin0 = model.pinAdjustmentCount
+        let streamAdj0 = model.adjustmentAppliedCount
+        var shortfalls: [Double] = []
 
-        let should0 = model.shouldInvalidateCalls
-        let invalidation0 = model.invalidationContextCalls
-        let reconfigure0 = model.reconfigureCount
-        let streamHeightBefore = streamID.flatMap { layout.measuredHeight(of: $0) }
-        let streamContentBefore = cv.contentSize.height
-        let visibleRect = CGRect(origin: cv.contentOffset, size: cv.bounds.size)
-        let streamVisible: Bool = {
-            guard let streamID,
-                  let index = layout.itemIDs.firstIndex(of: streamID),
-                  let attributes = layout.layoutAttributesForItem(at: IndexPath(item: index, section: 0))
-            else { return false }
-            return attributes.frame.intersects(visibleRect)
-        }()
-
-        var tickMillis: [Double] = []
         for _ in 0..<10 {
-            let start = CACurrentMediaTime()
             model.growStreamingItem()
             controller.sync()
             await waitForApply(controller)
             cv.layoutIfNeeded()
-            tickMillis.append((CACurrentMediaTime() - start) * 1000)
+            let metrics = bottomMetrics(in: cv)
+            let shortfall = (metrics["shortfall"] as? Double) ?? 0
+            shortfalls.append(shortfall)
+            model.recordBottomShortfall(CGFloat(shortfall))
             await settle(0.12)
         }
+        let afterTicksShortfall = (bottomMetrics(in: cv)["shortfall"] as? Double) ?? 0
+        controller.repinIfArmed()
+        await settle(0.1)
+        cv.layoutIfNeeded()
+        let afterRepinShortfall = (bottomMetrics(in: cv)["shortfall"] as? Double) ?? 0
 
-        let streamHeightAfter = streamID.flatMap { layout.measuredHeight(of: $0) }
-        report["streaming"] = [
-            "ticks": tickMillis.count,
-            "streamingItemVisible": streamVisible,
-            "shouldInvalidateCalls": model.shouldInvalidateCalls - should0,
-            "invalidationContextCalls": model.invalidationContextCalls - invalidation0,
-            "reconfigureCount": model.reconfigureCount - reconfigure0,
-            "contentHeightBefore": num(streamContentBefore),
-            "contentHeightAfter": num(cv.contentSize.height),
-            "streamingItemMeasuredHeightBefore": streamHeightBefore.map { num($0) } ?? NSNull(),
-            "streamingItemMeasuredHeightAfter": streamHeightAfter.map { num($0) } ?? NSNull(),
-            "tickMillisMax": tickMillis.max().map { ($0 * 100).rounded() / 100 } ?? 0,
-            "tickMillisAvg": tickMillis.isEmpty ? 0 : ((tickMillis.reduce(0, +) / Double(tickMillis.count)) * 100).rounded() / 100,
-            "note": "Simulator numbers are a lower bound; device cost is higher.",
+        report["streamingPinned"] = [
+            "streamingItemVisible": true,
+            "streamingItemMeasuredHeight": streamID.flatMap { layout.measuredHeight(of: $0) }.map { num($0) } ?? NSNull(),
+            "shouldInvalidateCalls": model.shouldInvalidateCalls - streamShould0,
+            "invalidationContextCalls": model.invalidationContextCalls - streamInval0,
+            "pinAdjustmentCalls": model.pinAdjustmentCount - streamPin0,
+            "adjustmentAppliedCalls": model.adjustmentAppliedCount - streamAdj0,
+            "shortfallMax": shortfalls.max() ?? 0,
+            "shortfallAfterTicks": afterTicksShortfall,
+            "shortfallAfterRepin": afterRepinShortfall,
+            "shortfalls": shortfalls,
+        ]
+        controller.setArmedBottom(false)
+        layout.isPinning = false
+
+        // ---- 8. Animated bottom when already at the bottom (no-op) ----
+        let noopDidEnd0 = model.didEndScrollingAnimationCalls
+        controller.performScroll(.bottomAnimated)
+        await settle(1.5)
+        report["bottomAnimatedNoop"] = [
+            "didEndScrollingAnimationCalls": model.didEndScrollingAnimationCalls - noopDidEnd0,
+            "shortfall": (bottomMetrics(in: cv)["shortfall"] as? Double) ?? 0,
         ]
 
-        // ---- 5. Animated bottom after the content grew ----
-        let didEnd0 = model.didEndScrollingAnimationCalls
+        // ---- 9. Programmatic interruption of an animated return ----
+        controller.performScroll(.top)
+        await settle(0.6)
+        let interruptDidEnd0 = model.didEndScrollingAnimationCalls
         controller.performScroll(.bottomAnimated)
-        await waitForDidEndScrollingAnimation(controller, baseline: didEnd0, timeout: 4)
-        await settle(0.8)
-        cv.layoutIfNeeded()
-        var animated = bottomMetrics(in: cv)
-        animated["didEndScrollingAnimationCalls"] = model.didEndScrollingAnimationCalls - didEnd0
-        report["bottomAnimated"] = animated
+        await settle(0.1)
+        cv.setContentOffset(cv.contentOffset, animated: false)
+        await settle(1.0)
+        report["bottomAnimatedInterrupted"] = [
+            "didEndScrollingAnimationCalls": model.didEndScrollingAnimationCalls - interruptDidEnd0,
+            "shortfall": (bottomMetrics(in: cv)["shortfall"] as? Double) ?? 0,
+            "note": "programmatic interruption, not a user drag",
+        ]
 
-        // Let self-sizing settle once more. A growing shortfall means the
-        // target offset was computed from estimates that no longer hold.
-        await settle(0.8)
-        cv.layoutIfNeeded()
-        report["bottomAnimatedAfterSettle"] = bottomMetrics(in: cv)
-
-        // ---- 6. Instant bottom as a control ----
-        controller.performScroll(.bottomInstant)
-        await settle(0.5)
-        cv.layoutIfNeeded()
-        report["bottomInstantAfterSettle"] = bottomMetrics(in: cv)
+        // ---- 10. Absolute owed is idempotent across queries ----
+        layout.debugSetOwedTarget(9140)
+        let firstQuery = layout.targetContentOffset(forProposedContentOffset: CGPoint(x: 0, y: 0)).y
+        let secondQuery = layout.targetContentOffset(forProposedContentOffset: CGPoint(x: 0, y: 500)).y
+        layout.debugSetOwedTarget(nil)
+        model.recordOwedDouble(first: firstQuery, second: secondQuery)
+        report["owedDoubleQuery"] = [
+            "first": num(firstQuery),
+            "second": num(secondQuery),
+            "same": firstQuery == secondQuery,
+        ]
 
         report["counters"] = [
             "targetOffsetCalls": model.targetOffsetCalls,
@@ -172,6 +284,13 @@ enum SpikeAutoRunner {
             "didEndScrollingAnimationCalls": model.didEndScrollingAnimationCalls,
             "reconfigureCount": model.reconfigureCount,
             "streamTicks": model.streamTicks,
+            "adjustmentAppliedCount": model.adjustmentAppliedCount,
+            "pinAdjustmentCount": model.pinAdjustmentCount,
+            "bottomShortfallMax": num(model.bottomShortfallMax),
+            "asyncFirstHeight": num(model.asyncFirstHeight),
+            "asyncSettledHeight": num(model.asyncSettledHeight),
+            "owedDoubleQueryFirst": num(model.owedDoubleQueryFirst),
+            "owedDoubleQuerySecond": num(model.owedDoubleQuerySecond),
         ]
         report["drag"] = "not_exercised: simctl cannot synthesize touches; XCUITest would be required"
         report["completed"] = true
@@ -207,6 +326,18 @@ enum SpikeAutoRunner {
         return Anchor(id: id, screenY: screenY, contentHeight: cv.contentSize.height)
     }
 
+    private static func itemID(after id: String, in layout: SpikeTimelineLayout) -> String? {
+        guard let index = layout.itemIDs.firstIndex(of: id), index + 1 < layout.itemIDs.count else {
+            return nil
+        }
+        return layout.itemIDs[index + 1]
+    }
+
+    private static func delta(_ before: Anchor?, _ after: Anchor?) -> Any {
+        guard let before, let after else { return NSNull() }
+        return num(after.screenY - before.screenY)
+    }
+
     private static func bottomMetrics(in cv: UICollectionView) -> [String: Any] {
         let inset = cv.adjustedContentInset
         let maxOffset = max(-inset.top, cv.contentSize.height - cv.bounds.height + inset.bottom)
@@ -214,9 +345,30 @@ enum SpikeAutoRunner {
             "contentHeight": num(cv.contentSize.height),
             "offsetY": num(cv.contentOffset.y),
             "maxOffsetY": num(maxOffset),
-            // Positive = the reader is short of the bottom.
             "shortfall": num(maxOffset - cv.contentOffset.y),
         ]
+    }
+
+    // MARK: - Scrolling
+
+    /// Puts `itemID` partially above the viewport top, re-resolving once after
+    /// the first materialization changed the item's measured height.
+    private static func scrollToPartialTop(
+        _ controller: SpikeCollectionController,
+        itemID: String,
+        above: CGFloat
+    ) async {
+        for _ in 0..<2 {
+            controller.collectionView.layoutIfNeeded()
+            guard let index = controller.layout.itemIDs.firstIndex(of: itemID),
+                  let attributes = controller.layout.layoutAttributesForItem(
+                    at: IndexPath(item: index, section: 0)
+                  ) else { return }
+            let inset = controller.collectionView.adjustedContentInset
+            let y = max(-inset.top, attributes.frame.minY + above)
+            controller.collectionView.setContentOffset(CGPoint(x: 0, y: y), animated: false)
+            await settle(0.2)
+        }
     }
 
     // MARK: - Waiting
@@ -231,17 +383,6 @@ enum SpikeAutoRunner {
             try? await Task.sleep(for: .milliseconds(10))
         }
         controller.collectionView.layoutIfNeeded()
-    }
-
-    private static func waitForDidEndScrollingAnimation(
-        _ controller: SpikeCollectionController,
-        baseline: Int,
-        timeout: TimeInterval
-    ) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while controller.model.didEndScrollingAnimationCalls == baseline, Date() < deadline {
-            try? await Task.sleep(for: .milliseconds(20))
-        }
     }
 
     private static func settle(_ seconds: TimeInterval) async {

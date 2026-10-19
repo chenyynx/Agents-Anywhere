@@ -38,6 +38,18 @@ final class SpikeModel {
     private(set) var streamTicks = 0
     private(set) var lastEvent = "-"
 
+    // Extended probes: hosting cell / partial visibility / pinning / absolute owed.
+    private(set) var adjustmentAppliedCount = 0
+    private(set) var lastAdjustmentDelta: CGFloat = 0
+    private(set) var pinAdjustmentCount = 0
+    private(set) var asyncFirstHeight: CGFloat = 0
+    private(set) var asyncSettledHeight: CGFloat = 0
+    private(set) var owedDoubleQueryFirst: CGFloat = 0
+    private(set) var owedDoubleQuerySecond: CGFloat = 0
+    private(set) var bottomShortfallMax: CGFloat = 0
+    private(set) var lastOwedTarget: CGFloat = 0
+    private(set) var asyncParseIDs: Set<String> = []
+
     private(set) var scrollCommand: (id: Int, target: ScrollTarget)?
     private var scrollCommandID = 0
     private var prependCounter = 0
@@ -52,9 +64,24 @@ final class SpikeModel {
         items = (1...1000).map { index in
             Item(id: "item-\(index)", text: Self.text(for: index, lines: index % 7 + 1), revision: 0)
         }
+        asyncParseIDs.removeAll()
         generation &+= 1
         streamingItemID = items.last?.id
         lastEvent = "reset 1000"
+    }
+
+    func markAsyncParse(_ id: String) {
+        asyncParseIDs.insert(id)
+    }
+
+    func growItem(_ id: String, lines: Int = 1) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        for _ in 0..<lines {
+            items[index].text += "\ngrown line " + String(items[index].revision)
+        }
+        items[index].revision += 1
+        generation &+= 1
+        lastEvent = "grow \(id)"
     }
 
     func prepend() {
@@ -112,6 +139,25 @@ final class SpikeModel {
     func recordReconfigure(_ count: Int) { reconfigureCount += count }
     func recordDragStart(_ height: CGFloat) { dragStartHeight = height; dragMaxDelta = 0 }
     func recordDragDelta(_ delta: CGFloat) { dragMaxDelta = max(dragMaxDelta, abs(delta)) }
+    func recordAdjustment(delta: CGFloat) {
+        adjustmentAppliedCount += 1
+        lastAdjustmentDelta = delta
+    }
+    func recordPinAdjustment() { pinAdjustmentCount += 1 }
+    func recordAsync(first: CGFloat, settled: CGFloat) {
+        asyncFirstHeight = first
+        asyncSettledHeight = settled
+    }
+    func recordOwedDouble(first: CGFloat, second: CGFloat) {
+        owedDoubleQueryFirst = first
+        owedDoubleQuerySecond = second
+    }
+    func recordBottomShortfall(_ value: CGFloat) {
+        bottomShortfallMax = max(bottomShortfallMax, value)
+    }
+    func recordOwedTarget(_ value: CGFloat) {
+        lastOwedTarget = value
+    }
     func recordOwed(before: CGFloat, after: CGFloat, owed: CGFloat) {
         anchorBeforeY = before
         anchorAfterY = after

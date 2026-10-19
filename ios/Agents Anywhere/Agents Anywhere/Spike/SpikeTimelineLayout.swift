@@ -1,10 +1,15 @@
 import UIKit
 
-/// Throwaway layout for the 6b spike. It exists to answer four runtime questions:
-/// does `targetContentOffset` fire on a non-animated apply, does a one-shot owed
-/// offset land, do self-sizing invalidations arrive, and what happens to the
-/// content height while the finger is down.
+/// Throwaway layout for the 6b spike. It now mirrors the shape the real plan
+/// needs: an absolute `owedTarget`, an in-update gate, self-sizing
+/// compensation for both "fully above" and "partially visible above" rows, and
+/// a same-transaction bottom pin.
 final class SpikeTimelineLayout: UICollectionViewLayout {
+    enum CompensationMode: String {
+        case fullyAboveOnly
+        case aboveOrPartial
+    }
+
     var itemIDs: [String] = []
     var estimates: [String: CGFloat] = [:]
 
@@ -13,16 +18,21 @@ final class SpikeTimelineLayout: UICollectionViewLayout {
     private var totalHeight: CGFloat = 0
     private let spacing: CGFloat = 8
 
-    /// One-shot offset owed to the reader after a prepend. Cleared at finalize.
-    var owed: CGFloat = 0
-    var anchorID: String?
-    private(set) var anchorAfterY: CGFloat = 0
+    /// Absolute target offset, not a delta. Official shape: `offsetOwed ?? proposed`.
+    private(set) var owedTarget: CGFloat?
+    private var owedConsumed = false
+    private var isInsideUpdate = false
+
+    var compensationMode: CompensationMode = .aboveOrPartial
+    var isPinning = false
 
     var onTargetOffset: ((_ proposed: CGFloat, _ returned: CGFloat) -> Void)?
     var onPrepareForUpdates: (() -> Void)?
     var onFinalizeUpdates: (() -> Void)?
     var onInvalidationContext: ((_ delta: CGFloat) -> Void)?
     var onShouldInvalidate: (() -> Void)?
+    var onAdjustment: ((_ delta: CGFloat) -> Void)?
+    var onPinAdjustment: (() -> Void)?
 
     override var collectionViewContentSize: CGSize {
         CGSize(width: collectionView?.bounds.width ?? 0, height: totalHeight)
@@ -43,9 +53,6 @@ final class SpikeTimelineLayout: UICollectionViewLayout {
             y += height + spacing
         }
         totalHeight = y
-        if let anchorID, let index = itemIDs.firstIndex(of: anchorID), index < itemAttributes.count {
-            anchorAfterY = itemAttributes[index].frame.minY
-        }
     }
 
     override func layoutAttributesForElements(in rect: CGRect) -> [UICollectionViewLayoutAttributes]? {
@@ -92,12 +99,32 @@ final class SpikeTimelineLayout: UICollectionViewLayout {
         let delta = newHeight - oldHeight
         onInvalidationContext?(delta)
 
-        if abs(delta) > 0.5, let collectionView,
-           !collectionView.isTracking, !collectionView.isDecelerating {
-            let frame = originalAttributes.frame
-            if frame.maxY <= collectionView.contentOffset.y {
-                context.contentOffsetAdjustment = CGPoint(x: 0, y: delta)
-            }
+        // Official `isInsideAnUpdate` gate: during an update transaction the
+        // owed target is the only compensation; do not also adjust the offset.
+        guard !isInsideUpdate, abs(delta) > 0.5, let collectionView,
+              !collectionView.isTracking, !collectionView.isDecelerating else {
+            return context
+        }
+
+        if isPinning, index == itemIDs.count - 1 {
+            context.contentOffsetAdjustment = CGPoint(x: 0, y: delta)
+            onPinAdjustment?()
+            onAdjustment?(delta)
+            return context
+        }
+
+        let frame = originalAttributes.frame
+        let offsetY = collectionView.contentOffset.y
+        let shouldAdjust: Bool
+        switch compensationMode {
+        case .fullyAboveOnly:
+            shouldAdjust = frame.maxY <= offsetY
+        case .aboveOrPartial:
+            shouldAdjust = frame.minY < offsetY
+        }
+        if shouldAdjust {
+            context.contentOffsetAdjustment = CGPoint(x: 0, y: delta)
+            onAdjustment?(delta)
         }
         return context
     }
@@ -106,19 +133,33 @@ final class SpikeTimelineLayout: UICollectionViewLayout {
 
     override func prepare(forCollectionViewUpdates updateItems: [UICollectionViewUpdateItem]) {
         super.prepare(forCollectionViewUpdates: updateItems)
+        isInsideUpdate = true
         onPrepareForUpdates?()
     }
 
     override func finalizeCollectionViewUpdates() {
         super.finalizeCollectionViewUpdates()
+        isInsideUpdate = false
+        // Official fallback: if UIKit never queried the target during this
+        // transaction, land the owed offset here instead of silently dropping it.
+        if let target = owedTarget, !owedConsumed {
+            collectionView?.setContentOffset(CGPoint(x: 0, y: target), animated: false)
+        }
+        owedTarget = nil
+        owedConsumed = false
         onFinalizeUpdates?()
-        owed = 0
     }
 
     override func targetContentOffset(forProposedContentOffset proposedContentOffset: CGPoint) -> CGPoint {
-        let returned = CGPoint(x: proposedContentOffset.x, y: proposedContentOffset.y + owed)
-        onTargetOffset?(proposedContentOffset.y, returned.y)
-        return returned
+        guard let target = owedTarget else {
+            onTargetOffset?(proposedContentOffset.y, proposedContentOffset.y)
+            return proposedContentOffset
+        }
+        // Absolute and idempotent: every query in the same transaction returns
+        // the same target, no matter what `proposedContentOffset` carries.
+        owedConsumed = true
+        onTargetOffset?(proposedContentOffset.y, target)
+        return CGPoint(x: proposedContentOffset.x, y: target)
     }
 
     // MARK: Helpers
@@ -141,5 +182,16 @@ final class SpikeTimelineLayout: UICollectionViewLayout {
     /// Read-only access for the auto-run probe; `measured` itself stays private.
     func measuredHeight(of id: String) -> CGFloat? {
         measured[id]
+    }
+
+    func setOwedTarget(_ value: CGFloat?) {
+        owedTarget = value
+        owedConsumed = false
+    }
+
+    /// The auto-run uses this to prove the absolute target is idempotent when
+    /// UIKit queries `targetContentOffset` more than once per transaction.
+    func debugSetOwedTarget(_ value: CGFloat?) {
+        setOwedTarget(value)
     }
 }

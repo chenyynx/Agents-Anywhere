@@ -15,36 +15,26 @@ struct SpikeTimelineView: UIViewControllerRepresentable {
     }
 }
 
-// MARK: - Cell
+// MARK: - Hosting cell
 
-final class SpikeCell: UICollectionViewCell {
-    static let reuseID = "SpikeCell"
-
-    private let label = UILabel()
+final class SpikeHostingCell: UICollectionViewCell {
+    static let reuseID = "SpikeHostingCell"
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        contentView.backgroundColor = .secondarySystemBackground
-        contentView.layer.cornerRadius = 8
         contentView.clipsToBounds = true
-        label.numberOfLines = 0
-        label.font = .preferredFont(forTextStyle: .body)
-        label.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(label)
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 12),
-            label.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
-            label.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
-            label.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -12),
-        ])
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(_ item: SpikeModel.Item) {
-        label.text = item.text
+    func configure(item: SpikeModel.Item, asyncParse: Bool) {
+        contentConfiguration = UIHostingConfiguration {
+            SpikeHostingRow(item: item, asyncParse: asyncParse)
+                .id(item.id)
+        }
+        .margins(.all, 0)
     }
 
     override func preferredLayoutAttributesFitting(
@@ -61,6 +51,40 @@ final class SpikeCell: UICollectionViewCell {
     }
 }
 
+private struct SpikeHostingRow: View {
+    let item: SpikeModel.Item
+    let asyncParse: Bool
+    @State private var parsedLines: [String] = []
+
+    private var lines: [String] {
+        if !parsedLines.isEmpty { return parsedLines }
+        if asyncParse { return ["…"] }
+        return item.text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                Text(line)
+                    .font(.body)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(uiColor: .secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .task(id: item.id) {
+            guard asyncParse, parsedLines.isEmpty else { return }
+            // Simulates ChatMarkdownView's detached parse: the first frame is
+            // empty (placeholder), then the blocks arrive and the row grows.
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled else { return }
+            parsedLines = item.text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        }
+    }
+}
+
 // MARK: - Controller
 
 @MainActor
@@ -74,6 +98,7 @@ final class SpikeCollectionController: UIViewController, UICollectionViewDelegat
     var lastGeneration = -1
     private var lastScrollCommand = -1
     private var autoRunStarted = false
+    var armedBottom = false
 
     init(model: SpikeModel) {
         self.model = model
@@ -103,13 +128,19 @@ final class SpikeCollectionController: UIViewController, UICollectionViewDelegat
         layout.onShouldInvalidate = { [weak self] in
             self?.model.recordShouldInvalidate()
         }
+        layout.onAdjustment = { [weak self] delta in
+            self?.model.recordAdjustment(delta: delta)
+        }
+        layout.onPinAdjustment = { [weak self] in
+            self?.model.recordPinAdjustment()
+        }
 
         collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
         collectionView.backgroundColor = .systemBackground
         collectionView.alwaysBounceVertical = true
         collectionView.keyboardDismissMode = .interactive
         collectionView.delegate = self
-        collectionView.register(SpikeCell.self, forCellWithReuseIdentifier: SpikeCell.reuseID)
+        collectionView.register(SpikeHostingCell.self, forCellWithReuseIdentifier: SpikeHostingCell.reuseID)
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(collectionView)
         NSLayoutConstraint.activate([
@@ -122,10 +153,10 @@ final class SpikeCollectionController: UIViewController, UICollectionViewDelegat
         dataSource = UICollectionViewDiffableDataSource<Int, String>(collectionView: collectionView) {
             [weak self] collectionView, indexPath, id in
             let cell = collectionView.dequeueReusableCell(
-                withReuseIdentifier: SpikeCell.reuseID, for: indexPath
-            ) as! SpikeCell
+                withReuseIdentifier: SpikeHostingCell.reuseID, for: indexPath
+            ) as! SpikeHostingCell
             if let item = self?.itemsByID[id] {
-                cell.configure(item)
+                cell.configure(item: item, asyncParse: self?.model.asyncParseIDs.contains(id) ?? false)
             }
             return cell
         }
@@ -158,9 +189,17 @@ final class SpikeCollectionController: UIViewController, UICollectionViewDelegat
 
     private func applyItems() {
         let oldIDs = layout.itemIDs
+        let oldEstimates = layout.estimates
         let items = model.items
         let newIDs = items.map(\.id)
         let previousRevisions = lastRevisions
+
+        let visibleFirst = collectionView.indexPathsForVisibleItems.min(by: { $0.item < $1.item })
+        let anchorID = visibleFirst.flatMap { $0.item < oldIDs.count ? oldIDs[$0.item] : nil } ?? oldIDs.first
+        let originOffset = max(-collectionView.adjustedContentInset.top, collectionView.contentOffset.y)
+        let beforeY = anchorID.flatMap { id in
+            oldIDs.firstIndex(of: id).map { layout.yOffset(of: $0, ids: oldIDs, estimates: oldEstimates) }
+        }
 
         itemsByID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
         lastRevisions = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0.revision) })
@@ -173,17 +212,21 @@ final class SpikeCollectionController: UIViewController, UICollectionViewDelegat
         }
 
         // Prepend detection: the old list is a suffix of the new one.
-        if !oldIDs.isEmpty, newIDs.count > oldIDs.count, Array(newIDs.suffix(oldIDs.count)) == oldIDs {
-            let anchorID = oldIDs[0]
-            let beforeY = layout.yOffset(of: 0, ids: oldIDs, estimates: layout.estimates)
+        if let anchorID, let beforeY,
+           !oldIDs.isEmpty, newIDs.count > oldIDs.count,
+           Array(newIDs.suffix(oldIDs.count)) == oldIDs {
             let newIndex = newIDs.firstIndex(of: anchorID) ?? 0
-            let afterY = layout.yOffset(of: newIndex, ids: newIDs, estimates: estimates)
-            layout.anchorID = anchorID
-            layout.owed = afterY - beforeY
+            let afterY = yOffset(of: newIndex, ids: newIDs, estimates: estimates)
+            // Absolute target: the origin offset already carries the clamped
+            // pull (max(-topInset, offsetY)), so the reader lands exactly where
+            // the existing TimelineHistoryPosition expects.
+            let target = originOffset + (afterY - beforeY)
+            layout.setOwedTarget(target)
+            model.recordOwedTarget(target)
             model.recordOwed(before: beforeY, after: afterY, owed: afterY - beforeY)
         } else {
-            layout.anchorID = nil
-            layout.owed = 0
+            layout.setOwedTarget(nil)
+            model.recordOwed(before: 0, after: 0, owed: 0)
         }
 
         layout.itemIDs = newIDs
@@ -204,6 +247,31 @@ final class SpikeCollectionController: UIViewController, UICollectionViewDelegat
 
         dataSource.apply(snapshot, animatingDifferences: false)
         model.recordContentHeight(collectionView.contentSize.height)
+    }
+
+    private func yOffset(of index: Int, ids: [String], estimates: [String: CGFloat]) -> CGFloat {
+        var y: CGFloat = 0
+        for offset in 0..<min(index, ids.count) {
+            let id = ids[offset]
+            y += (layout.measuredHeight(of: id) ?? estimates[id] ?? 200) + 8
+        }
+        return y
+    }
+
+    func setArmedBottom(_ value: Bool) {
+        armedBottom = value
+    }
+
+    /// The real controller re-resolves the armed bottom target on every
+    /// content-size change. The probe calls this explicitly after growth so the
+    /// measurement is not confused with the layout's in-transaction pin.
+    func repinIfArmed() {
+        guard armedBottom, isViewLoaded,
+              !collectionView.isTracking, !collectionView.isDecelerating else { return }
+        let y = bottomOffset().y
+        if abs(collectionView.contentOffset.y - y) > 0.5 {
+            collectionView.setContentOffset(CGPoint(x: 0, y: y), animated: false)
+        }
     }
 
     func performScroll(_ target: SpikeModel.ScrollTarget) {
@@ -228,6 +296,7 @@ final class SpikeCollectionController: UIViewController, UICollectionViewDelegat
     // MARK: UIScrollViewDelegate
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        armedBottom = false
         model.recordDragStart(scrollView.contentSize.height)
     }
 

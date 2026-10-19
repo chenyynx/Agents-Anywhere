@@ -82,7 +82,10 @@ final class TimelineListLayout: UICollectionViewLayout {
         }
         prepareCount += 1
         let width = collectionView.bounds.width
-        let widthChanged = width != lastLayoutWidth
+        // Ignore the first layout (0 → screen width): the controller already
+        // measured every new key before the apply. Only a later resize is a
+        // pure bounds change with no apply to schedule the new keys.
+        let widthChanged = lastLayoutWidth > 0 && width != lastLayoutWidth
         let column = TimelineListMetrics.column(containerWidth: width)
         let count = host.layoutItemCount
         var items: [TimelineListItem] = []

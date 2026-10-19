@@ -25,10 +25,16 @@ final class AssistantMarkdownCell: UICollectionViewCell {
         stack.spacing = AssistantMarkdownTextLayout.blockSpacing
         stack.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(stack)
+        let bottom = stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
+        // Optional: the layout may round the row a fraction above the block
+        // heights. The fitting pass still needs a bottom edge, or it minimizes
+        // the content view to zero.
+        bottom.priority = .defaultHigh
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             stack.topAnchor.constraint(equalTo: contentView.topAnchor),
+            bottom,
         ])
     }
 

@@ -260,6 +260,15 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             guard let controller else { continue }
             guard let sample = await sampleItem(controller, item: item) else {
                 failures.append("measurement: no cell for \(kind.rawValue)")
+                report["missingCell"] = [
+                    "kind": kind.rawValue,
+                    "itemCount": controller.items.count,
+                    "indexPath": controller.indexPath(for: item)?.item ?? -1,
+                    "visible": controller.collectionView.indexPathsForVisibleItems
+                        .sorted().map(\.item),
+                    "offset": Double(controller.collectionView.contentOffset.y),
+                    "contentHeight": Double(controller.layout.contentHeight),
+                ] as [String: Any]
                 continue
             }
             let tolerance: CGFloat = [.message, .assistantTextKit, .reasoning, .plain, .code, .table].contains(kind) ? 1 : 4
@@ -270,8 +279,26 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             if sample.cell + 0.5 < sample.content {
                 failures.append("measurement \(kind.rawValue): cell \(sample.cell) clips content \(sample.content)")
             }
+            var diagnostic: [String: Any] = [:]
+            let gateKey = heightKey(for: item, width: sample.width)
+            diagnostic["gateWidth"] = Double(gateKey.width)
+            diagnostic["gateRevision"] = gateKey.contentRevision
+            if let attributes = controller.layout.attributes(for: item.itemID) {
+                diagnostic["attributeHeight"] = Double(attributes.frame.height)
+                diagnostic["attributeWidth"] = Double(attributes.heightKey?.width ?? -1)
+                diagnostic["attributeRevision"] = attributes.heightKey?.contentRevision ?? -1
+            }
+            if let current = controller.layout.heights.currentKey(for: item.itemID) {
+                diagnostic["currentWidth"] = Double(current.width)
+                diagnostic["currentRevision"] = current.contentRevision
+            }
+            diagnostic["displayed"] = Double(
+                controller.layout.heights.displayedHeight(for: item.itemID) ?? -1)
+            diagnostic["tiered"] = Double(
+                controller.layout.heights.tieredHeight(for: gateKey) ?? -1)
             samples.append(["kind": kind.rawValue, "measured": sample.measured,
-                            "content": sample.content, "cell": sample.cell, "error": error])
+                            "content": sample.content, "cell": sample.cell,
+                            "error": error, "diagnostics": diagnostic])
         }
         if samples.count < 8 { failures.append("measurement: only \(samples.count) stratified samples") }
         report["measurement"] = ["samples": samples, "sampleCount": samples.count]
@@ -594,6 +621,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         let cell: CGFloat
         let content: CGFloat
         let measured: CGFloat
+        let width: CGFloat
     }
 
     /// A correction can invalidate the layout between the scroll and the
@@ -629,7 +657,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         let key = heightKey(for: item, width: width)
         let measured = controller.layout.heights.tieredHeight(for: key)
             ?? controller.layout.attributes(for: item.itemID)?.frame.height ?? 0
-        return CellSample(cell: cell.bounds.height, content: content, measured: measured)
+        return CellSample(cell: cell.bounds.height, content: content,
+                          measured: measured, width: width)
     }
 
     private func cellHeight(_ controller: TimelineCollectionController, _ item: TimelineListItem) -> CGFloat {

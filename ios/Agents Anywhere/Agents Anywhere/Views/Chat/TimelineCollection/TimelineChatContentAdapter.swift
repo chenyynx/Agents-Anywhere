@@ -302,6 +302,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         isRefreshing = true
         defer { isRefreshing = false }
 
+        // Capture the prepend origin before any map is replaced. A history
+        // page can merge the anchor's group; after the merge, the old row no
+        // longer resolves to an item that still has layout attributes.
+        let pendingHistoryOrigin = pendingHistoryRequest.flatMap { request in
+            controller?.historyLayout(anchorRowID: request.anchorRowID, edge: request.edge)
+        }
         isLoadingOlder = model.session.isLoadingHistory
         isLoadingLatest = model.session.isLoadingHistory
         let notices = model.session.notices.notices
@@ -381,9 +387,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             } else if contentChanged, let first = identity.items.first,
                       rowIDs(in: first).first != request.beforeFirstRowID {
                 pendingHistoryRequest = nil
-                _ = controller?.beginHistoryRequest(generation: request.generation,
-                    anchorRowID: request.anchorRowID, edge: request.edge,
-                    newItems: identity.items)
+                if let origin = pendingHistoryOrigin {
+                    _ = controller?.beginHistoryRequest(generation: request.generation,
+                        anchorRowID: request.anchorRowID, edge: request.edge,
+                        newItems: identity.items, origin: origin)
+                }
             }
         }
         if contentChanged {

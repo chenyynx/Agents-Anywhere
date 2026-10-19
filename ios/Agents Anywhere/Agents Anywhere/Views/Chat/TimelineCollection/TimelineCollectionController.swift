@@ -939,6 +939,18 @@ final class TimelineCollectionController: UIViewController {
                              edge: TimelineHistoryLayout.Edge,
                              newItems: [TimelineListItem]) -> TimelineHistoryPosition? {
         guard let origin = historyLayout(anchorRowID: anchorRowID, edge: edge) else { return nil }
+        return beginHistoryRequest(generation: generation, anchorRowID: anchorRowID,
+            edge: edge, newItems: newItems, origin: origin)
+    }
+
+    /// The adapter captures `origin` before it rebuilds its groups. A history
+    /// page can merge the anchor's group; after the merge, the old row no
+    /// longer resolves to an item that still has layout attributes, so the
+    /// origin must be taken from the pre-refresh maps.
+    func beginHistoryRequest(generation: Int, anchorRowID: String,
+                             edge: TimelineHistoryLayout.Edge,
+                             newItems: [TimelineListItem],
+                             origin: TimelineHistoryLayout) -> TimelineHistoryPosition? {
         measureSynchronously(newItems, width: columnWidth)
         guard let projected = projectedHistoryLayout(items: newItems,
                                                      anchorRowID: anchorRowID, edge: edge) else { return nil }

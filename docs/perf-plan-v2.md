@@ -24,7 +24,7 @@
 | 6.5 上滑锚点 | ✅ 已提交；真机：跳动减轻为"偶尔小跳" | `9060611c` |
 | 6a 懒渲染 | ❌ **已尝试并回滚**：下拉加载失效、锚点测量不触发 | `c2326744` → 回滚 `47fd9408` |
 | 5 行级存储 | ⏳ 未开始 | — |
-| 6b UICollectionView | 🔵 已立项；**M1 任务单 v4 已写，关键原语已用模拟器原型验证** | `docs/perf-6b-m1-task-sheet.md` |
+| 6b UICollectionView | 🔵 已立项；**M1 任务单 v5 已写，真实 hosting cell/绝对 owed/持久底部均已用模拟器原型验证** | `docs/perf-6b-m1-task-sheet.md` |
 | 7 推送 | ⏳ 待定 APNs 凭据归属 | — |
 | 8 流保活 | ⏳ 待抓包结论 | — |
 
@@ -360,9 +360,9 @@ SwiftUI 的"布局后 scrollTo"做不到同帧修正——这是**架构差异�
 - N. 改用 iOS 17+ 的 `scrollPosition(id:)` / `scrollTargetLayout()` 让系统锚定
 - O. 批 6b 换 `UICollectionView` + 自研 layout（官方同构，唯一能保证同帧修正）
 
-**⚠️ 与批 6a 的冲突**：现有锚点测量挂在锚点 group 的 `onGeometryChange` 上（`ChatTimelineView.swift:617-626`）。
-懒容器不渲染离屏行时，该回调可能不再触发 ⇒ **LazyVStack 可能让跳动更严重**。
-批 6a 必须先单独验证这一条。
+**⚠️ 6b 的衔接**：现有锚点测量挂在锚点 group 的 `onGeometryChange` 上（`ChatTimelineView.swift:617-633`）。
+换成 collection view 后该回调不再存在；锚点必须改为布局在 `targetContentOffset` 内用新旧 attributes 求差（任务单 §3.4.2），并保留 `TimelineHistoryPosition` 的单测。
+6a 已证明“懒容器不渲染离屏行 ⇒ 回调不触发”，这正是 6b 要正面接管的原因。
 
 ### 症状 4 · 没有后台推送；通知不落到最新
 
@@ -595,16 +595,19 @@ SwiftUI 的"布局后 scrollTo"做不到同帧修正——这是**架构差异�
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
-| **M1** | `UICollectionView` + 自研 layout + 三级高度缓存 + 播种 + 单参数 `targetContentOffset`（append/prepend）+ 持久底部目标 | 任务单 v4：`docs/perf-6b-m1-task-sheet.md` |
+| **M1** | `UICollectionView` + 自研 layout + 三级高度缓存 + 播种 + 绝对 `targetContentOffset`（append/prepend）+ 持久底部目标 | 任务单 v5：`docs/perf-6b-m1-task-sheet.md` |
 | **M2** | 取消裁窗 + 用例语义更新 | 依赖 M1 |
 
 > M1 必须包含高度播种：否则 `contentSize` 是估计值，**开屏落底无法保证**，
 > 滚动时未测行也会让内容在手指下位移。这也是原 M1/M2 合并的原因。
 
-**运行时验证（2026-10-19，模拟器，详见任务单 §12.0）**：单参数
-`targetContentOffset(forProposedContentOffset:)` 在非动画 `apply` 下被调用且 `owed` 落地
-（`proposed 0 → returned 9200`，锚点屏幕位移 0）；自测高链路 10/10 tick 到达；
-但从顶部一次性跳底短差 **365pt**——持久底部目标不是优化项，是正确性项。
+**运行时验证（2026-10-19，模拟器，详见任务单 §12.0/§12.3）**：
+- 单参数 `targetContentOffset` 在非动画 `apply` 下被调用且 owed 落地（`proposed 0 → returned 9200`）。
+- 绝对 owed mid-list：`originOffset 7458 → target 16658`，锚点屏幕位移 0；重复查询幂等。
+- 真实 `UIHostingConfiguration` + 异步解析：首次 45 → settled 163，自测高回调到达；
+  部分可见 `aboveOrPartial` 下方锚点位移 0，`fullyAboveOnly` 位移 105。
+- 流式 10 tick 只有 1 次自测高/1 次 pin，shortfall 264；控制器重解析后 0；动画 no-op 回调 0。
+→ 持久底部目标不是优化项，是正确性项；补偿判据用 `aboveOrPartial`。
 
 ---
 
@@ -615,12 +618,12 @@ SwiftUI 的"布局后 scrollTo"做不到同帧修正——这是**架构差异�
 | 项 | 内容 |
 |---|---|
 | 官方依据 | `TranscriptListLayout` 的 update 事务闸：`prepareForCollectionViewUpdates` 进入、`finalizeCollectionViewUpdates` 退出、`targetContentOffsetForProposedContentOffset:` 返回 `offsetOwed ?? proposed`——**同一次 update 内修正**（`part-c §2.1–2.2`，EVIDENCE） |
-| AA 现状 | `TimelineHistoryPosition.laidOut` 在布局**之后**算偏移，且经 `DispatchQueue.main.async` 投递（`ChatTimelineView.swift:510-527`） |
+| AA 现状 | 6.5 已把 `TimelineHistoryPosition.laidOut` 移进布局回调内**同步**算并 `scrollTo`（`ChatTimelineView.swift:484-496`）；`historyLayout` 状态仍经 `historyUpdates.submit` 异步发布。6b 把它进一步移进布局的 `targetContentOffset`。 |
 | 候选方案 | M 同步修正（低改动/高风险）<br>N `scrollPosition(id:)` + `scrollTargetLayout()`（系统锚定）<br>O UICollectionView（官方同构，成本最高） |
 | 单测 | `TimelineHistoryPositionTests` 扩充：`laidOut` 的偏移计算、edge/firstRowID 不匹配时不修正、重复 layout 去抖（0.5pt 阈值） |
 | 真机判据 | 上滑连续加载 3 页：①视口内的首行不位移；②不出现回弹；③加载完成后不再自动纠偏 |
 | 风险 | 中高（方案 O 会并入批 6b） |
-| 依赖 | 与批 6a 一起验证；LazyVStack 可能破坏锚点测量 |
+| 依赖 | 与批 6b 一起验证；6a 已回滚，锚点改由 layout 的 `targetContentOffset` 接管 |
 
 ---
 
@@ -665,24 +668,21 @@ SwiftUI 的"布局后 scrollTo"做不到同帧修正——这是**架构差异�
   ↓
 批 4 分组缓存
   ↓
-批 6.5 上滑锚点 ★ 直接治"页面跳"，不依赖懒渲染
+批 6.5 上滑锚点 ★ 已提交（真机：跳动减轻为"偶尔小跳"）
   ↓
-批 6a 懒渲染 ★ 必须早于批 1；会动锚点，需回归验证
+批 6b 容器替换 ★ 主路径（6a 已回滚，不再作为前置）
   ↓
-批 1 不裁窗（依赖批 6a；否则打开变慢）
+批 1 不裁窗（依赖 6b 的容器/窗口语义稳定）
   ↓
 批 5 行级存储（依赖批 1 稳定后的窗口语义）
   ↓
 批 7 推送（独立立项，可并行）
 批 8 流保活（等抓包，可能不做）
-批 6b UICollectionView（仅当 6a + 6.5 都达不到官方手感才做）
 ```
 
 **两条关键顺序约束**
-1. `批 6a → 批 1`：非懒 `VStack` 下打开 1000 条会话要一次性建 O(n) 行模型 + O(n) 行展示模型 + O(n) 个视图；
-   裁窗正是这段的补偿，先取消裁窗会让打开变慢（Part 3.5 A）。
-2. `批 6.5 → 批 6a`：锚点测量挂在锚点 group 的 `onGeometryChange` 上，
-   懒容器不渲染离屏行时可能不再触发；先把锚点改稳，再换容器。
+1. `批 6b → 批 1`：裁窗的前提是容器能稳定处理 1000 行窗口；6a 的 `LazyVStack` 已证明“先懒渲染再验证”会破坏下拉/锚点，6b 是替代路径。
+2. `批 6.5 → 批 6b`：6.5 的锚点语义已进 `TimelineHistoryPosition`；6b 必须把它移进 layout 的 `targetContentOffset`，并保留现有单测。
 
 ---
 
@@ -736,7 +736,7 @@ SwiftUI 的"布局后 scrollTo"做不到同帧修正——这是**架构差异�
 | 属性测试 | 批 3 |
 | 二次打开用例 | 批 1 |
 | 迁移幂等用例 | 批 5 |
-| 开关回退 | 批 5 `aa.localdb`、批 6 `aa.timeline.lazy` |
+| 开关回退 | 批 5 `aa.localdb`、批 6 `aa.timeline.collectionView` |
 | 观测 | 批 0 的 signpost + `PipelineBenchmarkTests` 的前后数字 |
 | 逐批提交 | 每批一个 commit，提交信息写"为什么" |
 
@@ -763,7 +763,7 @@ SwiftUI 的"布局后 scrollTo"做不到同帧修正——这是**架构差异�
 ## 附录 B · 审计方法
 
 - 引用复核脚本：`/home/ubuntu/aa-test/verify_citations.py`（行锚点）、`/home/ubuntu/aa-test/compare_baselines.py`（两棵树逐行对比）
-- 工作树：`/home/ubuntu/aa-ring-work`（89d0d141，clean）
+- 审计基线工作树：`/home/ubuntu/aa-ring-work`（`origin/dev @ 89d0d141`）；当前开发在 `perf/session-open-and-render`
 - 抓包任务书：`/home/ubuntu/wiring/docs/capture-brief-claude-code-page.md`
 
 ---

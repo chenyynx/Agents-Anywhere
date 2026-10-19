@@ -17,6 +17,9 @@ struct AgentsAnywhereApp: App {
                 if ProcessInfo.processInfo.arguments.contains(TimelineAutoRunModel.launchArgument) {
                     // C3 simulator gate; never reachable from the product UI.
                     TimelineAutoRunRootView()
+                } else if ProcessInfo.processInfo.arguments.contains(TextKitSpikeModel.launchArgument) {
+                    // C5/M1 TextKit 2 measurement spike; never reachable from the product UI.
+                    TextKitSpikeRootView()
                 } else {
                     RootView()
                 }

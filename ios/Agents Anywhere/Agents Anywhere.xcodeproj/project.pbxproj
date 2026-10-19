@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		000000000000000130000001 /* Textual in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000300000001 /* Textual */; };
+		000000000000000130000002 /* CDMarkdownKit in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000300000002 /* CDMarkdownKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -28,6 +29,7 @@
 			isa = PBXFrameworksBuildPhase;
 			files = (
 				000000000000000130000001 /* Textual in Frameworks */,
+				000000000000000130000002 /* CDMarkdownKit in Frameworks */,
 			);
 		};
 /* End PBXFrameworksBuildPhase section */
@@ -69,6 +71,7 @@
 			name = "Agents Anywhere";
 			packageProductDependencies = (
 				000000000000000300000001 /* Textual */,
+				000000000000000300000002 /* CDMarkdownKit */,
 			);
 			productName = MyApp;
 			productReference = 000000000000000000000120 /* Agents Anywhere.app */;
@@ -104,6 +107,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				000000000000000300000000 /* XCLocalSwiftPackageReference "../Packages/Textual" */,
+				000000000000000300000010 /* XCRemoteSwiftPackageReference "CDMarkdownKit" */,
 			);
 			preferredProjectObjectVersion = 90;
 			productRefGroup = 000000000000000000000020 /* Products */;
@@ -406,11 +410,27 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		000000000000000300000010 /* XCRemoteSwiftPackageReference "CDMarkdownKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/chrisdhaan/CDMarkdownKit.git";
+			requirement = {
+				kind = exactVersion;
+				version = 5.1.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		000000000000000300000001 /* Textual */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 000000000000000300000000 /* XCLocalSwiftPackageReference "../Packages/Textual" */;
 			productName = Textual;
+		};
+		000000000000000300000002 /* CDMarkdownKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 000000000000000300000010 /* XCRemoteSwiftPackageReference "CDMarkdownKit" */;
+			productName = CDMarkdownKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -28,6 +28,13 @@ protocol TimelineCollectionContentProviding: AnyObject {
     func item(containingRow rowID: String) -> TimelineListItem?
 
     func interactionState() -> TimelineLayoutInteractionState
+
+    /// Both are protocol requirements (not extension-only helpers): the
+    /// representable calls them through an existential, and an extension-only
+    /// method would statically dispatch to the no-op default instead of the
+    /// product adapter's implementation.
+    func prepareForUpdate()
+    func applyTypography(_ snapshot: TimelineTypographySnapshot)
 }
 
 extension TimelineCollectionContentProviding {

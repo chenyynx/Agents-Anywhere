@@ -24,7 +24,7 @@
 | 6.5 上滑锚点 | ✅ 已提交；真机：跳动减轻为"偶尔小跳" | `9060611c` |
 | 6a 懒渲染 | ❌ **已尝试并回滚**：下拉加载失效、锚点测量不触发 | `c2326744` → 回滚 `47fd9408` |
 | 5 行级存储 | ⏳ 未开始 | — |
-| 6b UICollectionView | 🔵 已立项；**M1 任务单 v5 已写，真实 hosting cell/绝对 owed/持久底部均已用模拟器原型验证** | `docs/perf-6b-m1-task-sheet.md` |
+| 6b UICollectionView | 🔵 已立项；**M1 任务单 v6 已写，改为测量驱动高度（不再依赖逐 tick 自测）** | `docs/perf-6b-m1-task-sheet.md` |
 | 7 推送 | ⏳ 待定 APNs 凭据归属 | — |
 | 8 流保活 | ⏳ 待抓包结论 | — |
 
@@ -595,19 +595,18 @@ SwiftUI 的"布局后 scrollTo"做不到同帧修正——这是**架构差异�
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
-| **M1** | `UICollectionView` + 自研 layout + 三级高度缓存 + 播种 + 绝对 `targetContentOffset`（append/prepend）+ 持久底部目标 | 任务单 v5：`docs/perf-6b-m1-task-sheet.md` |
-| **M2** | 取消裁窗 + 用例语义更新 | 依赖 M1 |
+| **M1** | `UICollectionView` + 自研 layout + **测量驱动高度**（三级缓存/稳定 id 键）+ 绝对 `targetContentOffset`（append/prepend）+ 持久底部状态机 | 任务单 v6：`docs/perf-6b-m1-task-sheet.md` |
+| **M2** | 取消裁窗 + 用例语义更新（即批 1） | 依赖 M1 |
 
-> M1 必须包含高度播种：否则 `contentSize` 是估计值，**开屏落底无法保证**，
+> M1 必须包含高度测量/播种：否则 `contentSize` 是估计值，**开屏落底无法保证**，
 > 滚动时未测行也会让内容在手指下位移。这也是原 M1/M2 合并的原因。
 
-**运行时验证（2026-10-19，模拟器，详见任务单 §12.0/§12.3）**：
+**运行时验证（2026-10-19，模拟器，详见任务单 §12.1）**：
 - 单参数 `targetContentOffset` 在非动画 `apply` 下被调用且 owed 落地（`proposed 0 → returned 9200`）。
 - 绝对 owed mid-list：`originOffset 7458 → target 16658`，锚点屏幕位移 0；重复查询幂等。
-- 真实 `UIHostingConfiguration` + 异步解析：首次 45 → settled 163，自测高回调到达；
-  部分可见 `aboveOrPartial` 下方锚点位移 0，`fullyAboveOnly` 位移 105。
-- 流式 10 tick 只有 1 次自测高/1 次 pin，shortfall 264；控制器重解析后 0；动画 no-op 回调 0。
-→ 持久底部目标不是优化项，是正确性项；补偿判据用 `aboveOrPartial`。
+- **自测高不可靠**：10 个流式 tick 只回 1 次 preferred 高度；异步行首次 45 → settled 163。
+- 动画 no-op 回调 0；持久底部必须由状态机重解析。
+→ v6 改为测量驱动：高度在 apply 前算好，cell 固定高度；OpenMinis 上游 `b4c0661d` 的三级缓存/defer/三分支补偿已核对（任务单附录 C）。
 
 ---
 

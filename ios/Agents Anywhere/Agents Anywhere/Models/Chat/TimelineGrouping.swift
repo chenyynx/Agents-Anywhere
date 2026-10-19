@@ -86,6 +86,11 @@ enum TimelineGrouping {
 @MainActor @Observable final class TimelineDisclosureState {
     @Observable fileprivate final class Entry { var expanded = false }
     @ObservationIgnored private var entries: [String: Entry] = [:]
+    /// Bumped on every toggle. Fold state changes a group's height without
+    /// changing its rows, so the collection adapter needs one observable
+    /// signal to recompute signatures; reading every entry would couple the
+    /// wrapper to ids it does not know yet.
+    private(set) var revision = 0
     private func entry(_ id: String) -> Entry {
         if let existing = entries[id] { return existing }
         let value = Entry(); entries[id] = value; return value
@@ -93,5 +98,8 @@ enum TimelineGrouping {
     // Each fold observes its own bit. Toggling one tool must not reconstruct
     // every other expanded tool's diff and output subtree.
     func isExpanded(_ id: String) -> Bool { entry(id).expanded }
-    func toggle(_ id: String) { entry(id).expanded.toggle() }
+    func toggle(_ id: String) {
+        entry(id).expanded.toggle()
+        revision &+= 1
+    }
 }

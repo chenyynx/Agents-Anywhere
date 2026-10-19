@@ -11,7 +11,9 @@ nonisolated struct TimelineRowContentSignature: Equatable {
 
 nonisolated struct TimelineInlineNoticeSignature: Equatable {
     let id: String
-    let status: V2TimelineItemStatus
+    /// A notice's status is `V2RuntimeNoticeStatus`; it is not a timeline row
+    /// status (open/responding/resolved vs pending/running/done).
+    let status: V2RuntimeNoticeStatus
     let revision: Int
 }
 
@@ -41,9 +43,13 @@ nonisolated struct TimelineTurnSuppression: Equatable {
 
 nonisolated struct TimelineGroupContentSignature: Equatable {
     let rows: [TimelineRowContentSignature]
-    /// Fold state for a tools/reconnect group (or any row with disclosure).
+    /// The group-level fold's state (`TimelineFold(id: "group:<id>")`).
     /// Expanding changes the group's height without changing its rows.
     let disclosureExpanded: Bool
+    /// Row-level folds expanded inside this group. One Bool cannot represent
+    /// several independent folds: collapsing one while another stays open
+    /// would leave the signature equal and the group's height stale.
+    var expandedRowIDs: [String] = []
     /// Inline approval/notice cards attached to this group's rows.
     let inlineNotices: [TimelineInlineNoticeSignature]
     let attachments: [TimelineAttachmentPreviewSignature]
@@ -58,6 +64,7 @@ nonisolated struct TimelineGroupContentSignature: Equatable {
             hasher.combine(row.updatedSeq)
         }
         hasher.combine(disclosureExpanded)
+        for rowID in expandedRowIDs.sorted() { hasher.combine(rowID) }
         for notice in inlineNotices {
             hasher.combine(notice.id)
             hasher.combine(notice.status.rawValue)
@@ -118,7 +125,7 @@ nonisolated enum TimelineContentSignature: Equatable {
     case group(TimelineGroupContentSignature)
     case olderPrompt(pullReady: Bool, isLoading: Bool, keepsPrompt: Bool, hasOlderItems: Bool)
     case latestPrompt(pullReady: Bool, isLoading: Bool, hasNewerItems: Bool)
-    case notice(id: String, status: V2TimelineItemStatus, revision: Int)
+    case notice(id: String, status: V2RuntimeNoticeStatus, revision: Int)
     case pending(id: String, attachments: [TimelineAttachmentPreviewSignature])
     case tail(TimelineTailContentSignature)
 

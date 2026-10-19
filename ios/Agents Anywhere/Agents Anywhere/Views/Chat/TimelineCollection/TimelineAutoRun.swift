@@ -78,7 +78,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             disclosureExpanded: entry.expanded,
             inlineNotices: entry.kind == .notice
                 ? [TimelineInlineNoticeSignature(id: "notice-\(entry.id)",
-                                                 status: .waitingApproval, revision: entry.revision)]
+                                                 status: .open, revision: entry.revision)]
                 : [],
             attachments: entry.kind == .image
                 ? [TimelineAttachmentPreviewSignature(id: "image-\(entry.id)",

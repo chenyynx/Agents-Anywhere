@@ -63,6 +63,30 @@ import Testing
         #expect(changed.isSet && !disclosures.isExpanded("second"))
     }
 
+    @Test @MainActor func disclosureRevisionTracksTogglesNotReads() {
+        let disclosures = TimelineDisclosureState()
+        let start = disclosures.revision
+        _ = disclosures.isExpanded("row")
+        #expect(disclosures.revision == start)
+        disclosures.toggle("row")
+        #expect(disclosures.revision == start + 1)
+        disclosures.toggle("row")
+        #expect(disclosures.revision == start + 2)
+    }
+
+    @Test @MainActor func flushRevisionBumpsOnlyWhenAFlushPublishes() throws {
+        let presentation = SessionTimelinePresentation()
+        let value = try item("message", status: "done", content: ["text": "a"])
+        let start = presentation.flushRevision
+        presentation.flush(now: 1)
+        #expect(presentation.flushRevision == start)
+        presentation.stage([value], animate: false)
+        presentation.flush(now: 2)
+        #expect(presentation.flushRevision == start + 1)
+        presentation.flush(now: 3)
+        #expect(presentation.flushRevision == start + 1)
+    }
+
     @Test func fileArtifactsUseRealChangePayloadAndRelativePaths() throws {
         let value = try item("artifact", content: ["kind": "file_change", "changes": [
             ["filePath": "/work/src/app.swift", "kind": ["type": "add"], "diff": "let value = 1\n"]

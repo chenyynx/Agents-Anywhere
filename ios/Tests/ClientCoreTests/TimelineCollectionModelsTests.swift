@@ -248,7 +248,7 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
             .group(groupSignature(rowRevision: 2)),
             .group(groupSignature(disclosureExpanded: true)),
             .group(groupSignature(inlineNotices: [
-                TimelineInlineNoticeSignature(id: "n", status: .waitingApproval, revision: 1)
+                TimelineInlineNoticeSignature(id: "n", status: .open, revision: 1)
             ])),
             .group(groupSignature(attachments: [
                 TimelineAttachmentPreviewSignature(id: "a", pixelWidth: 100, pixelHeight: 50)
@@ -283,11 +283,23 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
     }
 
     @Test func noticePendingAndTailFieldsAreCovered() {
-        let notice = TimelineContentSignature.notice(id: "n", status: .waitingApproval, revision: 1)
-        #expect(notice != .notice(id: "n", status: .done, revision: 1))
-        #expect(notice != .notice(id: "n", status: .waitingApproval, revision: 2))
+        let notice = TimelineContentSignature.notice(id: "n", status: .open, revision: 1)
+        #expect(notice != .notice(id: "n", status: .resolved, revision: 1))
+        #expect(notice != .notice(id: "n", status: .open, revision: 2))
 
         let pending = TimelineContentSignature.pending(id: "p", attachments: [])
+        var oneFold = groupSignature()
+        oneFold.expandedRowIDs = ["a"]
+        var twoFolds = groupSignature()
+        twoFolds.expandedRowIDs = ["a", "b"]
+        var noFolds = groupSignature()
+        noFolds.expandedRowIDs = []
+        #expect(oneFold.contentRevision != twoFolds.contentRevision)
+        #expect(oneFold.contentRevision != noFolds.contentRevision)
+        var reordered = groupSignature()
+        reordered.expandedRowIDs = ["b", "a"]
+        #expect(twoFolds.contentRevision == reordered.contentRevision)
+
         #expect(pending != .pending(id: "p", attachments: [
             TimelineAttachmentPreviewSignature(id: "a", pixelWidth: 1, pixelHeight: 1)
         ]))
@@ -328,7 +340,7 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         let base = groupSignature()
         #expect(base.contentRevision != groupSignature(disclosureExpanded: true).contentRevision)
         #expect(base.contentRevision != groupSignature(inlineNotices: [
-            TimelineInlineNoticeSignature(id: "n", status: .waitingApproval, revision: 1)
+            TimelineInlineNoticeSignature(id: "n", status: .open, revision: 1)
         ]).contentRevision)
         #expect(base.contentRevision != groupSignature(attachments: [
             TimelineAttachmentPreviewSignature(id: "a", pixelWidth: 100, pixelHeight: 50)

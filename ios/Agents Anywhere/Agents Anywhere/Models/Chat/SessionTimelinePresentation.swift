@@ -82,6 +82,13 @@ final class SessionTimelinePresentation {
     /// changes to the top, so without the re-assert the reader is parked
     /// away from the newest rows until a manual scroll (2026-10-08).
     private(set) var windowRevision = 0
+    /// Bumped once per published flush. Row text changes in place on a
+    /// `ChatTimelineRowModel` (an observable class), so the `rows` array
+    /// identity does not move when a streaming reply grows. The collection
+    /// wrapper reads this value to re-evaluate and recompute content
+    /// signatures; without it the new container would only notice a stream
+    /// on the next unrelated model change.
+    private(set) var flushRevision = 0
     @ObservationIgnored private var rowsByID: [V2TimelineItemID: ChatTimelineRowModel] = [:]
     @ObservationIgnored private var pending: [V2TimelineItem]?
     @ObservationIgnored private var animatePending = false
@@ -148,6 +155,7 @@ final class SessionTimelinePresentation {
             // `open()`, and an append keeps every old id, so neither bumps.
             if !presented.isSubset(of: Set(updated.map(\.id))) { windowRevision &+= 1 }
             if !hasPresentedSnapshot { hasPresentedSnapshot = true }
+            flushRevision &+= 1
             self.pending = nil; pendingWasStaged = false
         }
         for row in rows where row.isRevealing { row.settle(now: now) }

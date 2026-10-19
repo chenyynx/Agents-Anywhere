@@ -17,12 +17,17 @@ nonisolated enum TimelineHeightEstimateKind: Equatable {
     case latestPrompt
     case tail(statusLine: Bool)
     case row
+    /// Content-aware fallback for a row whose exact height is not available
+    /// yet. The value is an estimate, never a measurement; the visible cell
+    /// replaces it as soon as its real content has laid out.
+    case text(CGFloat)
 
     var height: CGFloat {
         switch self {
         case .olderPrompt, .latestPrompt: return 44
         case .tail(let statusLine): return statusLine ? 32 : 12
         case .row: return 200
+        case .text(let height): return max(44, height)
         }
     }
 }

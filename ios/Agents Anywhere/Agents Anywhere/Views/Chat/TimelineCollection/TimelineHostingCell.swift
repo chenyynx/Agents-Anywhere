@@ -17,6 +17,11 @@ final class TimelineHostingCell: UICollectionViewCell {
         super.init(frame: frame)
         backgroundConfiguration = .clear()
         contentView.backgroundColor = .clear
+        // Until the visible-cell settle reports the real height, a fixed row
+        // can be shorter than its SwiftUI content. Clip it instead of letting
+        // the overflow draw over the following row.
+        contentView.clipsToBounds = true
+        clipsToBounds = true
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

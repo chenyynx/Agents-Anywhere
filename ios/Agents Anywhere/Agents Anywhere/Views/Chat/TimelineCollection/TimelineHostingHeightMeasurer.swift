@@ -57,7 +57,12 @@ final class TimelineHostingHeightMeasurer: TimelineHeightMeasuring {
         hosting.view.layoutIfNeeded()
         let size = hosting.sizeThatFits(in: proposed)
         measurementCount += 1
-        guard size.height.isFinite, size.height > 0 else { return nil }
+        // The hosting view starts at a 1pt probe height. A SwiftUI subtree
+        // whose async content has not laid out yet (Textual parses Markdown in
+        // a task) can answer with that probe or with only its stack spacing.
+        // Treat such a value as "not measured"; the controller retries and the
+        // visible-cell settle supplies the real height.
+        guard size.height.isFinite, size.height > 1 else { return nil }
         return ceil(size.height)
     }
 }

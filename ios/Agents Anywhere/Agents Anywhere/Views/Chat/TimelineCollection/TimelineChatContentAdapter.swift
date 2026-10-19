@@ -51,6 +51,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private var lastEntries: [TimelineContentEntry] = []
     private var typography: TimelineTypographySnapshot
     private var isRefreshing = false
+    /// Last width `heightKey` was asked for. `estimateKind` runs immediately
+    /// after it in the layout's prepare loop, so this is the column the
+    /// estimate must use without threading a width through the provider.
+    private var lastWidth: CGFloat = 0
+    private var estimateCache: [String: CGFloat] = [:]
 
     // C4 renders the history prompts but leaves their pull/load state to C5;
     // the controller's pull machinery is already shared, so C5 only fills
@@ -62,6 +67,26 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private var keepsOlderPrompt = false
     var onLoadOlder: (() -> Void)?
     var onLoadLatest: (() -> Void)?
+
+    /// Set by the bridge before `loadOlder()` starts. The next refresh that
+    /// sees a new first row installs the absolute prepend target before the
+    /// controller applies the snapshot, so the reader's anchor does not move.
+    struct PendingHistoryRequest {
+        let generation: Int
+        let anchorRowID: String
+        let beforeFirstRowID: String?
+        let edge: TimelineHistoryLayout.Edge
+        let createdAt: Date
+    }
+    var pendingHistoryRequest: PendingHistoryRequest?
+
+    /// First timeline row of the first item, the value the prepend target
+    /// compares against. The history prompt deliberately reports the first
+    /// timeline row (not the prompt id); a prompt id would never change and
+    /// the target would never install.
+    var firstRowID: String? {
+        itemsValue.first.flatMap { rowIDs(in: $0).first }
+    }
 
     init(model: SessionChatModel,
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void,
@@ -102,7 +127,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     }
 
     func heightKey(for item: TimelineListItem, width: CGFloat) -> TimelineHeightKey {
-        TimelineHeightKey(itemID: item.itemID,
+        lastWidth = width
+        return TimelineHeightKey(itemID: item.itemID,
             contentRevision: contentSignature(for: item).contentRevision,
             width: width,
             dynamicType: typography.dynamicType,
@@ -115,8 +141,50 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         case .olderPrompt: return .olderPrompt
         case .latestPrompt: return .latestPrompt
         case .tail: return .tail(statusLine: model.sendingPlaceholder != nil)
-        case .group, .notice, .pending: return .row
+        case .notice: return .row
+        case .pending(let id):
+            guard let pending = pendingByID[id] else { return .row }
+            return .text(textEstimate(for: item,
+                rows: [TimelineHeightEstimate.TextRow(text: pending.content,
+                                                     attachmentCount: pending.attachments.count)],
+                minimum: 60))
+        case .group(let id):
+            guard let group = groupsByID[id] else { return .row }
+            // A folded group renders its header only; estimating the hidden
+            // rows would park a large blank block above the fold.
+            let expanded = group.kind == .single || model.disclosures.isExpanded("group:\(group.id)")
+            let rows = expanded ? group.rows : []
+            var textRows: [TimelineHeightEstimate.TextRow] = []
+            textRows.reserveCapacity(rows.count)
+            for row in rows {
+                textRows.append(TimelineHeightEstimate.TextRow(
+                    text: row.text,
+                    attachmentCount: attachments(of: row.value).count))
+            }
+            return .text(textEstimate(for: item, rows: textRows, minimum: expanded ? 44 : 64))
         }
+    }
+
+    /// The estimate is recomputed only when the row content, typography or
+    /// column width changes. `prepare` asks for it for every row on every
+    /// layout, so the cache key uses the already-computed content signature
+    /// rather than walking the row text again.
+    private func textEstimate(for item: TimelineListItem,
+                              rows: [TimelineHeightEstimate.TextRow],
+                              minimum: CGFloat) -> CGFloat {
+        let width = TimelineHeightKey.quantize(lastWidth > 0 ? lastWidth : 361)
+        var hasher = TimelineStableHasher()
+        hasher.combine(contentSignature(for: item).contentRevision)
+        hasher.combine(minimum)
+        hasher.combine(typography.revision)
+        hasher.combine(width)
+        let cacheKey = "\(hasher.revision)"
+        if let cached = estimateCache[cacheKey] { return cached }
+        let height = TimelineHeightEstimate.height(rows: rows, width: width,
+            bodySize: typography.body, lineSpacing: typography.lineSpacing,
+            paragraphSpacing: typography.paragraphSpacing, minimum: minimum)
+        estimateCache[cacheKey] = height
+        return height
     }
 
     func heightPolicy(for item: TimelineListItem) -> TimelineRowHeightPolicy {
@@ -148,13 +216,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 hasOlderItems: model.session.hasOlderItems,
                 isLoading: isLoadingOlder || isLoadingLatest,
                 pullReady: olderPullReady,
-                onLoad: onLoadOlder))
+                onLoad: { [weak self] in self?.onLoadOlder?() }))
         case .latestPrompt:
             return AnyView(TimelineCollectionLatestPromptRow(
                 hasNewerItems: model.session.hasNewerItems,
                 isLoading: isLoadingLatest || isLoadingOlder,
                 pullReady: latestPullReady,
-                onLoad: onLoadLatest))
+                onLoad: { [weak self] in self?.onLoadLatest?() }))
         case .group(let id):
             guard let group = groupsByID[id] else { return AnyView(EmptyView()) }
             return AnyView(SessionTimelineGroupView(
@@ -219,6 +287,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         isRefreshing = true
         defer { isRefreshing = false }
 
+        isLoadingOlder = model.session.isLoadingHistory
+        isLoadingLatest = model.session.isLoadingHistory
         let notices = model.session.notices.notices
         let visibleNotices = notices.filter { $0.isVisible && !$0.blocks(model.session.id) }
         let interactionTargets = Set(notices.filter(\.isVisible).compactMap(\.timelineTargetID))
@@ -283,6 +353,21 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         }
         itemsValue = identity.items
         signaturesByItem = signatures
+        if estimateCache.count > 256 { estimateCache.removeAll(keepingCapacity: true) }
+        // A history page that actually prepended rows installs its absolute
+        // target before `reloadFromContent` reads this generation and applies
+        // the snapshot. A page that returned nothing is dropped on timeout.
+        if let request = pendingHistoryRequest {
+            if Date.now.timeIntervalSince(request.createdAt) >= 5 {
+                pendingHistoryRequest = nil
+            } else if let first = identity.items.first,
+                      rowIDs(in: first).first != request.beforeFirstRowID {
+                pendingHistoryRequest = nil
+                _ = controller?.beginHistoryRequest(generation: request.generation,
+                    anchorRowID: request.anchorRowID, edge: request.edge,
+                    newItems: identity.items)
+            }
+        }
         if entries != lastEntries {
             lastEntries = entries
             generation &+= 1

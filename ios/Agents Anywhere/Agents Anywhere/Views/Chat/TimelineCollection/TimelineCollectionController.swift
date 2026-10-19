@@ -30,6 +30,8 @@ final class TimelineCollectionController: UIViewController {
     private var measurementPipeline = TimelineMeasurementPipeline(budgetMilliseconds: .max)
     private var pendingApply: (items: [TimelineListItem], animating: Bool)?
     private var pendingMeasurementTask: Task<Void, Never>?
+    private var visibleCellSettleTask: Task<Void, Never>?
+    private var visibleCellSettleGeneration = 0
     private var bottomAnimationWatchdog: Task<Void, Never>?
     private var lastPublishedViewport = TimelineViewport()
 
@@ -107,6 +109,12 @@ final class TimelineCollectionController: UIViewController {
         super.viewDidLoad()
         collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
         collectionView.backgroundColor = .clear
+        // The SwiftUI timeline asked for `.scrollEdgeEffectStyle(.soft, for:
+        // .top)`. A bare UICollectionView keeps the system's default (hard)
+        // edge effect, which reads as a solid bar over the transparent page;
+        // match the old page on both edges.
+        collectionView.topEdgeEffect.style = .soft
+        collectionView.bottomEdgeEffect.style = .soft
         collectionView.alwaysBounceVertical = true
         collectionView.showsVerticalScrollIndicator = false
         collectionView.keyboardDismissMode = .interactive // I7
@@ -234,6 +242,7 @@ final class TimelineCollectionController: UIViewController {
         dataSource.apply(snapshot, animatingDifferences: animating) { [weak self] in
             self?.onApplyCompleted?()
             self?.schedulePendingMeasurements()
+            self?.scheduleVisibleCellSettle()
             self?.publishViewport()
         }
     }
@@ -311,6 +320,37 @@ final class TimelineCollectionController: UIViewController {
         }
     }
 
+    /// No legitimate timeline row is shorter than a text line. A value below
+    /// this is the hosting probe or a pre-parse stack spacing, never a row.
+    private static let minimumPlausibleHeight: CGFloat = 8
+    private static let pendingMeasurementAttempts = 6
+    private static let pendingMeasurementInterval = Duration.milliseconds(150)
+    /// Visible-cell settle passes. Textual parses Markdown off the main actor,
+    /// so the cell's real height can arrive well after the first layout. The
+    /// later passes cover a long reply on a busy main thread; a later scroll
+    /// or `willDisplay` starts a fresh set if the content is still not parsed.
+    private static let visibleCellSettleDelays: [Duration] = [
+        .zero, .milliseconds(80), .milliseconds(160), .milliseconds(320),
+        .milliseconds(640), .milliseconds(1200), .milliseconds(2000),
+        .milliseconds(3000), .milliseconds(5000)
+    ]
+
+    private func validatedHeight(_ height: CGFloat?, minimum: CGFloat = 0) -> CGFloat? {
+        guard let height, height.isFinite else { return nil }
+        let floor = max(Self.minimumPlausibleHeight, minimum)
+        guard height >= floor else { return nil }
+        return ceil(height)
+    }
+
+    /// A fitting height far below the content-aware estimate is a pre-parse
+    /// stack spacing, not a row. 20% leaves room for an over-estimating text
+    /// model while rejecting the 2–20pt placeholders a multi-row VStack
+    /// reports before Textual parses its Markdown.
+    private func plausibleFloor(for item: TimelineListItem) -> CGFloat {
+        guard let content else { return Self.minimumPlausibleHeight }
+        return max(Self.minimumPlausibleHeight, content.estimateKind(for: item).height * 0.2)
+    }
+
     private func measureSynchronously(_ items: [TimelineListItem], width: CGFloat) {
         guard let content, let measurer, width > 0 else { return }
         // A typography change re-keys every row in the same SwiftUI update that
@@ -320,6 +360,12 @@ final class TimelineCollectionController: UIViewController {
             hosted.updateTraitOverrides(from: traitCollection)
         }
         let requests = items.compactMap { item -> TimelineMeasurementRequest? in
+            // Only plain text fits the synchronous offscreen pass. Textual
+            // parses Markdown in a task that a hostless controller never runs
+            // (the long-Markdown gate measured 2pt for 1471pt of content), so
+            // a hosting pass for those rows is both wrong and wasted main
+            // thread work. Their estimate stands until the visible cell fits.
+            guard content.measurementContent(for: item) == .plainText else { return nil }
             let key = content.heightKey(for: item, width: width)
             guard !layout.heights.hasMeasuredOrPrecalcHeight(for: key) else { return nil }
             return TimelineMeasurementRequest(itemID: item.itemID, key: key,
@@ -330,7 +376,12 @@ final class TimelineCollectionController: UIViewController {
         guard !requests.isEmpty else { return }
         let plan = measurementPipeline.plan(requests)
         for request in plan.measureBeforeApply {
-            guard let height = measurer.measure(itemID: request.itemID, width: width) else { continue }
+            // Async Markdown answers an offscreen pass with its pre-parse
+            // stack spacing (measured 2.0pt for a 1471pt group). Never write
+            // that as a row height; the estimate stands until the visible
+            // cell reports its real fitting height.
+            guard let raw = measurer.measure(itemID: request.itemID, width: width),
+                  let height = validatedHeight(raw) else { continue }
             layout.heights.set(height, for: request.key, tier: .measured)
         }
     }
@@ -338,7 +389,7 @@ final class TimelineCollectionController: UIViewController {
     private func schedulePendingMeasurements() {
         pendingMeasurementTask?.cancel()
         let pending = layout.pendingMeasurements
-        guard !pending.isEmpty, let measurer, columnWidth > 0 else { return }
+        guard !pending.isEmpty, columnWidth > 0 else { return }
         let width = columnWidth
         pendingMeasurementTask = Task { @MainActor [weak self] in
             if let self, let hosted = self.measurer as? TimelineHostingHeightMeasurer {
@@ -347,18 +398,21 @@ final class TimelineCollectionController: UIViewController {
             for item in pending {
                 guard let self, !Task.isCancelled, self.currentItems.contains(item) else { return }
                 guard let content = self.content else { return }
+                // Async Markdown is settled by the visible cell, not by this
+                // hostless loop; retrying an offscreen pass would only burn
+                // main-thread layout for the same 2pt answer.
+                guard content.measurementContent(for: item) == .plainText else { continue }
                 let key = content.heightKey(for: item, width: width)
-                // A hosted Markdown view parses asynchronously; a nil/zero
-                // first pass is expected. Retry briefly before leaving the row
-                // on displayed/estimate height.
-                for attempt in 0..<4 {
-                    if let height = measurer.measure(itemID: item.itemID, width: width) {
+                // Retry briefly; a visible cell's async Markdown is settled by
+                // the visible-cell passes instead of this offscreen loop.
+                for attempt in 0..<Self.pendingMeasurementAttempts {
+                    if let height = self.measuredHeight(for: item, width: width) {
                         self.measurementPipeline.complete(item.itemID)
                         self.layout.applyMeasuredHeight(height, for: item.itemID, key: key)
                         break
                     }
-                    if attempt < 3 {
-                        try? await Task.sleep(for: .milliseconds(150))
+                    if attempt < Self.pendingMeasurementAttempts - 1 {
+                        try? await Task.sleep(for: Self.pendingMeasurementInterval)
                     }
                     if Task.isCancelled { return }
                 }
@@ -367,14 +421,87 @@ final class TimelineCollectionController: UIViewController {
         }
     }
 
+    /// The visible cell is the only exact source for async content: Textual
+    /// parses in a task an offscreen hosting controller never runs, so the
+    /// offscreen pass sees only stack spacing. The official transcript's
+    /// `ClaudeTranscriptUI.TranscriptCellHost.heightDidChange` reports the
+    /// cell's real height; AA polls the same `systemLayoutSizeFitting` the
+    /// integration gate uses as its cell sample.
+    private func measuredHeight(for item: TimelineListItem, width: CGFloat) -> CGFloat? {
+        if let height = visibleCellFit(for: item) { return height }
+        guard let measurer else { return nil }
+        return validatedHeight(measurer.measure(itemID: item.itemID, width: width))
+    }
+
+    private func visibleCellFit(for item: TimelineListItem) -> CGFloat? {
+        guard !navigationSuspended, let indexPath = indexPath(for: item),
+              let cell = collectionView.cellForItem(at: indexPath) else { return nil }
+        return cellFit(cell, minimum: plausibleFloor(for: item))
+    }
+
+    private func cellFit(_ cell: UICollectionViewCell, minimum: CGFloat = 0) -> CGFloat? {
+        let width = cell.contentView.bounds.width
+        guard width > 0 else { return nil }
+        let height = cell.contentView.systemLayoutSizeFitting(
+            CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel).height
+        return validatedHeight(height, minimum: minimum)
+    }
+
     /// Re-measures one row on demand (the gate's async-Markdown settle step).
     func remeasure(_ item: TimelineListItem) {
-        guard let content, let measurer, columnWidth > 0 else { return }
+        guard let content, columnWidth > 0 else { return }
         let width = columnWidth
         let key = content.heightKey(for: item, width: width)
-        guard let height = measurer.measure(itemID: item.itemID, width: width) else { return }
+        guard let height = measuredHeight(for: item, width: width) else { return }
         measurementPipeline.complete(item.itemID)
         layout.applyMeasuredHeight(height, for: item.itemID, key: key)
+    }
+
+    /// Every visible row may correct its height after the cell has rendered;
+    /// this is the AA equivalent of the official cell's `heightDidChange`.
+    /// Passes stop as soon as each visible cell's fitting height equals its
+    /// frame; a pre-parse cell keeps them alive until the last pass.
+    private func scheduleVisibleCellSettle() {
+        visibleCellSettleTask?.cancel()
+        visibleCellSettleGeneration &+= 1
+        let generation = visibleCellSettleGeneration
+        visibleCellSettleTask = Task { @MainActor [weak self] in
+            for delay in Self.visibleCellSettleDelays {
+                if delay > .zero { try? await Task.sleep(for: delay) }
+                guard let self, !Task.isCancelled,
+                      self.visibleCellSettleGeneration == generation,
+                      !self.navigationSuspended else { return }
+                if !self.settleVisibleCellHeightsOnce() { return }
+            }
+        }
+    }
+
+    /// Returns false when every visible cell already matches its frame, so
+    /// the caller can stop. A visible cell whose Markdown has not parsed yet
+    /// (no plausible fitting height) keeps the passes alive.
+    private func settleVisibleCellHeightsOnce() -> Bool {
+        guard let content, !navigationSuspended, columnWidth > 0,
+              !collectionView.indexPathsForVisibleItems.isEmpty else { return false }
+        var needsMore = false
+        for indexPath in collectionView.indexPathsForVisibleItems.sorted() {
+            guard currentItems.indices.contains(indexPath.item),
+                  let cell = collectionView.cellForItem(at: indexPath) else { continue }
+            let item = currentItems[indexPath.item]
+            guard let height = cellFit(cell, minimum: plausibleFloor(for: item)) else {
+                // Pre-parse stack spacing or a probe: wait for the async content.
+                needsMore = true
+                continue
+            }
+            let key = content.heightKey(for: item, width: columnWidth)
+            let current = layout.attributes(for: item.itemID)?.frame.height ?? 0
+            guard abs(height - current) > 0.5 else { continue }
+            measurementPipeline.complete(item.itemID)
+            layout.applyMeasuredHeight(height, for: item.itemID, key: key)
+            needsMore = true
+        }
+        return needsMore
     }
 
     // MARK: - Viewport and bottom
@@ -438,6 +565,7 @@ final class TimelineCollectionController: UIViewController {
             collectionView.setContentOffset(CGPoint(x: collectionView.contentOffset.x, y: target), animated: false)
             noteBottomArrival()
         }
+        scheduleVisibleCellSettle()
     }
 
     func setReduceMotion(_ value: Bool) {
@@ -717,8 +845,37 @@ final class TimelineCollectionController: UIViewController {
     // MARK: - Pull
 
     private func beginPulls(at viewport: TimelineViewport) {
+        // The prompt flags are geometric, not model flags: a pull anywhere
+        // else in the transcript must not be read as "at history edge".
+        olderPromptVisible = currentItems.first == .olderPrompt && promptIsVisible(.olderPrompt)
+        latestPromptVisible = currentItems.last == .latestPrompt && promptIsVisible(.latestPrompt)
         olderPull.begin(at: viewport, promptVisible: olderPromptVisible, canLoad: canLoadOlder)
         latestPull.begin(at: viewport, promptVisible: latestPromptVisible, canLoad: canLoadLatest)
+    }
+
+    private func promptIsVisible(_ item: TimelineListItem) -> Bool {
+        guard let attributes = layout.attributes(for: item.itemID) else { return false }
+        let current = viewport
+        return attributes.frame.maxY > current.offsetY + current.topInset
+            && attributes.frame.minY < current.visibleBottom
+    }
+
+    /// The first row at or below the viewport top. A history prepend anchors
+    /// to this row so the text the reader is looking at stays put.
+    func visibleAnchorRowID() -> String? {
+        guard let content else { return nil }
+        let top = viewport.offsetY + viewport.topInset
+        for item in currentItems {
+            guard let attributes = layout.attributes(for: item.itemID) else { continue }
+            if attributes.frame.maxY > top {
+                return content.rowIDs(in: item).first
+            }
+        }
+        return currentItems.first.flatMap { content.rowIDs(in: $0).first }
+    }
+
+    var firstVisibleRowID: String? {
+        visibleAnchorRowID()
     }
 
     private func updatePulls(_ viewport: TimelineViewport) {
@@ -911,6 +1068,20 @@ extension TimelineCollectionController: TimelineListLayoutHost {
 }
 
 extension TimelineCollectionController: UICollectionViewDelegate {
+    func collectionView(_ collectionView: UICollectionView,
+                        willDisplay cell: UICollectionViewCell,
+                        forItemAt indexPath: IndexPath) {
+        // A newly materialized row is the first moment its real SwiftUI
+        // content exists. Defer the first fit to the next turn so the hosting
+        // view has run its initial layout; the settle passes then wait for an
+        // async Markdown parse.
+        guard !navigationSuspended else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.navigationSuspended else { return }
+            self.scheduleVisibleCellSettle()
+        }
+    }
+
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         guard !navigationSuspended else { return }
         bottomAnimationWatchdog?.cancel()
@@ -952,6 +1123,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         readerSettledAtBottom = viewport.measuredAtBottom
         layout.noteDecelerationDidEnd()
         scheduleUserScrollSettle()
+        scheduleVisibleCellSettle()
         publishViewport()
     }
 
@@ -959,6 +1131,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         bottomAnimationWatchdog?.cancel()
         let transition = phase.apply(.animationEnded)
         onPhaseChanged?(transition)
+        scheduleVisibleCellSettle()
         noteBottomArrival()
         publishViewport()
     }

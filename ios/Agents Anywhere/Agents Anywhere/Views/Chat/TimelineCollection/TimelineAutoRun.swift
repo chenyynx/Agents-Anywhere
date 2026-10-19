@@ -257,9 +257,11 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         if first < 44 {
             failures.append("first measurement: long group stored \(first)pt before parse")
         }
+        // The real cell is the measurement source for async Markdown, so it
+        // has to exist before the settle read.
+        await scrollToItem(item)
         await wait(1200)
         controller.remeasure(item)
-        await scrollToItem(item)
         await wait(250)
         if let sample = cellSample(controller, item: item) {
             measurement["settled"] = sample.measured

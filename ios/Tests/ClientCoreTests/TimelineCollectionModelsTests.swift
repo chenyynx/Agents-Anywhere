@@ -1058,3 +1058,41 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
             cache: cache, expectedKeys: ["g:a": heightKey(revision: 2)], owed: owed).isEmpty)
     }
 }
+
+@Suite struct TimelineHeightEstimateTests {
+    private func height(_ rows: [TimelineHeightEstimate.TextRow], width: CGFloat = 360) -> CGFloat {
+        TimelineHeightEstimate.height(rows: rows, width: width, bodySize: 13,
+                                      lineSpacing: 8, paragraphSpacing: 20)
+    }
+
+    @Test func emptyRowKeepsTheMinimum() {
+        #expect(height([]) == 44)
+        #expect(height([.init(text: "")]) == 44)
+    }
+
+    @Test func longerTextEstimatesTaller() {
+        let short = height([.init(text: String(repeating: "a", count: 40))])
+        let long = height([.init(text: String(repeating: "a", count: 4000))])
+        #expect(long > short)
+        #expect(long > 1000)
+    }
+
+    @Test func wideGlyphsCostMoreThanLatin() {
+        let latin = height([.init(text: String(repeating: "a", count: 200))])
+        let han = height([.init(text: String(repeating: "中", count: 200))])
+        #expect(han > latin)
+    }
+
+    @Test func narrowerColumnsEstimateTaller() {
+        let row = TimelineHeightEstimate.TextRow(text: String(repeating: "a", count: 800))
+        let wide = height([row], width: 700)
+        let narrow = height([row], width: 320)
+        #expect(narrow > wide)
+    }
+
+    @Test func attachmentsAddHeight() {
+        let text = TimelineHeightEstimate.TextRow(text: "see image")
+        let withImage = TimelineHeightEstimate.TextRow(text: "see image", attachmentCount: 1)
+        #expect(height([withImage]) > height([text]))
+    }
+}

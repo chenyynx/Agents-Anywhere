@@ -78,6 +78,7 @@ struct TimelineChatTimelineView: View {
         let _ = model.orbActivity
         let _ = model.session.hasNewerItems
         let _ = model.session.hasOlderItems
+        let _ = model.session.isLoadingHistory
         let _ = model.session.metadata?.cwd
 
         TimelineCollectionView(
@@ -123,6 +124,15 @@ struct TimelineChatTimelineView: View {
             .onChange(of: hasInteractions, initial: true) { _, presented in
                 bridge.controller?.setInteractionPresented(presented)
             }
+            .onChange(of: model.session.hasOlderItems, initial: true) { _, _ in
+                bridge.updateHistoryAvailability()
+            }
+            .onChange(of: model.session.hasNewerItems, initial: true) { _, _ in
+                bridge.updateHistoryAvailability()
+            }
+            .onChange(of: model.session.isLoadingHistory, initial: true) { _, _ in
+                bridge.updateHistoryAvailability()
+            }
             // I4's cold-load mask fallback: a no-op scroll or a window that
             // never arrives must not hold the mask forever.
             .task(id: model.isOpeningReady) {
@@ -166,6 +176,9 @@ final class TimelineChatBridge: ObservableObject {
     private var reduceMotion = false
     private var openingPending = false
     private var openingSettled = false
+    private var historyGeneration = 0
+    private var isLoadingOlder = false
+    private var isLoadingLatest = false
 
     init(model: SessionChatModel,
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void,
@@ -181,10 +194,65 @@ final class TimelineChatBridge: ObservableObject {
         adapter.attach(controller)
         controller.onApplyCompleted = { [weak self] in self?.applyCompleted() }
         controller.onBottomArrived = { [weak self] in self?.openingArrived() }
+        controller.onLoadOlder = { [weak self] in self?.loadOlder() }
+        controller.onLoadLatest = { [weak self] in self?.loadLatest() }
+        adapter.onLoadOlder = { [weak self] in self?.loadOlder() }
+        adapter.onLoadLatest = { [weak self] in self?.loadLatest() }
         controller.setNavigationSuspended(navigationSuspended)
         controller.setReduceMotion(reduceMotion)
         controller.setInteractionPresented(hasInteractions)
+        updateHistoryAvailability()
         if openingPending, !controller.items.isEmpty { applyCompleted() }
+    }
+
+    /// The prompt/pull gates read the session's page flags, not a copy that
+    /// goes stale after a request.
+    func updateHistoryAvailability() {
+        controller?.canLoadOlder = model.session.isValid && model.session.hasOlderItems
+            && !model.session.isLoadingHistory && !isLoadingOlder
+        controller?.canLoadLatest = model.session.isValid && model.session.hasNewerItems
+            && !model.session.isLoadingHistory && !isLoadingLatest
+    }
+
+    private func loadOlder() {
+        guard !navigationSuspended, model.session.isValid,
+              model.session.hasOlderItems, !model.session.isLoadingHistory,
+              !isLoadingOlder, let controller else { return }
+        // Capture the row under the viewport top and the current first row
+        // before the request. The adapter installs the absolute prepend
+        // target on the refresh that brings the new page, before the
+        // controller applies it.
+        guard let anchor = controller.visibleAnchorRowID(),
+              let before = adapter.firstRowID else { return }
+        isLoadingOlder = true
+        historyGeneration &+= 1
+        adapter.pendingHistoryRequest = .init(generation: historyGeneration,
+            anchorRowID: anchor, beforeFirstRowID: before, edge: .top,
+            createdAt: .now)
+        updateHistoryAvailability()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.model.session.loadOlder()
+            self.isLoadingOlder = false
+            self.updateHistoryAvailability()
+        }
+    }
+
+    private func loadLatest() {
+        guard !navigationSuspended, model.session.isValid,
+              model.session.hasNewerItems, !model.session.isLoadingHistory,
+              !isLoadingLatest else { return }
+        isLoadingLatest = true
+        updateHistoryAvailability()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.model.session.loadLatest()
+            self.isLoadingLatest = false
+            self.updateHistoryAvailability()
+            // The latest page lands at the bottom; an explicit request owns
+            // the return even if the reader had scrolled into history.
+            self.controller?.requestBottom(animated: true, forced: true)
+        }
     }
 
     func beginOpening() {

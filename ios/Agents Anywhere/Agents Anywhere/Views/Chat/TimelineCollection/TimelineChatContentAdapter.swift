@@ -354,13 +354,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         itemsValue = identity.items
         signaturesByItem = signatures
         if estimateCache.count > 256 { estimateCache.removeAll(keepingCapacity: true) }
+        let contentChanged = entries != lastEntries
         // A history page that actually prepended rows installs its absolute
         // target before `reloadFromContent` reads this generation and applies
         // the snapshot. A page that returned nothing is dropped on timeout.
+        // Only a changed snapshot will produce the update that consumes the
+        // owed target; firing on an unchanged refresh would leave it behind.
         if let request = pendingHistoryRequest {
             if Date.now.timeIntervalSince(request.createdAt) >= 5 {
                 pendingHistoryRequest = nil
-            } else if let first = identity.items.first,
+            } else if contentChanged, let first = identity.items.first,
                       rowIDs(in: first).first != request.beforeFirstRowID {
                 pendingHistoryRequest = nil
                 _ = controller?.beginHistoryRequest(generation: request.generation,
@@ -368,7 +371,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     newItems: identity.items)
             }
         }
-        if entries != lastEntries {
+        if contentChanged {
             lastEntries = entries
             generation &+= 1
         }

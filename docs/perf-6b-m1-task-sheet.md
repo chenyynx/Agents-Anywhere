@@ -626,6 +626,32 @@ SessionChatModel
 
 ---
 
+## 15. C4 真机重叠事故与修复方案（2026-10-19 22:09）
+
+**事故**：包 `3ab52aae`，打开 `aa.timeline.collectionView` 后进入会话，真实长消息/用户气泡/通知文字叠在同一竖排，下方大片空白；关掉开关恢复旧路径。结论：新容器的固定行高在**真实产品行**上错误，内容溢出相邻行。C3 合成行 gate 未覆盖真实 Markdown/group 视图，不能作为产品路径证据。
+
+**待证伪的根因（按优先级）**
+1. **H1 探针高度被当成测量值**：`TimelineHostingHeightMeasurer` 先把 hosting view 的 bounds 设为 height 1，Textual 异步解析前 `sizeThatFits` 可能回 1；`measure` 只丢弃 `<=0`，controller 把 1pt 写成 `.measured`，此后不再重测。
+2. **H2 fallback 太小**：未测出时统一 200pt；长 Markdown 实际远大于 200pt，固定高度 cell 直接溢出。
+3. **H3 重试太短**：pending 只重试 4×150ms，长解析 >450ms 的行永久停在 fallback。
+4. **H4 整窗同步测量**：轮流替换 hosting rootView 可能取消/饿死上一行刚启动的异步解析。
+
+**修复顺序（每步先红后绿）**
+1. **Gate 先复现**：`TimelineAutoRun` 增加 `longMarkdown`（≥20 段 + code fence + table + 长行），记录 `firstStoredHeight` / `settledStoredHeight` / `cellFitting` / 相邻 frame 是否相交。断言：
+   - `firstStoredHeight` 必须是“未测/保守 fallback”，不能是 1pt；
+   - `settledStoredHeight` 与 cellFitting 差 ≤0.5pt（text）/≤4pt（complex）；
+   - 任意相邻 item frame 不相交。
+   修复前该 gate 必须红，并输出实际 `firstStoredHeight`，以确认 H1/H3。
+2. **测量有效性**：`TimelineHostingHeightMeasurer` 把 `height <= 1`（探针高度）视为未测；controller 对 `.markdown/.complex/.interactive` 增加最小可信高度检查（阈值由 gate 实测真实最小行高得出，不拍脑袋），未过检查不写 `.measured`，保持 pending。
+3. **异步结算**：pending 重试改为有界（建议 3s，gate 实测解析时间后写死）且拿到可信高度即停；apply 完成/滚动停止时对**可见 cell** 读 `contentView.systemLayoutSizeFitting`，经 controller 单一写者修正（C3 fold 已验证的机制，扩展到异步 Markdown 组）；离屏行保持 fallback，进入视口后结算。
+4. **Fallback**：用 gate 采集真实长 Markdown 的（字符数/块数 → 高度）样本，取**保守上界**作为 estimate；官方 Part Z §6.1 的 4000/12pt/44/180 公式在 sbx 恢复后核对。estimate 只用于等待期，仍标 pending。
+5. **开屏工作量**：只同步测视口 ± 一屏，其余走 pending，避免 H4。
+6. **真机复验**：新包默认 off；开关打开后先看同一长会话不再重叠，再按 §7.3 走 I1–I9/I27–I31。未通过前不翻默认、不进 C5。
+
+**不做**：不把固定 200 换成更大常数就交差；测量不可信时不启用 fixed-height 行；真实行 gate 绿之前不再发包给 pp 测试。
+
+---
+
 ## 附录 C · OpenMinis 参考（已核对上游 `b4c0661d`）
 
 上游 `OpenMinis/OpenMinis`（GPL-3.0），`src/ios/Agent/MessageList/`：

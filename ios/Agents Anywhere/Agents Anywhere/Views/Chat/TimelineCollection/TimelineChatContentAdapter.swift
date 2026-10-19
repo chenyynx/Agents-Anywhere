@@ -172,7 +172,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             guard let pending = pendingByID[id] else { return AnyView(EmptyView()) }
             return AnyView(PendingMessageRow(pending: pending, chat: model,
                 onAttachment: onAttachment,
-                onDismiss: { [weak model] in model?.session.dismissPendingMessage(id: id) }))
+                onDismiss: { [weak self] in self?.model.session.dismissPendingMessage(id: id) }))
         case .tail:
             return AnyView(TimelineCollectionTailRow(model: model))
         }

@@ -365,8 +365,18 @@ final class TimelineCollectionController: UIViewController {
     func requestBottom(animated: Bool, forced: Bool = true) {
         guard collectionView != nil else { return }
         userScrollSettleTask?.cancel()
+        bottomAnimationWatchdog?.cancel()
         mode = .returning
-        if forced { armedBottom.forceArm() }
+        if forced {
+            armedBottom.forceArm()
+        } else if !armedBottom.isArmed {
+            // Keep re-resolving the bottom while the return is in flight, the
+            // same way the old `.returning` mode did on every content change.
+            _ = armedBottom.armFollowing(readerRestsAtBottom: readerRestsAtBottom,
+                                         mode: .returning,
+                                         interactionPresented: interactionPresented,
+                                         requiresNoInteraction: false)
+        }
         let target = TimelineOffsetTarget.bottomOffset(contentHeight: layout.contentHeight,
             containerHeight: collectionView.bounds.height,
             topInset: collectionView.adjustedContentInset.top,
@@ -512,8 +522,18 @@ final class TimelineCollectionController: UIViewController {
         guard !phase.userIsScrolling, viewport.measuredAtBottom else { return }
         readerRestsAtBottom = true
         if mode == .returning { mode = interactionPresented ? .reading : .following }
-        if !interactionPresented, armedBottom.source == nil {
-            armedBottom.readerDidRestAtBottom(readerRestsAtBottom: true, interactionPresented: false)
+        if interactionPresented {
+            // A presented approval owns the page until it resolves; an
+            // opening/forced target that happened to land must not keep
+            // re-pinning on later stream growth.
+            armedBottom.disarm()
+        } else if armedBottom.source == .forced || armedBottom.source == nil {
+            // The explicit command has landed. Persistence from here is the
+            // reader's at-bottom follow, exactly what the old state machine
+            // did by flipping mode to `.following` on completion.
+            armedBottom.disarm()
+            armedBottom.readerDidRestAtBottom(readerRestsAtBottom: true,
+                                              interactionPresented: false)
         }
     }
 

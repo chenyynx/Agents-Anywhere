@@ -1,0 +1,113 @@
+import Foundation
+
+/// Which rows may let their cell drive height. Everything else consumes the
+/// measurement layer's fixed height; only these controlled exceptions may
+/// surface a `preferredLayoutAttributesFitting` height as a correction signal.
+nonisolated enum TimelineRowHeightPolicy: Equatable {
+    case measured
+    /// Fold expansion, inline notice card, and other interactive row content.
+    case interactive
+    /// Queue/status block whose 12↔32 animation must not be clipped.
+    case tail
+
+    var acceptsPreferredHeight: Bool { self != .measured }
+}
+
+/// The two correction categories of the collection layout, kept apart because
+/// they answer different questions and have different guards.
+///
+/// **A — pending measurement.** The row was applied before its measurement
+/// finished. Measured height is the truth; the only question is whether the
+/// content offset must move by the delta so the reader's visible text stays
+/// put. A row whose top is above the viewport top — including a partially
+/// visible one — moves the content below it, so it must be compensated. The
+/// spike measured a 105pt jump when partially visible rows were excluded.
+///
+/// **B — cell self-sizing (controlled exceptions).** Fold, inline notice and
+/// tail rows may grow from inside the cell. These follow OpenMinis's three
+/// branches: fully above the viewport, visible and non-streaming, or streaming
+/// while the bottom is pinned. Everything else updates height without moving
+/// the offset and is corrected on the next settled frame.
+///
+/// Browsing defer: while the reader drags or decelerates, a cached row's
+/// shrink or stable correction is parked until deceleration ends; growth is
+/// allowed so the row never clips or overlaps; an uncached row may take its
+/// first measurement.
+nonisolated struct TimelinePreferredAttributesDecision: Equatable {
+    enum Height: Equatable {
+        case accept
+        case deferUntilSettled
+    }
+
+    let height: Height
+    /// Offset delta to apply in the same layout pass. `nil` means the height
+    /// update is applied without moving the content.
+    let correction: CGFloat?
+
+    static let accept = TimelinePreferredAttributesDecision(height: .accept, correction: nil)
+    static let deferred = TimelinePreferredAttributesDecision(height: .deferUntilSettled, correction: nil)
+
+    static func accept(correction: CGFloat?) -> Self {
+        guard let correction, correction != 0 else { return .accept }
+        return TimelinePreferredAttributesDecision(height: .accept, correction: correction)
+    }
+
+    /// OpenMinis's `scrollMode == .autoScrolling` analogue. A presented
+    /// approval card or a reader in `.reading` mode is not pinning.
+    static func isAutoScrollPinning(hasArmedBottomTarget: Bool,
+                                    interactionPresented: Bool,
+                                    userIsScrolling: Bool,
+                                    mode: TimelineScrollState.Mode) -> Bool {
+        hasArmedBottomTarget && !interactionPresented && !userIsScrolling && mode != .reading
+    }
+
+    /// Category A. `delta` is measured height minus the height the layout
+    /// currently displays.
+    static func pendingMeasurement(delta: CGFloat,
+                                   cellMinY: CGFloat,
+                                   viewportTop: CGFloat,
+                                   isStreaming: Bool,
+                                   isAutoScrollPinning: Bool,
+                                   isTracking: Bool,
+                                   isDecelerating: Bool,
+                                   keyboardTransition: Bool,
+                                   suppressContentOffsetAdjustment: Bool,
+                                   hasCachedHeight: Bool) -> Self {
+        let isBrowsing = isTracking || isDecelerating
+        if isBrowsing, hasCachedHeight, delta < 0 { return .deferred }
+        if isBrowsing || keyboardTransition || suppressContentOffsetAdjustment { return .accept }
+        if cellMinY < viewportTop { return .accept(correction: delta) }
+        if isStreaming, isAutoScrollPinning, delta > 0 { return .accept(correction: delta) }
+        return .accept
+    }
+
+    /// Category B. `delta` is the cell's preferred height minus the layout's
+    /// current height.
+    static func selfSizing(delta: CGFloat,
+                           cellMinY: CGFloat,
+                           cellMaxY: CGFloat,
+                           viewportTop: CGFloat,
+                           viewportBottom: CGFloat,
+                           isStreaming: Bool,
+                           isAutoScrollPinning: Bool,
+                           isTracking: Bool,
+                           isDecelerating: Bool,
+                           keyboardTransition: Bool,
+                           hasCachedHeight: Bool) -> Self {
+        let isBrowsing = isTracking || isDecelerating
+        if isBrowsing, hasCachedHeight, delta <= 0 { return .deferred }
+        if isBrowsing || keyboardTransition { return .accept }
+        // 1. Fully above the viewport: its growth pushes everything the reader
+        //    sees, so compensate.
+        if cellMaxY <= viewportTop { return .accept(correction: delta) }
+        // 2. Visible and not streaming: the interactive row itself is moving;
+        //    compensate the rows below it.
+        if cellMinY >= viewportTop, cellMinY < viewportBottom, !isStreaming { return .accept(correction: delta) }
+        // 3. Streaming while pinned to the bottom: grow and re-pin in the same
+        //    frame instead of letting the bottom fall behind.
+        if isStreaming, isAutoScrollPinning, delta > 0 { return .accept(correction: delta) }
+        // 4. Everything else, including a partially visible non-streaming row:
+        //    height applies, offset waits for the next settled correction.
+        return .accept
+    }
+}

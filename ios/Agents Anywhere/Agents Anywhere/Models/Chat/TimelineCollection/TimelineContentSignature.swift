@@ -1,0 +1,197 @@
+import Foundation
+
+/// Everything about a row that can change its rendered height. Kept separate
+/// from `ChatTimelineRowModel` (a main-actor observable class) so the diff can
+/// be computed and tested as a value comparison.
+nonisolated struct TimelineRowContentSignature: Equatable {
+    let id: String
+    let revision: Int
+    let updatedSeq: Int
+}
+
+nonisolated struct TimelineInlineNoticeSignature: Equatable {
+    let id: String
+    let status: V2TimelineItemStatus
+    let revision: Int
+}
+
+/// A preview already sitting in `ChatAttachmentStore`. Pixel dimensions decide
+/// the image's aspect box, so they change a row's height even when the text
+/// does not.
+nonisolated struct TimelineAttachmentPreviewSignature: Equatable {
+    let id: String
+    let pixelWidth: Int?
+    let pixelHeight: Int?
+}
+
+nonisolated struct TimelineTurnActionSignature: Equatable {
+    let replyIDs: [String]
+    let changeIDs: [String]
+    let startsMidTurn: Bool
+}
+
+/// The inputs `TimelineTurnActions.build` consumes beyond the rows themselves.
+/// `hasNewerItems` and the pending bubble decide whether the latest turn's
+/// footer commits or stays suppressed, which adds or removes a row.
+nonisolated struct TimelineTurnSuppression: Equatable {
+    let isRunning: Bool
+    let hasNewerItems: Bool
+    let hasPendingUserMessage: Bool
+}
+
+nonisolated struct TimelineGroupContentSignature: Equatable {
+    let rows: [TimelineRowContentSignature]
+    /// Fold state for a tools/reconnect group (or any row with disclosure).
+    /// Expanding changes the group's height without changing its rows.
+    let disclosureExpanded: Bool
+    /// Inline approval/notice cards attached to this group's rows.
+    let inlineNotices: [TimelineInlineNoticeSignature]
+    let attachments: [TimelineAttachmentPreviewSignature]
+    let turnAction: TimelineTurnActionSignature?
+    let turnSuppression: TimelineTurnSuppression
+
+    var contentRevision: Int {
+        var hasher = TimelineStableHasher()
+        for row in rows {
+            hasher.combine(row.id)
+            hasher.combine(row.revision)
+            hasher.combine(row.updatedSeq)
+        }
+        hasher.combine(disclosureExpanded)
+        for notice in inlineNotices {
+            hasher.combine(notice.id)
+            hasher.combine(notice.status.rawValue)
+            hasher.combine(notice.revision)
+        }
+        for attachment in attachments {
+            hasher.combine(attachment.id)
+            hasher.combine(attachment.pixelWidth.map { UInt64(bitPattern: Int64($0)) } ?? 0)
+            hasher.combine(attachment.pixelHeight.map { UInt64(bitPattern: Int64($0)) } ?? 0)
+        }
+        if let action = turnAction {
+            hasher.combine(true)
+            action.replyIDs.forEach { hasher.combine($0) }
+            hasher.combine(action.changeIDs.joined(separator: "|"))
+            hasher.combine(action.startsMidTurn)
+        } else {
+            hasher.combine(false)
+        }
+        hasher.combine(turnSuppression.isRunning)
+        hasher.combine(turnSuppression.hasNewerItems)
+        hasher.combine(turnSuppression.hasPendingUserMessage)
+        return hasher.revision
+    }
+}
+
+nonisolated struct TimelineQueueEntrySignature: Equatable {
+    let id: String
+    /// `V2QueuedMessage.State` rendered as a stable token; the model type is a
+    /// main-actor class, the signature stays a value.
+    let state: String
+}
+
+nonisolated struct TimelineTailContentSignature: Equatable {
+    let queue: [TimelineQueueEntrySignature]
+    let sendingPlaceholder: String?
+    let orbActivity: String
+    let hasNewerItems: Bool
+
+    /// The tail spacer's two-tier contract: 32 with a status line, 12 at rest.
+    var statusLineHeight: CGFloat { sendingPlaceholder == nil ? 12 : 32 }
+
+    var contentRevision: Int {
+        var hasher = TimelineStableHasher()
+        for entry in queue {
+            hasher.combine(entry.id)
+            hasher.combine(entry.state)
+        }
+        hasher.combine(optional: sendingPlaceholder)
+        hasher.combine(orbActivity)
+        hasher.combine(hasNewerItems)
+        return hasher.revision
+    }
+}
+
+/// The content half of one item's identity: equal signatures mean no
+/// re-measurement and no reconfigure are needed.
+nonisolated enum TimelineContentSignature: Equatable {
+    case group(TimelineGroupContentSignature)
+    case olderPrompt(pullReady: Bool, isLoading: Bool, keepsPrompt: Bool, hasOlderItems: Bool)
+    case latestPrompt(pullReady: Bool, isLoading: Bool, hasNewerItems: Bool)
+    case notice(id: String, status: V2TimelineItemStatus, revision: Int)
+    case pending(id: String, attachments: [TimelineAttachmentPreviewSignature])
+    case tail(TimelineTailContentSignature)
+
+    /// The value the height key carries. Two signatures that hash equally but
+    /// differ still produce a reconfigure; the revision only decides whether a
+    /// measurement may be reused.
+    var contentRevision: Int {
+        switch self {
+        case .group(let group):
+            return group.contentRevision
+        case .olderPrompt(let pullReady, let isLoading, let keepsPrompt, let hasOlderItems):
+            var hasher = TimelineStableHasher()
+            hasher.combine(pullReady); hasher.combine(isLoading)
+            hasher.combine(keepsPrompt); hasher.combine(hasOlderItems)
+            return hasher.revision
+        case .latestPrompt(let pullReady, let isLoading, let hasNewerItems):
+            var hasher = TimelineStableHasher()
+            hasher.combine(pullReady); hasher.combine(isLoading); hasher.combine(hasNewerItems)
+            return hasher.revision
+        case .notice(let id, let status, let revision):
+            var hasher = TimelineStableHasher()
+            hasher.combine(id); hasher.combine(status.rawValue); hasher.combine(revision)
+            return hasher.revision
+        case .pending(let id, let attachments):
+            var hasher = TimelineStableHasher()
+            hasher.combine(id)
+            for attachment in attachments {
+                hasher.combine(attachment.id)
+                hasher.combine(attachment.pixelWidth ?? 0)
+                hasher.combine(attachment.pixelHeight ?? 0)
+            }
+            return hasher.revision
+        case .tail(let tail):
+            return tail.contentRevision
+        }
+    }
+}
+
+nonisolated struct TimelineContentEntry: Equatable {
+    let item: TimelineListItem
+    let signature: TimelineContentSignature
+}
+
+nonisolated struct TimelineContentChange: Equatable {
+    /// Items present in the new snapshot whose signature differs from the
+    /// previous one, in snapshot order. New items are included: the caller
+    /// inserts them and, when a height is needed, measures them too.
+    let changed: [TimelineListItem]
+    let removed: [TimelineListItem]
+}
+
+/// Signature store that turns two snapshots into the `reconfigureItems` list.
+/// Pure view state (Textual selection, reveal animations, copy feedback) is
+/// deliberately absent: it cannot change a row's height and must not force a
+/// re-measure.
+nonisolated struct TimelineContentSignatures: Equatable {
+    private(set) var entries: [TimelineListItem: TimelineContentSignature] = [:]
+
+    @discardableResult
+    mutating func update(_ next: [TimelineContentEntry]) -> TimelineContentChange {
+        var changed: [TimelineListItem] = []
+        var nextEntries: [TimelineListItem: TimelineContentSignature] = [:]
+        nextEntries.reserveCapacity(next.count)
+        for entry in next {
+            nextEntries[entry.item] = entry.signature
+            if entries[entry.item] != entry.signature { changed.append(entry.item) }
+        }
+        let removed = entries.keys
+            .filter { nextEntries[$0] == nil }
+            .sorted { $0.itemID < $1.itemID }
+        entries = nextEntries
+        return TimelineContentChange(changed: changed, removed: removed)
+    }
+
+    func signature(for item: TimelineListItem) -> TimelineContentSignature? { entries[item] }
+}

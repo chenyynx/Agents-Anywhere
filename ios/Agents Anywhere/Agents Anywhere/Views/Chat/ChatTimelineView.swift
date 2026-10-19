@@ -591,11 +591,7 @@ private struct ChatTimelineContent: View, Equatable {
         let anchorEdge = historyAnchor?.edge ?? (anchorGroup?.rows.first?.structure.groupKind == .single ? .top : .bottom)
         // Keep actual row geometry available as Markdown grows and tool groups
         // change height. Hidden tool details own their deferred work separately.
-        //
-        // Lazy: a paged-in history window can hold a thousand groups, and the
-        // eager stack kept every one of them in the render tree while the
-        // reader scrolled through the top of it.
-        LazyVStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 20) {
             if model.session.hasOlderItems || keepsOlderPrompt {
                 Group {
                     if isLoadingOlder {

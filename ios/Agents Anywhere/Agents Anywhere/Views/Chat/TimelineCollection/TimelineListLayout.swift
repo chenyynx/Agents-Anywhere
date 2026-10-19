@@ -39,6 +39,12 @@ final class TimelineListLayout: UICollectionViewLayout {
     private var attributesByIndex: [TimelineListLayoutAttributes] = []
     private var attributesByItemID: [String: TimelineListLayoutAttributes] = [:]
     private var lastLayoutWidth: CGFloat = 0
+    /// Previous snapshot's identity and keys, for longest-common-prefix reuse.
+    /// The official `rowsApplied` compares row IDs the same way and keeps the
+    /// prefix untouched; without it every streaming apply would allocate an
+    /// attribute object for all 1000 rows.
+    private var previousItems: [TimelineListItem] = []
+    private var previousKeys: [TimelineHeightKey] = []
     private var isInsideUpdate = false
     private var insertionOwed: TimelineInsertionOwed?
     private var deferral = TimelinePullDeferOrdering()
@@ -78,13 +84,16 @@ final class TimelineListLayout: UICollectionViewLayout {
         }
         let width = collectionView.bounds.width
         let column = TimelineListMetrics.column(containerWidth: width)
-        var cursor = TimelineListMetrics.topInset
-        var next: [TimelineListLayoutAttributes] = []
-        var byID: [String: TimelineListLayoutAttributes] = [:]
+        let count = host.layoutItemCount
+        var items: [TimelineListItem] = []
+        var keys: [TimelineHeightKey] = []
+        var resolved: [CGFloat] = []
+        items.reserveCapacity(count)
+        keys.reserveCapacity(count)
+        resolved.reserveCapacity(count)
         var pending: Set<TimelineListItem> = []
-        next.reserveCapacity(host.layoutItemCount)
 
-        for index in 0..<host.layoutItemCount {
+        for index in 0..<count {
             let item = host.layoutItem(at: index)
             let key = host.layoutHeightKey(for: item, width: column.width)
             heights.setCurrentKey(key)
@@ -97,22 +106,54 @@ final class TimelineListLayout: UICollectionViewLayout {
                 heights.markPending(item.itemID)
             }
             heights.noteDisplayedHeight(height, for: item.itemID)
+            items.append(item)
+            keys.append(key)
+            resolved.append(height)
+        }
 
+        // Longest common prefix: same item, same height key, same displayed
+        // height. The prefix keeps its attribute objects and y positions.
+        var prefix = 0
+        if width == lastLayoutWidth {
+            let limit = min(count, attributesByIndex.count, previousItems.count, previousKeys.count)
+            while prefix < limit,
+                  previousItems[prefix] == items[prefix],
+                  previousKeys[prefix] == keys[prefix],
+                  abs(attributesByIndex[prefix].frame.height - resolved[prefix]) <= 0.5 {
+                prefix += 1
+            }
+        }
+
+        var next: [TimelineListLayoutAttributes] = []
+        next.reserveCapacity(count)
+        if prefix > 0 { next.append(contentsOf: attributesByIndex.prefix(prefix)) }
+        var cursor = prefix > 0
+            ? next[prefix - 1].frame.maxY + TimelineListMetrics.itemSpacing
+            : TimelineListMetrics.topInset
+        for index in prefix..<count {
             let attributes = TimelineListLayoutAttributes(forCellWith: IndexPath(item: index, section: 0))
-            attributes.frame = CGRect(x: column.x, y: cursor, width: column.width, height: height)
-            attributes.item = item
-            attributes.heightKey = key
-            attributes.policy = host.layoutHeightPolicy(for: item)
+            attributes.frame = CGRect(x: column.x, y: cursor, width: column.width,
+                                      height: resolved[index])
+            attributes.item = items[index]
+            attributes.heightKey = keys[index]
+            attributes.policy = host.layoutHeightPolicy(for: items[index])
             next.append(attributes)
-            byID[item.itemID] = attributes
-            cursor += height
-            if index < host.layoutItemCount - 1 { cursor += TimelineListMetrics.itemSpacing }
+            cursor += resolved[index]
+            if index < count - 1 { cursor += TimelineListMetrics.itemSpacing }
+        }
+
+        var byID: [String: TimelineListLayoutAttributes] = [:]
+        byID.reserveCapacity(count)
+        for attributes in next {
+            if let item = attributes.item { byID[item.itemID] = attributes }
         }
 
         let previousHeight = contentHeight
         attributesByIndex = next
         attributesByItemID = byID
-        contentHeight = max(0, cursor)
+        previousItems = items
+        previousKeys = keys
+        contentHeight = next.last?.frame.maxY ?? 0
         lastLayoutWidth = width
         pendingMeasurements = pending
         heights.prune(keeping: Set(byID.keys))
@@ -123,7 +164,23 @@ final class TimelineListLayout: UICollectionViewLayout {
     }
 
     override func layoutAttributesForElements(in rect: CGRect) -> [UICollectionViewLayoutAttributes]? {
-        attributesByIndex.filter { $0.frame.intersects(rect) }
+        guard !attributesByIndex.isEmpty else { return [] }
+        // Attributes are sorted by y. Find the first whose bottom reaches the
+        // rect, then walk until the top passes the rect's bottom.
+        var low = 0
+        var high = attributesByIndex.count
+        while low < high {
+            let mid = (low + high) / 2
+            if attributesByIndex[mid].frame.maxY < rect.minY { low = mid + 1 } else { high = mid }
+        }
+        var result: [UICollectionViewLayoutAttributes] = []
+        var index = low
+        while index < attributesByIndex.count, attributesByIndex[index].frame.minY <= rect.maxY {
+            let attributes = attributesByIndex[index]
+            if attributes.frame.intersects(rect) { result.append(attributes) }
+            index += 1
+        }
+        return result
     }
 
     override func layoutAttributesForItem(at indexPath: IndexPath) -> UICollectionViewLayoutAttributes? {

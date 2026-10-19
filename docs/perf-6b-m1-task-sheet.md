@@ -548,6 +548,8 @@ C3 门不过，不进 C4；C4/C5 后各出一次包，开关默认 off，pp 验�
 - **审批卡不走 `askedToStay`**：`askedToStay` 的唯一来源是 `cancelEditing`（取消编辑后放回原分支后续行，避免拽到底部）（§6.8）。v7 的“审批出现停跟随 / 消失回底”是 AA 产品语义，不是官方同构。
 - **图片高度**：附件 tile 有 `pixelSize` 时加载前即可定比例；搜索图库等异步图片加载完才长高一次（§6.8）。v7 把 `previewPixelSize` 放进签名，未知尺寸的图片按 pending 处理。
 - **Markdown 尾部重排**从“改动段落的前一段”开始，宽度变化才全文失效；流式 TextKit 2 只重排尾部（§6.4）。这支持 v7 的增量解析方向；AA 的 Textual/离屏 hosting 仍需整行测量。
+- **滚动动画每帧重问目标**：Mover 的 `UIUpdateLink` tick 每帧调用 target 闭包；目标变化 ≥1 个物理像素才改写当前目标，并按差值平移 pace，不重新起飞（§6.6）。飞行/缓动中内容长高可以连续追赶。
+- **流式行高跟揭示进度，不跟数据到达**：`RevealDriver.clampedHeight` 把 intrinsic 高度钳在已揭示的行，每推进一段 `invalidateIntrinsicContentSize` → `heightDidChange`，揭示结束才解除（§6.7）。AA 的 Textual 揭示当前不改变 intrinsic 高度，是产品差异，不在 6b 范围。
 
 ### 13.2 与 v7 的差异（有意保留，写明原因）
 
@@ -566,7 +568,7 @@ C3 门不过，不进 C4；C4/C5 后各出一次包，开关默认 off，pp 验�
 1. **C4 第 0 步**：并排打印 SwiftUI 与 UIKit 的 viewport 五元组；差 >1pt 再决定是否改 `.never` 与手动 inset。
 2. **C5 Markdown 外置解析**必须与测量输入一致（`row.text` + parsed blocks）；C3 gate 的代表行只证明机制，产品行一致性在 C5 重跑。官方只有助手正文是 TextKit 2，其余行是 hosting；AA 的 Textual 没有等价 API，不要在没有 UIKit renderer 的前提下假设 TextKit 2 快路径。
 3. **tool group 合并**不要把“删行插行”当默认路径：同一 group 的行 ID 稳定时，只重配 + 改高；高度迁移仅作防御。审批卡不要套官方 `askedToStay`，它只服务取消编辑。
-4. **流式 0.1s 节流**在 C4/C5 接线时落实；测量完成按 key 代际丢弃旧结果（`applyMeasuredHeight` 已 guard 当前 key）。
+4. **流式 0.1s 节流**在 C4/C5 接线时落实；测量完成按 key 代际丢弃旧结果（`applyMeasuredHeight` 已 guard 当前 key）。底部跟随每次内容变化/帧重解析目标，阈值按 1 个物理像素（`1/displayScale`）而不是写死 0.5pt；流式揭示高度若以后做，按揭示进度而非数据到达。
 5. **历史锚点**继续用 group item + row→group 映射；group 合并时迁移 `displayedHeight`（§3.4.5）。官方没有 `firstRowID`，不据此删掉 v7 的守卫。
 6. **估算回退**：若 C2/C3 吞吐 p95 过高，再引入官方估算公式（Part Z §6.1：4000 字符上限、块距 12pt、默认 44/180）作为 pending 回退；当前不写死数字。
 

@@ -141,10 +141,27 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
 
     // MARK: - Mutations
 
+    @ObservationIgnored private var initialHeights: [String: CGFloat] = [:]
+
     func attach(_ controller: TimelineCollectionController) {
         guard self.controller == nil else { return }
         self.controller = controller
+        controller.onApplyCompleted = { [weak self, weak controller] in
+            guard let self, let controller else { return }
+            self.captureInitialHeights(controller)
+        }
         Task { await run() }
+    }
+
+    private func captureInitialHeights(_ controller: TimelineCollectionController) {
+        guard initialHeights.isEmpty else { return }
+        controller.collectionView.layoutIfNeeded()
+        for entry in entries {
+            let item = listItem(entry)
+            if let height = controller.layout.attributes(for: item.itemID)?.frame.height {
+                initialHeights[item.itemID] = height
+            }
+        }
     }
 
     @discardableResult
@@ -185,8 +202,11 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         guard !didRun else { return }
         didRun = true
         await wait(900)
-        await measureConsistency()
+        // Async first: the automatic pending pass may settle Markdown shortly
+        // after apply, so the first-displayed snapshot is captured by
+        // `onApplyCompleted`.
         await asyncMarkdown()
+        await measureConsistency()
         await foldAndTail()
         await streaming()
         await bottom()
@@ -200,7 +220,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             guard let entry = entries.first(where: { $0.kind == kind }) else { continue }
             let item = listItem(entry)
             await scrollToItem(item)
-            if [.message, .reasoning, .code, .table].contains(kind) {
+            if [.message, .reasoning].contains(kind) {
                 await wait(900) // Textual parse is asynchronous.
                 controller?.remeasure(item)
                 await wait(150)
@@ -231,7 +251,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         let belowItem = listItem(below)
         controller.collectionView.setContentOffset(CGPoint(x: 0, y: 36), animated: false)
         await wait(120)
-        let firstDisplayed = controller.layout.attributes(for: item.itemID)?.frame.height ?? 0
+        let firstDisplayed = initialHeights[item.itemID]
+            ?? controller.layout.attributes(for: item.itemID)?.frame.height ?? 0
         let before = controller.screenY(for: belowItem) ?? 0
         await wait(900)
         controller.remeasure(item)
@@ -528,10 +549,15 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                     }
                 }
             }.frame(maxWidth: .infinity, alignment: .leading))
-        case .code:
-            return AnyView(ChatMarkdownView(text: "```swift\n" + entry.text + "\n```"))
-        case .table:
-            return AnyView(ChatMarkdownView(text: entry.text))
+        // Code/table use a synchronous representative view in this gate:
+        // ChatMarkdownView parses asynchronously, and a fresh measurer would
+        // otherwise compare a pre-parse height with the cell's settled height.
+        // C5 repeats these rows with the real parsed-block view.
+        case .code, .table:
+            return AnyView(Text(entry.text)
+                .font(.system(.caption, design: .monospaced))
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading))
         case .image:
             return AnyView(VStack(alignment: .leading, spacing: 6) {
                 Color.gray.opacity(0.25).frame(height: 160)

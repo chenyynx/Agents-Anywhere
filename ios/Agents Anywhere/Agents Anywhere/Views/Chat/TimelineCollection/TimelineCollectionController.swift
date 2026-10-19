@@ -50,6 +50,10 @@ final class TimelineCollectionController: UIViewController {
     var onPhaseChanged: ((TimelinePhaseMapping.Transition) -> Void)?
     var onViewportChanged: ((TimelineViewport) -> Void)?
     var onContentHeightChanged: ((CGFloat) -> Void)?
+    /// Fires after a snapshot apply, before pending measurements start. The
+    /// C3 gate uses it to capture the first displayed height for the async
+    /// Markdown probe.
+    var onApplyCompleted: (() -> Void)?
 
     // MARK: - Lifecycle
 
@@ -139,6 +143,7 @@ final class TimelineCollectionController: UIViewController {
         if !existingChanges.isEmpty { snapshot.reconfigureItems(existingChanges) }
         currentItems = items
         dataSource.apply(snapshot, animatingDifferences: animating) { [weak self] in
+            self?.onApplyCompleted?()
             self?.schedulePendingMeasurements()
             self?.publishViewport()
         }
@@ -153,7 +158,29 @@ final class TimelineCollectionController: UIViewController {
         let present = items.filter { snapshot.itemIdentifiers.contains($0) }
         guard !present.isEmpty else { return }
         snapshot.reconfigureItems(present)
-        dataSource.apply(snapshot, animatingDifferences: false)
+        dataSource.apply(snapshot, animatingDifferences: false) { [weak self] in
+            // The hosting cell has no heightDidChange callback; ask the
+            // visible exception rows for their fitting height after the new
+            // content has laid out.
+            DispatchQueue.main.async { [weak self] in self?.applyPreferredHeights(for: present) }
+        }
+    }
+
+    private func applyPreferredHeights(for items: [TimelineListItem]) {
+        guard let content else { return }
+        for item in items {
+            guard content.heightPolicy(for: item).acceptsPreferredHeight,
+                  let indexPath = indexPath(for: item),
+                  let cell = collectionView.cellForItem(at: indexPath) else { continue }
+            let width = cell.contentView.bounds.width
+            guard width > 0 else { continue }
+            let height = cell.contentView.systemLayoutSizeFitting(
+                CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
+                withHorizontalFittingPriority: .required,
+                verticalFittingPriority: .fittingSizeLevel).height
+            guard height > 0 else { continue }
+            layout.applyPreferredHeight(ceil(height), for: item.itemID)
+        }
     }
 
     private func measureSynchronously(_ items: [TimelineListItem], width: CGFloat) {

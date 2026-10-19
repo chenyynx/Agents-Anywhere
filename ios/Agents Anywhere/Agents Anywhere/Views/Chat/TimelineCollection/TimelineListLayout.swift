@@ -48,6 +48,7 @@ final class TimelineListLayout: UICollectionViewLayout {
     }
     private var deferredHeights: [String: DeferredHeight] = [:]
     private var preferredCorrections: [IndexPath: CGFloat] = [:]
+    private var preferredContentSizeDeltas: [IndexPath: CGFloat] = [:]
 
     // Integration-gate counters. They are cheap and make the C3 assertions
     // read the real layout path instead of re-deriving it in the test.
@@ -265,14 +266,23 @@ final class TimelineListLayout: UICollectionViewLayout {
         }
         heights.noteDisplayedHeight(height, for: itemID)
         invalidateHeight(itemID: itemID, attributes: attributes,
-                         correction: decision.correction, state: state)
+                         correction: decision.correction, contentSizeDelta: delta, state: state)
     }
 
+    /// The official layout ships offset and size adjustments together
+    /// (`setContentOffsetAdjustment:` + `setContentSizeAdjustment:`), so the
+    /// offset is interpreted against the corrected content size instead of
+    /// the old one. Without the size half, a correction near the bottom can
+    /// be clamped by the stale maximum offset.
     private func invalidateHeight(itemID: String, attributes: TimelineListLayoutAttributes,
-                                  correction: CGFloat?, state: TimelineLayoutInteractionState) {
+                                  correction: CGFloat?, contentSizeDelta: CGFloat,
+                                  state: TimelineLayoutInteractionState) {
         guard let collectionView else { return }
         let context = UICollectionViewLayoutInvalidationContext()
         context.invalidateItems(at: [attributes.indexPath])
+        if contentSizeDelta != 0 {
+            context.contentSizeAdjustment = CGSize(width: 0, height: contentSizeDelta)
+        }
         if let correction, correction != 0 {
             if isInsideUpdate, insertionOwed != nil {
                 insertionOwed?.adjustTarget(by: correction)
@@ -284,6 +294,42 @@ final class TimelineListLayout: UICollectionViewLayout {
     }
 
     // MARK: - Cell self-sizing exceptions (category B)
+
+    /// Controller-driven preferred-height application for controlled
+    /// exceptions. AA's hosting cells have no `heightDidChange` callback, so
+    /// the controller asks the visible cell for its fitting height after a
+    /// fold/notice/tail reconfiguration and feeds it here. The decision and
+    /// invalidation are the same ones the UIKit preferred-attributes path
+    /// uses.
+    func applyPreferredHeight(_ height: CGFloat, for itemID: String) {
+        guard let attributes = attributesByItemID[itemID],
+              attributes.policy.acceptsPreferredHeight,
+              let key = attributes.heightKey,
+              heights.currentKey(for: itemID) == key else { return }
+        let delta = height - attributes.frame.height
+        guard abs(delta) > 0.5 else { return }
+        let state = host?.layoutInteractionState() ?? TimelineLayoutInteractionState()
+        let decision = TimelinePreferredAttributesDecision.selfSizing(
+            delta: delta,
+            cellMinY: attributes.frame.minY,
+            cellMaxY: attributes.frame.maxY,
+            viewportTop: viewportTop,
+            viewportBottom: viewportBottom,
+            isStreaming: state.streamingItemIDs.contains(itemID),
+            isAutoScrollPinning: state.isAutoScrollPinning,
+            isTracking: state.isTracking,
+            isDecelerating: state.isDecelerating,
+            keyboardTransition: state.keyboardTransition,
+            hasCachedHeight: heights.hasMeasuredOrPrecalcHeight(for: key))
+        if decision.height == .deferUntilSettled {
+            deferredHeights[itemID] = DeferredHeight(key: key, height: height)
+            return
+        }
+        heights.set(height, for: key, tier: .measured)
+        heights.noteDisplayedHeight(height, for: itemID)
+        invalidateHeight(itemID: itemID, attributes: attributes,
+                         correction: decision.correction, contentSizeDelta: delta, state: state)
+    }
 
     override func shouldInvalidateLayout(forPreferredLayoutAttributes preferredAttributes: UICollectionViewLayoutAttributes,
                                          withOriginalAttributes originalAttributes: UICollectionViewLayoutAttributes) -> Bool {
@@ -314,6 +360,7 @@ final class TimelineListLayout: UICollectionViewLayout {
         heights.set(preferredAttributes.frame.height, for: key, tier: .measured)
         heights.noteDisplayedHeight(preferredAttributes.frame.height, for: item.itemID)
         preferredCorrections[original.indexPath] = decision.correction ?? 0
+        preferredContentSizeDeltas[original.indexPath] = delta
         return true
     }
 
@@ -322,6 +369,10 @@ final class TimelineListLayout: UICollectionViewLayout {
         let context = UICollectionViewLayoutInvalidationContext()
         context.invalidateItems(at: [originalAttributes.indexPath])
         let correction = preferredCorrections.removeValue(forKey: originalAttributes.indexPath) ?? 0
+        let sizeDelta = preferredContentSizeDeltas.removeValue(forKey: originalAttributes.indexPath) ?? 0
+        if sizeDelta != 0 {
+            context.contentSizeAdjustment = CGSize(width: 0, height: sizeDelta)
+        }
         if correction != 0 {
             let state = host?.layoutInteractionState() ?? TimelineLayoutInteractionState()
             if isInsideUpdate, insertionOwed != nil {
@@ -358,6 +409,7 @@ final class TimelineListLayout: UICollectionViewLayout {
         deferral.cancel()
         deferredHeights.removeAll()
         preferredCorrections.removeAll()
+        preferredContentSizeDeltas.removeAll()
         insertionOwed?.cancel()
         insertionOwed = nil
     }
@@ -366,6 +418,7 @@ final class TimelineListLayout: UICollectionViewLayout {
         guard let collectionView else { return }
         let context = UICollectionViewLayoutInvalidationContext()
         var total: CGFloat = 0
+        var contentSizeTotal: CGFloat = 0
         var invalidated: [IndexPath] = []
         for effect in application.effects {
             switch effect {
@@ -378,12 +431,16 @@ final class TimelineListLayout: UICollectionViewLayout {
                 heights.set(deferred.height, for: deferred.key, tier: .measured)
                 heights.noteDisplayedHeight(deferred.height, for: correction.itemID)
                 total += correction.delta
+                contentSizeTotal += deferred.height - attributes.frame.height
                 invalidated.append(attributes.indexPath)
             }
         }
         guard !invalidated.isEmpty || total != 0 else { return }
         context.invalidateItems(at: invalidated)
         if total != 0 { context.contentOffsetAdjustment = CGPoint(x: 0, y: total) }
+        if contentSizeTotal != 0 {
+            context.contentSizeAdjustment = CGSize(width: 0, height: contentSizeTotal)
+        }
         collectionView.collectionViewLayout.invalidateLayout(with: context)
     }
 

@@ -507,6 +507,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     }
 
     private func cellSample(_ controller: TimelineCollectionController, item: TimelineListItem) -> CellSample? {
+        // A correction invalidates the layout; force the pass so the cell's
+        // frame reflects the measured height before the sample reads it.
+        controller.collectionView.layoutIfNeeded()
         guard let indexPath = controller.indexPath(for: item),
               let cell = controller.collectionView.cellForItem(at: indexPath) else { return nil }
         let width = cell.contentView.bounds.width

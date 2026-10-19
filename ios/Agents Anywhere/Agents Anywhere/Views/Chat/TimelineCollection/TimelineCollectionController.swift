@@ -70,6 +70,11 @@ final class TimelineCollectionController: UIViewController {
         collectionView.alwaysBounceVertical = true
         collectionView.showsVerticalScrollIndicator = false
         collectionView.contentInsetAdjustmentBehavior = .automatic
+        // The official surface disables UIKit's automatic self-sizing
+        // invalidation; the layout owns every height. AA's controlled
+        // exceptions are driven explicitly by `applyPreferredHeights` after a
+        // reconfigure, so automatic invalidation would only add layout passes.
+        collectionView.selfSizingInvalidation = .disabled
         collectionView.delegate = self
         collectionView.register(TimelineHostingCell.self,
                                 forCellWithReuseIdentifier: TimelineHostingCell.reuseIdentifier)
@@ -174,11 +179,19 @@ final class TimelineCollectionController: UIViewController {
                   let cell = collectionView.cellForItem(at: indexPath) else { continue }
             let width = cell.contentView.bounds.width
             guard width > 0 else { continue }
-            let height = cell.contentView.systemLayoutSizeFitting(
+            // AA's hosting cells have no heightDidChange callback and the
+            // official surface disables automatic self-sizing invalidation.
+            // Re-measure the exception row through the same hosting layer the
+            // cell renders; fall back to the cell's fitting height only when
+            // the measurer cannot answer. (The first gate run showed the raw
+            // cell fitting can still be the old collapsed size immediately
+            // after reconfigure.)
+            let measured = measurer?.measure(itemID: item.itemID, width: width)
+            let fitting = cell.contentView.systemLayoutSizeFitting(
                 CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
                 withHorizontalFittingPriority: .required,
                 verticalFittingPriority: .fittingSizeLevel).height
-            guard height > 0 else { continue }
+            guard let height = measured ?? (fitting > 0 ? fitting : nil) else { continue }
             layout.applyPreferredHeight(ceil(height), for: item.itemID)
         }
     }

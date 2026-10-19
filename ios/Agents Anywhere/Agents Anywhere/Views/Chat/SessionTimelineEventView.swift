@@ -160,6 +160,9 @@ struct TimelineMarkerRow: View {
     var body: some View {
         HStack(spacing: 8) {
             if let expanded { AppSymbol(expanded ? "chevron.down" : "chevron.right", size: 10).frame(width: 10) }
+            // Non-fold rows keep the fold rows' chevron column so their icon
+            // and text stay on the same vertical line as every expandable row.
+            else { Color.clear.frame(width: 10, height: 10) }
             // `[pp 2026-10-17]` shrink reverted: the tool-row glyph keeps the
             // pre-refresh size so it still reads at a glance in the timeline.
             AppSymbol(symbol, size: 15).frame(width: 18)

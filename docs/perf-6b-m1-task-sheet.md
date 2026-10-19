@@ -507,7 +507,7 @@ C3 门不过，不进 C4；C4/C5 后各出一次包，开关默认 off，pp 验�
 - 自测高在 10 个流式 tick 只回 1 次（§12.1；该探针的 `waitForApply` 没等 apply 完成，计数只作方向证据，不作精确吞吐）。布局继续用旧高度 → 裁切/重叠。
 - 前插页 100 行大多离屏，自测高拿不到；估算误差直接变锚点位移。
 - 测量驱动在 apply 前把高度算好；cell 固定高度；插入/流式/回底都变成确定性。
-- OpenMinis 的 verified 做法（三级缓存 + defer + contentOffsetAdjustment 三分支）作为浏览期/补偿的参照；官方 TextKit 2 作为测量驱动的方向。
+- OpenMinis 的 verified 做法（三级缓存 + defer + contentOffsetAdjustment 三分支）作为浏览期/补偿的参照；官方 TextKit 2 作为测量驱动的方向（官方在 cell 物化后实测；AA 因 SwiftUI/Textual 行改为 apply 前离屏 hosting，见 §13.2）。
 
 ### 12.4 v6 两份审查与 v7 处置
 
@@ -527,6 +527,42 @@ C3 门不过，不进 C4；C4/C5 后各出一次包，开关默认 off，pp 验�
 | 12 | tail 动画与固定高度无同步 | §3.3 tail 受控例外 + §9 #13 + §7.3 #24 |
 
 > C1 可开工；C2 前修完上表 P1 项；C3 门不过，不进 C4。
+
+---
+
+## 13. Claude App 逆向对照（Part Z，2026-10-19）
+
+> 来源：sbx `/home/ubuntu/wiring/docs/part-z-textkit-height.md`（另一 agent 的静态逆向，Q1–Q8 + 第三轮补充；仍在补）。
+> 原则：官方证据用于校正“官方怎么做”的表述；AA 的差异凡有架构原因的，写明原因，不伪装同构。
+
+### 13.1 已证实、与 v7 一致
+
+- **owed 是绝对 contentOffset**；同一事务多次 `targetContentOffset` 是纯读、无副作用；事务内高度修正**覆盖** owed（后答覆盖前答），不累加；finalize 时与当前 offset 不同才 `setContentOffset` 并清零（Q3）。
+- 新行先带估计高度；宽度变化只清 `isMeasured`、**保留旧高度**，等重新测量（Q1/Q5）。
+- Markdown 在数据层解析，cell 只排版/报高度；没有“视图回写 settled”的独立状态（Q6）。
+- 滚动目标是显式 `placement`（`.reading(RowID, offsetIntoRow)` / `.end`），每次内容变化现算，不缓存绝对值；no-op 有阈值结算（Q4）。
+- 底部跟随不是单独 flag：`placement == .end`；拖动改成 `.reading` 即解除；回到底部重新武装（Q4）。
+- 列表层 `UIUpdateLink` 只用于滚动缓动/帧采样，不参与高度修正；Markdown 打字揭示另有独立 link（Q8）。
+
+### 13.2 与 v7 的差异（有意保留，写明原因）
+
+| 项 | 官方 | v7 / AA | 原因 |
+|---|---|---|---|
+| 测量时机 | 新行先用估计，cell 物化后由 TextKit 2 / `heightDidChange` 实测 | apply 前离屏 hosting 测量 | AA 行是 SwiftUI/Textual，没有独立测量 API；spike 实测 `UIHostingConfiguration` 逐 tick 自测不可靠（§12.1） |
+| 缓存档位 | estimate + measured 两档（`isMeasured`） | measured / precalc / estimate 三档 | 纯文本 precalc 是 AA 的加速路径；Markdown 仍只走 hosting |
+| 历史锚点 | `placement.reading(RowID, offsetIntoRow)`；前插页用逐行估计 | group item + edge + `firstRowID` 修正/结算 | AA 顶层 cell 是 group，内部行不可寻址；group 合并需要 `firstRowID` 判页插入 |
+| 底部命令 | `sent` → `placement.row(sent, .top)`；审批 `askedToStay`；拖动中忽略 `askedForEnd` | 发送/pending 回底；审批消失回底；强制命令无条件 | 对齐 AA 现状；6b 不改产品语义 |
+| 自测高 | `setSelfSizingInvalidation:0`；cell 只在 `isMeasured=false` 时自测一次 | measured 行拒绝 preferred；fold/notice/tail 受控例外 | AA 的 SwiftUI hosting 行没有 `heightDidChange` 通道，受控例外需要 UIKit 自测失效通知 |
+| 回底动画 | 自研 Mover + Spring（ease 0.4 / fly 0.36）+ `UIUpdateLink` | UIKit `setContentOffset(animated:)` + watchdog | 6b 不改动画机制；no-op 无回调已实测（§12.1） |
+| 安全区 | `contentInsetAdjustmentBehavior = .never`，手动维护 inset | 保留 `.automatic` | AA 用 safeAreaInset/键盘；C4 第 0 步先并排校验采样差 ≤1pt |
+
+### 13.3 对 C4/C5 的动作
+
+1. **C4 第 0 步**：并排打印 SwiftUI 与 UIKit 的 viewport 五元组；差 >1pt 再决定是否改 `.never` 与手动 inset。
+2. **C5 Markdown 外置解析**必须与测量输入一致（`row.text` + parsed blocks）；C3 gate 的代表行只证明机制，产品行一致性在 C5 重跑。
+3. **流式 0.1s 节流**在 C4/C5 接线时落实；测量完成按 key 代际丢弃旧结果（`applyMeasuredHeight` 已 guard 当前 key）。
+4. **历史锚点**继续用 group item + row→group 映射；group 合并时迁移 `displayedHeight`（§3.4.5）。官方没有 `firstRowID`，不据此删掉 v7 的守卫。
+5. **估算回退**：若 C2/C3 吞吐 p95 过高，再引入官方估算公式（§Part Z 6.1：4000 字符上限、块距 12pt、默认 44/180）作为 pending 回退；当前不写死数字。
 
 ---
 

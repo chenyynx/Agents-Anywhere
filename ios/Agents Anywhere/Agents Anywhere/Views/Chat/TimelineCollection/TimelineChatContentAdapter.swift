@@ -328,7 +328,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let expanded = group.kind != .single && model.disclosures.isExpanded("group:\(group.id)")
         var expandedRowIDs: [String] = []
         var inlineNotices: [TimelineInlineNoticeSignature] = []
-        var attachments: [TimelineAttachmentPreviewSignature] = []
+        var attachmentPreviews: [TimelineAttachmentPreviewSignature] = []
         for row in group.rows {
             rows.append(TimelineRowContentSignature(id: row.id, revision: row.value.revision,
                                                    updatedSeq: row.value.updatedSeq))
@@ -339,7 +339,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             }
             let rowAttachments = attachments(of: row.value)
             if !rowAttachments.isEmpty {
-                attachments.append(contentsOf: attachmentSignatures(rowAttachments))
+                attachmentPreviews.append(contentsOf: attachmentSignatures(rowAttachments))
             }
         }
         let action = turnActions[group.id]
@@ -348,7 +348,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             disclosureExpanded: expanded,
             expandedRowIDs: expandedRowIDs,
             inlineNotices: inlineNotices,
-            attachments: attachments,
+            attachments: attachmentPreviews,
             turnAction: action.map {
                 TimelineTurnActionSignature(replyIDs: $0.replies.map(\.id),
                                             changeIDs: $0.changes.map(\.id),

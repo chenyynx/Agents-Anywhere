@@ -12,7 +12,8 @@ struct AgentsAnywhereApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView()
+            // spike/6b-collection: throwaway prototype root. Revert before merge.
+            SpikeRootView()
                 .environment(appState)
                 .background {
                     #if targetEnvironment(macCatalyst)

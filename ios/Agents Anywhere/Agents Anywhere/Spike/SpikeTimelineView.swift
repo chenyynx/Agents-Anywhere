@@ -160,6 +160,7 @@ final class SpikeCollectionController: UIViewController, UICollectionViewDelegat
         let oldIDs = layout.itemIDs
         let items = model.items
         let newIDs = items.map(\.id)
+        let previousRevisions = lastRevisions
 
         itemsByID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
         lastRevisions = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0.revision) })
@@ -193,7 +194,8 @@ final class SpikeCollectionController: UIViewController, UICollectionViewDelegat
         snapshot.appendItems(newIDs)
 
         let changed = items.compactMap { item -> String? in
-            lastRevisions[item.id] != item.revision ? item.id : nil
+            guard let previous = previousRevisions[item.id] else { return nil }
+            return previous != item.revision ? item.id : nil
         }
         if !changed.isEmpty {
             snapshot.reconfigureItems(changed)

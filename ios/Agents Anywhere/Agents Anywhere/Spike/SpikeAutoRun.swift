@@ -88,12 +88,30 @@ enum SpikeAutoRunner {
         report["bottomInstantFromTop"] = bottomMetrics(in: cv)
 
         // ---- 4. Streaming while the tail row is visible ----
-        let streamID = model.streamingItemID
+        // `append()` moved the tail; target the current last row and keep it
+        // fully in the viewport. Otherwise its cell is never materialized and
+        // the self-sizing path cannot be exercised at all.
+        let streamID = model.items.last?.id
+        model.streamingItemID = streamID
+        let inset = cv.adjustedContentInset
+        let maxOffset = max(-inset.top, cv.contentSize.height - cv.bounds.height + inset.bottom)
+        cv.setContentOffset(CGPoint(x: 0, y: max(-inset.top, maxOffset - 200)), animated: false)
+        await settle(0.4)
+        cv.layoutIfNeeded()
+
         let should0 = model.shouldInvalidateCalls
         let invalidation0 = model.invalidationContextCalls
         let reconfigure0 = model.reconfigureCount
         let streamHeightBefore = streamID.flatMap { layout.measuredHeight(of: $0) }
         let streamContentBefore = cv.contentSize.height
+        let visibleRect = CGRect(origin: cv.contentOffset, size: cv.bounds.size)
+        let streamVisible: Bool = {
+            guard let streamID,
+                  let index = layout.itemIDs.firstIndex(of: streamID),
+                  let attributes = layout.layoutAttributesForItem(at: IndexPath(item: index, section: 0))
+            else { return false }
+            return attributes.frame.intersects(visibleRect)
+        }()
 
         var tickMillis: [Double] = []
         for _ in 0..<10 {
@@ -109,6 +127,7 @@ enum SpikeAutoRunner {
         let streamHeightAfter = streamID.flatMap { layout.measuredHeight(of: $0) }
         report["streaming"] = [
             "ticks": tickMillis.count,
+            "streamingItemVisible": streamVisible,
             "shouldInvalidateCalls": model.shouldInvalidateCalls - should0,
             "invalidationContextCalls": model.invalidationContextCalls - invalidation0,
             "reconfigureCount": model.reconfigureCount - reconfigure0,

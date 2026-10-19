@@ -1,6 +1,12 @@
 import SwiftUI
 import UIKit
 
+/// File-scope so the diffable data source's `Sendable` section identifier is
+/// not inferred as main-actor isolated from the controller class.
+nonisolated enum TimelineCollectionSection: Hashable, Sendable {
+    case main
+}
+
 /// Owns the collection timeline's UIKit side: data source, measurement
 /// scheduling, scroll phases, pull state, and the persistent bottom target.
 ///
@@ -11,11 +17,9 @@ import UIKit
 /// interactions.
 @MainActor
 final class TimelineCollectionController: UIViewController {
-    enum Section { case main }
-
     let layout = TimelineListLayout()
     private(set) var collectionView: UICollectionView!
-    private var dataSource: UICollectionViewDiffableDataSource<Section, TimelineListItem>!
+    private var dataSource: UICollectionViewDiffableDataSource<TimelineCollectionSection, TimelineListItem>!
     weak var content: TimelineCollectionContentProviding?
     private(set) var measurer: (any TimelineHeightMeasuring)?
 
@@ -128,7 +132,7 @@ final class TimelineCollectionController: UIViewController {
         let toMeasure = change.changed
         measureSynchronously(toMeasure, width: columnWidth)
 
-        var snapshot = NSDiffableDataSourceSnapshot<Section, TimelineListItem>()
+        var snapshot = NSDiffableDataSourceSnapshot<TimelineCollectionSection, TimelineListItem>()
         snapshot.appendSections([.main])
         snapshot.appendItems(items)
         let existingChanges = change.changed.filter { oldIDs.contains($0) }

@@ -6,7 +6,7 @@ import Foundation
 ///
 /// The `itemID` prefixes keep the height cache unambiguous when a row, a
 /// notice and a pending message happen to share a wire id (`g:` / `n:` / `p:`).
-nonisolated enum TimelineListItem: Hashable {
+nonisolated enum TimelineListItem: Hashable, Sendable {
     case olderPrompt
     /// The group's first row id (the same identity the SwiftUI list used).
     case group(String)

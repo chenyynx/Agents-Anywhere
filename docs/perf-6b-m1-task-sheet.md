@@ -543,6 +543,11 @@ C3 门不过，不进 C4；C4/C5 后各出一次包，开关默认 off，pp 验�
 - 滚动目标是显式 `placement`（`.reading(RowID, offsetIntoRow)` / `.end`），每次内容变化现算，不缓存绝对值；no-op 有阈值结算（Q4）。
 - 底部跟随不是单独 flag：`placement == .end`；拖动改成 `.reading` 即解除；回到底部重新武装（Q4）。
 - 列表层 `UIUpdateLink` 只用于滚动缓动/帧采样，不参与高度修正；Markdown 打字揭示另有独立 link（Q8）。
+- **tool group 合并保持行 ID 稳定**：聊天行 ID 是 `(消息 ID, .block(index))`；合并只改同一 block 的 `_content`（single → collapsed，lines 增长），列表看到的是同一行 reconfigure + 高度变化，不是删行插行（§6.8）。这支持 v7 用“首行 id 作 group id + 高度迁移兜底”的做法。
+- **只有助手正文走 TextKit 2**；用户消息、工具卡、files、分隔线、working、footer、历史加载器全部走 `UIHostingConfiguration` 回退（§6.8）。AA 的 hosting 测量对非正文行是必需路径，不是临时替代。
+- **审批卡不走 `askedToStay`**：`askedToStay` 的唯一来源是 `cancelEditing`（取消编辑后放回原分支后续行，避免拽到底部）（§6.8）。v7 的“审批出现停跟随 / 消失回底”是 AA 产品语义，不是官方同构。
+- **图片高度**：附件 tile 有 `pixelSize` 时加载前即可定比例；搜索图库等异步图片加载完才长高一次（§6.8）。v7 把 `previewPixelSize` 放进签名，未知尺寸的图片按 pending 处理。
+- **Markdown 尾部重排**从“改动段落的前一段”开始，宽度变化才全文失效；流式 TextKit 2 只重排尾部（§6.4）。这支持 v7 的增量解析方向；AA 的 Textual/离屏 hosting 仍需整行测量。
 
 ### 13.2 与 v7 的差异（有意保留，写明原因）
 
@@ -559,10 +564,11 @@ C3 门不过，不进 C4；C4/C5 后各出一次包，开关默认 off，pp 验�
 ### 13.3 对 C4/C5 的动作
 
 1. **C4 第 0 步**：并排打印 SwiftUI 与 UIKit 的 viewport 五元组；差 >1pt 再决定是否改 `.never` 与手动 inset。
-2. **C5 Markdown 外置解析**必须与测量输入一致（`row.text` + parsed blocks）；C3 gate 的代表行只证明机制，产品行一致性在 C5 重跑。
-3. **流式 0.1s 节流**在 C4/C5 接线时落实；测量完成按 key 代际丢弃旧结果（`applyMeasuredHeight` 已 guard 当前 key）。
-4. **历史锚点**继续用 group item + row→group 映射；group 合并时迁移 `displayedHeight`（§3.4.5）。官方没有 `firstRowID`，不据此删掉 v7 的守卫。
-5. **估算回退**：若 C2/C3 吞吐 p95 过高，再引入官方估算公式（§Part Z 6.1：4000 字符上限、块距 12pt、默认 44/180）作为 pending 回退；当前不写死数字。
+2. **C5 Markdown 外置解析**必须与测量输入一致（`row.text` + parsed blocks）；C3 gate 的代表行只证明机制，产品行一致性在 C5 重跑。官方只有助手正文是 TextKit 2，其余行是 hosting；AA 的 Textual 没有等价 API，不要在没有 UIKit renderer 的前提下假设 TextKit 2 快路径。
+3. **tool group 合并**不要把“删行插行”当默认路径：同一 group 的行 ID 稳定时，只重配 + 改高；高度迁移仅作防御。审批卡不要套官方 `askedToStay`，它只服务取消编辑。
+4. **流式 0.1s 节流**在 C4/C5 接线时落实；测量完成按 key 代际丢弃旧结果（`applyMeasuredHeight` 已 guard 当前 key）。
+5. **历史锚点**继续用 group item + row→group 映射；group 合并时迁移 `displayedHeight`（§3.4.5）。官方没有 `firstRowID`，不据此删掉 v7 的守卫。
+6. **估算回退**：若 C2/C3 吞吐 p95 过高，再引入官方估算公式（Part Z §6.1：4000 字符上限、块距 12pt、默认 44/180）作为 pending 回退；当前不写死数字。
 
 ---
 

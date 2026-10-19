@@ -19,7 +19,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     static let resultFileName = "timeline-autorun.json"
 
     enum Kind: String, CaseIterable {
-        case message, reasoning, toolExpanded, code, table, image, notice, pending, tail, plain
+        case message, longGroup, reasoning, toolExpanded, code, table, image, notice, pending, tail, plain
     }
 
     struct Entry: Identifiable, Equatable {
@@ -116,7 +116,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         case .code, .table, .image: return .complex
         case .toolExpanded, .notice, .pending: return .interactive
         case .tail: return .tail
-        case .message, .reasoning: return .markdown
+        case .message, .longGroup, .reasoning: return .markdown
         }
     }
 
@@ -205,6 +205,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         // Async first: the automatic pending pass may settle Markdown shortly
         // after apply, so the first-displayed snapshot is captured by
         // `onApplyCompleted`.
+        await firstMeasurement()
         await asyncMarkdown()
         await measureConsistency()
         await foldAndTail()
@@ -220,7 +221,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             guard let entry = entries.first(where: { $0.kind == kind }) else { continue }
             let item = listItem(entry)
             await scrollToItem(item)
-            if [.message, .reasoning].contains(kind) {
+            if [.message, .longGroup, .reasoning].contains(kind) {
                 await wait(900) // Textual parse is asynchronous.
                 controller?.remeasure(item)
                 await wait(150)
@@ -242,6 +243,32 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         }
         if samples.count < 8 { failures.append("measurement: only \(samples.count) stratified samples") }
         report["measurement"] = ["samples": samples, "sampleCount": samples.count]
+    }
+
+    /// The incident shape: a group of long Markdown rows. Before Textual
+    /// parses, the VStack spacing can be a small positive height; caching it
+    /// makes every fixed-height cell overlap. The first stored height must be
+    /// a pending/estimate value, never a probe-sized one.
+    private func firstMeasurement() async {
+        guard let controller, let entry = entries.first(where: { $0.kind == .longGroup }) else { return }
+        let item = listItem(entry)
+        let first = initialHeights[item.itemID] ?? 0
+        var measurement: [String: Any] = ["firstStored": first]
+        if first < 44 {
+            failures.append("first measurement: long group stored \(first)pt before parse")
+        }
+        await wait(1200)
+        controller.remeasure(item)
+        await scrollToItem(item)
+        await wait(250)
+        if let sample = cellSample(controller, item: item) {
+            measurement["settled"] = sample.measured
+            measurement["content"] = sample.content
+            if abs(sample.measured - sample.content) > 1 {
+                failures.append("first measurement: settled \(sample.measured) vs content \(sample.content)")
+            }
+        }
+        report["firstMeasurement"] = measurement
     }
 
     private func asyncMarkdown() async {
@@ -539,6 +566,14 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         switch entry.kind {
         case .message:
             return AnyView(ChatMarkdownView(text: entry.text))
+        case .longGroup:
+            // A product group is a VStack of rows with a small spacing. That
+            // spacing alone is a positive height before Textual parses, which
+            // is exactly the pre-parse value that must not be cached.
+            return AnyView(VStack(alignment: .leading, spacing: 2) {
+                ChatMarkdownView(text: entry.text)
+                ChatMarkdownView(text: String(entry.text.reversed()))
+            }.frame(maxWidth: .infinity, alignment: .leading))
         case .reasoning:
             return AnyView(ChatMarkdownView(text: entry.text)
                 .environment(\.chatMarkdownFont, .caption2))
@@ -640,6 +675,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         """
         var entries: [Entry] = [
             Entry(id: "message-1", kind: .message, text: longMessage),
+            Entry(id: "long-group-1", kind: .longGroup,
+                  text: longMessage + "\n\n" + longReasoning),
             Entry(id: "reasoning-1", kind: .reasoning, text: longReasoning),
             Entry(id: "tools-1", kind: .toolExpanded, text: "工具组"),
             Entry(id: "code-1", kind: .code, text: code),

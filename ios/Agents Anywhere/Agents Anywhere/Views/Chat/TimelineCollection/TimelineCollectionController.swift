@@ -437,11 +437,23 @@ final class TimelineCollectionController: UIViewController {
         guard interactionPresented != presented else { return }
         interactionPresented = presented
         if presented {
+            stopBottomAnimation()
             armedBottom.disarm()
             mode = .reading
         } else {
             requestBottom(animated: true, forced: true)
         }
+    }
+
+    /// Stops UIKit's in-flight animated return. The old view released its
+    /// `ScrollPosition` target on the same edges (approval appears, drawer
+    /// moves); leaving the native animation running would still pull the page.
+    private func stopBottomAnimation() {
+        bottomAnimationWatchdog?.cancel()
+        guard let collectionView, phase.phase == .animating else { return }
+        collectionView.setContentOffset(collectionView.contentOffset, animated: false)
+        let transition = phase.apply(.watchdogExpired)
+        onPhaseChanged?(transition)
     }
 
     // MARK: - Keyboard and container anchoring
@@ -696,7 +708,7 @@ final class TimelineCollectionController: UIViewController {
             olderPull.cancel()
             latestPull.cancel()
             pendingMeasurementTask?.cancel()
-            bottomAnimationWatchdog?.cancel()
+            stopBottomAnimation()
             userScrollSettleTask?.cancel()
             armedBottom.disarm()
             mode = .reading

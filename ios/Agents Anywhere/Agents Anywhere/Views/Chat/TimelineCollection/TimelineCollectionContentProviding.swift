@@ -22,6 +22,12 @@ protocol TimelineCollectionContentProviding: AnyObject {
     /// measurement-consistency gate.
     func rowView(for item: TimelineListItem) -> AnyView
 
+    /// The C5/M2 TextKit 2 path: a static assistant body whose blocks the
+    /// controller can measure synchronously before apply. Nil means "keep the
+    /// hosting cell" — unsupported blocks, streaming rows, attachments, folds
+    /// and every non-assistant row return nil.
+    func assistantMarkdown(for item: TimelineListItem) -> AssistantMarkdownDocument?
+
     /// Row ids contained in a top-level item. A group contains several; the
     /// history anchor maps a row id back to its group item.
     func rowIDs(in item: TimelineListItem) -> [String]
@@ -41,6 +47,9 @@ extension TimelineCollectionContentProviding {
     /// Marks the provider's item list stale before the representable reads
     /// `contentGeneration`. The C3 gate's synthetic model wants no work here.
     func prepareForUpdate() {}
+
+    /// The C3 synthetic model keeps every row on the hosting path.
+    func assistantMarkdown(for item: TimelineListItem) -> AssistantMarkdownDocument? { nil }
 
     /// Typography changes every height key. The C3 gate's synthetic rows keep
     /// one fixed scale and use this default; the product adapter overrides it.

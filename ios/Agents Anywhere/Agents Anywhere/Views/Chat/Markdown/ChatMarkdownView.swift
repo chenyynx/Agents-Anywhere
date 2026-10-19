@@ -87,33 +87,14 @@ struct ChatMarkdownView: View {
 
     nonisolated private static func parse(_ text: String, request: ParseRequest, startingAt startID: Int) throws -> [MarkdownBlockSnapshot] {
         try Task.checkCancellation()
-        var document = try AttributedStringMarkdownParser.parse(text, syntaxExtensions: [.math])
+        // The TextKit 2 path reuses this exact pipeline; keeping one copy is
+        // what stops the two renderers from parsing the same reply differently.
+        let snapshots = try AssistantMarkdownDocumentParser.parseBlocks(
+            text: text, resolvesFileReferences: request.resolvesFileReferences)
         try Task.checkCancellation()
-        if request.resolvesFileReferences {
-            for run in document.runs {
-                guard run.link == nil, run.inlinePresentationIntent?.contains(.code) == true else { continue }
-                let literal = String(document[run.range].characters)
-                // A URL first: the reference underlines it with dots, and the
-                // file-reference matcher would otherwise claim it as a path.
-                if let url = ChatInlineURL.url(for: literal) {
-                    // Only the link is set here. The dotted underline is applied
-                    // in the view layer (`MarkdownBlockView`), where building a
-                    // `Text.LineStyle` — which carries a `Color` — is safe.
-                    document[run.range].link = url
-                    continue
-                }
-                if let reference = SessionFileReference.inlineReference(literal) {
-                    document[run.range].link = reference.link
-                }
-            }
+        return snapshots.enumerated().map { offset, snapshot in
+            MarkdownBlockSnapshot(id: startID + offset, content: snapshot.content)
         }
-        document = GitDirectiveParser.enrich(document) { directives, attributes in
-            var badge = AttributedString(directives.map(\.label).joined(separator: " · "), attributes: attributes)
-            badge.textual.attachment = AnyAttachment(ChatGitBadgeAttachment(directives: directives))
-            return badge
-        }
-        try Task.checkCancellation()
-        return MarkdownBlockSnapshot.split(document, startingAt: startID)
     }
 }
 

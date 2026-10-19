@@ -213,6 +213,51 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         }
     }
 
+    // MARK: - C5/M2 TextKit 2 assistant body
+
+    private struct CachedAssistantDocument {
+        let revision: Int
+        let text: String
+        let typographyRevision: Int
+        let document: AssistantMarkdownDocument?
+    }
+
+    private var assistantDocuments: [String: CachedAssistantDocument] = [:]
+
+    /// M2 only takes a static, plain assistant message: one row, no fold, no
+    /// turn footer, no inline notice, no attachments, no streaming, and only
+    /// paragraph/header blocks. Everything else returns nil and keeps the
+    /// existing hosting cell.
+    func assistantMarkdown(for item: TimelineListItem) -> AssistantMarkdownDocument? {
+        guard case .group(let id) = item, let group = groupsByID[id],
+              group.kind == .single, group.rows.count == 1,
+              turnActions[group.id] == nil,
+              let row = group.rows.first else { return nil }
+        guard inlineNoticesByRow[row.id] == nil else { return nil }
+        guard case .message = row.value.content, row.value.role == .assistant else { return nil }
+        guard !row.value.isStreamingText, !row.isRevealing else { return nil }
+        guard row.value.status == .done else { return nil }
+        guard attachments(of: row.value).isEmpty, !row.text.isEmpty else { return nil }
+
+        let typographyRevision = typography.revision
+        if let cached = assistantDocuments[row.id],
+           cached.revision == row.value.revision,
+           cached.text == row.text,
+           cached.typographyRevision == typographyRevision {
+            return cached.document
+        }
+        let document = AssistantMarkdownDocumentParser.make(
+            text: row.text,
+            resolvesFileReferences: true,
+            typography: typography)
+        assistantDocuments[row.id] = CachedAssistantDocument(
+            revision: row.value.revision,
+            text: row.text,
+            typographyRevision: typographyRevision,
+            document: document)
+        return document
+    }
+
     func measurementContent(for item: TimelineListItem) -> TimelineMeasurementContent {
         switch item {
         case .tail: return .tail
@@ -359,6 +404,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         self.rowToItem = rowToItem
         self.inlineNoticesByRow = inlineNoticesByRow
         self.turnActions = turnActions
+        // Parsed documents are keyed by row id; drop rows that left the
+        // timeline so a long session does not retain old replies.
+        assistantDocuments = assistantDocuments.filter { rowToItem[$0.key] != nil }
 
         var itemsByID: [String: TimelineListItem] = [:]
         for item in identity.items { itemsByID[item.itemID] = item }

@@ -25,6 +25,10 @@ final class TimelineCollectionController: UIViewController {
     private(set) var measurer: (any TimelineHeightMeasuring)?
 
     private var currentItems: [TimelineListItem] = []
+    /// Items whose assistant body was measured synchronously with TextKit 2.
+    /// The same set decides which cell the data source returns, so a row can
+    /// never render in the TextKit cell with an estimate height.
+    private(set) var documentHeights: [String: CGFloat] = [:]
     private var lastReloadGeneration = Int.min
     private var signatures = TimelineContentSignatures()
     private var measurementPipeline = TimelineMeasurementPipeline(budgetMilliseconds: .max)
@@ -130,6 +134,8 @@ final class TimelineCollectionController: UIViewController {
         collectionView.delegate = self
         collectionView.register(TimelineHostingCell.self,
                                 forCellWithReuseIdentifier: TimelineHostingCell.reuseIdentifier)
+        collectionView.register(AssistantMarkdownCell.self,
+                                forCellWithReuseIdentifier: AssistantMarkdownCell.reuseIdentifier)
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(collectionView)
         NSLayoutConstraint.activate([
@@ -140,6 +146,15 @@ final class TimelineCollectionController: UIViewController {
         ])
         layout.host = self
         dataSource = UICollectionViewDiffableDataSource(collectionView: collectionView) { [weak self] collectionView, indexPath, item in
+            if let self, let content = self.content,
+               let document = content.assistantMarkdown(for: item),
+               self.documentHeights[item.itemID] != nil {
+                let cell = collectionView.dequeueReusableCell(
+                    withReuseIdentifier: AssistantMarkdownCell.reuseIdentifier,
+                    for: indexPath) as! AssistantMarkdownCell
+                cell.configure(document)
+                return cell
+            }
             let cell = collectionView.dequeueReusableCell(withReuseIdentifier: TimelineHostingCell.reuseIdentifier,
                                                           for: indexPath) as! TimelineHostingCell
             if let self, let content = self.content {
@@ -235,6 +250,8 @@ final class TimelineCollectionController: UIViewController {
             }
         }
         measureSynchronously(toMeasure, width: columnWidth)
+        let liveIDs = Set(items.map(\.itemID))
+        documentHeights = documentHeights.filter { liveIDs.contains($0.key) }
 
         var snapshot = NSDiffableDataSourceSnapshot<TimelineCollectionSection, TimelineListItem>()
         snapshot.appendSections([.main])
@@ -355,7 +372,27 @@ final class TimelineCollectionController: UIViewController {
     }
 
     private func measureSynchronously(_ items: [TimelineListItem], width: CGFloat) {
-        guard let content, let measurer, width > 0 else { return }
+        guard let content, width > 0 else { return }
+
+        // C5/M2: the assistant body is measured by the engine that renders it.
+        // The cell only exists for items that got a real height here, so the
+        // row never pairs a TextKit cell with an estimate.
+        for item in items {
+            guard let document = content.assistantMarkdown(for: item) else { continue }
+            let key = content.heightKey(for: item, width: width)
+            if layout.heights.hasMeasuredOrPrecalcHeight(for: key),
+               let cached = layout.heights.tieredHeight(for: key) {
+                documentHeights[item.itemID] = cached
+                continue
+            }
+            let raw = AssistantMarkdownTextLayout.measure(
+                document, width: width, displayScale: traitCollection.displayScale)
+            guard let height = validatedHeight(raw) else { continue }
+            layout.heights.set(height, for: key, tier: .measured)
+            documentHeights[item.itemID] = height
+        }
+
+        guard let measurer else { return }
         // A typography change re-keys every row in the same SwiftUI update that
         // calls this measurement, before the next layout pass. Sync the
         // measurer's traits now, or the new key caches an old-type height.
@@ -363,6 +400,8 @@ final class TimelineCollectionController: UIViewController {
             hosted.updateTraitOverrides(from: traitCollection)
         }
         let requests = items.compactMap { item -> TimelineMeasurementRequest? in
+            // Already measured by TextKit 2 above.
+            guard content.assistantMarkdown(for: item) == nil else { return nil }
             // Only plain text fits the synchronous offscreen pass. Textual
             // parses Markdown in a task that a hostless controller never runs
             // (the long-Markdown gate measured 2pt for 1471pt of content), so
@@ -452,6 +491,13 @@ final class TimelineCollectionController: UIViewController {
         return validatedHeight(height, minimum: minimum)
     }
 
+    /// The synchronously measured height of an M2 TextKit 2 row, or nil when
+    /// the row is on the hosting path. The gate reads this to prove the first
+    /// stored height is the measurement, not the estimate.
+    func measuredTextKitHeight(for item: TimelineListItem) -> CGFloat? {
+        documentHeights[item.itemID]
+    }
+
     /// Re-measures one row on demand (the gate's async-Markdown settle step).
     func remeasure(_ item: TimelineListItem) {
         guard let content, columnWidth > 0 else { return }
@@ -496,6 +542,9 @@ final class TimelineCollectionController: UIViewController {
             guard currentItems.indices.contains(indexPath.item),
                   let cell = collectionView.cellForItem(at: indexPath) else { continue }
             let item = currentItems[indexPath.item]
+            // TextKit 2 rows were measured before apply with the same engine
+            // the cell renders; the visible-fit loop must not second-guess it.
+            if documentHeights[item.itemID] != nil { continue }
             guard let height = cellFit(cell, minimum: plausibleFloor(for: item)) else {
                 // Pre-parse stack spacing or a probe: wait for the async content.
                 needsMore = true

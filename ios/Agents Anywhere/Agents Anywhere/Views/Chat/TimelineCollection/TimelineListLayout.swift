@@ -206,6 +206,10 @@ final class TimelineListLayout: UICollectionViewLayout {
         attributesByItemID[itemID]
     }
 
+    /// Ordered frames for the integration gate's overlap check. Debug-only
+    /// callers; the layout itself never reads this.
+    var orderedAttributes: [TimelineListLayoutAttributes] { attributesByIndex }
+
     // MARK: - Insertion owed (absolute prepend target)
 
     func beginInsertionOwed(generation: Int, origin: TimelineHistoryLayout?,

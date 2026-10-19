@@ -19,7 +19,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     static let resultFileName = "timeline-autorun.json"
 
     enum Kind: String, CaseIterable {
-        case message, longGroup, reasoning, toolExpanded, code, table, image, notice, pending, tail, plain
+        case message, longGroup, assistantTextKit, reasoning, toolExpanded, code, table, image, notice, pending, tail, plain
     }
 
     struct Entry: Identifiable, Equatable {
@@ -116,8 +116,32 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         case .code, .table, .image: return .complex
         case .toolExpanded, .notice, .pending: return .interactive
         case .tail: return .tail
-        case .message, .longGroup, .reasoning: return .markdown
+        case .message, .longGroup, .assistantTextKit, .reasoning: return .markdown
         }
+    }
+
+    // MARK: - C5/M2 TextKit 2 assistant body
+
+    @ObservationIgnored private var assistantTextKitDocuments: [String: AssistantMarkdownDocument] = [:]
+
+    private var assistantTextKitTypography: TimelineTypographySnapshot {
+        TimelineChatContentAdapter.typography(
+            dynamicType: "UICTContentSizeCategoryL",
+            layoutDirection: 0,
+            boldText: false)
+    }
+
+    func assistantMarkdown(for item: TimelineListItem) -> AssistantMarkdownDocument? {
+        guard case .group(let id) = item,
+              let entry = entries.first(where: { $0.id == id }),
+              entry.kind == .assistantTextKit else { return nil }
+        if let cached = assistantTextKitDocuments[entry.id] { return cached }
+        let document = AssistantMarkdownDocumentParser.make(
+            text: entry.text,
+            resolvesFileReferences: false,
+            typography: assistantTextKitTypography)
+        if let document { assistantTextKitDocuments[entry.id] = document }
+        return document
     }
 
     func rowView(for item: TimelineListItem) -> AnyView {
@@ -206,6 +230,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         // after apply, so the first-displayed snapshot is captured by
         // `onApplyCompleted`.
         await firstMeasurement()
+        await textKitMeasurement()
         await asyncMarkdown()
         await measureConsistency()
         await foldAndTail()
@@ -237,7 +262,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                 failures.append("measurement: no cell for \(kind.rawValue)")
                 continue
             }
-            let tolerance: CGFloat = [.message, .reasoning, .plain, .code, .table].contains(kind) ? 1 : 4
+            let tolerance: CGFloat = [.message, .assistantTextKit, .reasoning, .plain, .code, .table].contains(kind) ? 1 : 4
             let error = abs(sample.measured - sample.content)
             if error > tolerance {
                 failures.append("measurement \(kind.rawValue): measured \(sample.measured) content \(sample.content) error \(error) > \(tolerance)")
@@ -278,6 +303,70 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             }
         }
         report["firstMeasurement"] = measurement
+    }
+
+    /// C5/M2 gate: the assistant body is measured synchronously by TextKit 2
+    /// before the snapshot applies, the stored height is that measurement (not
+    /// the estimate), the cell renders the same attributed strings, and no
+    /// adjacent frames overlap.
+    private func textKitMeasurement() async {
+        guard let controller,
+              let entry = entries.first(where: { $0.kind == .assistantTextKit }) else { return }
+        let item = listItem(entry)
+        let stored = initialHeights[item.itemID]
+            ?? controller.layout.attributes(for: item.itemID)?.frame.height ?? 0
+        let measured = controller.measuredTextKitHeight(for: item) ?? -1
+        let estimate = estimateKind(for: item).height
+        let pending = controller.layout.pendingMeasurements.contains(item)
+
+        await scrollToItem(item)
+        await wait(300)
+        let sample = await sampleItem(controller, item: item)
+        let cellContent = sample?.content ?? -1
+        let cellFrame = sample?.cell ?? -1
+
+        var overlaps = 0
+        let attributes = controller.layout.orderedAttributes
+        for (upper, lower) in zip(attributes, attributes.dropFirst()) {
+            if upper.frame.maxY > lower.frame.minY + 0.5 { overlaps += 1 }
+        }
+
+        // The eligibility contract: paragraph/header blocks are accepted,
+        // lists and code fences must fall back to hosting in M2.
+        let typography = assistantTextKitTypography
+        let plainDocument = AssistantMarkdownDocumentParser.make(
+            text: "A plain paragraph.", resolvesFileReferences: false, typography: typography)
+        let listDocument = AssistantMarkdownDocumentParser.make(
+            text: "- one\n- two", resolvesFileReferences: false, typography: typography)
+        let codeDocument = AssistantMarkdownDocumentParser.make(
+            text: "```swift\nlet value = 1\n```", resolvesFileReferences: false, typography: typography)
+        if plainDocument == nil { failures.append("textkit parser: plain paragraph rejected") }
+        if listDocument != nil { failures.append("textkit parser: list accepted in M2") }
+        if codeDocument != nil { failures.append("textkit parser: code block accepted in M2") }
+
+        if measured < 0 {
+            failures.append("textkit: row has no synchronous document measurement")
+        }
+        if abs(stored - measured) > 0.5 {
+            failures.append("textkit: firstStored \(stored) != measured \(measured)")
+        }
+        if abs(cellContent - stored) > 1 {
+            failures.append("textkit: cell content \(cellContent) vs stored \(stored)")
+        }
+        if pending { failures.append("textkit: row entered pendingMeasurements") }
+        if abs(stored - estimate) <= 0.5 {
+            failures.append("textkit: stored height \(stored) equals the estimate \(estimate)")
+        }
+        if overlaps > 0 { failures.append("textkit: \(overlaps) adjacent frames overlap") }
+
+        report["textKit"] = ["stored": stored, "measured": measured, "estimate": estimate,
+                             "cellContent": cellContent, "cellFrame": cellFrame,
+                             "pending": pending, "overlaps": overlaps,
+                             "cellMaterialized": sample != nil,
+                             "blocks": assistantMarkdown(for: item)?.blocks.count ?? 0,
+                             "plainAccepted": plainDocument != nil,
+                             "listRejected": listDocument == nil,
+                             "codeRejected": codeDocument == nil]
     }
 
     private func asyncMarkdown() async {
@@ -601,7 +690,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
 
     private func view(for entry: Entry) -> AnyView {
         switch entry.kind {
-        case .message:
+        case .message, .assistantTextKit:
             return AnyView(ChatMarkdownView(text: entry.text))
         case .longGroup:
             // A product group is a VStack of rows with a small spacing. That
@@ -701,6 +790,17 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         }
         ```
         """
+        let assistantTextKit = """
+        ## A long static reply
+
+        The measurement has to come from the same engine that draws the text. This paragraph is deliberately long enough to wrap across several lines at the product column width, so a mismatch between measurement and rendering shows up as an overlap or a blank block rather than a rounding difference. It also carries **bold**, `inline code`, and a [web link](https://example.com) inside running text, which the M2 builder maps onto UIKit attributes.
+
+        ## A second section
+
+        A second heading and a second paragraph make the block model exercise the twelve-point inter-block spacing, not just a single text block. The words stay plain Markdown paragraphs; lists, quotes, code blocks and tables deliberately fall back to the hosting cell until M3.
+
+        The closing paragraph keeps the row static. No streaming marker is set, so the controller must measure this document synchronously before the snapshot applies and store exactly that height.
+        """
         let longReasoning = String(repeating: "Reasoning sentence with detail. ", count: 30)
         let code = (0..<18).map { "let value\($0) = \($0) * 2" }.joined(separator: "\n")
         let table = """
@@ -714,6 +814,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             Entry(id: "message-1", kind: .message, text: longMessage),
             Entry(id: "long-group-1", kind: .longGroup,
                   text: longMessage + "\n\n" + longReasoning),
+            Entry(id: "textkit-assistant-1", kind: .assistantTextKit, text: assistantTextKit),
             Entry(id: "reasoning-1", kind: .reasoning, text: longReasoning),
             Entry(id: "tools-1", kind: .toolExpanded, text: "工具组"),
             Entry(id: "code-1", kind: .code, text: code),

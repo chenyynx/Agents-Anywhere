@@ -178,16 +178,27 @@ jobs:
 
           m = r.get("measurement", {})
           samples = m.get("samples", [])
+          text_kinds = {"message", "assistantTextKit", "reasoning", "plain", "code", "table"}
           text_errors = [s.get("error", 0) for s in samples
-                         if s.get("kind") in {"message", "reasoning", "plain", "code", "table"}]
+                         if s.get("kind") in text_kinds]
           complex_errors = [s.get("error", 0) for s in samples
-                            if s.get("kind") not in {"message", "reasoning", "plain", "code", "table"}]
+                            if s.get("kind") not in text_kinds]
           check("completed", r.get("completed") is True, failures)
           check("no failures", not failures, failures)
           check("stratified samples >= 8", len(samples) >= 8, len(samples))
           check("text measurement <= 1pt", max(text_errors or [99]) <= 1.0, text_errors)
           check("complex measurement <= 4pt", max(complex_errors or [99]) <= 4.0, complex_errors)
 
+          tk = r.get("textKit", {})
+          check("textkit first stored == measured",
+                abs(tk.get("stored", 0) - tk.get("measured", -1)) <= 0.5, tk)
+          check("textkit cell content within 1pt",
+                abs(tk.get("cellContent", 0) - tk.get("stored", 0)) <= 1.0, tk)
+          check("textkit row not pending", tk.get("pending") is False, tk)
+          check("textkit no adjacent overlap", (tk.get("overlaps") or 0) == 0, tk)
+          check("textkit parser contract",
+                tk.get("plainAccepted") is True and tk.get("listRejected") is True
+                and tk.get("codeRejected") is True, tk)
           a = r.get("asyncMarkdown", {})
           check("async markdown below anchor <= 0.5pt", a.get("belowAnchorDelta", 99) <= 0.5, a)
           s = r.get("streaming", {})

@@ -358,13 +358,31 @@ final class TimelineListLayout: UICollectionViewLayout {
     /// fold/notice/tail reconfiguration and feeds it here. The decision and
     /// invalidation are the same ones the UIKit preferred-attributes path
     /// uses.
+    private(set) var preferredHeightDiagnostics: [String: Int] = [:]
+
+    private func notePreferred(_ key: String) {
+        preferredHeightDiagnostics[key, default: 0] += 1
+    }
+
     func applyPreferredHeight(_ height: CGFloat, for itemID: String) {
-        guard let attributes = attributesByItemID[itemID],
-              attributes.policy.acceptsPreferredHeight,
-              let key = attributes.heightKey,
-              heights.currentKey(for: itemID) == key else { return }
+        notePreferred("call")
+        guard let attributes = attributesByItemID[itemID] else {
+            notePreferred("noAttributes"); return
+        }
+        guard attributes.policy.acceptsPreferredHeight else {
+            notePreferred("notInteractive"); return
+        }
+        guard let key = attributes.heightKey else {
+            notePreferred("noKey"); return
+        }
+        guard heights.currentKey(for: itemID) == key else {
+            notePreferred("staleKey"); return
+        }
         let delta = height - attributes.frame.height
-        guard abs(delta) > 0.5 else { return }
+        guard abs(delta) > 0.5 else {
+            notePreferred("noDelta"); return
+        }
+        notePreferred("delta")
         let state = host?.layoutInteractionState() ?? TimelineLayoutInteractionState()
         let decision = TimelinePreferredAttributesDecision.selfSizing(
             delta: delta,

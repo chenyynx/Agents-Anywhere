@@ -275,7 +275,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             let collapsed = cellHeight(controller, item)
             setExpanded(entry.id, true)
             controller.reconfigure([item])
-            await wait(500)
+            await wait(700)
             let expanded = cellHeight(controller, item)
             let sample = cellSample(controller, item: item)
             if expanded <= collapsed + 1 {
@@ -285,7 +285,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                 failures.append("fold: cell \(sample.cell) clips content \(sample.content)")
             }
             report["fold"] = ["collapsed": collapsed, "expanded": expanded,
-                              "content": sample?.content ?? 0]
+                              "content": sample?.content ?? 0,
+                              "diagnostics": controller.preferredDiagnostics,
+                              "layoutDiagnostics": controller.layout.preferredHeightDiagnostics]
         }
         if let entry = entries.first(where: { $0.kind == .notice }) {
             let item = listItem(entry)

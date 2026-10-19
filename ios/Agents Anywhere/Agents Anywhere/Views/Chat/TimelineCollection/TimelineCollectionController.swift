@@ -181,27 +181,44 @@ final class TimelineCollectionController: UIViewController {
     /// immediate read is racy. Poll the cell's content fitting for a few
     /// frames and apply when it changes. This is the explicit replacement for
     /// the heightDidChange callback AA's hosting rows do not have.
+    private(set) var preferredDiagnostics: [String: Int] = [:]
+
+    private func notePreferred(_ key: String) {
+        preferredDiagnostics[key, default: 0] += 1
+    }
+
     private func settlePreferredHeights(for items: [TimelineListItem], attempt: Int) {
-        guard let content, attempt <= 5 else { return }
+        guard let content, attempt <= 9 else { return }
+        notePreferred("pass")
         for item in items {
-            guard content.heightPolicy(for: item).acceptsPreferredHeight,
-                  let indexPath = indexPath(for: item),
-                  let cell = collectionView.cellForItem(at: indexPath) else { continue }
+            notePreferred("item")
+            guard content.heightPolicy(for: item).acceptsPreferredHeight else {
+                notePreferred("notInteractive"); continue
+            }
+            guard let indexPath = indexPath(for: item) else {
+                notePreferred("noIndexPath"); continue
+            }
+            guard let cell = collectionView.cellForItem(at: indexPath) else {
+                notePreferred("noCell"); continue
+            }
             let width = cell.contentView.bounds.width
-            guard width > 0 else { continue }
+            guard width > 0 else { notePreferred("zeroWidth"); continue }
             let fitting = cell.contentView.systemLayoutSizeFitting(
                 CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
                 withHorizontalFittingPriority: .required,
                 verticalFittingPriority: .fittingSizeLevel).height
-            guard fitting > 0 else { continue }
+            guard fitting > 0 else { notePreferred("zeroFitting"); continue }
             let current = layout.attributes(for: item.itemID)?.frame.height ?? 0
             if abs(fitting - current) > 0.5 {
+                notePreferred("applyRequested")
                 layout.applyPreferredHeight(ceil(fitting), for: item.itemID)
+            } else {
+                notePreferred("alreadyEqual")
             }
         }
-        // Poll a few frames: the hosting content can report its old size on
+        // Poll several frames: the hosting content can report its old size on
         // the first pass and the new size only after SwiftUI lays out.
-        guard attempt < 5 else { return }
+        guard attempt < 9 else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
             self?.settlePreferredHeights(for: items, attempt: attempt + 1)
         }

@@ -86,7 +86,15 @@ AssistantMarkdownCell
 - **eligibility 切换**：流式结束、footer 出现、文件变更出现都会改变可接入性；在 `measureSynchronously` 清理不再可接入的 `documentHeights`，防止陈旧高度卡住宿主测量。
 - **复制行为**：hosting 的 `SessionTurnActionsRow` 直接调用 `UIPasteboard`，不依赖父控制器；真机验证复制成功与 2 秒确认态。
 
-## 6. 验证状态
+## 6. 验证状态（2026-10-20）
 
-- 待实现后记录 CI run、gate JSON（stored/measured/cellContent/footer）。
-- 未覆盖：真机、滚动性能、文件变更 footer、流式/选择/链接。
+- 提交 `9a332bc9`，编译修复 `dafd9226`（`UIHostingController` 需要 `import SwiftUI`）。
+- **全流程绿**：run `39370349234` 的 rerun（commit `dafd9226`）— `test` success、`timeline-autorun` success（C3 与 M3.1 同时绿）。
+- M3 gate（iPhone Air / iOS 26.5）：
+  - `stored 640 == measured 640`
+  - `cellContent 639.67`，`cellFrame 640`
+  - `footerDelta 44.0` vs `footerHeight 43.5`（整点取整差 0.5pt）
+  - `pending false`，`estimate 200` 未写入，`overlaps 0`
+  - 块统计与解析契约同 M3
+- 同轮 C3 曾连续两次报既有 flake（`no cell for reasoning` / `longGroup cell 200 clips content 1471`），第三次 rerun 绿；M3.1 不触碰 C3 路径。
+- 未覆盖：真机、滚动性能（已加 scroll gate，见下一个提交）、复制交互、文件变更 footer、流式/选择/链接。

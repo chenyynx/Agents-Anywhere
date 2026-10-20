@@ -23,6 +23,9 @@ struct AgentsAnywhereApp: App {
                 } else if ProcessInfo.processInfo.arguments.contains(TextKitM3AutoRunModel.launchArgument) {
                     // C5/M3 assistant-body gate; never reachable from the product UI.
                     TextKitM3AutoRunRootView()
+                } else if ProcessInfo.processInfo.arguments.contains(TextKitVisualParityAutoRunModel.launchArgument) {
+                    // C5 visual-parity capture; never reachable from the product UI.
+                    TextKitVisualParityRootView()
                 } else {
                     RootView()
                 }

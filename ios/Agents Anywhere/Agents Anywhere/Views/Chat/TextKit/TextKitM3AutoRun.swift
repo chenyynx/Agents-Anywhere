@@ -35,7 +35,7 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
     @ObservationIgnored private var document: AssistantMarkdownDocument?
     @ObservationIgnored private var stressDocument: AssistantMarkdownDocument?
 
-    private static let fixture = """
+    static let fixture = """
     ## Lists and quotes
 
     The lists below use the product's marker column and spacing. This paragraph also carries **bold**, `inline code`, and a [web link](https://example.com).

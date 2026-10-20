@@ -82,3 +82,15 @@
 - 当前分支的视觉与交互冻结：不做 tool call 并回 cell，不做间距/代码卡视觉对齐。
 - M1 的官方证据保留在 `part-ac` 报告与 `perf-6b-c5-muse-audit.md`，等 pp 以后决定是否切 B 时再启用。
 - C5 的定位保持“dev 的视觉 + 换 TextKit 2 引擎的性能优化”，不引入视觉变化。
+
+## 5. 视觉一致性验证设施（2026-10-20）
+
+新增 DEBUG-only launch arg `aa-textkit-parity`（`TextKitVisualParityAutoRun.swift`）：
+
+- 同一份 Markdown fixture、同一 388pt 内容宽、同一 light trait
+- 旧路径：`ChatMarkdownView`（SwiftUI + Textual）
+- 新路径：`AssistantMarkdownDocumentParser` + `AssistantMarkdownCell`（TextKit 2）
+- 各写一张 PNG（`parity-legacy.png` / `parity-textkit.png`）和 `textkit-parity.json`（两边高度）
+- CI 在 M3 gate 后自动跑，截图随 `timeline-autorun` artifact 上传
+
+不改产品渲染路径，不合并 dev，不出包。

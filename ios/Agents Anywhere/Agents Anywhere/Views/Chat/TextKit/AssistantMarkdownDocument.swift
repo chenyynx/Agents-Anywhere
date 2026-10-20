@@ -118,10 +118,11 @@ enum AssistantMarkdownDocumentParser {
             guard let parsed = parseTree(from: snapshot.content,
                                          parent: nil,
                                          foreground: .label,
-                                         typography: typography),
-                  !parsed.isEmpty else {
+                                         typography: typography) else {
                 return nil
             }
+            // An empty snapshot (a stray separator) contributes nothing; it is
+            // not an unsupported construct.
             parsedBlocks.append(contentsOf: parsed)
         }
         return AssistantMarkdownDocument(blocks: parsedBlocks, plainTextLength: text.count)

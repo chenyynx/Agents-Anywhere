@@ -85,9 +85,9 @@ final class AssistantMarkdownCell: UICollectionViewCell {
     /// constraint derived from the TextKit measurement; this is the only place
     /// the two engines can disagree inside the cell.
     var debugTailFitHeight: CGFloat? {
-        guard let tailHost, contentView.bounds.width > 0 else { return nil }
+        guard let tailHost, let hostView = tailHost.view,
+              contentView.bounds.width > 0 else { return nil }
         let width = contentView.bounds.width
-        let hostView = tailHost.view
         let saved = hostView.bounds
         // The measurer's exact sequence: force a layout at the proposed width
         // before asking for the fitting height.
@@ -101,7 +101,7 @@ final class AssistantMarkdownCell: UICollectionViewCell {
     }
 
     var debugTailConstraintHeight: CGFloat? { tailConstraint?.constant }
-    var debugTailHostBounds: CGRect? { tailHost?.view.bounds }
+    var debugTailHostBounds: CGRect? { tailHost?.view?.bounds }
     var debugTailHostTextLength: Int? { tailHost?.rootView.text.count }
     #endif
 

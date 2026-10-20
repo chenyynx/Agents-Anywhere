@@ -295,6 +295,9 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
 
         let counts = document?.blockCounts ?? [:]
         let topLevelBlocks = document?.blocks.count ?? 0
+        let segments = document?.segments ?? []
+        let segmentCounts = Dictionary(grouping: segments, by: { $0.kindName })
+            .mapValues { $0.count }
         let cellContent = sample?.content ?? -1
         let cellFrame = sample?.frame ?? -1
         let inWindow = sample?.inWindow ?? false
@@ -352,6 +355,13 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
         if counts["table"] != 1 {
             failures.append("textkit fixture: \(counts["table"] ?? -1) table blocks, expected 1")
         }
+        if segments.count != 4 {
+            failures.append("textkit segments: \(segments.count), expected 4")
+        }
+        if segmentCounts["prose"] != 2 || segmentCounts["code"] != 1
+            || segmentCounts["table"] != 1 {
+            failures.append("textkit segments: \(segmentCounts), expected prose 2 / code 1 / table 1")
+        }
         if abs(footerDelta - AssistantTurnFooter.height) > 1.5 {
             failures.append("textkit footer: delta \(footerDelta) vs \(AssistantTurnFooter.height)")
         }
@@ -370,6 +380,11 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
             "footerHeight": Double(AssistantTurnFooter.height),
             "topLevelBlocks": topLevelBlocks,
             "blockCounts": counts,
+            "segments": {
+                var summary = segmentCounts
+                summary["total"] = segments.count
+                return summary
+            }(),
             "plainAccepted": plainDocument != nil,
             "unorderedAccepted": unorderedDocument != nil,
             "orderedAccepted": orderedDocument != nil,

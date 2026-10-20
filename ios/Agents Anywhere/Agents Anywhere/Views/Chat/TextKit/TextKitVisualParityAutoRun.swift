@@ -42,18 +42,25 @@ final class TextKitVisualParityController: UIViewController {
         Task { await run() }
     }
 
+    private struct TrimmedSnapshot {
+        let image: UIImage
+        let contentHeight: CGFloat
+        let rawHeight: CGFloat
+        let firstInkRow: Int
+        let lastInkRow: Int
+    }
+
     private func run() async {
         await wait(600)
-        let legacyHeight = await captureLegacy()
+        let legacy = await captureLegacy()
         let textKit = captureTextKit()
-        writeReport(legacyHeight: legacyHeight,
-                    textKitHeight: textKit.height,
+        writeReport(legacy: legacy, textKit: textKit.snapshot,
                     textKitBlocks: textKit.blocks)
     }
 
     // MARK: - Legacy path
 
-    private func captureLegacy() async -> CGFloat {
+    private func captureLegacy() async -> TrimmedSnapshot {
         // The product hosts this view inside a timeline row, not under the
         // status bar. Ignore the parity window's top safe area so the capture
         // compares content, not the 68pt inset the M1 spike also hit.
@@ -88,12 +95,12 @@ final class TextKitVisualParityController: UIViewController {
         host.willMove(toParent: nil)
         host.view.removeFromSuperview()
         host.removeFromParent()
-        return shot.height
+        return shot
     }
 
     // MARK: - TextKit path
 
-    private func captureTextKit() -> (height: CGFloat, blocks: [[String: Any]]) {
+    private func captureTextKit() -> (snapshot: TrimmedSnapshot, blocks: [[String: Any]]) {
         let typography = TimelineChatContentAdapter.typography(
             dynamicType: "UICTContentSizeCategoryL",
             layoutDirection: 0,
@@ -101,7 +108,11 @@ final class TextKitVisualParityController: UIViewController {
         guard let document = AssistantMarkdownDocumentParser.make(
             text: TextKitM3AutoRunModel.fixture,
             resolvesFileReferences: false,
-            typography: typography) else { return (0, []) }
+            typography: typography) else {
+            return (TrimmedSnapshot(image: UIImage(), contentHeight: 0,
+                                    rawHeight: 0, firstInkRow: -1,
+                                    lastInkRow: -1), [])
+        }
 
         let scale = UIScreen.main.scale
         let height = max(1, ceil(AssistantMarkdownTextLayout.measure(
@@ -132,15 +143,20 @@ final class TextKitVisualParityController: UIViewController {
         let shot = trimmedSnapshot(of: cell)
         writePNG(shot.image, name: TextKitVisualParityAutoRunModel.textKitImageName)
         cell.removeFromSuperview()
-        return (shot.height, blocks)
+        return (shot, blocks)
     }
 
     // MARK: - Output
 
     private func snapshot(of view: UIView) -> UIImage {
         let bounds = view.bounds
-        let renderer = UIGraphicsImageRenderer(bounds: bounds)
-        return renderer.image { _ in
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = UIScreen.main.scale
+        format.opaque = true
+        let renderer = UIGraphicsImageRenderer(bounds: bounds, format: format)
+        return renderer.image { context in
+            UIColor.white.setFill()
+            context.fill(bounds)
             view.drawHierarchy(in: bounds, afterScreenUpdates: true)
         }
     }
@@ -148,24 +164,28 @@ final class TextKitVisualParityController: UIViewController {
     /// Drop the white margins around the rendered content. The legacy host
     /// reports its window's safe-area inset as blank rows; compare content,
     /// not capture chrome.
-    private func trimmedSnapshot(of view: UIView) -> (image: UIImage, height: CGFloat) {
+    private func trimmedSnapshot(of view: UIView) -> TrimmedSnapshot {
         let image = snapshot(of: view)
+        let rawHeight = image.size.height
         guard let cg = image.cgImage,
               let data = cg.dataProvider?.data,
               let bytes = CFDataGetBytePtr(data) else {
-            return (image, image.size.height)
+            return TrimmedSnapshot(image: image, contentHeight: rawHeight,
+                                   rawHeight: rawHeight, firstInkRow: -1,
+                                   lastInkRow: -1)
         }
         let width = cg.width
         let height = cg.height
         let bytesPerRow = cg.bytesPerRow
         let bytesPerPixel = max(1, cg.bitsPerPixel / 8)
+        let length = CFDataGetLength(data)
         var first = height
         var last = -1
         for y in 0..<height {
             var hasInk = false
             for x in stride(from: 0, to: width, by: 4) {
                 let offset = y * bytesPerRow + x * bytesPerPixel
-                guard offset + 2 < CFDataGetLength(data) else { continue }
+                guard offset + 2 < length else { continue }
                 if bytes[offset] < 245 || bytes[offset + 1] < 245
                     || bytes[offset + 2] < 245 {
                     hasInk = true
@@ -180,11 +200,18 @@ final class TextKitVisualParityController: UIViewController {
         guard last >= first, let cropped = cg.cropping(
             to: CGRect(x: 0, y: first, width: width,
                        height: last - first + 1)) else {
-            return (image, image.size.height)
+            return TrimmedSnapshot(image: image, contentHeight: rawHeight,
+                                   rawHeight: rawHeight, firstInkRow: first,
+                                   lastInkRow: last)
         }
-        return (UIImage(cgImage: cropped, scale: image.scale,
-                        orientation: image.imageOrientation),
-                CGFloat(last - first + 1) / image.scale)
+        let croppedImage = UIImage(cgImage: cropped, scale: image.scale,
+                                   orientation: image.imageOrientation)
+        return TrimmedSnapshot(
+            image: croppedImage,
+            contentHeight: CGFloat(last - first + 1) / image.scale,
+            rawHeight: rawHeight,
+            firstInkRow: first,
+            lastInkRow: last)
     }
 
     private func writePNG(_ image: UIImage, name: String) {
@@ -193,14 +220,18 @@ final class TextKitVisualParityController: UIViewController {
         try? data.write(to: url)
     }
 
-    private func writeReport(legacyHeight: CGFloat,
-                             textKitHeight: CGFloat,
+    private func writeReport(legacy: TrimmedSnapshot,
+                             textKit: TrimmedSnapshot,
                              textKitBlocks: [[String: Any]]) {
         let report: [String: Any] = [
             "completed": true,
             "width": Double(contentWidth),
-            "legacyHeight": Double(legacyHeight),
-            "textKitHeight": Double(textKitHeight),
+            "legacyHeight": Double(legacy.contentHeight),
+            "legacyRawHeight": Double(legacy.rawHeight),
+            "legacyInk": [legacy.firstInkRow, legacy.lastInkRow],
+            "textKitHeight": Double(textKit.contentHeight),
+            "textKitRawHeight": Double(textKit.rawHeight),
+            "textKitInk": [textKit.firstInkRow, textKit.lastInkRow],
             "textKitBlocks": textKitBlocks,
             "device": UIDevice.current.name,
             "system": UIDevice.current.systemVersion,

@@ -64,3 +64,23 @@
 - 不要重新挖聊天页（`MarkdownTextCellContent` 路径）的细节，除非它和 Code 页共享。
 - 不要改 AA 代码。
 - 不要把 INFERENCE 写成 EVIDENCE；拿不到就写 UNKNOWN。
+
+## 核实结果（2026-10-20，Hark `part-ab`）
+
+> 报告：sbx `/home/ubuntu/wiring/docs/part-ab-code-page-granularity.md`；本地副本 `/home/ubuntu/aa-test/part-ab-code-page-granularity.md`。
+
+**结论（EVIDENCE）**
+
+- Code 页一个 `SessionTranscriptEntry` 占一行 `TranscriptListCell`；该行是 `UIHostingConfiguration`，content 为 `SessionCollectionRow → SessionTranscriptEntryView`。
+- 已落库的 assistant 消息 `.message(DisplayMessage)` **整条一行**：`DisplayMessageView → TranscriptBlockStack`（`VStack(.leading, spacing: interBlockSpacing)` + `ForEach`）按 `DisplayMessage.blocks` 逐块排 `DisplayBlockView`。
+- 每个 `.text(String)` 块是一个 `AssistantTextBlockView(.committed)` → `RichMarkdownView` → `ClaudeMarkdownView`（内层 `VStack` + `ForEach`，每个 Markdown 块一个 `MarkdownBlockView`）。
+- `.toolCalls` 等非文本块也是同一 VStack 里的兄弟视图，**不单独占行**（前提是它们在同一个 `DisplayMessage` 里）。
+- 流式正文是**另一行**：`.streamingText`（固定 ID）→ `StreamingAssistantTextView`，每个 API text block 一个 `AssistantTextBlockView(.streaming)`；完成后转为 `.message(id)` 行。
+
+**仍是 INFERENCE / UNKNOWN**
+
+- “正文 → tool call → 正文”是否落在**同一个** `DisplayMessage`（决定 1 行还是多行）：INFERENCE；`SessionMessageProcessor` 的合并/拆分指令未读完。
+- `ClaudeMarkdownView` 内层 block spacing 的字段名和数值：UNKNOWN（字段名推断 `theme.blockSpacing`）。
+- 外层 `SessionMessageStyle.interBlockSpacing` 默认 nil（SwiftUI 默认 spacing）；`rowMargins`、`interMessageSpacing` 实际值未读出。
+- 列表/引用在解析器里是一个块还是每个 item 一个块：UNKNOWN。
+- Code 页 `CodeView` 走 `CodeTextDisplay`（`MarkdownCodeTextView`）还是 `CodeTextView`：UNKNOWN；代码卡片圆角/颜色/header 高也 UNKNOWN。

@@ -22,6 +22,9 @@ enum AssistantMarkdownBlockViewFactory {
         case .quote(let quote):
             return (AssistantQuoteBlockView(quote: quote, width: width,
                                             displayScale: displayScale), height)
+        case .code(let code):
+            return (AssistantCodeBlockView(codeBlock: code, width: width,
+                                           displayScale: displayScale), height)
         }
     }
 }
@@ -202,6 +205,118 @@ final class AssistantQuoteBlockView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         bar.frame = CGRect(x: 0, y: 0, width: quote.barWidth, height: bounds.height)
+    }
+}
+
+/// The fenced-code card: a 36pt language header, a hairline divider, and a
+/// horizontally scrolling code body. Long lines never wrap, so the block's
+/// height is the code's intrinsic line stack plus the card chrome.
+final class AssistantCodeBlockView: UIView {
+    private let codeBlock: AssistantCodeBlock
+    private let displayScale: CGFloat
+    private let textSize: CGSize
+    private let header = UIView()
+    private let languageLabel = UILabel()
+    private let divider = UIView()
+    private let scrollView = UIScrollView()
+    private let codeView = AssistantMarkdownBlockTextView()
+    private let copyIcon = UIImageView()
+    private let expandIcon = UIImageView()
+
+    init(codeBlock: AssistantCodeBlock, width: CGFloat, displayScale: CGFloat) {
+        self.codeBlock = codeBlock
+        self.displayScale = displayScale
+        self.textSize = AssistantMarkdownTextLayout.intrinsicSize(
+            of: codeBlock.code, displayScale: displayScale)
+        super.init(frame: .zero)
+        backgroundColor = ChatTextUIColors.codeCardFill
+        layer.cornerRadius = codeBlock.cornerRadius
+        layer.cornerCurve = .continuous
+        clipsToBounds = true
+
+        header.backgroundColor = .clear
+        addSubview(header)
+
+        divider.backgroundColor = ChatTextUIColors.codeHeaderDivider
+        addSubview(divider)
+
+        languageLabel.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .medium)
+        languageLabel.textColor = ChatTextUIColors.codeHeaderLabel
+        languageLabel.lineBreakMode = .byTruncatingTail
+        languageLabel.text = (codeBlock.language?.isEmpty == false
+            ? codeBlock.language! : "code").lowercased()
+        header.addSubview(languageLabel)
+
+        configureIcon(copyIcon, symbol: "document.on.document")
+        configureIcon(expandIcon, symbol: "arrow.up.left.and.arrow.down.right")
+        header.addSubview(copyIcon)
+        header.addSubview(expandIcon)
+
+        scrollView.backgroundColor = .clear
+        scrollView.showsHorizontalScrollIndicator = false
+        scrollView.showsVerticalScrollIndicator = false
+        scrollView.alwaysBounceHorizontal = false
+        scrollView.alwaysBounceVertical = false
+        scrollView.bounces = false
+        scrollView.contentInsetAdjustmentBehavior = .never
+        addSubview(scrollView)
+
+        codeView.attributedText = codeBlock.code
+        codeView.backgroundColor = .clear
+        codeView.textContainer.widthTracksTextView = false
+        scrollView.addSubview(codeView)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private func configureIcon(_ view: UIImageView, symbol: String) {
+        view.image = UIImage(systemName: symbol)
+        view.tintColor = ChatTextUIColors.codeHeaderIcon
+        view.contentMode = .scaleAspectFit
+        view.isUserInteractionEnabled = false
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let scale = traitCollection.displayScale > 0
+            ? traitCollection.displayScale : displayScale
+        let dividerHeight = 1 / scale
+        let width = bounds.width
+        let bodyY = codeBlock.headerHeight + dividerHeight
+        let bodyHeight = max(0, bounds.height - bodyY)
+
+        header.frame = CGRect(x: 0, y: 0, width: width,
+                              height: codeBlock.headerHeight)
+        divider.frame = CGRect(x: 0, y: codeBlock.headerHeight,
+                               width: width, height: dividerHeight)
+        scrollView.frame = CGRect(x: 0, y: bodyY, width: width, height: bodyHeight)
+
+        // Match `ChatMarkdownCodeBlock`: two 44pt header buttons inset 14pt.
+        let iconSize: CGFloat = 15
+        let iconY = (codeBlock.headerHeight - iconSize) / 2
+        expandIcon.frame = CGRect(x: width - 14 - 22 - iconSize / 2,
+                                  y: iconY, width: iconSize, height: iconSize)
+        copyIcon.frame = CGRect(x: width - 14 - 44 - 22 - iconSize / 2,
+                                y: iconY, width: iconSize, height: iconSize)
+        let labelWidth = max(0, width - 14 - 88 - 8 - 14)
+        languageLabel.frame = CGRect(x: 14, y: 0,
+                                     width: labelWidth,
+                                     height: codeBlock.headerHeight)
+
+        let textWidth = max(1, textSize.width + 1)
+        codeView.frame = CGRect(x: codeBlock.contentPadding,
+                                y: codeBlock.contentPadding,
+                                width: textWidth,
+                                height: textSize.height)
+        codeView.textContainer.size = CGSize(
+            width: textWidth, height: .greatestFiniteMagnitude)
+        let contentWidth = max(width,
+            codeBlock.contentPadding * 2 + textWidth)
+        scrollView.contentSize = CGSize(width: contentWidth, height: bodyHeight)
+
+        layer.borderWidth = 1 / scale
+        layer.borderColor = ChatTextUIColors.codeCardBorder
+            .resolvedColor(with: traitCollection).cgColor
     }
 }
 #endif

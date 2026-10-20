@@ -30,6 +30,8 @@ struct AssistantMarkdownDocument {
                 case .quote(let quote):
                     counts["quote", default: 0] += 1
                     walk(quote.blocks)
+                case .code:
+                    counts["code", default: 0] += 1
                 }
             }
         }
@@ -45,6 +47,7 @@ enum AssistantMarkdownBlock {
     case text(NSAttributedString)
     case list(AssistantListBlock)
     case quote(AssistantQuoteBlock)
+    case code(AssistantCodeBlock)
 }
 
 struct AssistantListBlock {
@@ -98,6 +101,17 @@ struct AssistantQuoteBlock {
     let inset: CGFloat
     let barWidth: CGFloat
     let innerSpacing: CGFloat
+}
+
+/// A fenced code block. The code is laid out without wrapping inside a
+/// horizontal scroll, so its height does not depend on the column width; the
+/// card's header and padding are design constants from `ChatMarkdownCodeBlock`.
+struct AssistantCodeBlock {
+    let code: NSAttributedString
+    let language: String?
+    let headerHeight: CGFloat
+    let contentPadding: CGFloat
+    let cornerRadius: CGFloat
 }
 
 /// Builds the document from the same parse pipeline the product's Textual
@@ -248,6 +262,8 @@ enum AssistantMarkdownDocumentParser {
                              foreground: foreground, typography: typography)
         case .blockQuote:
             return quoteBlock(content, quoteIntent: intent, typography: typography)
+        case .codeBlock(let languageHint):
+            return codeBlock(content, language: languageHint, typography: typography)
         default:
             // Code blocks, tables, thematic breaks, math and attachment-only
             // blocks are still hosting-only. One unsupported block makes the
@@ -313,6 +329,41 @@ enum AssistantMarkdownDocumentParser {
             inset: 12 * scale,
             barWidth: 2.5,
             innerSpacing: typography.paragraphSpacing * scale))
+    }
+
+    private static func codeBlock(_ content: AttributedString,
+                                  language: String?,
+                                  typography: TimelineTypographySnapshot) -> AssistantMarkdownBlock? {
+        for run in content.runs {
+            if run.textual.attachment != nil || run.imageURL != nil { return nil }
+        }
+        var code = String(content.characters)
+        // The block parser leaves the separator newline at the end; keeping it
+        // would add an empty code line to the measured card.
+        while code.hasSuffix("\n") || code.hasSuffix("\r") { code.removeLast() }
+
+        let size = typography.codeBlockPin ?? typography.body * typography.codeBlockRatio
+        let lineSpacing = max(0, size * typography.codeBlockLineSpacingRatio)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = lineSpacing
+        paragraph.paragraphSpacing = 0
+        // Code keeps its character order even inside an RTL reply.
+        paragraph.baseWritingDirection = .leftToRight
+        let attributed = NSAttributedString(
+            string: code,
+            attributes: [
+                .font: UIFont.monospacedSystemFont(ofSize: size, weight: .regular),
+                .foregroundColor: ChatTextUIColors.text,
+                .paragraphStyle: paragraph,
+            ])
+        return .code(AssistantCodeBlock(
+            code: attributed,
+            language: language,
+            // Mirrors `ChatMarkdownCodeBlock`: a 36pt header, 14pt body
+            // padding, and the product's shared code-card radius.
+            headerHeight: 36,
+            contentPadding: 14,
+            cornerRadius: ChatMetrics.codeRadius))
     }
 
     // MARK: - Text conversion
@@ -436,6 +487,12 @@ enum ChatTextUIColors {
     static var bodyTemplate: UIColor { dynamic(ChatColorStore.bodyTemplate) }
     static var link: UIColor { dynamic(ChatColorStore.link) }
     static var quoteBar: UIColor { dynamic(ChatPalette.quoteBar) }
+    static var text: UIColor { dynamic(ChatPalette.text) }
+    static var codeCardFill: UIColor { dynamic(ChatPalette.codeCardFill) }
+    static var codeCardBorder: UIColor { dynamic(ChatPalette.codeCardBorder) }
+    static var codeHeaderDivider: UIColor { dynamic(ChatPalette.codeHeaderDivider) }
+    static var codeHeaderLabel: UIColor { dynamic(ChatPalette.codeHeaderLabel) }
+    static var codeHeaderIcon: UIColor { dynamic(ChatPalette.codeHeaderIcon) }
 
     private static func dynamic(_ pair: ChatColorSettings.Pair) -> UIColor {
         UIColor { traits in

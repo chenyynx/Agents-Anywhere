@@ -51,6 +51,11 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
     > - A bullet inside the quote
     > - Another quoted bullet
 
+    ```swift
+    let value = 1
+    print(value)
+    ```
+
     The closing paragraph keeps the row static and gives the tree a text block after the containers.
     """
 
@@ -215,10 +220,10 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
             text: "1. one\n2. two", resolvesFileReferences: false, typography: typography)
         let quoteDocument = AssistantMarkdownDocumentParser.make(
             text: "> quoted", resolvesFileReferences: false, typography: typography)
-        // Still unsupported in M3 step 1; these must keep falling back to
-        // hosting rather than render as a paragraph with a replacement glyph.
         let codeDocument = AssistantMarkdownDocumentParser.make(
             text: "```swift\nlet value = 1\n```", resolvesFileReferences: false, typography: typography)
+        // Still unsupported in M3; these must keep falling back to hosting
+        // rather than render as a paragraph with a replacement glyph.
         let tableDocument = AssistantMarkdownDocumentParser.make(
             text: "| a | b |\n|---|---|\n| 1 | 2 |",
             resolvesFileReferences: false, typography: typography)
@@ -254,11 +259,11 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
         if unorderedDocument == nil { failures.append("textkit parser: unordered list rejected") }
         if orderedDocument == nil { failures.append("textkit parser: ordered list rejected") }
         if quoteDocument == nil { failures.append("textkit parser: quote rejected") }
-        if codeDocument != nil { failures.append("textkit parser: code block accepted before its M3 step") }
+        if codeDocument == nil { failures.append("textkit parser: code block rejected") }
         if tableDocument != nil { failures.append("textkit parser: table accepted before its M3 step") }
         if imageDocument != nil { failures.append("textkit parser: image accepted before its M3 step") }
-        if topLevelBlocks != 6 {
-            failures.append("textkit fixture: \(topLevelBlocks) top-level blocks, expected 6")
+        if topLevelBlocks != 7 {
+            failures.append("textkit fixture: \(topLevelBlocks) top-level blocks, expected 7")
         }
         if counts["text"] != 12 {
             failures.append("textkit fixture: \(counts["text"] ?? -1) text blocks, expected 12")
@@ -268,6 +273,9 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
         }
         if counts["quote"] != 1 {
             failures.append("textkit fixture: \(counts["quote"] ?? -1) quote blocks, expected 1")
+        }
+        if counts["code"] != 1 {
+            failures.append("textkit fixture: \(counts["code"] ?? -1) code blocks, expected 1")
         }
 
         report["textKit"] = [
@@ -286,7 +294,7 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
             "unorderedAccepted": unorderedDocument != nil,
             "orderedAccepted": orderedDocument != nil,
             "quoteAccepted": quoteDocument != nil,
-            "codeRejected": codeDocument == nil,
+            "codeAccepted": codeDocument != nil,
             "tableRejected": tableDocument == nil,
             "imageRejected": imageDocument == nil,
         ] as [String: Any]

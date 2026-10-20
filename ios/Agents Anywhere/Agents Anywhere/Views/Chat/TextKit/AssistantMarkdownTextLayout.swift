@@ -30,6 +30,27 @@ enum AssistantMarkdownTextLayout {
         return roundUp(used, scale: displayScale)
     }
 
+    /// TextKit's used size for an attributed string laid out without wrapping.
+    /// Code blocks scroll horizontally, so their intrinsic width is what sets
+    /// the scroll content and their height must not depend on the column.
+    static func intrinsicSize(of attributed: NSAttributedString,
+                              displayScale: CGFloat) -> CGSize {
+        guard attributed.length > 0 else { return .zero }
+        let storage = NSTextContentStorage()
+        storage.attributedString = attributed
+        let manager = NSTextLayoutManager()
+        storage.addTextLayoutManager(manager)
+        let container = NSTextContainer(
+            size: CGSize(width: 1_000_000, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        manager.textContainer = container
+        manager.ensureLayout(for: manager.documentRange)
+        let used = manager.usageBoundsForTextContainer
+        guard used.width.isFinite, used.height.isFinite, used.height > 0 else { return .zero }
+        return CGSize(width: roundUp(used.width, scale: displayScale),
+                      height: roundUp(used.height, scale: displayScale))
+    }
+
     /// Height of any block, from the same measurements its view installs as
     /// explicit constraints.
     static func height(of block: AssistantMarkdownBlock,
@@ -57,6 +78,14 @@ enum AssistantMarkdownTextLayout {
                                     spacing: quote.innerSpacing,
                                     displayScale: displayScale)
             return roundUp(total, scale: displayScale)
+        case .code(let code):
+            let divider = displayScale > 0 && displayScale.isFinite
+                ? 1 / displayScale : 1
+            let textHeight = intrinsicSize(of: code.code,
+                                           displayScale: displayScale).height
+            return roundUp(code.headerHeight + divider
+                           + code.contentPadding * 2 + textHeight,
+                           scale: displayScale)
         }
     }
 

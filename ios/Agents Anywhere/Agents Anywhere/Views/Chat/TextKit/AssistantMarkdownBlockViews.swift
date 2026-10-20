@@ -25,6 +25,9 @@ enum AssistantMarkdownBlockViewFactory {
         case .code(let code):
             return (AssistantCodeBlockView(codeBlock: code, width: width,
                                            displayScale: displayScale), height)
+        case .table(let table):
+            return (AssistantTableBlockView(table: table, width: width,
+                                            displayScale: displayScale), height)
         }
     }
 }
@@ -316,6 +319,109 @@ final class AssistantCodeBlockView: UIView {
 
         layer.borderWidth = 1 / scale
         layer.borderColor = ChatTextUIColors.codeCardBorder
+            .resolvedColor(with: traitCollection).cgColor
+    }
+}
+
+/// The table card: a horizontally scrolling grid with fixed column widths and
+/// per-row heights. Cells use the same TextKit views as running text; the
+/// header row is tinted and semibold, and every seam uses the product's single
+/// hairline colour.
+final class AssistantTableBlockView: UIView {
+    private let table: AssistantTableBlock
+    private let displayScale: CGFloat
+    private let scrollView = UIScrollView()
+    private let card = UIView()
+    private var cells: [[UIView]] = []
+    private var textViews: [[AssistantMarkdownBlockTextView]] = []
+    private var separators: [[UIView]] = []
+
+    init(table: AssistantTableBlock, width: CGFloat, displayScale: CGFloat) {
+        self.table = table
+        self.displayScale = displayScale
+        super.init(frame: .zero)
+        backgroundColor = .clear
+
+        scrollView.backgroundColor = .clear
+        scrollView.showsHorizontalScrollIndicator = false
+        scrollView.showsVerticalScrollIndicator = false
+        scrollView.alwaysBounceHorizontal = false
+        scrollView.alwaysBounceVertical = false
+        scrollView.bounces = false
+        scrollView.contentInsetAdjustmentBehavior = .never
+        addSubview(scrollView)
+
+        card.backgroundColor = .clear
+        card.layer.cornerRadius = table.cornerRadius
+        card.layer.cornerCurve = .continuous
+        card.clipsToBounds = true
+        scrollView.addSubview(card)
+
+        for row in table.rows.indices {
+            var rowCells: [UIView] = []
+            var rowTextViews: [AssistantMarkdownBlockTextView] = []
+            var rowSeparators: [UIView] = []
+            for column in table.rows[row].indices {
+                let cell = UIView()
+                cell.backgroundColor = row == 0
+                    ? ChatTextUIColors.tableHeaderFill : .clear
+                card.addSubview(cell)
+
+                let textView = AssistantMarkdownBlockTextView()
+                textView.attributedText = table.rows[row][column]
+                textView.backgroundColor = .clear
+                cell.addSubview(textView)
+
+                let separator = UIView()
+                separator.backgroundColor = ChatTextUIColors.tableLine
+                separator.isHidden = row == table.rows.count - 1
+                cell.addSubview(separator)
+
+                rowCells.append(cell)
+                rowTextViews.append(textView)
+                rowSeparators.append(separator)
+            }
+            cells.append(rowCells)
+            textViews.append(rowTextViews)
+            separators.append(rowSeparators)
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let scale = traitCollection.displayScale > 0
+            ? traitCollection.displayScale : displayScale
+        let line = 1 / scale
+        scrollView.frame = bounds
+        card.frame = CGRect(x: 0, y: 0,
+                            width: table.totalWidth, height: table.totalHeight)
+        scrollView.contentSize = card.frame.size
+
+        var y: CGFloat = 0
+        for (row, height) in table.rowHeights.enumerated() {
+            var x: CGFloat = 0
+            for (column, width) in table.columnWidths.enumerated() {
+                guard cells.indices.contains(row),
+                      cells[row].indices.contains(column) else { break }
+                cells[row][column].frame = CGRect(x: x, y: y, width: width, height: height)
+                let textView = textViews[row][column]
+                textView.frame = CGRect(
+                    x: table.cellPaddingHorizontal,
+                    y: table.cellPaddingVertical,
+                    width: max(0, width - table.cellPaddingHorizontal * 2),
+                    height: max(0, height - table.cellPaddingVertical * 2))
+                let separator = separators[row][column]
+                separator.frame = CGRect(
+                    x: 0, y: height - line, width: width, height: line)
+                x += width
+            }
+            y += height
+        }
+
+        card.layer.borderWidth = line
+        card.layer.borderColor = ChatTextUIColors.tableLine
             .resolvedColor(with: traitCollection).cgColor
     }
 }

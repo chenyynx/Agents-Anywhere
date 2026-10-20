@@ -41,7 +41,7 @@ enum AssistantMarkdownTextLayout {
         let manager = NSTextLayoutManager()
         storage.addTextLayoutManager(manager)
         let container = NSTextContainer(
-            size: CGSize(width: 1_000_000, height: .greatestFiniteMagnitude))
+            size: CGSize(width: 1_000_000, height: CGFloat.greatestFiniteMagnitude))
         container.lineFragmentPadding = 0
         manager.textContainer = container
         manager.ensureLayout(for: manager.documentRange)
@@ -86,7 +86,44 @@ enum AssistantMarkdownTextLayout {
             return roundUp(code.headerHeight + divider
                            + code.contentPadding * 2 + textHeight,
                            scale: displayScale)
+        case .table(let table):
+            // Column widths are capped and fixed at parse time, so the grid
+            // scrolls sideways instead of reflowing against the row width.
+            return roundUp(table.totalHeight, scale: displayScale)
         }
+    }
+
+    /// Column widths and row heights for a table, from the same TextKit engine
+    /// the cell text views use. The table's own width is the sum of the columns
+    /// and does not depend on the timeline column.
+    static func tableMetrics(rows: [[NSAttributedString]],
+                             paddingHorizontal: CGFloat,
+                             paddingVertical: CGFloat) -> (widths: [CGFloat], heights: [CGFloat]) {
+        let columnCount = max(1, rows.map { $0.count }.max() ?? 0)
+        var widths = Array(repeating: paddingHorizontal * 2, count: columnCount)
+        // Metrics are baked into the document, before a cell knows the
+        // display scale; rounding to whole points keeps the two consumers
+        // identical and costs at most one point against the product.
+        let metricScale: CGFloat = 1
+        for row in rows {
+            for (column, cell) in row.enumerated() where column < columnCount {
+                let ideal = intrinsicSize(of: cell, displayScale: metricScale).width
+                widths[column] = min(
+                    max(widths[column], ideal + paddingHorizontal * 2),
+                    ChatMetrics.tableContentWidthCap)
+            }
+        }
+        let heights = rows.map { row -> CGFloat in
+            var tallest: CGFloat = 0
+            for (column, cell) in row.enumerated() where column < columnCount {
+                let textWidth = max(0, widths[column] - paddingHorizontal * 2)
+                tallest = max(tallest,
+                    height(of: cell, width: textWidth, displayScale: metricScale)
+                        + paddingVertical * 2)
+            }
+            return tallest
+        }
+        return (widths, heights)
     }
 
     /// Height of a vertical block stack. Individual blocks are already

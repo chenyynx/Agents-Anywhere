@@ -32,6 +32,8 @@ struct AssistantMarkdownDocument {
                     walk(quote.blocks)
                 case .code:
                     counts["code", default: 0] += 1
+                case .table:
+                    counts["table", default: 0] += 1
                 }
             }
         }
@@ -48,6 +50,7 @@ enum AssistantMarkdownBlock {
     case list(AssistantListBlock)
     case quote(AssistantQuoteBlock)
     case code(AssistantCodeBlock)
+    case table(AssistantTableBlock)
 }
 
 struct AssistantListBlock {
@@ -112,6 +115,21 @@ struct AssistantCodeBlock {
     let headerHeight: CGFloat
     let contentPadding: CGFloat
     let cornerRadius: CGFloat
+}
+
+/// A table with precomputed column widths and row heights. Both the view and
+/// the measurement read these numbers, so a wrapped cell cannot make the card
+/// and the stored row height disagree.
+struct AssistantTableBlock {
+    let rows: [[NSAttributedString]]
+    let columnWidths: [CGFloat]
+    let rowHeights: [CGFloat]
+    let cellPaddingHorizontal: CGFloat
+    let cellPaddingVertical: CGFloat
+    let cornerRadius: CGFloat
+
+    var totalWidth: CGFloat { columnWidths.reduce(0, +) }
+    var totalHeight: CGFloat { rowHeights.reduce(0, +) }
 }
 
 /// Builds the document from the same parse pipeline the product's Textual
@@ -264,6 +282,9 @@ enum AssistantMarkdownDocumentParser {
             return quoteBlock(content, quoteIntent: intent, typography: typography)
         case .codeBlock(let languageHint):
             return codeBlock(content, language: languageHint, typography: typography)
+        case .table(let columns):
+            return tableBlock(content, tableIntent: intent, columns: columns,
+                              foreground: foreground, typography: typography)
         default:
             // Code blocks, tables, thematic breaks, math and attachment-only
             // blocks are still hosting-only. One unsupported block makes the
@@ -366,6 +387,110 @@ enum AssistantMarkdownDocumentParser {
             cornerRadius: ChatMetrics.codeRadius))
     }
 
+    private static func tableBlock(_ content: AttributedString,
+                                   tableIntent: PresentationIntent.IntentType,
+                                   columns: [PresentationIntent.TableColumn],
+                                   foreground: UIColor,
+                                   typography: TimelineTypographySnapshot) -> AssistantMarkdownBlock? {
+        let rowGroups = blockGroups(in: content, parent: tableIntent)
+        guard !rowGroups.isEmpty else { return nil }
+
+        var rawRows: [[(column: Int, content: AttributedString)]] = []
+        for rowGroup in rowGroups {
+            guard let rowIntent = rowGroup.intent else { return nil }
+            switch rowIntent.kind {
+            case .tableHeaderRow, .tableRow:
+                break
+            default:
+                return nil
+            }
+            var cells: [(column: Int, content: AttributedString)] = []
+            var nextColumn = 0
+            for cellGroup in blockGroups(in: rowGroup.content, parent: rowIntent) {
+                let column: Int
+                if let cellIntent = cellGroup.intent,
+                   case .tableCell(let columnIndex) = cellIntent.kind {
+                    column = columnIndex
+                } else {
+                    column = nextColumn
+                }
+                cells.append((column: column, content: cellGroup.content))
+                nextColumn = column + 1
+            }
+            rawRows.append(cells)
+        }
+
+        let widestRow = rawRows.map { row in
+            (row.map { $0.column }.max() ?? -1) + 1
+        }.max() ?? 0
+        let columnCount = max(1, max(columns.count, widestRow))
+
+        var rows: [[NSAttributedString]] = []
+        rows.reserveCapacity(rawRows.count)
+        for (rowIndex, rawRow) in rawRows.enumerated() {
+            var cells = Array(repeating: NSAttributedString(), count: columnCount)
+            for cell in rawRow where cell.column >= 0 && cell.column < columnCount {
+                guard let attributed = tableCell(
+                    cell.content,
+                    isHeader: rowIndex == 0,
+                    column: cell.column,
+                    columns: columns,
+                    foreground: foreground,
+                    typography: typography) else { return nil }
+                cells[cell.column] = attributed
+            }
+            rows.append(cells)
+        }
+
+        let paddingHorizontal = ChatMetrics.tableCellPadHorizontal
+        let paddingVertical = ChatMetrics.tableCellPadVertical
+        // Column widths and row heights depend only on the cell text, not on
+        // the timeline's column width: the table scrolls sideways.
+        let metrics = AssistantMarkdownTextLayout.tableMetrics(
+            rows: rows,
+            paddingHorizontal: paddingHorizontal,
+            paddingVertical: paddingVertical)
+        return .table(AssistantTableBlock(
+            rows: rows,
+            columnWidths: metrics.widths,
+            rowHeights: metrics.heights,
+            cellPaddingHorizontal: paddingHorizontal,
+            cellPaddingVertical: paddingVertical,
+            cornerRadius: ChatMetrics.tableRadius))
+    }
+
+    private static func tableCell(_ content: AttributedString,
+                                  isHeader: Bool,
+                                  column: Int,
+                                  columns: [PresentationIntent.TableColumn],
+                                  foreground: UIColor,
+                                  typography: TimelineTypographySnapshot) -> NSAttributedString? {
+        let font = UIFont.systemFont(ofSize: ChatMetrics.tableCellSize,
+                                     weight: isHeader ? .semibold : .regular)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 0
+        paragraph.paragraphSpacing = 0
+        paragraph.alignment = tableAlignment(column: column, columns: columns)
+        paragraph.baseWritingDirection = typography.layoutDirection == 1
+            ? .rightToLeft : .leftToRight
+        guard let attributed = inlineAttributedString(
+            content, baseFont: font, baseColor: foreground,
+            paragraph: paragraph, typography: typography) else { return nil }
+        trimBoundaryWhitespace(attributed)
+        return attributed
+    }
+
+    private static func tableAlignment(column: Int,
+                                       columns: [PresentationIntent.TableColumn]) -> NSTextAlignment {
+        guard columns.indices.contains(column) else { return .natural }
+        switch columns[column].alignment {
+        case .left: return .left
+        case .center: return .center
+        case .right: return .right
+        @unknown default: return .natural
+        }
+    }
+
     // MARK: - Text conversion
 
     private static func textBlock(_ content: AttributedString,
@@ -386,13 +511,33 @@ enum AssistantMarkdownDocumentParser {
         let lineSpacing = headingLevel == nil
             ? typography.lineSpacing / ChatMetrics.referenceBodySize * bodySize
             : 0
-        let inlineCodeSize = typography.inlineCodePin ?? bodySize * typography.inlineCodeRatio
 
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = max(0, lineSpacing)
         paragraph.paragraphSpacing = 0
         paragraph.baseWritingDirection = typography.layoutDirection == 1
             ? .rightToLeft : .leftToRight
+
+        guard let output = inlineAttributedString(
+            content, baseFont: baseFont, baseColor: foreground,
+            paragraph: paragraph, typography: typography) else { return nil }
+        trimBoundaryWhitespace(output)
+        return output.length > 0 ? output : nil
+    }
+
+    /// Shared inline conversion for running text and table cells. `baseFont`
+    /// carries the block's own size, so inline code scales from it the way
+    /// Textual's `.fontScale` does instead of always using the body size.
+    private static func inlineAttributedString(_ content: AttributedString,
+                                               baseFont: UIFont,
+                                               baseColor: UIColor,
+                                               paragraph: NSParagraphStyle,
+                                               typography: TimelineTypographySnapshot)
+        -> NSMutableAttributedString? {
+        let inlineCodeRatio = typography.body > 0
+            ? (typography.inlineCodePin.map { $0 / typography.body } ?? typography.inlineCodeRatio)
+            : typography.inlineCodeRatio
+        let inlineCodeSize = baseFont.pointSize * inlineCodeRatio
 
         let output = NSMutableAttributedString()
         for run in content.runs {
@@ -410,7 +555,7 @@ enum AssistantMarkdownDocumentParser {
             }
             guard !text.isEmpty else { continue }
             var font = baseFont
-            var color = foreground
+            var color = baseColor
             var underline: NSUnderlineStyle?
             var strikethrough: NSUnderlineStyle?
 
@@ -450,8 +595,7 @@ enum AssistantMarkdownDocumentParser {
             }
             output.append(NSAttributedString(string: text, attributes: attributes))
         }
-        trimBoundaryWhitespace(output)
-        return output.length > 0 ? output : nil
+        return output
     }
 
     /// Block boundaries already provide the spacing between structures; the
@@ -493,6 +637,8 @@ enum ChatTextUIColors {
     static var codeHeaderDivider: UIColor { dynamic(ChatPalette.codeHeaderDivider) }
     static var codeHeaderLabel: UIColor { dynamic(ChatPalette.codeHeaderLabel) }
     static var codeHeaderIcon: UIColor { dynamic(ChatPalette.codeHeaderIcon) }
+    static var tableLine: UIColor { dynamic(ChatPalette.tableLine) }
+    static var tableHeaderFill: UIColor { dynamic(ChatPalette.tableHeaderFill) }
 
     private static func dynamic(_ pair: ChatColorSettings.Pair) -> UIColor {
         UIColor { traits in

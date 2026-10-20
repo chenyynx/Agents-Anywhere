@@ -26,6 +26,9 @@ struct AgentsAnywhereApp: App {
                 } else if ProcessInfo.processInfo.arguments.contains(TextKitVisualParityAutoRunModel.launchArgument) {
                     // C5 visual-parity capture; never reachable from the product UI.
                     TextKitVisualParityRootView()
+                } else if ProcessInfo.processInfo.arguments.contains(TextKitM4BaselineAutoRun.launchArgument) {
+                    // C5/M4 streaming baseline probe; never reachable from the product UI.
+                    TextKitM4BaselineRootView()
                 } else {
                     RootView()
                 }

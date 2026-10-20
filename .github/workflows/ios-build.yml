@@ -308,6 +308,27 @@ jobs:
           cp "$CONTAINER/Documents/parity-textkit.png" "$RUNNER_TEMP/parity-textkit.png"
           cat "$RUNNER_TEMP/textkit-parity.json"
 
+      - name: Run the M4 baseline probe
+        if: always()
+        run: |
+          set -euo pipefail
+          UDID="${{ steps.sim.outputs.udid }}"
+          xcrun simctl terminate "$UDID" com.agentsanywhere.app || true
+          xcrun simctl launch "$UDID" com.agentsanywhere.app aa-textkit-m4-baseline
+          CONTAINER=$(xcrun simctl get_app_container "$UDID" com.agentsanywhere.app data)
+          RESULT="$CONTAINER/Documents/textkit-m4-baseline.json"
+          for _ in $(seq 1 120); do
+            if [ -f "$RESULT" ]; then break; fi
+            sleep 1
+          done
+          if [ ! -f "$RESULT" ]; then
+            echo "::error::M4 baseline probe produced no result file"
+            xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/m4-baseline-failure.png" || true
+            exit 1
+          fi
+          cp "$RESULT" "$RUNNER_TEMP/textkit-m4-baseline.json"
+          cat "$RUNNER_TEMP/textkit-m4-baseline.json"
+
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
@@ -317,6 +338,8 @@ jobs:
             ${{ runner.temp }}/timeline-autorun.json
             ${{ runner.temp }}/textkit-m3.json
             ${{ runner.temp }}/textkit-parity.json
+            ${{ runner.temp }}/textkit-m4-baseline.json
+            ${{ runner.temp }}/m4-baseline-failure.png
             ${{ runner.temp }}/parity-legacy.png
             ${{ runner.temp }}/parity-textkit.png
             ${{ runner.temp }}/parity-failure.png

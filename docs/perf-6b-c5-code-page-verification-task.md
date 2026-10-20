@@ -4,6 +4,7 @@
 > 背景：第一版报告把 `MarkdownTextCellContent` / `MarkdownTextCellRow` 误归到 Code 页；第二版报告已修正为聊天页。当前 AA 分支 `feat/textkit2-assistant-body` 已按“Code 页一条消息一行”回退（`02c727bd`），但这一步仍基于 INFERENCE，**不是最终结论**。
 > 输出要求：结论先行；每条标 `EVIDENCE` / `INFERENCE` / `UNKNOWN`；给地址（函数/符号/常量）；不要改 AA 代码。
 > 参考：`/home/ubuntu/wiring/docs/part-aa-markdown-ui.md`（第二轮报告）。
+> 状态：第一轮行粒度核实已由 Hark 完成（`part-ab-code-page-granularity.md`，结论见文末）；**本任务单现在作为 Muse 的补挖单，只做 §8 的 UNKNOWN，不重做已证实部分。**
 
 ## 0. 先给一句话结论
 
@@ -84,3 +85,63 @@
 - 外层 `SessionMessageStyle.interBlockSpacing` 默认 nil（SwiftUI 默认 spacing）；`rowMargins`、`interMessageSpacing` 实际值未读出。
 - 列表/引用在解析器里是一个块还是每个 item 一个块：UNKNOWN。
 - Code 页 `CodeView` 走 `CodeTextDisplay`（`MarkdownCodeTextView`）还是 `CodeTextView`：UNKNOWN；代码卡片圆角/颜色/header 高也 UNKNOWN。
+
+---
+
+# 8. Muse 补挖任务（2026-10-20，只做剩余 UNKNOWN）
+
+> 前置：Hark `part-ab-code-page-granularity.md` 已证实行粒度；不要重做 §1–§7 的已证实部分。
+> 目标：补出实现“严格同形”还缺的证据。每条都要 `EVIDENCE / INFERENCE / UNKNOWN` + 地址；拿不到就写 UNKNOWN，不要猜。
+> 产物：与 `part-ab` 同目录的 `part-ac-code-page-parity.md`；不改 AA 代码。
+
+## M1. DisplayMessage 合并/拆分（决定 tool call 是否与正文同一行）
+
+Hark 已把行级视图链钉死；数据层还差“正文 → tool call → 正文”是否同一个 `DisplayMessage`。
+
+请读完并给出规则表（输入事件 → 产生/追加哪个 `DisplayMessage`、哪个 block）：
+
+- `SessionMessageProcessor` 候选：`0x10273255c`、`0x102737174`、`0x102735628`、`0x10272fa48`、`0x102731950`
+- `SessionTranscript` 条目构建：`0x10253f794`、`0x102542cdc`、`0x1025415e4`
+- `LiveTurn.Span.isOnlyRowOfItsMessage` 的语义
+
+要回答：
+
+1. 一条 API assistant message（含 text + tool_use）落成几个 `DisplayMessage`？
+2. tool call 前后的两段 text 是否进同一个 `DisplayMessage.blocks`？
+3. 若同一 API message 有多个 text content block，是否每个 block 一个 `.text` 元素、但仍在同一个 `DisplayMessage`？
+4. AA 若把 tool 行独立成 `.tools` group，与官方差在哪一层的什么规则？
+
+## M2. 间距 / insets 数值
+
+1. `ClaudeMarkdownView` 内层 `VStack(spacing:)` 的字段（推断 `MarkdownThemeConfiguration.blockSpacing`）：字段名、默认值、`AssistantTextBlockView` 构造 theme 的三处（`0x10295b974` / `0x10295b9a8` / `0x10295ba3c`）实际传值。
+2. `SessionMessageStyle`：`interBlockSpacing` 默认 nil 已证；补 `rowMargins`（`SessionCollectionRow` 字段 / hosting `.margins`）和 `.padding(.bottom, x)` 在 Code 页的实际数值；`interMessageSpacing=10.0`、`segmentVerticalPadding=4.0` 是否参与普通 Code 会话。
+3. 给出可直接写进 AA 的数值（含单位/缩放），拿不到就 UNKNOWN。
+
+## M3. 列表 / 引用
+
+官方 `MarkdownBlock.Content` 没有 list/quote case，列表/引用是 `.text(AttributedString)`；AA 现在是自定义视图。请补：
+
+1. `MarkdownTextRenderer` 如何把 `RunTraits{listLevel, listItemLevel, quoteLevel, quoteGutterDepth, tabStops}` 映射到 `NSParagraphStyle`（`headIndent` / `tailIndent` / `firstLineHeadIndent` / `tabStops` / `defaultTabInterval`）。
+2. 列表 marker（bullet/ordered）和引用条/quote gutter 的绘制位置、宽度、颜色、圆角。
+3. 解析器切块：一个列表是**一个** `.text` 块，还是每个 item / 每个段落一个块？引用同理。
+4. 给出能复现一段“嵌套列表 + 引用”的公式/伪代码；拿不到就 UNKNOWN。
+
+## M4. 代码块
+
+1. `ClaudeComponents.CodeBlockView` 常量：圆角、背景色、header 高、divider 高/色、内容 insets、字体、行距。
+2. Code 页 `CodeView` 的 `display` 环境是否被设为 `MarkdownCodeTextView`？找到环境写入点；若没有，走 `CodeTextView`（UITextView）。
+3. `ExpandableCodeBlockView` 的展开是 sheet / 全屏 / 行内？复制按钮的格式（纯文本 / Markdown / HTML）。
+4. `CodeTextView` 的行高/换行/横向滚动策略；`MarkdownCodeTextView` 的 `StreamingCodeColors` 更新粒度。
+
+## M5. 流式行切换（P2）
+
+1. `.streamingText` 行 → `.message(id)` 行的替换时序、锚点、动画；`rowsApplied` 前缀比较是否参与。
+2. `TranscriptBlockStack` 的 `ForEach` id keypath：committed 侧是否 `offset`，streaming 侧是否 `Block.index`。
+3. 流式期间 tool call 放哪一行（Hark 推断不在 `.streamingText`，需确认）。
+
+## 环境与工具
+
+- 二进制：`/home/ubuntu/swift-recover/unpacked/Payload/Claude.app/Claude`（thin arm64，base `0x100000000`；若分析机上路径不同，用等价副本）。
+- Hark 用过的工具：`swift_types.csv` / `witness.csv`（`/home/ubuntu/wiring/out/`）、`q.py` / `calls.py` / `dis1.py` / `xrefs.py`、Ghidra `DecompileAt.java`（`-readOnly`）。
+- 临时反编译输出放分析机 `/tmp`，不入库；报告按 `EVIDENCE / INFERENCE / UNKNOWN` 分档。
+- **不要改 AA 仓库**；只写报告。

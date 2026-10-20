@@ -103,6 +103,28 @@ final class AssistantMarkdownCell: UICollectionViewCell {
     var debugTailConstraintHeight: CGFloat? { tailConstraint?.constant }
     var debugTailHostBounds: CGRect? { tailHost?.view?.bounds }
     var debugTailHostTextLength: Int? { tailHost?.rootView.text.count }
+
+    /// Natural height of the hosting view with the TextKit height constraint
+    /// temporarily removed. `sizeThatFits` can answer from a stale or
+    /// constrained layout; this asks the same view that is on screen.
+    var debugTailNaturalHeight: CGFloat? {
+        guard let tailHost, let view = tailHost.view,
+              let constraint = tailConstraint,
+              contentView.bounds.width > 0 else { return nil }
+        let wasActive = constraint.isActive
+        constraint.isActive = false
+        defer {
+            constraint.isActive = wasActive
+            view.layoutIfNeeded()
+        }
+        view.setNeedsLayout()
+        view.layoutIfNeeded()
+        return view.systemLayoutSizeFitting(
+            CGSize(width: contentView.bounds.width,
+                   height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel).height
+    }
     #endif
 
     override init(frame: CGRect) {

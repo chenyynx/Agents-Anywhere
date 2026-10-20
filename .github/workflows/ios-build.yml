@@ -276,6 +276,9 @@ jobs:
                and (tk.get("segments") or {}).get("prose") == 2
                and (tk.get("segments") or {}).get("code") == 1
                and (tk.get("segments") or {}).get("table") == 1, tk),
+              ("segment rows",
+               tk.get("segmentItems") == 4
+               and abs(tk.get("segmentDelta", 99)) <= 5.0, tk),
               ("scroll covered",
                scroll.get("steps") == 24 and scroll.get("reachedBottom") is True,
                scroll),

@@ -40,6 +40,9 @@ nonisolated struct TimelineLayoutInteractionState: Equatable {
     func layoutEstimateKind(for item: TimelineListItem) -> TimelineHeightEstimateKind
     func layoutHeightPolicy(for item: TimelineListItem) -> TimelineRowHeightPolicy
     func layoutContentKind(for item: TimelineListItem) -> TimelineMeasurementContent
+    /// Gap after one item. Per-block rows inside a message use the block
+    /// spacing; group/page boundaries keep the timeline item spacing.
+    func layoutSpacing(after item: TimelineListItem, before next: TimelineListItem) -> CGFloat
     func layoutInteractionState() -> TimelineLayoutInteractionState
 
     /// Called in effect order when a browse gesture settles: the pull decision
@@ -56,4 +59,12 @@ nonisolated struct TimelineLayoutInteractionState: Equatable {
     /// must ask the host to schedule them; the host must not measure inside
     /// `prepare`.
     func layoutNeedsMeasurement(width: CGFloat)
+}
+
+extension TimelineListLayoutHost {
+    /// Synthetic hosts (the C3 gate) keep the single spacing the old layout
+    /// used; the product controller overrides this for block rows.
+    func layoutSpacing(after item: TimelineListItem, before next: TimelineListItem) -> CGFloat {
+        TimelineListMetrics.itemSpacing
+    }
 }

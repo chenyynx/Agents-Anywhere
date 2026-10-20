@@ -27,12 +27,12 @@
 - **代码高亮**：Textual 的 Prism tokenizer 通过新增公开桥接复用（`ios/Packages/Textual/Sources/Textual/Public/SyntaxHighlighting.swift`），AA 侧用 `ChatPalette` 同一套 token 颜色。
 - **列表 pitch**：Textual 在列表内用“行距 + 2pt”的条目 pitch（`ChatMetrics.listItemSpacing`），已同步到测量/渲染。
 
-### 1.2 待验证
+### 1.2 图标修复已验证
 
-- **图标修复 CI `39451773950`**（`1d6af112`）：代码卡复制/放大按钮改为 `AppSymbolAssets` 的 `aa-Copy` / `aa-Maximize2`，尺寸按 body 缩放。跑完需：
-  1. 下载 artifact 的 `parity-legacy.png` / `parity-textkit.png`
-  2. 看两张图的代码卡 header 图标是否一致
-  3. 重新生成并排图/像素 diff
+- **CI `39451773950`**（`1d6af112`）：`test` success；`timeline-autorun` 只有既有 C3 flake（`Assert gate results`），M3 gate 与 parity 采集均通过。
+- 代码卡复制/放大按钮已改为 `AppSymbolAssets` 的 `aa-Copy` / `aa-Maximize2`，尺寸按 body 缩放；裁剪对比图确认两边图标形状、位置一致：
+  - 对比图：`/home/ubuntu/aa-test/code-header-compare.png`（本地）
+  - parity 高度不变：旧 `608.33pt` / 新 `610.00pt`
 - 真机未验：模拟器只证明静态排版；滚动、手势、字体渲染需真机。
 
 ## 2. 本轮提交（按时间）

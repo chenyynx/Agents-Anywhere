@@ -178,7 +178,7 @@ jobs:
 
           m = r.get("measurement", {})
           samples = m.get("samples", [])
-          text_kinds = {"message", "assistantTextKit", "reasoning", "plain", "code", "table"}
+          text_kinds = {"message", "reasoning", "plain", "code", "table"}
           text_errors = [s.get("error", 0) for s in samples
                          if s.get("kind") in text_kinds]
           complex_errors = [s.get("error", 0) for s in samples
@@ -189,16 +189,6 @@ jobs:
           check("text measurement <= 1pt", max(text_errors or [99]) <= 1.0, text_errors)
           check("complex measurement <= 4pt", max(complex_errors or [99]) <= 4.0, complex_errors)
 
-          tk = r.get("textKit", {})
-          check("textkit first stored == measured",
-                abs(tk.get("stored", 0) - tk.get("measured", -1)) <= 0.5, tk)
-          check("textkit cell content within 1pt",
-                abs(tk.get("cellContent", 0) - tk.get("stored", 0)) <= 1.0, tk)
-          check("textkit row not pending", tk.get("pending") is False, tk)
-          check("textkit no adjacent overlap", (tk.get("overlaps") or 0) == 0, tk)
-          check("textkit parser contract",
-                tk.get("plainAccepted") is True and tk.get("listRejected") is True
-                and tk.get("codeRejected") is True, tk)
           a = r.get("asyncMarkdown", {})
           check("async markdown below anchor <= 0.5pt", a.get("belowAnchorDelta", 99) <= 0.5, a)
           s = r.get("streaming", {})
@@ -224,6 +214,61 @@ jobs:
               sys.exit(1)
           PY
 
+      - name: Run the M2 TextKit gate
+        if: always()
+        run: |
+          set -euo pipefail
+          UDID="${{ steps.sim.outputs.udid }}"
+          xcrun simctl terminate "$UDID" com.agentsanywhere.app || true
+          xcrun simctl launch "$UDID" com.agentsanywhere.app aa-textkit-m2
+          CONTAINER=$(xcrun simctl get_app_container "$UDID" com.agentsanywhere.app data)
+          RESULT="$CONTAINER/Documents/textkit-m2.json"
+          for _ in $(seq 1 120); do
+            if [ -f "$RESULT" ]; then break; fi
+            sleep 1
+          done
+          if [ ! -f "$RESULT" ]; then
+            echo "::error::textkit M2 gate produced no result file"
+            xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/textkit-m2-failure.png" || true
+            exit 1
+          fi
+          cp "$RESULT" "$RUNNER_TEMP/textkit-m2.json"
+          cat "$RUNNER_TEMP/textkit-m2.json"
+
+      - name: Assert the M2 TextKit results
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          path = os.path.join(os.environ["RUNNER_TEMP"], "textkit-m2.json")
+          if not os.path.exists(path):
+              print("::error::textkit M2 result missing")
+              sys.exit(1)
+          r = json.load(open(path))
+          tk = r.get("textKit", {})
+          checks = [
+              ("completed", r.get("completed") is True, r.get("failures")),
+              ("no failures", not r.get("failures"), r.get("failures")),
+              ("first stored == measured",
+               abs(tk.get("stored", 0) - tk.get("measured", -1)) <= 0.5, tk),
+              ("cell content within 1pt",
+               abs(tk.get("cellContent", 0) - tk.get("stored", 0)) <= 1.0, tk),
+              ("row not pending", tk.get("pending") is False, tk),
+              ("cell materialized", tk.get("cellMaterialized") is True, tk),
+              ("no adjacent overlap", (tk.get("overlaps") or 0) == 0, tk),
+              ("no estimate stored", abs(tk.get("stored", 0) - tk.get("estimate", -1)) > 0.5, tk),
+              ("parser contract",
+               tk.get("plainAccepted") is True and tk.get("listRejected") is True
+               and tk.get("codeRejected") is True, tk),
+          ]
+          failed = [c for c in checks if not c[1]]
+          for name, ok, detail in checks:
+              print(("PASS " if ok else "FAIL ") + name + ("" if ok else f" | {detail}"))
+          if failed:
+              print("::error::textkit M2 gate failed: " + "; ".join(c[0] for c in failed))
+              sys.exit(1)
+          PY
+
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
@@ -231,8 +276,10 @@ jobs:
           name: timeline-autorun
           path: |
             ${{ runner.temp }}/timeline-autorun.json
+            ${{ runner.temp }}/textkit-m2.json
             ${{ runner.temp }}/timeline-failure.png
             ${{ runner.temp }}/timeline-final.png
+            ${{ runner.temp }}/textkit-m2-failure.png
             ${{ runner.temp }}/sim-build.log
           if-no-files-found: ignore
 

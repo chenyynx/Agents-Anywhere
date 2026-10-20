@@ -258,7 +258,16 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             // cell rather than a transient invalidation hole.
             await scrollToItem(item)
             guard let controller else { continue }
-            guard let sample = await sampleItem(controller, item: item) else {
+            var sample = await sampleItem(controller, item: item)
+            // A cell frame can trail the attributes by one layout pass after a
+            // pending correction. Re-sample once before calling it clipping;
+            // a persistent mismatch still fails.
+            if let first = sample, first.cell + 0.5 < first.content {
+                await wait(120)
+                controller.collectionView.layoutIfNeeded()
+                sample = await sampleItem(controller, item: item) ?? first
+            }
+            guard let sample else {
                 failures.append("measurement: no cell for \(kind.rawValue)")
                 report["missingCell"] = [
                     "kind": kind.rawValue,
@@ -648,6 +657,10 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         controller.collectionView.layoutIfNeeded()
         guard let indexPath = controller.indexPath(for: item),
               let cell = controller.collectionView.cellForItem(at: indexPath) else { return nil }
+        // A cell materialized by `cellForItem` can still carry the frame from
+        // the pass that created it; force the attributes that just changed to
+        // reach `cell.bounds` before sampling.
+        controller.collectionView.layoutIfNeeded()
         let width = cell.contentView.bounds.width
         guard width > 0 else { return nil }
         let content = cell.contentView.systemLayoutSizeFitting(

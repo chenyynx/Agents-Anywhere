@@ -333,7 +333,7 @@ final class AssistantTableBlockView: UIView {
     private let scrollView = UIScrollView()
     private let card = UIView()
     private var cells: [[UIView]] = []
-    private var textViews: [[AssistantMarkdownBlockTextView]] = []
+    private var textViews: [[UILabel]] = []
     private var separators: [[UIView]] = []
 
     init(table: AssistantTableBlock, width: CGFloat, displayScale: CGFloat) {
@@ -359,7 +359,7 @@ final class AssistantTableBlockView: UIView {
 
         for row in table.rows.indices {
             var rowCells: [UIView] = []
-            var rowTextViews: [AssistantMarkdownBlockTextView] = []
+            var rowTextViews: [UILabel] = []
             var rowSeparators: [UIView] = []
             for column in table.rows[row].indices {
                 let cell = UIView()
@@ -367,8 +367,15 @@ final class AssistantTableBlockView: UIView {
                     ? ChatTextUIColors.tableHeaderFill : .clear
                 card.addSubview(cell)
 
-                let textView = AssistantMarkdownBlockTextView()
+                // A UITextView per cell makes a large table build dozens of
+                // TextKit 2 stacks; the scroll gate measured that as the
+                // dominant cost. Labels render the same attributed string and
+                // are an order of magnitude lighter. Row heights still come
+                // from TextKit 2, so layout stays in one engine.
+                let textView = AssistantTableLabel()
                 textView.attributedText = table.rows[row][column]
+                textView.numberOfLines = 0
+                textView.lineBreakMode = .byWordWrapping
                 textView.backgroundColor = .clear
                 cell.addSubview(textView)
 
@@ -423,6 +430,22 @@ final class AssistantTableBlockView: UIView {
         card.layer.borderWidth = line
         card.layer.borderColor = ChatTextUIColors.tableLine
             .resolvedColor(with: traitCollection).cgColor
+    }
+}
+
+/// `UILabel` centres short text in a tall frame; table cells are top-aligned.
+private final class AssistantTableLabel: UILabel {
+    override func textRect(forBounds bounds: CGRect,
+                           limitedToNumberOfLines numberOfLines: Int) -> CGRect {
+        var rect = super.textRect(forBounds: bounds,
+                                  limitedToNumberOfLines: numberOfLines)
+        rect.origin.y = bounds.origin.y
+        return rect
+    }
+
+    override func drawText(in rect: CGRect) {
+        super.drawText(in: textRect(forBounds: rect,
+                                    limitedToNumberOfLines: numberOfLines))
     }
 }
 #endif

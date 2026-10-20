@@ -183,7 +183,6 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
         var samples: [[String: Any]] = []
         var previousHeight: CGFloat = 0
         var lastStreamingHeight: CGFloat = 0
-        var lastStreamingMeasurement: CGFloat = 0
         var expectedStable = 0
         var cellIdentity: ObjectIdentifier?
 
@@ -252,14 +251,23 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
             // The tail host is the only view whose rendered height comes from
             // the other engine. Compare its own fitting height with the
             // constraint the TextKit measurement installed.
+            let tailConstraint = cell.debugTailConstraintHeight
             var tailFit = cell.debugTailFitHeight ?? 0
-            for _ in 0..<5 where tailFit <= 0 {
+            // Wait for the SwiftUI parse to settle, then require a real value:
+            // a present tail host with no rendered height is a failure, not a
+            // skipped comparison.
+            for _ in 0..<5 {
+                if tailConstraint == nil { break }
+                if let tailConstraint, tailFit > 0,
+                   abs(tailFit - tailConstraint) <= 1.5 { break }
                 await wait(50)
                 controller.collectionView.layoutIfNeeded()
                 tailFit = cell.debugTailFitHeight ?? 0
             }
-            if let tailConstraint = cell.debugTailConstraintHeight {
-                if tailFit > 0, abs(tailFit - tailConstraint) > 1.5 {
+            if let tailConstraint {
+                if tailFit <= 0 {
+                    failures.append("m4 batch \(batchIndex): tail host rendered no height")
+                } else if abs(tailFit - tailConstraint) > 1.5 {
                     failures.append("m4 batch \(batchIndex): tail fit \(tailFit) vs constraint \(tailConstraint)")
                 }
             } else if !document.tailText.isEmpty {
@@ -281,7 +289,6 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
             expectedStable = document.stableBlockCount
             previousHeight = stored
             lastStreamingHeight = stored
-            lastStreamingMeasurement = measured
 
             samples.append([
                 "batch": batchIndex,
@@ -297,6 +304,10 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
                 "tailFit": Double(tailFit),
                 "tailConstraint": Double(cell.debugTailConstraintHeight ?? -1),
             ])
+        }
+
+        if expectedStable <= 0 {
+            failures.append("m4: the stream never promoted a stable block")
         }
 
         // Phase 1: the real completion frame. The wire item is done but the

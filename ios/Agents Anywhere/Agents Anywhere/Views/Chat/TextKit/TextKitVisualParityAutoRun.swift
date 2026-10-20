@@ -82,13 +82,13 @@ final class TextKitVisualParityController: UIViewController {
         host.view.layoutIfNeeded()
         await wait(200)
 
-        let image = snapshot(of: host.view)
-        writePNG(image, name: TextKitVisualParityAutoRunModel.legacyImageName)
+        let shot = trimmedSnapshot(of: host.view)
+        writePNG(shot.image, name: TextKitVisualParityAutoRunModel.legacyImageName)
 
         host.willMove(toParent: nil)
         host.view.removeFromSuperview()
         host.removeFromParent()
-        return height
+        return shot.height
     }
 
     // MARK: - TextKit path
@@ -129,10 +129,10 @@ final class TextKitVisualParityController: UIViewController {
         cell.layoutIfNeeded()
         cell.contentView.layoutIfNeeded()
 
-        let image = snapshot(of: cell)
-        writePNG(image, name: TextKitVisualParityAutoRunModel.textKitImageName)
+        let shot = trimmedSnapshot(of: cell)
+        writePNG(shot.image, name: TextKitVisualParityAutoRunModel.textKitImageName)
         cell.removeFromSuperview()
-        return (height, blocks)
+        return (shot.height, blocks)
     }
 
     // MARK: - Output
@@ -143,6 +143,48 @@ final class TextKitVisualParityController: UIViewController {
         return renderer.image { _ in
             view.drawHierarchy(in: bounds, afterScreenUpdates: true)
         }
+    }
+
+    /// Drop the white margins around the rendered content. The legacy host
+    /// reports its window's safe-area inset as blank rows; compare content,
+    /// not capture chrome.
+    private func trimmedSnapshot(of view: UIView) -> (image: UIImage, height: CGFloat) {
+        let image = snapshot(of: view)
+        guard let cg = image.cgImage,
+              let data = cg.dataProvider?.data,
+              let bytes = CFDataGetBytePtr(data) else {
+            return (image, image.size.height)
+        }
+        let width = cg.width
+        let height = cg.height
+        let bytesPerRow = cg.bytesPerRow
+        let bytesPerPixel = max(1, cg.bitsPerPixel / 8)
+        var first = height
+        var last = -1
+        for y in 0..<height {
+            var hasInk = false
+            for x in stride(from: 0, to: width, by: 4) {
+                let offset = y * bytesPerRow + x * bytesPerPixel
+                guard offset + 2 < CFDataGetLength(data) else { continue }
+                if bytes[offset] < 245 || bytes[offset + 1] < 245
+                    || bytes[offset + 2] < 245 {
+                    hasInk = true
+                    break
+                }
+            }
+            if hasInk {
+                if first == height { first = y }
+                last = y
+            }
+        }
+        guard last >= first, let cropped = cg.cropping(
+            to: CGRect(x: 0, y: first, width: width,
+                       height: last - first + 1)) else {
+            return (image, image.size.height)
+        }
+        return (UIImage(cgImage: cropped, scale: image.scale,
+                        orientation: image.imageOrientation),
+                CGFloat(last - first + 1) / image.scale)
     }
 
     private func writePNG(_ image: UIImage, name: String) {

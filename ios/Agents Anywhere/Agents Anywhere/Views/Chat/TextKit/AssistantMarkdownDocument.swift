@@ -12,6 +12,10 @@ import UIKit
 /// show a mix of two visual systems.
 struct AssistantMarkdownDocument {
     let blocks: [AssistantMarkdownBlock]
+    /// One entry per top-level block: its `MarkdownBlockSnapshot` index. The
+    /// legacy renderer puts `VStack(spacing: 12)` between snapshots, while
+    /// blocks inside one snapshot use Textual's collapsed margins.
+    let blockGroups: [Int]
     let plainTextLength: Int
 
     /// Recursive kind census. The gate asserts the fixture really produced the
@@ -177,7 +181,8 @@ enum AssistantMarkdownDocumentParser {
                                                resolvesFileReferences: resolvesFileReferences),
               !snapshots.isEmpty else { return nil }
         var parsedBlocks: [AssistantMarkdownBlock] = []
-        for snapshot in snapshots {
+        var blockGroups: [Int] = []
+        for (group, snapshot) in snapshots.enumerated() {
             guard let parsed = parseTree(from: snapshot.content,
                                          parent: nil,
                                          foreground: .label,
@@ -187,8 +192,11 @@ enum AssistantMarkdownDocumentParser {
             // An empty snapshot (a stray separator) contributes nothing; it is
             // not an unsupported construct.
             parsedBlocks.append(contentsOf: parsed)
+            blockGroups.append(contentsOf: repeatElement(group, count: parsed.count))
         }
-        return AssistantMarkdownDocument(blocks: parsedBlocks, plainTextLength: text.count)
+        return AssistantMarkdownDocument(
+            blocks: parsedBlocks, blockGroups: blockGroups,
+            plainTextLength: text.count)
     }
 
     /// The exact pipeline `ChatMarkdownView` runs for a complete document.

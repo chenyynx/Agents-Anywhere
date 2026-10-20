@@ -159,9 +159,8 @@ final class AssistantMarkdownCell: UICollectionViewCell {
         for index in 1..<max(1, document.blocks.count) {
             guard stack.arrangedSubviews.indices.contains(index - 1) else { break }
             stack.setCustomSpacing(
-                AssistantMarkdownTextLayout.spacing(
-                    after: document.blocks[index - 1],
-                    before: document.blocks[index]),
+                AssistantMarkdownTextLayout.topLevelSpacing(
+                    after: index - 1, in: document),
                 after: stack.arrangedSubviews[index - 1])
         }
 

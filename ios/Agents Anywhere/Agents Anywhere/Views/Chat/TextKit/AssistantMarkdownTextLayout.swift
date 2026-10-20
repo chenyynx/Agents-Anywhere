@@ -170,11 +170,33 @@ enum AssistantMarkdownTextLayout {
         return total
     }
 
-    /// Sum of the block heights plus Textual's collapsed inter-block margins.
+    /// The legacy renderer places each `MarkdownBlockSnapshot` in a VStack with
+    /// this spacing; blocks inside one snapshot use Textual's collapsed
+    /// margins instead.
+    static let snapshotSpacing: CGFloat = 12
+
+    static func topLevelSpacing(after index: Int,
+                                in document: AssistantMarkdownDocument) -> CGFloat {
+        guard document.blocks.indices.contains(index + 1),
+              document.blockGroups.indices.contains(index),
+              document.blockGroups.indices.contains(index + 1) else { return 0 }
+        if document.blockGroups[index] != document.blockGroups[index + 1] {
+            return snapshotSpacing
+        }
+        return spacing(after: document.blocks[index],
+                       before: document.blocks[index + 1])
+    }
+
+    /// Sum of the block heights plus the same spacing the cell stack uses.
     static func measure(_ document: AssistantMarkdownDocument,
                         width: CGFloat,
                         displayScale: CGFloat) -> CGFloat {
-        stackHeight(of: document.blocks, width: width, displayScale: displayScale)
+        var total: CGFloat = 0
+        for (index, block) in document.blocks.enumerated() {
+            if index > 0 { total += topLevelSpacing(after: index - 1, in: document) }
+            total += height(of: block, width: width, displayScale: displayScale)
+        }
+        return total
     }
 
     private static func roundUp(_ value: CGFloat, scale: CGFloat) -> CGFloat {

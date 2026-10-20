@@ -762,6 +762,9 @@ nonisolated struct AssistantBlockID: Hashable {
 struct AssistantStreamingDocument {
     let document: AssistantMarkdownDocument
     let stableBlockIDs: [AssistantBlockID]
+    /// Blocks settled *before this batch*. A block that completed in this
+    /// batch stays in the tail for one more frame, so its last glyphs still
+    /// run the reveal animation instead of appearing already typeset.
     let stableBlockCount: Int
     let tailText: String
     /// Bumped when the text stops extending the previous batch (a correction or
@@ -781,6 +784,10 @@ final class AssistantStreamingDocumentBuilder {
     private var lastText = ""
     private var generation = 0
     private(set) var isRejected = false
+    /// The render boundary from the previous batch. Blocks completed in the
+    /// current batch are not promoted until the next one.
+    private var promotedSnapshotCount = 0
+    private var promotedPrefixText = ""
 
     func reset() {
         state = MarkdownParseState()
@@ -788,12 +795,19 @@ final class AssistantStreamingDocumentBuilder {
         lastText = ""
         generation &+= 1
         isRejected = false
+        promotedSnapshotCount = 0
+        promotedPrefixText = ""
     }
 
     func make(text: String,
               typography: TimelineTypographySnapshot) -> AssistantStreamingDocument? {
         guard !isRejected, !text.isEmpty else { return nil }
         if !text.hasPrefix(lastText) { reset() }
+        // Promotion lags one batch. The boundary this frame renders with was
+        // settled at the end of the previous batch, so anything that completed
+        // in this batch is still in the tail and still reveals letter by letter.
+        let renderedSnapshotCount = min(promotedSnapshotCount, stable.count)
+        let renderedPrefixText = promotedPrefixText
         guard let parsed = try? Self.parseIncremental(text: text, state: state) else {
             isRejected = true
             return nil
@@ -818,33 +832,44 @@ final class AssistantStreamingDocumentBuilder {
             }
             tailConverted.append(converted)
         }
+        promotedSnapshotCount = stable.count
+        promotedPrefixText = parsed.state.prefixText
 
         var blocks: [AssistantMarkdownBlock] = []
         var groups: [Int] = []
         var ids: [AssistantBlockID] = []
-        var stableBlockCount = 0
-        func append(_ converted: [AssistantMarkdownDocumentParser.ConvertedSnapshot],
-                    isStable: Bool) {
+        var renderedStableBlocks = 0
+        for snapshot in stable.prefix(renderedSnapshotCount) {
+            renderedStableBlocks += snapshot.blocks.count
+        }
+        func append(_ converted: [AssistantMarkdownDocumentParser.ConvertedSnapshot]) {
             for snapshot in converted {
                 for (index, block) in snapshot.blocks.enumerated() {
                     blocks.append(block)
                     groups.append(snapshot.id)
                     ids.append(AssistantBlockID(snapshot: snapshot.id, index: index))
-                    if isStable { stableBlockCount += 1 }
                 }
             }
         }
-        append(stable, isStable: true)
-        append(tailConverted, isStable: false)
+        append(stable)
+        append(tailConverted)
         lastText = text
+
+        let tailText: String
+        if text.hasPrefix(renderedPrefixText) {
+            let start = text.index(text.startIndex, offsetBy: renderedPrefixText.count)
+            tailText = String(text[start...])
+        } else {
+            tailText = text
+        }
 
         return AssistantStreamingDocument(
             document: AssistantMarkdownDocument(
                 blocks: blocks, blockGroups: groups,
                 plainTextLength: text.count),
-            stableBlockIDs: Array(ids.prefix(stableBlockCount)),
-            stableBlockCount: stableBlockCount,
-            tailText: parsed.tail,
+            stableBlockIDs: Array(ids.prefix(renderedStableBlocks)),
+            stableBlockCount: renderedStableBlocks,
+            tailText: tailText,
             generation: generation)
     }
 

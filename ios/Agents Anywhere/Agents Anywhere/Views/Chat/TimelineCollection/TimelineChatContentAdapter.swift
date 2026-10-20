@@ -317,23 +317,41 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         streamingRow(for: item)?.isRevealing ?? false
     }
 
-    /// A streaming assistant text row that the TextKit cell can own. A row that
-    /// stops streaming clears its builder; a row that gained an unsupported
-    /// block keeps its fallback for the rest of the turn.
+    /// A streaming assistant text row that the TextKit cell can own. The row
+    /// stays eligible through the final reveal batch (`status == .done` with
+    /// `isRevealing == true`), so committing does not flash through a fresh
+    /// hosting view; once the reveal settles it hands over to `assistantMarkdown`.
+    /// A row that stops streaming clears its builder; a row that gained an
+    /// unsupported block keeps its fallback for the rest of the turn.
     private func streamingRow(for item: TimelineListItem) -> ChatTimelineRowModel? {
         guard case .group(let id) = item, let group = groupsByID[id],
-              group.kind == .single, group.rows.count == 1,
-              isTextOnlyTurnAction(turnActions[group.id]),
               let row = group.rows.first else { return nil }
-        guard inlineNoticesByRow[row.id] == nil else { return nil }
-        guard case .message = row.value.content, row.value.role == .assistant else { return nil }
-        guard row.value.isStreamingText else {
-            streamingDocuments.removeValue(forKey: row.id)
-            streamingBuilders.removeValue(forKey: row.id)
-            streamingFallbacks.remove(row.id)
+        let isAssistantMessage: Bool
+        if case .message = row.value.content, row.value.role == .assistant {
+            isAssistantMessage = true
+        } else {
+            isAssistantMessage = false
+        }
+        let admitted = TimelineStreamingEligibility.admits(
+            isSingleRowGroup: group.kind == .single && group.rows.count == 1,
+            isAssistantMessage: isAssistantMessage,
+            isStreamingText: row.value.isStreamingText,
+            isRevealing: row.isRevealing,
+            textIsEmpty: row.text.isEmpty,
+            hasInlineNotice: inlineNoticesByRow[row.id] != nil,
+            hasAttachments: !attachments(of: row.value).isEmpty,
+            isTextOnlyAction: isTextOnlyTurnAction(turnActions[group.id]),
+            isFallback: streamingFallbacks.contains(row.id))
+        guard admitted else {
+            // Only a row that left streaming (and its final reveal) discards
+            // its incremental state; a temporary notice/attachment keeps it.
+            if !row.value.isStreamingText && !row.isRevealing {
+                streamingDocuments.removeValue(forKey: row.id)
+                streamingBuilders.removeValue(forKey: row.id)
+                streamingFallbacks.remove(row.id)
+            }
             return nil
         }
-        guard attachments(of: row.value).isEmpty, !row.text.isEmpty else { return nil }
         return row
     }
 
@@ -592,12 +610,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         rows.reserveCapacity(group.rows.count)
         let expanded = group.kind != .single && model.disclosures.isExpanded("group:\(group.id)")
         var expandedRowIDs: [String] = []
+        var revealingRowIDs: [String] = []
         var inlineNotices: [TimelineInlineNoticeSignature] = []
         var attachmentPreviews: [TimelineAttachmentPreviewSignature] = []
         for row in group.rows {
             rows.append(TimelineRowContentSignature(id: row.id, revision: row.value.revision,
                                                    updatedSeq: row.value.updatedSeq))
             if model.disclosures.isExpanded(row.id) { expandedRowIDs.append(row.id) }
+            if row.isRevealing { revealingRowIDs.append(row.id) }
             for notice in inlineNoticesByRow[row.id] ?? [] {
                 inlineNotices.append(TimelineInlineNoticeSignature(id: notice.id,
                     status: notice.notice.status, revision: notice.notice.revision))
@@ -618,6 +638,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             rows: rows,
             disclosureExpanded: expanded,
             expandedRowIDs: expandedRowIDs,
+            revealingRowIDs: revealingRowIDs,
             inlineNotices: inlineNotices,
             attachments: attachmentPreviews,
             turnAction: action.map {
@@ -698,7 +719,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
 
     private static var emptyGroupSignature: TimelineGroupContentSignature {
         TimelineGroupContentSignature(
-            rows: [], disclosureExpanded: false, inlineNotices: [], attachments: [],
+            rows: [], disclosureExpanded: false, revealingRowIDs: [],
+            inlineNotices: [], attachments: [],
             turnAction: nil,
             turnSuppression: TimelineTurnSuppression(isRunning: false, hasNewerItems: false,
                                                      hasPendingUserMessage: false))

@@ -80,6 +80,18 @@ final class AssistantMarkdownCell: UICollectionViewCell {
     #if DEBUG
     private(set) var debugStableViewsBuilt = 0
     private(set) var debugTailUpdates = 0
+
+    /// The tail host's own layout height. The gate compares it with the
+    /// constraint derived from the TextKit measurement; this is the only place
+    /// the two engines can disagree inside the cell.
+    var debugTailFitHeight: CGFloat? {
+        guard let tailHost, contentView.bounds.width > 0 else { return nil }
+        return tailHost.sizeThatFits(in: CGSize(
+            width: contentView.bounds.width,
+            height: .greatestFiniteMagnitude)).height
+    }
+
+    var debugTailConstraintHeight: CGFloat? { tailConstraint?.constant }
     #endif
 
     override init(frame: CGRect) {

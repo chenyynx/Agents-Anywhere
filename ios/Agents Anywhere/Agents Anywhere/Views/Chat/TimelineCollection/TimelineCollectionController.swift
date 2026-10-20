@@ -402,7 +402,14 @@ final class TimelineCollectionController: UIViewController {
                 let raw = AssistantMarkdownTextLayout.measure(
                     streaming.document, width: width,
                     displayScale: traitCollection.displayScale)
-                guard let height = validatedHeight(raw) else { continue }
+                guard let height = validatedHeight(raw) else {
+                    // A correction/recovery can briefly parse to an empty
+                    // document. Drop the old height with the old document, or
+                    // the data source would pair a TextKit cell with a stale
+                    // frame that the visible-cell settle can never correct.
+                    documentHeights.removeValue(forKey: item.itemID)
+                    continue
+                }
                 layout.heights.set(height, for: key, tier: .measured)
                 documentHeights[item.itemID] = height
                 continue

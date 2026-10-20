@@ -329,6 +329,34 @@ jobs:
           cp "$RESULT" "$RUNNER_TEMP/textkit-m4-baseline.json"
           cat "$RUNNER_TEMP/textkit-m4-baseline.json"
 
+      - name: Assert the M4 baseline results
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          path = os.path.join(os.environ["RUNNER_TEMP"], "textkit-m4-baseline.json")
+          if not os.path.exists(path):
+              print("::error::textkit M4 baseline result missing")
+              sys.exit(1)
+          with open(path) as handle:
+              data = json.load(handle)
+          failed = list(data.get("failures") or [])
+          if not data.get("completed"):
+              failed.append("baseline did not complete")
+          if not data.get("passed"):
+              failed.append("baseline reported passed=false")
+          for name, scenario in (data.get("scenarios") or {}).items():
+              if not scenario.get("builderMatchesStatic"):
+                  failed.append(f"{name}: builder differs from the full parse")
+              if scenario.get("correctionGeneration", 0) < 1:
+                  failed.append(f"{name}: correction did not reset the builder")
+          for failure in failed:
+              print("::error::textkit M4 baseline: " + failure)
+          if failed:
+              sys.exit(1)
+          print("PASS textkit M4 baseline")
+          PY
+
       - name: Run the M4 streaming gate
         if: always()
         run: |
@@ -364,7 +392,11 @@ jobs:
           if not data.get("completed"):
               print("::error::textkit M4 gate did not complete")
               sys.exit(1)
-          failures = data.get("failures") or []
+          failures = list(data.get("failures") or [])
+          if not data.get("doneRevealing"):
+              failures.append("gate never exercised the done+revealing completion frame")
+          elif not data["doneRevealing"].get("sameCell"):
+              failures.append("the completion frame replaced the TextKit cell")
           for failure in failures:
               print("::error::textkit M4: " + failure)
           if failures:

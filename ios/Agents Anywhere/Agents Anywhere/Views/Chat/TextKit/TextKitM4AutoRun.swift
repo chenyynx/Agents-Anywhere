@@ -81,6 +81,7 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
                                                revision: entry.revision,
                                                updatedSeq: entry.revision)],
             disclosureExpanded: false,
+            revealingRowIDs: entry.reveal ? [entry.id] : [],
             inlineNotices: [],
             attachments: [],
             turnAction: nil,
@@ -141,14 +142,15 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
 
     func assistantMarkdown(for item: TimelineListItem) -> AssistantMarkdownDocument? {
         guard case .group(let id) = item,
-              let entry = entries.first(where: { $0.id == id }) else { return nil }
+              let entry = entries.first(where: { $0.id == id }),
+              !entry.isStreaming, !entry.reveal else { return nil }
         return entry.staticDocument
     }
 
     func assistantStreamingDocument(for item: TimelineListItem) -> AssistantStreamingDocument? {
         guard case .group(let id) = item,
               let entry = entries.first(where: { $0.id == id }),
-              entry.isStreaming else { return nil }
+              entry.isStreaming || entry.reveal else { return nil }
         return entry.streamingDocument
     }
 
@@ -183,10 +185,15 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
         var lastStreamingHeight: CGFloat = 0
         var lastStreamingMeasurement: CGFloat = 0
         var expectedStable = 0
+        var cellIdentity: ObjectIdentifier?
 
-        for (batchIndex, text) in batches.enumerated() where batchIndex > 0 {
-            advance(to: text)
-            controller.reloadFromContent()
+        // Batch 0 is the document the model starts with; the remaining batches
+        // append text and reload. Every batch, including the first, is asserted.
+        for (batchIndex, text) in batches.enumerated() {
+            if batchIndex > 0 {
+                advance(to: text)
+                controller.reloadFromContent()
+            }
             await wait(220)
             controller.collectionView.layoutIfNeeded()
 
@@ -210,6 +217,11 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
                 failures.append("m4 batch \(batchIndex): zero cell width")
                 continue
             }
+            let identity = ObjectIdentifier(cell)
+            if let cellIdentity, cellIdentity != identity {
+                failures.append("m4 batch \(batchIndex): cell instance replaced")
+            }
+            cellIdentity = identity
             controller.collectionView.layoutIfNeeded()
             let stored = attributes.frame.height
             let measured = AssistantMarkdownTextLayout.measure(
@@ -237,6 +249,26 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
             if arranged != expectedArranged {
                 failures.append("m4 batch \(batchIndex): \(arranged) views, expected \(expectedArranged)")
             }
+            // The tail host is the only view whose rendered height comes from
+            // the other engine. Compare its own fitting height with the
+            // constraint the TextKit measurement installed.
+            var tailFit = cell.debugTailFitHeight ?? 0
+            for _ in 0..<5 where tailFit <= 0 {
+                await wait(50)
+                controller.collectionView.layoutIfNeeded()
+                tailFit = cell.debugTailFitHeight ?? 0
+            }
+            if let tailConstraint = cell.debugTailConstraintHeight {
+                if tailFit > 0, abs(tailFit - tailConstraint) > 1.5 {
+                    failures.append("m4 batch \(batchIndex): tail fit \(tailFit) vs constraint \(tailConstraint)")
+                }
+            } else if !document.tailText.isEmpty {
+                failures.append("m4 batch \(batchIndex): tail text without a tail host")
+            }
+            if batchIndex == batches.count - 1,
+               cell.debugStableViewsBuilt != document.stableBlockCount {
+                failures.append("m4 batch \(batchIndex): built \(cell.debugStableViewsBuilt) stable views for \(document.stableBlockCount) blocks")
+            }
             if stored + 0.5 < previousHeight {
                 failures.append("m4 batch \(batchIndex): height shrank \(previousHeight) -> \(stored)")
             }
@@ -262,12 +294,53 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
                 "content": Double(content),
                 "stableViewsBuilt": cell.debugStableViewsBuilt,
                 "tailUpdates": cell.debugTailUpdates,
+                "tailFit": Double(tailFit),
+                "tailConstraint": Double(cell.debugTailConstraintHeight ?? -1),
             ])
         }
 
-        // Commit: the same row becomes a static message. Height must not jump,
-        // and the static document must be measured by the same engine.
-        complete()
+        // Phase 1: the real completion frame. The wire item is done but the
+        // final glyphs are still revealing; the row must stay on the TextKit
+        // cell (with its tail host), not fall back to a fresh hosting view.
+        finishReveal()
+        controller.reloadFromContent()
+        await wait(250)
+        controller.collectionView.layoutIfNeeded()
+        guard let revealingEntry = entries.first(where: { $0.id == "m4-stream" }),
+              let revealingDocument = revealingEntry.streamingDocument else {
+            failures.append("m4 done+revealing: no streaming document")
+            finish()
+            return
+        }
+        guard let revealingAttributes = controller.layout.attributes(for: item.itemID) else {
+            failures.append("m4 done+revealing: no layout attributes")
+            finish()
+            return
+        }
+        guard let revealingIndexPath = controller.indexPath(for: item),
+              let revealingCell = controller.collectionView.cellForItem(at: revealingIndexPath)
+                as? AssistantMarkdownCell else {
+            failures.append("m4 done+revealing: row left the TextKit cell")
+            finish()
+            return
+        }
+        if let cellIdentity, cellIdentity != ObjectIdentifier(revealingCell) {
+            failures.append("m4 done+revealing: cell instance replaced")
+        }
+        let revealingWidth = revealingCell.contentView.bounds.width
+        let revealingStored = revealingAttributes.frame.height
+        let revealingMeasured = AssistantMarkdownTextLayout.measure(
+            revealingDocument.document, width: revealingWidth,
+            displayScale: controller.traitCollection.displayScale)
+        if abs(revealingStored - revealingMeasured) > 1.0 {
+            failures.append("m4 done+revealing: stored \(revealingStored) != measured \(revealingMeasured)")
+        }
+        if abs(revealingStored - lastStreamingHeight) > 1.5 {
+            failures.append("m4 done+revealing: height jumped \(lastStreamingHeight) -> \(revealingStored)")
+        }
+
+        // Phase 2: the reveal clock settles; the same row becomes static.
+        settleStatic()
         controller.reloadFromContent()
         await wait(250)
         controller.collectionView.layoutIfNeeded()
@@ -297,10 +370,10 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
         if abs(stored - measured) > 1.0 {
             failures.append("m4 completion: stored \(stored) != measured \(measured)")
         }
-        if abs(stored - lastStreamingHeight) > 1.5 {
-            failures.append("m4 completion: height jumped \(lastStreamingHeight) -> \(stored)")
+        if abs(stored - revealingStored) > 1.5 {
+            failures.append("m4 completion: height jumped \(revealingStored) -> \(stored)")
         }
-        if abs(lastStreamingMeasurement - measured) > 0.5 {
+        if abs(revealingMeasured - measured) > 0.5 {
             failures.append("m4 completion: stream/static measurement differ")
         }
         if abs(cell.contentView.systemLayoutSizeFitting(
@@ -317,6 +390,13 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
         if overlaps > 0 { failures.append("m4: \(overlaps) adjacent frames overlap") }
 
         report["batches"] = samples
+        report["doneRevealing"] = [
+            "stored": Double(revealingStored),
+            "measured": Double(revealingMeasured),
+            "arrangedViews": revealingCell.debugArrangedBlockViews.count,
+            "tailFit": Double(revealingCell.debugTailFitHeight ?? -1),
+            "sameCell": cellIdentity == ObjectIdentifier(revealingCell),
+        ] as [String: Any]
         report["completion"] = [
             "stored": Double(stored),
             "measured": Double(measured),
@@ -324,6 +404,7 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
             "stableViewsBuilt": cell.debugStableViewsBuilt,
             "tailUpdates": cell.debugTailUpdates,
             "overlaps": overlaps,
+            "sameCellAsDoneRevealing": ObjectIdentifier(cell) == ObjectIdentifier(revealingCell),
         ] as [String: Any]
         finish()
     }
@@ -338,10 +419,22 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
         contentGeneration += 1
     }
 
-    private func complete() {
+    /// The real completion frame: the wire item is done while the final glyphs
+    /// are still revealing. The streaming document must stay available.
+    private func finishReveal() {
         guard let index = entries.firstIndex(where: { $0.id == "m4-stream" }) else { return }
         entries[index].revision += 1
         entries[index].isStreaming = false
+        entries[index].reveal = true
+        entries[index].streamingDocument = builder.make(
+            text: entries[index].text, typography: typography)
+        contentGeneration += 1
+    }
+
+    /// The reveal clock has settled; the row hands over to the static body.
+    private func settleStatic() {
+        guard let index = entries.firstIndex(where: { $0.id == "m4-stream" }) else { return }
+        entries[index].revision += 1
         entries[index].reveal = false
         entries[index].streamingDocument = nil
         entries[index].staticDocument = AssistantMarkdownDocumentParser.make(

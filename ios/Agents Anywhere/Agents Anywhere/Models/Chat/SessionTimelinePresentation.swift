@@ -158,7 +158,16 @@ final class SessionTimelinePresentation {
             flushRevision &+= 1
             self.pending = nil; pendingWasStaged = false
         }
-        for row in rows where row.isRevealing { row.settle(now: now) }
+        // A reveal settling flips which renderer may own the row (the live
+        // tail vs. the static TextKit body) without a wire revision change.
+        // Publish one update so the collection re-evaluates that row; without
+        // it the row can stay on the hosting path until an unrelated update.
+        var revealSettled = false
+        for row in rows where row.isRevealing {
+            row.settle(now: now)
+            if !row.isRevealing { revealSettled = true }
+        }
+        if revealSettled { flushRevision &+= 1 }
     }
 
     func run(sessionID: V2SessionID, repository: V2SessionRepository) async {

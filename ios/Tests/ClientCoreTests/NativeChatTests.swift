@@ -30,6 +30,22 @@ import Testing
         #expect(!row.isRevealing)
     }
 
+    @Test func settlingARevealPublishesAnotherUpdate() throws {
+        let timeline = SessionTimelinePresentation()
+        timeline.stage([try item("Hello")], animate: false)
+        timeline.flush(now: 0)
+        let row = try #require(timeline.rows.first)
+        // The final done batch reveals its last glyphs; the reveal settling
+        // must publish, because it changes which renderer may own the row.
+        timeline.stage([try item("Hello world", status: "done", revision: 2)], animate: true)
+        timeline.flush(now: 1)
+        #expect(row.isRevealing)
+        let duringReveal = timeline.flushRevision
+        timeline.flush(now: 2)
+        #expect(!row.isRevealing)
+        #expect(timeline.flushRevision > duringReveal)
+    }
+
     @Test func runningReplyStopsRevealingWhenTextPauses() throws {
         let timeline = SessionTimelinePresentation()
         timeline.stage([try item("Hello")], animate: false); timeline.flush(now: 0)

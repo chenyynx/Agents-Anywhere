@@ -55,6 +55,10 @@ nonisolated struct TimelineGroupContentSignature: Equatable {
     /// several independent folds: collapsing one while another stays open
     /// would leave the signature equal and the group's height stale.
     var expandedRowIDs: [String] = []
+    /// Rows whose reveal clock is running. A reveal settling changes which
+    /// engine may render the row (streaming tail vs. static TextKit) without
+    /// changing the wire revision, so the signature must carry it.
+    var revealingRowIDs: [String] = []
     /// Inline approval/notice cards attached to this group's rows.
     let inlineNotices: [TimelineInlineNoticeSignature]
     let attachments: [TimelineAttachmentPreviewSignature]
@@ -70,6 +74,7 @@ nonisolated struct TimelineGroupContentSignature: Equatable {
         }
         hasher.combine(disclosureExpanded)
         for rowID in expandedRowIDs.sorted() { hasher.combine(rowID) }
+        for rowID in revealingRowIDs.sorted() { hasher.combine(rowID) }
         for notice in inlineNotices {
             hasher.combine(notice.id)
             hasher.combine(notice.status.rawValue)

@@ -132,6 +132,7 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
             rows: [TimelineRowContentSignature(id: entry.id, revision: entry.revision,
                                                updatedSeq: entry.revision)],
             disclosureExpanded: false,
+            revealingRowIDs: [],
             inlineNotices: [],
             attachments: [],
             turnAction: isAssistant

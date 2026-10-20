@@ -98,6 +98,7 @@ enum AssistantMarkdownTextLayout {
                 let contentWidth = max(0, width - list.contentIndent(for: item.marker))
                 total += stackHeight(of: item.blocks,
                                      width: contentWidth,
+                                     uniformSpacing: list.itemSpacing,
                                      displayScale: displayScale)
             }
             return roundUp(total, scale: displayScale)
@@ -159,11 +160,13 @@ enum AssistantMarkdownTextLayout {
     /// pixel-rounded; the caller decides whether the sum needs its own round.
     static func stackHeight(of blocks: [AssistantMarkdownBlock],
                             width: CGFloat,
+                            uniformSpacing: CGFloat? = nil,
                             displayScale: CGFloat) -> CGFloat {
         var total: CGFloat = 0
         for (index, block) in blocks.enumerated() {
             if index > 0 {
-                total += spacing(after: blocks[index - 1], before: block)
+                total += uniformSpacing
+                    ?? spacing(after: blocks[index - 1], before: block)
             }
             total += height(of: block, width: width, displayScale: displayScale)
         }

@@ -93,7 +93,8 @@ final class AssistantListItemRowView: UIView {
         self.contentIndent = list.contentIndent(for: item.marker)
         let contentWidth = max(0, width - contentIndent)
         self.contentHeight = AssistantMarkdownTextLayout.stackHeight(
-            of: item.blocks, width: contentWidth, displayScale: displayScale)
+            of: item.blocks, width: contentWidth,
+            uniformSpacing: list.itemSpacing, displayScale: displayScale)
         super.init(frame: .zero)
         backgroundColor = .clear
 
@@ -101,7 +102,7 @@ final class AssistantListItemRowView: UIView {
         stack.axis = .vertical
         stack.alignment = .fill
         stack.distribution = .fill
-        stack.spacing = 0
+        stack.spacing = list.itemSpacing
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         let bottom = stack.bottomAnchor.constraint(equalTo: bottomAnchor)
@@ -112,17 +113,11 @@ final class AssistantListItemRowView: UIView {
             stack.topAnchor.constraint(equalTo: topAnchor),
             bottom,
         ])
-        for (index, block) in item.blocks.enumerated() {
+        for block in item.blocks {
             let made = AssistantMarkdownBlockViewFactory.make(
                 block, width: contentWidth, displayScale: displayScale)
             stack.addArrangedSubview(made.view)
             made.view.heightAnchor.constraint(equalToConstant: made.height).isActive = true
-            if index > 0 {
-                stack.setCustomSpacing(
-                    AssistantMarkdownTextLayout.spacing(
-                        after: item.blocks[index - 1], before: block),
-                    after: stack.arrangedSubviews[index - 1])
-            }
         }
 
         switch item.marker {

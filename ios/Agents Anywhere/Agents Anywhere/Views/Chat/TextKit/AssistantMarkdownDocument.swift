@@ -367,7 +367,9 @@ enum AssistantMarkdownDocumentParser {
             markerGap: ChatMetrics.listMarkerGap * scale,
             bulletSize: ChatMetrics.bulletSize * scale,
             bulletCenterX: ChatMetrics.bulletCenterX * scale,
-            itemSpacing: ChatMetrics.listItemExtraSpacing * scale,
+            // Textual replaces block spacing inside a list with the list item
+            // pitch: body line spacing + the 2pt extra gap.
+            itemSpacing: ChatMetrics.listItemSpacing * scale,
             innerSpacing: typography.paragraphSpacing * scale,
             bodySize: typography.body,
             markerColor: foreground))

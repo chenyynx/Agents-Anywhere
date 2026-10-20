@@ -104,8 +104,9 @@ nonisolated enum ChatMetrics {
     /// the same greyscale and border rules as the code block.
     static let tableRadius: CGFloat = 12  // `[pp 2026-10-18]` card corner: smaller than the code card so a table reads as lighter than a code block
     static let tableCellPadHorizontal: CGFloat = 12
-    /// The official transcript's table cell vertical padding (Hark: `padV = 8`).
-    static let tableCellPadVertical: CGFloat = 8
+    /// moonveil's table cell vertical padding; one point roomier than the
+    /// first pass so wrapped cells breathe.
+    static let tableCellPadVertical: CGFloat = 10
     static let tableCellSize: CGFloat = 13
     static let tableCellLineHeight: CGFloat = 18
     /// Ceiling for one content-sized column. Without it a single long cell

@@ -342,11 +342,16 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
 
         var sample: (content: CGFloat, frame: CGFloat, inWindow: Bool)?
         var sampleWidth: CGFloat = 0
+        var tableSurface: AssistantTableBlockView?
         for _ in 0..<10 {
             controller.collectionView.layoutIfNeeded()
             if let indexPath = controller.indexPath(for: item),
                let cell = controller.collectionView.cellForItem(at: indexPath) {
                 controller.collectionView.layoutIfNeeded()
+                if let assistantCell = cell as? AssistantMarkdownCell {
+                    tableSurface = assistantCell.debugArrangedBlockViews
+                        .compactMap { $0 as? AssistantTableBlockView }.first
+                }
                 let width = cell.contentView.bounds.width
                 if width > 0 {
                     let content = cell.contentView.systemLayoutSizeFitting(
@@ -359,6 +364,28 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
                 }
             }
             await wait(100)
+        }
+
+        // The last assistant segment is the fixture table (3 rows × 2 columns).
+        // The M3.4 surface must expose six cell elements and no cell subviews.
+        var tableSurfaceCells = -1
+        var tableSurfaceSubviews = -1
+        var tableSurfaceLabels = -1
+        if let tableSurface {
+            tableSurfaceCells = tableSurface.debugCellElementCount
+            tableSurfaceSubviews = tableSurface.debugSurfaceSubviewCount
+            tableSurfaceLabels = tableSurface.debugCellLabelCount
+            if tableSurfaceCells != 6 {
+                failures.append("textkit table: \(tableSurfaceCells) cell elements, expected 6")
+            }
+            if tableSurfaceSubviews != 0 {
+                failures.append("textkit table: \(tableSurfaceSubviews) surface subviews, expected 0")
+            }
+            if tableSurfaceLabels != 0 {
+                failures.append("textkit table: \(tableSurfaceLabels) cell labels, expected 0")
+            }
+        } else {
+            failures.append("textkit table: no table surface")
         }
 
         var overlaps = 0
@@ -517,6 +544,9 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
             "codeAccepted": codeDocument != nil,
             "tableAccepted": tableDocument != nil,
             "imageRejected": imageDocument == nil,
+            "tableSurfaceCells": tableSurfaceCells,
+            "tableSurfaceSubviews": tableSurfaceSubviews,
+            "tableSurfaceLabels": tableSurfaceLabels,
         ] as [String: Any]
         var textKitReport = report["textKit"] as? [String: Any] ?? [:]
         AssistantMarkdownCellBuildMetrics.reset()

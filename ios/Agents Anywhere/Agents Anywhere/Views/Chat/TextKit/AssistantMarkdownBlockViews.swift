@@ -323,21 +323,20 @@ final class AssistantCodeBlockView: UIView {
     }
 }
 
-/// The table card: a horizontally scrolling grid with fixed column widths and
-/// per-row heights. Labels carry the cell text; the card draws the header fill
-/// and row seams, so a table does not build a container and separator view for
-/// every cell.
+/// The table surface: one view draws the whole table, the shape the official
+/// chat transcript uses (`MarkdownTableView` with a single text surface and no
+/// per-cell UIView). Cells are paragraphs in that surface; here they are drawn
+/// directly, with accessibility elements standing in for the old labels.
 final class AssistantTableBlockView: UIView {
     private let table: AssistantTableBlock
     private let displayScale: CGFloat
     private let scrollView = UIScrollView()
-    private let card: AssistantTableCardView
-    private var labels: [[UILabel]] = []
+    private let surface: AssistantTableSurfaceView
 
     init(table: AssistantTableBlock, width: CGFloat, displayScale: CGFloat) {
         self.table = table
         self.displayScale = displayScale
-        self.card = AssistantTableCardView(table: table)
+        self.surface = AssistantTableSurfaceView(table: table, displayScale: displayScale)
         super.init(frame: .zero)
         backgroundColor = .clear
 
@@ -349,97 +348,146 @@ final class AssistantTableBlockView: UIView {
         scrollView.bounces = false
         scrollView.contentInsetAdjustmentBehavior = .never
         addSubview(scrollView)
-
-        card.backgroundColor = .clear
-        card.layer.cornerRadius = table.cornerRadius
-        card.layer.cornerCurve = .continuous
-        card.clipsToBounds = true
-        scrollView.addSubview(card)
-
-        for row in table.rows.indices {
-            var rowLabels: [UILabel] = []
-            for column in table.rows[row].indices {
-                // A UITextView per cell makes a large table build dozens of
-                // TextKit 2 stacks; the scroll gate measured that as the
-                // dominant cost. Labels render the same attributed string and
-                // are an order of magnitude lighter. Row heights still come
-                // from TextKit 2, so layout stays in one engine.
-                let label = AssistantTableLabel()
-                label.attributedText = table.rows[row][column]
-                label.numberOfLines = 0
-                label.lineBreakMode = .byWordWrapping
-                label.backgroundColor = .clear
-                card.addSubview(label)
-                rowLabels.append(label)
-            }
-            labels.append(rowLabels)
-        }
+        scrollView.addSubview(surface)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        let scale = traitCollection.displayScale > 0
-            ? traitCollection.displayScale : displayScale
-        let line = 1 / scale
         scrollView.frame = bounds
-        card.frame = CGRect(x: 0, y: 0,
-                            width: table.totalWidth, height: table.totalHeight)
-        scrollView.contentSize = card.frame.size
-
-        var y: CGFloat = 0
-        for (row, height) in table.rowHeights.enumerated() {
-            var x: CGFloat = 0
-            for (column, width) in table.columnWidths.enumerated() {
-                guard labels.indices.contains(row),
-                      labels[row].indices.contains(column) else { break }
-                labels[row][column].frame = CGRect(
-                    x: x + table.cellPaddingHorizontal,
-                    y: y + table.cellPaddingVertical,
-                    width: max(0, width - table.cellPaddingHorizontal * 2),
-                    height: max(0, height - table.cellPaddingVertical * 2))
-                x += width
-            }
-            y += height
-        }
-        card.setNeedsDisplay()
-
-        card.layer.borderWidth = line
-        card.layer.borderColor = ChatTextUIColors.tableLine
-            .resolvedColor(with: traitCollection).cgColor
+        surface.frame = CGRect(origin: .zero,
+                               size: CGSize(width: table.totalWidth,
+                                            height: table.totalHeight))
+        scrollView.contentSize = surface.frame.size
     }
+
+    #if DEBUG
+    var debugCellElementCount: Int { surface.debugCellElementCount }
+    var debugSurfaceSubviewCount: Int { surface.subviews.count }
+    var debugCellLabelCount: Int {
+        var count = 0
+        func walk(_ view: UIView) {
+            if view is UILabel { count += 1 }
+            view.subviews.forEach(walk)
+        }
+        walk(self)
+        return count
+    }
+    #endif
 }
 
-/// Draws the header fill and row seams once, behind the cell labels.
-private final class AssistantTableCardView: UIView {
+/// Draws the header fill, row seams, cell text and the outer border in one
+/// pass. Height still comes from `AssistantMarkdownTextLayout.tableMetrics`
+/// (TextKit 2); this view only renders the attributed strings at the geometry
+/// that measurement already fixed.
+private final class AssistantTableSurfaceView: UIView {
     private let table: AssistantTableBlock
+    private let displayScale: CGFloat
+    private let columnOrigins: [CGFloat]
+    private let rowOrigins: [CGFloat]
 
-    init(table: AssistantTableBlock) {
+    init(table: AssistantTableBlock, displayScale: CGFloat) {
         self.table = table
+        self.displayScale = displayScale
+        var x: CGFloat = 0
+        self.columnOrigins = table.columnWidths.map { width in
+            defer { x += width }
+            return x
+        }
+        var y: CGFloat = 0
+        self.rowOrigins = table.rowHeights.map { height in
+            defer { y += height }
+            return y
+        }
         super.init(frame: .zero)
         isOpaque = false
+        backgroundColor = .clear
+        contentMode = .redraw
+        isAccessibilityElement = false
+        accessibilityElements = makeAccessibilityElements()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    private func cellBounds(row: Int, column: Int) -> CGRect {
+        guard table.rowHeights.indices.contains(row),
+              table.columnWidths.indices.contains(column) else { return .zero }
+        return CGRect(x: columnOrigins[column], y: rowOrigins[row],
+                      width: table.columnWidths[column],
+                      height: table.rowHeights[row])
+    }
+
+    private func textRect(row: Int, column: Int) -> CGRect {
+        cellBounds(row: row, column: column)
+            .insetBy(dx: table.cellPaddingHorizontal,
+                     dy: table.cellPaddingVertical)
+    }
+
+    private func makeAccessibilityElements() -> [Any] {
+        var elements: [Any] = []
+        for row in table.rows.indices {
+            for column in table.rows[row].indices {
+                let text = table.rows[row][column].string
+                guard !text.isEmpty else { continue }
+                elements.append(AssistantTableCellAccessibilityElement(
+                    container: self, row: row, column: column,
+                    label: text, frame: cellBounds(row: row, column: column)))
+            }
+        }
+        return elements
+    }
+
+    #if DEBUG
+    var debugCellElementCount: Int { accessibilityElements?.count ?? 0 }
+    #endif
+
     override func draw(_ rect: CGRect) {
-        guard let firstHeight = table.rowHeights.first else { return }
+        guard !table.rowHeights.isEmpty, !table.columnWidths.isEmpty else { return }
+        let scale = traitCollection.displayScale > 0
+            ? traitCollection.displayScale : displayScale
+        let line = 1 / max(scale, 1)
+        let radius = table.cornerRadius
+        let clipPath = UIBezierPath(roundedRect: bounds, cornerRadius: radius)
+
+        clipPath.addClip()
+
         ChatTextUIColors.tableHeaderFill
             .resolvedColor(with: traitCollection).setFill()
-        UIRectFill(CGRect(x: 0, y: 0, width: bounds.width, height: firstHeight))
+        UIRectFill(CGRect(x: 0, y: 0, width: bounds.width,
+                          height: table.rowHeights[0]))
 
-        let scale = traitCollection.displayScale > 0
-            ? traitCollection.displayScale : 1
-        let line = 1 / scale
         ChatTextUIColors.tableLine
             .resolvedColor(with: traitCollection).setFill()
-        var y = firstHeight
-        for index in 1..<table.rowHeights.count {
-            UIRectFill(CGRect(x: 0, y: y - line,
-                              width: bounds.width, height: line))
-            y += table.rowHeights[index]
+        for row in 1..<table.rowHeights.count {
+            // Centre the hairline on the row boundary, the official shape
+            // (`rowTop[i] - lineWidth / 2`).
+            let y = rowOrigins[row] - line / 2
+            UIRectFill(CGRect(x: 0, y: y, width: bounds.width, height: line))
         }
+
+        for row in table.rows.indices {
+            for column in table.rows[row].indices {
+                let string = table.rows[row][column]
+                guard string.length > 0 else { continue }
+                let cell = cellBounds(row: row, column: column)
+                guard cell.intersects(rect) else { continue }
+                UIGraphicsGetCurrentContext()?.saveGState()
+                UIRectClip(cell)
+                string.draw(with: textRect(row: row, column: column),
+                            options: [.usesLineFragmentOrigin, .usesFontLeading],
+                            context: nil)
+                UIGraphicsGetCurrentContext()?.restoreGState()
+            }
+        }
+
+        let border = UIBezierPath(
+            roundedRect: bounds.insetBy(dx: line / 2, dy: line / 2),
+            cornerRadius: max(0, radius - line / 2))
+        border.lineWidth = line
+        ChatTextUIColors.tableLine
+            .resolvedColor(with: traitCollection).setStroke()
+        border.stroke()
     }
 
     override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
@@ -450,19 +498,17 @@ private final class AssistantTableCardView: UIView {
     }
 }
 
-/// `UILabel` centres short text in a tall frame; table cells are top-aligned.
-private final class AssistantTableLabel: UILabel {
-    override func textRect(forBounds bounds: CGRect,
-                           limitedToNumberOfLines numberOfLines: Int) -> CGRect {
-        var rect = super.textRect(forBounds: bounds,
-                                  limitedToNumberOfLines: numberOfLines)
-        rect.origin.y = bounds.origin.y
-        return rect
-    }
+private final class AssistantTableCellAccessibilityElement: UIAccessibilityElement {
+    let row: Int
+    let column: Int
 
-    override func drawText(in rect: CGRect) {
-        super.drawText(in: textRect(forBounds: rect,
-                                    limitedToNumberOfLines: numberOfLines))
+    init(container: UIView, row: Int, column: Int, label: String, frame: CGRect) {
+        self.row = row
+        self.column = column
+        super.init(accessibilityContainer: container)
+        accessibilityLabel = label
+        accessibilityTraits = .staticText
+        accessibilityFrameInContainerSpace = frame
     }
 }
 #endif

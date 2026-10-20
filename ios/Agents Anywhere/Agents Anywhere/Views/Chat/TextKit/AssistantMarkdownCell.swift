@@ -94,6 +94,10 @@ final class AssistantMarkdownCell: UICollectionViewCell {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    #if DEBUG
+    var debugArrangedBlockViews: [UIView] { stack.arrangedSubviews }
+    #endif
+
     func configure(_ document: AssistantMarkdownDocument,
                    footer: AssistantTurnFooter? = nil) {
         self.document = document

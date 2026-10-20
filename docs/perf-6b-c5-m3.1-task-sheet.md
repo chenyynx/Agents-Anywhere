@@ -97,4 +97,13 @@ AssistantMarkdownCell
   - `pending false`，`estimate 200` 未写入，`overlaps 0`
   - 块统计与解析契约同 M3
 - 同轮 C3 曾连续两次报既有 flake（`no cell for reasoning` / `longGroup cell 200 clips content 1471`），第三次 rerun 绿；M3.1 不触碰 C3 路径。
-- 未覆盖：真机、滚动性能（已加 scroll gate，见下一个提交）、复制交互、文件变更 footer、流式/选择/链接。
+- 未覆盖：真机、复制交互、文件变更 footer、流式/选择/链接。
+
+## 7. 滚动 gate（M3.2）
+
+- 在 M3 gate 的合成时间线底部追加 12 条「表格 + 代码 + 列表」压力行，从顶到底 24 步 `setContentOffset` + `layoutIfNeeded`，只计同步 scroll+layout 时间。
+- 首轮（run `39375282261`，commit `cc9a63bb`）：median 162.75ms / p95 297.36ms / max 307.67ms，触发 150/300ms 冒烟上限。根因：表格每个单元格一个 `UITextView`，一张 4×6 表 24 个 TextKit 2 栈。
+- 修复（`b44b423e`）：表格单元格改用顶对齐 `UILabel`，同一份 attributed string，行高仍由 TextKit 2 测量。
+- 复测（run `39377592341`，M3 gate pass）：median 27.31ms / p95 37.71ms / max 40.85ms；正确性 stored 640 / cellContent 639.67 不变。
+- 这是模拟器 Debug 的同步冒烟指标，不是产品帧预算；真机滚动/120Hz 仍待验证。UILabel 与 TextKit 2 的换行差、是否裁切也未真机确认。
+- 同轮 C3 仍是既有 flake，M3 gate 独立绿。

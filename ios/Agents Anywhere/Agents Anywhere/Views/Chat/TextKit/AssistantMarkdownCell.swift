@@ -86,12 +86,23 @@ final class AssistantMarkdownCell: UICollectionViewCell {
     /// the two engines can disagree inside the cell.
     var debugTailFitHeight: CGFloat? {
         guard let tailHost, contentView.bounds.width > 0 else { return nil }
-        return tailHost.sizeThatFits(in: CGSize(
-            width: contentView.bounds.width,
-            height: .greatestFiniteMagnitude)).height
+        let width = contentView.bounds.width
+        let hostView = tailHost.view
+        let saved = hostView.bounds
+        // The measurer's exact sequence: force a layout at the proposed width
+        // before asking for the fitting height.
+        hostView.bounds = CGRect(origin: .zero,
+                                 size: CGSize(width: width, height: 1))
+        hostView.layoutIfNeeded()
+        let size = tailHost.sizeThatFits(in: CGSize(
+            width: width, height: UIView.layoutFittingExpandedSize.height))
+        hostView.bounds = saved
+        return size.height
     }
 
     var debugTailConstraintHeight: CGFloat? { tailConstraint?.constant }
+    var debugTailHostBounds: CGRect? { tailHost?.view.bounds }
+    var debugTailHostTextLength: Int? { tailHost?.rootView.text.count }
     #endif
 
     override init(frame: CGRect) {
@@ -314,6 +325,11 @@ final class AssistantMarkdownCell: UICollectionViewCell {
             host.view.backgroundColor = .clear
             host.view.translatesAutoresizingMaskIntoConstraints = false
             host.view.clipsToBounds = true
+            // Match `TimelineHostingHeightMeasurer`: without intrinsic sizing
+            // `sizeThatFits` does not answer from the SwiftUI content at the
+            // proposed width, which makes the gate's cross-engine check read
+            // an inflated height.
+            host.sizingOptions = [.intrinsicContentSize]
             stack.addArrangedSubview(host.view)
             let constraint = host.view.heightAnchor.constraint(equalToConstant: height)
             constraint.isActive = true

@@ -303,6 +303,9 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
                 "tailUpdates": cell.debugTailUpdates,
                 "tailFit": Double(tailFit),
                 "tailConstraint": Double(cell.debugTailConstraintHeight ?? -1),
+                "tailHostWidth": Double(cell.debugTailHostBounds?.width ?? -1),
+                "tailHostHeight": Double(cell.debugTailHostBounds?.height ?? -1),
+                "tailHostTextLength": cell.debugTailHostTextLength ?? -1,
             ])
         }
 

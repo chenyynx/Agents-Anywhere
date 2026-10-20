@@ -62,6 +62,10 @@ enum TextKitM4BaselineAutoRun {
             var cellConfigure: [Double] = []
             var finalDocument: AssistantMarkdownDocument?
             var finalCellHeight: CGFloat = 0
+            let builder = AssistantStreamingDocumentBuilder()
+            var builderDurations: [Double] = []
+            var builderDocument: AssistantStreamingDocument?
+            var builderRejected = false
 
             let cell = AssistantMarkdownCell(frame: CGRect(
                 x: 0, y: 0, width: columnWidth, height: 800))
@@ -80,6 +84,18 @@ enum TextKitM4BaselineAutoRun {
                 incrementalWall.append((CACurrentMediaTime() - parseStart) * 1000)
                 state = parsed.state
                 tails.append(parsed.tail)
+
+                let (streaming, builderMs) = time {
+                    builder.make(text: prefix, isRevealing: true,
+                                 typography: typography)
+                }
+                builderDurations.append(builderMs)
+                if let streaming {
+                    builderDocument = streaming
+                } else {
+                    builderRejected = true
+                    failures.append("\(scenario.name) batch \(batchIndex): builder rejected")
+                }
 
                 let (document, makeMs) = time {
                     AssistantMarkdownDocumentParser.make(
@@ -135,6 +151,42 @@ enum TextKitM4BaselineAutoRun {
                 if finalCellHeight <= 0 {
                     failures.append("\(scenario.name): cell fitting reported \(finalCellHeight)")
                 }
+                let staticHeight = AssistantMarkdownTextLayout.measure(
+                    finalDocument, width: columnWidth, displayScale: scale)
+                var builderMatches = false
+                var builderHeight: CGFloat = -1
+                var builderBlockCount = -1
+                if let builderDocument {
+                    builderHeight = AssistantMarkdownTextLayout.measure(
+                        builderDocument.document, width: columnWidth,
+                        displayScale: scale)
+                    builderBlockCount = builderDocument.document.blocks.count
+                    builderMatches = builderBlockCount == finalDocument.blocks.count
+                        && builderDocument.document.blockGroups == finalDocument.blockGroups
+                        && builderDocument.document.plainTextLength
+                            == finalDocument.plainTextLength
+                        && abs(builderHeight - staticHeight) <= 0.5
+                }
+                if !builderMatches {
+                    failures.append("\(scenario.name): builder document differs from the full parse")
+                }
+                var correctionGeneration = -1
+                if let finalPrefix = prefixes.last {
+                    let drop = min(40, finalPrefix.count)
+                    let corrected = "Corrected intro.\n\n" + String(finalPrefix.dropFirst(drop))
+                    if let correctedDocument = builder.make(
+                        text: corrected, isRevealing: true, typography: typography) {
+                        correctionGeneration = correctedDocument.generation
+                        if correctedDocument.document.blocks.isEmpty {
+                            failures.append("\(scenario.name): corrected document has no blocks")
+                        }
+                    } else {
+                        failures.append("\(scenario.name): corrected text was rejected")
+                    }
+                }
+                if correctionGeneration < 1 {
+                    failures.append("\(scenario.name): correction did not bump the generation")
+                }
                 scenarioReports[scenario.name] = [
                     "batches": prefixes.count,
                     "textLength": prefixes.last?.utf8.count ?? 0,
@@ -148,6 +200,12 @@ enum TextKitM4BaselineAutoRun {
                     "tailMake": stats(tailMake),
                     "tailMeasure": stats(tailMeasure),
                     "cellConfigure": stats(cellConfigure),
+                    "builder": stats(builderDurations),
+                    "builderHeight": Double(builderHeight),
+                    "builderBlockCount": builderBlockCount,
+                    "builderMatchesStatic": builderMatches,
+                    "builderRejected": builderRejected,
+                    "correctionGeneration": correctionGeneration,
                     "dutyCycle": dutyCycle(
                         batches: prefixes.count,
                         incremental: incrementalWall,

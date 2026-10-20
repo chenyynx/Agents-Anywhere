@@ -173,6 +173,27 @@ struct AssistantTableBlock {
 /// attributes. Conversion returns nil for any construct M3 does not render.
 @MainActor
 enum AssistantMarkdownDocumentParser {
+    /// One parsed snapshot converted to renderable blocks. The snapshot id is
+    /// the identity the streaming parser assigns; the digest changes only when
+    /// the snapshot's content changes.
+    struct ConvertedSnapshot {
+        let id: Int
+        let digest: Int
+        let blocks: [AssistantMarkdownBlock]
+    }
+
+    static func convert(snapshot: MarkdownBlockSnapshot,
+                        typography: TimelineTypographySnapshot) -> ConvertedSnapshot? {
+        guard let parsed = parseTree(from: snapshot.content,
+                                     parent: nil,
+                                     foreground: .label,
+                                     typography: typography) else {
+            return nil
+        }
+        return ConvertedSnapshot(id: snapshot.id, digest: snapshot.digest,
+                                 blocks: parsed)
+    }
+
     static func make(text: String,
                      resolvesFileReferences: Bool,
                      typography: TimelineTypographySnapshot) -> AssistantMarkdownDocument? {
@@ -182,17 +203,15 @@ enum AssistantMarkdownDocumentParser {
               !snapshots.isEmpty else { return nil }
         var parsedBlocks: [AssistantMarkdownBlock] = []
         var blockGroups: [Int] = []
-        for (group, snapshot) in snapshots.enumerated() {
-            guard let parsed = parseTree(from: snapshot.content,
-                                         parent: nil,
-                                         foreground: .label,
-                                         typography: typography) else {
+        for snapshot in snapshots {
+            guard let converted = convert(snapshot: snapshot, typography: typography) else {
                 return nil
             }
             // An empty snapshot (a stray separator) contributes nothing; it is
             // not an unsupported construct.
-            parsedBlocks.append(contentsOf: parsed)
-            blockGroups.append(contentsOf: repeatElement(group, count: parsed.count))
+            parsedBlocks.append(contentsOf: converted.blocks)
+            blockGroups.append(contentsOf:
+                repeatElement(converted.id, count: converted.blocks.count))
         }
         return AssistantMarkdownDocument(
             blocks: parsedBlocks, blockGroups: blockGroups,
@@ -725,6 +744,157 @@ private extension UIFont {
         let traits = fontDescriptor.symbolicTraits.union(.traitItalic)
         guard let descriptor = fontDescriptor.withSymbolicTraits(traits) else { return self }
         return UIFont(descriptor: descriptor, size: pointSize)
+    }
+}
+
+/// Identity of one rendered block inside a streaming document. The snapshot id
+/// comes from `MarkdownParseState` and survives batches; `index` is the block's
+/// position inside that snapshot.
+nonisolated struct AssistantBlockID: Hashable {
+    let snapshot: Int
+    let index: Int
+}
+
+/// A streaming document plus the boundary between settled and revealing
+/// content. Blocks before `stableBlockCount` never change again, so the cell
+/// may keep their views; the tail is the text after the last safe split and is
+/// rendered by the existing reveal view.
+struct AssistantStreamingDocument {
+    let document: AssistantMarkdownDocument
+    let stableBlockIDs: [AssistantBlockID]
+    let stableBlockCount: Int
+    let tailText: String
+    let isRevealing: Bool
+    /// Bumped when the text stops extending the previous batch (a correction or
+    /// a recovery snapshot). The cell must rebuild rather than reuse views.
+    let generation: Int
+}
+
+/// Builds the streaming document incrementally: completed snapshots are parsed
+/// and converted once, the open tail is reparsed each batch. The work stays on
+/// the main actor (the conversion needs UIKit colours); the measured cost of
+/// the tail is sub-millisecond for the fixtures, so this keeps the adapter's
+/// synchronous contract instead of adding async document delivery.
+@MainActor
+final class AssistantStreamingDocumentBuilder {
+    private var state = MarkdownParseState()
+    private var stable: [AssistantMarkdownDocumentParser.ConvertedSnapshot] = []
+    private var lastText = ""
+    private var generation = 0
+    private(set) var isRejected = false
+
+    func reset() {
+        state = MarkdownParseState()
+        stable = []
+        lastText = ""
+        generation &+= 1
+        isRejected = false
+    }
+
+    func make(text: String,
+              isRevealing: Bool,
+              typography: TimelineTypographySnapshot) -> AssistantStreamingDocument? {
+        guard !isRejected, !text.isEmpty else { return nil }
+        if !text.hasPrefix(lastText) { reset() }
+        guard let parsed = try? Self.parseIncremental(text: text, state: state) else {
+            isRejected = true
+            return nil
+        }
+        state = parsed.state
+
+        for snapshot in parsed.completed {
+            guard let converted = AssistantMarkdownDocumentParser.convert(
+                snapshot: snapshot, typography: typography) else {
+                isRejected = true
+                return nil
+            }
+            stable.append(converted)
+        }
+        var tailConverted: [AssistantMarkdownDocumentParser.ConvertedSnapshot] = []
+        tailConverted.reserveCapacity(parsed.tailSnapshots.count)
+        for snapshot in parsed.tailSnapshots {
+            guard let converted = AssistantMarkdownDocumentParser.convert(
+                snapshot: snapshot, typography: typography) else {
+                isRejected = true
+                return nil
+            }
+            tailConverted.append(converted)
+        }
+
+        var blocks: [AssistantMarkdownBlock] = []
+        var groups: [Int] = []
+        var ids: [AssistantBlockID] = []
+        var stableBlockCount = 0
+        func append(_ converted: [AssistantMarkdownDocumentParser.ConvertedSnapshot],
+                    isStable: Bool) {
+            for snapshot in converted {
+                for (index, block) in snapshot.blocks.enumerated() {
+                    blocks.append(block)
+                    groups.append(snapshot.id)
+                    ids.append(AssistantBlockID(snapshot: snapshot.id, index: index))
+                    if isStable { stableBlockCount += 1 }
+                }
+            }
+        }
+        append(stable, isStable: true)
+        append(tailConverted, isStable: false)
+        lastText = text
+
+        return AssistantStreamingDocument(
+            document: AssistantMarkdownDocument(
+                blocks: blocks, blockGroups: groups,
+                plainTextLength: text.count),
+            stableBlockIDs: Array(ids.prefix(stableBlockCount)),
+            stableBlockCount: stableBlockCount,
+            tailText: parsed.tail,
+            isRevealing: isRevealing,
+            generation: generation)
+    }
+
+    private struct ParseResult {
+        let state: MarkdownParseState
+        let completed: [MarkdownBlockSnapshot]
+        let tail: String
+        let tailSnapshots: [MarkdownBlockSnapshot]
+    }
+
+    /// Same boundary rule as `ChatMarkdownView.parse`: completed text is parsed
+    /// once into state, the open tail is parsed per batch.
+    private static func parseIncremental(text: String,
+                                         state: MarkdownParseState) throws -> ParseResult {
+        var state = state
+        let consumed = state.prefixEnd(text)
+        let split = MarkdownStreamSplit.safeSplitIndex(in: text)
+            .flatMap { $0 >= consumed ? $0 : nil }
+
+        var completed: [MarkdownBlockSnapshot] = []
+        if let split, split > consumed {
+            let raw = try AssistantMarkdownDocumentParser.parseBlocks(
+                text: String(text[consumed..<split]),
+                resolvesFileReferences: true)
+            completed = raw.enumerated().map { offset, snapshot in
+                MarkdownBlockSnapshot(id: state.nextID + offset,
+                                      content: snapshot.content)
+            }
+            state.blocks.append(contentsOf: completed)
+            state.nextID += completed.count
+            state.prefixText = String(text[..<split])
+        }
+
+        let tail = String(text[(split ?? consumed)...])
+        let tailSnapshots: [MarkdownBlockSnapshot]
+        if tail.isEmpty {
+            tailSnapshots = []
+        } else {
+            let raw = try AssistantMarkdownDocumentParser.parseBlocks(
+                text: tail, resolvesFileReferences: true)
+            tailSnapshots = raw.enumerated().map { offset, snapshot in
+                MarkdownBlockSnapshot(id: state.nextID + offset,
+                                      content: snapshot.content)
+            }
+        }
+        return ParseResult(state: state, completed: completed,
+                           tail: tail, tailSnapshots: tailSnapshots)
     }
 }
 #endif

@@ -6,13 +6,13 @@
 
 ## 0. 一句话
 
-把表格从「每格一个 UILabel + 卡片子视图」改成官方聊天页的形状：**一个表格 surface 视图画完整张表**（表头填充、行分隔线、外框、所有单元格文字），单元格不再各自持有 UIView。
+把表格从「每格一个 UILabel + 卡片子视图」改成官方的单 surface 形状：**一个表格 surface 视图画完整张表**（表头填充、行分隔线、外框、所有单元格文字），单元格不再各自持有 UIView。表格作为助手正文里的一个 block，随 Code 页的“一条消息一行”一起渲染。
 
 ## 1. 依据与边界
 
 Hark 报告确认：
 
-- 官方**聊天页**的 cell body 是 `prose | code | table`，表格走 `MarkdownTableView`；**Code 页**走 SwiftUI `RichMarkdownView`，不是本条路径。AA 是聊天产品，M3.3 采用的 per-block cell 与官方聊天页一致。
+- 官方**Code 页**是一条助手正文一个 hosting 行，内部由 `RichMarkdownView` 按块渲染；**聊天页**才是 `prose | code | table` 每段一个 cell。按 pp 定稿，助手正文采用 Code 页的一条消息一行，M3.3 的分段行已回退（见 `docs/perf-6b-c5-m3.3-task-sheet.md` §10）。
 - 官方表格是单文本 surface + 自定义 layout：一张表一个 `MarkdownTableLayout`，单元格是段落，绘制按 `(column,row)` 分 tile；没有单元格 UIView。单元格只以无障碍元素形式存在。
 - 几何：`padH = 12`、`padV = 8`；行高 = 本行最高单元格 + `2×padV`；表宽 = `Σ(列宽 + 2×padH)`；溢出时横向滚动 + 边缘渐隐；表头填充第 0 行、行分隔线、外框；未找到竖线。
 - 列宽由 `TableOverflowPolicy` 分配（`lines 8`、`comfortCap 10×body`、`proseCap 16×body`、`tokenCap 12×body`、`squeezeBand 0.15`、`columnInset 40`、`comfortFraction 0.7`）；字段与常量的对应关系仍是 INFERENCE，先不照搬。

@@ -135,3 +135,14 @@ CI run `39392270705`（commit `b7b52028`，`workflow_dispatch` + `timeline_autor
 - 同轮 C3 亦绿（前一轮 `39390593194` 的 `longGroup cell 200 clips content 1471` 为既有 flake）
 
 未覆盖：真机视觉、真机滚动、流式、选择/附件；adapter 真实数据路径只经编译与 C3 冒烟，未单独合成断言。
+
+## 10. 方向修正（2026-10-20）：按 Code 页回退分段行
+
+Hark 第二轮报告修正了页面归属：`MarkdownTextCellContent.body = prose | code | table` 的 per-block cell 属于**聊天页**；**Code 页**是一条助手正文一个 `AssistantTextBlockView`（SwiftUI hosting 行），内部由 `RichMarkdownView` 按块渲染。
+
+因此 M3.3 的“每段一行”不是 Code 页形状。按 pp 定稿（严格对齐 Code 页的行粒度）回退：
+
+- 恢复一条助手消息一个 group item / 一个 cell，内部按顺序渲染所有 block，footer 在消息底部。
+- 移除 `.segment` item、`itemsForGroup` 展开、同消息段间 12pt 的 pair spacing、分段 gate 断言。
+- 保留：块模型与块视图、TextKit 2 测量、M3.1 footer、M3.2 滚动优化、M3.4 表格单 surface。
+- 视觉/行粒度与 Code 页一致；宿主仍是 UIKit（Code 页是 SwiftUI），源码形状差异另行决定。

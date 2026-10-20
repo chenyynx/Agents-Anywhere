@@ -40,52 +40,6 @@ struct AssistantMarkdownDocument {
         walk(blocks)
         return counts
     }
-
-    /// The official Code page groups consecutive prose blocks into one cell and
-    /// gives every code block and table its own cell. Top-level only: a code
-    /// block nested inside a quote/list stays inside that prose block.
-    var segments: [AssistantMarkdownSegment] {
-        var segments: [AssistantMarkdownSegment] = []
-        var prose: [AssistantMarkdownBlock] = []
-
-        func flushProse() {
-            guard !prose.isEmpty else { return }
-            segments.append(.prose(prose))
-            prose.removeAll(keepingCapacity: true)
-        }
-
-        for block in blocks {
-            switch block {
-            case .text, .list, .quote:
-                prose.append(block)
-            case .code(let code):
-                flushProse()
-                segments.append(.code(code))
-            case .table(let table):
-                flushProse()
-                segments.append(.table(table))
-            }
-        }
-        flushProse()
-        return segments
-    }
-}
-
-/// One row's worth of the official per-block layout: a run of prose blocks, or
-/// a single code block/table. M3.3 only defines the shape; the timeline still
-/// renders the whole document in one cell until the item migration lands.
-enum AssistantMarkdownSegment {
-    case prose([AssistantMarkdownBlock])
-    case code(AssistantCodeBlock)
-    case table(AssistantTableBlock)
-
-    var kindName: String {
-        switch self {
-        case .prose: return "prose"
-        case .code: return "code"
-        case .table: return "table"
-        }
-    }
 }
 
 /// Block tree mirroring Textual's `BlockContent`. Nested lists and quotes are

@@ -142,7 +142,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         case .latestPrompt: return .latestPrompt
         case .tail: return .tail(statusLine: model.sendingPlaceholder != nil)
         case .notice: return .row
-        case .segment: return .row
         case .pending(let id):
             guard let pending = pendingByID[id] else { return .row }
             return .text(textEstimate(for: item,
@@ -207,7 +206,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         switch item {
         case .tail: return .tail
         case .notice, .pending: return .interactive
-        case .segment: return .measured
         case .group(let id):
             guard let group = groupsByID[id] else { return .measured }
             return groupHasInteractiveContent(group) ? .interactive : .measured
@@ -225,17 +223,15 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     }
 
     private var assistantDocuments: [String: CachedAssistantDocument] = [:]
-    /// Per-group block segmentation, rebuilt on every refresh from the same
-    /// document cache the measurement path uses.
-    private var segmentsByGroup: [String: [AssistantMarkdownSegment]] = [:]
 
     /// The TextKit path only takes a static assistant message: one row, no
     /// fold, no inline notice, no attachments, no streaming. A text-only turn
     /// action footer is allowed (M3.1); a footer with a file-change summary is
     /// not, because that summary's height is not deterministic. Any block the
     /// parser does not render still makes the whole row return nil.
-    private func assistantDocument(for group: ChatTimelineGroup) -> AssistantMarkdownDocument? {
-        guard group.kind == .single, group.rows.count == 1,
+    func assistantMarkdown(for item: TimelineListItem) -> AssistantMarkdownDocument? {
+        guard case .group(let id) = item, let group = groupsByID[id],
+              group.kind == .single, group.rows.count == 1,
               isTextOnlyTurnAction(turnActions[group.id]),
               let row = group.rows.first else { return nil }
         guard inlineNoticesByRow[row.id] == nil else { return nil }
@@ -263,32 +259,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         return document
     }
 
-    func assistantMarkdown(for item: TimelineListItem) -> AssistantMarkdownDocument? {
-        switch item {
-        case .group(let id):
-            guard let group = groupsByID[id] else { return nil }
-            return assistantDocument(for: group)
-        case .segment(let groupID, _, let index):
-            return segmentDocument(groupID: groupID, index: index)
-        default:
-            return nil
-        }
-    }
-
-    /// A segment is measured and rendered as its own block list: prose keeps
-    /// its consecutive blocks, code/table are single blocks.
-    private func segmentDocument(groupID: String, index: Int) -> AssistantMarkdownDocument? {
-        guard let segments = segmentsByGroup[groupID],
-              segments.indices.contains(index) else { return nil }
-        let blocks: [AssistantMarkdownBlock]
-        switch segments[index] {
-        case .prose(let prose): blocks = prose
-        case .code(let code): blocks = [.code(code)]
-        case .table(let table): blocks = [.table(table)]
-        }
-        return AssistantMarkdownDocument(blocks: blocks, plainTextLength: 0)
-    }
-
     /// A nil action is fine. A text-only action is the fixed copy/retry row
     /// that `AssistantTurnFooter` measures; an action with file changes also
     /// renders `SessionTurnReviewFooter`, whose height depends on its content.
@@ -298,10 +268,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     }
 
     func assistantTurnFooter(for item: TimelineListItem) -> AssistantTurnFooter? {
-        guard case .segment(let groupID, _, let index) = item,
-              let segments = segmentsByGroup[groupID],
-              index == segments.count - 1,
-              let action = turnActions[groupID],
+        guard case .group(let id) = item,
+              let action = turnActions[id],
               isTextOnlyTurnAction(action) else { return nil }
         return AssistantTurnFooter(copyText: action.copyText,
                                    timestampText: action.timestampText)
@@ -311,7 +279,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         switch item {
         case .tail: return .tail
         case .notice, .pending: return .interactive
-        case .segment: return .markdown
         case .group(let id):
             guard let group = groupsByID[id] else { return .markdown }
             return groupHasInteractiveContent(group) ? .interactive : .markdown
@@ -333,11 +300,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 isLoading: isLoadingLatest || isLoadingOlder,
                 pullReady: latestPullReady,
                 onLoad: { [weak self] in self?.onLoadLatest?() }))
-        case .segment:
-            // Segments are only emitted when the TextKit document measured; a
-            // hosting fallback here would duplicate the whole message per
-            // segment, so an unmeasured segment renders nothing.
-            return AnyView(EmptyView())
         case .group(let id):
             guard let group = groupsByID[id] else { return AnyView(EmptyView()) }
             return AnyView(SessionTimelineGroupView(
@@ -365,7 +327,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         switch item {
         case .group(let id):
             return groupsByID[id]?.rows.map(\.id) ?? [id]
-        case .segment(_, let row, _): return [row]
         case .notice(let id): return [id]
         case .pending(let id): return [id]
         case .tail: return ["tail"]
@@ -419,6 +380,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let tailNotices = SessionNoticeRouting.tailNotices(notices, sessionID: model.session.id,
                                                           timelineRowIDs: timelineRowIDs)
         let pending = model.timeline.pendingMessages
+        let identity = TimelineItemIdentity.build(
+            hasOlderPrompt: model.session.hasOlderItems || keepsOlderPrompt,
+            groupIDs: groups.map(\.id),
+            noticeIDs: tailNotices.map(\.id),
+            pendingIDs: pending.map(\.id),
+            hasLatestPrompt: model.session.hasNewerItems)
 
         var groupsByID: [String: ChatTimelineGroup] = [:]
         for group in groups where groupsByID[group.id] == nil { groupsByID[group.id] = group }
@@ -429,6 +396,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         var pendingByID: [String: V2PendingMessage] = [:]
         for message in pending where pendingByID[message.id] == nil {
             pendingByID[message.id] = message
+        }
+        var rowToItem: [String: TimelineListItem] = [:]
+        for group in groups {
+            let item = TimelineListItem.group(group.id)
+            for row in group.rows where rowToItem[row.id] == nil {
+                rowToItem[row.id] = item
+            }
         }
         var inlineNoticesByRow: [String: [SessionNoticeModel]] = [:]
         for notice in visibleNotices where notice.notice.type == "interaction" {
@@ -441,49 +415,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             hasPendingUserMessage: !model.session.hasNewerItems
                 && (!model.timeline.pendingMessages.isEmpty || !model.session.pendingMessages.isEmpty))
 
-        // Segmenting reads the same maps the measurement path uses.
         self.groupsByID = groupsByID
         self.tailNoticesByID = tailNoticesByID
         self.pendingByID = pendingByID
+        self.rowToItem = rowToItem
         self.inlineNoticesByRow = inlineNoticesByRow
         self.turnActions = turnActions
-
-        var segmentsByGroup: [String: [AssistantMarkdownSegment]] = [:]
-        var itemsForGroup: [String: [TimelineListItem]] = [:]
-        for group in groups {
-            guard let document = assistantDocument(for: group),
-                  !document.segments.isEmpty,
-                  let row = group.rows.first else { continue }
-            segmentsByGroup[group.id] = document.segments
-            itemsForGroup[group.id] = document.segments.indices.map {
-                .segment(group: group.id, row: row.id, index: $0)
-            }
-        }
-        self.segmentsByGroup = segmentsByGroup
-
-        let identity = TimelineItemIdentity.build(
-            hasOlderPrompt: model.session.hasOlderItems || keepsOlderPrompt,
-            groupIDs: groups.map(\.id),
-            noticeIDs: tailNotices.map(\.id),
-            pendingIDs: pending.map(\.id),
-            hasLatestPrompt: model.session.hasNewerItems,
-            itemsForGroup: { itemsForGroup[$0] ?? [] })
-
-        var rowToItem: [String: TimelineListItem] = [:]
-        for item in identity.items {
-            switch item {
-            case .group(let id):
-                guard let group = groupsByID[id] else { continue }
-                for row in group.rows where rowToItem[row.id] == nil {
-                    rowToItem[row.id] = item
-                }
-            case .segment(_, let row, _):
-                if rowToItem[row] == nil { rowToItem[row] = item }
-            default:
-                break
-            }
-        }
-        self.rowToItem = rowToItem
         // Parsed documents are keyed by row id; drop rows that left the
         // timeline so a long session does not retain old replies.
         assistantDocuments = assistantDocuments.filter { rowToItem[$0.key] != nil }
@@ -529,8 +466,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
 #if DEBUG
         if identity.hasDuplicates {
             // Data defect: the first occurrence renders. One line, ids only.
-            let duplicates = identity.duplicateGroupIDs + identity.duplicateNoticeIDs
-                + identity.duplicatePendingIDs + identity.duplicateItemIDs
+            let duplicates = identity.duplicateGroupIDs + identity.duplicateNoticeIDs + identity.duplicatePendingIDs
             NSLog("timeline duplicates: %@", duplicates.joined(separator: ","))
         }
 #endif
@@ -561,28 +497,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 pending.attachments.map(\.content), clientID: pending.id))
         case .tail:
             return .tail(tailSignature())
-        case .segment(let groupID, let rowID, let index):
-            guard let group = groupsByID[groupID], let row = group.rows.first else {
-                return .group(Self.emptyGroupSignature)
-            }
-            let isLast = segmentsByGroup[groupID]?.indices.last == index
-            let action = isLast ? turnActions[groupID] : nil
-            return .group(TimelineGroupContentSignature(
-                rows: [TimelineRowContentSignature(
-                    id: "\(rowID)#s\(index)",
-                    revision: row.value.revision,
-                    updatedSeq: row.value.updatedSeq)],
-                disclosureExpanded: false,
-                expandedRowIDs: [],
-                inlineNotices: [],
-                attachments: [],
-                turnAction: action.map(turnActionSignature),
-                turnSuppression: TimelineTurnSuppression(
-                    isRunning: model.isRunning,
-                    hasNewerItems: model.session.hasNewerItems,
-                    hasPendingUserMessage: !model.session.hasNewerItems
-                        && (!model.timeline.pendingMessages.isEmpty
-                            || !model.session.pendingMessages.isEmpty))))
         case .group(let id):
             guard let group = groupsByID[id] else { return .group(Self.emptyGroupSignature) }
             return .group(groupSignature(group))
@@ -622,21 +536,19 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             expandedRowIDs: expandedRowIDs,
             inlineNotices: inlineNotices,
             attachments: attachmentPreviews,
-            turnAction: action.map(turnActionSignature),
+            turnAction: action.map {
+                TimelineTurnActionSignature(
+                    replyIDs: $0.replies.map(\.id),
+                    changeIDs: $0.changes.map(\.id),
+                    startsMidTurn: $0.startsMidTurn,
+                    replyRevisions: $0.replies.map { $0.value.revision },
+                    changeRevisions: $0.changes.map { $0.value.revision })
+            },
             turnSuppression: TimelineTurnSuppression(
                 isRunning: model.isRunning,
                 hasNewerItems: model.session.hasNewerItems,
                 hasPendingUserMessage: !model.session.hasNewerItems
                     && (!model.timeline.pendingMessages.isEmpty || !model.session.pendingMessages.isEmpty)))
-    }
-
-    private func turnActionSignature(_ action: TimelineTurnAction) -> TimelineTurnActionSignature {
-        TimelineTurnActionSignature(
-            replyIDs: action.replies.map(\.id),
-            changeIDs: action.changes.map(\.id),
-            startsMidTurn: action.startsMidTurn,
-            replyRevisions: action.replies.map { $0.value.revision },
-            changeRevisions: action.changes.map { $0.value.revision })
     }
 
     private func tailSignature() -> TimelineTailContentSignature {

@@ -271,14 +271,6 @@ jobs:
                tk.get("topLevelBlocks") == 8 and counts.get("text") == 12
                and counts.get("list") == 4 and counts.get("quote") == 1
                and counts.get("code") == 1 and counts.get("table") == 1, tk),
-              ("segment plan",
-               (tk.get("segments") or {}).get("total") == 4
-               and (tk.get("segments") or {}).get("prose") == 2
-               and (tk.get("segments") or {}).get("code") == 1
-               and (tk.get("segments") or {}).get("table") == 1, tk),
-              ("segment rows",
-               tk.get("segmentItems") == 4
-               and abs(tk.get("segmentDelta", 99)) <= 5.0, tk),
               ("scroll covered",
                scroll.get("steps") == 24 and scroll.get("reachedBottom") is True,
                scroll),

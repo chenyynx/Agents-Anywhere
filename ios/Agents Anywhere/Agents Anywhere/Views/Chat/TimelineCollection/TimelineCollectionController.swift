@@ -1140,16 +1140,6 @@ extension TimelineCollectionController: TimelineListLayoutHost {
         content?.measurementContent(for: item) ?? .markdown
     }
 
-    func layoutSpacing(after item: TimelineListItem, before next: TimelineListItem) -> CGFloat {
-        if case .segment(let group, _, let index) = item,
-           case .segment(let nextGroup, _, let nextIndex) = next,
-           group == nextGroup,
-           nextIndex == index + 1 {
-            return AssistantMarkdownTextLayout.blockSpacing
-        }
-        return TimelineListMetrics.itemSpacing
-    }
-
     func layoutInteractionState() -> TimelineLayoutInteractionState {
         var state = content?.interactionState() ?? TimelineLayoutInteractionState()
         state.hasArmedBottomTarget = armedBottom.isArmed

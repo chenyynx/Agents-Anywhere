@@ -34,8 +34,6 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
     @ObservationIgnored private var initialHeights: [String: CGFloat] = [:]
     @ObservationIgnored private var document: AssistantMarkdownDocument?
     @ObservationIgnored private var stressDocument: AssistantMarkdownDocument?
-    @ObservationIgnored private var items: [TimelineListItem] = []
-    @ObservationIgnored private var rowToItem: [String: TimelineListItem] = [:]
 
     private static let fixture = """
     ## Lists and quotes
@@ -116,70 +114,36 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
             text: Self.stressFixture,
             resolvesFileReferences: false,
             typography: typography)
-
-        var builtItems: [TimelineListItem] = []
-        var builtRowToItem: [String: TimelineListItem] = [:]
-        for entry in entries {
-            if entry.kind == .assistantTextKit, let document {
-                for index in document.segments.indices {
-                    let item = TimelineListItem.segment(
-                        group: entry.id, row: entry.id, index: index)
-                    builtItems.append(item)
-                    if builtRowToItem[entry.id] == nil { builtRowToItem[entry.id] = item }
-                }
-            } else {
-                let item = TimelineListItem.group(entry.id)
-                builtItems.append(item)
-                builtRowToItem[entry.id] = item
-            }
-        }
-        items = builtItems
-        rowToItem = builtRowToItem
     }
 
     // MARK: - Content providing
 
-    var itemCount: Int { items.count }
+    var itemCount: Int { entries.count }
 
-    func item(at index: Int) -> TimelineListItem { items[index] }
+    func item(at index: Int) -> TimelineListItem { listItem(entries[index]) }
 
     func contentSignature(for item: TimelineListItem) -> TimelineContentSignature {
-        switch item {
-        case .segment(let groupID, let rowID, let index):
-            let isLast = groupID == "textkit-assistant-1"
-                && document?.segments.indices.last == index
-            return .group(TimelineGroupContentSignature(
-                rows: [TimelineRowContentSignature(
-                    id: "\(rowID)#s\(index)", revision: 0, updatedSeq: 0)],
-                disclosureExpanded: false,
-                inlineNotices: [],
-                attachments: [],
-                turnAction: isLast
-                    ? TimelineTurnActionSignature(
-                        replyIDs: [rowID],
-                        changeIDs: [],
-                        startsMidTurn: false,
-                        replyRevisions: [0],
-                        changeRevisions: [])
-                    : nil,
-                turnSuppression: TimelineTurnSuppression(
-                    isRunning: false, hasNewerItems: false, hasPendingUserMessage: false)))
-        case .group(let id):
-            guard let entry = entries.first(where: { $0.id == id }) else {
-                return .notice(id: "missing", status: .unknown, revision: 0)
-            }
-            return .group(TimelineGroupContentSignature(
-                rows: [TimelineRowContentSignature(id: entry.id, revision: entry.revision,
-                                                   updatedSeq: entry.revision)],
-                disclosureExpanded: false,
-                inlineNotices: [],
-                attachments: [],
-                turnAction: nil,
-                turnSuppression: TimelineTurnSuppression(
-                    isRunning: false, hasNewerItems: false, hasPendingUserMessage: false)))
-        default:
+        guard case .group(let id) = item,
+              let entry = entries.first(where: { $0.id == id }) else {
             return .notice(id: "missing", status: .unknown, revision: 0)
         }
+        let isAssistant = entry.kind == .assistantTextKit
+        return .group(TimelineGroupContentSignature(
+            rows: [TimelineRowContentSignature(id: entry.id, revision: entry.revision,
+                                               updatedSeq: entry.revision)],
+            disclosureExpanded: false,
+            inlineNotices: [],
+            attachments: [],
+            turnAction: isAssistant
+                ? TimelineTurnActionSignature(
+                    replyIDs: [entry.id],
+                    changeIDs: [],
+                    startsMidTurn: false,
+                    replyRevisions: [entry.revision],
+                    changeRevisions: [])
+                : nil,
+            turnSuppression: TimelineTurnSuppression(
+                isRunning: false, hasNewerItems: false, hasPendingUserMessage: false)))
     }
 
     func heightKey(for item: TimelineListItem, width: CGFloat) -> TimelineHeightKey {
@@ -196,47 +160,31 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
     func heightPolicy(for item: TimelineListItem) -> TimelineRowHeightPolicy { .measured }
 
     func measurementContent(for item: TimelineListItem) -> TimelineMeasurementContent {
-        switch item {
-        case .segment:
-            return .markdown
-        case .group(let id):
-            guard let entry = entries.first(where: { $0.id == id }) else { return .plainText }
-            return entry.kind == .topPlain || entry.kind == .bottomPlain
-                ? .plainText : .markdown
-        default:
-            return .plainText
-        }
+        guard case .group(let id) = item,
+              let entry = entries.first(where: { $0.id == id }) else { return .plainText }
+        return entry.kind == .topPlain || entry.kind == .bottomPlain
+            ? .plainText : .markdown
     }
 
     func rowView(for item: TimelineListItem) -> AnyView {
-        switch item {
-        case .segment:
-            return AnyView(EmptyView())
-        case .group(let id):
-            guard let entry = entries.first(where: { $0.id == id }) else {
-                return AnyView(EmptyView())
-            }
-            if entry.kind != .topPlain && entry.kind != .bottomPlain {
-                return AnyView(ChatMarkdownView(text: entry.text))
-            }
-            return AnyView(Text(entry.text)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading))
-        default:
-            return AnyView(EmptyView())
+        guard case .group(let id) = item,
+              let entry = entries.first(where: { $0.id == id }) else { return AnyView(EmptyView()) }
+        if entry.kind != .topPlain && entry.kind != .bottomPlain {
+            return AnyView(ChatMarkdownView(text: entry.text))
         }
+        return AnyView(Text(entry.text)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading))
     }
 
     func rowIDs(in item: TimelineListItem) -> [String] {
-        switch item {
-        case .segment(_, let row, _): return [row]
-        case .group(let id): return [id]
-        default: return []
-        }
+        if case .group(let id) = item { return [id] }
+        return []
     }
 
     func item(containingRow rowID: String) -> TimelineListItem? {
-        rowToItem[rowID]
+        guard let entry = entries.first(where: { $0.id == rowID }) else { return nil }
+        return listItem(entry)
     }
 
     func interactionState() -> TimelineLayoutInteractionState {
@@ -244,31 +192,17 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
     }
 
     func assistantMarkdown(for item: TimelineListItem) -> AssistantMarkdownDocument? {
-        switch item {
-        case .segment(let groupID, _, let index):
-            guard groupID == "textkit-assistant-1",
-                  let document,
-                  document.segments.indices.contains(index) else { return nil }
-            let blocks: [AssistantMarkdownBlock]
-            switch document.segments[index] {
-            case .prose(let prose): blocks = prose
-            case .code(let code): blocks = [.code(code)]
-            case .table(let table): blocks = [.table(table)]
-            }
-            return AssistantMarkdownDocument(blocks: blocks, plainTextLength: 0)
-        case .group(let id):
-            guard let entry = entries.first(where: { $0.id == id }) else { return nil }
-            return entry.kind == .stress ? stressDocument : nil
-        default:
-            return nil
+        guard case .group(let id) = item,
+              let entry = entries.first(where: { $0.id == id }) else { return nil }
+        switch entry.kind {
+        case .assistantTextKit: return document
+        case .stress: return stressDocument
+        case .topPlain, .bottomPlain: return nil
         }
     }
 
     func assistantTurnFooter(for item: TimelineListItem) -> AssistantTurnFooter? {
-        guard case .segment(let groupID, _, let index) = item,
-              groupID == "textkit-assistant-1",
-              let document,
-              document.segments.indices.last == index else { return nil }
+        guard case .group(let id) = item, id == "textkit-assistant-1" else { return nil }
         return AssistantTurnFooter(copyText: "A static TextKit reply.", timestampText: "10:30")
     }
 
@@ -287,7 +221,8 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
     private func captureInitialHeights(_ controller: TimelineCollectionController) {
         guard initialHeights.isEmpty else { return }
         controller.collectionView.layoutIfNeeded()
-        for item in items {
+        for entry in entries {
+            let item = listItem(entry)
             if let height = controller.layout.attributes(for: item.itemID)?.frame.height {
                 initialHeights[item.itemID] = height
             }
@@ -303,42 +238,12 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
             finish()
             return
         }
-        let assistantItems = items.filter {
-            if case .segment(let group, _, _) = $0, group == "textkit-assistant-1" {
-                return true
-            }
-            return false
-        }
-        guard let item = assistantItems.last else {
-            failures.append("textkit: no assistant segments")
-            finish()
-            return
-        }
+        let item = listItem(entries[1])
         let stored = initialHeights[item.itemID]
             ?? controller.layout.attributes(for: item.itemID)?.frame.height ?? 0
         let measured = controller.measuredTextKitHeight(for: item) ?? -1
         let estimate = estimateKind(for: item).height
         let pending = controller.layout.pendingMeasurements.contains(item)
-
-        var segmentRows: [[String: Any]] = []
-        var segmentSum: CGFloat = 0
-        for segmentItem in assistantItems {
-            let segmentStored = initialHeights[segmentItem.itemID]
-                ?? controller.layout.attributes(for: segmentItem.itemID)?.frame.height ?? 0
-            let segmentMeasured = controller.measuredTextKitHeight(for: segmentItem) ?? -1
-            segmentSum += segmentStored
-            if abs(segmentStored - segmentMeasured) > 0.5 {
-                failures.append("textkit segment \(segmentItem.itemID): stored \(segmentStored) != measured \(segmentMeasured)")
-            }
-            segmentRows.append([
-                "item": segmentItem.itemID,
-                "stored": Double(segmentStored),
-                "measured": Double(segmentMeasured),
-            ])
-        }
-        if assistantItems.count != 4 {
-            failures.append("textkit segments: \(assistantItems.count) rows, expected 4")
-        }
 
         var sample: (content: CGFloat, frame: CGFloat, inWindow: Bool)?
         var sampleWidth: CGFloat = 0
@@ -366,8 +271,8 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
             await wait(100)
         }
 
-        // The last assistant segment is the fixture table (3 rows × 2 columns).
-        // The M3.4 surface must expose six cell elements and no cell subviews.
+        // The assistant body's fixture table is 3 rows × 2 columns. The M3.4
+        // surface must expose six cell elements and no cell subviews.
         var tableSurfaceCells = -1
         var tableSurfaceSubviews = -1
         var tableSurfaceLabels = -1
@@ -417,39 +322,19 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
 
         let counts = document?.blockCounts ?? [:]
         let topLevelBlocks = document?.blocks.count ?? 0
-        let segments = document?.segments ?? []
-        let segmentCounts = Dictionary(grouping: segments, by: { $0.kindName })
-            .mapValues { $0.count }
         let cellContent = sample?.content ?? -1
         let cellFrame = sample?.frame ?? -1
         let inWindow = sample?.inWindow ?? false
 
         // The footer must be part of the synchronously stored height, not just
-        // a view that happens to fit. Measure the last segment without it and
+        // a view that happens to fit. Measure the same document without it and
         // compare the difference with the fixed footer height.
-        let lastSegmentDocument = assistantMarkdown(for: item)
-        let lastSegmentOnly = sampleWidth > 0 ? lastSegmentDocument.map {
+        let documentOnly = sampleWidth > 0 ? document.map {
             AssistantMarkdownTextLayout.measure(
                 $0, width: sampleWidth,
                 displayScale: controller.traitCollection.displayScale)
         } : nil
-        let footerDelta = lastSegmentOnly.map { measured - $0 } ?? -1
-
-        // Splitting a message into rows must preserve the old one-cell height:
-        // sum of segment heights (without the footer) + 12pt between segments
-        // equals the whole document's measure.
-        let segmentSpacing = AssistantMarkdownTextLayout.blockSpacing
-            * CGFloat(max(0, assistantItems.count - 1))
-        let segmentSumWithoutFooter = segmentSum - AssistantTurnFooter.height
-        let wholeDocumentOnly = sampleWidth > 0 ? document.map {
-            AssistantMarkdownTextLayout.measure(
-                $0, width: sampleWidth,
-                displayScale: controller.traitCollection.displayScale)
-        } : nil
-        let wholeDocumentHeight = wholeDocumentOnly ?? -1
-        let segmentDelta = wholeDocumentHeight >= 0
-            ? (segmentSumWithoutFooter + segmentSpacing) - wholeDocumentHeight
-            : -1
+        let footerDelta = documentOnly.map { measured - $0 } ?? -1
 
         if measured < 0 {
             failures.append("textkit: row has no synchronous document measurement")
@@ -494,22 +379,8 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
         if counts["table"] != 1 {
             failures.append("textkit fixture: \(counts["table"] ?? -1) table blocks, expected 1")
         }
-        if segments.count != 4 {
-            failures.append("textkit segments: \(segments.count), expected 4")
-        }
-        if segmentCounts["prose"] != 2 || segmentCounts["code"] != 1
-            || segmentCounts["table"] != 1 {
-            failures.append("textkit segments: \(segmentCounts), expected prose 2 / code 1 / table 1")
-        }
         if abs(footerDelta - AssistantTurnFooter.height) > 1.5 {
             failures.append("textkit footer: delta \(footerDelta) vs \(AssistantTurnFooter.height)")
-        }
-        // Each row's stored height is ceiled to an integral point; with four
-        // segments the sum can legitimately sit a few points above the old
-        // single-cell measure. The invariant catches drift, not sub-point
-        // rounding.
-        if abs(segmentDelta) > Double(assistantItems.count) + 1 {
-            failures.append("textkit segments: sum \(segmentSumWithoutFooter) + spacing \(segmentSpacing) vs whole \(wholeDocumentHeight)")
         }
 
         report["textKit"] = [
@@ -524,19 +395,8 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
             "overlaps": overlaps,
             "footerDelta": Double(footerDelta),
             "footerHeight": Double(AssistantTurnFooter.height),
-            "segmentItems": assistantItems.count,
-            "segmentHeights": segmentRows,
-            "segmentSumWithoutFooter": Double(segmentSumWithoutFooter),
-            "segmentSpacing": Double(segmentSpacing),
-            "wholeDocumentHeight": Double(wholeDocumentHeight),
-            "segmentDelta": Double(segmentDelta),
             "topLevelBlocks": topLevelBlocks,
             "blockCounts": counts,
-            "segments": {
-                var summary = segmentCounts
-                summary["total"] = segments.count
-                return summary
-            }(),
             "plainAccepted": plainDocument != nil,
             "unorderedAccepted": unorderedDocument != nil,
             "orderedAccepted": orderedDocument != nil,

@@ -76,7 +76,7 @@ final class AssistantMarkdownCell: UICollectionViewCell {
         stack.axis = .vertical
         stack.alignment = .fill
         stack.distribution = .fill
-        stack.spacing = AssistantMarkdownTextLayout.blockSpacing
+        stack.spacing = 0
         stack.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(stack)
         let bottom = stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
@@ -152,6 +152,17 @@ final class AssistantMarkdownCell: UICollectionViewCell {
             let constraint = made.view.heightAnchor.constraint(equalToConstant: made.height)
             constraint.isActive = true
             heightConstraints.append(constraint)
+        }
+
+        // Textual collapses adjacent block margins (max, not sum); the same
+        // rule is used by the measurement path.
+        for index in 1..<max(1, document.blocks.count) {
+            guard stack.arrangedSubviews.indices.contains(index - 1) else { break }
+            stack.setCustomSpacing(
+                AssistantMarkdownTextLayout.spacing(
+                    after: document.blocks[index - 1],
+                    before: document.blocks[index]),
+                after: stack.arrangedSubviews[index - 1])
         }
 
         if let footer {

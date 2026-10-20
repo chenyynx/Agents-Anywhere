@@ -12,9 +12,9 @@ enum AssistantMarkdownBlockViewFactory {
         let height = AssistantMarkdownTextLayout.height(
             of: block, width: width, displayScale: displayScale)
         switch block {
-        case .text(let attributed):
+        case .text(let text):
             let view = AssistantMarkdownBlockTextView()
-            view.attributedText = attributed
+            view.attributedText = text.attributed
             return (view, height)
         case .list(let list):
             return (AssistantListBlockView(list: list, width: width,
@@ -92,8 +92,7 @@ final class AssistantListItemRowView: UIView {
         self.contentIndent = list.contentIndent(for: item.marker)
         let contentWidth = max(0, width - contentIndent)
         self.contentHeight = AssistantMarkdownTextLayout.stackHeight(
-            of: item.blocks, width: contentWidth,
-            spacing: list.innerSpacing, displayScale: displayScale)
+            of: item.blocks, width: contentWidth, displayScale: displayScale)
         super.init(frame: .zero)
         backgroundColor = .clear
 
@@ -101,7 +100,7 @@ final class AssistantListItemRowView: UIView {
         stack.axis = .vertical
         stack.alignment = .fill
         stack.distribution = .fill
-        stack.spacing = list.innerSpacing
+        stack.spacing = 0
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         let bottom = stack.bottomAnchor.constraint(equalTo: bottomAnchor)
@@ -112,11 +111,17 @@ final class AssistantListItemRowView: UIView {
             stack.topAnchor.constraint(equalTo: topAnchor),
             bottom,
         ])
-        for block in item.blocks {
+        for (index, block) in item.blocks.enumerated() {
             let made = AssistantMarkdownBlockViewFactory.make(
                 block, width: contentWidth, displayScale: displayScale)
             stack.addArrangedSubview(made.view)
             made.view.heightAnchor.constraint(equalToConstant: made.height).isActive = true
+            if index > 0 {
+                stack.setCustomSpacing(
+                    AssistantMarkdownTextLayout.spacing(
+                        after: item.blocks[index - 1], before: block),
+                    after: stack.arrangedSubviews[index - 1])
+            }
         }
 
         switch item.marker {
@@ -184,7 +189,7 @@ final class AssistantQuoteBlockView: UIView {
         stack.axis = .vertical
         stack.alignment = .fill
         stack.distribution = .fill
-        stack.spacing = quote.innerSpacing
+        stack.spacing = 0
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         let bottom = stack.bottomAnchor.constraint(equalTo: bottomAnchor)
@@ -195,11 +200,17 @@ final class AssistantQuoteBlockView: UIView {
             stack.topAnchor.constraint(equalTo: topAnchor),
             bottom,
         ])
-        for block in quote.blocks {
+        for (index, block) in quote.blocks.enumerated() {
             let made = AssistantMarkdownBlockViewFactory.make(
                 block, width: contentWidth, displayScale: displayScale)
             stack.addArrangedSubview(made.view)
             made.view.heightAnchor.constraint(equalToConstant: made.height).isActive = true
+            if index > 0 {
+                stack.setCustomSpacing(
+                    AssistantMarkdownTextLayout.spacing(
+                        after: quote.blocks[index - 1], before: block),
+                    after: stack.arrangedSubviews[index - 1])
+            }
         }
     }
 

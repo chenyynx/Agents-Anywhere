@@ -7,8 +7,39 @@ import UIKit
 /// detached `NSTextContainer`).
 @MainActor
 enum AssistantMarkdownTextLayout {
-    /// `ChatMarkdownView` lays blocks out in a VStack with this spacing.
-    static let blockSpacing: CGFloat = 12
+    /// Textual's CSS-style margin collapsing: the gap between two blocks is
+    /// the larger of the previous block's bottom margin and the next block's
+    /// top margin. The values come from AA's existing typography scheme, not
+    /// from a redesign.
+    struct BlockMargins {
+        let top: CGFloat?
+        let bottom: CGFloat?
+    }
+
+    static func margins(for block: AssistantMarkdownBlock) -> BlockMargins {
+        // Textual's `.fontScaled` multiplies the reference ratio by the current
+        // body size; keep the same conversion here.
+        let scale = ChatMetrics.bodySize / ChatMetrics.referenceBodySize
+        func scaled(_ points: CGFloat) -> CGFloat { points * scale }
+        switch block {
+        case .text(let text):
+            return BlockMargins(
+                top: scaled(ChatMetrics.paragraphSpacing),
+                bottom: text.headingLevel == nil ? nil : scaled(8))
+        case .code, .table:
+            return BlockMargins(
+                top: scaled(ChatMetrics.codeBlockMargin),
+                bottom: scaled(ChatMetrics.codeBlockMargin))
+        case .list, .quote:
+            return BlockMargins(top: scaled(ChatMetrics.paragraphSpacing), bottom: nil)
+        }
+    }
+
+    static func spacing(after block: AssistantMarkdownBlock,
+                        before next: AssistantMarkdownBlock) -> CGFloat {
+        max(margins(for: block).bottom ?? 0,
+            margins(for: next).top ?? 0)
+    }
 
     /// Height of one text block, wrapped to `width`. Pixel-rounded the same way
     /// `MarkdownBlockSizing` rounds a Textual block.
@@ -58,8 +89,8 @@ enum AssistantMarkdownTextLayout {
                        displayScale: CGFloat) -> CGFloat {
         guard width > 0, width.isFinite else { return 0 }
         switch block {
-        case .text(let attributed):
-            return height(of: attributed, width: width, displayScale: displayScale)
+        case .text(let text):
+            return height(of: text.attributed, width: width, displayScale: displayScale)
         case .list(let list):
             var total: CGFloat = 0
             for (index, item) in list.items.enumerated() {
@@ -67,7 +98,6 @@ enum AssistantMarkdownTextLayout {
                 let contentWidth = max(0, width - list.contentIndent(for: item.marker))
                 total += stackHeight(of: item.blocks,
                                      width: contentWidth,
-                                     spacing: list.innerSpacing,
                                      displayScale: displayScale)
             }
             return roundUp(total, scale: displayScale)
@@ -75,7 +105,6 @@ enum AssistantMarkdownTextLayout {
             let contentWidth = max(0, width - quote.inset)
             let total = stackHeight(of: quote.blocks,
                                     width: contentWidth,
-                                    spacing: quote.innerSpacing,
                                     displayScale: displayScale)
             return roundUp(total, scale: displayScale)
         case .code(let code):
@@ -130,26 +159,22 @@ enum AssistantMarkdownTextLayout {
     /// pixel-rounded; the caller decides whether the sum needs its own round.
     static func stackHeight(of blocks: [AssistantMarkdownBlock],
                             width: CGFloat,
-                            spacing: CGFloat,
                             displayScale: CGFloat) -> CGFloat {
         var total: CGFloat = 0
         for (index, block) in blocks.enumerated() {
-            if index > 0 { total += spacing }
+            if index > 0 {
+                total += spacing(after: blocks[index - 1], before: block)
+            }
             total += height(of: block, width: width, displayScale: displayScale)
         }
         return total
     }
 
-    /// Sum of the block heights plus the product's inter-block spacing.
+    /// Sum of the block heights plus Textual's collapsed inter-block margins.
     static func measure(_ document: AssistantMarkdownDocument,
                         width: CGFloat,
                         displayScale: CGFloat) -> CGFloat {
-        var total: CGFloat = 0
-        for (index, block) in document.blocks.enumerated() {
-            if index > 0 { total += blockSpacing }
-            total += height(of: block, width: width, displayScale: displayScale)
-        }
-        return total
+        stackHeight(of: document.blocks, width: width, displayScale: displayScale)
     }
 
     private static func roundUp(_ value: CGFloat, scale: CGFloat) -> CGFloat {

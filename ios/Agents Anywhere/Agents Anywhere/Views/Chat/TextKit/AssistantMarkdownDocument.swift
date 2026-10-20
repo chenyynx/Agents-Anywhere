@@ -42,11 +42,18 @@ struct AssistantMarkdownDocument {
     }
 }
 
+/// A running-text block. `headingLevel` is kept because Textual gives headings
+/// an 8pt bottom margin while body paragraphs have none.
+struct AssistantTextBlock {
+    let attributed: NSAttributedString
+    let headingLevel: Int?
+}
+
 /// Block tree mirroring Textual's `BlockContent`. Nested lists and quotes are
 /// containers, not flattened markers, because the product's indentation,
 /// marker column and quote rule all depend on the parent column's width.
 enum AssistantMarkdownBlock {
-    case text(NSAttributedString)
+    case text(AssistantTextBlock)
     case list(AssistantListBlock)
     case quote(AssistantQuoteBlock)
     case code(AssistantCodeBlock)
@@ -520,7 +527,7 @@ enum AssistantMarkdownDocumentParser {
     private static func textBlock(_ content: AttributedString,
                                   headingLevel: Int?,
                                   foreground: UIColor,
-                                  typography: TimelineTypographySnapshot) -> NSAttributedString? {
+                                  typography: TimelineTypographySnapshot) -> AssistantTextBlock? {
         guard !content.characters.isEmpty else { return nil }
 
         let bodySize = typography.body
@@ -546,7 +553,9 @@ enum AssistantMarkdownDocumentParser {
             content, baseFont: baseFont, baseColor: foreground,
             paragraph: paragraph, typography: typography) else { return nil }
         trimBoundaryWhitespace(output)
-        return output.length > 0 ? output : nil
+        return output.length > 0
+            ? AssistantTextBlock(attributed: output, headingLevel: headingLevel)
+            : nil
     }
 
     /// Shared inline conversion for running text and table cells. `baseFont`

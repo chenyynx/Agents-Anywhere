@@ -388,7 +388,11 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
     /// rows. The measured block is only the synchronous scroll + layout work;
     /// the short sleep afterwards lets reuse settle without inflating it.
     private func measureScroll(_ controller: TimelineCollectionController) async -> [String: Any] {
-        let view = controller.collectionView
+        guard let view = controller.collectionView else {
+            failures.append("textkit scroll: no collection view")
+            return ["steps": 0, "medianMs": -1.0, "p95Ms": -1.0, "maxMs": -1.0,
+                    "contentHeight": 0.0, "viewport": 0.0, "reachedBottom": false]
+        }
         view.layoutIfNeeded()
         let viewport = view.bounds.height
         let contentHeight = view.contentSize.height

@@ -52,10 +52,14 @@ final class TextKitVisualParityController: UIViewController {
     // MARK: - Legacy path
 
     private func captureLegacy() async -> CGFloat {
+        // The product hosts this view inside a timeline row, not under the
+        // status bar. Ignore the parity window's top safe area so the capture
+        // compares content, not the 68pt inset the M1 spike also hit.
         let host = UIHostingController(rootView: ChatMarkdownView(
             text: TextKitM3AutoRunModel.fixture,
             isStreaming: false,
-            resolvesFileReferences: false))
+            resolvesFileReferences: false)
+            .ignoresSafeArea())
         host.overrideUserInterfaceStyle = .light
         addChild(host)
         host.view.translatesAutoresizingMaskIntoConstraints = true

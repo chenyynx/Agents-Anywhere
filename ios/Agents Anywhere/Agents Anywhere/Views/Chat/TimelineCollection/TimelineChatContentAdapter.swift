@@ -142,6 +142,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         case .latestPrompt: return .latestPrompt
         case .tail: return .tail(statusLine: model.sendingPlaceholder != nil)
         case .notice: return .row
+        case .segment: return .row
         case .pending(let id):
             guard let pending = pendingByID[id] else { return .row }
             return .text(textEstimate(for: item,
@@ -206,6 +207,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         switch item {
         case .tail: return .tail
         case .notice, .pending: return .interactive
+        case .segment: return .measured
         case .group(let id):
             guard let group = groupsByID[id] else { return .measured }
             return groupHasInteractiveContent(group) ? .interactive : .measured
@@ -279,6 +281,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         switch item {
         case .tail: return .tail
         case .notice, .pending: return .interactive
+        case .segment: return .markdown
         case .group(let id):
             guard let group = groupsByID[id] else { return .markdown }
             return groupHasInteractiveContent(group) ? .interactive : .markdown
@@ -300,6 +303,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 isLoading: isLoadingLatest || isLoadingOlder,
                 pullReady: latestPullReady,
                 onLoad: { [weak self] in self?.onLoadLatest?() }))
+        case .segment:
+            // Segments are only emitted when the TextKit document measured; a
+            // hosting fallback here would duplicate the whole message per
+            // segment, so an unmeasured segment renders nothing.
+            return AnyView(EmptyView())
         case .group(let id):
             guard let group = groupsByID[id] else { return AnyView(EmptyView()) }
             return AnyView(SessionTimelineGroupView(
@@ -327,6 +335,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         switch item {
         case .group(let id):
             return groupsByID[id]?.rows.map(\.id) ?? [id]
+        case .segment(_, let row, _): return [row]
         case .notice(let id): return [id]
         case .pending(let id): return [id]
         case .tail: return ["tail"]
@@ -466,7 +475,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
 #if DEBUG
         if identity.hasDuplicates {
             // Data defect: the first occurrence renders. One line, ids only.
-            let duplicates = identity.duplicateGroupIDs + identity.duplicateNoticeIDs + identity.duplicatePendingIDs
+            let duplicates = identity.duplicateGroupIDs + identity.duplicateNoticeIDs
+                + identity.duplicatePendingIDs + identity.duplicateItemIDs
             NSLog("timeline duplicates: %@", duplicates.joined(separator: ","))
         }
 #endif
@@ -497,6 +507,26 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 pending.attachments.map(\.content), clientID: pending.id))
         case .tail:
             return .tail(tailSignature())
+        case .segment(let groupID, let rowID, let index):
+            guard let group = groupsByID[groupID], let row = group.rows.first else {
+                return .group(Self.emptyGroupSignature)
+            }
+            return .group(TimelineGroupContentSignature(
+                rows: [TimelineRowContentSignature(
+                    id: "\(rowID)#s\(index)",
+                    revision: row.value.revision,
+                    updatedSeq: row.value.updatedSeq)],
+                disclosureExpanded: false,
+                expandedRowIDs: [],
+                inlineNotices: [],
+                attachments: [],
+                turnAction: nil,
+                turnSuppression: TimelineTurnSuppression(
+                    isRunning: model.isRunning,
+                    hasNewerItems: model.session.hasNewerItems,
+                    hasPendingUserMessage: !model.session.hasNewerItems
+                        && (!model.timeline.pendingMessages.isEmpty
+                            || !model.session.pendingMessages.isEmpty))))
         case .group(let id):
             guard let group = groupsByID[id] else { return .group(Self.emptyGroupSignature) }
             return .group(groupSignature(group))

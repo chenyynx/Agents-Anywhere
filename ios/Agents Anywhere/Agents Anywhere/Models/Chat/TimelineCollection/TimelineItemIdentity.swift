@@ -10,6 +10,10 @@ nonisolated enum TimelineListItem: Hashable, Sendable {
     case olderPrompt
     /// The group's first row id (the same identity the SwiftUI list used).
     case group(String)
+    /// One official-shaped block row inside an assistant group: a prose run,
+    /// a code block or a table. `row` is the owning message row; segments of
+    /// the same row share it and are ordered by `index`.
+    case segment(group: String, row: String, index: Int)
     case notice(String)
     case pending(String)
     case latestPrompt
@@ -19,6 +23,7 @@ nonisolated enum TimelineListItem: Hashable, Sendable {
         switch self {
         case .olderPrompt: return "prompt:older"
         case .group(let id): return "g:\(id)"
+        case .segment(_, let row, let index): return "sg:\(row):\(index)"
         case .notice(let id): return "n:\(id)"
         case .pending(let id): return "p:\(id)"
         case .latestPrompt: return "prompt:latest"
@@ -35,9 +40,12 @@ nonisolated struct TimelineItemIdentityList: Equatable {
     let duplicateGroupIDs: [String]
     let duplicateNoticeIDs: [String]
     let duplicatePendingIDs: [String]
+    /// Duplicates after expanding a group into per-block segment rows.
+    var duplicateItemIDs: [String] = []
 
     var hasDuplicates: Bool {
-        !duplicateGroupIDs.isEmpty || !duplicateNoticeIDs.isEmpty || !duplicatePendingIDs.isEmpty
+        !duplicateGroupIDs.isEmpty || !duplicateNoticeIDs.isEmpty
+            || !duplicatePendingIDs.isEmpty || !duplicateItemIDs.isEmpty
     }
 }
 
@@ -50,13 +58,21 @@ nonisolated enum TimelineItemIdentity {
                       noticeIDs: [String],
                       pendingIDs: [String],
                       hasLatestPrompt: Bool,
-                      hasTail: Bool = true) -> TimelineItemIdentityList {
+                      hasTail: Bool = true,
+                      itemsForGroup: ((String) -> [TimelineListItem])? = nil)
+        -> TimelineItemIdentityList {
         var items: [TimelineListItem] = []
         items.reserveCapacity(groupIDs.count + noticeIDs.count + pendingIDs.count + 3)
         if hasOlderPrompt { items.append(.olderPrompt) }
 
         let groups = deduplicate(groupIDs)
-        items.append(contentsOf: groups.values.map { .group($0) })
+        for groupID in groups.values {
+            if let groupItems = itemsForGroup?(groupID), !groupItems.isEmpty {
+                items.append(contentsOf: groupItems)
+            } else {
+                items.append(.group(groupID))
+            }
+        }
         let notices = deduplicate(noticeIDs)
         items.append(contentsOf: notices.values.map { .notice($0) })
         let pending = deduplicate(pendingIDs)
@@ -64,10 +80,21 @@ nonisolated enum TimelineItemIdentity {
 
         if hasLatestPrompt { items.append(.latestPrompt) }
         if hasTail { items.append(.tail) }
+
+        // Per-block rows share the group's order but carry their own identity;
+        // a repeated itemID is a data defect, not a crash.
+        var seen = Set<String>()
+        var duplicateItemIDs: [String] = []
+        items = items.filter { item in
+            if seen.insert(item.itemID).inserted { return true }
+            duplicateItemIDs.append(item.itemID)
+            return false
+        }
         return TimelineItemIdentityList(items: items,
             duplicateGroupIDs: groups.duplicates,
             duplicateNoticeIDs: notices.duplicates,
-            duplicatePendingIDs: pending.duplicates)
+            duplicatePendingIDs: pending.duplicates,
+            duplicateItemIDs: duplicateItemIDs)
     }
 
     private static func deduplicate(_ ids: [String]) -> (values: [String], duplicates: [String]) {

@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import SwiftUI
 import UIKit
 
 /// The assistant body cell. It hosts a vertical stack of block views with the

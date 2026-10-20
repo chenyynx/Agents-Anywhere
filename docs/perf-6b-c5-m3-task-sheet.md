@@ -87,7 +87,33 @@ AssistantMarkdownTextLayout
 - **解析成本**：complex 文档 parse 仍同步在主线程；gate 记录耗时，超预算在 M4 外置。
 - **部分支持**：任何未支持 block 整行回退，避免“代码块是卡片、表格还是纯文本”的半套视觉。
 
-## 6. 交付
+## 6. 验证状态（2026-10-20）
+
+### 已完成
+
+- 提交：`aa7e8298` 列表/引用，`d2247afc` 空快照兜底，`43d1c4a5` 代码块，`7583dabc` 表格 + 构建修复。
+- **全流程绿**：run `39364614409`（commit `7583dabc`）— `test` success、`timeline-autorun` success（C3 与 M3 同时绿）。
+- M3 gate（iPhone Air / iOS 26.5）：
+  - `stored 596 == measured 596`
+  - `cellContent 596 == cellFrame 596`
+  - `pending false`，`estimate 200` 未写入，`overlaps 0`，cell in window
+  - 块统计：text 12 / list 4 / quote 1 / code 1 / table 1；top-level 8
+  - 解析契约：plain/unordered/ordered/quote/code/table 接受；image 拒绝并回退 hosting
+- 前两轮的真实问题：单测与 C3 既有 flake（重跑）；代码块无界测量容器的 `greatestFiniteMagnitude` 歧义（`7583dabc` 修复）。
+
+### 实施决定
+
+- 列表/引用走**逐 item / 递归容器视图**，没有用 `NSTextList`：产品的 marker 是 5pt `circle.fill` + decimal label，`NSTextList` 无法给出同样的 marker 栏宽；逐 item 也自然表达嵌套。
+- 代码块**未移植语法高亮**：Textual 的 Prism tokenizer 是包内 internal API；M3 先用产品卡片底色 + 等宽单色，高亮留后续。高度/卡片结构与产品对齐。
+- 表格列宽/行高在解析时按整点预计算，view 与测量共用；表格横向滚动，不随列宽重排。
+- 内联 code 改为从块自身字号缩放（与 Textual `.fontScale` 一致），影响标题与表格单元格。
+
+### 未覆盖 / 未验证
+
+- 真机；流式；选择、链接点击/长按；Dynamic Type 中途变化；RTL 真机；产品视觉逐项对照（gate 只断言内部一致性）。
+- 附件（图片 / Git badge / math）**尚未接入**：图片占位尺寸可同步确定，但 Git badge / math 依赖 Textual 内部 `TextEnvironmentValues` 与行内附件渲染。建议整体留 M4；若 pp 要求，可先做独立图片块。
+
+## 7. 交付
 
 - 代码 + gate 输出 + 本任务单的验证状态。
 - 不合并、不发包、不碰 dev。

@@ -45,8 +45,10 @@ final class TextKitVisualParityController: UIViewController {
     private func run() async {
         await wait(600)
         let legacyHeight = await captureLegacy()
-        let textKitHeight = captureTextKit()
-        writeReport(legacyHeight: legacyHeight, textKitHeight: textKitHeight)
+        let textKit = captureTextKit()
+        writeReport(legacyHeight: legacyHeight,
+                    textKitHeight: textKit.height,
+                    textKitBlocks: textKit.blocks)
     }
 
     // MARK: - Legacy path
@@ -91,7 +93,7 @@ final class TextKitVisualParityController: UIViewController {
 
     // MARK: - TextKit path
 
-    private func captureTextKit() -> CGFloat {
+    private func captureTextKit() -> (height: CGFloat, blocks: [[String: Any]]) {
         let typography = TimelineChatContentAdapter.typography(
             dynamicType: "UICTContentSizeCategoryL",
             layoutDirection: 0,
@@ -99,11 +101,24 @@ final class TextKitVisualParityController: UIViewController {
         guard let document = AssistantMarkdownDocumentParser.make(
             text: TextKitM3AutoRunModel.fixture,
             resolvesFileReferences: false,
-            typography: typography) else { return 0 }
+            typography: typography) else { return (0, []) }
 
+        let scale = UIScreen.main.scale
         let height = max(1, ceil(AssistantMarkdownTextLayout.measure(
-            document, width: contentWidth,
-            displayScale: UIScreen.main.scale)))
+            document, width: contentWidth, displayScale: scale)))
+        var blocks: [[String: Any]] = []
+        for (index, block) in document.blocks.enumerated() {
+            blocks.append([
+                "kind": block.kindName,
+                "group": document.blockGroups.indices.contains(index)
+                    ? document.blockGroups[index] : -1,
+                "height": Double(AssistantMarkdownTextLayout.height(
+                    of: block, width: contentWidth, displayScale: scale)),
+                "spacingAfter": index + 1 < document.blocks.count
+                    ? Double(AssistantMarkdownTextLayout.topLevelSpacing(
+                        after: index, in: document)) : 0,
+            ])
+        }
         let cell = AssistantMarkdownCell(
             frame: CGRect(x: 0, y: 0, width: contentWidth, height: height))
         cell.overrideUserInterfaceStyle = .light
@@ -117,7 +132,7 @@ final class TextKitVisualParityController: UIViewController {
         let image = snapshot(of: cell)
         writePNG(image, name: TextKitVisualParityAutoRunModel.textKitImageName)
         cell.removeFromSuperview()
-        return height
+        return (height, blocks)
     }
 
     // MARK: - Output
@@ -136,12 +151,15 @@ final class TextKitVisualParityController: UIViewController {
         try? data.write(to: url)
     }
 
-    private func writeReport(legacyHeight: CGFloat, textKitHeight: CGFloat) {
+    private func writeReport(legacyHeight: CGFloat,
+                             textKitHeight: CGFloat,
+                             textKitBlocks: [[String: Any]]) {
         let report: [String: Any] = [
             "completed": true,
             "width": Double(contentWidth),
             "legacyHeight": Double(legacyHeight),
             "textKitHeight": Double(textKitHeight),
+            "textKitBlocks": textKitBlocks,
             "device": UIDevice.current.name,
             "system": UIDevice.current.systemVersion,
         ]

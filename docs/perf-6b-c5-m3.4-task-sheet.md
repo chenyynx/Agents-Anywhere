@@ -88,3 +88,7 @@ Hark 报告确认：
 - 每段 stored == measured；总高不变量；footer 不变
 - 表格 surface 无逐格子视图；无障碍元素数正确
 - 未覆盖：真机视觉/滚动、边缘渐隐、官方列宽 policy、表格内附件
+
+## 11. padV 回滚（2026-10-20）
+
+pp 定调「逆向只学架构不动视觉」后，M3.4 中唯一一处视觉常数改动（`tableCellPadVertical` 10→8）回滚为 10（`3d599365`），表格恢复视觉刷新时校准的 AA 视觉；单 surface 结构保留。CI `39418489821` 双绿：`stored 640 == measured 640`、cellContent 639.67、表格 surface 6 元素/0 子视图/0 label，滚动 median 22.88 / p95 27.00 / max 28.18ms。M3.4 至此只含结构改动。

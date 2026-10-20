@@ -91,13 +91,21 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
               let entry = entries.first(where: { $0.id == id }) else {
             return .notice(id: "missing", status: .unknown, revision: 0)
         }
+        let isAssistant = entry.kind == .assistantTextKit
         return .group(TimelineGroupContentSignature(
             rows: [TimelineRowContentSignature(id: entry.id, revision: entry.revision,
                                                updatedSeq: entry.revision)],
             disclosureExpanded: false,
             inlineNotices: [],
             attachments: [],
-            turnAction: nil,
+            turnAction: isAssistant
+                ? TimelineTurnActionSignature(
+                    replyIDs: [entry.id],
+                    changeIDs: [],
+                    startsMidTurn: false,
+                    replyRevisions: [entry.revision],
+                    changeRevisions: [])
+                : nil,
             turnSuppression: TimelineTurnSuppression(
                 isRunning: false, hasNewerItems: false, hasPendingUserMessage: false)))
     }
@@ -151,6 +159,11 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
         return document
     }
 
+    func assistantTurnFooter(for item: TimelineListItem) -> AssistantTurnFooter? {
+        guard case .group(let id) = item, id == "textkit-assistant-1" else { return nil }
+        return AssistantTurnFooter(copyText: "A static TextKit reply.", timestampText: "10:30")
+    }
+
     // MARK: - Gate
 
     func attach(_ controller: TimelineCollectionController) {
@@ -191,6 +204,7 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
         let pending = controller.layout.pendingMeasurements.contains(item)
 
         var sample: (content: CGFloat, frame: CGFloat, inWindow: Bool)?
+        var sampleWidth: CGFloat = 0
         for _ in 0..<10 {
             controller.collectionView.layoutIfNeeded()
             if let indexPath = controller.indexPath(for: item),
@@ -203,6 +217,7 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
                         withHorizontalFittingPriority: .required,
                         verticalFittingPriority: .fittingSizeLevel).height
                     sample = (content, cell.bounds.height, cell.window != nil)
+                    sampleWidth = width
                     if cell.window != nil, abs(content - stored) <= 1 { break }
                 }
             }
@@ -241,6 +256,16 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
         let cellContent = sample?.content ?? -1
         let cellFrame = sample?.frame ?? -1
         let inWindow = sample?.inWindow ?? false
+
+        // The footer must be part of the synchronously stored height, not just
+        // a view that happens to fit. Measure the same document without it and
+        // compare the difference with the fixed footer height.
+        let documentOnly = sampleWidth > 0 ? document.map {
+            AssistantMarkdownTextLayout.measure(
+                $0, width: sampleWidth,
+                displayScale: controller.traitCollection.displayScale)
+        } : nil
+        let footerDelta = documentOnly.map { measured - $0 } ?? -1
 
         if measured < 0 {
             failures.append("textkit: row has no synchronous document measurement")
@@ -285,6 +310,9 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
         if counts["table"] != 1 {
             failures.append("textkit fixture: \(counts["table"] ?? -1) table blocks, expected 1")
         }
+        if abs(footerDelta - AssistantTurnFooter.height) > 1.5 {
+            failures.append("textkit footer: delta \(footerDelta) vs \(AssistantTurnFooter.height)")
+        }
 
         report["textKit"] = [
             "stored": Double(stored),
@@ -296,6 +324,8 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
             "cellMaterialized": sample != nil,
             "pending": pending,
             "overlaps": overlaps,
+            "footerDelta": Double(footerDelta),
+            "footerHeight": Double(AssistantTurnFooter.height),
             "topLevelBlocks": topLevelBlocks,
             "blockCounts": counts,
             "plainAccepted": plainDocument != nil,

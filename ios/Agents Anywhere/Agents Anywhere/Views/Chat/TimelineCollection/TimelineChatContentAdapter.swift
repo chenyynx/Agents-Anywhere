@@ -225,13 +225,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private var assistantDocuments: [String: CachedAssistantDocument] = [:]
 
     /// The TextKit path only takes a static assistant message: one row, no
-    /// fold, no turn footer, no inline notice, no attachments, no streaming.
-    /// M3 adds lists and quotes; any block the parser does not render makes the
-    /// whole row return nil and keep the existing hosting cell.
+    /// fold, no inline notice, no attachments, no streaming. A text-only turn
+    /// action footer is allowed (M3.1); a footer with a file-change summary is
+    /// not, because that summary's height is not deterministic. Any block the
+    /// parser does not render still makes the whole row return nil.
     func assistantMarkdown(for item: TimelineListItem) -> AssistantMarkdownDocument? {
         guard case .group(let id) = item, let group = groupsByID[id],
               group.kind == .single, group.rows.count == 1,
-              turnActions[group.id] == nil,
+              isTextOnlyTurnAction(turnActions[group.id]),
               let row = group.rows.first else { return nil }
         guard inlineNoticesByRow[row.id] == nil else { return nil }
         guard case .message = row.value.content, row.value.role == .assistant else { return nil }
@@ -256,6 +257,22 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             typographyRevision: typographyRevision,
             document: document)
         return document
+    }
+
+    /// A nil action is fine. A text-only action is the fixed copy/retry row
+    /// that `AssistantTurnFooter` measures; an action with file changes also
+    /// renders `SessionTurnReviewFooter`, whose height depends on its content.
+    private func isTextOnlyTurnAction(_ action: TimelineTurnAction?) -> Bool {
+        guard let action else { return true }
+        return action.changes.isEmpty && !action.replies.isEmpty
+    }
+
+    func assistantTurnFooter(for item: TimelineListItem) -> AssistantTurnFooter? {
+        guard case .group(let id) = item,
+              let action = turnActions[id],
+              isTextOnlyTurnAction(action) else { return nil }
+        return AssistantTurnFooter(copyText: action.copyText,
+                                   timestampText: action.timestampText)
     }
 
     func measurementContent(for item: TimelineListItem) -> TimelineMeasurementContent {

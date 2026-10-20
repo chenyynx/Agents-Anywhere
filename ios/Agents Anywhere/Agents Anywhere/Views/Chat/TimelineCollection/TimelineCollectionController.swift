@@ -152,7 +152,8 @@ final class TimelineCollectionController: UIViewController {
                 let cell = collectionView.dequeueReusableCell(
                     withReuseIdentifier: AssistantMarkdownCell.reuseIdentifier,
                     for: indexPath) as! AssistantMarkdownCell
-                cell.configure(document)
+                cell.configure(document,
+                               footer: content.assistantTurnFooter(for: item))
                 return cell
             }
             let cell = collectionView.dequeueReusableCell(withReuseIdentifier: TimelineHostingCell.reuseIdentifier,
@@ -378,7 +379,16 @@ final class TimelineCollectionController: UIViewController {
         // The cell only exists for items that got a real height here, so the
         // row never pairs a TextKit cell with an estimate.
         for item in items {
-            guard let document = content.assistantMarkdown(for: item) else { continue }
+            guard let document = content.assistantMarkdown(for: item) else {
+                // The row may have been a document on an earlier pass and lost
+                // eligibility (streaming started, an attachment arrived, or a
+                // file-change footer appeared). A stale entry here would make
+                // the hosting path skip its own measurement.
+                documentHeights.removeValue(forKey: item.itemID)
+                continue
+            }
+            let footerHeight = content.assistantTurnFooter(for: item) == nil
+                ? 0 : AssistantTurnFooter.height
             let key = content.heightKey(for: item, width: width)
             if layout.heights.hasMeasuredOrPrecalcHeight(for: key),
                let cached = layout.heights.tieredHeight(for: key) {
@@ -387,6 +397,7 @@ final class TimelineCollectionController: UIViewController {
             }
             let raw = AssistantMarkdownTextLayout.measure(
                 document, width: width, displayScale: traitCollection.displayScale)
+                + footerHeight
             guard let height = validatedHeight(raw) else { continue }
             layout.heights.set(height, for: key, tier: .measured)
             documentHeights[item.itemID] = height

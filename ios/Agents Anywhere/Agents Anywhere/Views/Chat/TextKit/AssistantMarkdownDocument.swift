@@ -106,6 +106,19 @@ struct AssistantQuoteBlock {
     let innerSpacing: CGFloat
 }
 
+/// The copy/like/retry footer of a finished turn, reduced to the data the
+/// TextKit cell needs. The view is the product's own `SessionTurnActionsRow`,
+/// hosted at a fixed height so the footer never participates in fitting.
+struct AssistantTurnFooter {
+    let copyText: String
+    let timestampText: String
+
+    /// `SessionTimelineGroupView` puts a 4pt VStack gap between the reply and
+    /// its footer; the action row itself is fixed by `SessionTurnActionsRow`.
+    static let topSpacing: CGFloat = 4
+    static var height: CGFloat { topSpacing + SessionTurnActionsRow.rowHeight }
+}
+
 /// A fenced code block. The code is laid out without wrapping inside a
 /// horizontal scroll, so its height does not depend on the column width; the
 /// card's header and padding are design constants from `ChatMarkdownCodeBlock`.

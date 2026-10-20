@@ -11,6 +11,8 @@ final class AssistantMarkdownCell: UICollectionViewCell {
 
     private let stack = UIStackView()
     private var document: AssistantMarkdownDocument?
+    private var footer: AssistantTurnFooter?
+    private var footerHost: UIHostingController<SessionTurnActionsRow>?
     private var heightConstraints: [NSLayoutConstraint] = []
     private var lastLayoutWidth: CGFloat = -1
 
@@ -41,8 +43,10 @@ final class AssistantMarkdownCell: UICollectionViewCell {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func configure(_ document: AssistantMarkdownDocument) {
+    func configure(_ document: AssistantMarkdownDocument,
+                   footer: AssistantTurnFooter? = nil) {
         self.document = document
+        self.footer = footer
         lastLayoutWidth = -1
         rebuildIfPossible()
     }
@@ -71,11 +75,30 @@ final class AssistantMarkdownCell: UICollectionViewCell {
             constraint.isActive = true
             heightConstraints.append(constraint)
         }
+
+        if let footer {
+            // `SessionTimelineGroupView` uses a 4pt VStack gap between the
+            // reply and its footer; the action row itself has a fixed height.
+            if let last = stack.arrangedSubviews.last {
+                stack.setCustomSpacing(AssistantTurnFooter.topSpacing, after: last)
+            }
+            let host = UIHostingController(rootView: SessionTurnActionsRow(
+                copyText: footer.copyText, timestampText: footer.timestampText))
+            host.view.backgroundColor = .clear
+            host.view.translatesAutoresizingMaskIntoConstraints = false
+            stack.addArrangedSubview(host.view)
+            let constraint = host.view.heightAnchor.constraint(
+                equalToConstant: SessionTurnActionsRow.rowHeight)
+            constraint.isActive = true
+            heightConstraints.append(constraint)
+            footerHost = host
+        }
     }
 
     private func removeBlockViews() {
         NSLayoutConstraint.deactivate(heightConstraints)
         heightConstraints = []
+        footerHost = nil
         for view in stack.arrangedSubviews {
             stack.removeArrangedSubview(view)
             view.removeFromSuperview()
@@ -85,6 +108,7 @@ final class AssistantMarkdownCell: UICollectionViewCell {
     override func prepareForReuse() {
         super.prepareForReuse()
         document = nil
+        footer = nil
         lastLayoutWidth = -1
         removeBlockViews()
     }

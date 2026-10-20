@@ -28,6 +28,11 @@ protocol TimelineCollectionContentProviding: AnyObject {
     /// and every non-assistant row return nil.
     func assistantMarkdown(for item: TimelineListItem) -> AssistantMarkdownDocument?
 
+    /// The text-only turn action footer for a TextKit assistant row. Nil for
+    /// rows whose footer includes a variable-height file-change summary (those
+    /// keep hosting) and for every hosting row.
+    func assistantTurnFooter(for item: TimelineListItem) -> AssistantTurnFooter?
+
     /// Row ids contained in a top-level item. A group contains several; the
     /// history anchor maps a row id back to its group item.
     func rowIDs(in item: TimelineListItem) -> [String]
@@ -50,6 +55,7 @@ extension TimelineCollectionContentProviding {
 
     /// The C3 synthetic model keeps every row on the hosting path.
     func assistantMarkdown(for item: TimelineListItem) -> AssistantMarkdownDocument? { nil }
+    func assistantTurnFooter(for item: TimelineListItem) -> AssistantTurnFooter? { nil }
 
     /// Typography changes every height key. The C3 gate's synthetic rows keep
     /// one fixed scale and use this default; the product adapter overrides it.

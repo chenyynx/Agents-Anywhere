@@ -258,6 +258,8 @@ jobs:
               ("cell materialized", tk.get("cellMaterialized") is True, tk),
               ("no adjacent overlap", (tk.get("overlaps") or 0) == 0, tk),
               ("no estimate stored", abs(tk.get("stored", 0) - tk.get("estimate", -1)) > 0.5, tk),
+              ("footer included",
+               abs(tk.get("footerDelta", 0) - tk.get("footerHeight", -1)) <= 1.5, tk),
               ("parser contract",
                tk.get("plainAccepted") is True and tk.get("unorderedAccepted") is True
                and tk.get("orderedAccepted") is True and tk.get("quoteAccepted") is True

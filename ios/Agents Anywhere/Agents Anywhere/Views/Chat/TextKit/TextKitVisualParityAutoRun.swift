@@ -53,7 +53,7 @@ final class TextKitVisualParityController: UIViewController {
     private func run() async {
         await wait(600)
         let legacy = await captureLegacy()
-        let textKit = captureTextKit()
+        let textKit = await captureTextKit()
         writeReport(legacy: legacy, textKit: textKit.snapshot,
                     textKitBlocks: textKit.blocks)
     }
@@ -100,7 +100,7 @@ final class TextKitVisualParityController: UIViewController {
 
     // MARK: - TextKit path
 
-    private func captureTextKit() -> (snapshot: TrimmedSnapshot, blocks: [[String: Any]]) {
+    private func captureTextKit() async -> (snapshot: TrimmedSnapshot, blocks: [[String: Any]]) {
         let typography = TimelineChatContentAdapter.typography(
             dynamicType: "UICTContentSizeCategoryL",
             layoutDirection: 0,
@@ -139,6 +139,11 @@ final class TextKitVisualParityController: UIViewController {
         cell.setNeedsLayout()
         cell.layoutIfNeeded()
         cell.contentView.layoutIfNeeded()
+
+        // The code card tokenizes through JavaScriptCore after the first
+        // layout. Give it a beat so the parity image compares the settled
+        // colours, not the plain first frame.
+        await wait(800)
 
         let shot = trimmedSnapshot(of: cell)
         writePNG(shot.image, name: TextKitVisualParityAutoRunModel.textKitImageName)

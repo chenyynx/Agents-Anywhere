@@ -90,9 +90,10 @@
 
 # 8. Muse 补挖任务（2026-10-20，只做剩余 UNKNOWN）
 
+> **运行机器：sbx（`ubuntu@100.79.4.30:2222`），不是空的 htch-runtime。** 二进制、Hark 的工具链和报告都在 sbx；htch-runtime 上没有二进制，跑不了本题。
 > 前置：Hark `part-ab-code-page-granularity.md` 已证实行粒度；不要重做 §1–§7 的已证实部分。
 > 目标：补出实现“严格同形”还缺的证据。每条都要 `EVIDENCE / INFERENCE / UNKNOWN` + 地址；拿不到就写 UNKNOWN，不要猜。
-> 产物：与 `part-ab` 同目录的 `part-ac-code-page-parity.md`；不改 AA 代码。
+> 产物：sbx `/home/ubuntu/wiring/docs/part-ac-code-page-parity.md`；不改 AA 代码。
 
 ## M1. DisplayMessage 合并/拆分（决定 tool call 是否与正文同一行）
 
@@ -141,7 +142,8 @@ Hark 已把行级视图链钉死；数据层还差“正文 → tool call → �
 
 ## 环境与工具
 
-- 二进制：`/home/ubuntu/swift-recover/unpacked/Payload/Claude.app/Claude`（thin arm64，base `0x100000000`；若分析机上路径不同，用等价副本）。
+- **在 sbx（`ubuntu@100.79.4.30:2222`）上跑**；Hark 的二进制、工具链、报告都在这里。不要用空的 htch-runtime。
+- 二进制：`/home/ubuntu/swift-recover/unpacked/Payload/Claude.app/Claude`（thin arm64，base `0x100000000`）。
 - Hark 用过的工具：`swift_types.csv` / `witness.csv`（`/home/ubuntu/wiring/out/`）、`q.py` / `calls.py` / `dis1.py` / `xrefs.py`、Ghidra `DecompileAt.java`（`-readOnly`）。
-- 临时反编译输出放分析机 `/tmp`，不入库；报告按 `EVIDENCE / INFERENCE / UNKNOWN` 分档。
-- **不要改 AA 仓库**；只写报告。
+- 临时反编译输出放 sbx `/tmp`，不入库；报告按 `EVIDENCE / INFERENCE / UNKNOWN` 分档。
+- **不要改 AA 仓库**；只写报告。重活只在 sbx，不要去 206。

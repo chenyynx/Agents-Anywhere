@@ -29,6 +29,9 @@ struct AgentsAnywhereApp: App {
                 } else if ProcessInfo.processInfo.arguments.contains(TextKitM4BaselineAutoRun.launchArgument) {
                     // C5/M4 streaming baseline probe; never reachable from the product UI.
                     TextKitM4BaselineRootView()
+                } else if ProcessInfo.processInfo.arguments.contains(TextKitM4AutoRunModel.launchArgument) {
+                    // C5/M4 streaming gate; never reachable from the product UI.
+                    TextKitM4AutoRunRootView()
                 } else {
                     RootView()
                 }

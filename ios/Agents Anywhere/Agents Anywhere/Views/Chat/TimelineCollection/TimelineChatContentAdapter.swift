@@ -224,6 +224,22 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
 
     private var assistantDocuments: [String: CachedAssistantDocument] = [:]
 
+    /// Streaming documents are rebuilt per revision but only parsed to the new
+    /// tail; the cache keeps the measurement and the cell configuration in one
+    /// apply from doing the work twice.
+    private struct CachedStreamingDocument {
+        let revision: Int
+        let typographyRevision: Int
+        let text: String
+        let document: AssistantStreamingDocument?
+    }
+    private var streamingDocuments: [String: CachedStreamingDocument] = [:]
+    private var streamingBuilders: [String: AssistantStreamingDocumentBuilder] = [:]
+    /// Rows whose stream contained a block the TextKit path cannot render stay
+    /// on the hosting path for the rest of the turn. Flipping engines mid-stream
+    /// would be a visible jump.
+    private var streamingFallbacks: Set<String> = []
+
     /// The TextKit path only takes a static assistant message: one row, no
     /// fold, no inline notice, no attachments, no streaming. A text-only turn
     /// action footer is allowed (M3.1); a footer with a file-change summary is
@@ -257,6 +273,68 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             typographyRevision: typographyRevision,
             document: document)
         return document
+    }
+
+    /// The streaming counterpart of `assistantMarkdown`: the same admission
+    /// rules, but the row may be pending/running and its text may still grow.
+    func assistantStreamingDocument(for item: TimelineListItem) -> AssistantStreamingDocument? {
+        guard let row = streamingRow(for: item) else { return nil }
+        if streamingFallbacks.contains(row.id) { return nil }
+        let typographyRevision = typography.revision
+        if let cached = streamingDocuments[row.id],
+           cached.revision == row.value.revision,
+           cached.typographyRevision == typographyRevision,
+           cached.text == row.text {
+            return cached.document
+        }
+        if let cached = streamingDocuments[row.id],
+           cached.typographyRevision != typographyRevision {
+            // Converted blocks bake colours and fonts; a type-scale change
+            // must rebuild them from the text.
+            streamingBuilders[row.id]?.reset()
+        }
+        let builder: AssistantStreamingDocumentBuilder
+        if let existing = streamingBuilders[row.id] {
+            builder = existing
+        } else {
+            let created = AssistantStreamingDocumentBuilder()
+            streamingBuilders[row.id] = created
+            builder = created
+        }
+        let document = builder.make(text: row.text, typography: typography)
+        if document == nil, builder.isRejected {
+            streamingFallbacks.insert(row.id)
+        }
+        streamingDocuments[row.id] = CachedStreamingDocument(
+            revision: row.value.revision,
+            typographyRevision: typographyRevision,
+            text: row.text,
+            document: document)
+        return document
+    }
+
+    func assistantStreamingReveal(for item: TimelineListItem) -> Bool {
+        streamingRow(for: item)?.isRevealing ?? false
+    }
+
+    /// A streaming assistant text row that the TextKit cell can own. A row that
+    /// stops streaming clears its builder; a row that gained an unsupported
+    /// block keeps its fallback for the rest of the turn.
+    private func streamingRow(for item: TimelineListItem) -> ChatTimelineRowModel? {
+        guard case .group(let id) = item, let group = groupsByID[id],
+              group.kind == .single, group.rows.count == 1,
+              isTextOnlyTurnAction(turnActions[group.id]),
+              let row = group.rows.first else { return nil }
+        guard inlineNoticesByRow[row.id] == nil else { return nil }
+        guard case .message = row.value.content, row.value.role == .assistant else { return nil }
+        guard row.value.isStreamingText else {
+            streamingDocuments.removeValue(forKey: row.id)
+            streamingBuilders.removeValue(forKey: row.id)
+            streamingFallbacks.remove(row.id)
+            return nil
+        }
+        guard attachments(of: row.value).isEmpty, !row.text.isEmpty else { return nil }
+        return row
     }
 
     /// A nil action is fine. A text-only action is the fixed copy/retry row
@@ -424,6 +502,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // Parsed documents are keyed by row id; drop rows that left the
         // timeline so a long session does not retain old replies.
         assistantDocuments = assistantDocuments.filter { rowToItem[$0.key] != nil }
+        let streamingRowIDs = Set(model.timeline.rows.compactMap {
+            $0.value.isStreamingText ? $0.id : nil
+        })
+        streamingDocuments = streamingDocuments.filter { streamingRowIDs.contains($0.key) }
+        streamingBuilders = streamingBuilders.filter { streamingRowIDs.contains($0.key) }
+        streamingFallbacks.formIntersection(streamingRowIDs)
 
         var itemsByID: [String: TimelineListItem] = [:]
         for item in identity.items { itemsByID[item.itemID] = item }

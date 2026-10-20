@@ -329,6 +329,49 @@ jobs:
           cp "$RESULT" "$RUNNER_TEMP/textkit-m4-baseline.json"
           cat "$RUNNER_TEMP/textkit-m4-baseline.json"
 
+      - name: Run the M4 streaming gate
+        if: always()
+        run: |
+          set -euo pipefail
+          UDID="${{ steps.sim.outputs.udid }}"
+          xcrun simctl terminate "$UDID" com.agentsanywhere.app || true
+          xcrun simctl launch "$UDID" com.agentsanywhere.app aa-textkit-m4
+          CONTAINER=$(xcrun simctl get_app_container "$UDID" com.agentsanywhere.app data)
+          RESULT="$CONTAINER/Documents/textkit-m4.json"
+          for _ in $(seq 1 180); do
+            if [ -f "$RESULT" ]; then break; fi
+            sleep 1
+          done
+          if [ ! -f "$RESULT" ]; then
+            echo "::error::M4 streaming gate produced no result file"
+            xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/textkit-m4-failure.png" || true
+            exit 1
+          fi
+          cp "$RESULT" "$RUNNER_TEMP/textkit-m4.json"
+          cat "$RUNNER_TEMP/textkit-m4.json"
+
+      - name: Assert the M4 streaming results
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          path = os.path.join(os.environ["RUNNER_TEMP"], "textkit-m4.json")
+          if not os.path.exists(path):
+              print("::error::textkit M4 result missing")
+              sys.exit(1)
+          with open(path) as handle:
+              data = json.load(handle)
+          if not data.get("completed"):
+              print("::error::textkit M4 gate did not complete")
+              sys.exit(1)
+          failures = data.get("failures") or []
+          for failure in failures:
+              print("::error::textkit M4: " + failure)
+          if failures:
+              sys.exit(1)
+          print("PASS textkit M4 streaming gate")
+          PY
+
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
@@ -339,7 +382,9 @@ jobs:
             ${{ runner.temp }}/textkit-m3.json
             ${{ runner.temp }}/textkit-parity.json
             ${{ runner.temp }}/textkit-m4-baseline.json
+            ${{ runner.temp }}/textkit-m4.json
             ${{ runner.temp }}/m4-baseline-failure.png
+            ${{ runner.temp }}/textkit-m4-failure.png
             ${{ runner.temp }}/parity-legacy.png
             ${{ runner.temp }}/parity-textkit.png
             ${{ runner.temp }}/parity-failure.png

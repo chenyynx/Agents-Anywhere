@@ -86,8 +86,7 @@ enum TextKitM4BaselineAutoRun {
                 tails.append(parsed.tail)
 
                 let (streaming, builderMs) = time {
-                    builder.make(text: prefix, isRevealing: true,
-                                 typography: typography)
+                    builder.make(text: prefix, typography: typography)
                 }
                 builderDurations.append(builderMs)
                 if let streaming {
@@ -175,7 +174,7 @@ enum TextKitM4BaselineAutoRun {
                     let drop = min(40, finalPrefix.count)
                     let corrected = "Corrected intro.\n\n" + String(finalPrefix.dropFirst(drop))
                     if let correctedDocument = builder.make(
-                        text: corrected, isRevealing: true, typography: typography) {
+                        text: corrected, typography: typography) {
                         correctionGeneration = correctedDocument.generation
                         if correctedDocument.document.blocks.isEmpty {
                             failures.append("\(scenario.name): corrected document has no blocks")

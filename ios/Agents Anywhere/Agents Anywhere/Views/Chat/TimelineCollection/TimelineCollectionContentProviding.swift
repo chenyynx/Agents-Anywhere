@@ -28,6 +28,16 @@ protocol TimelineCollectionContentProviding: AnyObject {
     /// and every non-assistant row return nil.
     func assistantMarkdown(for item: TimelineListItem) -> AssistantMarkdownDocument?
 
+    /// The C5/M4 streaming path: the same TextKit cell renders settled blocks
+    /// and hosts the revealing tail in the existing Markdown view. Nil means
+    /// the row stays on the hosting path (unsupported blocks, attachments,
+    /// notices, or a non-assistant row).
+    func assistantStreamingDocument(for item: TimelineListItem) -> AssistantStreamingDocument?
+
+    /// Whether the streaming tail is currently revealing. Kept separate from
+    /// the document so a settle does not rebuild the parsed blocks.
+    func assistantStreamingReveal(for item: TimelineListItem) -> Bool
+
     /// The text-only turn action footer for a TextKit assistant row. Nil for
     /// rows whose footer includes a variable-height file-change summary (those
     /// keep hosting) and for every hosting row.
@@ -55,6 +65,8 @@ extension TimelineCollectionContentProviding {
 
     /// The C3 synthetic model keeps every row on the hosting path.
     func assistantMarkdown(for item: TimelineListItem) -> AssistantMarkdownDocument? { nil }
+    func assistantStreamingDocument(for item: TimelineListItem) -> AssistantStreamingDocument? { nil }
+    func assistantStreamingReveal(for item: TimelineListItem) -> Bool { false }
     func assistantTurnFooter(for item: TimelineListItem) -> AssistantTurnFooter? { nil }
 
     /// Typography changes every height key. The C3 gate's synthetic rows keep

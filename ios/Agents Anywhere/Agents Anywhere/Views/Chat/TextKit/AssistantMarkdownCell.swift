@@ -67,6 +67,21 @@ final class AssistantMarkdownCell: UICollectionViewCell {
     private var heightConstraints: [NSLayoutConstraint] = []
     private var lastLayoutWidth: CGFloat = -1
 
+    // C5/M4 streaming state. Settled blocks keep their views across batches;
+    // only the tail is re-hosted and re-measured.
+    private var streaming: AssistantStreamingDocument?
+    private var streamingReveal = false
+    private var stableIDs: [AssistantBlockID] = []
+    private var stableViews: [AssistantBlockID: UIView] = [:]
+    private var stableConstraints: [AssistantBlockID: NSLayoutConstraint] = [:]
+    private var tailHost: UIHostingController<ChatMarkdownView>?
+    private var tailConstraint: NSLayoutConstraint?
+    private var lastGeneration = -1
+    #if DEBUG
+    private(set) var debugStableViewsBuilt = 0
+    private(set) var debugTailUpdates = 0
+    #endif
+
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear
@@ -102,15 +117,33 @@ final class AssistantMarkdownCell: UICollectionViewCell {
                    footer: AssistantTurnFooter? = nil) {
         self.document = document
         self.footer = footer
+        self.streaming = nil
+        self.streamingReveal = false
+        lastGeneration = -1
         lastLayoutWidth = -1
         rebuildIfPossible()
+    }
+
+    /// Streaming row: settled blocks are TextKit views that survive batches;
+    /// the open tail is hosted by the existing reveal view so the glyph
+    /// animation does not change.
+    func configure(streaming: AssistantStreamingDocument, reveal: Bool) {
+        self.document = nil
+        self.footer = nil
+        self.streaming = streaming
+        self.streamingReveal = reveal
+        rebuildStreamingIfPossible()
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         let width = contentView.bounds.width
         if width > 0, abs(width - lastLayoutWidth) > 0.5 {
-            rebuildIfPossible()
+            if streaming != nil {
+                rebuildStreamingIfPossible()
+            } else {
+                rebuildIfPossible()
+            }
         }
     }
 
@@ -183,9 +216,136 @@ final class AssistantMarkdownCell: UICollectionViewCell {
         }
     }
 
+    // MARK: - Streaming
+
+    /// Settled blocks are appended once; the tail host is the only subview
+    /// replaced on each batch. A new generation (correction), a width change,
+    /// or a stable set that is not a prefix of the previous one rebuilds.
+    private func rebuildStreamingIfPossible() {
+        guard let streaming, contentView.bounds.width > 0 else { return }
+        let width = contentView.bounds.width
+        let displayScale = traitCollection.displayScale
+        let ids = streaming.stableBlockIDs
+        let shared = zip(ids, stableIDs).prefix { $0.0 == $0.1 }.count
+        let needsFull = streaming.generation != lastGeneration
+            || abs(width - lastLayoutWidth) > 0.5
+            || shared < min(ids.count, stableIDs.count)
+            || ids.count < stableIDs.count
+        if needsFull {
+            removeBlockViews()
+            lastLayoutWidth = width
+            lastGeneration = streaming.generation
+        }
+
+        if ids.count > stableIDs.count {
+            for index in stableIDs.count..<ids.count {
+                guard index < streaming.document.blocks.count else { break }
+                let id = ids[index]
+                let made = AssistantMarkdownBlockViewFactory.make(
+                    streaming.document.blocks[index], width: width,
+                    displayScale: displayScale)
+                let insertion = tailHost.map { host in
+                    stack.arrangedSubviews.firstIndex(where: { $0 === host.view })
+                        ?? stack.arrangedSubviews.count
+                } ?? stack.arrangedSubviews.count
+                stack.insertArrangedSubview(made.view, at: insertion)
+                let constraint = made.view.heightAnchor.constraint(
+                    equalToConstant: made.height)
+                constraint.isActive = true
+                stableIDs.append(id)
+                stableViews[id] = made.view
+                stableConstraints[id] = constraint
+                #if DEBUG
+                debugStableViewsBuilt += 1
+                #endif
+            }
+        }
+
+        // The same collapsed-margin rule the measurement and the static cell
+        // use. The last settled block keeps its spacing before the tail.
+        for (index, id) in stableIDs.enumerated() {
+            guard let view = stableViews[id] else { continue }
+            let spacing = index + 1 < streaming.document.blocks.count
+                ? AssistantMarkdownTextLayout.topLevelSpacing(
+                    after: index, in: streaming.document)
+                : 0
+            stack.setCustomSpacing(spacing, after: view)
+        }
+
+        updateTail(streaming, width: width)
+    }
+
+    private func updateTail(_ streaming: AssistantStreamingDocument, width: CGFloat) {
+        let start = min(streaming.stableBlockCount,
+                        streaming.document.blocks.count)
+        let range = start..<streaming.document.blocks.count
+        let height = tailHeight(streaming, range: range, width: width)
+        if range.isEmpty {
+            if let tailHost {
+                stack.removeArrangedSubview(tailHost.view)
+                tailHost.view.removeFromSuperview()
+                tailConstraint?.isActive = false
+                self.tailHost = nil
+                self.tailConstraint = nil
+            }
+            return
+        }
+
+        let host: UIHostingController<ChatMarkdownView>
+        if let tailHost {
+            host = tailHost
+        } else {
+            host = UIHostingController(rootView: ChatMarkdownView(
+                text: streaming.tailText,
+                isStreaming: streamingReveal,
+                resolvesFileReferences: true))
+            host.view.backgroundColor = .clear
+            host.view.translatesAutoresizingMaskIntoConstraints = false
+            host.view.clipsToBounds = true
+            stack.addArrangedSubview(host.view)
+            let constraint = host.view.heightAnchor.constraint(equalToConstant: height)
+            constraint.isActive = true
+            self.tailHost = host
+            self.tailConstraint = constraint
+        }
+        host.rootView = ChatMarkdownView(
+            text: streaming.tailText,
+            isStreaming: streamingReveal,
+            resolvesFileReferences: true)
+        tailConstraint?.constant = height
+        #if DEBUG
+        debugTailUpdates += 1
+        #endif
+    }
+
+    private func tailHeight(_ streaming: AssistantStreamingDocument,
+                            range: Range<Int>,
+                            width: CGFloat) -> CGFloat {
+        guard !range.isEmpty else { return 0 }
+        var total: CGFloat = 0
+        for index in range {
+            if index > range.lowerBound {
+                total += AssistantMarkdownTextLayout.topLevelSpacing(
+                    after: index - 1, in: streaming.document)
+            }
+            total += AssistantMarkdownTextLayout.height(
+                of: streaming.document.blocks[index], width: width,
+                displayScale: traitCollection.displayScale)
+        }
+        return total
+    }
+
     private func removeBlockViews() {
         NSLayoutConstraint.deactivate(heightConstraints)
+        NSLayoutConstraint.deactivate(Array(stableConstraints.values))
+        tailConstraint?.isActive = false
         heightConstraints = []
+        stableIDs = []
+        stableViews = [:]
+        stableConstraints = [:]
+        tailHost = nil
+        tailConstraint = nil
+        lastGeneration = -1
         footerHost = nil
         for view in stack.arrangedSubviews {
             stack.removeArrangedSubview(view)
@@ -197,6 +357,8 @@ final class AssistantMarkdownCell: UICollectionViewCell {
         super.prepareForReuse()
         document = nil
         footer = nil
+        streaming = nil
+        streamingReveal = false
         lastLayoutWidth = -1
         removeBlockViews()
     }

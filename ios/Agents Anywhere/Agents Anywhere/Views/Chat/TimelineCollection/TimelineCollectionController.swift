@@ -146,15 +146,25 @@ final class TimelineCollectionController: UIViewController {
         ])
         layout.host = self
         dataSource = UICollectionViewDiffableDataSource(collectionView: collectionView) { [weak self] collectionView, indexPath, item in
-            if let self, let content = self.content,
-               let document = content.assistantMarkdown(for: item),
-               self.documentHeights[item.itemID] != nil {
-                let cell = collectionView.dequeueReusableCell(
-                    withReuseIdentifier: AssistantMarkdownCell.reuseIdentifier,
-                    for: indexPath) as! AssistantMarkdownCell
-                cell.configure(document,
-                               footer: content.assistantTurnFooter(for: item))
-                return cell
+            if let self, let content = self.content {
+                if let streaming = content.assistantStreamingDocument(for: item),
+                   self.documentHeights[item.itemID] != nil {
+                    let cell = collectionView.dequeueReusableCell(
+                        withReuseIdentifier: AssistantMarkdownCell.reuseIdentifier,
+                        for: indexPath) as! AssistantMarkdownCell
+                    cell.configure(streaming: streaming,
+                                   reveal: content.assistantStreamingReveal(for: item))
+                    return cell
+                }
+                if let document = content.assistantMarkdown(for: item),
+                   self.documentHeights[item.itemID] != nil {
+                    let cell = collectionView.dequeueReusableCell(
+                        withReuseIdentifier: AssistantMarkdownCell.reuseIdentifier,
+                        for: indexPath) as! AssistantMarkdownCell
+                    cell.configure(document,
+                                   footer: content.assistantTurnFooter(for: item))
+                    return cell
+                }
             }
             let cell = collectionView.dequeueReusableCell(withReuseIdentifier: TimelineHostingCell.reuseIdentifier,
                                                           for: indexPath) as! TimelineHostingCell
@@ -379,6 +389,24 @@ final class TimelineCollectionController: UIViewController {
         // The cell only exists for items that got a real height here, so the
         // row never pairs a TextKit cell with an estimate.
         for item in items {
+            // C5/M4: the streaming row is measured by the same engine that
+            // renders its settled blocks. The tail view is constrained to the
+            // remainder, so the stored height is exact instead of an estimate.
+            if let streaming = content.assistantStreamingDocument(for: item) {
+                let key = content.heightKey(for: item, width: width)
+                if layout.heights.hasMeasuredOrPrecalcHeight(for: key),
+                   let cached = layout.heights.tieredHeight(for: key) {
+                    documentHeights[item.itemID] = cached
+                    continue
+                }
+                let raw = AssistantMarkdownTextLayout.measure(
+                    streaming.document, width: width,
+                    displayScale: traitCollection.displayScale)
+                guard let height = validatedHeight(raw) else { continue }
+                layout.heights.set(height, for: key, tier: .measured)
+                documentHeights[item.itemID] = height
+                continue
+            }
             guard let document = content.assistantMarkdown(for: item) else {
                 // The row may have been a document on an earlier pass and lost
                 // eligibility (streaming started, an attachment arrived, or a

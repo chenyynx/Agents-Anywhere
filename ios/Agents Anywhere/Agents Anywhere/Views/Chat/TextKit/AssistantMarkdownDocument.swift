@@ -764,7 +764,6 @@ struct AssistantStreamingDocument {
     let stableBlockIDs: [AssistantBlockID]
     let stableBlockCount: Int
     let tailText: String
-    let isRevealing: Bool
     /// Bumped when the text stops extending the previous batch (a correction or
     /// a recovery snapshot). The cell must rebuild rather than reuse views.
     let generation: Int
@@ -792,7 +791,6 @@ final class AssistantStreamingDocumentBuilder {
     }
 
     func make(text: String,
-              isRevealing: Bool,
               typography: TimelineTypographySnapshot) -> AssistantStreamingDocument? {
         guard !isRejected, !text.isEmpty else { return nil }
         if !text.hasPrefix(lastText) { reset() }
@@ -847,7 +845,6 @@ final class AssistantStreamingDocumentBuilder {
             stableBlockIDs: Array(ids.prefix(stableBlockCount)),
             stableBlockCount: stableBlockCount,
             tailText: parsed.tail,
-            isRevealing: isRevealing,
             generation: generation)
     }
 

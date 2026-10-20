@@ -20,9 +20,9 @@ struct AgentsAnywhereApp: App {
                 } else if ProcessInfo.processInfo.arguments.contains(TextKitSpikeModel.launchArgument) {
                     // C5/M1 TextKit 2 measurement spike; never reachable from the product UI.
                     TextKitSpikeRootView()
-                } else if ProcessInfo.processInfo.arguments.contains(TextKitM2AutoRunModel.launchArgument) {
-                    // C5/M2 assistant-body gate; never reachable from the product UI.
-                    TextKitM2AutoRunRootView()
+                } else if ProcessInfo.processInfo.arguments.contains(TextKitM3AutoRunModel.launchArgument) {
+                    // C5/M3 assistant-body gate; never reachable from the product UI.
+                    TextKitM3AutoRunRootView()
                 } else {
                     RootView()
                 }

@@ -213,7 +213,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         }
     }
 
-    // MARK: - C5/M2 TextKit 2 assistant body
+    // MARK: - C5/M3 TextKit 2 assistant body
 
     private struct CachedAssistantDocument {
         let revision: Int
@@ -224,10 +224,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
 
     private var assistantDocuments: [String: CachedAssistantDocument] = [:]
 
-    /// M2 only takes a static, plain assistant message: one row, no fold, no
-    /// turn footer, no inline notice, no attachments, no streaming, and only
-    /// paragraph/header blocks. Everything else returns nil and keeps the
-    /// existing hosting cell.
+    /// The TextKit path only takes a static assistant message: one row, no
+    /// fold, no turn footer, no inline notice, no attachments, no streaming.
+    /// M3 adds lists and quotes; any block the parser does not render makes the
+    /// whole row return nil and keep the existing hosting cell.
     func assistantMarkdown(for item: TimelineListItem) -> AssistantMarkdownDocument? {
         guard case .group(let id) = item, let group = groupsByID[id],
               group.kind == .single, group.rows.count == 1,

@@ -3,16 +3,16 @@ import Observation
 import SwiftUI
 import UIKit
 
-/// C5/M2 simulator gate. A dedicated three-row timeline (plain, long static
-/// assistant body, plain) that fits the viewport, so the assertion does not
-/// depend on scrolling: the TextKit 2 row must be measured synchronously
-/// before apply, stored as that measurement, rendered by the matching cell,
-/// and never enter pending/estimate/visible-fit paths.
+/// C5/M3 simulator gate. A dedicated three-row timeline (plain, a static
+/// assistant body with lists and quotes, plain) that fits the viewport, so the
+/// assertion does not depend on scrolling: the TextKit row must be measured
+/// synchronously before apply, stored as that measurement, rendered by the
+/// matching cell, and never enter pending/estimate/visible-fit paths.
 @MainActor
 @Observable
-final class TextKitM2AutoRunModel: TimelineCollectionContentProviding {
-    static let launchArgument = "aa-textkit-m2"
-    static let resultFileName = "textkit-m2.json"
+final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
+    static let launchArgument = "aa-textkit-m3"
+    static let resultFileName = "textkit-m3.json"
 
     enum Kind: String, CaseIterable { case topPlain, assistantTextKit, bottomPlain }
 
@@ -34,15 +34,24 @@ final class TextKitM2AutoRunModel: TimelineCollectionContentProviding {
     @ObservationIgnored private var document: AssistantMarkdownDocument?
 
     private static let fixture = """
-    ## A long static reply
+    ## Lists and quotes
 
-    The measurement has to come from the same engine that draws the text. This paragraph is deliberately long enough to wrap across several lines at the product column width, so a mismatch between measurement and rendering shows up as an overlap or a blank block rather than a rounding difference. It also carries **bold**, `inline code`, and a [web link](https://example.com) inside running text, which the M2 builder maps onto UIKit attributes.
+    The lists below use the product's marker column and spacing. This paragraph also carries **bold**, `inline code`, and a [web link](https://example.com).
 
-    ## A second section
+    - First bullet with **bold** and `code`
+    - Second bullet with a [link](https://example.com)
+      - Nested bullet one
+      - Nested bullet two
 
-    A second heading and a second paragraph make the block model exercise the twelve-point inter-block spacing, not just a single text block. The words stay plain Markdown paragraphs; lists, quotes, code blocks and tables deliberately fall back to the hosting cell until M3.
+    1. First ordered item
+    2. Second ordered item
 
-    The closing paragraph keeps the row static. No streaming marker is set, so the controller must measure this document synchronously before the snapshot applies and store exactly that height.
+    > A quoted paragraph in body-template ink.
+    >
+    > - A bullet inside the quote
+    > - Another quoted bullet
+
+    The closing paragraph keeps the row static and gives the tree a text block after the containers.
     """
 
     init() {
@@ -200,11 +209,25 @@ final class TextKitM2AutoRunModel: TimelineCollectionContentProviding {
             dynamicType: "UICTContentSizeCategoryL", layoutDirection: 0, boldText: false)
         let plainDocument = AssistantMarkdownDocumentParser.make(
             text: "A plain paragraph.", resolvesFileReferences: false, typography: typography)
-        let listDocument = AssistantMarkdownDocumentParser.make(
+        let unorderedDocument = AssistantMarkdownDocumentParser.make(
             text: "- one\n- two", resolvesFileReferences: false, typography: typography)
+        let orderedDocument = AssistantMarkdownDocumentParser.make(
+            text: "1. one\n2. two", resolvesFileReferences: false, typography: typography)
+        let quoteDocument = AssistantMarkdownDocumentParser.make(
+            text: "> quoted", resolvesFileReferences: false, typography: typography)
+        // Still unsupported in M3 step 1; these must keep falling back to
+        // hosting rather than render as a paragraph with a replacement glyph.
         let codeDocument = AssistantMarkdownDocumentParser.make(
             text: "```swift\nlet value = 1\n```", resolvesFileReferences: false, typography: typography)
+        let tableDocument = AssistantMarkdownDocumentParser.make(
+            text: "| a | b |\n|---|---|\n| 1 | 2 |",
+            resolvesFileReferences: false, typography: typography)
+        let imageDocument = AssistantMarkdownDocumentParser.make(
+            text: "![alt](https://example.com/pixel.png)",
+            resolvesFileReferences: false, typography: typography)
 
+        let counts = document?.blockCounts ?? [:]
+        let topLevelBlocks = document?.blocks.count ?? 0
         let cellContent = sample?.content ?? -1
         let cellFrame = sample?.frame ?? -1
         let inWindow = sample?.inWindow ?? false
@@ -228,8 +251,24 @@ final class TextKitM2AutoRunModel: TimelineCollectionContentProviding {
         }
         if overlaps > 0 { failures.append("textkit: \(overlaps) adjacent frames overlap") }
         if plainDocument == nil { failures.append("textkit parser: plain paragraph rejected") }
-        if listDocument != nil { failures.append("textkit parser: list accepted in M2") }
-        if codeDocument != nil { failures.append("textkit parser: code block accepted in M2") }
+        if unorderedDocument == nil { failures.append("textkit parser: unordered list rejected") }
+        if orderedDocument == nil { failures.append("textkit parser: ordered list rejected") }
+        if quoteDocument == nil { failures.append("textkit parser: quote rejected") }
+        if codeDocument != nil { failures.append("textkit parser: code block accepted before its M3 step") }
+        if tableDocument != nil { failures.append("textkit parser: table accepted before its M3 step") }
+        if imageDocument != nil { failures.append("textkit parser: image accepted before its M3 step") }
+        if topLevelBlocks != 6 {
+            failures.append("textkit fixture: \(topLevelBlocks) top-level blocks, expected 6")
+        }
+        if counts["text"] != 12 {
+            failures.append("textkit fixture: \(counts["text"] ?? -1) text blocks, expected 12")
+        }
+        if counts["list"] != 4 {
+            failures.append("textkit fixture: \(counts["list"] ?? -1) list blocks, expected 4")
+        }
+        if counts["quote"] != 1 {
+            failures.append("textkit fixture: \(counts["quote"] ?? -1) quote blocks, expected 1")
+        }
 
         report["textKit"] = [
             "stored": Double(stored),
@@ -241,10 +280,15 @@ final class TextKitM2AutoRunModel: TimelineCollectionContentProviding {
             "cellMaterialized": sample != nil,
             "pending": pending,
             "overlaps": overlaps,
-            "blocks": document?.blocks.count ?? 0,
+            "topLevelBlocks": topLevelBlocks,
+            "blockCounts": counts,
             "plainAccepted": plainDocument != nil,
-            "listRejected": listDocument == nil,
+            "unorderedAccepted": unorderedDocument != nil,
+            "orderedAccepted": orderedDocument != nil,
+            "quoteAccepted": quoteDocument != nil,
             "codeRejected": codeDocument == nil,
+            "tableRejected": tableDocument == nil,
+            "imageRejected": imageDocument == nil,
         ] as [String: Any]
         finish()
     }
@@ -270,20 +314,20 @@ final class TextKitM2AutoRunModel: TimelineCollectionContentProviding {
 }
 
 /// Only reachable through the launch argument; the product root is untouched.
-struct TextKitM2AutoRunRootView: View {
-    @State private var model = TextKitM2AutoRunModel()
+struct TextKitM3AutoRunRootView: View {
+    @State private var model = TextKitM3AutoRunModel()
 
     var body: some View {
-        TimelineCollectionView(content: model, measurer: TextKitM2NoopMeasurer(),
+        TimelineCollectionView(content: model, measurer: TextKitM3NoopMeasurer(),
             onControllerReady: { model.attach($0) })
             .ignoresSafeArea()
     }
 }
 
-/// The M2 timeline has no hosting rows that need offscreen measurement; the
+/// The M3 timeline has no hosting rows that need offscreen measurement; the
 /// protocol still requires a measurer. Returning nil keeps it inert.
 @MainActor
-private final class TextKitM2NoopMeasurer: TimelineHeightMeasuring {
+private final class TextKitM3NoopMeasurer: TimelineHeightMeasuring {
     var traitOverrides: UITraitCollection? { nil }
     func measure(itemID: String, width: CGFloat) -> CGFloat? { nil }
 }

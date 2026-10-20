@@ -214,38 +214,39 @@ jobs:
               sys.exit(1)
           PY
 
-      - name: Run the M2 TextKit gate
+      - name: Run the M3 TextKit gate
         if: always()
         run: |
           set -euo pipefail
           UDID="${{ steps.sim.outputs.udid }}"
           xcrun simctl terminate "$UDID" com.agentsanywhere.app || true
-          xcrun simctl launch "$UDID" com.agentsanywhere.app aa-textkit-m2
+          xcrun simctl launch "$UDID" com.agentsanywhere.app aa-textkit-m3
           CONTAINER=$(xcrun simctl get_app_container "$UDID" com.agentsanywhere.app data)
-          RESULT="$CONTAINER/Documents/textkit-m2.json"
+          RESULT="$CONTAINER/Documents/textkit-m3.json"
           for _ in $(seq 1 120); do
             if [ -f "$RESULT" ]; then break; fi
             sleep 1
           done
           if [ ! -f "$RESULT" ]; then
-            echo "::error::textkit M2 gate produced no result file"
-            xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/textkit-m2-failure.png" || true
+            echo "::error::textkit M3 gate produced no result file"
+            xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/textkit-m3-failure.png" || true
             exit 1
           fi
-          cp "$RESULT" "$RUNNER_TEMP/textkit-m2.json"
-          cat "$RUNNER_TEMP/textkit-m2.json"
+          cp "$RESULT" "$RUNNER_TEMP/textkit-m3.json"
+          cat "$RUNNER_TEMP/textkit-m3.json"
 
-      - name: Assert the M2 TextKit results
+      - name: Assert the M3 TextKit results
         if: always()
         run: |
           python3 - <<'PY'
           import json, os, sys
-          path = os.path.join(os.environ["RUNNER_TEMP"], "textkit-m2.json")
+          path = os.path.join(os.environ["RUNNER_TEMP"], "textkit-m3.json")
           if not os.path.exists(path):
-              print("::error::textkit M2 result missing")
+              print("::error::textkit M3 result missing")
               sys.exit(1)
           r = json.load(open(path))
           tk = r.get("textKit", {})
+          counts = tk.get("blockCounts") or {}
           checks = [
               ("completed", r.get("completed") is True, r.get("failures")),
               ("no failures", not r.get("failures"), r.get("failures")),
@@ -258,14 +259,19 @@ jobs:
               ("no adjacent overlap", (tk.get("overlaps") or 0) == 0, tk),
               ("no estimate stored", abs(tk.get("stored", 0) - tk.get("estimate", -1)) > 0.5, tk),
               ("parser contract",
-               tk.get("plainAccepted") is True and tk.get("listRejected") is True
-               and tk.get("codeRejected") is True, tk),
+               tk.get("plainAccepted") is True and tk.get("unorderedAccepted") is True
+               and tk.get("orderedAccepted") is True and tk.get("quoteAccepted") is True
+               and tk.get("codeRejected") is True and tk.get("tableRejected") is True
+               and tk.get("imageRejected") is True, tk),
+              ("fixture tree",
+               tk.get("topLevelBlocks") == 6 and counts.get("text") == 12
+               and counts.get("list") == 4 and counts.get("quote") == 1, tk),
           ]
           failed = [c for c in checks if not c[1]]
           for name, ok, detail in checks:
               print(("PASS " if ok else "FAIL ") + name + ("" if ok else f" | {detail}"))
           if failed:
-              print("::error::textkit M2 gate failed: " + "; ".join(c[0] for c in failed))
+              print("::error::textkit M3 gate failed: " + "; ".join(c[0] for c in failed))
               sys.exit(1)
           PY
 
@@ -276,10 +282,10 @@ jobs:
           name: timeline-autorun
           path: |
             ${{ runner.temp }}/timeline-autorun.json
-            ${{ runner.temp }}/textkit-m2.json
+            ${{ runner.temp }}/textkit-m3.json
             ${{ runner.temp }}/timeline-failure.png
             ${{ runner.temp }}/timeline-final.png
-            ${{ runner.temp }}/textkit-m2-failure.png
+            ${{ runner.temp }}/textkit-m3-failure.png
             ${{ runner.temp }}/sim-build.log
           if-no-files-found: ignore
 

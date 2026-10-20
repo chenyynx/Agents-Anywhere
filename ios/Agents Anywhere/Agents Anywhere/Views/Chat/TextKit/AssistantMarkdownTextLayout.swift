@@ -10,7 +10,7 @@ enum AssistantMarkdownTextLayout {
     /// `ChatMarkdownView` lays blocks out in a VStack with this spacing.
     static let blockSpacing: CGFloat = 12
 
-    /// Height of one block, wrapped to `width`. Pixel-rounded the same way
+    /// Height of one text block, wrapped to `width`. Pixel-rounded the same way
     /// `MarkdownBlockSizing` rounds a Textual block.
     static func height(of attributed: NSAttributedString,
                        width: CGFloat,
@@ -27,8 +27,51 @@ enum AssistantMarkdownTextLayout {
         manager.ensureLayout(for: manager.documentRange)
         let used = manager.usageBoundsForTextContainer.maxY
         guard used.isFinite, used > 0 else { return 0 }
-        let scale = displayScale > 0 && displayScale.isFinite ? displayScale : 1
-        return ceil(used * scale) / scale
+        return roundUp(used, scale: displayScale)
+    }
+
+    /// Height of any block, from the same measurements its view installs as
+    /// explicit constraints.
+    static func height(of block: AssistantMarkdownBlock,
+                       width: CGFloat,
+                       displayScale: CGFloat) -> CGFloat {
+        guard width > 0, width.isFinite else { return 0 }
+        switch block {
+        case .text(let attributed):
+            return height(of: attributed, width: width, displayScale: displayScale)
+        case .list(let list):
+            var total: CGFloat = 0
+            for (index, item) in list.items.enumerated() {
+                if index > 0 { total += list.itemSpacing }
+                let contentWidth = max(0, width - list.contentIndent(for: item.marker))
+                total += stackHeight(of: item.blocks,
+                                     width: contentWidth,
+                                     spacing: list.innerSpacing,
+                                     displayScale: displayScale)
+            }
+            return roundUp(total, scale: displayScale)
+        case .quote(let quote):
+            let contentWidth = max(0, width - quote.inset)
+            let total = stackHeight(of: quote.blocks,
+                                    width: contentWidth,
+                                    spacing: quote.innerSpacing,
+                                    displayScale: displayScale)
+            return roundUp(total, scale: displayScale)
+        }
+    }
+
+    /// Height of a vertical block stack. Individual blocks are already
+    /// pixel-rounded; the caller decides whether the sum needs its own round.
+    static func stackHeight(of blocks: [AssistantMarkdownBlock],
+                            width: CGFloat,
+                            spacing: CGFloat,
+                            displayScale: CGFloat) -> CGFloat {
+        var total: CGFloat = 0
+        for (index, block) in blocks.enumerated() {
+            if index > 0 { total += spacing }
+            total += height(of: block, width: width, displayScale: displayScale)
+        }
+        return total
     }
 
     /// Sum of the block heights plus the product's inter-block spacing.
@@ -38,12 +81,15 @@ enum AssistantMarkdownTextLayout {
         var total: CGFloat = 0
         for (index, block) in document.blocks.enumerated() {
             if index > 0 { total += blockSpacing }
-            switch block {
-            case .text(let attributed):
-                total += height(of: attributed, width: width, displayScale: displayScale)
-            }
+            total += height(of: block, width: width, displayScale: displayScale)
         }
         return total
+    }
+
+    private static func roundUp(_ value: CGFloat, scale: CGFloat) -> CGFloat {
+        guard value.isFinite, value > 0 else { return 0 }
+        let s = scale > 0 && scale.isFinite ? scale : 1
+        return ceil(value * s) / s
     }
 }
 

@@ -11,6 +11,8 @@ enum AssistantMarkdownCellBuildMetrics {
     private(set) static var count = 0
     private(set) static var totalMilliseconds: Double = 0
     private(set) static var maxMilliseconds: Double = 0
+    private(set) static var kindTotals: [String: Double] = [:]
+    private(set) static var kindCounts: [String: Int] = [:]
 
     static var averageMilliseconds: Double {
         count == 0 ? 0 : totalMilliseconds / Double(count)
@@ -20,12 +22,32 @@ enum AssistantMarkdownCellBuildMetrics {
         count = 0
         totalMilliseconds = 0
         maxMilliseconds = 0
+        kindTotals = [:]
+        kindCounts = [:]
     }
 
     static func record(_ milliseconds: Double) {
         count += 1
         totalMilliseconds += milliseconds
         maxMilliseconds = max(maxMilliseconds, milliseconds)
+    }
+
+    static func record(kind: String, milliseconds: Double) {
+        kindTotals[kind, default: 0] += milliseconds
+        kindCounts[kind, default: 0] += 1
+    }
+
+    static var kindSnapshot: [String: Any] {
+        var snapshot: [String: Any] = [:]
+        for (kind, total) in kindTotals {
+            let samples = kindCounts[kind] ?? 0
+            snapshot[kind] = [
+                "totalMs": total,
+                "count": samples,
+                "averageMs": samples == 0 ? 0 : total / Double(samples),
+            ]
+        }
+        return snapshot
     }
 }
 #endif
@@ -100,12 +122,28 @@ final class AssistantMarkdownCell: UICollectionViewCell {
                 (CACurrentMediaTime() - buildStart) * 1000)
         }
         #endif
+        #if DEBUG
+        let clearStart = CACurrentMediaTime()
+        #endif
         removeBlockViews()
+        #if DEBUG
+        AssistantMarkdownCellBuildMetrics.record(
+            kind: "clear",
+            milliseconds: (CACurrentMediaTime() - clearStart) * 1000)
+        #endif
         let width = contentView.bounds.width
         lastLayoutWidth = width
         for block in document.blocks {
+            #if DEBUG
+            let blockStart = CACurrentMediaTime()
+            #endif
             let made = AssistantMarkdownBlockViewFactory.make(
                 block, width: width, displayScale: traitCollection.displayScale)
+            #if DEBUG
+            AssistantMarkdownCellBuildMetrics.record(
+                kind: block.kindName,
+                milliseconds: (CACurrentMediaTime() - blockStart) * 1000)
+            #endif
             stack.addArrangedSubview(made.view)
             let constraint = made.view.heightAnchor.constraint(equalToConstant: made.height)
             constraint.isActive = true

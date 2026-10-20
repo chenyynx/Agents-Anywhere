@@ -51,6 +51,17 @@ enum AssistantMarkdownBlock {
     case quote(AssistantQuoteBlock)
     case code(AssistantCodeBlock)
     case table(AssistantTableBlock)
+
+    /// Stable label for DEBUG build-cost instrumentation.
+    var kindName: String {
+        switch self {
+        case .text: return "text"
+        case .list: return "list"
+        case .quote: return "quote"
+        case .code: return "code"
+        case .table: return "table"
+        }
+    }
 }
 
 struct AssistantListBlock {

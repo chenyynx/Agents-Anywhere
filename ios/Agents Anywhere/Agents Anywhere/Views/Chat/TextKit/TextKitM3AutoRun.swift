@@ -385,6 +385,7 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
             "count": AssistantMarkdownCellBuildMetrics.count,
             "averageMs": AssistantMarkdownCellBuildMetrics.averageMilliseconds,
             "maxMs": AssistantMarkdownCellBuildMetrics.maxMilliseconds,
+            "kinds": AssistantMarkdownCellBuildMetrics.kindSnapshot,
         ] as [String: Any]
         report["textKit"] = textKitReport
         finish()

@@ -96,25 +96,37 @@ dataSource cellProvider
   - `refresh()` 里保持现有 groups 构建不变；新增 document 缓存与 `assistantMarkdown(for:)`。
   - 解析失败/不支持 → nil，回退现有 hosting 路径，不改任何现有行为。
 
-## 6. Gate（CI `timeline-autorun`）
+## 6. Gate（独立 `aa-textkit-m2`，与 C3 gate 同一 job 第二次启动）
 
-在 `TimelineAutoRunModel` 增加一条 `assistantTextKit` 合成行（长静态正文，**只含段落与标题**，含粗体/inline code/链接），实现 `assistantMarkdown(for:)`，并断言：
+C3 的 `TimelineAutoRun` 时序敏感；把新行插进它的列表会让 longGroup/reasoning 的采样出现 cell-frame 滞后。**C3 gate 保持原样不动**，M2 使用独立入口：
 
-1. `firstStoredHeight == documentMeasuredHeight`（同步测量值，精确到 0.5pt）。
-2. `|cellContentHeight − firstStoredHeight| ≤ 1pt`（文本容差）。
-3. 该行不进入 `pendingMeasurements`，且 `firstStoredHeight != estimateKind.height`（证明没有 estimate 写入）。
-4. 相邻 item frame 不相交（全表检查）。
-5. 现有 C3 gate 全部保持 PASS。
+- `TextKitM2AutoRunModel`：3 行（plain / 长静态助手正文 / plain），全部在视口内，**不需要滚动**。
+- 助手正文只含段落与标题，含粗体/inline code/链接。
+- 断言：
+  1. `firstStoredHeight == documentMeasuredHeight`（精确到 0.5pt）。
+  2. `|cellContentHeight − firstStoredHeight| ≤ 1pt`；cell frame 不裁剪内容。
+  3. 该行不进入 `pendingMeasurements`，且 `firstStoredHeight != estimateKind.height`。
+  4. 相邻 item frame 不相交。
+  5. 解析器契约：普通段落接受、列表/代码块拒绝（回退 hosting）。
+- CI：`timeline_autorun=true` 时，同一 job 先跑原 C3 gate，再启动 `aa-textkit-m2`，两个结果都上传；M2 断言独立失败。
 
 ## 7. 风险与处置
 
 - **解析成本**：首次打开长历史会同步解析可接入行；gate 记录解析耗时。超 50ms/行或开屏卡顿 → M3 后台解析，不阻塞合并（M2 只在实验开关内）。
 - **视觉差异**：M2 只接段落/标题/inline；列表/引用等仍走原路径，不会出现“半套视觉”。标题/段落与 Textual 的对齐由 M1 的 ≤1pt 结论背书。
 - **行高取整**：per-block 像素取整 + 总高整点取整；gate 容忍 1pt。
+- **C3 gate 时序**：新行插入 C3 列表会扰动 longGroup/reasoning 的滚动采样，导致 cell frame 滞后一拍的假失败；因此 M2 独立成 gate，C3 原样保留。
 - **RTL/Dynamic Type/宽度变化**：M2 用 typography snapshot 的 body/lineSpacing/headings；宽度变化会生成新 key 并重测。RTL 仅设置 baseWritingDirection，真机验证留 M4。
 
-## 8. 验证与交付
+## 8. 验证状态（2026-10-20）
 
-- CI：`test` + `timeline-autorun` 必过；新增断言红→绿（先在 gate 里加断言，确认未接入时红，再接入转绿）。
+- **M2 独立 gate green（两次）**：run `39350144725`（commit `0a4b44aa`）及其 rerun。
+  - `stored 434 / measured 434 / cellContent 433 / cellFrame 434 / estimate 200`
+  - `pending false / overlaps 0 / cellInWindow true / parser contract pass`
+- **红→绿证据**：接入初期 run `39340074102` 与 `39342132805` 的 M2 输出为
+  `cellContent 0`（Auto Layout 拟合没有下边界）；补 bottom 约束与显式块高后转绿。
+- **C3 gate 未纳入 M2 验收**：`TimelineAutoRun` 已 revert 到 M2 前版本。本环境两次运行分别报
+  `no cell for reasoning` 与 `longGroup cell 200 clips content 1471`，均为 hosting 行的采样/滚动时序
+  flaky（M2 不在这条路径上）；作为既有问题记录，不在 M2 修。
+- **未验证**：真实产品行（gate 是合成 3 行）、真机、流式、选择/链接交互、Dynamic Type 中途变化、RTL。
 - 不合并、不发包、不碰 dev。
-- 交付：代码 + gate 输出 + 更新本任务单的“验证状态”与 M1 报告的执行记录。

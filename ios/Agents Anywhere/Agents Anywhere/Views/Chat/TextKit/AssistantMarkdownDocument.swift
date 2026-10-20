@@ -681,6 +681,16 @@ enum ChatTextUIColors {
     static var tableLine: UIColor { dynamic(ChatPalette.tableLine) }
     static var tableHeaderFill: UIColor { dynamic(ChatPalette.tableHeaderFill) }
 
+    // Syntax tokens, mirroring `ChatHighlighterTheme`.
+    static var synKey: UIColor { dynamic(ChatPalette.synKey) }
+    static var synString: UIColor { dynamic(ChatPalette.synString) }
+    static var synComment: UIColor { dynamic(ChatPalette.synComment) }
+    static var synPunct: UIColor { dynamic(ChatPalette.synPunct) }
+    static var synKeyword: UIColor { dynamic(ChatPalette.synKeyword) }
+    static var synNumber: UIColor { dynamic(ChatPalette.synNumber) }
+    static var synType: UIColor { dynamic(ChatPalette.synType) }
+    static var synFunction: UIColor { dynamic(ChatPalette.synFunction) }
+
     private static func dynamic(_ pair: ChatColorSettings.Pair) -> UIColor {
         UIColor { traits in
             let hex = traits.userInterfaceStyle == .dark ? pair.dark : pair.light

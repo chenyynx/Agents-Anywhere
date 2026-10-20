@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import Textual
 import UIKit
 
 /// Builds the UIKit view for one block and returns the height it was laid out
@@ -236,6 +237,7 @@ final class AssistantCodeBlockView: UIView {
     private let codeView = AssistantMarkdownBlockTextView()
     private let copyIcon = UIImageView()
     private let expandIcon = UIImageView()
+    private var highlightTask: Task<Void, Never>?
 
     init(codeBlock: AssistantCodeBlock, width: CGFloat, displayScale: CGFloat) {
         self.codeBlock = codeBlock
@@ -279,9 +281,77 @@ final class AssistantCodeBlockView: UIView {
         codeView.backgroundColor = .clear
         codeView.textContainer.widthTracksTextView = false
         scrollView.addSubview(codeView)
+        startHighlighting()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// The legacy renderer gets syntax colours from Textual's view layer. The
+    /// TextKit path has no `StructuredText` view, so it asks the same Prism
+    /// tokenizer for the token stream and applies the same AA palette.
+    private func startHighlighting() {
+        guard let language = codeBlock.language, !language.isEmpty else { return }
+        let plain = codeBlock.code
+        let source = plain.string
+        highlightTask = Task { @MainActor [weak self] in
+            let tokens = await SyntaxHighlighting.tokenize(
+                code: source, language: language)
+            guard let self, !Task.isCancelled,
+                  tokens.map(\.content).joined() == source else { return }
+            self.codeView.attributedText = Self.highlighted(
+                tokens: tokens, base: plain)
+        }
+    }
+
+    private static func highlighted(tokens: [SyntaxHighlightToken],
+                                    base: NSAttributedString) -> NSAttributedString {
+        guard base.length > 0,
+              let baseAttributes = base.attributes(
+                at: 0, effectiveRange: nil) as? [NSAttributedString.Key: Any] else {
+            return base
+        }
+        let baseFont = baseAttributes[.font] as? UIFont
+        let result = NSMutableAttributedString()
+        for token in tokens {
+            var attributes = baseAttributes
+            if let color = color(for: token.type) {
+                attributes[.foregroundColor] = color
+            }
+            if token.type == .keyword || token.type == .literal
+                || token.type == .boolean, let baseFont {
+                attributes[.font] = UIFont.monospacedSystemFont(
+                    ofSize: baseFont.pointSize, weight: .semibold)
+            }
+            result.append(NSAttributedString(
+                string: token.content, attributes: attributes))
+        }
+        return result
+    }
+
+    private static func color(
+        for type: StructuredText.HighlighterTheme.TokenType
+    ) -> UIColor? {
+        switch type {
+        case .property, .variable:
+            return ChatTextUIColors.synKey
+        case .string, .char, .regex:
+            return ChatTextUIColors.synString
+        case .comment, .blockComment, .docComment:
+            return ChatTextUIColors.synComment
+        case .punctuation, .symbol:
+            return ChatTextUIColors.synPunct
+        case .keyword, .literal, .boolean:
+            return ChatTextUIColors.synKeyword
+        case .number:
+            return ChatTextUIColors.synNumber
+        case .className:
+            return ChatTextUIColors.synType
+        case .function, .functionName:
+            return ChatTextUIColors.synFunction
+        default:
+            return nil
+        }
+    }
 
     private func configureIcon(_ view: UIImageView, symbol: String) {
         view.image = UIImage(systemName: symbol)

@@ -1,5 +1,6 @@
 #if DEBUG
 import Observation
+import QuartzCore
 import SwiftUI
 import UIKit
 
@@ -14,7 +15,7 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
     static let launchArgument = "aa-textkit-m3"
     static let resultFileName = "textkit-m3.json"
 
-    enum Kind: String, CaseIterable { case topPlain, assistantTextKit, bottomPlain }
+    enum Kind: String, CaseIterable { case topPlain, assistantTextKit, bottomPlain, stress }
 
     struct Entry: Identifiable, Equatable {
         let id: String
@@ -32,6 +33,7 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
     @ObservationIgnored private var didRun = false
     @ObservationIgnored private var initialHeights: [String: CGFloat] = [:]
     @ObservationIgnored private var document: AssistantMarkdownDocument?
+    @ObservationIgnored private var stressDocument: AssistantMarkdownDocument?
 
     private static let fixture = """
     ## Lists and quotes
@@ -64,20 +66,54 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
     The closing paragraph keeps the row static and gives the tree a text block after the containers.
     """
 
+    /// Below the correctness rows: a table/code/list document repeated down the
+    /// timeline, so the scroll phase builds real TextKit cells offscreen.
+    private static let stressFixture = """
+    ## Scroll fixture
+
+    A short paragraph before the table.
+
+    | Name | Value | Note | Extra |
+    | --- | --- | --- | --- |
+    | alpha | 1 | first | a |
+    | beta | 2 | second | b |
+    | gamma | 3 | third | c |
+    | delta | 4 | fourth | d |
+    | epsilon | 5 | fifth | e |
+
+    ```swift
+    let value = 1
+    let other = 2
+    print(value + other)
+    ```
+
+    - One
+    - Two
+    - Three
+    """
+
     init() {
         entries = [
             Entry(id: "top-plain", kind: .topPlain, text: "A short opening line."),
             Entry(id: "textkit-assistant-1", kind: .assistantTextKit, text: Self.fixture),
             Entry(id: "bottom-plain", kind: .bottomPlain, text: "A short closing line."),
         ]
+        entries.append(contentsOf: (0..<12).map {
+            Entry(id: "stress-\($0)", kind: .stress, text: Self.stressFixture)
+        })
         contentGeneration = 1
+        let typography = TimelineChatContentAdapter.typography(
+            dynamicType: "UICTContentSizeCategoryL",
+            layoutDirection: 0,
+            boldText: false)
         document = AssistantMarkdownDocumentParser.make(
             text: Self.fixture,
             resolvesFileReferences: false,
-            typography: TimelineChatContentAdapter.typography(
-                dynamicType: "UICTContentSizeCategoryL",
-                layoutDirection: 0,
-                boldText: false))
+            typography: typography)
+        stressDocument = AssistantMarkdownDocumentParser.make(
+            text: Self.stressFixture,
+            resolvesFileReferences: false,
+            typography: typography)
     }
 
     // MARK: - Content providing
@@ -126,13 +162,14 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
     func measurementContent(for item: TimelineListItem) -> TimelineMeasurementContent {
         guard case .group(let id) = item,
               let entry = entries.first(where: { $0.id == id }) else { return .plainText }
-        return entry.kind == .assistantTextKit ? .markdown : .plainText
+        return entry.kind == .topPlain || entry.kind == .bottomPlain
+            ? .plainText : .markdown
     }
 
     func rowView(for item: TimelineListItem) -> AnyView {
         guard case .group(let id) = item,
               let entry = entries.first(where: { $0.id == id }) else { return AnyView(EmptyView()) }
-        if entry.kind == .assistantTextKit {
+        if entry.kind != .topPlain && entry.kind != .bottomPlain {
             return AnyView(ChatMarkdownView(text: entry.text))
         }
         return AnyView(Text(entry.text)
@@ -155,8 +192,13 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
     }
 
     func assistantMarkdown(for item: TimelineListItem) -> AssistantMarkdownDocument? {
-        guard case .group(let id) = item, id == "textkit-assistant-1" else { return nil }
-        return document
+        guard case .group(let id) = item,
+              let entry = entries.first(where: { $0.id == id }) else { return nil }
+        switch entry.kind {
+        case .assistantTextKit: return document
+        case .stress: return stressDocument
+        case .topPlain, .bottomPlain: return nil
+        }
     }
 
     func assistantTurnFooter(for item: TimelineListItem) -> AssistantTurnFooter? {
@@ -336,7 +378,61 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
             "tableAccepted": tableDocument != nil,
             "imageRejected": imageDocument == nil,
         ] as [String: Any]
+        var textKitReport = report["textKit"] as? [String: Any] ?? [:]
+        textKitReport["scroll"] = await measureScroll(controller)
+        report["textKit"] = textKitReport
         finish()
+    }
+
+    /// Drive the real collection view from top to bottom through the stress
+    /// rows. The measured block is only the synchronous scroll + layout work;
+    /// the short sleep afterwards lets reuse settle without inflating it.
+    private func measureScroll(_ controller: TimelineCollectionController) async -> [String: Any] {
+        let view = controller.collectionView
+        view.layoutIfNeeded()
+        let viewport = view.bounds.height
+        let contentHeight = view.contentSize.height
+        guard viewport > 0, contentHeight > viewport else {
+            failures.append("textkit scroll: content \(contentHeight) does not exceed viewport \(viewport)")
+            return ["steps": 0, "medianMs": -1.0, "p95Ms": -1.0, "maxMs": -1.0,
+                    "contentHeight": Double(contentHeight), "viewport": Double(viewport),
+                    "reachedBottom": false]
+        }
+
+        let maxOffset = contentHeight - viewport
+        let steps = 24
+        var durations: [Double] = []
+        for step in 1...steps {
+            let y = maxOffset * CGFloat(step) / CGFloat(steps)
+            let start = CACurrentMediaTime()
+            view.setContentOffset(CGPoint(x: 0, y: y), animated: false)
+            view.layoutIfNeeded()
+            durations.append((CACurrentMediaTime() - start) * 1000)
+            await wait(16)
+        }
+        view.layoutIfNeeded()
+
+        let reachedBottom = abs(view.contentOffset.y - maxOffset) <= 1
+        let sorted = durations.sorted()
+        let median = sorted[sorted.count / 2]
+        let p95 = sorted[min(sorted.count - 1, Int(Double(sorted.count - 1) * 0.95))]
+        let maxValue = sorted.last ?? 0
+
+        if !reachedBottom {
+            failures.append("textkit scroll: stopped at \(view.contentOffset.y) of \(maxOffset)")
+        }
+        // Simulator smoke ceilings, not product frame targets. They catch a
+        // pathological cell build; device measurements decide the real budget.
+        if p95 > 150 { failures.append("textkit scroll: p95 \(p95)ms > 150ms") }
+        if maxValue > 300 { failures.append("textkit scroll: max \(maxValue)ms > 300ms") }
+
+        return ["steps": steps,
+                "medianMs": median,
+                "p95Ms": p95,
+                "maxMs": maxValue,
+                "contentHeight": Double(contentHeight),
+                "viewport": Double(viewport),
+                "reachedBottom": reachedBottom]
     }
 
     private func finish() {

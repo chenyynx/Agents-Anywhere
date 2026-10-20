@@ -247,6 +247,7 @@ jobs:
           r = json.load(open(path))
           tk = r.get("textKit", {})
           counts = tk.get("blockCounts") or {}
+          scroll = tk.get("scroll") or {}
           checks = [
               ("completed", r.get("completed") is True, r.get("failures")),
               ("no failures", not r.get("failures"), r.get("failures")),
@@ -269,6 +270,9 @@ jobs:
                tk.get("topLevelBlocks") == 8 and counts.get("text") == 12
                and counts.get("list") == 4 and counts.get("quote") == 1
                and counts.get("code") == 1 and counts.get("table") == 1, tk),
+              ("scroll covered",
+               scroll.get("steps") == 24 and scroll.get("reachedBottom") is True,
+               scroll),
           ]
           failed = [c for c in checks if not c[1]]
           for name, ok, detail in checks:

@@ -179,6 +179,17 @@ final class TextKitVisualParityController: UIViewController {
         let bytesPerRow = cg.bytesPerRow
         let bytesPerPixel = max(1, cg.bitsPerPixel / 8)
         let length = CFDataGetLength(data)
+        // The hosted SwiftUI view paints the system background (not pure
+        // white) across the safe-area band. Treat the top-left pixel as the
+        // background and crop rows that only contain that colour.
+        guard length >= 3 else {
+            return TrimmedSnapshot(image: image, contentHeight: rawHeight,
+                                   rawHeight: rawHeight, firstInkRow: -1,
+                                   lastInkRow: -1)
+        }
+        let bgR = Int(bytes[0])
+        let bgG = Int(bytes[1])
+        let bgB = Int(bytes[2])
         var first = height
         var last = -1
         for y in 0..<height {
@@ -186,8 +197,9 @@ final class TextKitVisualParityController: UIViewController {
             for x in stride(from: 0, to: width, by: 4) {
                 let offset = y * bytesPerRow + x * bytesPerPixel
                 guard offset + 2 < length else { continue }
-                if bytes[offset] < 245 || bytes[offset + 1] < 245
-                    || bytes[offset + 2] < 245 {
+                if abs(Int(bytes[offset]) - bgR) > 8
+                    || abs(Int(bytes[offset + 1]) - bgG) > 8
+                    || abs(Int(bytes[offset + 2]) - bgB) > 8 {
                     hasInk = true
                     break
                 }

@@ -349,7 +349,10 @@ final class AssistantCodeBlockView: UIView {
     }
 
     private func configureIcon(_ view: UIImageView, symbol: String) {
-        view.image = UIImage(systemName: symbol)
+        // The legacy card uses AppSymbol's Lucide assets, not SF Symbols.
+        let asset = AppSymbolAssets.names[symbol].flatMap { UIImage(named: $0) }
+        view.image = (asset ?? UIImage(systemName: symbol))?
+            .withRenderingMode(.alwaysTemplate)
         view.tintColor = ChatTextUIColors.codeHeaderIcon
         view.contentMode = .scaleAspectFit
         view.isUserInteractionEnabled = false
@@ -371,7 +374,8 @@ final class AssistantCodeBlockView: UIView {
         scrollView.frame = CGRect(x: 0, y: bodyY, width: width, height: bodyHeight)
 
         // Match `ChatMarkdownCodeBlock`: two 44pt header buttons inset 14pt.
-        let iconSize: CGFloat = 15
+        // AppSymbol scales its 15pt icon with the body text style.
+        let iconSize = UIFontMetrics(forTextStyle: .body).scaledValue(for: 15)
         let iconY = (codeBlock.headerHeight - iconSize) / 2
         expandIcon.frame = CGRect(x: width - 14 - 22 - iconSize / 2,
                                   y: iconY, width: iconSize, height: iconSize)

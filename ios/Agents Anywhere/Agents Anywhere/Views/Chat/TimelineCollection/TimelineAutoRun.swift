@@ -230,9 +230,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         // after apply, so the first-displayed snapshot is captured by
         // `onApplyCompleted`.
         await firstMeasurement()
-        await textKitMeasurement()
         await asyncMarkdown()
         await measureConsistency()
+        await textKitMeasurement()
         await foldAndTail()
         await streaming()
         await bottom()
@@ -305,6 +305,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                 controller.layout.heights.displayedHeight(for: item.itemID) ?? -1)
             diagnostic["tiered"] = Double(
                 controller.layout.heights.tieredHeight(for: gateKey) ?? -1)
+            diagnostic["cellFrameHeight"] = Double(sample.frameHeight)
+            diagnostic["cellInWindow"] = sample.inWindow
             samples.append(["kind": kind.rawValue, "measured": sample.measured,
                             "content": sample.content, "cell": sample.cell,
                             "error": error, "diagnostics": diagnostic])
@@ -631,6 +633,10 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         let content: CGFloat
         let measured: CGFloat
         let width: CGFloat
+        /// Diagnostics for the cell-frame-vs-attribute mismatch: a prefetched
+        /// cell is not in a window and its bounds are not the rendered frame.
+        let frameHeight: CGFloat
+        let inWindow: Bool
     }
 
     /// A correction can invalidate the layout between the scroll and the
@@ -661,6 +667,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         // the pass that created it; force the attributes that just changed to
         // reach `cell.bounds` before sampling.
         controller.collectionView.layoutIfNeeded()
+        // A prefetched cell is not in a window; its bounds are not the frame
+        // the reader sees. Treat it as "no cell" and let the caller retry.
+        guard cell.window != nil else { return nil }
         let width = cell.contentView.bounds.width
         guard width > 0 else { return nil }
         let content = cell.contentView.systemLayoutSizeFitting(
@@ -671,7 +680,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         let measured = controller.layout.heights.tieredHeight(for: key)
             ?? controller.layout.attributes(for: item.itemID)?.frame.height ?? 0
         return CellSample(cell: cell.bounds.height, content: content,
-                          measured: measured, width: width)
+                          measured: measured, width: width,
+                          frameHeight: cell.frame.height, inWindow: cell.window != nil)
     }
 
     private func cellHeight(_ controller: TimelineCollectionController, _ item: TimelineListItem) -> CGFloat {

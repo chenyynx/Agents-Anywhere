@@ -500,6 +500,9 @@ final class TimelineCollectionController: UIViewController {
 
     /// Re-measures one row on demand (the gate's async-Markdown settle step).
     func remeasure(_ item: TimelineListItem) {
+        // A TextKit 2 row was measured before apply by the engine that renders
+        // it; the visible-cell fit must not replace that measurement.
+        guard documentHeights[item.itemID] == nil else { return }
         guard let content, columnWidth > 0 else { return }
         let width = columnWidth
         let key = content.heightKey(for: item, width: width)

@@ -40,8 +40,8 @@ import Testing
     }
 
     @Test func unsupportedRowShapesStayOnHosting() {
-        #expect(!admits(streamingText: true, assistant: false))
-        #expect(!admits(streamingText: true, singleRow: false))
+        #expect(!admits(assistant: false, streamingText: true))
+        #expect(!admits(singleRow: false, streamingText: true))
         #expect(!admits(streamingText: true, emptyText: true))
         #expect(!admits(streamingText: true, notice: true))
         #expect(!admits(streamingText: true, attachments: true))

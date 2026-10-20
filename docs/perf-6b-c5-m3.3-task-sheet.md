@@ -119,3 +119,19 @@ segment 身份：
 - 全流程 CI 绿（M3 gate；C3 既有 flake 单独记录）
 - 每 segment 高度、总高不变量、footer、块统计均通过
 - 未覆盖：真机视觉、滚动真机、流式、选择/附件
+
+## 9. 验证结果（2026-10-20）
+
+CI run `39392270705`（commit `b7b52028`，`workflow_dispatch` + `timeline_autorun=true`）全绿：`test` success、`timeline-autorun` success。
+
+`textkit-m3.json`（iPhone Air / iOS 26.5）：
+
+- `passed: true`、`failures: []`
+- segment：4 段（prose 2 / code 1 / table 1），高 317 / 97 / 108 / 83，四段 `stored == measured`
+- 总高不变量：`segmentSumWithoutFooter 561.5 + spacing 36 = 597.5` vs `wholeDocumentHeight 596`，`segmentDelta 1.5`（容差 5）
+- footer：`footerDelta 44.33` vs `footerHeight 43.5`
+- 准入：text/list/quote/code/table/ordered/unordered/plain 全 accepted；image rejected；无 pending/estimate/重叠
+- scroll：24 步，median 29.09ms / p95 58.95ms / max 79.20ms；`cellBuild` 平均 24.93ms
+- 同轮 C3 亦绿（前一轮 `39390593194` 的 `longGroup cell 200 clips content 1471` 为既有 flake）
+
+未覆盖：真机视觉、真机滚动、流式、选择/附件；adapter 真实数据路径只经编译与 C3 冒烟，未单独合成断言。

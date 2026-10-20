@@ -324,21 +324,20 @@ final class AssistantCodeBlockView: UIView {
 }
 
 /// The table card: a horizontally scrolling grid with fixed column widths and
-/// per-row heights. Cells use the same TextKit views as running text; the
-/// header row is tinted and semibold, and every seam uses the product's single
-/// hairline colour.
+/// per-row heights. Labels carry the cell text; the card draws the header fill
+/// and row seams, so a table does not build a container and separator view for
+/// every cell.
 final class AssistantTableBlockView: UIView {
     private let table: AssistantTableBlock
     private let displayScale: CGFloat
     private let scrollView = UIScrollView()
-    private let card = UIView()
-    private var cells: [[UIView]] = []
-    private var textViews: [[UILabel]] = []
-    private var separators: [[UIView]] = []
+    private let card: AssistantTableCardView
+    private var labels: [[UILabel]] = []
 
     init(table: AssistantTableBlock, width: CGFloat, displayScale: CGFloat) {
         self.table = table
         self.displayScale = displayScale
+        self.card = AssistantTableCardView(table: table)
         super.init(frame: .zero)
         backgroundColor = .clear
 
@@ -358,39 +357,22 @@ final class AssistantTableBlockView: UIView {
         scrollView.addSubview(card)
 
         for row in table.rows.indices {
-            var rowCells: [UIView] = []
-            var rowTextViews: [UILabel] = []
-            var rowSeparators: [UIView] = []
+            var rowLabels: [UILabel] = []
             for column in table.rows[row].indices {
-                let cell = UIView()
-                cell.backgroundColor = row == 0
-                    ? ChatTextUIColors.tableHeaderFill : .clear
-                card.addSubview(cell)
-
                 // A UITextView per cell makes a large table build dozens of
                 // TextKit 2 stacks; the scroll gate measured that as the
                 // dominant cost. Labels render the same attributed string and
                 // are an order of magnitude lighter. Row heights still come
                 // from TextKit 2, so layout stays in one engine.
-                let textView = AssistantTableLabel()
-                textView.attributedText = table.rows[row][column]
-                textView.numberOfLines = 0
-                textView.lineBreakMode = .byWordWrapping
-                textView.backgroundColor = .clear
-                cell.addSubview(textView)
-
-                let separator = UIView()
-                separator.backgroundColor = ChatTextUIColors.tableLine
-                separator.isHidden = row == table.rows.count - 1
-                cell.addSubview(separator)
-
-                rowCells.append(cell)
-                rowTextViews.append(textView)
-                rowSeparators.append(separator)
+                let label = AssistantTableLabel()
+                label.attributedText = table.rows[row][column]
+                label.numberOfLines = 0
+                label.lineBreakMode = .byWordWrapping
+                label.backgroundColor = .clear
+                card.addSubview(label)
+                rowLabels.append(label)
             }
-            cells.append(rowCells)
-            textViews.append(rowTextViews)
-            separators.append(rowSeparators)
+            labels.append(rowLabels)
         }
     }
 
@@ -410,26 +392,61 @@ final class AssistantTableBlockView: UIView {
         for (row, height) in table.rowHeights.enumerated() {
             var x: CGFloat = 0
             for (column, width) in table.columnWidths.enumerated() {
-                guard cells.indices.contains(row),
-                      cells[row].indices.contains(column) else { break }
-                cells[row][column].frame = CGRect(x: x, y: y, width: width, height: height)
-                let textView = textViews[row][column]
-                textView.frame = CGRect(
-                    x: table.cellPaddingHorizontal,
-                    y: table.cellPaddingVertical,
+                guard labels.indices.contains(row),
+                      labels[row].indices.contains(column) else { break }
+                labels[row][column].frame = CGRect(
+                    x: x + table.cellPaddingHorizontal,
+                    y: y + table.cellPaddingVertical,
                     width: max(0, width - table.cellPaddingHorizontal * 2),
                     height: max(0, height - table.cellPaddingVertical * 2))
-                let separator = separators[row][column]
-                separator.frame = CGRect(
-                    x: 0, y: height - line, width: width, height: line)
                 x += width
             }
             y += height
         }
+        card.setNeedsDisplay()
 
         card.layer.borderWidth = line
         card.layer.borderColor = ChatTextUIColors.tableLine
             .resolvedColor(with: traitCollection).cgColor
+    }
+}
+
+/// Draws the header fill and row seams once, behind the cell labels.
+private final class AssistantTableCardView: UIView {
+    private let table: AssistantTableBlock
+
+    init(table: AssistantTableBlock) {
+        self.table = table
+        super.init(frame: .zero)
+        isOpaque = false
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func draw(_ rect: CGRect) {
+        guard let firstHeight = table.rowHeights.first else { return }
+        ChatTextUIColors.tableHeaderFill
+            .resolvedColor(with: traitCollection).setFill()
+        UIRectFill(CGRect(x: 0, y: 0, width: bounds.width, height: firstHeight))
+
+        let scale = traitCollection.displayScale > 0
+            ? traitCollection.displayScale : 1
+        let line = 1 / scale
+        ChatTextUIColors.tableLine
+            .resolvedColor(with: traitCollection).setFill()
+        var y = firstHeight
+        for index in 1..<table.rowHeights.count {
+            UIRectFill(CGRect(x: 0, y: y - line,
+                              width: bounds.width, height: line))
+            y += table.rowHeights[index]
+        }
+    }
+
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        if traitCollection.hasDifferentColorAppearance(comparedTo: previousTraitCollection) {
+            setNeedsDisplay()
+        }
     }
 }
 

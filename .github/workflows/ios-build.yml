@@ -248,6 +248,7 @@ jobs:
           tk = r.get("textKit", {})
           counts = tk.get("blockCounts") or {}
           scroll = tk.get("scroll") or {}
+          cell_build = tk.get("cellBuild") or {}
           checks = [
               ("completed", r.get("completed") is True, r.get("failures")),
               ("no failures", not r.get("failures"), r.get("failures")),
@@ -273,6 +274,8 @@ jobs:
               ("scroll covered",
                scroll.get("steps") == 24 and scroll.get("reachedBottom") is True,
                scroll),
+              ("cell build sampled", (cell_build.get("count") or 0) > 0,
+               cell_build),
           ]
           failed = [c for c in checks if not c[1]]
           for name, ok, detail in checks:

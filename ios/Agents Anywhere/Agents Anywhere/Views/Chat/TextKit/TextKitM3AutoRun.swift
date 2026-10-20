@@ -379,7 +379,13 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
             "imageRejected": imageDocument == nil,
         ] as [String: Any]
         var textKitReport = report["textKit"] as? [String: Any] ?? [:]
+        AssistantMarkdownCellBuildMetrics.reset()
         textKitReport["scroll"] = await measureScroll(controller)
+        textKitReport["cellBuild"] = [
+            "count": AssistantMarkdownCellBuildMetrics.count,
+            "averageMs": AssistantMarkdownCellBuildMetrics.averageMilliseconds,
+            "maxMs": AssistantMarkdownCellBuildMetrics.maxMilliseconds,
+        ] as [String: Any]
         report["textKit"] = textKitReport
         finish()
     }

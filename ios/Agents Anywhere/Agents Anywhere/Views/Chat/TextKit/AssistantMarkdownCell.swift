@@ -1,6 +1,34 @@
 #if canImport(UIKit)
+import QuartzCore
 import SwiftUI
 import UIKit
+
+#if DEBUG
+/// DEBUG-only build cost for the scroll gate. Counts every full block-tree
+/// construction so the probe can separate view building from layout.
+@MainActor
+enum AssistantMarkdownCellBuildMetrics {
+    private(set) static var count = 0
+    private(set) static var totalMilliseconds: Double = 0
+    private(set) static var maxMilliseconds: Double = 0
+
+    static var averageMilliseconds: Double {
+        count == 0 ? 0 : totalMilliseconds / Double(count)
+    }
+
+    static func reset() {
+        count = 0
+        totalMilliseconds = 0
+        maxMilliseconds = 0
+    }
+
+    static func record(_ milliseconds: Double) {
+        count += 1
+        totalMilliseconds += milliseconds
+        maxMilliseconds = max(maxMilliseconds, milliseconds)
+    }
+}
+#endif
 
 /// The assistant body cell. It hosts a vertical stack of block views with the
 /// product's 12pt block spacing. The row height is owned by
@@ -65,6 +93,13 @@ final class AssistantMarkdownCell: UICollectionViewCell {
     /// the first layout pass the width is zero, so `layoutSubviews` builds them.
     private func rebuildIfPossible() {
         guard let document, contentView.bounds.width > 0 else { return }
+        #if DEBUG
+        let buildStart = CACurrentMediaTime()
+        defer {
+            AssistantMarkdownCellBuildMetrics.record(
+                (CACurrentMediaTime() - buildStart) * 1000)
+        }
+        #endif
         removeBlockViews()
         let width = contentView.bounds.width
         lastLayoutWidth = width

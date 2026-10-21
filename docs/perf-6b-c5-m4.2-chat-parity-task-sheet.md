@@ -177,7 +177,7 @@ C3（`TimelineAutoRun`）在 CI 上间歇性失败，三种形态：`no cell for
 - `d822c0f5`：当测量缓存已 settle 但 cell frame 仍旧时，强制一次完整 layout re-apply；样本记录 `attributes`/`frame` 便于诊断。
 - `59256e3d`：缺失 cell 改为 top 对齐 + 10s 重试；失败信息附原因（no index path / no cell at index / width）。
 
-已验证：run `39573714858`（`59256e3d`）**test + timeline-autorun 全绿（C3 与 M4）**；C3 `failures: []`，11 个样本 `attributes == cell == measured`（longGroup 1471/1471/1471）；M4 `failures: []`、`follow.starts: 1`。另派两轮复核 run `39575693162` / `39575701977`。
+已验证：run `39573714858`（`59256e3d`）**test + timeline-autorun 全绿（C3 与 M4）**；C3 `failures: []`，11 个样本 `attributes == cell == measured`（longGroup 1471/1471/1471）；M4 `failures: []`、`follow.starts: 1`。另派两轮复核 run `39575693162` / `39575701977`，**均全绿**（test + timeline-autorun）——C3 连续 3 轮绿。
 
 ## 8. 验收
 

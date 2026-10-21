@@ -20,7 +20,11 @@ enum AssistantMarkdownMaskRenderer {
                                            offsetBy: range.location),
               let end = content.location(start, offsetBy: range.length),
               end.compare(start) != .orderedSame else { return [] }
-        let textRange = NSTextRange(location: start, end: end)
+        // The initializer is failable in the iOS 26 SDK (two locations from
+        // different content managers are rejected). The annotation keeps this
+        // compiling on SDKs where it is non-failable as well.
+        let textRange: NSTextRange? = NSTextRange(location: start, end: end)
+        guard let textRange else { return [] }
         var rects: [CGRect] = []
         manager.enumerateTextSegments(in: textRange, type: .standard, options: []) {
             _, frame, _, _ in

@@ -239,6 +239,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await tailFlap(); persist(phase: "tailFlap")
         await foldCycles(); persist(phase: "foldCycles")
         await interleavedApplies(); persist(phase: "interleavedApplies")
+        await scrollCost(); persist(phase: "scrollCost")
         writeReport()
     }
 
@@ -645,6 +646,37 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         report["owedRace"] = ["before": Double(before), "after": Double(after),
                               "delta": Double(delta),
                               "targetCalls": controller.layout.targetContentOffsetCallCount]
+    }
+
+    /// Device report: scrolling stutters. Measure the synchronous layout cost
+    /// of a scripted 40-step scroll over the tool-heavy timeline and the
+    /// settle/prepare work it triggers. Report-only for the first run; the
+    /// ceiling goes in once the baseline is known.
+    private func scrollCost() async {
+        guard let controller else { return }
+        let view = controller.collectionView!
+        view.layoutIfNeeded()
+        let maxOffset = max(0, view.contentSize.height - view.bounds.height)
+        guard maxOffset > 0 else { return }
+        let preparesBefore = controller.layout.prepareCount
+        var durations: [Double] = []
+        for step in 1...40 {
+            let y = maxOffset * CGFloat(step) / CGFloat(40)
+            let start = CACurrentMediaTime()
+            view.setContentOffset(CGPoint(x: 0, y: y), animated: false)
+            view.layoutIfNeeded()
+            durations.append((CACurrentMediaTime() - start) * 1000)
+            await wait(16)
+        }
+        let sorted = durations.sorted()
+        let median = sorted[sorted.count / 2]
+        let p95 = sorted[min(sorted.count - 1, Int(Double(sorted.count - 1) * 0.95))]
+        let maxValue = sorted.last ?? 0
+        let prepares = controller.layout.prepareCount - preparesBefore
+        report["scrollCost"] = ["steps": 40,
+                                "medianMs": median, "p95Ms": p95, "maxMs": maxValue,
+                                "prepares": prepares,
+                                "contentHeight": Double(view.contentSize.height)]
     }
 
     /// Rows intersecting the viewport, how many have no cell, and the largest

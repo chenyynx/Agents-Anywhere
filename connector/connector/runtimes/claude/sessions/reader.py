@@ -65,6 +65,7 @@ from connector.runtimes.claude.sessions.subagent_oracle import (
     raw_only_notices,
     scan_raw_transcript,
     scan_transcript_file,
+    subagent_token_usage,
     verified_dispatch_tasks,
 )
 from connector.runtimes.claude.sessions.sync_state import ClaudeSessionSyncStateStore
@@ -1459,6 +1460,21 @@ def _agent_task_notification_folds(
             if any(state is None for _, _, state in states)
             else max(statuses, key=lambda item: item[0])[1]
         )
+        if status in AGENT_CARD_TERMINAL_STATUSES:
+            # The wire's single total is the last call's context, not what the
+            # run consumed; the task's transcript keeps every call's usage and
+            # is final now, so the fold publishes the real 输入/输出 split.
+            totals: dict[str, int] = {}
+            for _, task_id, _ in states:
+                usage = subagent_token_usage(
+                    cwd=session.cwd,
+                    external_session_id=session.external_session_id,
+                    task_id=task_id,
+                )
+                for key, value in (usage or {}).items():
+                    totals[key] = totals.get(key, 0) + value
+            if totals:
+                overlay.usage.update(totals)
         index = max(state_index for state_index, _, _ in states)
         folds.setdefault(index, []).append(
             _AgentTaskNotificationFold(

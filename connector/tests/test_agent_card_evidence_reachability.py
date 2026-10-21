@@ -47,6 +47,7 @@ from connector.runtimes.claude.sessions.subagent_oracle import (
     AgentFileInfo,
     ClaudeSubagentOracle,
     scan_raw_transcript,
+    subagent_token_usage,
 )
 from connector.runtimes.claude.timeline.messages import (
     ClaudeMessageProjector,
@@ -507,3 +508,119 @@ def test_startup_reconciliation_judges_an_indexed_session(
     assert host.upserts[0].id == stable_tool_item_id(_session(), DISPATCH_TUID)
     # The closure was recorded, so the work list retires itself.
     assert host.state[KEY]["sessions"] == {}
+
+
+# --------------------------------------------------------------------------
+# 5. Real input/output usage from the subagent transcript
+# --------------------------------------------------------------------------
+
+
+def _usage_row(
+    input_tokens: int,
+    output_tokens: int,
+    *,
+    cache_read: int = 0,
+    cache_creation: int = 0,
+) -> str:
+    return _line(
+        {
+            "type": "assistant",
+            "uuid": f"usage-{input_tokens}-{output_tokens}",
+            "timestamp": DISPATCH_TS,
+            "message": {
+                "id": f"msg-{input_tokens}-{output_tokens}",
+                "role": "assistant",
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cache_creation_input_tokens": cache_creation,
+                    "cache_read_input_tokens": cache_read,
+                },
+                "content": [{"type": "text", "text": "working"}],
+            },
+        }
+    )
+
+
+def _write_subagent_transcript(root: Path) -> None:
+    path = (
+        root
+        / "projects"
+        / "-repo"
+        / EXTERNAL_SESSION_ID
+        / "subagents"
+        / f"agent-{TASK_ID}.jsonl"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(
+            (
+                _usage_row(1_000, 200),
+                _usage_row(500, 300, cache_read=9_000),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_subagent_usage_sums_the_transcripts_per_call_rows(
+    tmp_path: Any,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    _write_subagent_transcript(tmp_path)
+
+    usage = subagent_token_usage(
+        cwd=CWD,
+        external_session_id=EXTERNAL_SESSION_ID,
+        task_id=TASK_ID,
+    )
+
+    assert usage == {
+        "inputTokens": 1_500,
+        "outputTokens": 500,
+        "cacheCreationTokens": 0,
+        "cacheReadTokens": 9_000,
+    }
+
+
+def test_compacted_window_publishes_the_real_input_output_split(
+    tmp_path: Any,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    _write_subagent_transcript(tmp_path)
+
+    items = _history_items_from_messages(
+        _session(),
+        (_stop_message(),),
+        raw_lines=(
+            _dispatch_line(),
+            _receipt_line(),
+            _completed_line(),
+            _stopped_line(),
+        ),
+    )
+
+    content = _card_items(items)[0].content
+    assert content["usage"]["inputTokens"] == 1_500
+    assert content["usage"]["outputTokens"] == 500
+    assert content["usage"]["cacheReadTokens"] == 9_000
+
+
+def test_sweep_publishes_the_real_input_output_split(
+    tmp_path: Any,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    _write_subagent_transcript(tmp_path)
+
+    items = _sweep(
+        (_dispatch_line(), _receipt_line()),
+        mtime_ms=int((NOW - 1000) * 1000),
+    )
+
+    usage = items[0].content["usage"]
+    assert usage["inputTokens"] == 1_500
+    assert usage["outputTokens"] == 500
+    assert usage["cacheReadTokens"] == 9_000

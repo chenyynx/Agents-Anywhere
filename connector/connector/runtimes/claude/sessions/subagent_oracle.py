@@ -344,6 +344,142 @@ def probe_agent_file(
 FileProbe = Callable[..., AgentFileInfo]
 
 
+def agent_transcript_path(
+    *,
+    projects_dir: Path,
+    project_key: str,
+    external_session_id: str,
+    task_id: str,
+) -> Path | None:
+    """The newest transcript file for one subagent task, or ``None``.
+
+    Mirrors :func:`probe_agent_file`'s search — a direct hit first, then one
+    bounded recursive pass — but returns the path: the usage summary reads the
+    file, where the liveness probe only needs its mtime.
+    """
+
+    base = projects_dir / project_key / external_session_id / "subagents"
+    direct = base / f"agent-{task_id}.jsonl"
+    if direct.is_file():
+        return direct
+    try:
+        candidates = [
+            candidate
+            for candidate in base.rglob(f"agent-{task_id}.jsonl")
+            if candidate.is_file()
+        ]
+    except OSError:
+        return None
+    if not candidates:
+        return None
+
+    def _mtime(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return -1.0
+
+    return max(candidates, key=_mtime)
+
+
+#: Subagent usage summaries keyed by (path, size, mtime ms). The live fold and
+#: the evidence sweep both ask at closure time, when the file has stopped
+#: growing; the size/mtime key keeps a still-running task from reading stale.
+_AGENT_USAGE_CACHE: dict[tuple[str, int, int], Mapping[str, int]] = {}
+_AGENT_USAGE_CACHE_LIMIT = 256
+
+
+def subagent_token_usage(
+    *,
+    cwd: str | None,
+    external_session_id: str | None,
+    task_id: str,
+) -> Mapping[str, int] | None:
+    """Sum the subagent transcript's own per-call token usage.
+
+    The wire carries one ``total_tokens`` number, and the CLI computes it from
+    the LAST API call's context (``input + cache_creation + cache_read +
+    output``) — a context size, not what the run consumed. The transcript
+    keeps every assistant message's ``usage``, so the real split is
+    recoverable: ``inputTokens``/``outputTokens`` sum the non-cached input and
+    the output over all calls, and the cache counters ride along for callers
+    that want them. ``None`` when the file is missing or has no usage rows.
+
+    Measured 2026-10-21: a 6.2-minute resumed reviewer run reported 55 through
+    the wire (an early streamed estimate) while its transcript sums to
+    ~17.6k input / ~6.4k output plus ~2.5M cache reads.
+    """
+
+    if not cwd or not external_session_id:
+        return None
+    path = agent_transcript_path(
+        projects_dir=claude_projects_dir(),
+        project_key=claude_project_key(cwd),
+        external_session_id=external_session_id,
+        task_id=task_id,
+    )
+    if path is None:
+        return None
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    key = (str(path), stat.st_size, int(stat.st_mtime * 1000))
+    cached = _AGENT_USAGE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    usage = _sum_transcript_usage(path)
+    if usage is None:
+        return None
+    if len(_AGENT_USAGE_CACHE) >= _AGENT_USAGE_CACHE_LIMIT:
+        _AGENT_USAGE_CACHE.clear()
+    _AGENT_USAGE_CACHE[key] = usage
+    return usage
+
+
+def _sum_transcript_usage(path: Path) -> Mapping[str, int] | None:
+    """Sum one transcript's per-call usage rows (``None`` when there are none)."""
+
+    totals = {
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cacheCreationTokens": 0,
+        "cacheReadTokens": 0,
+    }
+    found = False
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if '"usage"' not in line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(row, Mapping) or row.get("type") != "assistant":
+                    continue
+                message = row.get("message")
+                usage = message.get("usage") if isinstance(message, Mapping) else None
+                if not isinstance(usage, Mapping):
+                    continue
+                found = True
+                totals["inputTokens"] += _usage_int(usage.get("input_tokens"))
+                totals["outputTokens"] += _usage_int(usage.get("output_tokens"))
+                totals["cacheCreationTokens"] += _usage_int(
+                    usage.get("cache_creation_input_tokens")
+                )
+                totals["cacheReadTokens"] += _usage_int(
+                    usage.get("cache_read_input_tokens")
+                )
+    except OSError:
+        return None
+    return totals if found else None
+
+
+def _usage_int(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
 @dataclass(slots=True)
 class ClaudeSubagentOracle:
     """Judge one Agent task's liveness from its transcript file's stillness.

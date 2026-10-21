@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -44,6 +44,7 @@ from connector.runtimes.claude.sessions.subagent_oracle import (
     RawTranscriptScan,
     participation_ages_seconds,
     participation_times_ms,
+    subagent_token_usage,
 )
 from connector.runtimes.claude.timeline.agent_calls import (
     AGENT_CARD_TERMINAL_STATUSES,
@@ -1527,6 +1528,7 @@ class ClaudeMessageProjector:
         )
         if len(verdicts) != len(open_task_ids):
             return None
+        usage = _evidence_usage(session, open_task_ids)
         _, best = max(
             verdicts.items(),
             key=lambda item: (
@@ -1544,6 +1546,8 @@ class ClaudeMessageProjector:
             card.status = resolve_agent_card_status(card.status, best.closure_status)
             if best.end_time_ms is not None:
                 card.overlay.end_time = best.end_time_ms
+            if usage:
+                content = replace(content, usage={**dict(content.usage), **usage})
             closed_content = self._apply_evidence_closure(
                 content=content,
                 card=card,
@@ -1566,6 +1570,12 @@ class ClaudeMessageProjector:
             closed_by=best.closed_by,
             end_time_ms=best.end_time_ms,
         )
+        if usage:
+            raw_usage = published.content.get("usage")
+            new_content["usage"] = {
+                **(dict(raw_usage) if isinstance(raw_usage, Mapping) else {}),
+                **usage,
+            }
         if new_status == published.status and dict(new_content) == dict(
             published.content
         ):
@@ -2017,6 +2027,31 @@ def _published_evidence_closed_content(
             merged[task_id] = entry
         new_content["agents"] = merged
     return new_content
+
+
+def _evidence_usage(
+    session: ClaudeSession,
+    task_ids: Iterable[str],
+) -> dict[str, int]:
+    """The judged tasks' real input/output split from their transcripts.
+
+    The wire's ``total_tokens`` is the last call's context size, not what the
+    run consumed (2026-10-21). At closure the subagent transcript is final, so
+    the panel gets the numbers people mean by "usage": summed non-cached input
+    and summed output over every call of those tasks. Fail-soft — a missing
+    file simply leaves the wire value in place.
+    """
+
+    totals: dict[str, int] = {}
+    for task_id in sorted(set(task_ids)):
+        usage = subagent_token_usage(
+            cwd=session.cwd,
+            external_session_id=session.external_session_id,
+            task_id=task_id,
+        )
+        for key, value in (usage or {}).items():
+            totals[key] = totals.get(key, 0) + value
+    return totals
 
 
 def _collect_agent_task_ids(content: Mapping[str, Any], into: set[str]) -> None:

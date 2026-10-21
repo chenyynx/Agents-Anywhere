@@ -339,7 +339,10 @@ import Testing
     }
 
     @Test func runningCardWithoutAPublicationTimeStaysFrozen() throws {
-        let running = try card(try cardItem(status: "running", usage: ["durationMs": 5_000]))
+        // The wire always carries `updatedAt`; an unparsable stamp is the only
+        // way the card has none, and then the engine's number is all we know.
+        let running = try card(try cardItem(status: "running",
+            usage: ["durationMs": 5_000], updatedAt: "not-a-timestamp"))
         #expect(SubAgentProgress.liveDurationMs(for: running, now: Date()) == 5_000)
     }
 

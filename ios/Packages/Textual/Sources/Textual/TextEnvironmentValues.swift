@@ -54,28 +54,15 @@ public struct TextEnvironmentValues: Hashable, Sendable {
 }
 
 extension EnvironmentValues {
-  /// Public so the math bridge can render an attachment in the exact
-  /// environment its metrics measured.
   var textEnvironment: TextEnvironmentValues {
-    get {
-      .init(
-        font: font,
-        dynamicTypeSize: dynamicTypeSize,
-        legibilityWeight: legibilityWeight,
-        emojiProperties: emojiProperties,
-        mathProperties: mathProperties,
-        colorScheme: colorScheme,
-        colorSchemeContrast: colorSchemeContrast
-      )
-    }
-    set {
-      font = newValue.font
-      dynamicTypeSize = newValue.dynamicTypeSize
-      legibilityWeight = newValue.legibilityWeight
-      emojiProperties = newValue.emojiProperties
-      mathProperties = newValue.mathProperties
-      colorScheme = newValue.colorScheme
-      colorSchemeContrast = newValue.colorSchemeContrast
-    }
+    .init(
+      font: font,
+      dynamicTypeSize: dynamicTypeSize,
+      legibilityWeight: legibilityWeight,
+      emojiProperties: emojiProperties,
+      mathProperties: mathProperties,
+      colorScheme: colorScheme,
+      colorSchemeContrast: colorSchemeContrast
+    )
   }
 }

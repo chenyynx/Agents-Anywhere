@@ -70,9 +70,10 @@ public enum TextualMath {
 
 /// The math view paired with `TextualMath.metrics(latex:isBlock:fontSize:)`.
 ///
-/// The explicit `textEnvironment` is what makes measurement and drawing
-/// agree: `MathView` reads the font from it, and the defaults in a bare
-/// hosting environment would typeset at the system body size instead.
+/// Measurement and drawing agree through the font: `MathView` reads
+/// `textEnvironment`, whose getter picks up the injected `.font`, and the
+/// remaining values (scheme, contrast, math properties) come from the host's
+/// real environment rather than defaults.
 public struct TextualMathView: View {
   private let latex: String
   private let isBlock: Bool
@@ -86,9 +87,6 @@ public struct TextualMathView: View {
 
   public var body: some View {
     MathAttachment(latex: latex, style: isBlock ? .block : .inline).body
-      .environment(
-        \.textEnvironment,
-        TextEnvironmentValues(font: .system(size: fontSize))
-      )
+      .environment(\.font, .system(size: fontSize))
   }
 }

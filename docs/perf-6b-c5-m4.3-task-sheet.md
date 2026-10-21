@@ -339,3 +339,11 @@ $$ \int_0^1 x^2 dx = 1/3 $$（块公式）。
 - 旧 SwiftUI 路径截图与改动前一致（除既有 1.67pt 级漂移）。
 - 未覆盖项按 §8 明示。
 - **不碰 dev、不合并、不出包**；测试包只从 `feat/textkit2-assistant-body` 出。
+
+## 10. 进展与 S0 结论（2026-10-21）
+
+- **S0 内联附件 spike 结论：provider 视图在本运行时挂载失败**。三种机制都试过：`viewProvider(for:location:textContainer:)` 实例覆写在 `init(frame:textContainer:)` 文本视图上不挂载；同一覆写在 `UITextView(usingTextLayoutManager: true)` 上不挂载；`NSTextAttachment.registerViewProviderClass(_:forFileType:)` + 自定义 UTI 也不挂载。测量本身正常（附件 57.3pt vs layout 57.1pt ±0.3），说明 TextKit 2 认 `NSTextAttachment.bounds`，只是不实例化 view provider。证据：CI `39596621963` / `39602585225` / `39604659242` 的 `textkit-mask-spike.json`（`attachment.mounted=false`、`hitTest=false`）。
+- **决策（按本单 §3.2 回退）**：行内 Git badge / 行内公式改走**快照附件**（`ImageRenderer` → `NSTextAttachment(image:)`）或直接保持 hosting 回退；不阻塞 M4.3 主体。
+- **已完成并 CI 绿的部分**：图片块、块公式块、文件变更 footer、揭示持住补丁；M4.3 静态 gate（`aa-textkit-m43`）全绿（图 1/公式 1/文本 2、stored==measured 486、footer delta 92≈91.5、图片 285pt 加载前后不变、420 上限 315/窄列 270）；M3 gate 图片断言翻转为接受；M4 流式 gate 绿（完成帧等待改为 1s，消除淡出期竞态）。
+- **行内附件待办**：快照方案 + dark mode 重渲染（trait 变化重建块），或等待 view provider 可用；在此之前含 badge/行内公式的回复继续走 hosting（行为与旧路径一致，不是假渲染）。
+- **真机反馈（cf130b1）已转成回归用例**：C3 gate 新增 `tool storm`（8 行工具全展开走签名→reload 路径）与 `tail flap`（贴底状态行快速闪 6 次）两场景（commit `913dc410`）。

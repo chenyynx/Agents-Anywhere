@@ -63,4 +63,94 @@ import Testing
         )
         #expect(abs(velocity - 1) < 1e-9)
     }
+
+    @Test func snapTargetUsesTheHalfWayBoundary() {
+        #expect(SidebarDrawerGestureRules.snapTarget(progress: 0.49) == 0)
+        #expect(SidebarDrawerGestureRules.snapTarget(progress: 0.50) == 1)
+    }
+
+    @Test func shouldBeginPrefersAccumulatedTranslationOverTheStartVelocity() {
+        // The velocity points left, but the finger has already accumulated
+        // 20 pt of rightward travel: the translation wins.
+        #expect(SidebarDrawerGestureRules.shouldBegin(
+            progress: 0,
+            translationX: 20, translationY: 5,
+            velocityX: -200, velocityY: -30
+        ))
+        // A leftward start cannot open a closed drawer.
+        #expect(!SidebarDrawerGestureRules.shouldBegin(
+            progress: 0,
+            translationX: -20, translationY: 5,
+            velocityX: 200, velocityY: 30
+        ))
+        // Vertical travel is rejected before the scroll view is disturbed.
+        #expect(!SidebarDrawerGestureRules.shouldBegin(
+            progress: 0,
+            translationX: 5, translationY: 20,
+            velocityX: 200, velocityY: 300
+        ))
+        // Open: only a leftward drag may close.
+        #expect(!SidebarDrawerGestureRules.shouldBegin(
+            progress: 1,
+            translationX: 20, translationY: 5,
+            velocityX: 200, velocityY: 30
+        ))
+        #expect(SidebarDrawerGestureRules.shouldBegin(
+            progress: 1,
+            translationX: -20, translationY: 5,
+            velocityX: -200, velocityY: -30
+        ))
+        // Mid-drag both directions are allowed.
+        #expect(SidebarDrawerGestureRules.shouldBegin(
+            progress: 0.5,
+            translationX: 20, translationY: 5,
+            velocityX: 200, velocityY: 30
+        ))
+    }
+
+    @Test func shouldBeginFallsBackToVelocityBelowTenPoints() {
+        #expect(SidebarDrawerGestureRules.shouldBegin(
+            progress: 0,
+            translationX: 2, translationY: 1,
+            velocityX: 100, velocityY: 10
+        ))
+        #expect(!SidebarDrawerGestureRules.shouldBegin(
+            progress: 0,
+            translationX: 2, translationY: 1,
+            velocityX: 10, velocityY: 100
+        ))
+    }
+
+    @Test func shouldBeginRejectsAnExactDirectionTie() {
+        #expect(!SidebarDrawerGestureRules.shouldBegin(
+            progress: 0.5,
+            translationX: 20, translationY: 20,
+            velocityX: 0, velocityY: 0
+        ))
+    }
+
+    @Test func estimatedVelocityUsesOnlyUsableSpans() {
+        // 30 pt over 0.25 s is 120 pt/s; the upper bound is inclusive.
+        #expect(SidebarDrawerGestureRules.estimatedVelocityX(
+            previousTranslationX: 0, previousTime: 1.00,
+            currentTranslationX: 30, currentTime: 1.25
+        ) == 120)
+        #expect(SidebarDrawerGestureRules.estimatedVelocityX(
+            previousTranslationX: 0, previousTime: 1.00,
+            currentTranslationX: -30, currentTime: 1.25
+        ) == -120)
+        // No span, a backwards span, or a stale span cannot estimate a flick.
+        #expect(SidebarDrawerGestureRules.estimatedVelocityX(
+            previousTranslationX: 0, previousTime: 1.00,
+            currentTranslationX: 30, currentTime: 1.00
+        ) == nil)
+        #expect(SidebarDrawerGestureRules.estimatedVelocityX(
+            previousTranslationX: 0, previousTime: 1.02,
+            currentTranslationX: 30, currentTime: 1.00
+        ) == nil)
+        #expect(SidebarDrawerGestureRules.estimatedVelocityX(
+            previousTranslationX: 0, previousTime: 1.00,
+            currentTranslationX: 30, currentTime: 1.2501
+        ) == nil)
+    }
 }

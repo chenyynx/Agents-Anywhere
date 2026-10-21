@@ -328,10 +328,14 @@ private struct SidebarDrawerInteractive<
         guard let dragStartProgress else { return }
 
         let nextProgress = dragStartProgress + (translationX / revealWidth)
+        moveWithoutAnimation(to: nextProgress.clamped(to: 0 ... 1))
+    }
+
+    private func moveWithoutAnimation(to next: CGFloat) {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            motion.move(to: nextProgress.clamped(to: 0 ... 1))
+            motion.move(to: next)
         }
     }
 
@@ -342,21 +346,32 @@ private struct SidebarDrawerInteractive<
         cancelled: Bool
     ) {
         defer { resetDrag() }
-        guard dragStartProgress != nil else { return }
+        guard let dragStartProgress else { return }
+
+        let releaseProgress: CGFloat
+        if cancelled {
+            releaseProgress = motion.progress
+        } else {
+            // The last .changed sample can lag the release; advance to the
+            // finger's final translation before deciding where it lands.
+            releaseProgress = (dragStartProgress + translationX / revealWidth)
+                .clamped(to: 0 ... 1)
+            if releaseProgress != motion.progress {
+                moveWithoutAnimation(to: releaseProgress)
+            }
+        }
 
         // A cancelled gesture keeps the position-only snap: the system took
         // the touch away, so its remaining velocity is not trustworthy.
-        let target = if cancelled {
-            motion.progress >= 0.5 ? 1.0 : 0.0
-        } else {
-            SidebarDrawerGestureRules.targetProgress(
-                progress: motion.progress,
+        let target = cancelled
+            ? SidebarDrawerGestureRules.snapTarget(progress: releaseProgress)
+            : SidebarDrawerGestureRules.targetProgress(
+                progress: releaseProgress,
                 velocityX: velocityX
             )
-        }
         let initialVelocity = cancelled ? 0 : SidebarDrawerGestureRules.normalizedVelocity(
             velocityX: velocityX,
-            progress: motion.progress,
+            progress: releaseProgress,
             targetProgress: target,
             revealWidth: revealWidth
         )
@@ -393,13 +408,18 @@ private struct SidebarDrawerInteractive<
                     return
                 }
 
+                let releaseProgress = (dragStartProgress + value.translation.width / revealWidth)
+                    .clamped(to: 0 ... 1)
+                if releaseProgress != motion.progress {
+                    moveWithoutAnimation(to: releaseProgress)
+                }
                 let target = SidebarDrawerGestureRules.targetProgress(
-                    progress: motion.progress,
+                    progress: releaseProgress,
                     velocityX: value.velocity.width
                 )
                 let initialVelocity = SidebarDrawerGestureRules.normalizedVelocity(
                     velocityX: value.velocity.width,
-                    progress: motion.progress,
+                    progress: releaseProgress,
                     targetProgress: target,
                     revealWidth: revealWidth
                 )

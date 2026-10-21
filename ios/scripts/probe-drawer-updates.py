@@ -34,6 +34,7 @@ def main() -> None:
             *(str(components / name) for name in ["SidebarDrawerPanGesture.swift",
                 "SidebarDrawerTranslation.swift", "SidebarDrawerCloseRegion.swift"]),
             str(app / "Models/Chat/DrawerInteractionState.swift"),
+            str(app / "Models/Chat/SidebarDrawerGestureRules.swift"),
             str(ios / "Tests/DrawerUpdateProbe.swift"), "-o", str(executable),
         ], check=True)
         subprocess.run([str(executable)], check=True)

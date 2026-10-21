@@ -363,6 +363,28 @@ final class TimelineListLayout: UICollectionViewLayout {
                          correction: decision.correction, contentSizeDelta: delta, state: state)
     }
 
+    /// The changed item plus the visible rows below it. A height change moves
+    /// every following row, and UIKit only re-queries the items named in an
+    /// invalidation context; naming just the changed item leaves the rows
+    /// below their cells at the previous frames, so their content draws over
+    /// the next row (device report: overlapping tool rows and messages).
+    private func cellUpdatesAffected(
+        by attributes: TimelineListLayoutAttributes
+    ) -> [IndexPath] {
+        var affected: [IndexPath] = [attributes.indexPath]
+        let top = viewportTop - 400
+        let bottom = viewportBottom + 400
+        for candidate in attributesByIndex
+        where candidate.indexPath.item > attributes.indexPath.item {
+            if candidate.frame.minY > bottom { break }
+            // Rows between a far-above change and the viewport do not need a
+            // cell update; only what can be on screen (plus a margin).
+            if candidate.frame.maxY < top { continue }
+            affected.append(candidate.indexPath)
+        }
+        return affected
+    }
+
     /// The official layout ships offset and size adjustments together
     /// (`setContentOffsetAdjustment:` + `setContentSizeAdjustment:`), so the
     /// offset is interpreted against the corrected content size instead of
@@ -373,23 +395,7 @@ final class TimelineListLayout: UICollectionViewLayout {
                                   state: TimelineLayoutInteractionState) {
         guard let collectionView else { return }
         let context = UICollectionViewLayoutInvalidationContext()
-        // A height change moves every following row. UIKit only re-queries
-        // the items named here, so naming just the changed one leaves all
-        // rows below their cells at the previous frames; their content then
-        // draws over the next row (device report: overlapping tool rows and
-        // messages). Include the visible rows below it.
-        var affected: [IndexPath] = [attributes.indexPath]
-        let affectedTop = viewportTop - 400
-        let affectedBottom = viewportBottom + 400
-        for candidate in attributesByIndex
-        where candidate.indexPath.item > attributes.indexPath.item {
-            if candidate.frame.minY > affectedBottom { break }
-            // Rows between a far-above change and the viewport do not need a
-            // cell update; only what can be on screen (plus a margin).
-            if candidate.frame.maxY < affectedTop { continue }
-            affected.append(candidate.indexPath)
-        }
-        context.invalidateItems(at: affected)
+        context.invalidateItems(at: cellUpdatesAffected(by: attributes))
         if contentSizeDelta != 0 {
             context.contentSizeAdjustment = CGSize(width: 0, height: contentSizeDelta)
         }
@@ -567,7 +573,7 @@ final class TimelineListLayout: UICollectionViewLayout {
         let context = UICollectionViewLayoutInvalidationContext()
         var total: CGFloat = 0
         var contentSizeTotal: CGFloat = 0
-        var invalidated: [IndexPath] = []
+        var invalidated: Set<IndexPath> = []
         for effect in application.effects {
             switch effect {
             case .settlePull:
@@ -580,11 +586,11 @@ final class TimelineListLayout: UICollectionViewLayout {
                 heights.noteDisplayedHeight(deferred.height, for: correction.itemID)
                 total += correction.delta
                 contentSizeTotal += deferred.height - attributes.frame.height
-                invalidated.append(attributes.indexPath)
+                invalidated.formUnion(cellUpdatesAffected(by: attributes))
             }
         }
         guard !invalidated.isEmpty || total != 0 else { return }
-        context.invalidateItems(at: invalidated)
+        context.invalidateItems(at: Array(invalidated))
         if total != 0 { context.contentOffsetAdjustment = CGPoint(x: 0, y: total) }
         if contentSizeTotal != 0 {
             context.contentSizeAdjustment = CGSize(width: 0, height: contentSizeTotal)

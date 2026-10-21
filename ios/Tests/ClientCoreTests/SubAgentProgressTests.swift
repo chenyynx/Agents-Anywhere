@@ -285,17 +285,17 @@ import Testing
         #expect(SubAgentUsageFormat.tokens(999_999) == "1M")
         #expect(SubAgentUsageFormat.tokens(1_000_000) == "1M")
         #expect(SubAgentUsageFormat.tokens(1_200_000) == "1.2M")
-        #expect(SubAgentUsageFormat.duration(milliseconds: 400) == "0.4s")
-        #expect(SubAgentUsageFormat.duration(milliseconds: 4_858) == "4.9s")
-        #expect(SubAgentUsageFormat.duration(milliseconds: 6_000) == "6s")
-        #expect(SubAgentUsageFormat.duration(milliseconds: 60_000) == "1m")
-        #expect(SubAgentUsageFormat.duration(milliseconds: 90_000) == "1.5m")
-        #expect(SubAgentUsageFormat.duration(milliseconds: 120_000) == "2m")
+        #expect(SubAgentUsageFormat.duration(milliseconds: 400) == "0.4 秒")
+        #expect(SubAgentUsageFormat.duration(milliseconds: 4_858) == "4.9 秒")
+        #expect(SubAgentUsageFormat.duration(milliseconds: 6_000) == "6 秒")
+        #expect(SubAgentUsageFormat.duration(milliseconds: 60_000) == "1 分钟")
+        #expect(SubAgentUsageFormat.duration(milliseconds: 90_000) == "1.5 分钟")
+        #expect(SubAgentUsageFormat.duration(milliseconds: 120_000) == "2 分钟")
     }
 
     @Test func statsLineDropsMissingAndZeroCounters() throws {
         let full = try card(try cardItem(usage: ["toolCalls": 7, "tokens": 33_555, "durationMs": 24_723]))
-        #expect(SubAgentProgress.statsLine(for: full) == "7 个工具 · 24.7s · 33.6k")
+        #expect(SubAgentProgress.statsLine(for: full) == "7 个工具 · 24.7 秒 · 33.6k tokens")
         let bare = try card(try cardItem())
         #expect(SubAgentProgress.statsLine(for: bare) == "")
         let zeros = try card(try cardItem(usage: ["toolCalls": 0, "tokens": 0, "durationMs": 0]))
@@ -304,29 +304,29 @@ import Testing
         #expect(SubAgentProgress.statsLine(for: closed) == "3 个工具")
     }
 
-    @Test func statsLineCarriesTheMetricsOnly() throws {
-        // The phase word moved into the status badge; the visible line keeps
-        // no "用时" and no "tokens" suffix, and each counter keeps its place.
+    @Test func statsLineCarriesEveryCounterWithItsUnit() throws {
+        // The phase word lives in the status badge; every counter keeps its
+        // place AND its unit — "6.2m" / a bare "55" read as stray
+        // letters/numbers (pp, 2026-10-21).
         let full = try card(try cardItem(usage: ["toolCalls": 12, "tokens": 31_200, "durationMs": 8_100]))
         let line = SubAgentProgress.statsLine(for: full)
-        #expect(line == "12 个工具 · 8.1s · 31.2k")
+        #expect(line == "12 个工具 · 8.1 秒 · 31.2k tokens")
         #expect(!line.contains("用时"))
-        #expect(!line.contains("tokens"))
         #expect(!line.contains("运行中"))
         // One counter at a time still renders, and never with a leading separator.
         let toolsOnly = try card(try cardItem(usage: ["toolCalls": 12, "tokens": 0, "durationMs": 0]))
         #expect(SubAgentProgress.statsLine(for: toolsOnly) == "12 个工具")
         let timeOnly = try card(try cardItem(usage: ["toolCalls": 0, "tokens": 0, "durationMs": 8_100]))
-        #expect(SubAgentProgress.statsLine(for: timeOnly) == "8.1s")
+        #expect(SubAgentProgress.statsLine(for: timeOnly) == "8.1 秒")
         let tokensOnly = try card(try cardItem(usage: ["toolCalls": 0, "tokens": 31_200, "durationMs": 0]))
-        #expect(SubAgentProgress.statsLine(for: tokensOnly) == "31.2k")
+        #expect(SubAgentProgress.statsLine(for: tokensOnly) == "31.2k tokens")
     }
 
     @Test func statsAccessibilityLabelReadsAsOneSentence() throws {
         // The badge dot, the badge word and the metrics must not become three
         // separate stops: one label, phase first, unit words restored.
         let full = try card(try cardItem(usage: ["toolCalls": 7, "tokens": 33_555, "durationMs": 24_723]))
-        #expect(SubAgentProgress.statsAccessibilityLabel(for: full) == "运行中，7 个工具，用时 24.7s，33.6k tokens")
+        #expect(SubAgentProgress.statsAccessibilityLabel(for: full) == "运行中，7 个工具，用时 24.7 秒，33.6k tokens")
         let bare = try card(try cardItem())
         #expect(SubAgentProgress.statsAccessibilityLabel(for: bare) == "运行中")
         let zeros = try card(try cardItem(usage: ["toolCalls": 0, "tokens": 0, "durationMs": 0]))

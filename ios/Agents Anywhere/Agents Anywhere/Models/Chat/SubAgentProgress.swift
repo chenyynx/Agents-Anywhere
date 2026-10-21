@@ -544,18 +544,18 @@ enum SubAgentProgress {
         return date(item.completedAt) ?? date(item.updatedAt)
     }
 
-    /// The panel's metrics, beside the status badge: "12 个工具 · 8.1s · 31.2k".
-    /// Bare values only — the phase word is the badge's job and the unit words
-    /// are the spoken label's. Empty when every counter is missing or zero;
-    /// the values freeze when the card closes because the task events stop
-    /// writing.
+    /// The panel's metrics, beside the status badge: "12 个工具 · 8.1 秒 ·
+    /// 31.2k tokens". Every value carries its unit: "6.2m" and a bare "55"
+    /// read as stray letters/numbers (pp, 2026-10-21). The phase word stays the
+    /// badge's job. Empty when every counter is missing or zero; the values
+    /// freeze when the card closes because the task events stop writing.
     static func statsLine(for card: SubAgentCard) -> String {
         metrics(for: card).joined(separator: " · ")
     }
 
-    /// The same row as one spoken sentence: "已完成，12 个工具，用时 8.1s，31.2k
-    /// tokens". VoiceOver needs the words "用时"/"tokens" — a bare "8.1s" is
-    /// read as a stray letter — and it needs the phase word, which the badge
+    /// The same row as one spoken sentence: "已完成，12 个工具，用时 8.1 秒，
+    /// 31.2k tokens". VoiceOver needs the words "用时"/"tokens" — a bare "8.1s"
+    /// is read as a stray letter — and it needs the phase word, which the badge
     /// already carries visually.
     static func statsAccessibilityLabel(for card: SubAgentCard) -> String {
         let spoken = metrics(for: card,
@@ -569,7 +569,9 @@ enum SubAgentProgress {
     /// line and the spoken label, so the drop rule stays in one place.
     private static func metrics(for card: SubAgentCard,
                                 duration: (Int) -> String = { SubAgentUsageFormat.duration(milliseconds: $0) },
-                                tokens: (Int) -> String = { SubAgentUsageFormat.tokens($0) }) -> [String] {
+                                tokens: (Int) -> String = {
+                                    String(localized: "\(SubAgentUsageFormat.tokens($0)) tokens")
+                                }) -> [String] {
         var parts: [String] = []
         if let toolCalls = card.toolCalls, toolCalls > 0 {
             parts.append(String(localized: "\(toolCalls) 个工具"))
@@ -641,10 +643,13 @@ enum SubAgentUsageFormat {
         return trimmed(Double(value) / 1_000_000) + "M"
     }
 
-    /// Elapsed time: "4.9s" below a minute, "1.5m" above.
+    /// Elapsed time: "4.9 秒" below a minute, "1.5 分钟" above. The unit is
+    /// spelled out — "1.5m" reads as metres or a bare letter (pp, 2026-10-21).
     static func duration(milliseconds: Int) -> String {
-        if milliseconds < 60_000 { return trimmed(Double(milliseconds) / 1_000) + "s" }
-        return trimmed(Double(milliseconds) / 60_000) + "m"
+        if milliseconds < 60_000 {
+            return String(localized: "\(trimmed(Double(milliseconds) / 1_000)) 秒")
+        }
+        return String(localized: "\(trimmed(Double(milliseconds) / 60_000)) 分钟")
     }
 
     private static func trimmed(_ value: Double) -> String {

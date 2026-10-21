@@ -244,7 +244,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                 failures.append("measurement \(kind.rawValue): cell \(sample.cell) clips content \(sample.content)")
             }
             samples.append(["kind": kind.rawValue, "measured": sample.measured,
-                            "content": sample.content, "cell": sample.cell, "error": error])
+                            "content": sample.content, "cell": sample.cell,
+                            "attributes": sample.attributes, "frame": sample.frame,
+                            "error": error])
         }
         if samples.count < 8 { failures.append("measurement: only \(samples.count) stratified samples") }
         report["measurement"] = ["samples": samples, "sampleCount": samples.count]
@@ -500,6 +502,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         let cell: CGFloat
         let content: CGFloat
         let measured: CGFloat
+        let attributes: CGFloat
+        let frame: CGFloat
     }
 
     /// A correction can invalidate the layout between the scroll and the
@@ -526,6 +530,13 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             let settled = abs(sample.measured - sample.content) <= 1
                 && sample.cell + 0.5 >= sample.content
             if settled { return sample }
+            if sample.measured >= sample.content - 1,
+               sample.cell + 0.5 < sample.content {
+                // The cache already has the measurement but the cell still
+                // carries the old frame: force the layout to re-apply it.
+                controller.collectionView.collectionViewLayout.invalidateLayout()
+                controller.collectionView.layoutIfNeeded()
+            }
             if abs(sample.measured - lastMeasured) >= 0.5 {
                 lastMeasured = sample.measured
                 controller.remeasure(item)
@@ -579,9 +590,12 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             withHorizontalFittingPriority: .required,
             verticalFittingPriority: .fittingSizeLevel).height
         let key = heightKey(for: item, width: width)
+        let attributes = controller.layout.attributes(for: item.itemID)?.frame.height ?? -1
         let measured = controller.layout.heights.tieredHeight(for: key)
-            ?? controller.layout.attributes(for: item.itemID)?.frame.height ?? 0
-        return CellSample(cell: cell.bounds.height, content: content, measured: measured)
+            ?? attributes
+        return CellSample(cell: cell.bounds.height, content: content,
+                          measured: measured, attributes: attributes,
+                          frame: cell.frame.height)
     }
 
     private func cellHeight(_ controller: TimelineCollectionController, _ item: TimelineListItem) -> CGFloat {

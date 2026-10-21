@@ -70,6 +70,18 @@ final class TimelineCollectionController: UIViewController {
     private var keyboardTransitionTask: Task<Void, Never>?
     private var userScrollSettleTask: Task<Void, Never>?
     private var isPinningBottom = false
+    /// Streaming height follow (M4.2): the official sprung motion toward the
+    /// bottom, driven by its own display link while the reveal grows the row.
+    private var streamingFollowLink: CADisplayLink?
+    private var streamingFollowSpring = TimelineSpringFollow.Spring.ease
+    private var streamingFollowStartPosition: CGFloat = 0
+    private var streamingFollowStartTime: TimeInterval = 0
+    private var streamingFollowLastTime: TimeInterval = 0
+    private var streamingFollowLastPosition: CGFloat = 0
+    /// True between the first reveal frame and its completion frame. While
+    /// true the follower keeps running even when it momentarily reaches the
+    /// current bottom, because the target is still growing.
+    private var streamingFollowActive = false
     private var isScrollingToTop = false
     private var scrollToTopWatchdog: Task<Void, Never>?
     private var scrollToTopToken = 0
@@ -308,11 +320,169 @@ final class TimelineCollectionController: UIViewController {
     /// The reveal's per-frame clamped height. `nil` means the reveal ended and
     /// the row returns to its measured height.
     private func streamingRevealFrame(_ height: CGFloat?, for item: TimelineListItem) {
+        let state = layoutInteractionState()
+        // While the reader is pinned to the bottom the follower owns the
+        // offset; the layout only invalidates the item height.
+        let following = height != nil && state.isAutoScrollPinning
         if let height {
-            layout.applyStreamingHeight(height, for: item.itemID)
+            layout.applyStreamingHeight(height, for: item.itemID,
+                                        adjustOffset: !following)
+            if following {
+                streamingFollowActive = true
+                startStreamingFollowIfNeeded()
+            } else if state.isTracking || state.isDecelerating {
+                stopStreamingFollow()
+            }
         } else {
             layout.clearStreamingHeight(for: item.itemID)
+            streamingFollowActive = false
+            startStreamingFollowIfNeeded()
         }
+    }
+
+    // MARK: - Streaming bottom follow
+
+    /// The official `Mover.ease`: step the analytic spring toward the live
+    /// content bottom on a display link. The target is re-read every frame
+    /// (the reveal keeps growing the row); the spring phase keeps its original
+    /// start so the motion does not restart each frame.
+    private func startStreamingFollowIfNeeded() {
+        guard let collectionView, !navigationSuspended,
+              armedBottom.isArmed else { return }
+        let state = layoutInteractionState()
+        guard !state.isTracking, !state.isDecelerating else { return }
+        guard !UIAccessibility.isReduceMotionEnabled,
+              !UIAccessibility.isVoiceOverRunning else {
+            // Accessibility bypass: place directly, as the official reducer
+            // does instead of easing.
+            stopStreamingFollow()
+            repinDirectly()
+            return
+        }
+        if streamingFollowLink != nil { return }
+
+        let target = streamingFollowEndOffset()
+        let current = collectionView.contentOffset.y
+        let scale = traitCollection.displayScale
+        guard TimelineSpringFollow.shouldMove(
+            target: target, current: current, displayScale: scale) else { return }
+
+        let visible = streamingFollowVisibleHeight()
+        let preplaced = TimelineSpringFollow.preplacedOffset(
+            target: target, current: current, visibleHeight: visible)
+        if abs(preplaced - current) >= TimelineSpringFollow.pixel(displayScale: scale) {
+            collectionView.setContentOffset(
+                CGPoint(x: collectionView.contentOffset.x, y: preplaced),
+                animated: false)
+        }
+        streamingFollowSpring = TimelineSpringFollow.spring(
+            target: target, current: collectionView.contentOffset.y,
+            visibleHeight: visible)
+        streamingFollowStartPosition = collectionView.contentOffset.y
+        streamingFollowStartTime = ProcessInfo.processInfo.systemUptime
+        streamingFollowLastTime = streamingFollowStartTime
+        streamingFollowLastPosition = streamingFollowStartPosition
+
+        let maxFPS = max(60, view.window?.screen.maximumFramesPerSecond ?? 60)
+        let link = CADisplayLink(target: self,
+                                 selector: #selector(streamingFollowTick(_:)))
+        // Official range: [maxFPS/2, maxFPS]; no preferred rate is set.
+        link.preferredFrameRateRange = CAFrameRateRange(
+            minimum: Float(maxFPS) / 2, maximum: Float(maxFPS),
+            preferred: 0)
+        link.add(to: .main, forMode: .common)
+        streamingFollowLink = link
+    }
+
+    @objc private func streamingFollowTick(_ link: CADisplayLink) {
+        guard let collectionView else {
+            stopStreamingFollow()
+            return
+        }
+        let state = layoutInteractionState()
+        guard armedBottom.isArmed, !navigationSuspended,
+              !state.isTracking, !state.isDecelerating else {
+            stopStreamingFollow()
+            return
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        let maxFPS = Double(max(60, view.window?.screen.maximumFramesPerSecond ?? 60))
+        let dt = min(max(0, now - streamingFollowLastTime), 2 / maxFPS)
+        let target = streamingFollowEndOffset()
+        let visible = streamingFollowVisibleHeight()
+        // A burst that moved the target more than two viewports: jump one
+        // viewport short of the target, then fly (official catch-up distance).
+        if streamingFollowActive,
+           target - streamingFollowLastPosition
+            > TimelineSpringFollow.catchUpDistance(visibleHeight: visible) {
+            let preplaced = target - visible
+            collectionView.setContentOffset(
+                CGPoint(x: collectionView.contentOffset.x, y: preplaced),
+                animated: false)
+            streamingFollowSpring = .fly
+            streamingFollowStartPosition = preplaced
+            streamingFollowStartTime = now
+            streamingFollowLastPosition = preplaced
+            streamingFollowLastTime = now
+            return
+        }
+        let elapsed = now - streamingFollowStartTime
+        let progress = CGFloat(streamingFollowSpring.progress(at: elapsed))
+        let position = streamingFollowStartPosition
+            + (target - streamingFollowStartPosition) * progress
+        let velocity = dt > 0
+            ? (position - streamingFollowLastPosition) / CGFloat(dt) : 0
+        collectionView.setContentOffset(
+            CGPoint(x: collectionView.contentOffset.x, y: position),
+            animated: false)
+        if !streamingFollowActive, TimelineSpringFollow.hasArrived(
+            target: target, position: position, velocity: velocity,
+            dt: dt, displayScale: traitCollection.displayScale) {
+            collectionView.setContentOffset(
+                CGPoint(x: collectionView.contentOffset.x, y: target),
+                animated: false)
+            stopStreamingFollow()
+            noteBottomArrival()
+            return
+        }
+        streamingFollowLastTime = now
+        streamingFollowLastPosition = position
+    }
+
+    private func stopStreamingFollow() {
+        streamingFollowLink?.invalidate()
+        streamingFollowLink = nil
+    }
+
+    private func streamingFollowVisibleHeight() -> CGFloat {
+        guard let collectionView else { return 0 }
+        return TimelineOffsetTarget.visibleHeight(
+            containerHeight: collectionView.bounds.height,
+            topInset: collectionView.adjustedContentInset.top,
+            bottomInset: collectionView.adjustedContentInset.bottom)
+    }
+
+    /// The `.end` target for the streaming follow: the measured content bottom
+    /// (AA has no send anchor pad).
+    private func streamingFollowEndOffset() -> CGFloat {
+        guard let collectionView else { return 0 }
+        return TimelineOffsetTarget.bottomOffset(
+            contentHeight: layout.contentHeight,
+            containerHeight: collectionView.bounds.height,
+            topInset: collectionView.adjustedContentInset.top,
+            bottomInset: collectionView.adjustedContentInset.bottom)
+    }
+
+    /// Accessibility/manual placement: pin instantly once.
+    private func repinDirectly() {
+        guard let collectionView, armedBottom.isArmed else { return }
+        let target = streamingFollowEndOffset()
+        guard abs(collectionView.contentOffset.y - target) > 0.5 else { return }
+        isPinningBottom = true
+        collectionView.setContentOffset(
+            CGPoint(x: collectionView.contentOffset.x, y: target), animated: false)
+        isPinningBottom = false
+        noteBottomArrival()
     }
 
     private func applyPreferredHeights(for items: [TimelineListItem]) {
@@ -958,6 +1128,9 @@ final class TimelineCollectionController: UIViewController {
     }
 
     private func repinIfArmed() {
+        // The reveal follower owns the offset while it runs; an instant pin
+        // here would fight the spring on every content change.
+        guard streamingFollowLink == nil else { return }
         guard !isPinningBottom, armedBottom.isArmed else { return }
         guard let target = armedBottom.contentChanged(contentHeight: layout.contentHeight,
             containerHeight: collectionView.bounds.height,
@@ -1265,6 +1438,8 @@ extension TimelineCollectionController: UICollectionViewDelegate {
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         guard !navigationSuspended else { return }
+        // The reader's finger always wins over the streaming follow.
+        stopStreamingFollow()
         bottomAnimationWatchdog?.cancel()
         userScrollSettleTask?.cancel()
         endScrollToTopTracking()

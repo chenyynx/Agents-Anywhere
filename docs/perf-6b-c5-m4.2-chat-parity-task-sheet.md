@@ -137,7 +137,17 @@ shownThrough=floor(position+1e-9)
 5. 开始/结束震动。
 6. Gate + CI + 交接。
 
-## 7. 验收
+## 7. 进展（2026-10-21）
+
+- **阶段 1**：`0e09c0dd` 时间线模型 + 单测，CI 绿（run `39541811227` 的 `test` job）。
+- **阶段 2**：`10a807f0` renderer-owned 原始文本源 + 单测，CI 绿。
+- **阶段 3 前置验证**：mask spike（`a46e7b2a`，编译修复 `5a01f1a2`）CI 绿（run `39542856355` 的 `textkit-mask-spike.json`）：TextKit 2 layout manager 存在；`layoutHeight 336.725` vs `measuredHeight 337`（Δ0.275）；160 字覆盖 3 条行 rect，`lastMaxY 61.401` ≤ layout；mask 安装成功；动画 `0.6 / backwards / easeOut`。设备 iPhone Air / iOS 26.5 / scale 3。
+- **阶段 3 集成**：`9ce81bad` 移除 tail host，尾部改 TextKit 块视图 + `StreamingRevealDriver`（逐行 mask、24–64 run、0.35 patience、0.6 fade、clamped 行底、cell 版块入场）；`isRevealPending` 让 done 行留到游标追平 + 0.6s 淡出；逐帧高度走 layout 的 display override（不写测量缓存）。CI run `39544101166` 验证中。
+- **阶段 4**：`TimelineSpringFollow`（纯模型 + 单测）：1 物理像素 no-op / 2 屏 catch-up / 1 屏预置 / `ease(0.4,0)` `fly(0.36,0.15)` 解析解 / 到达双阈值 / `.end` 重武装；controller 用独立 display link 逐帧跟随（`[maxFPS/2, maxFPS]`，`dt ≤ 2/maxFPS`），拖动立即停，Reduce Motion/VoiceOver 直接 place。逐帧高度仍走 layout display override（不污染测量缓存）。
+- **阶段 5**：`ChatTurnPhase`（官方 tag 0/1/2/3）+ `TurnPhaseHaptics`：`writing→idle` 唯一 `.impact(.light,1.0)`，其余相位变化 `.selection`，流式过程 0 次；`TimelineChatTimelineView` 用 `.sensoryFeedback` 接线。
+- **已知取舍**：稳定块在游标尚未到达其末尾时即整块显示（官方逐叶 mask）；只在快速突发时可见，后续按游标推进可细化。`thinking` 进入时的 caption 谓词官方 UNKNOWN，AA 保留 `.selection`。相位 haptic 在整页生命周期内触发，不随 footer 是否在屏。
+
+## 8. 验收
 
 - M4.2 gate 全绿；旧 SwiftUI 路径回归不变。
 - 揭示时序/视觉/行高/滚动/震动按本单参数。

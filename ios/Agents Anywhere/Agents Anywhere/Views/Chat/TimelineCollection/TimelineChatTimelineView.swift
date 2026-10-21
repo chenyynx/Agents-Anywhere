@@ -42,6 +42,16 @@ struct TimelineChatTimelineView: View {
     private var navigationIsSuspended: Bool {
         sidebarIsTransitioning || sidebarObscuresDetail
     }
+    /// The official turn phase, from the same live signals the orb reads.
+    /// Drives the `TurnStatusView` haptic transfer: entry into writing is a
+    /// selection, `writing -> idle` is the single light impact.
+    private var turnPhase: ChatTurnPhase {
+        let signals = model.orbActivitySignals
+        return ChatTurnPhase.resolve(
+            toolActive: signals.hasActiveToolItem,
+            writing: signals.isStreamingAssistantText,
+            reasoning: signals.hasActiveReasoningItem)
+    }
     private var typography: TimelineTypographySnapshot {
         let scale = ChatTypeSettings.resolve(
             schemeRaw: typeSchemeRaw,
@@ -159,6 +169,16 @@ struct TimelineChatTimelineView: View {
                 keyboardTransitionBegan(TimelineKeyboardEvent(source: .willChangeFrame, userInfo: note.userInfo ?? [:]))
             }
             .onDisappear { bridge.cancel() }
+            // Official TurnStatusView transfer: the end of a stream is the
+            // one light impact; other phase changes are selections. Streamed
+            // tokens never play a haptic.
+            .sensoryFeedback(.selection, trigger: turnPhase) { old, new in
+                TurnPhaseHaptics.feedback(from: old, to: new) == .selection
+            }
+            .sensoryFeedback(.impact(weight: .light, intensity: 1.0),
+                             trigger: turnPhase) { old, new in
+                TurnPhaseHaptics.feedback(from: old, to: new) == .impactLight
+            }
     }
 
     private func keyboardTransitionBegan(_ event: TimelineKeyboardEvent) {

@@ -455,7 +455,11 @@ final class TimelineListLayout: UICollectionViewLayout {
     /// The reveal's clamped bottom, in row coordinates. This is a display
     /// override, not a measurement: it is used by `prepare` but never written
     /// to the height cache, so clearing it restores the measured height.
-    func applyStreamingHeight(_ height: CGFloat, for itemID: String) {
+    /// `adjustOffset` is false while the controller's spring follower owns
+    /// the scroll: the height changes without the layout correcting the
+    /// offset underneath it.
+    func applyStreamingHeight(_ height: CGFloat, for itemID: String,
+                              adjustOffset: Bool = true) {
         guard height.isFinite, height > 0 else { return }
         let previous = streamingHeights[itemID]
         streamingHeights[itemID] = height
@@ -479,7 +483,7 @@ final class TimelineListLayout: UICollectionViewLayout {
             hasCachedHeight: true)
         if decision.height == .deferUntilSettled { return }
         invalidateHeight(itemID: itemID, attributes: attributes,
-                         correction: decision.correction,
+                         correction: adjustOffset ? decision.correction : nil,
                          contentSizeDelta: delta, state: state)
     }
 

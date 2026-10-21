@@ -213,6 +213,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         // Build the tool rows before the stream scenario, so the growing row
         // has expanded rows below it — the shape of pp's device report.
         await toolStorm()
+        await collapseGap()
         await streaming()
         await bottom()
         await prepend()
@@ -471,6 +472,91 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         report["tailFlap"] = ["height": Double(height), "visible": visible,
                               "contentHeight": Double(contentBottom),
                               "staleCells": stale]
+    }
+
+    /// Device report (6a18aa3): after collapsing an expanded tool the content
+    /// below disappeared until a scroll. Collapse through the product path
+    /// and check that every row intersecting the viewport still has a cell
+    /// and that the visible band has no holes. Also sample the row height
+    /// while expanding, for the animation report.
+    private func collapseGap() async {
+        guard let controller,
+              let entry = entries.first(where: { $0.id == "storm-0" }) else { return }
+        let item = listItem(entry)
+        setExpanded(entry.id, true)
+        contentGeneration += 1
+        controller.reloadFromContent()
+        await wait(500)
+        if let indexPath = controller.indexPath(for: item) {
+            controller.collectionView.scrollToItem(at: indexPath, at: .top, animated: false)
+        }
+        await wait(300)
+        controller.collectionView.layoutIfNeeded()
+        let before = visibleCoverage(controller)
+
+        setExpanded(entry.id, false)
+        contentGeneration += 1
+        controller.reloadFromContent()
+        await wait(900)
+        controller.collectionView.layoutIfNeeded()
+        let after = visibleCoverage(controller)
+
+        // Expansion samples: frame height over 500ms.
+        setExpanded(entry.id, true)
+        contentGeneration += 1
+        controller.reloadFromContent()
+        var samples: [CGFloat] = []
+        for _ in 0..<30 {
+            controller.collectionView.layoutIfNeeded()
+            if let indexPath = controller.indexPath(for: item),
+               let cell = controller.collectionView.cellForItem(at: indexPath) {
+                samples.append(cell.frame.height)
+            }
+            await wait(16)
+        }
+        var distinct: [CGFloat] = []
+        for value in samples where distinct.last.map({ abs($0 - value) > 0.5 }) ?? true {
+            distinct.append(value)
+        }
+        if after.missing > 0 || after.gap > 1 {
+            failures.append("collapse: missing \(after.missing) cells, gap \(after.gap)pt")
+        }
+        report["collapseGap"] = [
+            "beforeMissing": before.missing, "beforeGap": Double(before.gap),
+            "afterMissing": after.missing, "afterGap": Double(after.gap),
+            "expansionHeights": distinct.map(Double.init),
+            "contentHeight": Double(controller.layout.contentHeight),
+            "offset": Double(controller.collectionView.contentOffset.y),
+        ]
+    }
+
+    /// Rows intersecting the viewport, how many have no cell, and the largest
+    /// uncovered vertical run inside the viewport.
+    private func visibleCoverage(_ controller: TimelineCollectionController)
+        -> (missing: Int, gap: CGFloat) {
+        let view = controller.collectionView!
+        let top = view.contentOffset.y + view.adjustedContentInset.top
+        let bottom = top + view.bounds.height - view.adjustedContentInset.top
+            - view.adjustedContentInset.bottom
+        var missing = 0
+        var intervals: [(CGFloat, CGFloat)] = []
+        for attributes in controller.layout.orderedAttributes {
+            guard attributes.frame.maxY > top, attributes.frame.minY < bottom else { continue }
+            if view.cellForItem(at: attributes.indexPath) == nil {
+                missing += 1
+            } else {
+                intervals.append((max(attributes.frame.minY, top),
+                                  min(attributes.frame.maxY, bottom)))
+            }
+        }
+        var gap: CGFloat = 0
+        var covered = top
+        for (start, end) in intervals.sorted(by: { $0.0 < $1.0 }) {
+            if start > covered + 1 { gap += start - covered }
+            covered = max(covered, end)
+        }
+        if covered < bottom - 1 { gap += bottom - covered }
+        return (missing, gap)
     }
 
     /// Visible cells whose frame disagrees with the layout's own attributes.

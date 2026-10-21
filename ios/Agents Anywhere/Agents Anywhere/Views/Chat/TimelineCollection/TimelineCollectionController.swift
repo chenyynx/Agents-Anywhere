@@ -335,20 +335,22 @@ final class TimelineCollectionController: UIViewController {
     /// The reveal's per-frame clamped height. `nil` means the reveal ended and
     /// the row returns to its measured height.
     private func streamingRevealFrame(_ height: CGFloat?, for item: TimelineListItem) {
+        // A not-yet-laid-out block can report its origin; never collapse a row.
+        if let height, height < 8 { return }
         let state = layoutInteractionState()
         // While the reader is pinned to the bottom the follower owns the
         // offset; the layout only invalidates the item height.
         // A programmatic return (pill/send/keyboard) owns the offset until
         // its animation ends; the reveal follower must not cancel it.
-        let following = height != nil && state.isAutoScrollPinning
-            && phase.phase != .animating
+        let animating = phase.phase == .animating
+        let following = height != nil && state.isAutoScrollPinning && !animating
         if let height {
             #if DEBUG
             debugStreamingFrameCalls += 1
             if following { debugStreamingFollowEligibleFrames += 1 }
             #endif
             layout.applyStreamingHeight(height, for: item.itemID,
-                                        adjustOffset: !following)
+                                        adjustOffset: !(following || animating))
             if following {
                 streamingFollowActive = true
                 startStreamingFollowIfNeeded()

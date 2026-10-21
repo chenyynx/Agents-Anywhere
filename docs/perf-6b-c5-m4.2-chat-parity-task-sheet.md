@@ -151,6 +151,12 @@ shownThrough=floor(position+1e-9)
   - P1：揭示收口不交接静态 body（footer 缺失）。改为 `StreamingRevealOwnership`（ClientCore，含单测）作为“揭示仍拥有该行”的唯一真相：adapter 的签名把它计入 `revealingRowIDs`；driver 在最后一次淡出结束后经 `streamingRevealDidFinish` 清除并强制一次 apply；控制器在静态测量分支丢弃逐帧 override，使 footer 高度在同一 apply 生效。
   - P2：去掉不可达的 0.7s 宽限（由 ownership 取代）；gate 增加 `follow.starts > 0`、`debugMaskLayerInstalled`（读真实 layer.mask）、done 帧 `revealedCharacters > 0` 断言；`fly` 曲线在预置前按原始距离选择；显式底部动画/键盘期间不启动 follower；外部 offset 写入时重锚弹簧相位；揭示块按字符游标选择（不再只看最后一个块，文本后跟列表/代码时仍遮罩）；run 区间按块长裁剪。
   - 残余：adapter 的交接/ownership 接线仍靠 gate 与代码审查（SwiftPM 测试目标不含 Views）；`thinking` caption 谓词仍 UNKNOWN；手势仅 delegate 级。
+- **第二轮窄核验修复（2026-10-21）**：
+  - P1 残余（回复以非文字块结尾不交接）：非文字游标按块底 clamp；纯时间线轮询在追平后上报 caught-up（不依赖新的 SwiftUI 更新）；轮询任务随 cell 复用/移除取消。
+  - 新 P2（后续块被裁/硬弹）：游标后的块 `isHidden` 到游标到达；非文字块入场改在首次可见时播放；游标跨块时在 display-link 回调里重配 mask。
+  - 真实 artifact 抓到的行高塌陷：未布局视图 `bounds.maxY=0` 被报成 1pt → 加 8pt 下限（cell + controller 双层）；gate 增加 `stored >= 8` 断言。
+  - gate 判定口径：`stored`（clamp+1）与 content 的舍入差放宽到 2pt；跟随断言改为 `eligibleFrames > 0`（内容短于一屏时 `starts` 合法为 0，instant repin 已满足目标）；done 诊断在完成重配前快照。
+- **已验证** run `39559608529`（`2b2499ca`，gateVersion 5）：**test + timeline-autorun 全绿（含 C3 gate）**；`textkit-m4.json failures: []`；done 帧 `streamingConfiguration: true`、`revealedCharacters: 494`、`stableViews: 7`、`tailViews: 1`、sameCell、stored 616 == measured 616；`frameCalls: 10`、`eligibleFrames: 9`、`dragDisarmed: true`、`offsetAtBottom: true`（194=194）。artifact 同时暴露 batch 4 的 1pt 塌陷（已在下一提交修复，待最终 CI 验证）。
 - **无障碍旁路**：VoiceOver / Reduce Motion 时揭示关闭（官方 pacing provider 返回 nil / 不建 driver），行直接全量；底部跟随在两种情况下直接 place。已实现。
 - **已知取舍**：稳定块在游标尚未到达其末尾时即整块显示（官方逐叶 mask）；只在快速突发时可见，后续按游标推进可细化。`thinking` 进入时的 caption 谓词官方 UNKNOWN，AA 保留 `.selection`。相位 haptic 在整页生命周期内触发，不随 footer 是否在屏。手势只做 delegate 级验证（simctl 不能合成触摸）。AA 现有 `measuredAtBottom` 判定是 **8pt**（官方 1 物理像素 = 1/displayScale）；本次复用该判定以免影响 pull/回底/胶囊等既有行为，`TimelineSpringFollow.shouldRearmEnd` 的 1px 规则仅由单测覆盖。
 

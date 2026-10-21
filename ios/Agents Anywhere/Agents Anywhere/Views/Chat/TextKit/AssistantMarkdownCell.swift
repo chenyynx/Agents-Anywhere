@@ -470,10 +470,13 @@ final class AssistantMarkdownCell: UICollectionViewCell {
         revealCursorView = nil
         if let id = cursorID, let view = stableViews[id] ?? tailViews[id] {
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
+                guard let self, view.bounds.height > 0 else { return }
                 let bottom = view.convert(
                     CGPoint(x: 0, y: view.bounds.maxY), to: self.contentView).y
                 let height = ceil(bottom + 1.0)
+                // A view that has not been laid out yet reports its origin;
+                // never collapse the row to a placeholder height.
+                guard height >= 8 else { return }
                 #if DEBUG
                 self.debugStreamingRowHeight = height
                 #endif
@@ -578,6 +581,7 @@ final class AssistantMarkdownCell: UICollectionViewCell {
             onStreamingRevealFrame?(nil)
             return
         }
+        guard cursorView.bounds.height > 0 else { return }
         let point = cursorView.convert(CGPoint(x: 0, y: clamped), to: contentView)
         let height = ceil(point.y + 1.0)
         #if DEBUG

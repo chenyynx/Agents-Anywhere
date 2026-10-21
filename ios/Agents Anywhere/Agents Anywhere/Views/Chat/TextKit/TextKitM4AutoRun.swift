@@ -259,6 +259,9 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
             let expectedArranged = document.document.blocks.count
             let revealClamp = cell.debugStreamingRowHeight
 
+            if stored < 8 {
+                failures.append("m4 batch \(batchIndex): row collapsed to \(stored)")
+            }
             if arranged != expectedArranged {
                 failures.append("m4 batch \(batchIndex): \(arranged) views, expected \(expectedArranged)")
             }
@@ -549,7 +552,7 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
     }
 
     private func finish() {
-        report["gateVersion"] = 5
+        report["gateVersion"] = 6
         report["failures"] = failures
         report["completed"] = true
         report["passed"] = failures.isEmpty

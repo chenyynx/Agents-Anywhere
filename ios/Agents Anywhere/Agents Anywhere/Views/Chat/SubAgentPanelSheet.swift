@@ -222,7 +222,10 @@ struct SubAgentPanelSheet: View {
             // and the metrics separately. The stop controls stay outside this
             // element — children-ignoring would swallow the buttons.
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(SubAgentProgress.statsAccessibilityLabel(for: card, now: now))
+            // Spoken from the stored numbers, never from the ticking clock: a
+            // label that changes every second can make VoiceOver re-announce
+            // the element while a user is still on it.
+            .accessibilityLabel(SubAgentProgress.statsAccessibilityLabel(for: card))
             Spacer(minLength: 0)
             stopControls(for: card)
         }

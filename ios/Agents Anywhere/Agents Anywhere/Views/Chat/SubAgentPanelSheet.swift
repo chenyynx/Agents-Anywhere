@@ -172,7 +172,7 @@ struct SubAgentPanelSheet: View {
     /// the row scans as one glanceable state + one line of numbers.
     private func statsRow(_ card: SubAgentCard) -> some View {
         let phaseColor = SubAgentPalette.phase(card.phase)
-        let metrics = SubAgentProgress.statsLine(for: card)
+        let metricLines = SubAgentProgress.statsLines(for: card)
         return HStack(spacing: 8) {
             HStack(spacing: 8) {
                 HStack(spacing: 5) {
@@ -185,12 +185,17 @@ struct SubAgentPanelSheet: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
                 .background(phaseColor.opacity(Self.badgeFillOpacity(colorScheme)), in: .capsule)
-                if !metrics.isEmpty {
-                    Text(metrics)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                if !metricLines.isEmpty {
+                    // Two visual groups at most: tools+time, then the token
+                    // side as glyphs (↑ input, ↓ output) — pp, 2026-10-21.
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(metricLines[0])
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        tokenMetricsLine(for: card, plainLines: metricLines)
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
                 }
             }
             // One element, one sentence: VoiceOver should read the state and
@@ -205,6 +210,30 @@ struct SubAgentPanelSheet: View {
         .padding(.horizontal, 20)
         .padding(.top, 8)
         .padding(.bottom, 6)
+    }
+
+    /// The token side of the stats block: glyph + value pairs when the card
+    /// carries the transcript's input/output split, the plain fallback line
+    /// otherwise (a card whose transcript is gone still shows its counter).
+    @ViewBuilder
+    private func tokenMetricsLine(for card: SubAgentCard, plainLines: [String]) -> some View {
+        let metrics = SubAgentProgress.tokenMetrics(for: card)
+        if !metrics.isEmpty {
+            HStack(spacing: 4) {
+                ForEach(Array(metrics.enumerated()), id: \.offset) { index, metric in
+                    if index > 0 {
+                        Text("·").font(.footnote).foregroundStyle(.secondary)
+                    }
+                    AppSymbol(metric.symbol, size: 11).foregroundStyle(.secondary)
+                    Text(metric.value).font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+        } else if plainLines.count > 1 {
+            Text(plainLines[1])
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
     }
 
     /// §A3: the selected card's live-task stop controls, trailing the header.

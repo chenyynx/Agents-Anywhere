@@ -794,6 +794,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         if let request = pendingHistoryRequest {
             if Date.now.timeIntervalSince(request.createdAt) >= 5 {
                 pendingHistoryRequest = nil
+                // The owed target belongs to a page that never arrived; drop
+                // it so a later unrelated update cannot consume it.
+                controller?.cancelHistoryRequest()
             } else if contentChanged, let first = identity.items.first,
                       rowIDs(in: first).first != request.beforeFirstRowID {
                 pendingHistoryRequest = nil

@@ -1475,6 +1475,10 @@ extension TimelineCollectionController: TimelineListLayoutHost {
 
     func layoutItem(at index: Int) -> TimelineListItem { currentItems[index] }
 
+    var layoutFirstRowID: String? {
+        currentItems.first.flatMap { content?.rowIDs(in: $0).first }
+    }
+
     func layoutHeightKey(for item: TimelineListItem, width: CGFloat) -> TimelineHeightKey {
         content?.heightKey(for: item, width: width) ?? TimelineHeightKey(itemID: item.itemID,
             contentRevision: 0, width: width, dynamicType: "", typographyRevision: 0, layoutDirection: 0)

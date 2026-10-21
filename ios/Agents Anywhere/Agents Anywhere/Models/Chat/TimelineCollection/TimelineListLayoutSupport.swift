@@ -36,6 +36,10 @@ nonisolated struct TimelineLayoutInteractionState: Equatable {
 @MainActor protocol TimelineListLayoutHost: AnyObject {
     var layoutItemCount: Int { get }
     func layoutItem(at index: Int) -> TimelineListItem
+    /// First timeline row the layout is currently describing. A prepend
+    /// target is only valid for the update that carries that page; earlier
+    /// updates must not consume it.
+    var layoutFirstRowID: String? { get }
     func layoutHeightKey(for item: TimelineListItem, width: CGFloat) -> TimelineHeightKey
     func layoutEstimateKind(for item: TimelineListItem) -> TimelineHeightEstimateKind
     func layoutHeightPolicy(for item: TimelineListItem) -> TimelineRowHeightPolicy

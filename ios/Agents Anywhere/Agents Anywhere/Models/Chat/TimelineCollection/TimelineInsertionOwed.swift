@@ -63,6 +63,10 @@ nonisolated struct TimelineInsertionOwed: Equatable {
     let generation: Int
     let origin: TimelineHistoryLayout?
     let originOffset: CGFloat
+    /// First row of the page this target belongs to. Only the update that
+    /// carries that row may consume the target; an unrelated snapshot update
+    /// arriving earlier must leave it for the prepend update.
+    private(set) var expectedFirstRowID: String?
     private var owed = TimelineOneShotOwed()
     private(set) var isCancelled = false
 
@@ -88,6 +92,7 @@ nonisolated struct TimelineInsertionOwed: Equatable {
               new.firstRowID != origin.firstRowID else { return nil }
         let target = originOffset + new.y - origin.y
         owed.replace(target: target)
+        expectedFirstRowID = new.firstRowID
         return target
     }
 

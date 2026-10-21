@@ -250,7 +250,11 @@ final class TimelineListLayout: UICollectionViewLayout {
     override func targetContentOffset(forProposedContentOffset proposedContentOffset: CGPoint) -> CGPoint {
         targetContentOffsetCallCount += 1
         lastProposedContentOffset = proposedContentOffset.y
-        guard var owed = insertionOwed else {
+        // The target belongs to the update that carries the prepended page.
+        // An unrelated update (a streaming batch landing first) must not
+        // consume it or the history request loses its compensation.
+        guard var owed = insertionOwed,
+              owed.expectedFirstRowID == host?.layoutFirstRowID else {
             lastReturnedContentOffset = proposedContentOffset.y
             return proposedContentOffset
         }
@@ -270,11 +274,17 @@ final class TimelineListLayout: UICollectionViewLayout {
         super.finalizeCollectionViewUpdates()
         finalizeUpdatesCallCount += 1
         isInsideUpdate = false
-        if var owed = insertionOwed, let fallback = owed.finalizeFallback() {
-            insertionOwed = owed
-            applyOffsetFallback(fallback)
+        if var owed = insertionOwed {
+            if owed.expectedFirstRowID == host?.layoutFirstRowID {
+                if let fallback = owed.finalizeFallback() {
+                    insertionOwed = owed
+                    applyOffsetFallback(fallback)
+                }
+                insertionOwed = nil
+            }
+            // Otherwise this update belongs to an earlier page; keep the
+            // target for the update that actually carries the prepend.
         }
-        insertionOwed = nil
 #if DEBUG
         var expected: [String: TimelineHeightKey] = [:]
         for attributes in attributesByIndex {
@@ -401,7 +411,8 @@ final class TimelineListLayout: UICollectionViewLayout {
             context.contentSizeAdjustment = CGSize(width: 0, height: contentSizeDelta)
         }
         if let correction, correction != 0 {
-            if isInsideUpdate, insertionOwed != nil {
+            if isInsideUpdate, insertionOwed != nil,
+               insertionOwed?.expectedFirstRowID == host?.layoutFirstRowID {
                 insertionOwed?.adjustTarget(by: correction)
             } else if !state.suppressContentOffsetAdjustment {
                 context.contentOffsetAdjustment = CGPoint(x: 0, y: correction)

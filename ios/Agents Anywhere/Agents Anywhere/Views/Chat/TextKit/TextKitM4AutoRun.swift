@@ -407,9 +407,11 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
         }
 
         // Phase 2: the reveal clock settles; the same row becomes static.
+        // The final fade runs 0.6s after the cursor catches up; wait past it
+        // so the snapshot compares static-vs-static, not static-vs-clamp.
         settleStatic()
         controller.reloadFromContent()
-        await wait(250)
+        await wait(1000)
         controller.collectionView.layoutIfNeeded()
         guard let entry = entries.first(where: { $0.id == "m4-stream" }),
               let staticDocument = entry.staticDocument else {
@@ -458,7 +460,7 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
 
         // The reveal override is gone; the row is back on the measured height
         // and the bottom follow has settled at the end target.
-        await wait(500)
+        await wait(300)
         controller.collectionView.layoutIfNeeded()
         let endTarget = TimelineOffsetTarget.bottomOffset(
             contentHeight: controller.layout.contentHeight,

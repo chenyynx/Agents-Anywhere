@@ -320,6 +320,13 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
         let imageDocument = AssistantMarkdownDocumentParser.make(
             text: "![alt](https://example.com/pixel.png)",
             resolvesFileReferences: false, typography: typography)
+        // A thematic break is pure text but used to reject the whole
+        // document, which dropped live replies to the hosting renderer.
+        let dividerDocument = AssistantMarkdownDocumentParser.make(
+            text: "Intro\n\n---\n\nOutro",
+            resolvesFileReferences: false, typography: typography)
+        let dividerStreaming = AssistantStreamingDocumentBuilder().make(
+            text: "Intro\n\n---\n\nOutro", typography: typography)
 
         let counts = document?.blockCounts ?? [:]
         let topLevelBlocks = document?.blocks.count ?? 0
@@ -366,6 +373,14 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
         } else if (imageDocument?.blockCounts["image"] ?? 0) != 1 {
             failures.append("textkit parser: image block missing")
         }
+        if dividerDocument == nil {
+            failures.append("textkit parser: thematic break rejected")
+        } else if (dividerDocument?.blockCounts["divider"] ?? 0) != 1 {
+            failures.append("textkit parser: divider block missing")
+        }
+        if dividerStreaming == nil {
+            failures.append("textkit streaming: thematic break rejected")
+        }
         if topLevelBlocks != 8 {
             failures.append("textkit fixture: \(topLevelBlocks) top-level blocks, expected 8")
         }
@@ -410,6 +425,9 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
             "tableAccepted": tableDocument != nil,
             "imageAccepted": imageDocument != nil,
             "imageBlocks": imageDocument?.blockCounts["image"] ?? 0,
+            "dividerAccepted": dividerDocument != nil,
+            "dividerBlocks": dividerDocument?.blockCounts["divider"] ?? 0,
+            "dividerStreamingAccepted": dividerStreaming != nil,
             "tableSurfaceCells": tableSurfaceCells,
             "tableSurfaceSubviews": tableSurfaceSubviews,
             "tableSurfaceLabels": tableSurfaceLabels,

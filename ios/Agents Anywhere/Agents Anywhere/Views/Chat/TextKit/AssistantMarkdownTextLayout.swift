@@ -35,6 +35,12 @@ enum AssistantMarkdownTextLayout {
             // The legacy renderer treats an image or a display formula as a
             // paragraph block, so it takes the paragraph's top margin.
             return BlockMargins(top: scaled(ChatMetrics.paragraphSpacing), bottom: nil)
+        case .divider:
+            // Textual's themed break spacing is `.fontScaled(top: 1.6,
+            // bottom: 1.6)`; both sides carry it so the collapsed margin with
+            // a neighbouring paragraph is the same 1.6em.
+            let spacing = 1.6 * ChatMetrics.bodySize
+            return BlockMargins(top: spacing, bottom: spacing)
         }
     }
 
@@ -131,6 +137,9 @@ enum AssistantMarkdownTextLayout {
         case .math(let math):
             return roundUp(math.metrics(columnWidth: width).size.height,
                            scale: displayScale)
+        case .divider:
+            // `Divider().frame(minHeight: 1)`.
+            return roundUp(1, scale: displayScale)
         }
     }
 

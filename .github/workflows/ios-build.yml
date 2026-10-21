@@ -283,7 +283,10 @@ jobs:
                and tk.get("orderedAccepted") is True and tk.get("quoteAccepted") is True
                and tk.get("codeAccepted") is True and tk.get("tableAccepted") is True
                and tk.get("imageAccepted") is True
-               and tk.get("imageBlocks") == 1, tk),
+               and tk.get("imageBlocks") == 1
+               and tk.get("dividerAccepted") is True
+               and tk.get("dividerBlocks") == 1
+               and tk.get("dividerStreamingAccepted") is True, tk),
               ("fixture tree",
                tk.get("topLevelBlocks") == 8 and counts.get("text") == 12
                and counts.get("list") == 4 and counts.get("quote") == 1

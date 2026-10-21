@@ -48,6 +48,8 @@ struct AssistantMarkdownDocument {
                     counts["image", default: 0] += 1
                 case .math:
                     counts["math", default: 0] += 1
+                case .divider:
+                    counts["divider", default: 0] += 1
                 }
             }
         }
@@ -74,6 +76,7 @@ enum AssistantMarkdownBlock {
     case table(AssistantTableBlock)
     case image(AssistantImageBlock)
     case math(AssistantMathBlock)
+    case divider
 
     /// Stable label for DEBUG build-cost instrumentation.
     var kindName: String {
@@ -85,6 +88,7 @@ enum AssistantMarkdownBlock {
         case .table: return "table"
         case .image: return "image"
         case .math: return "math"
+        case .divider: return "divider"
         }
     }
 
@@ -111,7 +115,7 @@ enum AssistantMarkdownBlock {
             return table.rows.reduce(0) { total, row in
                 total + row.reduce(0) { $0 + $1.length }
             }
-        case .image, .math:
+        case .image, .math, .divider:
             return 1
         }
     }
@@ -436,6 +440,10 @@ enum AssistantMarkdownDocumentParser {
             return quoteBlock(content, quoteIntent: intent, typography: typography)
         case .codeBlock(let languageHint):
             return codeBlock(content, language: languageHint, typography: typography)
+        case .thematicBreak:
+            // Textual's default thematic break: a hairline divider with
+            // 1.6em spacing on both sides (`DividerThematicBreakStyle`).
+            return .divider
         case .table(let columns):
             return tableBlock(content, tableIntent: intent, columns: columns,
                               foreground: foreground, typography: typography)

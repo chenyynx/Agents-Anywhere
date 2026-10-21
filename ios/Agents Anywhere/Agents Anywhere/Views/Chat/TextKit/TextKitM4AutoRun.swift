@@ -41,7 +41,11 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
             dynamicType: "UICTContentSizeCategoryL",
             layoutDirection: 0,
             boldText: false)
+        // End the stream with a thematic break: a pure-text construct that
+        // used to reject the whole streaming document and drop the row to the
+        // hosting renderer mid-reply.
         let fixture = TextKitM3AutoRunModel.fixture
+            + "\n\n---\n\nA closing paragraph after the divider."
         batches = Self.prefixes(of: fixture, count: 8)
         let first = batches.first ?? ""
         entries = [

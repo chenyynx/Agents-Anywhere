@@ -40,6 +40,43 @@ enum AssistantMarkdownBlockViewFactory {
             let view = AssistantMathBlockView(
                 math: math, columnWidth: width, height: height)
             return (view, height)
+        case .divider:
+            return (AssistantDividerBlockView(), height)
+        }
+    }
+}
+
+/// Textual's default thematic break: a hairline in `DynamicColor.grid`
+/// (210/210/215 light, 66/66/69 dark) vertically centred in a 1pt frame.
+final class AssistantDividerBlockView: UIView {
+    init() {
+        super.init(frame: .zero)
+        backgroundColor = .clear
+        isOpaque = false
+        contentMode = .redraw
+        isUserInteractionEnabled = false
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func draw(_ rect: CGRect) {
+        let scale = traitCollection.displayScale > 0
+            ? traitCollection.displayScale : 1
+        let line = 1 / scale
+        let color = UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(red: 66 / 255, green: 66 / 255, blue: 69 / 255, alpha: 1)
+                : UIColor(red: 210 / 255, green: 210 / 255, blue: 215 / 255, alpha: 1)
+        }
+        color.resolvedColor(with: traitCollection).setFill()
+        UIRectFill(CGRect(x: 0, y: (bounds.height - line) / 2,
+                          width: bounds.width, height: line))
+    }
+
+    override func traitCollectionDidChange(_ previous: UITraitCollection?) {
+        super.traitCollectionDidChange(previous)
+        if traitCollection.hasDifferentColorAppearance(comparedTo: previous) {
+            setNeedsDisplay()
         }
     }
 }

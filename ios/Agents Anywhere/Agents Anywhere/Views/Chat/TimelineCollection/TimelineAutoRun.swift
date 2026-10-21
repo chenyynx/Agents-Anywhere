@@ -612,21 +612,15 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         controller.collectionView.scrollToItem(at: anchorIndex, at: .top, animated: false)
         await wait(120)
         let before = controller.screenY(for: anchorItem) ?? 0
-        guard let origin = controller.historyLayout(anchorRowID: anchor.id, edge: .top) else {
-            failures.append("owed race: no origin")
-            return
-        }
         let prepended = makePrependEntries(40)
-        guard let projected = controller.projectedHistoryLayout(
-            items: prepended.map(listItem) + entries.map(listItem),
-            anchorRowID: anchor.id, edge: .top) else {
-            failures.append("owed race: no projected layout")
+        // Use the product entry point: it measures the new page before
+        // projecting, so the target matches the post-apply layout.
+        guard controller.beginHistoryRequest(generation: 900,
+            anchorRowID: anchor.id, edge: .top,
+            newItems: prepended.map(listItem) + entries.map(listItem)) != nil else {
+            failures.append("owed race: no history position")
             return
         }
-        controller.layout.beginInsertionOwed(generation: 900, origin: origin,
-            offsetY: controller.collectionView.contentOffset.y,
-            topInset: controller.collectionView.adjustedContentInset.top)
-        controller.layout.updateInsertionOwed(layout: projected)
 
         // An unrelated update lands first (a streaming batch during the
         // history request); it must not consume or clear the prepend target.

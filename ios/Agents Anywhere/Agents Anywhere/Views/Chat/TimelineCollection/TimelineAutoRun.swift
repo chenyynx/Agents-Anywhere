@@ -210,10 +210,12 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await asyncMarkdown()
         await measureConsistency()
         await foldAndTail()
+        // Build the tool rows before the stream scenario, so the growing row
+        // has expanded rows below it — the shape of pp's device report.
+        await toolStorm()
         await streaming()
         await bottom()
         await prepend()
-        await toolStorm()
         await tailFlap()
         await foldCycles()
         await interleavedApplies()
@@ -475,6 +477,16 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     /// The custom layout only invalidates the corrected item; if UIKit leaves
     /// the following cells at the previous positions, they draw over each
     /// other — the device report's overlapping bands.
+    private func adjacentFrameOverlaps(_ controller: TimelineCollectionController) -> Int {
+        var overlaps = 0
+        let attributes = controller.layout.orderedAttributes
+        for (upper, lower) in zip(attributes, attributes.dropFirst())
+        where upper.frame.maxY > lower.frame.minY + 0.5 {
+            overlaps += 1
+        }
+        return overlaps
+    }
+
     private func staleVisibleCells(_ controller: TimelineCollectionController) -> Int {
         var stale = 0
         for attributes in controller.layout.orderedAttributes {
@@ -566,6 +578,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         var heights: [CGFloat] = []
         var shortfalls: [CGFloat] = []
         var movesPerTick: [Int] = []
+        var worstStale = 0
+        var worstOverlap = 0
         for _ in 0..<10 {
             let offsetBefore = controller.collectionView.contentOffset.y
             appendStreamLine(to: entry.id)
@@ -576,15 +590,25 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             shortfalls.append(controller.bottomShortfall)
             let offsetAfter = controller.collectionView.contentOffset.y
             movesPerTick.append(abs(offsetAfter - offsetBefore) > 0.5 ? 1 : 0)
+            worstStale = max(worstStale, staleVisibleCells(controller))
+            worstOverlap = max(worstOverlap, adjacentFrameOverlaps(controller))
         }
         let monotonic = zip(heights, heights.dropFirst()).allSatisfy { $0 <= $1 + 0.5 }
         let maxShortfall = shortfalls.max() ?? 0
         if !monotonic { failures.append("streaming: heights not monotonic \(heights)") }
         if maxShortfall > 0.5 { failures.append("streaming: bottom shortfall \(maxShortfall)") }
         if movesPerTick.max() ?? 0 > 1 { failures.append("streaming: more than one offset move per tick") }
+        if worstStale > 0 {
+            failures.append("streaming: \(worstStale) visible cells sat at stale frames")
+        }
+        if worstOverlap > 0 {
+            failures.append("streaming: \(worstOverlap) adjacent frames overlapped")
+        }
         report["streaming"] = ["ticks": heights.count, "heights": heights,
                                "maxShortfall": maxShortfall, "monotonic": monotonic,
-                               "movesPerTick": movesPerTick]
+                               "movesPerTick": movesPerTick,
+                               "worstStaleCells": worstStale,
+                               "worstOverlaps": worstOverlap]
     }
 
     private func bottom() async {

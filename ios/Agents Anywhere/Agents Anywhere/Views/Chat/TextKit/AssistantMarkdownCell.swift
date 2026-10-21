@@ -368,7 +368,7 @@ final class AssistantMarkdownCell: UICollectionViewCell {
     /// The official Chat **cell** entrance (not the SwiftUI modifier): a plain
     /// opacity animation, 0.25 s ease-out, disabled under Reduce Motion.
     private func applyBlockEntrance(to view: UIView) {
-        guard !UIAccessibilityIsReduceMotionEnabled() else { return }
+        guard !UIAccessibility.isReduceMotionEnabled else { return }
         let fade = CABasicAnimation(keyPath: "opacity")
         fade.fromValue = 0.0
         fade.toValue = 1.0

@@ -264,11 +264,11 @@ final class StreamingRevealDriver: NSObject {
     /// rebuilds the covered range when its seated bottom drifts by 0.5 pt.
     private func rebuildMaskIfSeatedDrifted(in textView: UITextView) {
         let length = localRevealedLength
-        guard length > 0, let mask, let seatedMaxY else { return }
+        guard length > 0, let mask, let knownMaxY = seatedMaxY else { return }
         let rects = AssistantMarkdownMaskRenderer.lineRects(
             for: NSRange(location: 0, length: length), in: textView)
         guard let last = rects.last else { return }
-        guard abs(last.maxY - seatedMaxY) > Self.seatedTolerance
+        guard abs(last.maxY - knownMaxY) > Self.seatedTolerance
                 || abs(last.minY - (seatedMinY ?? last.minY)) > Self.seatedTolerance else {
             return
         }

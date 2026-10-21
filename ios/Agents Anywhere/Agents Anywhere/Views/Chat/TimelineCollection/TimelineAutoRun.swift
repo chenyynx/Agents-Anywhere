@@ -223,18 +223,15 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             let item = listItem(entry)
             await scrollToItem(item)
             // The visible cell is the measurement source for every kind now
-            // that async Markdown is never pre-measured offscreen. Give the
-            // async kinds time to parse, then read the same fitting source
-            // the product uses.
-            await wait([.message, .longGroup, .reasoning].contains(kind) ? 900 : 200)
-            controller?.remeasure(item)
-            await wait(150)
-            // A correction can move the cell out of the visible set before the
-            // sample; re-center it so the sample always reads a materialized
-            // cell rather than a transient invalidation hole.
-            await scrollToItem(item)
+            // that async Markdown is never pre-measured offscreen. Poll the
+            // product's own settle instead of a fixed wait: CI load can push
+            // the async Markdown parse past any single delay, and the sample
+            // must read a materialized, settled cell.
             guard let controller else { continue }
-            guard let sample = await sampleItem(controller, item: item) else {
+            await scrollToItem(item)
+            let timeout: TimeInterval = [.message, .longGroup, .reasoning].contains(kind) ? 8 : 3
+            guard let sample = await settleSample(controller, item: item,
+                                                  timeout: timeout) else {
                 failures.append("measurement: no cell for \(kind.rawValue)")
                 continue
             }
@@ -268,10 +265,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         // The real cell is the measurement source for async Markdown, so it
         // has to exist before the settle read.
         await scrollToItem(item)
-        await wait(1200)
-        controller.remeasure(item)
-        await wait(250)
-        if let sample = await sampleItem(controller, item: item) {
+        if let sample = await settleSample(controller, item: item, timeout: 8) {
             measurement["settled"] = sample.measured
             measurement["content"] = sample.content
             if abs(sample.measured - sample.content) > 1 {
@@ -312,8 +306,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             let collapsed = cellHeight(controller, item)
             setExpanded(entry.id, true)
             controller.reconfigure([item])
-            await wait(700)
-            let expanded = cellHeight(controller, item)
+            let expanded = await waitForCellHeight(controller, item: item,
+                timeout: 3) { $0 > collapsed + 1 }
             let sample = await sampleItem(controller, item: item)
             if expanded <= collapsed + 1 {
                 failures.append("fold: expanded \(expanded) not taller than collapsed \(collapsed)")
@@ -336,8 +330,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             let collapsed = cellHeight(controller, item)
             setExpanded(entry.id, true)
             controller.reconfigure([item])
-            await wait(500)
-            let expanded = cellHeight(controller, item)
+            let expanded = await waitForCellHeight(controller, item: item,
+                timeout: 3) { $0 > collapsed + 1 }
             if expanded <= collapsed + 1 {
                 failures.append("inline notice: expanded \(expanded) not taller than collapsed \(collapsed)")
             }
@@ -349,8 +343,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             let resting = cellHeight(controller, item)
             setTailStatusLine(true)
             controller.reconfigure([item])
-            await wait(500)
-            let active = cellHeight(controller, item)
+            let active = await waitForCellHeight(controller, item: item,
+                timeout: 3) { abs($0 - 32) <= 1 }
             if abs(resting - 12) > 1 { failures.append("tail: resting height \(resting) != 12") }
             if abs(active - 32) > 1 { failures.append("tail: status height \(active) != 32") }
             report["tail"] = ["resting": resting, "statusLine": active]
@@ -511,6 +505,52 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     /// A correction can invalidate the layout between the scroll and the
     /// sample, leaving no materialized cell for a frame. Re-center and retry
     /// before calling it a missing cell.
+    /// Wait for the product's visible-cell settle: the stored height matches
+    /// the cell's fitting content. Re-measures on change and re-centers a cell
+    /// that a correction pushed out of the visible set.
+    private func settleSample(_ controller: TimelineCollectionController,
+                              item: TimelineListItem,
+                              timeout: TimeInterval) async -> CellSample? {
+        let start = ProcessInfo.processInfo.systemUptime
+        var lastMeasured: CGFloat = -1
+        while ProcessInfo.processInfo.systemUptime - start < timeout {
+            controller.collectionView.layoutIfNeeded()
+            guard let sample = cellSample(controller, item: item) else {
+                if let indexPath = controller.indexPath(for: item) {
+                    controller.collectionView.scrollToItem(at: indexPath,
+                        at: .centeredVertically, animated: false)
+                }
+                await wait(120)
+                continue
+            }
+            let settled = abs(sample.measured - sample.content) <= 1
+                && sample.cell + 0.5 >= sample.content
+            if settled { return sample }
+            if abs(sample.measured - lastMeasured) >= 0.5 {
+                lastMeasured = sample.measured
+                controller.remeasure(item)
+            }
+            await wait(120)
+        }
+        return cellSample(controller, item: item)
+    }
+
+    /// Poll the layout height until it satisfies `predicate` (fold/notice/tail
+    /// exceptions settle through the controller's async preferred-height pass).
+    private func waitForCellHeight(_ controller: TimelineCollectionController,
+                                   item: TimelineListItem,
+                                   timeout: TimeInterval,
+                                   predicate: (CGFloat) -> Bool) async -> CGFloat {
+        let start = ProcessInfo.processInfo.systemUptime
+        while ProcessInfo.processInfo.systemUptime - start < timeout {
+            controller.collectionView.layoutIfNeeded()
+            let height = cellHeight(controller, item)
+            if predicate(height) { return height }
+            await wait(100)
+        }
+        return cellHeight(controller, item)
+    }
+
     private func sampleItem(_ controller: TimelineCollectionController,
                             item: TimelineListItem,
                             attempts: Int = 5) async -> CellSample? {

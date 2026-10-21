@@ -395,6 +395,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             isAssistantMessage = false
         }
         let now = ProcessInfo.processInfo.systemUptime
+        // While the renderer-owned reveal still owns the row, a notice or a
+        // footer arriving mid-stream must not switch engines: the full text
+        // is already published, so the hosting path would show all of the
+        // remaining characters at once. Hand off after the reveal settles.
+        let holdsEngine = isRevealEnabled
+            && rendererRevealOwnership.isActive(row.id)
         let admitted = TimelineStreamingEligibility.admits(
             isSingleRowGroup: group.kind == .single && group.rows.count == 1,
             isAssistantMessage: isAssistantMessage,
@@ -404,8 +410,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             textIsEmpty: row.text.isEmpty,
             hasInlineNotice: inlineNoticesByRow[row.id] != nil,
             hasAttachments: !attachments(of: row.value).isEmpty,
-            isTextOnlyAction: isTextOnlyTurnAction(turnActions[group.id]),
-            isFallback: streamingFallbacks.contains(row.id))
+            footerSupported: isTextOnlyTurnAction(turnActions[group.id]),
+            isFallback: streamingFallbacks.contains(row.id),
+            holdsEngineThroughDisqualifiers: holdsEngine)
         guard admitted else {
             // Only a row that left streaming (and finished both reveals)
             // discards its incremental state; a temporary notice/attachment

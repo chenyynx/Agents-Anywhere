@@ -46,6 +46,38 @@ import Testing
         #expect(timeline.flushRevision > duringReveal)
     }
 
+    @Test func enablingRendererOwnedRevealRestoresTheWithheldGlyph() throws {
+        let row = ChatTimelineRowModel(try item("Hello"), animate: false)
+        row.flush(try item("Hello world", revision: 2), animate: true, now: 0)
+        #expect(row.text == "Hello worl")
+        #expect(row.isRevealing)
+        row.useRendererOwnedReveal()
+        #expect(row.text == "Hello world")
+        #expect(!row.isRevealing)
+    }
+
+    @Test func rendererOwnedRevealPublishesRawTextWithoutBatchDelay() throws {
+        let timeline = SessionTimelinePresentation()
+        timeline.stage([try item("Hello")], animate: false)
+        timeline.flush(now: 0)
+        let row = try #require(timeline.rows.first)
+        let batchBefore = timeline.nextBatchAt
+        row.useRendererOwnedReveal()
+        timeline.stage([try item("Hello world", revision: 2)], animate: true)
+        timeline.flush(now: 1)
+        #expect(row.text == "Hello world")
+        #expect(!row.isRevealing)
+        #expect(timeline.nextBatchAt == batchBefore)
+        // A correction is a full replacement, but still never re-enters the
+        // withheld-glyph path.
+        let generation = row.layoutGeneration
+        timeline.stage([try item("Goodbye", revision: 3)], animate: true)
+        timeline.flush(now: 2)
+        #expect(row.text == "Goodbye")
+        #expect(!row.isRevealing)
+        #expect(row.layoutGeneration == generation + 1)
+    }
+
     @Test func runningReplyStopsRevealingWhenTextPauses() throws {
         let timeline = SessionTimelinePresentation()
         timeline.stage([try item("Hello")], animate: false); timeline.flush(now: 0)

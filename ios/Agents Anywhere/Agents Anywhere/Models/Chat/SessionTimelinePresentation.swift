@@ -8,6 +8,10 @@ final class ChatTimelineRowModel: Identifiable {
     private(set) var structure: TimelineRowStructure
     private(set) var text: String
     private(set) var isRevealing = false
+    /// When true, the TextKit reveal engine owns visibility: `flush` publishes
+    /// the full received text instead of withholding the last glyph and
+    /// batching at the legacy 0.24 s cadence.
+    private(set) var rendererOwnedReveal = false
     private(set) var layoutGeneration = 0
     @ObservationIgnored private(set) var settlesAt: TimeInterval = 0
     @ObservationIgnored private var hasFlushed = false
@@ -27,6 +31,23 @@ final class ChatTimelineRowModel: Identifiable {
         // Unchanged rows neither recompute their structure nor rescan their text.
         if hasFlushed && value == next && (animate || displaysFullText) { settle(now: now); return false }
         hasFlushed = true
+
+        // Renderer-owned reveal: the TextKit cursor decides what is visible.
+        // Publish the whole received text and never enter the legacy reveal
+        // batching/withholding path.
+        if rendererOwnedReveal {
+            let received = next.displayText
+            let appending = received.hasPrefix(text)
+            if !appending { layoutGeneration += 1 }
+            if received != text { text = received }
+            displaysFullText = true
+            isRevealing = false
+            if value != next { value = next; entryCache = nil }
+            let nextStructure = TimelineRowStructure(next)
+            if structure != nextStructure { structure = nextStructure }
+            return false
+        }
+
         let received = next.displayText
         let appending = received.hasPrefix(text)
         // Snapshots/corrections are authoritative replacements, not token deltas.
@@ -47,6 +68,19 @@ final class ChatTimelineRowModel: Identifiable {
         if structure != nextStructure { structure = nextStructure }
         if !animate || now >= settlesAt { isRevealing = false }
         return started
+    }
+
+    /// Switch this row to renderer-owned reveal. The caller enables it only
+    /// when the TextKit reveal renderer owns the row; the legacy SwiftUI path
+    /// keeps the default batched/withheld presentation.
+    func useRendererOwnedReveal() {
+        guard !rendererOwnedReveal else { return }
+        rendererOwnedReveal = true
+        isRevealing = false
+        displaysFullText = true
+        let latest = value.displayText
+        if !latest.hasPrefix(text) { layoutGeneration += 1 }
+        if latest != text { text = latest }
     }
 
     /// Tool/marker rows parse their payload once per item version instead of

@@ -241,11 +241,12 @@ private final class SpikeInlineAttachment: NSTextAttachment {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    override func viewProvider(for location: NSTextLocation,
+    override func viewProvider(for parentView: UIView?,
+                               location: NSTextLocation,
                                textContainer: NSTextContainer?) -> NSTextAttachmentViewProvider? {
         let provider = SpikeInlineAttachmentProvider(
             textAttachment: self,
-            parentView: nil,
+            parentView: parentView,
             textLayoutManager: textContainer?.textLayoutManager,
             location: location)
         provider.tracksTextAttachmentViewBounds = true

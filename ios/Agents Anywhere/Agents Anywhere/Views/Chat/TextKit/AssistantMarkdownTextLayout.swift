@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import Textual
 import UIKit
 
 /// TextKit 2 measurement for the assistant body. The same attributed strings

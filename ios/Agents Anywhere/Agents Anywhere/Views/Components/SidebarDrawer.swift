@@ -277,7 +277,6 @@ private struct SidebarDrawerInteractive<
             .gesture(
                 SidebarDrawerPanGesture(
                     progress: motion.restingProgress,
-                    edgeActivationWidth: configuration.edgeActivationWidth,
                     onBegan: beginDirectionalPan,
                     onChanged: { translationX in
                         updateDirectionalPan(
@@ -310,10 +309,7 @@ private struct SidebarDrawerInteractive<
         .environment(\.sidebarDrawerObscuresDetail, isOpen || motion.restingProgress > 0)
         .environment(\.sidebarDrawerIsTransitioning, isAnimating || dragStartProgress != nil
             || motion.restingProgress != (isOpen ? 1 : 0))
-        .sensoryFeedback(
-            .impact(weight: .light, intensity: 1),
-            trigger: feedbackTrigger
-        )
+        .sensoryFeedback(.impact, trigger: feedbackTrigger)
     }
 
     private var usesOpeningEdgeGestureRegion: Bool {
@@ -329,10 +325,14 @@ private struct SidebarDrawerInteractive<
         guard let dragStartProgress else { return }
 
         let nextProgress = dragStartProgress + (translationX / revealWidth)
+        moveWithoutAnimation(to: nextProgress.clamped(to: 0 ... 1))
+    }
+
+    private func moveWithoutAnimation(to next: CGFloat) {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            motion.move(to: nextProgress.clamped(to: 0 ... 1))
+            motion.move(to: next)
         }
     }
 
@@ -345,19 +345,35 @@ private struct SidebarDrawerInteractive<
         defer { resetDrag() }
         guard let dragStartProgress else { return }
 
-        let projectedTranslation = translationX + (velocityX * 0.2)
-        let projectedProgress = dragStartProgress + (projectedTranslation / revealWidth)
-        let target = if cancelled {
-            motion.progress >= 0.5 ? 1.0 : 0.0
+        let releaseProgress: CGFloat
+        if cancelled {
+            releaseProgress = motion.progress
         } else {
-            projectedProgress >= 0.5 ? 1.0 : 0.0
+            // The last .changed sample can lag the release; advance to the
+            // finger's final translation before deciding where it lands.
+            releaseProgress = (dragStartProgress + translationX / revealWidth)
+                .clamped(to: 0 ... 1)
+            if releaseProgress != motion.progress {
+                moveWithoutAnimation(to: releaseProgress)
+            }
         }
 
-        settle(
-            to: target,
-            progressVelocity: velocityX / revealWidth,
-            feedback: !cancelled
+        // A cancelled gesture keeps the position-only snap: the system took
+        // the touch away, so its remaining velocity is not trustworthy.
+        let target = cancelled
+            ? SidebarDrawerGestureRules.snapTarget(progress: releaseProgress)
+            : SidebarDrawerGestureRules.targetProgress(
+                progress: releaseProgress,
+                velocityX: velocityX
+            )
+        let initialVelocity = cancelled ? 0 : SidebarDrawerGestureRules.normalizedVelocity(
+            velocityX: velocityX,
+            progress: releaseProgress,
+            targetProgress: target,
+            revealWidth: revealWidth
         )
+
+        settle(to: target, initialVelocity: initialVelocity, feedback: !cancelled)
     }
 
     private func drawerGesture(revealWidth: CGFloat) -> some Gesture {
@@ -373,11 +389,7 @@ private struct SidebarDrawerInteractive<
                 }
 
                 let nextProgress = dragStartProgress + (value.translation.width / revealWidth)
-                var transaction = Transaction(animation: nil)
-                transaction.disablesAnimations = true
-                withTransaction(transaction) {
-                    motion.move(to: nextProgress.clamped(to: 0 ... 1))
-                }
+                moveWithoutAnimation(to: nextProgress.clamped(to: 0 ... 1))
             }
             .onEnded { value in
                 defer { resetDrag() }
@@ -389,14 +401,22 @@ private struct SidebarDrawerInteractive<
                     return
                 }
 
-                let predictedProgress = dragStartProgress
-                    + (value.predictedEndTranslation.width / revealWidth)
-                let progressVelocity = value.velocity.width / revealWidth
-                settle(
-                    to: predictedProgress >= 0.5 ? 1 : 0,
-                    progressVelocity: progressVelocity,
-                    feedback: true
+                let releaseProgress = (dragStartProgress + value.translation.width / revealWidth)
+                    .clamped(to: 0 ... 1)
+                if releaseProgress != motion.progress {
+                    moveWithoutAnimation(to: releaseProgress)
+                }
+                let target = SidebarDrawerGestureRules.targetProgress(
+                    progress: releaseProgress,
+                    velocityX: value.velocity.width
                 )
+                let initialVelocity = SidebarDrawerGestureRules.normalizedVelocity(
+                    velocityX: value.velocity.width,
+                    progress: releaseProgress,
+                    targetProgress: target,
+                    revealWidth: revealWidth
+                )
+                settle(to: target, initialVelocity: initialVelocity, feedback: true)
             }
     }
 
@@ -453,17 +473,11 @@ private struct SidebarDrawerInteractive<
     // Confirms the snap immediately, then commits external semantic state on completion.
     private func settle(
         to rawTarget: CGFloat,
-        progressVelocity: CGFloat = 0,
+        initialVelocity: Double = 0,
         feedback: Bool
     ) {
         let target = rawTarget.clamped(to: 0 ... 1)
         let shouldProvideFeedback = feedback && abs(motion.progress - target) > 0.001
-        let remainingProgress = target - motion.progress
-        let initialVelocity: Double = if abs(remainingProgress) > 0.001 {
-            Double(progressVelocity / remainingProgress).clamped(to: -8 ... 8)
-        } else {
-            0.0
-        }
 
         animationGeneration &+= 1
         let generation = animationGeneration
@@ -506,7 +520,7 @@ private struct SidebarDrawerInteractive<
         } else {
             withAnimation(
                 .interpolatingSpring(
-                    Spring(response: 0.34, dampingRatio: 0.9),
+                    Spring(response: 0.2, dampingRatio: 1.0),
                     initialVelocity: initialVelocity
                 ),
                 completionCriteria: .removed
@@ -814,12 +828,6 @@ private enum DragDisposition {
 
 private extension CGFloat {
     func clamped(to range: ClosedRange<CGFloat>) -> CGFloat {
-        Swift.min(Swift.max(self, range.lowerBound), range.upperBound)
-    }
-}
-
-private extension Double {
-    func clamped(to range: ClosedRange<Double>) -> Double {
         Swift.min(Swift.max(self, range.lowerBound), range.upperBound)
     }
 }

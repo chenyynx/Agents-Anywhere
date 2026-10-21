@@ -261,7 +261,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         guard !row.value.isStreamingText, !row.isRevealing else { return nil }
         // A done row whose renderer-owned cursor is still revealing stays on
         // the streaming path; the static body would cut the animation short.
-        if let timeline = revealTimelines[row.id], timeline.total > 0,
+        if isRevealEnabled,
+           let timeline = revealTimelines[row.id], timeline.total > 0,
            timeline.shownThrough(at: ProcessInfo.processInfo.systemUptime)
             < timeline.total {
             return nil
@@ -330,6 +331,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     }
 
     func assistantStreamingReveal(for item: TimelineListItem) -> StreamingRevealState? {
+        // Official gating: VoiceOver bypasses the pacing provider entirely and
+        // Reduce Motion skips the mask driver; both show the text at once.
+        guard isRevealEnabled else { return nil }
         guard let row = streamingRow(for: item),
               let cached = streamingDocuments[row.id],
               let document = cached.document else { return nil }
@@ -350,6 +354,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// never move backwards.
     private func anchorRevealTimeline(for row: ChatTimelineRowModel,
                                       document: AssistantStreamingDocument) {
+        guard isRevealEnabled else {
+            revealTimelines.removeValue(forKey: row.id)
+            revealCaughtUpAt.removeValue(forKey: row.id)
+            return
+        }
         let total = document.document.revealCharacterCount
         let now = ProcessInfo.processInfo.systemUptime
         var timeline = revealTimelines[row.id] ?? StreamingRevealTimeline()
@@ -416,11 +425,19 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         return row
     }
 
+    /// VoiceOver and Reduce Motion both bypass the reveal (official: the
+    /// pacing provider returns nil / the driver is not created).
+    private var isRevealEnabled: Bool {
+        !UIAccessibility.isVoiceOverRunning
+            && !UIAccessibility.isReduceMotionEnabled
+    }
+
     /// True while the renderer-owned cursor is still behind the received text,
     /// or during the short grace that lets the cell's final run fade out.
     private func revealPending(for row: ChatTimelineRowModel,
                                at now: TimeInterval) -> Bool {
-        guard let timeline = revealTimelines[row.id], timeline.total > 0 else {
+        guard isRevealEnabled,
+              let timeline = revealTimelines[row.id], timeline.total > 0 else {
             return false
         }
         if timeline.shownThrough(at: now) >= timeline.total {

@@ -78,6 +78,10 @@ final class TimelineCollectionController: UIViewController {
     private var streamingFollowStartTime: TimeInterval = 0
     private var streamingFollowLastTime: TimeInterval = 0
     private var streamingFollowLastPosition: CGFloat = 0
+    /// Last frame that actually moved; a link with no movement for 0.5 s is
+    /// stopped even while the reveal flag is still set (a cell that scrolled
+    /// away never reports its completion frame).
+    private var streamingFollowLastMoveAt: TimeInterval = 0
     /// True between the first reveal frame and its completion frame. While
     /// true the follower keeps running even when it momentarily reaches the
     /// current bottom, because the target is still growing.
@@ -382,6 +386,7 @@ final class TimelineCollectionController: UIViewController {
         streamingFollowStartTime = ProcessInfo.processInfo.systemUptime
         streamingFollowLastTime = streamingFollowStartTime
         streamingFollowLastPosition = streamingFollowStartPosition
+        streamingFollowLastMoveAt = streamingFollowStartTime
 
         let maxFPS = max(60, view.window?.screen.maximumFramesPerSecond ?? 60)
         let link = CADisplayLink(target: self,
@@ -432,6 +437,9 @@ final class TimelineCollectionController: UIViewController {
             + (target - streamingFollowStartPosition) * progress
         let velocity = dt > 0
             ? (position - streamingFollowLastPosition) / CGFloat(dt) : 0
+        if abs(position - streamingFollowLastPosition) >= 0.5 {
+            streamingFollowLastMoveAt = now
+        }
         collectionView.setContentOffset(
             CGPoint(x: collectionView.contentOffset.x, y: position),
             animated: false)
@@ -443,6 +451,15 @@ final class TimelineCollectionController: UIViewController {
                 animated: false)
             stopStreamingFollow()
             noteBottomArrival()
+            return
+        }
+        // No movement for half a second and already at the target: the reveal
+        // is over, or its cell scrolled away before reporting completion. A
+        // later reveal frame restarts the link.
+        if now - streamingFollowLastMoveAt > 0.5,
+           abs(target - position) < TimelineSpringFollow.pixel(
+            displayScale: traitCollection.displayScale) {
+            stopStreamingFollow()
             return
         }
         streamingFollowLastTime = now

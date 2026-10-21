@@ -209,8 +209,16 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
             if batchIndex > 0 {
                 advance(to: text)
                 controller.reloadFromContent()
+                // Capture while the cursor is still behind the received text:
+                // this is the frame that shows the per-line mask and the
+                // clamped row height, not the settled whole message.
+                await wait(80)
+                if batchIndex == 3 { capture("m42-mid1.png") }
+                if batchIndex == batches.count - 1 { capture("m42-mid2.png") }
+                await wait(140)
+            } else {
+                await wait(220)
             }
-            await wait(220)
             controller.collectionView.layoutIfNeeded()
 
             guard let entry = entries.first(where: { $0.id == "m4-stream" }),
@@ -311,8 +319,6 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
                 "revealClamp": Double(revealClamp ?? -1),
             ])
             followOffsets.append(controller.collectionView.contentOffset.y)
-            if batchIndex == 3 { capture("m42-mid1.png") }
-            if batchIndex == batches.count - 1 { capture("m42-mid2.png") }
         }
 
         // M4.2 reveal assertions.

@@ -179,6 +179,19 @@ final class AssistantMarkdownCell: UICollectionViewCell {
         }
     }
 
+    /// An offscreen cell must stop its reveal link (and report the clamp as
+    /// cleared). The adapter keeps the cursor, so a cell that comes back shows
+    /// everything already released without replaying the fade.
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil, streaming != nil {
+            revealDriver.reset()
+            #if DEBUG
+            debugStreamingRowHeight = nil
+            #endif
+        }
+    }
+
     /// Block views need a concrete width: the text views measure their glyphs
     /// at it, and the list/quote containers divide the remaining column. Before
     /// the first layout pass the width is zero, so `layoutSubviews` builds them.
@@ -368,18 +381,29 @@ final class AssistantMarkdownCell: UICollectionViewCell {
         #endif
     }
 
-    /// The official Chat **cell** entrance (not the SwiftUI modifier): a plain
-    /// opacity animation, 0.25 s ease-out, disabled under Reduce Motion.
+    /// The official Chat entrance: opacity 0 → 1 over 0.25 s ease-out with a
+    /// 5 pt rise (the rise is off under Reduce Motion; the fade stays).
+    /// `opacity = min(4 × progress, 1)` at first appearance is 0, so the first
+    /// frame is the full 0.25 s / 5 pt.
     private func applyBlockEntrance(to view: UIView) {
-        guard !UIAccessibility.isReduceMotionEnabled else { return }
+        let now = CACurrentMediaTime()
         let fade = CABasicAnimation(keyPath: "opacity")
         fade.fromValue = 0.0
         fade.toValue = 1.0
         fade.duration = 0.25
         fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
-        fade.beginTime = CACurrentMediaTime()
+        fade.beginTime = now
         fade.fillMode = .backwards
         view.layer.add(fade, forKey: "revealEntrance")
+        guard !UIAccessibility.isReduceMotionEnabled else { return }
+        let rise = CABasicAnimation(keyPath: "transform.translation.y")
+        rise.fromValue = 5.0
+        rise.toValue = 0.0
+        rise.duration = 0.25
+        rise.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        rise.beginTime = now
+        rise.fillMode = .backwards
+        view.layer.add(rise, forKey: "revealEntranceRise")
     }
 
     private func removeTailView(_ id: AssistantBlockID) {

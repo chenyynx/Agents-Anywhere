@@ -146,7 +146,9 @@ shownThrough=floor(position+1e-9)
 - **阶段 4**：`TimelineSpringFollow`（纯模型 + 单测）：1 物理像素 no-op / 2 屏 catch-up / 1 屏预置 / `ease(0.4,0)` `fly(0.36,0.15)` 解析解 / 到达双阈值 / `.end` 重武装；controller 用独立 display link 逐帧跟随（`[maxFPS/2, maxFPS]`，`dt ≤ 2/maxFPS`），拖动立即停，Reduce Motion/VoiceOver 直接 place。逐帧高度仍走 layout display override（不污染测量缓存）。
 - **阶段 5**：`ChatTurnPhase`（官方 tag 0/1/2/3）+ `TurnPhaseHaptics`：`writing→idle` 唯一 `.impact(.light,1.0)`，其余相位变化 `.selection`，流式过程 0 次；`TimelineChatTimelineView` 用 `.sensoryFeedback` 接线。
 - **阶段 6**：M4 gate 增加 M4.2 断言：至少一次 mask run（`revealedCharacters > 0` + mask 安装）、至少一次 clamped 行高、跟随 offset 单调、delegate 级拖动解除底部、完成帧贴底且无 clamp 残留；workflow 对 `follow` 字段逐项判红。**已验证**（run `39545641056`）：`textkit-m4.json` `failures: []`；`sawReveal/sawClamp/dragDisarmed/offsetAtBottom` 全 true；`finalOffset 194 == endTarget 194`；完成帧 `sameCellAsDoneRevealing: true`、`overlaps: 0`、`stored 616 == measured 616`。该 run 唯一红是 C3 gate 的已知 flake（`longGroup cell 200 vs content 1471`，异步 Markdown 未及时 settle），与本改动路径无关。
-- **已知取舍**：稳定块在游标尚未到达其末尾时即整块显示（官方逐叶 mask）；只在快速突发时可见，后续按游标推进可细化。`thinking` 进入时的 caption 谓词官方 UNKNOWN，AA 保留 `.selection`。相位 haptic 在整页生命周期内触发，不随 footer 是否在屏。手势只做 delegate 级验证（simctl 不能合成触摸）。
+- **截图**：gate 上传 `m42-mid1.png` / `m42-mid2.png` / `m42-final.png`（run `39546806791`）。首轮两张 mid 帧在 220ms 采样点拍摄，揭示已追平；已把截图时点前移到批次后 80ms（下一轮验证可见的半揭示帧）。
+- **无障碍旁路**：VoiceOver / Reduce Motion 时揭示关闭（官方 pacing provider 返回 nil / 不建 driver），行直接全量；底部跟随在两种情况下直接 place。已实现。
+- **已知取舍**：稳定块在游标尚未到达其末尾时即整块显示（官方逐叶 mask）；只在快速突发时可见，后续按游标推进可细化。`thinking` 进入时的 caption 谓词官方 UNKNOWN，AA 保留 `.selection`。相位 haptic 在整页生命周期内触发，不随 footer 是否在屏。手势只做 delegate 级验证（simctl 不能合成触摸）。AA 现有 `measuredAtBottom` 判定是 **8pt**（官方 1 物理像素 = 1/displayScale）；本次复用该判定以免影响 pull/回底/胶囊等既有行为，`TimelineSpringFollow.shouldRearmEnd` 的 1px 规则仅由单测覆盖。
 
 ## 8. 验收
 

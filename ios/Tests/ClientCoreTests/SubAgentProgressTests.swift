@@ -325,22 +325,22 @@ import Testing
     @Test func statsLinesPreferTheRealInputOutputSplit() throws {
         // The connector sums the subagent transcript's own per-call usage; the
         // wire's single counter (the last call's context size) is not repeated.
-        let card = try card(try cardItem(usage: [
+        let split = try card(try cardItem(usage: [
             "toolCalls": 20, "tokens": 55, "durationMs": 372_836,
             "inputTokens": 17_593, "outputTokens": 6_398,
         ]))
-        #expect(SubAgentProgress.statsLines(for: card)
+        #expect(SubAgentProgress.statsLines(for: split)
             == ["20 个工具 · 6.2 分钟", "输入 17.6k · 输出 6.4k"])
-        #expect(SubAgentProgress.statsLine(for: card)
+        #expect(SubAgentProgress.statsLine(for: split)
             == "20 个工具 · 6.2 分钟 · 输入 17.6k · 输出 6.4k")
-        #expect(SubAgentProgress.statsAccessibilityLabel(for: card)
+        #expect(SubAgentProgress.statsAccessibilityLabel(for: split)
             == "运行中，20 个工具，用时 6.2 分钟，输入 17.6k，输出 6.4k")
-        #expect(!SubAgentProgress.statsLine(for: card).contains("55"))
+        #expect(!SubAgentProgress.statsLine(for: split).contains("55"))
     }
 
     @Test func tokenMetricsUseGlyphsForTheSplit() throws {
-        let card = try card(try cardItem(usage: ["inputTokens": 17_593, "outputTokens": 6_398]))
-        #expect(SubAgentProgress.tokenMetrics(for: card) == [
+        let split = try card(try cardItem(usage: ["inputTokens": 17_593, "outputTokens": 6_398]))
+        #expect(SubAgentProgress.tokenMetrics(for: split) == [
             SubAgentProgress.SubAgentTokenMetric(symbol: "arrow.up", value: "17.6k"),
             SubAgentProgress.SubAgentTokenMetric(symbol: "arrow.down", value: "6.4k"),
         ])
@@ -354,8 +354,8 @@ import Testing
     }
 
     @Test func statsLinesFallBackToTheWireCounterWithoutASplit() throws {
-        let card = try card(try cardItem(usage: ["toolCalls": 7, "tokens": 33_555, "durationMs": 24_723]))
-        #expect(SubAgentProgress.statsLines(for: card)
+        let fallback = try card(try cardItem(usage: ["toolCalls": 7, "tokens": 33_555, "durationMs": 24_723]))
+        #expect(SubAgentProgress.statsLines(for: fallback)
             == ["7 个工具 · 24.7 秒", "33.6k tokens"])
     }
 

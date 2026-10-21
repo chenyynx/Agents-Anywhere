@@ -215,6 +215,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await prepend()
         await toolStorm()
         await tailFlap()
+        await foldCycles()
         await interleavedApplies()
         writeReport()
     }
@@ -402,8 +403,12 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                 verticalFittingPriority: .fittingSizeLevel).height
             if cell.bounds.height + 0.5 < content { clipped += 1 }
         }
+        let stale = staleVisibleCells(controller)
         if overlaps > 0 {
             failures.append("tool storm: \(overlaps) adjacent frames overlap")
+        }
+        if stale > 0 {
+            failures.append("tool storm: \(stale) visible cells sit at stale frames")
         }
         if collapsed > 0 {
             failures.append("tool storm: \(collapsed) expanded rows kept a collapsed height")
@@ -413,7 +418,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         }
         report["toolStorm"] = ["rows": stormEntries.count, "overlaps": overlaps,
                                "checked": checked, "clipped": clipped,
-                               "collapsed": collapsed]
+                               "collapsed": collapsed, "staleCells": stale]
     }
 
     /// Device report (cf130b1): the status line jumped and sometimes ended
@@ -457,8 +462,65 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         if !visible {
             failures.append("tail flap: tail is below the viewport at rest")
         }
+        let stale = staleVisibleCells(controller)
+        if stale > 0 {
+            failures.append("tail flap: \(stale) visible cells sit at stale frames")
+        }
         report["tailFlap"] = ["height": Double(height), "visible": visible,
-                              "contentHeight": Double(contentBottom)]
+                              "contentHeight": Double(contentBottom),
+                              "staleCells": stale]
+    }
+
+    /// Visible cells whose frame disagrees with the layout's own attributes.
+    /// The custom layout only invalidates the corrected item; if UIKit leaves
+    /// the following cells at the previous positions, they draw over each
+    /// other — the device report's overlapping bands.
+    private func staleVisibleCells(_ controller: TimelineCollectionController) -> Int {
+        var stale = 0
+        for attributes in controller.layout.orderedAttributes {
+            guard let cell = controller.collectionView.cellForItem(at: attributes.indexPath) else { continue }
+            if abs(cell.frame.minY - attributes.frame.minY) > 0.5
+                || abs(cell.frame.height - attributes.frame.height) > 0.5 {
+                stale += 1
+            }
+        }
+        return stale
+    }
+
+    /// Incremental height corrections (fold toggles, status-line flips) must
+    /// move every following cell, not just the corrected one. Collapse and
+    /// expand the same row repeatedly and check the visible cells against
+    /// the layout's own attributes.
+    private func foldCycles() async {
+        guard let controller,
+              let entry = entries.first(where: { $0.id == "storm-0" }) else { return }
+        let item = listItem(entry)
+        await scrollToItem(item)
+        for cycle in 0..<4 {
+            setExpanded(entry.id, cycle % 2 == 0)
+            contentGeneration += 1
+            controller.reloadFromContent()
+            await wait(350)
+        }
+        setExpanded(entry.id, true)
+        contentGeneration += 1
+        controller.reloadFromContent()
+        await wait(700)
+        controller.collectionView.layoutIfNeeded()
+        let stale = staleVisibleCells(controller)
+        if stale > 0 {
+            failures.append("fold cycles: \(stale) visible cells sit at stale frames")
+        }
+        var overlaps = 0
+        let attributes = controller.layout.orderedAttributes
+        for (upper, lower) in zip(attributes, attributes.dropFirst())
+        where upper.frame.maxY > lower.frame.minY + 0.5 {
+            overlaps += 1
+        }
+        if overlaps > 0 {
+            failures.append("fold cycles: \(overlaps) adjacent frames overlap")
+        }
+        report["foldCycles"] = ["staleCells": stale, "overlaps": overlaps]
     }
 
     /// Device report (cf130b1): SIGABRT in `dequeueReusableCell` during a

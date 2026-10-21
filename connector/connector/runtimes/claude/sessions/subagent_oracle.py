@@ -344,6 +344,142 @@ def probe_agent_file(
 FileProbe = Callable[..., AgentFileInfo]
 
 
+def agent_transcript_path(
+    *,
+    projects_dir: Path,
+    project_key: str,
+    external_session_id: str,
+    task_id: str,
+) -> Path | None:
+    """The newest transcript file for one subagent task, or ``None``.
+
+    Mirrors :func:`probe_agent_file`'s search — a direct hit first, then one
+    bounded recursive pass — but returns the path: the usage summary reads the
+    file, where the liveness probe only needs its mtime.
+    """
+
+    base = projects_dir / project_key / external_session_id / "subagents"
+    direct = base / f"agent-{task_id}.jsonl"
+    if direct.is_file():
+        return direct
+    try:
+        candidates = [
+            candidate
+            for candidate in base.rglob(f"agent-{task_id}.jsonl")
+            if candidate.is_file()
+        ]
+    except OSError:
+        return None
+    if not candidates:
+        return None
+
+    def _mtime(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return -1.0
+
+    return max(candidates, key=_mtime)
+
+
+#: Subagent usage summaries keyed by (path, size, mtime ms). The live fold and
+#: the evidence sweep both ask at closure time, when the file has stopped
+#: growing; the size/mtime key keeps a still-running task from reading stale.
+_AGENT_USAGE_CACHE: dict[tuple[str, int, int], Mapping[str, int]] = {}
+_AGENT_USAGE_CACHE_LIMIT = 256
+
+
+def subagent_token_usage(
+    *,
+    cwd: str | None,
+    external_session_id: str | None,
+    task_id: str,
+) -> Mapping[str, int] | None:
+    """Sum the subagent transcript's own per-call token usage.
+
+    The wire carries one ``total_tokens`` number, and the CLI computes it from
+    the LAST API call's context (``input + cache_creation + cache_read +
+    output``) — a context size, not what the run consumed. The transcript
+    keeps every assistant message's ``usage``, so the real split is
+    recoverable: ``inputTokens``/``outputTokens`` sum the non-cached input and
+    the output over all calls, and the cache counters ride along for callers
+    that want them. ``None`` when the file is missing or has no usage rows.
+
+    Measured 2026-10-21: a 6.2-minute resumed reviewer run reported 55 through
+    the wire (an early streamed estimate) while its transcript sums to
+    ~17.6k input / ~6.4k output plus ~2.5M cache reads.
+    """
+
+    if not cwd or not external_session_id:
+        return None
+    path = agent_transcript_path(
+        projects_dir=claude_projects_dir(),
+        project_key=claude_project_key(cwd),
+        external_session_id=external_session_id,
+        task_id=task_id,
+    )
+    if path is None:
+        return None
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    key = (str(path), stat.st_size, int(stat.st_mtime * 1000))
+    cached = _AGENT_USAGE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    usage = _sum_transcript_usage(path)
+    if usage is None:
+        return None
+    if len(_AGENT_USAGE_CACHE) >= _AGENT_USAGE_CACHE_LIMIT:
+        _AGENT_USAGE_CACHE.clear()
+    _AGENT_USAGE_CACHE[key] = usage
+    return usage
+
+
+def _sum_transcript_usage(path: Path) -> Mapping[str, int] | None:
+    """Sum one transcript's per-call usage rows (``None`` when there are none)."""
+
+    totals = {
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cacheCreationTokens": 0,
+        "cacheReadTokens": 0,
+    }
+    found = False
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if '"usage"' not in line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(row, Mapping) or row.get("type") != "assistant":
+                    continue
+                message = row.get("message")
+                usage = message.get("usage") if isinstance(message, Mapping) else None
+                if not isinstance(usage, Mapping):
+                    continue
+                found = True
+                totals["inputTokens"] += _usage_int(usage.get("input_tokens"))
+                totals["outputTokens"] += _usage_int(usage.get("output_tokens"))
+                totals["cacheCreationTokens"] += _usage_int(
+                    usage.get("cache_creation_input_tokens")
+                )
+                totals["cacheReadTokens"] += _usage_int(
+                    usage.get("cache_read_input_tokens")
+                )
+    except OSError:
+        return None
+    return totals if found else None
+
+
+def _usage_int(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
 @dataclass(slots=True)
 class ClaudeSubagentOracle:
     """Judge one Agent task's liveness from its transcript file's stillness.
@@ -765,6 +901,18 @@ class RawTranscriptScan:
     #: line order (D-B, zombie-agent-card §9). Empty for hand-built scans,
     #: which then keep the window gate exactly as it was.
     uuid_line_index: Mapping[str, int] = field(default_factory=dict)
+    #: tool_use id -> (dispatch row, its receipt row or ``None``) for every
+    #: **verified** dispatch. The SDK message view is the compacted chain, so
+    #: after a ``/compact`` the dispatch of a still-open Agent task survives
+    #: only here; retaining the two rows lets a fold rebuild the same
+    #: ``ClaudePendingToolCall`` (dispatch input + launch receipt) the message
+    #: view would have produced, instead of silently dropping the task's
+    #: terminal evidence (2026-10-21: a stopped notice could not resolve its
+    #: card and the card stayed ``running`` forever). Rows are retained only
+    #: for verified dispatch ids — a mention is still never a dispatch.
+    dispatch_records: Mapping[
+        str, tuple[Mapping[str, Any], Mapping[str, Any] | None]
+    ] = field(default_factory=dict)
 
 
 def scan_raw_transcript(
@@ -826,6 +974,11 @@ def scan_raw_transcript(
     tool_use_names: dict[str, str] = {}
     last_anchor: str | None = None
     uuid_line_index: dict[str, int] = {}
+    # The two rows a rebuild of a dispatch needs: the assistant row carrying
+    # the Agent ``tool_use`` block and the user row carrying its receipt.
+    # Retained for verified dispatch ids only (see ``dispatch_records``).
+    dispatch_rows: dict[str, Mapping[str, Any]] = {}
+    result_rows: dict[str, Mapping[str, Any]] = {}
     for line_index, line in enumerate(raw_lines):
         wants_notice = "<task-notification>" in line
         wants_receipt = "agentId:" in line
@@ -834,6 +987,14 @@ def scan_raw_transcript(
         wants_resume = "resumedAgentId" in line
         wants_agent_key = '"agentId"' in line
         wants_tool_use = '"tool_use"' in line
+        # A receipt answers a dispatch by its tool_use id. Once a dispatch has
+        # been seen, a later row naming it is worth parsing even when it
+        # carries none of the other markers; the substring test keeps this
+        # from making every tool-result row in a large transcript parseable.
+        wants_dispatch_result = bool(dispatch_rows) and (
+            '"tool_result"' in line
+            and any(tool_use_id in line for tool_use_id in dispatch_rows)
+        )
         if not (
             wants_notice
             or wants_receipt
@@ -842,6 +1003,7 @@ def scan_raw_transcript(
             or wants_resume
             or wants_agent_key
             or wants_tool_use
+            or wants_dispatch_result
         ):
             continue
         try:
@@ -859,6 +1021,7 @@ def scan_raw_transcript(
             uuid_line_index.setdefault(row_uuid, line_index)
         if wants_tool_use:
             _register_tool_use_names(row, tool_use_names)
+        _capture_agent_call_rows(row, dispatch_rows, result_rows)
         if wants_receipt or wants_send or wants_resume or wants_agent_key:
             try:
                 _extract_transcript_lineage(
@@ -945,7 +1108,51 @@ def scan_raw_transcript(
         },
         verified_dispatch_ids=verified_dispatch_ids,
         uuid_line_index=uuid_line_index,
+        dispatch_records={
+            tool_use_id: (dispatch_rows[tool_use_id], result_rows.get(tool_use_id))
+            for tool_use_id in verified_dispatch_ids
+            if tool_use_id in dispatch_rows
+        },
     )
+
+
+def _capture_agent_call_rows(
+    row: Mapping[str, Any],
+    dispatch_rows: dict[str, Mapping[str, Any]],
+    result_rows: dict[str, Mapping[str, Any]],
+) -> None:
+    """Retain the raw rows a dispatch rebuild needs, in place.
+
+    A dispatch is the assistant row whose ``tool_use`` block names
+    :data:`DISPATCH_TOOL_NAME`; its receipt is the user row whose
+    ``tool_result`` block answers that same tool_use id. Both are kept whole
+    (not re-serialized) so :func:`_history_tool_call_context` can rebuild the
+    exact ``ClaudePendingToolCall`` the message view would have produced —
+    the dispatch input and the launch receipt, which together are the card's
+    base content. Every other row is ignored here: only ids the lineage gate
+    later verifies as dispatches survive into the returned scan.
+    """
+
+    row_type = row.get("type")
+    if row_type not in {"assistant", "user"}:
+        return
+    message = row.get("message")
+    content = message.get("content") if isinstance(message, Mapping) else None
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if not isinstance(block, Mapping):
+            continue
+        block_type = block.get("type")
+        if row_type == "assistant" and block_type == "tool_use":
+            tool_use_id = _string(block.get("id"))
+            if tool_use_id is None or _string(block.get("name")) != DISPATCH_TOOL_NAME:
+                continue
+            dispatch_rows.setdefault(tool_use_id, row)
+        elif row_type == "user" and block_type == "tool_result":
+            tool_use_id = _string(block.get("tool_use_id"))
+            if tool_use_id is not None and tool_use_id in dispatch_rows:
+                result_rows.setdefault(tool_use_id, row)
 
 
 _AGENT_ID_RE = re.compile(r"agentId:\s*([0-9a-zA-Z]+)")

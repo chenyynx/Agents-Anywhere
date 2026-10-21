@@ -67,14 +67,18 @@ from connector.runtimes.claude.sdk.stop_affordance import (
 from connector.runtimes.claude.sdk.tasks import ClaudeTaskEvent
 from connector.runtimes.claude.sdk.title_tool import build_change_title_tool
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
+from connector.runtimes.claude.sessions.open_cards import ClaudeOpenAgentCards
+from connector.runtimes.claude.sessions.reader import scan_agent_call_cards
 from connector.runtimes.claude.sessions.scheduled import ClaudeScheduledSessions
 from connector.runtimes.claude.sessions.subagent_oracle import (
     ClaudeSubagentOracle,
     RawTranscriptScan,
     participation_times_ms,
+    subagent_token_usage,
 )
 from connector.runtimes.claude.timeline.agent_calls import (
     agent_task_overlay_for_event,
+    agent_task_terminal_status,
 )
 from connector.runtimes.claude.timeline.markers import (
     ClaudeTimelineMarkers,
@@ -459,6 +463,10 @@ class ClaudeTurnRunner:
     #: The subagent-transcript liveness oracle (R1/R2). Injectable so tests can
     #: drive the closure decision with a fake clock and fake files.
     oracle: ClaudeSubagentOracle | None = None
+    #: The durable "sessions with open Agent cards" work list. The startup
+    #: reconciliation reads it so a card stranded by a previous process is
+    #: judged even in a session this connector never touches again.
+    open_cards: ClaudeOpenAgentCards | None = None
     connections: dict[str, ClaudeConnection] = field(default_factory=dict, init=False)
     # Cron* bookkeeping handed over by a transport that was retired before its
     # replacement was built. `close()` drops the retired connection from
@@ -1140,6 +1148,18 @@ class ClaudeTurnRunner:
                 # event and the dispatch on one card instead of two.
                 await self._update_external_session_id(session, event.session_id)
             overlay, status = agent_task_overlay_for_event(event)
+            if agent_task_terminal_status(event.status) is not None:
+                # The wire's single total_tokens is the last call's context,
+                # not what the run consumed (2026-10-21). At closure the task's
+                # own transcript is final, so publish the real split beside the
+                # tool/duration counters: 输入/输出 for the panel.
+                usage = subagent_token_usage(
+                    cwd=session.cwd,
+                    external_session_id=session.external_session_id,
+                    task_id=event.task_id,
+                )
+                if usage:
+                    overlay.usage.update(usage)
             items = self.timeline.fold_agent_task_items(
                 session,
                 tool_use_id=tool_use_id,
@@ -1325,6 +1345,10 @@ class ClaudeTurnRunner:
                     "live_task_ids": self.live_agent_task_ids(session),
                     "terminal_events": _terminal_events_by_task(scan),
                     "receipt_ages": _receipt_ages_by_task(scan, now_ms=now_ms),
+                    # A card stranded across a restart never re-enters the
+                    # in-memory timeline, so the raw transcript is the only
+                    # surface that still describes it (2026-10-21).
+                    "scan_cards": scan_agent_call_cards(session, scan),
                     # Pin the sweep's "now" to the same instant the ages were
                     # computed against, so the grace and the file deadline
                     # judge one clock.
@@ -1483,11 +1507,44 @@ class ClaudeTurnRunner:
 
         Never fatal: a failure is logged and the next session continues, so one
         bad transcript cannot stop the runtime from coming up.
+
+        The store starts empty, so a session the connector never touches again
+        would never be judged; the durable open-card index (``open_cards``,
+        2026-10-21) names those sessions and is consulted first. Entries are
+        only *locations* — the sweep rebuilds each card from the raw transcript
+        and the oracle decides, so a stale index entry publishes nothing it
+        cannot prove.
         """
 
         if self.oracle is None:
             return 0
         reconciled = 0
+        if self.open_cards is not None:
+            for session_id, entry in (await self.open_cards.read()).items():
+                if self.stopping:
+                    return reconciled
+                if self.session_store.get(session_id) is not None:
+                    # Already in the store: the loop below covers it.
+                    continue
+                external = entry.get("externalSessionId")
+                cwd = entry.get("cwd")
+                if not isinstance(external, str) or not external:
+                    continue
+                if not isinstance(cwd, str) or not cwd:
+                    continue
+                session = self.session_store.ensure(
+                    session_id=session_id,
+                    external_session_id=external,
+                    cwd=cwd,
+                )
+                try:
+                    reconciled += await self.sweep_agent_cards_by_evidence(session)
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "Claude startup agent-card reconciliation failed "
+                        "session_id={}",
+                        session_id,
+                    )
         for session in self.session_store.sessions():
             if self.stopping:
                 return reconciled

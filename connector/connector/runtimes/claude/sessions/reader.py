@@ -65,11 +65,14 @@ from connector.runtimes.claude.sessions.subagent_oracle import (
     raw_only_notices,
     scan_raw_transcript,
     scan_transcript_file,
+    subagent_token_usage,
     verified_dispatch_tasks,
 )
 from connector.runtimes.claude.sessions.sync_state import ClaudeSessionSyncStateStore
 from connector.runtimes.claude.timeline.agent_calls import (
     AGENT_CARD_TERMINAL_STATUSES,
+    DISPATCH_TOOL_NAME,
+    ClaudeAgentCallCard,
     ClaudeAgentTaskOverlay,
     agent_task_overlay_for_event,
     agent_task_terminal_status,
@@ -579,11 +582,31 @@ def _history_items_from_messages(
     raw_notices = _raw_history_notices(
         messages, raw_scan, window_origin_uuid=window_origin_uuid
     )
+    # A /compact rewrites the SDK chain: the dispatch of a still-open Agent
+    # task can fall out of every message the view still returns, leaving its
+    # terminal notice with no task -> card join. The raw transcript keeps the
+    # dispatch and receipt rows, so the fold rebuilds the same call the view
+    # would have handed it. Only the fold's lookup is widened — the projector
+    # keeps the window's own lookup so no out-of-window call is minted into a
+    # row.
+    scan_calls: dict[str, ClaudePendingToolCall] = {}
+    scan_history: dict[str, tuple[tuple[int, ClaudeTaskEvent], ...]] = {}
+    if raw_scan is not None:
+        scan_calls = _raw_scan_calls(session, raw_scan)
+        scan_history = _raw_scan_notice_history(raw_scan, scan_calls)
+    fold_lookup = tool_call_lookup
+    if scan_calls:
+        merged_lookup = dict(tool_call_lookup or {})
+        for tool_use_id, call in scan_calls.items():
+            merged_lookup.setdefault(tool_use_id, call)
+        fold_lookup = merged_lookup
     notification_folds = _agent_task_notification_folds(
         session,
         messages,
-        tool_call_lookup,
+        fold_lookup,
         raw_notices=raw_notices,
+        scan_history=scan_history,
+        scan_root_ids=frozenset(scan_calls),
     )
     items: list[RuntimeTimelineItem] = []
     matches = client_message_matches or {}
@@ -1097,12 +1120,141 @@ class _AgentTaskNotificationFold:
     turn_id: str | None
 
 
+def _raw_scan_calls(
+    session: ClaudeSession,
+    scan: RawTranscriptScan,
+) -> dict[str, ClaudePendingToolCall]:
+    """Rebuild dispatch calls from rows the compacted message view lost.
+
+    ``/compact`` restarts the SDK chain at a summary, so a task dispatched
+    before the boundary has no call row left in the message view — its
+    terminal notice then resolves against no root and is dropped. The scan
+    retains the verified dispatch row and its receipt (``dispatch_records``),
+    which are exactly the two rows the message view would have contributed;
+    rebuilding them through the same ``_history_tool_call_context`` keeps the
+    history fold's content identical to the live projection's.
+    """
+
+    rows: list[Any] = []
+    for tool_use_id in sorted(scan.dispatch_records):
+        dispatch_row, result_row = scan.dispatch_records[tool_use_id]
+        rows.append(dispatch_row)
+        if result_row is not None:
+            rows.append(result_row)
+    if not rows:
+        return {}
+    calls, _ = _history_tool_call_context(session, tuple(rows))
+    return {
+        tool_use_id: call
+        for tool_use_id, call in calls.items()
+        if tool_use_id in scan.verified_dispatch_ids
+        and call.block.tool_name == DISPATCH_TOOL_NAME
+    }
+
+
+def scan_agent_call_cards(
+    session: ClaudeSession,
+    scan: RawTranscriptScan | None,
+) -> tuple[ClaudeAgentCallCard, ...]:
+    """Cards the raw transcript alone can justify, for the evidence sweep.
+
+    A card stranded across a restart never re-enters the connector's in-memory
+    timeline, and the sweep's traversal set *is* that timeline — so the one
+    surface that still knows the task is the raw transcript. Every fact the
+    judgment needs is there: the verified dispatch, its launch receipt, the
+    task's notices. Each task with exactly one verified dispatch root becomes
+    a candidate card; the caller's oracle still decides whether it closes, and
+    an ambiguous or unverified lineage produces nothing (宁缺勿假).
+
+    The card is built ``running`` on purpose: the sweep publishes only a
+    judgment, never a "running" card it invented, and the oracle's verdict is
+    what gives the closure its status and provenance. Summary/usage from the
+    task's own notices are carried as overlay state (the live fold accumulates
+    them the same way) so a closure does not publish a thinner card than the
+    live path would have.
+    """
+
+    if scan is None:
+        return ()
+    calls = _raw_scan_calls(session, scan)
+    if not calls:
+        return ()
+    cards: list[ClaudeAgentCallCard] = []
+    for task_id in sorted(scan.dispatch_roots):
+        roots = scan.dispatch_roots[task_id]
+        if len(roots) != 1:
+            continue
+        tool_use_id = next(iter(roots))
+        call = calls.get(tool_use_id)
+        if call is None:
+            continue
+        overlay = ClaudeAgentTaskOverlay()
+        for notice in sorted(scan.notices, key=lambda item: item.line_index):
+            if notice.event.task_id != task_id:
+                continue
+            part, _ = agent_task_overlay_for_event(notice.event)
+            if part.summary is not None:
+                overlay.summary = part.summary
+            overlay.usage.update(part.usage)
+        receipt_ms = scan.receipt_times_ms.get(task_id)
+        cards.append(
+            ClaudeAgentCallCard(
+                turn_id=call.turn_id,
+                content=synthesized_agent_call_content(session, call),
+                overlay=overlay,
+                status="running",
+                tool_use_id=tool_use_id,
+                session_id=session.session_id,
+                native_message_id=call.block.native_message_id,
+                launched_at=(receipt_ms / 1000.0) if receipt_ms else None,
+            )
+        )
+    return tuple(cards)
+
+
+def _raw_scan_notice_history(
+    scan: RawTranscriptScan,
+    scan_calls: Mapping[str, ClaudePendingToolCall],
+) -> dict[str, tuple[tuple[int, ClaudeTaskEvent], ...]]:
+    """Every notice the scan saw for a task whose root it resolved, in order.
+
+    The window admits only notices written after its origin, so a closure
+    rebuilt from a scan-resolved root would otherwise publish a card without
+    the summary and usage an earlier completion had already put on it (the
+    live fold accumulates those across events; a history rebuild must reach
+    the same content shape). These are merged *under* the window's own state,
+    never used to choose the status.
+    """
+
+    if not scan_calls:
+        return {}
+    task_ids = {
+        task_id
+        for task_id, roots in scan.dispatch_roots.items()
+        if roots & scan_calls.keys()
+    }
+    if not task_ids:
+        return {}
+    grouped: dict[str, list[tuple[int, ClaudeTaskEvent]]] = {}
+    for notice in scan.notices:
+        task_id = notice.event.task_id
+        if task_id not in task_ids:
+            continue
+        grouped.setdefault(task_id, []).append((notice.line_index, notice.event))
+    return {
+        task_id: tuple(sorted(entries, key=lambda item: item[0]))
+        for task_id, entries in grouped.items()
+    }
+
+
 def _agent_task_notification_folds(
     session: ClaudeSession,
     messages: tuple[Any, ...],
     tool_call_lookup: Mapping[str, ClaudePendingToolCall] | None,
     *,
     raw_notices: tuple[tuple[int, ClaudeTaskEvent], ...] = (),
+    scan_history: Mapping[str, tuple[tuple[int, ClaudeTaskEvent], ...]] | None = None,
+    scan_root_ids: frozenset[str] = frozenset(),
 ) -> dict[int, list[_AgentTaskNotificationFold]]:
     """Resolve transcript terminal/resume events through Agent task-id lineage.
 
@@ -1115,6 +1267,11 @@ def _agent_task_notification_folds(
     CLI persists some completions only as ``queue-operation`` rows, so they are
     read from the raw transcript and merged here at their true position. A task
     whose notice reached the fold from either surface closes the same way.
+
+    ``scan_root_ids`` names the roots this window only knows through the raw
+    transcript (``_raw_scan_calls``); for those, ``scan_history`` merges the
+    task's earlier notices *under* the window's state so a closure keeps the
+    accumulated summary/usage instead of publishing a thin card.
     """
 
     calls = dict(tool_call_lookup or {})
@@ -1271,6 +1428,24 @@ def _agent_task_notification_folds(
             continue
         overlay = ClaudeAgentTaskOverlay()
         statuses: list[tuple[int, str | None]] = []
+        if scan_history and root_id in scan_root_ids:
+            # A root this window only knows through the raw transcript was
+            # dispatched before a compaction (or in a previous process): the
+            # window's own notices cannot carry the card's accumulated
+            # summary/usage. Merge the scan's earlier notices underneath; a
+            # notice newer than the window's own state is not applied, so the
+            # status and the fields it owns stay the window's word.
+            for _, task_id, state_event in states:
+                ceiling = state_event.end_time if state_event is not None else None
+                for _, history_event in scan_history.get(task_id, ()):
+                    if (
+                        ceiling is not None
+                        and history_event.end_time is not None
+                        and history_event.end_time > ceiling
+                    ):
+                        continue
+                    history_part, _ = agent_task_overlay_for_event(history_event)
+                    overlay.merge(history_part)
         for index, task_id, event in sorted(states, key=lambda item: item[0]):
             normalized = event or ClaudeTaskEvent(
                 kind="progress",
@@ -1285,6 +1460,21 @@ def _agent_task_notification_folds(
             if any(state is None for _, _, state in states)
             else max(statuses, key=lambda item: item[0])[1]
         )
+        if status in AGENT_CARD_TERMINAL_STATUSES:
+            # The wire's single total is the last call's context, not what the
+            # run consumed; the task's transcript keeps every call's usage and
+            # is final now, so the fold publishes the real 输入/输出 split.
+            totals: dict[str, int] = {}
+            for _, task_id, _ in states:
+                usage = subagent_token_usage(
+                    cwd=session.cwd,
+                    external_session_id=session.external_session_id,
+                    task_id=task_id,
+                )
+                for key, value in (usage or {}).items():
+                    totals[key] = totals.get(key, 0) + value
+            if totals:
+                overlay.usage.update(totals)
         index = max(state_index for state_index, _, _ in states)
         folds.setdefault(index, []).append(
             _AgentTaskNotificationFold(

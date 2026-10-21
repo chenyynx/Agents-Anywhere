@@ -25,6 +25,7 @@ held or a deliberate trade the batch made:
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from test_zombie_card_selfheal import (
     DISPATCH_TUID,
@@ -167,7 +168,10 @@ def test_Z1_control_a_terminal_notice_still_beats_the_pierce() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_Z1_P2_a_live_task_missing_from_the_snapshot_loses_its_exemption() -> None:
+def test_Z1_P2_a_live_task_missing_from_the_snapshot_loses_its_exemption(
+    tmp_path: Any,
+    monkeypatch: Any,
+) -> None:
     """ATTACK (P2): F1 narrows the exemption to `active ∩ snapshot`. A task
     that started (task_started -> active_ids) but whose snapshot was NOT
     updated (the CLI's next `background_tasks_changed` is delayed or lost —
@@ -181,6 +185,12 @@ def test_Z1_P2_a_live_task_missing_from_the_snapshot_loses_its_exemption() -> No
     The spec's protection is T4 (the snapshot listing the task) — this is the
     gap where it does NOT list it. The CLI is expected to send the snapshot
     promptly, so the window is narrow; filed P2 as the trade F1 makes."""
+
+    # Hermetic: this case is about the exemption set, not a transcript. The
+    # sweep now rebuilds candidates from the raw transcript (2026-10-21), so an
+    # empty config dir keeps this machine's real sessions out of the harness —
+    # the other cases in this file already isolate themselves the same way.
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
 
     background = ClaudeBackgroundTasks()
     # The task starts: task_started adds it to active_ids.

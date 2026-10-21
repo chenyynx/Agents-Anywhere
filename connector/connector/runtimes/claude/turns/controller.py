@@ -24,6 +24,7 @@ from connector.runtimes.claude.notifications.projector import (
 )
 from connector.runtimes.claude.sdk.client import ClaudeClientFactory, SdkLoader
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
+from connector.runtimes.claude.sessions.open_cards import ClaudeOpenAgentCards
 from connector.runtimes.claude.sessions.reader import ClaudeSessionReader
 from connector.runtimes.claude.sessions.subagent_oracle import ClaudeSubagentOracle
 from connector.runtimes.claude.timeline.messages import ClaudeMessageProjector
@@ -51,6 +52,7 @@ class ClaudeTurnController:
     sdk_loader: SdkLoader | None = None
     client_factory: ClaudeClientFactory | None = None
     oracle: ClaudeSubagentOracle | None = None
+    open_cards: ClaudeOpenAgentCards | None = None
     interactions: ClaudeInteractionController = field(init=False)
     selections: ClaudeSelectionController = field(init=False)
     runner: ClaudeTurnRunner = field(init=False)
@@ -77,6 +79,7 @@ class ClaudeTurnController:
             sdk_loader=self.sdk_loader,
             client_factory=self.client_factory,
             oracle=self.oracle,
+            open_cards=self.open_cards,
         )
         # The runner owns the connection table, so it supplies the in-process
         # selection seam (model-switch-in-process-tasks.md §3.1): a selection

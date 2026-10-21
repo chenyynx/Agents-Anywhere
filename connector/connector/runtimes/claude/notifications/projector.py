@@ -16,6 +16,7 @@ from connector.runtimes.claude.notifications.timeline_activity import (
 )
 from connector.runtimes.claude.sessions.bindings import ClaudeSessionBindingStore
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
+from connector.runtimes.claude.sessions.open_cards import ClaudeOpenAgentCards
 
 
 @dataclass(slots=True)
@@ -25,6 +26,7 @@ class ClaudeNotificationProjector:
     session_store: ClaudeSessionStore
     notices: ClaudeNoticeRegistry
     bindings: ClaudeSessionBindingStore | None = None
+    open_cards: ClaudeOpenAgentCards | None = None
     notice_handler: ClaudeNoticeHandler = field(init=False)
     session_state: ClaudeSessionStateHandler = field(init=False)
     timeline_activity: ClaudeTimelineActivityHandler = field(init=False)
@@ -42,4 +44,5 @@ class ClaudeNotificationProjector:
         self.timeline_activity = ClaudeTimelineActivityHandler(
             host=self.host,
             session_store=self.session_store,
+            open_cards=self.open_cards,
         )

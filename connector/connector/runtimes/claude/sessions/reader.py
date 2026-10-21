@@ -71,6 +71,7 @@ from connector.runtimes.claude.sessions.sync_state import ClaudeSessionSyncState
 from connector.runtimes.claude.timeline.agent_calls import (
     AGENT_CARD_TERMINAL_STATUSES,
     DISPATCH_TOOL_NAME,
+    ClaudeAgentCallCard,
     ClaudeAgentTaskOverlay,
     agent_task_overlay_for_event,
     agent_task_terminal_status,
@@ -1148,6 +1149,66 @@ def _raw_scan_calls(
         if tool_use_id in scan.verified_dispatch_ids
         and call.block.tool_name == DISPATCH_TOOL_NAME
     }
+
+
+def scan_agent_call_cards(
+    session: ClaudeSession,
+    scan: RawTranscriptScan | None,
+) -> tuple[ClaudeAgentCallCard, ...]:
+    """Cards the raw transcript alone can justify, for the evidence sweep.
+
+    A card stranded across a restart never re-enters the connector's in-memory
+    timeline, and the sweep's traversal set *is* that timeline — so the one
+    surface that still knows the task is the raw transcript. Every fact the
+    judgment needs is there: the verified dispatch, its launch receipt, the
+    task's notices. Each task with exactly one verified dispatch root becomes
+    a candidate card; the caller's oracle still decides whether it closes, and
+    an ambiguous or unverified lineage produces nothing (宁缺勿假).
+
+    The card is built ``running`` on purpose: the sweep publishes only a
+    judgment, never a "running" card it invented, and the oracle's verdict is
+    what gives the closure its status and provenance. Summary/usage from the
+    task's own notices are carried as overlay state (the live fold accumulates
+    them the same way) so a closure does not publish a thinner card than the
+    live path would have.
+    """
+
+    if scan is None:
+        return ()
+    calls = _raw_scan_calls(session, scan)
+    if not calls:
+        return ()
+    cards: list[ClaudeAgentCallCard] = []
+    for task_id in sorted(scan.dispatch_roots):
+        roots = scan.dispatch_roots[task_id]
+        if len(roots) != 1:
+            continue
+        tool_use_id = next(iter(roots))
+        call = calls.get(tool_use_id)
+        if call is None:
+            continue
+        overlay = ClaudeAgentTaskOverlay()
+        for notice in sorted(scan.notices, key=lambda item: item.line_index):
+            if notice.event.task_id != task_id:
+                continue
+            part, _ = agent_task_overlay_for_event(notice.event)
+            if part.summary is not None:
+                overlay.summary = part.summary
+            overlay.usage.update(part.usage)
+        receipt_ms = scan.receipt_times_ms.get(task_id)
+        cards.append(
+            ClaudeAgentCallCard(
+                turn_id=call.turn_id,
+                content=synthesized_agent_call_content(session, call),
+                overlay=overlay,
+                status="running",
+                tool_use_id=tool_use_id,
+                session_id=session.session_id,
+                native_message_id=call.block.native_message_id,
+                launched_at=(receipt_ms / 1000.0) if receipt_ms else None,
+            )
+        )
+    return tuple(cards)
 
 
 def _raw_scan_notice_history(

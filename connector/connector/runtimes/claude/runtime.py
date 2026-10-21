@@ -48,6 +48,7 @@ from connector.runtimes.claude.sdk.client import (
 )
 from connector.runtimes.claude.sessions.bindings import ClaudeSessionBindingStore
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
+from connector.runtimes.claude.sessions.open_cards import ClaudeOpenAgentCards
 from connector.runtimes.claude.sessions.reader import ClaudeSessionReader
 from connector.runtimes.claude.sessions.subagent_oracle import ClaudeSubagentOracle
 from connector.runtimes.claude.sessions.sync_state import ClaudeSessionSyncStateStore
@@ -67,6 +68,11 @@ class ClaudeRuntime(AgentRuntime):
     #: drive the closure decision with a fake clock and fake files; defaults to
     #: the real filesystem probe.
     subagent_oracle: ClaudeSubagentOracle | None = None
+    #: Durable index of sessions whose Agent cards may still be open. The
+    #: startup reconciliation reads it so a card stranded by a previous
+    #: process is judged even in a session the connector never touches again
+    #: (2026-10-21). Injectable for tests.
+    open_cards: ClaudeOpenAgentCards | None = None
     _sessions: dict[str, ClaudeSession] = field(default_factory=dict, init=False)
     _session_states: RuntimeSessionStateCache = field(init=False)
     _session_store: ClaudeSessionStore = field(init=False)
@@ -80,11 +86,13 @@ class ClaudeRuntime(AgentRuntime):
     _notices: ClaudeNoticeRegistry = field(init=False)
     _notifications: ClaudeNotificationProjector = field(init=False)
     _turns: ClaudeTurnController = field(init=False)
+    _open_cards: ClaudeOpenAgentCards = field(init=False)
 
     def __post_init__(self) -> None:
         if self.subagent_oracle is None:
             # Real filesystem probe in production; tests pass their own.
             self.subagent_oracle = ClaudeSubagentOracle()
+        self._open_cards = self.open_cards or ClaudeOpenAgentCards(self.host)
         self._session_states = RuntimeSessionStateCache(
             "claude",
             self.host,
@@ -133,6 +141,7 @@ class ClaudeRuntime(AgentRuntime):
             session_store=self._session_store,
             notices=self._notices,
             bindings=self._session_bindings,
+            open_cards=self._open_cards,
         )
         self._turns = ClaudeTurnController(
             config=self.config,
@@ -149,6 +158,7 @@ class ClaudeRuntime(AgentRuntime):
             sdk_loader=self.sdk_loader,
             client_factory=self.client_factory,
             oracle=self.subagent_oracle,
+            open_cards=self._open_cards,
         )
         # F2: the reader and the syncer consult the live transport's task set
         # before closing a card during a history rebuild. Wired here, after the

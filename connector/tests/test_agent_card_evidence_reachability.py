@@ -27,14 +27,35 @@ shapes measured on 2026-10-21, with no real session content.
 
 from __future__ import annotations
 
+import asyncio
 import json
+from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
 
+from connector.runtime_protocol import RuntimeConfig, RuntimeTimelineItem
+from connector.runtime_protocol.host import RuntimeHostClient
 from connector.runtimes.claude.domain.session import ClaudeSession
-from connector.runtimes.claude.sessions.reader import _history_items_from_messages
-from connector.runtimes.claude.sessions.subagent_oracle import scan_raw_transcript
-from connector.runtimes.claude.timeline.messages import stable_tool_item_id
+from connector.runtimes.claude.runtime import ClaudeRuntime
+from connector.runtimes.claude.sessions.open_cards import KEY, ClaudeOpenAgentCards
+from connector.runtimes.claude.sessions.reader import (
+    _history_items_from_messages,
+    scan_agent_call_cards,
+)
+from connector.runtimes.claude.sessions.subagent_oracle import (
+    AgentFileInfo,
+    ClaudeSubagentOracle,
+    scan_raw_transcript,
+)
+from connector.runtimes.claude.timeline.messages import (
+    ClaudeMessageProjector,
+    stable_tool_item_id,
+)
+from connector.runtimes.claude.turns.lifecycle import (
+    _receipt_ages_by_task,
+    _terminal_events_by_task,
+)
 
 EXTERNAL_SESSION_ID = "claude_evidence_reach"
 SESSION_ID = "sess_evidence_reach"
@@ -293,3 +314,196 @@ def test_a_notice_without_a_dispatch_row_still_folds_nothing() -> None:
     )
 
     assert _card_items(items) == []
+
+
+# --------------------------------------------------------------------------
+# 3. The evidence sweep reaches a card that never re-entered the timeline
+# --------------------------------------------------------------------------
+
+
+def _ms(iso: str) -> int:
+    return int(datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp() * 1000)
+
+
+NOW = 1_792_550_000.0  # 2026-10-20T18:33:20Z, after every fixture event
+
+
+class _Clock:
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+
+    def __call__(self) -> float:
+        return self.seconds
+
+
+def _oracle(
+    *,
+    mtime_ms: int | None,
+    exists: bool = True,
+) -> ClaudeSubagentOracle:
+    def probe(*, projects_dir, project_key, external_session_id, task_id):
+        _ = projects_dir, project_key, external_session_id, task_id
+        return AgentFileInfo(exists=exists, path_known=True, mtime_ms=mtime_ms)
+
+    return ClaudeSubagentOracle(
+        projects_dir=Path("/tmp/nonexistent-projects"),
+        clock=_Clock(NOW),
+        file_probe=probe,
+    )
+
+
+def _sweep(
+    raw_lines: tuple[str, ...],
+    *,
+    mtime_ms: int | None,
+    exists: bool = True,
+) -> tuple[Any, ...]:
+    scan = scan_raw_transcript(raw_lines)
+    return ClaudeMessageProjector().close_open_agent_cards(
+        _session(),
+        oracle=_oracle(mtime_ms=mtime_ms, exists=exists),
+        terminal_events=_terminal_events_by_task(scan),
+        receipt_ages=_receipt_ages_by_task(scan, now_ms=int(NOW * 1000)),
+        scan_cards=scan_agent_call_cards(_session(), scan),
+        now_ms=int(NOW * 1000),
+    )
+
+
+def test_sweep_closes_a_card_that_never_re_entered_the_timeline() -> None:
+    # The restart shape: no in-memory card, no restored timeline row, and the
+    # subagent transcript has been silent for far longer than the deadline.
+    items = _sweep(
+        (_dispatch_line(), _receipt_line()),
+        mtime_ms=int((NOW - 1000) * 1000),
+    )
+
+    assert len(items) == 1
+    item = items[0]
+    assert item.id == stable_tool_item_id(_session(), DISPATCH_TUID)
+    assert item.status == "interrupted"
+    assert item.content["closedByEvidence"] == "agentFileStale"
+    assert item.content["input"]["prompt"] == PROMPT
+    assert "Async agent launched successfully" in item.content["output"]
+    assert item.content["agents"][TASK_ID]["status"] == "interrupted"
+
+
+def test_sweep_leaves_a_card_whose_transcript_is_still_growing() -> None:
+    items = _sweep(
+        (_dispatch_line(), _receipt_line()),
+        mtime_ms=int(NOW * 1000),
+    )
+
+    assert items == ()
+
+
+def test_sweep_closes_on_a_terminal_notice_that_never_reached_the_fold() -> None:
+    # The notice is in the raw transcript (the fold's window never saw it), and
+    # the subagent transcript stopped before it was written.
+    items = _sweep(
+        (_dispatch_line(), _receipt_line(), _stopped_line()),
+        mtime_ms=_ms(STOPPED_TS) - 5_000,
+    )
+
+    assert len(items) == 1
+    item = items[0]
+    assert item.status == "interrupted"
+    assert item.content["closedByEvidence"] == "terminalNotice"
+    assert item.content["agents"][TASK_ID]["status"] == "stopped"
+
+
+# --------------------------------------------------------------------------
+# 4. The startup reconciliation reaches a session the store never adopted
+# --------------------------------------------------------------------------
+
+
+class _FakeHost(RuntimeHostClient):
+    def __init__(self, state: dict[str, Any] | None = None) -> None:
+        self.state = dict(state or {})
+        self.upserts: list[RuntimeTimelineItem] = []
+
+    @property
+    def connector_id(self) -> str:
+        return "conn_test"
+
+    async def sync_state_read(self, key: str) -> dict[str, Any] | None:
+        return self.state.get(key)
+
+    async def sync_state_write(self, key: str, value: dict[str, Any]) -> None:
+        self.state[key] = value
+
+    async def timeline_item_upsert(self, item: RuntimeTimelineItem) -> None:
+        self.upserts.append(item)
+
+
+def _agent_item(item_id: str, *, status: str) -> RuntimeTimelineItem:
+    return RuntimeTimelineItem(
+        id=item_id,
+        session_id=SESSION_ID,
+        type="tool",
+        status=status,
+        order_seq=7,
+        content_hash="sha256:test",
+        role="tool",
+        content={"kind": "agent_call", "agents": {TASK_ID: {"status": "running"}}},
+    )
+
+
+def test_open_card_index_tracks_open_and_terminal_publishes() -> None:
+    host = _FakeHost()
+    index = ClaudeOpenAgentCards(host)
+
+    asyncio.run(index.record(_session(), _agent_item("card-1", status="running")))
+    assert host.state[KEY]["sessions"][SESSION_ID]["itemIds"] == ["card-1"]
+    assert (
+        host.state[KEY]["sessions"][SESSION_ID]["externalSessionId"]
+        == EXTERNAL_SESSION_ID
+    )
+
+    # A terminal publish retires the entry; the session leaves the work list.
+    asyncio.run(index.record(_session(), _agent_item("card-1", status="done")))
+    assert host.state[KEY]["sessions"] == {}
+
+
+def test_startup_reconciliation_judges_an_indexed_session(
+    tmp_path: Any,
+    monkeypatch: Any,
+) -> None:
+    # The session was never adopted by the in-memory store (it is not touched
+    # after the restart); only the durable index knows it exists.
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    project = tmp_path / "projects" / "-repo"
+    project.mkdir(parents=True)
+    (project / f"{EXTERNAL_SESSION_ID}.jsonl").write_text(
+        "\n".join((_dispatch_line(), _receipt_line())),
+        encoding="utf-8",
+    )
+    host = _FakeHost(
+        {
+            KEY: {
+                "sessions": {
+                    SESSION_ID: {
+                        "externalSessionId": EXTERNAL_SESSION_ID,
+                        "cwd": CWD,
+                        "itemIds": [stable_tool_item_id(_session(), DISPATCH_TUID)],
+                    }
+                }
+            }
+        }
+    )
+    runtime = ClaudeRuntime(
+        config=RuntimeConfig(
+            runtime="claude", revision=1, values={"environment": {}}
+        ),
+        host=host,
+        subagent_oracle=_oracle(mtime_ms=int((NOW - 1000) * 1000)),
+    )
+
+    reconciled = asyncio.run(
+        runtime._turns.runner.reconcile_agent_cards_from_evidence()
+    )
+
+    assert reconciled == 1
+    assert [item.status for item in host.upserts] == ["interrupted"]
+    assert host.upserts[0].id == stable_tool_item_id(_session(), DISPATCH_TUID)
+    # The closure was recorded, so the work list retires itself.
+    assert host.state[KEY]["sessions"] == {}

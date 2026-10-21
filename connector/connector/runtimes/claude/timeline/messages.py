@@ -1250,6 +1250,7 @@ class ClaudeMessageProjector:
         receipt_ages: Mapping[str, float] | None = None,
         attached_task_ids: frozenset[str] | None = None,
         live_task_ids: frozenset[str] | None = None,
+        scan_cards: Sequence[ClaudeAgentCallCard] = (),
         now_ms: int | None = None,
     ) -> tuple[RuntimeTimelineItem, ...]:
         """Judge every open Agent card of this session against engine evidence.
@@ -1292,6 +1293,14 @@ class ClaudeMessageProjector:
         driving (a long tool call writes nothing for a while) is never closed
         on file silence, though a terminal notice — the engine's own word —
         still closes it (D3). The stop path is untouched by that merge.
+
+        ``scan_cards`` are candidates the caller rebuilt from the raw transcript
+        (2026-10-21, ``scan_agent_call_cards``) — the case the restored timeline
+        cannot cover because the card never re-entered it (a restart after the
+        session's last history sync) and the message view lost the dispatch to a
+        compaction. They are ordinary open candidates from there: the oracle
+        still has to justify every closure, and nothing is published when it
+        declines.
         """
 
         events = terminal_events or {}
@@ -1300,7 +1309,9 @@ class ClaudeMessageProjector:
         live = live_task_ids or frozenset()
         items: list[RuntimeTimelineItem] = []
         for candidate in self._open_agent_card_candidates(
-            session, include_published=oracle is not None
+            session,
+            include_published=oracle is not None,
+            scan_cards=scan_cards,
         ):
             if oracle is None:
                 item = self._stop_ghost_closure(session, candidate)
@@ -1324,6 +1335,7 @@ class ClaudeMessageProjector:
         session: ClaudeSession,
         *,
         include_published: bool,
+        scan_cards: Sequence[ClaudeAgentCallCard] = (),
     ) -> tuple[_OpenAgentCardCandidate, ...]:
         """The open Agent cards of this session, from both surfaces (D1).
 
@@ -1334,16 +1346,27 @@ class ClaudeMessageProjector:
         re-judgement from file silence. ``include_published`` is the evidence
         path's gate — the stop path iterates the process's own cards exactly
         as it always has (D3).
+
+        ``scan_cards`` add the third surface: the raw transcript's own record
+        of a dispatch whose card never re-entered the timeline. They come last
+        and only for ids neither surface already holds — a card the projector
+        or the restored timeline knows always outranks the rebuilt one.
         """
 
         candidates: dict[str, _OpenAgentCardCandidate] = {}
         published_items: dict[str, RuntimeTimelineItem] = {}
+        # Every task either surface already speaks for. A rebuilt card is a
+        # blind-spot filler, so a task the timeline or the registry knows —
+        # under ANY id (an alias card names its task too) — is out of its
+        # reach; otherwise one task could be closed twice under two ids.
+        known_task_ids: set[str] = set()
         if include_published:
             for item_id, item in tuple(session.timeline_items.items()):
                 content = item.content
                 if item.type != "tool" or content.get("kind") != "agent_call":
                     continue
                 published_items[item_id] = item
+                _collect_agent_task_ids(content, known_task_ids)
                 if item.status in AGENT_CARD_TERMINAL_STATUSES:
                     continue
                 candidates[item_id] = _OpenAgentCardCandidate(
@@ -1355,6 +1378,9 @@ class ClaudeMessageProjector:
             if card.session_id != session.session_id:
                 # One projector serves every session of the runtime.
                 continue
+            known_task_ids.update(card.overlay.agents)
+            if card.content is not None:
+                known_task_ids.update(card.content.agents)
             published = published_items.get(item_id)
             if published is not None:
                 merged = resolve_agent_card_status(card.status, published.status)
@@ -1375,6 +1401,27 @@ class ClaudeMessageProjector:
                 card=card,
                 published=None,
             )
+        if include_published:
+            for card in scan_cards:
+                if card.session_id != session.session_id or card.tool_use_id is None:
+                    continue
+                task_ids = set(card.content.agents) if card.content is not None else set()
+                if task_ids & known_task_ids:
+                    continue
+                item_id = stable_tool_item_id(session, card.tool_use_id)
+                if (
+                    item_id in candidates
+                    or item_id in self._agent_cards
+                    or item_id in published_items
+                ):
+                    # A surface the runtime already holds is authoritative,
+                    # terminal or not; the rebuilt card only fills a blind spot.
+                    continue
+                candidates[item_id] = _OpenAgentCardCandidate(
+                    item_id=item_id,
+                    card=card,
+                    published=None,
+                )
         return tuple(candidates.values())
 
     def _stop_ghost_closure(
@@ -1970,6 +2017,19 @@ def _published_evidence_closed_content(
             merged[task_id] = entry
         new_content["agents"] = merged
     return new_content
+
+
+def _collect_agent_task_ids(content: Mapping[str, Any], into: set[str]) -> None:
+    """Add the task ids an agent-call content names to ``into`` (in place)."""
+
+    agents = content.get("agents")
+    if not isinstance(agents, Mapping):
+        return
+    into.update(
+        agent_id
+        for agent_id in agents
+        if isinstance(agent_id, str) and agent_id
+    )
 
 
 def _fallback_task_ids(agents: Mapping[str, Any]) -> frozenset[str]:

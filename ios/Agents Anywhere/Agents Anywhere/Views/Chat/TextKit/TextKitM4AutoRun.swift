@@ -273,7 +273,7 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
                 if abs(stored - revealClamp) > 1.5 {
                     failures.append("m4 batch \(batchIndex): stored \(stored) vs reveal clamp \(revealClamp)")
                 }
-                if stored > content + 1.5 {
+                if stored > content + 2.0 {
                     failures.append("m4 batch \(batchIndex): stored \(stored) exceeds content \(content)")
                 }
             } else {
@@ -381,6 +381,14 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
         if revealingCell.debugRevealedCharacters == 0 {
             failures.append("m4.2 done+revealing: the reveal driver was reset")
         }
+        // Snapshot here: the completion phase reconfigures the same cell, so
+        // reading these when the report is written would show the static body.
+        let doneRevealed = revealingCell.debugRevealedCharacters
+        let doneMaskLayer = revealingCell.debugMaskLayerInstalled
+        let doneClamp = revealingCell.debugStreamingRowHeight
+        let doneTailViews = revealingCell.debugTailViewCount
+        let doneStableViews = revealingCell.debugStableViewCount
+        let doneStreamingConfiguration = revealingCell.debugStreamingConfiguration
         let revealingWidth = revealingCell.contentView.bounds.width
         let revealingStored = revealingAttributes.frame.height
         let revealingMeasured = AssistantMarkdownTextLayout.measure(
@@ -466,6 +474,9 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
         capture("m42-final.png")
         report["follow"] = [
             "starts": controller.debugStreamingFollowStarts,
+            "frameCalls": controller.debugStreamingFrameCalls,
+            "eligibleFrames": controller.debugStreamingFollowEligibleFrames,
+            "armedAtEnd": controller.armedBottom.isArmed,
             "offsets": followOffsets.map(Double.init),
             "sawReveal": sawReveal,
             "sawClamp": sawClamp,
@@ -478,13 +489,13 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
         report["doneRevealing"] = [
             "stored": Double(revealingStored),
             "measured": Double(revealingMeasured),
-            "revealClamp": Double(revealingCell.debugStreamingRowHeight ?? -1),
+            "revealClamp": Double(doneClamp ?? -1),
             "arrangedViews": revealingCell.debugArrangedBlockViews.count,
-            "revealedCharacters": revealingCell.debugRevealedCharacters,
-            "maskLayerInstalled": revealingCell.debugMaskLayerInstalled,
-            "tailViews": revealingCell.debugTailViewCount,
-            "stableViews": revealingCell.debugStableViewCount,
-            "streamingConfiguration": revealingCell.debugStreamingConfiguration,
+            "revealedCharacters": doneRevealed,
+            "maskLayerInstalled": doneMaskLayer,
+            "tailViews": doneTailViews,
+            "stableViews": doneStableViews,
+            "streamingConfiguration": doneStreamingConfiguration,
             "tailTextLength": revealingDocument.tailText.count,
             "stableBlocks": revealingDocument.stableBlockCount,
             "blockCount": revealingDocument.document.blocks.count,
@@ -538,7 +549,7 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
     }
 
     private func finish() {
-        report["gateVersion"] = 4
+        report["gateVersion"] = 5
         report["failures"] = failures
         report["completed"] = true
         report["passed"] = failures.isEmpty

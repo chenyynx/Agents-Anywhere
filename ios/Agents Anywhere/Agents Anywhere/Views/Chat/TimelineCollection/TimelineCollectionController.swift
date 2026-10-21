@@ -90,6 +90,8 @@ final class TimelineCollectionController: UIViewController {
     /// Number of sprung follows started; the M4 gate asserts the follower
     /// actually ran (an instant pin would leave this at zero).
     private(set) var debugStreamingFollowStarts = 0
+    private(set) var debugStreamingFrameCalls = 0
+    private(set) var debugStreamingFollowEligibleFrames = 0
     #endif
     private var isScrollingToTop = false
     private var scrollToTopWatchdog: Task<Void, Never>?
@@ -341,6 +343,10 @@ final class TimelineCollectionController: UIViewController {
         let following = height != nil && state.isAutoScrollPinning
             && phase.phase != .animating
         if let height {
+            #if DEBUG
+            debugStreamingFrameCalls += 1
+            if following { debugStreamingFollowEligibleFrames += 1 }
+            #endif
             layout.applyStreamingHeight(height, for: item.itemID,
                                         adjustOffset: !following)
             if following {

@@ -32,6 +32,9 @@ struct AgentsAnywhereApp: App {
                 } else if ProcessInfo.processInfo.arguments.contains(TextKitM4AutoRunModel.launchArgument) {
                     // C5/M4 streaming gate; never reachable from the product UI.
                     TextKitM4AutoRunRootView()
+                } else if ProcessInfo.processInfo.arguments.contains(TextKitMaskSpikeAutoRun.launchArgument) {
+                    // C5/M4.2 TextKit mask spike; never reachable from the product UI.
+                    TextKitMaskSpikeRootView()
                 } else {
                     RootView()
                 }

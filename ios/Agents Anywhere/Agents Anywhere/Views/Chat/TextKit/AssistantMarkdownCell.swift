@@ -149,6 +149,9 @@ final class AssistantMarkdownCell: UICollectionViewCell {
         lastGeneration = -1
         lastLayoutWidth = -1
         revealDriver.reset()
+        #if DEBUG
+        debugStreamingRowHeight = nil
+        #endif
         rebuildIfPossible()
     }
 
@@ -452,6 +455,9 @@ final class AssistantMarkdownCell: UICollectionViewCell {
         streaming = nil
         revealState = nil
         lastLayoutWidth = -1
+        #if DEBUG
+        debugStreamingRowHeight = nil
+        #endif
         removeBlockViews()
     }
 }

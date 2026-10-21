@@ -140,6 +140,7 @@ final class StreamingRevealDriver: NSObject {
             mask?.frame = textView.bounds
             CATransaction.commit()
         }
+        restoreMaskIfNeeded(in: textView)
         if needsReport {
             needsReport = false
             onFrame?(clampedHeight)
@@ -258,6 +259,31 @@ final class StreamingRevealDriver: NSObject {
         mask = nil
         seatedMaxY = nil
         seatedMinY = nil
+    }
+
+    /// A text view that was created before its first layout has no width, so
+    /// the restored mask could not be built. Rebuild it once the view has a
+    /// width; without this the already-released text stays hidden until the
+    /// next run repaints it.
+    private func restoreMaskIfNeeded(in textView: UITextView) {
+        let length = localRevealedLength
+        guard seatedMaxY == nil, length > 0, textView.bounds.width > 0,
+              let mask else { return }
+        let rects = AssistantMarkdownMaskRenderer.lineRects(
+            for: NSRange(location: 0, length: length), in: textView)
+        guard let last = rects.last else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        mask.sublayers?.forEach { $0.removeFromSuperlayer() }
+        if let layer = AssistantMarkdownMaskRenderer.makeRunLayer(
+            rects: rects, in: textView, fadeDuration: 0) {
+            mask.addSublayer(layer)
+        }
+        CATransaction.commit()
+        seatedMaxY = last.maxY
+        seatedMinY = last.minY
+        clampedHeight = last.maxY
+        needsReport = true
     }
 
     /// A content update can move the lines the mask already covers. Official

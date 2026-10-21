@@ -641,6 +641,23 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         _ = history.laidOut(layout(first: "earlier", y: 780), generation: 8)
         #expect(history.isReadyToFinish)
     }
+
+    @Test func aPrependRecordsTheFirstRowOfItsPage() {
+        var owed = TimelineInsertionOwed(generation: 10,
+            origin: layout(), offsetY: 20, topInset: 80)
+        let target = owed.update(layout: layout(first: "earlier", y: 780))
+        #expect(target == 720)
+        #expect(owed.expectedFirstRowID == "earlier")
+    }
+
+    @Test func anUnrelatedUpdateDoesNotRecordAPage() {
+        // A streaming batch that lands before the history page must not make
+        // the target belong to its own first row.
+        var owed = TimelineInsertionOwed(generation: 11,
+            origin: layout(), offsetY: 20, topInset: 80)
+        #expect(owed.update(layout: layout()) == nil)
+        #expect(owed.expectedFirstRowID == nil)
+    }
 }
 
 @Suite struct TimelineHeightKeyingTests {

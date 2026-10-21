@@ -155,7 +155,12 @@ struct SidebarDrawerPanGesture: UIGestureRecognizerRepresentable {
             var current = view
             while let candidate = current, candidate !== host {
                 if let scrollView = candidate as? UIScrollView,
-                   scrollView.contentSize.width > scrollView.bounds.width + 1 {
+                   scrollView.contentSize.width > scrollView.bounds.width + 1,
+                   // A full-width vertical scroller can report horizontal
+                   // overflow from a child; that is the page itself, not a
+                   // horizontal surface. Only inset scrollers (code blocks,
+                   // trays) take the drag away from the drawer.
+                   host.map({ scrollView.bounds.width < $0.bounds.width - 1 }) ?? true {
                     return true
                 }
                 current = candidate.superview

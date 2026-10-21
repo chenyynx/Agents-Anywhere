@@ -186,9 +186,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
 
     var allItems: [TimelineListItem] { entries.map(listItem) }
 
-    @discardableResult
     private var prependBatch = 0
 
+    @discardableResult
     func prependPlain(_ count: Int) -> [TimelineListItem] {
         // Unique ids per call: a second prepend with the same `pre-N` ids
         // makes the diffable snapshot throw ("identifiers must be unique").

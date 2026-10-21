@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import SwiftUI
 import Textual
 import UIKit
 

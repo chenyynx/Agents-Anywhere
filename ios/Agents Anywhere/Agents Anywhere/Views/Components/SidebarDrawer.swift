@@ -354,7 +354,7 @@ private struct SidebarDrawerInteractive<
                 velocityX: velocityX
             )
         }
-        let initialVelocity = SidebarDrawerGestureRules.normalizedVelocity(
+        let initialVelocity = cancelled ? 0 : SidebarDrawerGestureRules.normalizedVelocity(
             velocityX: velocityX,
             progress: motion.progress,
             targetProgress: target,

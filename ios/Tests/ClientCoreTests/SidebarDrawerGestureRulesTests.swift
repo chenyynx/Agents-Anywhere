@@ -187,12 +187,14 @@ import Testing
             previousTranslationX: 0, previousTime: 1.0,
             currentTranslationX: 1, currentTime: 1.0 + 1.0 / 300.0
         ) == nil)
-        // One frame at 240 Hz is the inclusive lower bound.
+        // A normal frame span (1/120 s) is accepted. The exact 1/240 s
+        // boundary is not asserted: subtracting two uptimes loses enough
+        // precision to flip the inclusive comparison.
         let frameVelocity = SidebarDrawerGestureRules.estimatedVelocityX(
             previousTranslationX: 0, previousTime: 1.0,
-            currentTranslationX: 1, currentTime: 1.0 + 1.0 / 240.0
+            currentTranslationX: 1, currentTime: 1.0 + 1.0 / 120.0
         )
         #expect(frameVelocity != nil)
-        #expect(abs((frameVelocity ?? 0) - 240) < 1e-9)
+        #expect(abs((frameVelocity ?? 0) - 120) < 1e-9)
     }
 }

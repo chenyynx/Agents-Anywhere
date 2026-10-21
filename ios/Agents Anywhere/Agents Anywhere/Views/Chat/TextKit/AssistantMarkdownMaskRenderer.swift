@@ -17,8 +17,8 @@ enum AssistantMarkdownMaskRenderer {
               let manager = textView.textLayoutManager,
               let content = manager.textContentManager,
               let start = content.location(content.documentRange.location,
-                                           offset: range.location),
-              let end = content.location(start, offset: range.length),
+                                           offsetBy: range.location),
+              let end = content.location(start, offsetBy: range.length),
               end.compare(start) != .orderedSame else { return [] }
         let textRange = NSTextRange(location: start, end: end)
         var rects: [CGRect] = []

@@ -154,6 +154,12 @@ final class TimelineCollectionController: UIViewController {
                         for: indexPath) as! AssistantMarkdownCell
                     cell.configure(streaming: streaming,
                                    reveal: content.assistantStreamingReveal(for: item))
+                    cell.onStreamingRevealFrame = { [weak self] height in
+                        self?.streamingRevealFrame(height, for: item)
+                    }
+                    cell.onStreamingRevealCaughtUp = { [weak self] in
+                        DispatchQueue.main.async { self?.reloadFromContent() }
+                    }
                     return cell
                 }
                 if let document = content.assistantMarkdown(for: item),
@@ -163,6 +169,10 @@ final class TimelineCollectionController: UIViewController {
                         for: indexPath) as! AssistantMarkdownCell
                     cell.configure(document,
                                    footer: content.assistantTurnFooter(for: item))
+                    // The reveal's per-frame override belongs to the previous
+                    // streaming configuration; hand the row back to the
+                    // measured height.
+                    self.layout.clearStreamingHeight(for: item.itemID)
                     return cell
                 }
             }
@@ -292,6 +302,16 @@ final class TimelineCollectionController: UIViewController {
             // visible exception rows for their fitting height after the new
             // content has laid out.
             DispatchQueue.main.async { [weak self] in self?.applyPreferredHeights(for: present) }
+        }
+    }
+
+    /// The reveal's per-frame clamped height. `nil` means the reveal ended and
+    /// the row returns to its measured height.
+    private func streamingRevealFrame(_ height: CGFloat?, for item: TimelineListItem) {
+        if let height {
+            layout.applyStreamingHeight(height, for: item.itemID)
+        } else {
+            layout.clearStreamingHeight(for: item.itemID)
         }
     }
 
@@ -1230,6 +1250,17 @@ extension TimelineCollectionController: UICollectionViewDelegate {
             guard let self, !self.navigationSuspended else { return }
             self.scheduleVisibleCellSettle()
         }
+    }
+
+    /// A streaming row that scrolls away stops driving per-frame heights (its
+    /// display link is reset with the reused cell). Drop its display override
+    /// so the offscreen row returns to its measured height; a later
+    /// configuration re-installs the current clamp.
+    func collectionView(_ collectionView: UICollectionView,
+                        didEndDisplaying cell: UICollectionViewCell,
+                        forItemAt indexPath: IndexPath) {
+        guard currentItems.indices.contains(indexPath.item) else { return }
+        layout.clearStreamingHeight(for: currentItems[indexPath.item].itemID)
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {

@@ -34,9 +34,10 @@ protocol TimelineCollectionContentProviding: AnyObject {
     /// notices, or a non-assistant row).
     func assistantStreamingDocument(for item: TimelineListItem) -> AssistantStreamingDocument?
 
-    /// Whether the streaming tail is currently revealing. Kept separate from
-    /// the document so a settle does not rebuild the parsed blocks.
-    func assistantStreamingReveal(for item: TimelineListItem) -> Bool
+    /// The reveal state for the streaming row (timeline anchor, character
+    /// total, whether the text stopped growing). Kept separate from the
+    /// document so frame ticks do not rebuild parsed blocks.
+    func assistantStreamingReveal(for item: TimelineListItem) -> StreamingRevealState?
 
     /// The text-only turn action footer for a TextKit assistant row. Nil for
     /// rows whose footer includes a variable-height file-change summary (those
@@ -66,7 +67,7 @@ extension TimelineCollectionContentProviding {
     /// The C3 synthetic model keeps every row on the hosting path.
     func assistantMarkdown(for item: TimelineListItem) -> AssistantMarkdownDocument? { nil }
     func assistantStreamingDocument(for item: TimelineListItem) -> AssistantStreamingDocument? { nil }
-    func assistantStreamingReveal(for item: TimelineListItem) -> Bool { false }
+    func assistantStreamingReveal(for item: TimelineListItem) -> StreamingRevealState? { nil }
     func assistantTurnFooter(for item: TimelineListItem) -> AssistantTurnFooter? { nil }
 
     /// Typography changes every height key. The C3 gate's synthetic rows keep

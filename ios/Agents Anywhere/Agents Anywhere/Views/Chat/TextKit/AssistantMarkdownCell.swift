@@ -68,63 +68,39 @@ final class AssistantMarkdownCell: UICollectionViewCell {
     private var lastLayoutWidth: CGFloat = -1
 
     // C5/M4 streaming state. Settled blocks keep their views across batches;
-    // only the tail is re-hosted and re-measured.
+    // the tail is rebuilt from the same TextKit block factory and only its
+    // open text block carries the reveal mask.
     private var streaming: AssistantStreamingDocument?
-    private var streamingReveal = false
+    private var revealState: StreamingRevealState?
     private var stableIDs: [AssistantBlockID] = []
     private var stableViews: [AssistantBlockID: UIView] = [:]
     private var stableConstraints: [AssistantBlockID: NSLayoutConstraint] = [:]
-    private var tailHost: UIHostingController<ChatMarkdownView>?
-    private var tailConstraint: NSLayoutConstraint?
+    private var tailIDs: [AssistantBlockID] = []
+    private var tailViews: [AssistantBlockID: UIView] = [:]
+    private var tailConstraints: [AssistantBlockID: NSLayoutConstraint] = [:]
     private var lastGeneration = -1
+
+    /// The reveal driver per cell. It survives batch configurations so the
+    /// mask keeps its released cursor; reuse and static configuration reset it.
+    private let revealDriver = StreamingRevealDriver()
+    /// Row height while the cursor is mid-message (`nil` means the full
+    /// measured height). The controller installs this on the layout.
+    var onStreamingRevealFrame: ((CGFloat?) -> Void)?
+    /// The final fade finished; the row may hand over to the static body.
+    var onStreamingRevealCaughtUp: (() -> Void)?
+
     #if DEBUG
     private(set) var debugStableViewsBuilt = 0
     private(set) var debugTailUpdates = 0
 
-    /// The tail host's own layout height. The gate compares it with the
-    /// constraint derived from the TextKit measurement; this is the only place
-    /// the two engines can disagree inside the cell.
-    var debugTailFitHeight: CGFloat? {
-        guard let tailHost, let hostView = tailHost.view,
-              contentView.bounds.width > 0 else { return nil }
-        let width = contentView.bounds.width
-        let saved = hostView.bounds
-        // The measurer's exact sequence: force a layout at the proposed width
-        // before asking for the fitting height.
-        hostView.bounds = CGRect(origin: .zero,
-                                 size: CGSize(width: width, height: 1))
-        hostView.layoutIfNeeded()
-        let size = tailHost.sizeThatFits(in: CGSize(
-            width: width, height: UIView.layoutFittingExpandedSize.height))
-        hostView.bounds = saved
-        return size.height
+    var debugTailViewCount: Int { tailViews.count }
+    var debugMaskInstalled: Bool {
+        revealDriver.clampedHeight != nil
     }
-
-    var debugTailConstraintHeight: CGFloat? { tailConstraint?.constant }
-    var debugTailHostBounds: CGRect? { tailHost?.view?.bounds }
-    var debugTailHostTextLength: Int? { tailHost?.rootView.text.count }
-
-    /// Natural height of the hosting view with the TextKit height constraint
-    /// temporarily removed. `sizeThatFits` can answer from a stale or
-    /// constrained layout; this asks the same view that is on screen.
-    var debugTailNaturalHeight: CGFloat? {
-        guard let tailHost, let view = tailHost.view,
-              let constraint = tailConstraint,
-              contentView.bounds.width > 0 else { return nil }
-        let wasActive = constraint.isActive
-        constraint.isActive = false
-        defer {
-            constraint.isActive = wasActive
-            view.layoutIfNeeded()
-        }
-        view.setNeedsLayout()
-        view.layoutIfNeeded()
-        return view.systemLayoutSizeFitting(
-            CGSize(width: contentView.bounds.width,
-                   height: UIView.layoutFittingCompressedSize.height),
-            withHorizontalFittingPriority: .required,
-            verticalFittingPriority: .fittingSizeLevel).height
-    }
+    var debugRevealedCharacters: Int { revealDriver.released ?? 0 }
+    /// Last row height the reveal reported (`nil` once the row uses its full
+    /// measured height).
+    private(set) var debugStreamingRowHeight: CGFloat?
     #endif
 
     override init(frame: CGRect) {
@@ -150,6 +126,12 @@ final class AssistantMarkdownCell: UICollectionViewCell {
             stack.topAnchor.constraint(equalTo: contentView.topAnchor),
             bottom,
         ])
+        revealDriver.onFrame = { [weak self] clamped in
+            self?.handleRevealFrame(clamped)
+        }
+        revealDriver.onCaughtUp = { [weak self] in
+            self?.onStreamingRevealCaughtUp?()
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -163,20 +145,22 @@ final class AssistantMarkdownCell: UICollectionViewCell {
         self.document = document
         self.footer = footer
         self.streaming = nil
-        self.streamingReveal = false
+        self.revealState = nil
         lastGeneration = -1
         lastLayoutWidth = -1
+        revealDriver.reset()
         rebuildIfPossible()
     }
 
-    /// Streaming row: settled blocks are TextKit views that survive batches;
-    /// the open tail is hosted by the existing reveal view so the glyph
-    /// animation does not change.
-    func configure(streaming: AssistantStreamingDocument, reveal: Bool) {
+    /// Streaming row: every block is a TextKit view; the open text block runs
+    /// the official per-line reveal mask. The timeline lives in the adapter so
+    /// cell reuse does not restart the cursor.
+    func configure(streaming: AssistantStreamingDocument,
+                   reveal: StreamingRevealState?) {
         self.document = nil
         self.footer = nil
         self.streaming = streaming
-        self.streamingReveal = reveal
+        self.revealState = reveal
         rebuildStreamingIfPossible()
     }
 
@@ -263,9 +247,10 @@ final class AssistantMarkdownCell: UICollectionViewCell {
 
     // MARK: - Streaming
 
-    /// Settled blocks are appended once; the tail host is the only subview
-    /// replaced on each batch. A new generation (correction), a width change,
-    /// or a stable set that is not a prefix of the previous one rebuilds.
+    /// Settled blocks are appended once; the tail blocks are rebuilt from the
+    /// same TextKit factory and follow the stable views. A new generation
+    /// (correction), a width change, or a stable set that is not a prefix of
+    /// the previous one rebuilds everything.
     private func rebuildStreamingIfPossible() {
         guard let streaming, contentView.bounds.width > 0 else { return }
         let width = contentView.bounds.width
@@ -289,11 +274,7 @@ final class AssistantMarkdownCell: UICollectionViewCell {
                 let made = AssistantMarkdownBlockViewFactory.make(
                     streaming.document.blocks[index], width: width,
                     displayScale: displayScale)
-                let insertion = tailHost.map { host in
-                    stack.arrangedSubviews.firstIndex(where: { $0 === host.view })
-                        ?? stack.arrangedSubviews.count
-                } ?? stack.arrangedSubviews.count
-                stack.insertArrangedSubview(made.view, at: insertion)
+                stack.insertArrangedSubview(made.view, at: tailInsertionIndex())
                 let constraint = made.view.heightAnchor.constraint(
                     equalToConstant: made.height)
                 constraint.isActive = true
@@ -306,95 +287,156 @@ final class AssistantMarkdownCell: UICollectionViewCell {
             }
         }
 
-        // The same collapsed-margin rule the measurement and the static cell
-        // use. The last settled block keeps its spacing before the tail.
-        for (index, id) in stableIDs.enumerated() {
-            guard let view = stableViews[id] else { continue }
-            let spacing = index + 1 < streaming.document.blocks.count
+        updateTail(streaming, width: width)
+
+        // Every block has exactly one arranged view, in document order, so the
+        // same collapsed-margin rule the measurement and the static cell use
+        // maps directly onto the stack.
+        let blocks = streaming.document.blocks
+        for index in blocks.indices where stack.arrangedSubviews.indices.contains(index) {
+            let spacing = index + 1 < blocks.count
                 ? AssistantMarkdownTextLayout.topLevelSpacing(
                     after: index, in: streaming.document)
                 : 0
-            stack.setCustomSpacing(spacing, after: view)
+            stack.setCustomSpacing(spacing, after: stack.arrangedSubviews[index])
         }
 
-        updateTail(streaming, width: width)
+        configureReveal(streaming)
+    }
+
+    /// The first tail view's position: a newly promoted stable block lands in
+    /// front of the tail, never after it.
+    private func tailInsertionIndex() -> Int {
+        for id in tailIDs {
+            if let view = tailViews[id],
+               let index = stack.arrangedSubviews.firstIndex(where: { $0 === view }) {
+                return index
+            }
+        }
+        return stack.arrangedSubviews.count
     }
 
     private func updateTail(_ streaming: AssistantStreamingDocument, width: CGFloat) {
-        let start = min(streaming.stableBlockCount,
-                        streaming.document.blocks.count)
-        let range = start..<streaming.document.blocks.count
-        let height = tailHeight(streaming, range: range, width: width)
-        if range.isEmpty {
-            if let tailHost {
-                stack.removeArrangedSubview(tailHost.view)
-                tailHost.view.removeFromSuperview()
-                tailConstraint?.isActive = false
-                self.tailHost = nil
-                self.tailConstraint = nil
+        let blocks = streaming.document.blocks
+        let start = min(streaming.stableBlockCount, blocks.count)
+        guard streaming.blockIDs.count == blocks.count else { return }
+        let ids = Array(streaming.blockIDs[start...])
+        let keep = Set(ids)
+        for id in tailIDs where !keep.contains(id) {
+            removeTailView(id)
+        }
+        for (offset, id) in ids.enumerated() {
+            let block = blocks[start + offset]
+            let height = AssistantMarkdownTextLayout.height(
+                of: block, width: width,
+                displayScale: traitCollection.displayScale)
+            if let view = tailViews[id] as? AssistantMarkdownBlockTextView,
+               case .text(let text) = block {
+                if let current = view.attributedText,
+                   current.isEqual(to: text.attributed) {
+                    // Same content: keep the view and its mask layers.
+                } else {
+                    view.attributedText = text.attributed
+                }
+                tailConstraints[id]?.constant = height
+            } else {
+                let isNew = tailViews[id] == nil
+                removeTailView(id)
+                let made = AssistantMarkdownBlockViewFactory.make(
+                    block, width: width,
+                    displayScale: traitCollection.displayScale)
+                stack.addArrangedSubview(made.view)
+                let constraint = made.view.heightAnchor.constraint(
+                    equalToConstant: made.height)
+                constraint.isActive = true
+                tailViews[id] = made.view
+                tailConstraints[id] = constraint
+                // Code/table/list/quote tails enter with the official cell
+                // fade (`revealEntrance`, 0.25 s, ease-out). Text leaves use
+                // the character mask instead.
+                if isNew, !(made.view is AssistantMarkdownBlockTextView) {
+                    applyBlockEntrance(to: made.view)
+                }
             }
-            return
         }
-
-        let host: UIHostingController<ChatMarkdownView>
-        if let tailHost {
-            host = tailHost
-        } else {
-            host = UIHostingController(rootView: ChatMarkdownView(
-                text: streaming.tailText,
-                isStreaming: streamingReveal,
-                resolvesFileReferences: true))
-            host.view.backgroundColor = .clear
-            host.view.translatesAutoresizingMaskIntoConstraints = false
-            host.view.clipsToBounds = true
-            // Match `TimelineHostingHeightMeasurer`: without intrinsic sizing
-            // `sizeThatFits` does not answer from the SwiftUI content at the
-            // proposed width, which makes the gate's cross-engine check read
-            // an inflated height.
-            host.sizingOptions = [.intrinsicContentSize]
-            stack.addArrangedSubview(host.view)
-            let constraint = host.view.heightAnchor.constraint(equalToConstant: height)
-            constraint.isActive = true
-            self.tailHost = host
-            self.tailConstraint = constraint
-        }
-        host.rootView = ChatMarkdownView(
-            text: streaming.tailText,
-            isStreaming: streamingReveal,
-            resolvesFileReferences: true)
-        tailConstraint?.constant = height
+        tailIDs = ids
         #if DEBUG
         debugTailUpdates += 1
         #endif
     }
 
-    private func tailHeight(_ streaming: AssistantStreamingDocument,
-                            range: Range<Int>,
-                            width: CGFloat) -> CGFloat {
-        guard !range.isEmpty else { return 0 }
-        var total: CGFloat = 0
-        for index in range {
-            if index > range.lowerBound {
-                total += AssistantMarkdownTextLayout.topLevelSpacing(
-                    after: index - 1, in: streaming.document)
-            }
-            total += AssistantMarkdownTextLayout.height(
-                of: streaming.document.blocks[index], width: width,
-                displayScale: traitCollection.displayScale)
+    /// The official Chat **cell** entrance (not the SwiftUI modifier): a plain
+    /// opacity animation, 0.25 s ease-out, disabled under Reduce Motion.
+    private func applyBlockEntrance(to view: UIView) {
+        guard !UIAccessibilityIsReduceMotionEnabled() else { return }
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0.0
+        fade.toValue = 1.0
+        fade.duration = 0.25
+        fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        fade.beginTime = CACurrentMediaTime()
+        fade.fillMode = .backwards
+        view.layer.add(fade, forKey: "revealEntrance")
+    }
+
+    private func removeTailView(_ id: AssistantBlockID) {
+        guard let view = tailViews[id] else { return }
+        tailConstraints[id]?.isActive = false
+        stack.removeArrangedSubview(view)
+        view.removeFromSuperview()
+        tailViews.removeValue(forKey: id)
+        tailConstraints.removeValue(forKey: id)
+    }
+
+    /// The open block is the last top-level text block. Lists, quotes, code
+    /// and tables use the block entrance instead of a character mask.
+    private func configureReveal(_ streaming: AssistantStreamingDocument) {
+        guard let state = revealState,
+              let last = streaming.document.blocks.last,
+              case .text = last,
+              let lastID = streaming.blockIDs.last,
+              let textView = tailViews[lastID] as? AssistantMarkdownBlockTextView else {
+            revealDriver.reset()
+            return
         }
-        return total
+        var blockStart = 0
+        for index in 0..<(streaming.document.blocks.count - 1) {
+            blockStart += streaming.document.blocks[index].characterCount
+        }
+        revealDriver.configure(state: state, blockStart: blockStart,
+                               textView: textView)
+    }
+
+    private func handleRevealFrame(_ clamped: CGFloat?) {
+        guard let clamped,
+              let lastID = tailIDs.last,
+              let cursorView = tailViews[lastID] else {
+            #if DEBUG
+            debugStreamingRowHeight = nil
+            #endif
+            onStreamingRevealFrame?(nil)
+            return
+        }
+        let point = cursorView.convert(CGPoint(x: 0, y: clamped), to: contentView)
+        let height = ceil(point.y + 1.0)
+        #if DEBUG
+        debugStreamingRowHeight = height
+        #endif
+        onStreamingRevealFrame?(height)
     }
 
     private func removeBlockViews() {
+        revealDriver.reset()
         NSLayoutConstraint.deactivate(heightConstraints)
         NSLayoutConstraint.deactivate(Array(stableConstraints.values))
-        tailConstraint?.isActive = false
+        NSLayoutConstraint.deactivate(Array(tailConstraints.values))
         heightConstraints = []
         stableIDs = []
         stableViews = [:]
         stableConstraints = [:]
-        tailHost = nil
-        tailConstraint = nil
+        tailIDs = []
+        tailViews = [:]
+        tailConstraints = [:]
         lastGeneration = -1
         footerHost = nil
         for view in stack.arrangedSubviews {
@@ -408,7 +450,7 @@ final class AssistantMarkdownCell: UICollectionViewCell {
         document = nil
         footer = nil
         streaming = nil
-        streamingReveal = false
+        revealState = nil
         lastLayoutWidth = -1
         removeBlockViews()
     }

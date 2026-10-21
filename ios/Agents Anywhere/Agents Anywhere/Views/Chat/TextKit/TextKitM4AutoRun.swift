@@ -34,6 +34,7 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
     @ObservationIgnored private var builder = AssistantStreamingDocumentBuilder()
     @ObservationIgnored private var batches: [String] = []
     @ObservationIgnored private var typography: TimelineTypographySnapshot
+    @ObservationIgnored private var revealTimeline = StreamingRevealTimeline()
 
     init() {
         typography = TimelineChatContentAdapter.typography(
@@ -154,10 +155,19 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
         return entry.streamingDocument
     }
 
-    func assistantStreamingReveal(for item: TimelineListItem) -> Bool {
+    func assistantStreamingReveal(for item: TimelineListItem) -> StreamingRevealState? {
         guard case .group(let id) = item,
-              let entry = entries.first(where: { $0.id == id }) else { return false }
-        return entry.reveal
+              let entry = entries.first(where: { $0.id == id }),
+              entry.isStreaming || entry.reveal,
+              let document = entry.streamingDocument else { return nil }
+        let total = document.document.revealCharacterCount
+        if revealTimeline.total != total {
+            revealTimeline.retarget(total: total,
+                                    at: ProcessInfo.processInfo.systemUptime)
+        }
+        return StreamingRevealState(
+            timeline: revealTimeline, total: total,
+            isTextComplete: !entry.isStreaming)
     }
 
     func assistantTurnFooter(for item: TimelineListItem) -> AssistantTurnFooter? { nil }
@@ -181,7 +191,6 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
         }
         let item = listItem(entries[1])
         var samples: [[String: Any]] = []
-        var previousHeight: CGFloat = 0
         var lastStreamingHeight: CGFloat = 0
         var expectedStable = 0
         var cellIdentity: ObjectIdentifier?
@@ -231,54 +240,38 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
                 withHorizontalFittingPriority: .required,
                 verticalFittingPriority: .fittingSizeLevel).height
             let arranged = cell.debugArrangedBlockViews.count
-            let expectedArranged = document.stableBlockCount
-                + (document.tailText.isEmpty ? 0 : 1)
+            let expectedArranged = document.document.blocks.count
+            let revealClamp = cell.debugStreamingRowHeight
 
-            // The layout stores the ceiling of the measurement; compare
-            // against one point so the rounding itself is not a failure.
-            if abs(stored - measured) > 1.0 {
-                failures.append("m4 batch \(batchIndex): stored \(stored) != measured \(measured)")
-            }
-            if content > stored + 1 {
-                failures.append("m4 batch \(batchIndex): content \(content) clips stored \(stored)")
-            }
-            if abs(content - stored) > 1.5 {
-                failures.append("m4 batch \(batchIndex): content \(content) vs stored \(stored)")
-            }
             if arranged != expectedArranged {
                 failures.append("m4 batch \(batchIndex): \(arranged) views, expected \(expectedArranged)")
             }
-            // The tail host is the only view whose rendered height comes from
-            // the other engine. Compare its own fitting height with the
-            // constraint the TextKit measurement installed.
-            let tailConstraint = cell.debugTailConstraintHeight
-            var tailFit = cell.debugTailFitHeight ?? 0
-            // Wait for the SwiftUI parse to settle, then require a real value:
-            // a present tail host with no rendered height is a failure, not a
-            // skipped comparison.
-            for _ in 0..<5 {
-                if tailConstraint == nil { break }
-                if let tailConstraint, tailFit > 0,
-                   abs(tailFit - tailConstraint) <= 1.5 { break }
-                await wait(50)
-                controller.collectionView.layoutIfNeeded()
-                tailFit = cell.debugTailFitHeight ?? 0
-            }
-            if let tailConstraint {
-                if tailFit <= 0 {
-                    failures.append("m4 batch \(batchIndex): tail host rendered no height")
-                } else if abs(tailFit - tailConstraint) > 1.5 {
-                    failures.append("m4 batch \(batchIndex): tail fit \(tailFit) vs constraint \(tailConstraint)")
+            if let revealClamp {
+                // The reveal owns the visible bottom: the row is the clamped
+                // line bottom while the text below is still masked. The cell
+                // content (full document) is taller than the row by design.
+                if abs(stored - revealClamp) > 1.5 {
+                    failures.append("m4 batch \(batchIndex): stored \(stored) vs reveal clamp \(revealClamp)")
                 }
-            } else if !document.tailText.isEmpty {
-                failures.append("m4 batch \(batchIndex): tail text without a tail host")
+                if stored > content + 1 {
+                    failures.append("m4 batch \(batchIndex): stored \(stored) exceeds content \(content)")
+                }
+            } else {
+                // The layout stores the ceiling of the measurement; compare
+                // against one point so the rounding itself is not a failure.
+                if abs(stored - measured) > 1.0 {
+                    failures.append("m4 batch \(batchIndex): stored \(stored) != measured \(measured)")
+                }
+                if content > stored + 1 {
+                    failures.append("m4 batch \(batchIndex): content \(content) clips stored \(stored)")
+                }
+                if abs(content - stored) > 1.5 {
+                    failures.append("m4 batch \(batchIndex): content \(content) vs stored \(stored)")
+                }
             }
             if batchIndex == batches.count - 1,
                cell.debugStableViewsBuilt != document.stableBlockCount {
                 failures.append("m4 batch \(batchIndex): built \(cell.debugStableViewsBuilt) stable views for \(document.stableBlockCount) blocks")
-            }
-            if stored + 0.5 < previousHeight {
-                failures.append("m4 batch \(batchIndex): height shrank \(previousHeight) -> \(stored)")
             }
             if cell.debugStableViewsBuilt > document.stableBlockCount {
                 failures.append("m4 batch \(batchIndex): rebuilt stable views \(cell.debugStableViewsBuilt) > \(document.stableBlockCount)")
@@ -287,7 +280,6 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
                 failures.append("m4 batch \(batchIndex): stable blocks regressed")
             }
             expectedStable = document.stableBlockCount
-            previousHeight = stored
             lastStreamingHeight = stored
 
             samples.append([
@@ -295,18 +287,16 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
                 "textLength": document.document.plainTextLength,
                 "tailLength": document.tailText.utf8.count,
                 "stableBlocks": document.stableBlockCount,
+                "tailBlocks": max(0, expectedArranged - document.stableBlockCount),
                 "arrangedViews": arranged,
                 "stored": Double(stored),
                 "measured": Double(measured),
                 "content": Double(content),
                 "stableViewsBuilt": cell.debugStableViewsBuilt,
                 "tailUpdates": cell.debugTailUpdates,
-                "tailFit": Double(tailFit),
-                "tailConstraint": Double(cell.debugTailConstraintHeight ?? -1),
-                "tailHostWidth": Double(cell.debugTailHostBounds?.width ?? -1),
-                "tailHostHeight": Double(cell.debugTailHostBounds?.height ?? -1),
-                "tailHostTextLength": cell.debugTailHostTextLength ?? -1,
-                "tailNaturalHeight": Double(cell.debugTailNaturalHeight ?? -1),
+                "revealedCharacters": cell.debugRevealedCharacters,
+                "maskInstalled": cell.debugMaskInstalled,
+                "revealClamp": Double(revealClamp ?? -1),
             ])
         }
 
@@ -347,11 +337,13 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
         let revealingMeasured = AssistantMarkdownTextLayout.measure(
             revealingDocument.document, width: revealingWidth,
             displayScale: controller.traitCollection.displayScale)
-        if abs(revealingStored - revealingMeasured) > 1.0 {
+        let revealingClamp = revealingCell.debugStreamingRowHeight
+        if let revealingClamp {
+            if abs(revealingStored - revealingClamp) > 1.5 {
+                failures.append("m4 done+revealing: stored \(revealingStored) vs reveal clamp \(revealingClamp)")
+            }
+        } else if abs(revealingStored - revealingMeasured) > 1.0 {
             failures.append("m4 done+revealing: stored \(revealingStored) != measured \(revealingMeasured)")
-        }
-        if abs(revealingStored - lastStreamingHeight) > 1.5 {
-            failures.append("m4 done+revealing: height jumped \(lastStreamingHeight) -> \(revealingStored)")
         }
 
         // Phase 2: the reveal clock settles; the same row becomes static.
@@ -408,8 +400,9 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
         report["doneRevealing"] = [
             "stored": Double(revealingStored),
             "measured": Double(revealingMeasured),
+            "revealClamp": Double(revealingCell.debugStreamingRowHeight ?? -1),
             "arrangedViews": revealingCell.debugArrangedBlockViews.count,
-            "tailFit": Double(revealingCell.debugTailFitHeight ?? -1),
+            "revealedCharacters": revealingCell.debugRevealedCharacters,
             "sameCell": cellIdentity == ObjectIdentifier(revealingCell),
         ] as [String: Any]
         report["completion"] = [

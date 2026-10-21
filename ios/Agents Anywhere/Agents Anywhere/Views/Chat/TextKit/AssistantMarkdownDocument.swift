@@ -21,6 +21,12 @@ struct AssistantMarkdownDocument {
     /// Recursive kind census. The gate asserts the fixture really produced the
     /// structures it claims to exercise, not just a paragraph that happened to
     /// pass the height check.
+    /// Character total the reveal timeline anchors on (see
+    /// `AssistantMarkdownBlock.characterCount`).
+    var revealCharacterCount: Int {
+        blocks.reduce(0) { $0 + $1.characterCount }
+    }
+
     var blockCounts: [String: Int] {
         var counts: [String: Int] = [:]
         func walk(_ blocks: [AssistantMarkdownBlock]) {
@@ -71,6 +77,28 @@ enum AssistantMarkdownBlock {
         case .quote: return "quote"
         case .code: return "code"
         case .table: return "table"
+        }
+    }
+
+    /// Rendered UTF-16 length. The reveal cursor counts characters of the
+    /// blocks that are on screen (the official controller anchors on the sum
+    /// of its block lengths), not the raw Markdown source.
+    var characterCount: Int {
+        switch self {
+        case .text(let text):
+            return text.attributed.length
+        case .list(let list):
+            return list.items.reduce(0) { total, item in
+                total + item.blocks.reduce(0) { $0 + $1.characterCount }
+            }
+        case .quote(let quote):
+            return quote.blocks.reduce(0) { $0 + $1.characterCount }
+        case .code(let code):
+            return code.code.length
+        case .table(let table):
+            return table.rows.reduce(0) { total, row in
+                total + row.reduce(0) { $0 + $1.length }
+            }
         }
     }
 }
@@ -761,6 +789,8 @@ nonisolated struct AssistantBlockID: Hashable {
 /// rendered by the existing reveal view.
 struct AssistantStreamingDocument {
     let document: AssistantMarkdownDocument
+    /// One id per rendered block, in document order.
+    let blockIDs: [AssistantBlockID]
     let stableBlockIDs: [AssistantBlockID]
     /// Blocks settled *before this batch*. A block that completed in this
     /// batch stays in the tail for one more frame, so its last glyphs still
@@ -867,6 +897,7 @@ final class AssistantStreamingDocumentBuilder {
             document: AssistantMarkdownDocument(
                 blocks: blocks, blockGroups: groups,
                 plainTextLength: text.count),
+            blockIDs: ids,
             stableBlockIDs: Array(ids.prefix(renderedStableBlocks)),
             stableBlockCount: renderedStableBlocks,
             tailText: tailText,

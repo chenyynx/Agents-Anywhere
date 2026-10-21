@@ -7,6 +7,7 @@ import Testing
         assistant: Bool = true,
         streamingText: Bool = false,
         revealing: Bool = false,
+        revealPending: Bool = false,
         emptyText: Bool = false,
         notice: Bool = false,
         attachments: Bool = false,
@@ -18,6 +19,7 @@ import Testing
             isAssistantMessage: assistant,
             isStreamingText: streamingText,
             isRevealing: revealing,
+            isRevealPending: revealPending,
             textIsEmpty: emptyText,
             hasInlineNotice: notice,
             hasAttachments: attachments,
@@ -35,6 +37,13 @@ import Testing
         #expect(admits(streamingText: false, revealing: true))
     }
 
+    @Test func rendererOwnedCursorKeepsTheRowAfterDone() {
+        // The wire item is done but the TextKit reveal cursor is still behind
+        // the received text; the row must not swap to a fresh hosting view.
+        #expect(admits(streamingText: false, revealing: false,
+                       revealPending: true))
+    }
+
     @Test func settledDoneRowIsNotEligible() {
         #expect(!admits(streamingText: false, revealing: false))
     }
@@ -50,5 +59,14 @@ import Testing
 
     @Test func stickyFallbackWinsOverTheLiveStream() {
         #expect(!admits(streamingText: true, revealing: true, fallback: true))
+        #expect(!admits(revealPending: true, fallback: true))
+    }
+
+    @Test func blockedShapesStayIneligibleWhileRevealing() {
+        #expect(!admits(revealPending: true, emptyText: true))
+        #expect(!admits(revealPending: true, notice: true))
+        #expect(!admits(revealPending: true, attachments: true))
+        #expect(!admits(revealPending: true, textOnlyAction: false))
+        #expect(!admits(assistant: false, revealPending: true))
     }
 }

@@ -36,6 +36,12 @@ nonisolated struct StreamingRevealTimeline: Equatable {
         self.config = config
     }
 
+    /// Total characters of the current anchor (0 before the first retarget).
+    var total: Int { segment?.total ?? 0 }
+
+    /// Anchor head: characters already shown when the current segment started.
+    var head: Double { segment?.head ?? 0 }
+
     /// A correction/recovery restarts the stream: the caller drops the
     /// timeline and retargets from the new text.
     mutating func reset() {
@@ -134,6 +140,22 @@ nonisolated struct StreamingRevealRunGenerator: Equatable {
         let value = x &* 0x2545F4914F6CDD1D
         let span = UInt64(range.upperBound - range.lowerBound + 1)
         return range.lowerBound + Int(value % span)
+    }
+}
+
+/// What the cell needs to run the reveal: the anchored timeline, the message's
+/// character total, and whether the text itself has stopped growing.
+nonisolated struct StreamingRevealState: Equatable {
+    var timeline: StreamingRevealTimeline
+    var total: Int
+    var isTextComplete: Bool
+
+    func shownThrough(at now: TimeInterval) -> Int {
+        min(timeline.shownThrough(at: now), total)
+    }
+
+    func isCaughtUp(at now: TimeInterval) -> Bool {
+        shownThrough(at: now) >= total
     }
 }
 

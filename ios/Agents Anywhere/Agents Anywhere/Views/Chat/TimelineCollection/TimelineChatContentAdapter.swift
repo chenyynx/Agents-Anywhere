@@ -235,6 +235,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     }
     private var streamingDocuments: [String: CachedStreamingDocument] = [:]
     private var streamingBuilders: [String: AssistantStreamingDocumentBuilder] = [:]
+    /// Per-row reveal timelines. They live here, not in the cell, so scrolling
+    /// a cell away and back does not restart the cursor.
+    private var revealTimelines: [String: StreamingRevealTimeline] = [:]
+    /// First moment the renderer-owned cursor caught up. Kept briefly so the
+    /// cell's final run and fade can finish before the static body takes over.
+    private var revealCaughtUpAt: [String: TimeInterval] = [:]
     /// Rows whose stream contained a block the TextKit path cannot render stay
     /// on the hosting path for the rest of the turn. Flipping engines mid-stream
     /// would be a visible jump.
@@ -253,6 +259,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         guard inlineNoticesByRow[row.id] == nil else { return nil }
         guard case .message = row.value.content, row.value.role == .assistant else { return nil }
         guard !row.value.isStreamingText, !row.isRevealing else { return nil }
+        // A done row whose renderer-owned cursor is still revealing stays on
+        // the streaming path; the static body would cut the animation short.
+        if let timeline = revealTimelines[row.id], timeline.total > 0,
+           timeline.shownThrough(at: ProcessInfo.processInfo.systemUptime)
+            < timeline.total {
+            return nil
+        }
         guard row.value.status == .done else { return nil }
         guard attachments(of: row.value).isEmpty, !row.text.isEmpty else { return nil }
 
@@ -305,6 +318,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         if document == nil, builder.isRejected {
             streamingFallbacks.insert(row.id)
         }
+        if let document {
+            anchorRevealTimeline(for: row, document: document)
+        }
         streamingDocuments[row.id] = CachedStreamingDocument(
             revision: row.value.revision,
             typographyRevision: typographyRevision,
@@ -313,8 +329,38 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         return document
     }
 
-    func assistantStreamingReveal(for item: TimelineListItem) -> Bool {
-        streamingRow(for: item)?.isRevealing ?? false
+    func assistantStreamingReveal(for item: TimelineListItem) -> StreamingRevealState? {
+        guard let row = streamingRow(for: item),
+              let cached = streamingDocuments[row.id],
+              let document = cached.document else { return nil }
+        let total = document.document.revealCharacterCount
+        let now = ProcessInfo.processInfo.systemUptime
+        var timeline = revealTimelines[row.id] ?? StreamingRevealTimeline()
+        if timeline.total != total {
+            timeline.retarget(total: total, at: now)
+            revealTimelines[row.id] = timeline
+        }
+        return StreamingRevealState(
+            timeline: timeline, total: total,
+            isTextComplete: !row.value.isStreamingText)
+    }
+
+    /// Anchor the reveal cursor on the rendered character total. The official
+    /// controller retargets when content changes; already-shown characters
+    /// never move backwards.
+    private func anchorRevealTimeline(for row: ChatTimelineRowModel,
+                                      document: AssistantStreamingDocument) {
+        let total = document.document.revealCharacterCount
+        let now = ProcessInfo.processInfo.systemUptime
+        var timeline = revealTimelines[row.id] ?? StreamingRevealTimeline()
+        guard timeline.total != total else { return }
+        timeline.retarget(total: total, at: now)
+        revealTimelines[row.id] = timeline
+        if timeline.shownThrough(at: now) >= total {
+            revealCaughtUpAt[row.id] = revealCaughtUpAt[row.id] ?? now
+        } else {
+            revealCaughtUpAt.removeValue(forKey: row.id)
+        }
     }
 
     /// A streaming assistant text row that the TextKit cell can own. The row
@@ -332,27 +378,58 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         } else {
             isAssistantMessage = false
         }
+        let now = ProcessInfo.processInfo.systemUptime
         let admitted = TimelineStreamingEligibility.admits(
             isSingleRowGroup: group.kind == .single && group.rows.count == 1,
             isAssistantMessage: isAssistantMessage,
             isStreamingText: row.value.isStreamingText,
             isRevealing: row.isRevealing,
+            isRevealPending: revealPending(for: row, at: now),
             textIsEmpty: row.text.isEmpty,
             hasInlineNotice: inlineNoticesByRow[row.id] != nil,
             hasAttachments: !attachments(of: row.value).isEmpty,
             isTextOnlyAction: isTextOnlyTurnAction(turnActions[group.id]),
             isFallback: streamingFallbacks.contains(row.id))
         guard admitted else {
-            // Only a row that left streaming (and its final reveal) discards
-            // its incremental state; a temporary notice/attachment keeps it.
-            if !row.value.isStreamingText && !row.isRevealing {
+            // Only a row that left streaming (and finished both reveals)
+            // discards its incremental state; a temporary notice/attachment
+            // keeps it.
+            if !row.value.isStreamingText && !row.isRevealing
+                && !revealPending(for: row, at: now) {
                 streamingDocuments.removeValue(forKey: row.id)
                 streamingBuilders.removeValue(forKey: row.id)
                 streamingFallbacks.remove(row.id)
+                revealTimelines.removeValue(forKey: row.id)
+                revealCaughtUpAt.removeValue(forKey: row.id)
             }
             return nil
         }
+        // Once the TextKit reveal owns the row, the presentation publishes the
+        // full received text and the cursor decides what is visible. The
+        // adapter reads happen inside the SwiftUI update; switch on the next
+        // runloop turn so the observable row is not mutated mid-update.
+        if !row.rendererOwnedReveal {
+            DispatchQueue.main.async {
+                row.useRendererOwnedReveal()
+            }
+        }
         return row
+    }
+
+    /// True while the renderer-owned cursor is still behind the received text,
+    /// or during the short grace that lets the cell's final run fade out.
+    private func revealPending(for row: ChatTimelineRowModel,
+                               at now: TimeInterval) -> Bool {
+        guard let timeline = revealTimelines[row.id], timeline.total > 0 else {
+            return false
+        }
+        if timeline.shownThrough(at: now) >= timeline.total {
+            let caught = revealCaughtUpAt[row.id] ?? now
+            revealCaughtUpAt[row.id] = caught
+            return now - caught < 0.7
+        }
+        revealCaughtUpAt.removeValue(forKey: row.id)
+        return true
     }
 
     /// A nil action is fine. A text-only action is the fixed copy/retry row
@@ -520,12 +597,22 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // Parsed documents are keyed by row id; drop rows that left the
         // timeline so a long session does not retain old replies.
         assistantDocuments = assistantDocuments.filter { rowToItem[$0.key] != nil }
-        let streamingRowIDs = Set(model.timeline.rows.compactMap {
-            $0.value.isStreamingText ? $0.id : nil
+        let streamingNow = ProcessInfo.processInfo.systemUptime
+        let streamingRowIDs = Set(model.timeline.rows.compactMap { row -> String? in
+            if row.value.isStreamingText { return row.id }
+            // A done row whose cursor is still behind the received text keeps
+            // its document and builder until the reveal hands back.
+            if let timeline = revealTimelines[row.id], timeline.total > 0,
+               timeline.shownThrough(at: streamingNow) < timeline.total {
+                return row.id
+            }
+            return nil
         })
         streamingDocuments = streamingDocuments.filter { streamingRowIDs.contains($0.key) }
         streamingBuilders = streamingBuilders.filter { streamingRowIDs.contains($0.key) }
         streamingFallbacks.formIntersection(streamingRowIDs)
+        revealTimelines = revealTimelines.filter { streamingRowIDs.contains($0.key) }
+        revealCaughtUpAt = revealCaughtUpAt.filter { streamingRowIDs.contains($0.key) }
 
         var itemsByID: [String: TimelineListItem] = [:]
         for item in identity.items { itemsByID[item.itemID] = item }

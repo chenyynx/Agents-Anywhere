@@ -53,6 +53,10 @@ final class TimelineListLayout: UICollectionViewLayout {
         let height: CGFloat
     }
     private var deferredHeights: [String: DeferredHeight] = [:]
+    /// Per-frame reveal heights for streaming rows. Display-only: never
+    /// written to `heights`, so the row returns to its measured height when
+    /// the reveal finishes.
+    private var streamingHeights: [String: CGFloat] = [:]
 
     // Integration-gate counters. They are cheap and make the C3 assertions
     // read the real layout path instead of re-deriving it in the test.
@@ -101,14 +105,21 @@ final class TimelineListLayout: UICollectionViewLayout {
             let key = host.layoutHeightKey(for: item, width: column.width)
             heights.setCurrentKey(key)
             let estimate = host.layoutEstimateKind(for: item)
-            let height = heights.resolvedHeight(for: key, itemID: item.itemID, fallback: estimate)
+            // A streaming row's per-frame clamped height is a display override:
+            // it is used for this prepare but never written to the height
+            // cache, so clearing it restores the measured height.
+            let streamingHeight = streamingHeights[item.itemID]
+            let height = streamingHeight
+                ?? heights.resolvedHeight(for: key, itemID: item.itemID, fallback: estimate)
             if heights.hasMeasuredOrPrecalcHeight(for: key) {
                 heights.resolvePending(item.itemID)
             } else {
                 pending.insert(item)
                 heights.markPending(item.itemID)
             }
-            heights.noteDisplayedHeight(height, for: item.itemID)
+            if streamingHeight == nil {
+                heights.noteDisplayedHeight(height, for: item.itemID)
+            }
             lastPreparedHeight[item.itemID] = height
             lastPreparedKeyRevision[item.itemID] = key.contentRevision
             items.append(item)
@@ -163,6 +174,7 @@ final class TimelineListLayout: UICollectionViewLayout {
         pendingMeasurements = pending
         heights.prune(keeping: Set(byID.keys))
         deferredHeights = deferredHeights.filter { byID[$0.key] != nil }
+        streamingHeights = streamingHeights.filter { byID[$0.key] != nil }
         if abs(previousHeight - contentHeight) > 0.5 {
             host.layoutDidChangeContentHeight(contentHeight)
         }
@@ -436,6 +448,49 @@ final class TimelineListLayout: UICollectionViewLayout {
         heights.noteDisplayedHeight(height, for: itemID)
         invalidateHeight(itemID: itemID, attributes: attributes,
                          correction: decision.correction, contentSizeDelta: delta, state: state)
+    }
+
+    // MARK: - Streaming reveal height (per frame)
+
+    /// The reveal's clamped bottom, in row coordinates. This is a display
+    /// override, not a measurement: it is used by `prepare` but never written
+    /// to the height cache, so clearing it restores the measured height.
+    func applyStreamingHeight(_ height: CGFloat, for itemID: String) {
+        guard height.isFinite, height > 0 else { return }
+        let previous = streamingHeights[itemID]
+        streamingHeights[itemID] = height
+        guard previous == nil || abs((previous ?? 0) - height) > 0.5 else { return }
+        guard let collectionView = collectionView,
+              let attributes = attributesByItemID[itemID] else { return }
+        let delta = height - attributes.frame.height
+        guard abs(delta) > 0.5 else { return }
+        let state = host?.layoutInteractionState() ?? TimelineLayoutInteractionState()
+        let decision = TimelinePreferredAttributesDecision.selfSizing(
+            delta: delta,
+            cellMinY: attributes.frame.minY,
+            cellMaxY: attributes.frame.maxY,
+            viewportTop: viewportTop,
+            viewportBottom: viewportBottom,
+            isStreaming: true,
+            isAutoScrollPinning: state.isAutoScrollPinning,
+            isTracking: state.isTracking,
+            isDecelerating: state.isDecelerating,
+            keyboardTransition: state.keyboardTransition,
+            hasCachedHeight: true)
+        if decision.height == .deferUntilSettled { return }
+        invalidateHeight(itemID: itemID, attributes: attributes,
+                         correction: decision.correction,
+                         contentSizeDelta: delta, state: state)
+    }
+
+    /// The reveal finished. The row returns to the cached measurement.
+    func clearStreamingHeight(for itemID: String) {
+        guard streamingHeights.removeValue(forKey: itemID) != nil else { return }
+        guard let collectionView = collectionView,
+              let attributes = attributesByItemID[itemID] else { return }
+        let context = UICollectionViewLayoutInvalidationContext()
+        context.invalidateItems(at: [attributes.indexPath])
+        collectionView.collectionViewLayout.invalidateLayout(with: context)
     }
 
     /// The controller is the single writer of controlled-exception heights:

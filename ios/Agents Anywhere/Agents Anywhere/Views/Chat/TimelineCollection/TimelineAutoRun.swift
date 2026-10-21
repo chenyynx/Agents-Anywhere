@@ -494,7 +494,12 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     private func staleCellDetails(_ controller: TimelineCollectionController,
                                   limit: Int) -> [String] {
         var stale: [String] = []
-        for attributes in controller.layout.orderedAttributes {
+        // Only genuinely visible cells. UIKit keeps prefetched/offscreen cells
+        // with their previous frames until they scroll in; those are not a
+        // display defect and would make this check flaky.
+        let visible = Set(controller.collectionView.indexPathsForVisibleItems)
+        for attributes in controller.layout.orderedAttributes
+        where visible.contains(attributes.indexPath) {
             guard let cell = controller.collectionView.cellForItem(at: attributes.indexPath) else { continue }
             if abs(cell.frame.minY - attributes.frame.minY) > 0.5
                 || abs(cell.frame.height - attributes.frame.height) > 0.5 {

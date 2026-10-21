@@ -213,6 +213,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await streaming()
         await bottom()
         await prepend()
+        await toolStorm()
+        await tailFlap()
         writeReport()
     }
 
@@ -351,6 +353,111 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             if abs(active - 32) > 1 { failures.append("tail: status height \(active) != 32") }
             report["tail"] = ["resting": resting, "statusLine": active]
         }
+    }
+
+    /// Device report (cf130b1): a tool-heavy turn with expanded rows drew
+    /// text from neighbouring rows on top of each other. Expand eight tool
+    /// rows through the product path (signature change → reload) and assert
+    /// the frames stay disjoint and the visible cells contain their content.
+    private func toolStorm() async {
+        guard let controller else { return }
+        let insertAt = max(0, entries.count - 1)
+        var stormEntries: [Entry] = []
+        for index in 0..<8 {
+            let entry = Entry(id: "storm-\(index)", kind: .toolExpanded,
+                              text: "工具组 \(index)")
+            entries.insert(entry, at: insertAt + index)
+            stormEntries.append(entry)
+        }
+        contentGeneration += 1
+        controller.reloadFromContent()
+        await wait(400)
+        for entry in stormEntries { setExpanded(entry.id, true) }
+        contentGeneration += 1
+        controller.reloadFromContent()
+        await wait(1500)
+        controller.collectionView.layoutIfNeeded()
+
+        var overlaps = 0
+        let attributes = controller.layout.orderedAttributes
+        for (upper, lower) in zip(attributes, attributes.dropFirst())
+        where upper.frame.maxY > lower.frame.minY + 0.5 {
+            overlaps += 1
+        }
+        var checked = 0
+        var clipped = 0
+        var collapsed = 0
+        for entry in stormEntries {
+            let item = listItem(entry)
+            let height = controller.layout.attributes(for: item.itemID)?.frame.height ?? 0
+            if height < 44 { collapsed += 1 }
+            guard let indexPath = controller.indexPath(for: item),
+                  let cell = controller.collectionView.cellForItem(at: indexPath) else { continue }
+            checked += 1
+            let content = cell.contentView.systemLayoutSizeFitting(
+                CGSize(width: cell.contentView.bounds.width,
+                       height: UIView.layoutFittingCompressedSize.height),
+                withHorizontalFittingPriority: .required,
+                verticalFittingPriority: .fittingSizeLevel).height
+            if cell.bounds.height + 0.5 < content { clipped += 1 }
+        }
+        if overlaps > 0 {
+            failures.append("tool storm: \(overlaps) adjacent frames overlap")
+        }
+        if collapsed > 0 {
+            failures.append("tool storm: \(collapsed) expanded rows kept a collapsed height")
+        }
+        if checked > 0, clipped > 0 {
+            failures.append("tool storm: \(clipped)/\(checked) visible cells clip content")
+        }
+        report["toolStorm"] = ["rows": stormEntries.count, "overlaps": overlaps,
+                               "checked": checked, "clipped": clipped,
+                               "collapsed": collapsed]
+    }
+
+    /// Device report (cf130b1): the status line jumped and sometimes ended
+    /// below the viewport. Flap the status line while the reader sits at the
+    /// bottom; the row must settle on the final height and the tail must stay
+    /// reachable.
+    private func tailFlap() async {
+        guard let controller,
+              let entry = entries.first(where: { $0.kind == .tail }) else { return }
+        let item = listItem(entry)
+        await scrollToItem(item)
+        controller.requestBottom(animated: false)
+        await wait(200)
+        for index in 0..<6 {
+            setTailStatusLine(index % 2 == 0)
+            contentGeneration += 1
+            controller.reloadFromContent()
+            await wait(120)
+        }
+        setTailStatusLine(true)
+        contentGeneration += 1
+        controller.reloadFromContent()
+        _ = await waitForCellHeight(controller, item: item, timeout: 3) {
+            abs($0 - 32) <= 1
+        }
+        await wait(400)
+        controller.collectionView.layoutIfNeeded()
+        let height = cellHeight(controller, item)
+        let attributes = controller.layout.attributes(for: item.itemID)
+        let contentBottom = controller.layout.contentHeight
+        let viewportBottom = controller.collectionView.contentOffset.y
+            + controller.collectionView.bounds.height
+            - controller.collectionView.adjustedContentInset.bottom
+        let visible = viewportBottom >= contentBottom - 1
+        if abs(height - 32) > 1 {
+            failures.append("tail flap: settled at \(height), expected 32")
+        }
+        if let attributes, attributes.frame.maxY > controller.layout.contentHeight + 0.5 {
+            failures.append("tail flap: tail frame exceeds content height")
+        }
+        if !visible {
+            failures.append("tail flap: tail is below the viewport at rest")
+        }
+        report["tailFlap"] = ["height": Double(height), "visible": visible,
+                              "contentHeight": Double(contentBottom)]
     }
 
     private func streaming() async {

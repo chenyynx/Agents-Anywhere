@@ -216,7 +216,7 @@ struct SubAgentPanelSheet: View {
     /// carries the transcript's input/output split, the plain fallback line
     /// otherwise (a card whose transcript is gone still shows its counter).
     @ViewBuilder
-    private func tokenMetricsLine(_ card: SubAgentCard, plainLines: [String]) -> some View {
+    private func tokenMetricsLine(for card: SubAgentCard, plainLines: [String]) -> some View {
         let metrics = SubAgentProgress.tokenMetrics(for: card)
         if !metrics.isEmpty {
             HStack(spacing: 4) {

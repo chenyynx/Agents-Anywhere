@@ -200,7 +200,7 @@ final class TimelineCollectionController: UIViewController {
                         withReuseIdentifier: AssistantMarkdownCell.reuseIdentifier,
                         for: indexPath) as! AssistantMarkdownCell
                     cell.configure(document,
-                                   footer: content.assistantTurnFooter(for: item))
+                                   footer: content.assistantFooter(for: item))
                     // The reveal's per-frame override belongs to the previous
                     // streaming configuration; hand the row back to the
                     // measured height.
@@ -677,8 +677,9 @@ final class TimelineCollectionController: UIViewController {
             // measured static height in this same apply; the display override
             // from the streaming cell would otherwise win the first prepare.
             layout.discardStreamingHeight(for: item.itemID)
-            let footerHeight = content.assistantTurnFooter(for: item) == nil
-                ? 0 : AssistantTurnFooter.height
+            let footerHeight = content.assistantFooter(for: item).map {
+                AssistantFooterMetrics.groupSpacing + $0.height
+            } ?? 0
             let key = content.heightKey(for: item, width: width)
             if layout.heights.hasMeasuredOrPrecalcHeight(for: key),
                let cached = layout.heights.tieredHeight(for: key) {

@@ -49,6 +49,11 @@ protocol TimelineCollectionContentProviding: AnyObject {
     /// keep hosting) and for every hosting row.
     func assistantTurnFooter(for item: TimelineListItem) -> AssistantTurnFooter?
 
+    /// The footer the TextKit cell hosts at a fixed height. Covers the action
+    /// row and, from M4.3, the file-change summary. Nil keeps the row on the
+    /// hosting path (or means the turn has no footer).
+    func assistantFooter(for item: TimelineListItem) -> AssistantFooterHost?
+
     /// Row ids contained in a top-level item. A group contains several; the
     /// history anchor maps a row id back to its group item.
     func rowIDs(in item: TimelineListItem) -> [String]
@@ -75,6 +80,17 @@ extension TimelineCollectionContentProviding {
     func assistantStreamingReveal(for item: TimelineListItem) -> StreamingRevealState? { nil }
     func streamingRevealDidFinish(for item: TimelineListItem) {}
     func assistantTurnFooter(for item: TimelineListItem) -> AssistantTurnFooter? { nil }
+
+    /// C3's synthetic rows and the M4 gate have no footer; the M3 gate only
+    /// needs the action row, so the default wraps its `assistantTurnFooter`.
+    func assistantFooter(for item: TimelineListItem) -> AssistantFooterHost? {
+        guard let footer = assistantTurnFooter(for: item) else { return nil }
+        return AssistantFooterHost(
+            height: SessionTurnActionsRow.rowHeight,
+            view: AnyView(SessionTurnActionsRow(
+                copyText: footer.copyText,
+                timestampText: footer.timestampText)))
+    }
 
     /// Typography changes every height key. The C3 gate's synthetic rows keep
     /// one fixed scale and use this default; the product adapter overrides it.

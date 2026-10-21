@@ -62,8 +62,8 @@ final class AssistantMarkdownCell: UICollectionViewCell {
 
     private let stack = UIStackView()
     private var document: AssistantMarkdownDocument?
-    private var footer: AssistantTurnFooter?
-    private var footerHost: UIHostingController<SessionTurnActionsRow>?
+    private var footer: AssistantFooterHost?
+    private var footerHost: UIHostingController<AnyView>?
     private var heightConstraints: [NSLayoutConstraint] = []
     private var lastLayoutWidth: CGFloat = -1
 
@@ -159,7 +159,7 @@ final class AssistantMarkdownCell: UICollectionViewCell {
     #endif
 
     func configure(_ document: AssistantMarkdownDocument,
-                   footer: AssistantTurnFooter? = nil) {
+                   footer: AssistantFooterHost? = nil) {
         self.document = document
         self.footer = footer
         self.streaming = nil
@@ -264,17 +264,17 @@ final class AssistantMarkdownCell: UICollectionViewCell {
 
         if let footer {
             // `SessionTimelineGroupView` uses a 4pt VStack gap between the
-            // reply and its footer; the action row itself has a fixed height.
+            // reply and its footer; the footer's own height is a constant
+            // from the legacy views, never a fitting pass.
             if let last = stack.arrangedSubviews.last {
-                stack.setCustomSpacing(AssistantTurnFooter.topSpacing, after: last)
+                stack.setCustomSpacing(AssistantFooterMetrics.groupSpacing, after: last)
             }
-            let host = UIHostingController(rootView: SessionTurnActionsRow(
-                copyText: footer.copyText, timestampText: footer.timestampText))
+            let host = UIHostingController(rootView: footer.view)
             host.view.backgroundColor = .clear
             host.view.translatesAutoresizingMaskIntoConstraints = false
             stack.addArrangedSubview(host.view)
             let constraint = host.view.heightAnchor.constraint(
-                equalToConstant: SessionTurnActionsRow.rowHeight)
+                equalToConstant: footer.height)
             constraint.isActive = true
             heightConstraints.append(constraint)
             footerHost = host

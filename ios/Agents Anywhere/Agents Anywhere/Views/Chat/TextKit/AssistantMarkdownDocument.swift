@@ -201,6 +201,17 @@ struct AssistantQuoteBlock {
     let innerSpacing: CGFloat
 }
 
+/// A footer hosted under the TextKit body at a fixed height.
+///
+/// The height excludes the spacing between the reply and the footer (the
+/// cell installs `AssistantFooterMetrics.groupSpacing` itself). It comes from
+/// legacy view constants, never from a fitting pass, so a slow or pending
+/// footer can never collapse or grow the row after layout.
+struct AssistantFooterHost {
+    let height: CGFloat
+    let view: AnyView
+}
+
 /// The copy/like/retry footer of a finished turn, reduced to the data the
 /// TextKit cell needs. The view is the product's own `SessionTurnActionsRow`,
 /// hosted at a fixed height so the footer never participates in fitting.

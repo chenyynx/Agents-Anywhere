@@ -373,7 +373,23 @@ final class TimelineListLayout: UICollectionViewLayout {
                                   state: TimelineLayoutInteractionState) {
         guard let collectionView else { return }
         let context = UICollectionViewLayoutInvalidationContext()
-        context.invalidateItems(at: [attributes.indexPath])
+        // A height change moves every following row. UIKit only re-queries
+        // the items named here, so naming just the changed one leaves all
+        // rows below their cells at the previous frames; their content then
+        // draws over the next row (device report: overlapping tool rows and
+        // messages). Include the visible rows below it.
+        var affected: [IndexPath] = [attributes.indexPath]
+        let affectedTop = viewportTop - 400
+        let affectedBottom = viewportBottom + 400
+        for candidate in attributesByIndex
+        where candidate.indexPath.item > attributes.indexPath.item {
+            if candidate.frame.minY > affectedBottom { break }
+            // Rows between a far-above change and the viewport do not need a
+            // cell update; only what can be on screen (plus a margin).
+            if candidate.frame.maxY < affectedTop { continue }
+            affected.append(candidate.indexPath)
+        }
+        context.invalidateItems(at: affected)
         if contentSizeDelta != 0 {
             context.contentSizeAdjustment = CGSize(width: 0, height: contentSizeDelta)
         }

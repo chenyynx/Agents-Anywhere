@@ -374,8 +374,9 @@ final class TimelineListLayout: UICollectionViewLayout {
         var affected: [IndexPath] = [attributes.indexPath]
         let top = viewportTop - 400
         let bottom = viewportBottom + 400
-        for candidate in attributesByIndex
-        where candidate.indexPath.item > attributes.indexPath.item {
+        let start = attributes.indexPath.item + 1
+        guard start < attributesByIndex.count else { return affected }
+        for candidate in attributesByIndex[start...] {
             if candidate.frame.minY > bottom { break }
             // Rows between a far-above change and the viewport do not need a
             // cell update; only what can be on screen (plus a margin).

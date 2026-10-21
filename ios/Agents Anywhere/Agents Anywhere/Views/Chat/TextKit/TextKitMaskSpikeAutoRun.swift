@@ -139,6 +139,11 @@ enum TextKitMaskSpikeAutoRun {
     ) async -> (failures: [String], report: [String: Any]) {
         var failures: [String] = []
         let chipSize = CGSize(width: 120, height: 44)
+        // Apple's documented mounting path is file-type registration; the
+        // per-instance override alone did not mount a view in either text
+        // view flavour.
+        NSTextAttachment.registerViewProviderClass(
+            SpikeInlineAttachmentProvider.self, forFileType: SpikeInlineAttachment.fileType)
         let attachment = SpikeInlineAttachment(size: chipSize, baselineOffset: 10)
         let base: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 13),
@@ -243,22 +248,14 @@ enum TextKitMaskSpikeAutoRun {
 /// Git badge. The bounds are set by the caller, exactly the shape the real
 /// inline attachment will use.
 private final class SpikeInlineAttachment: NSTextAttachment {
+    static let fileType = "com.agentsanywhere.spike.inline"
+
     init(size: CGSize, baselineOffset: CGFloat) {
-        super.init(data: nil, ofType: nil)
+        super.init(data: nil, ofType: Self.fileType)
         bounds = CGRect(x: 0, y: baselineOffset, width: size.width, height: size.height)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    override func viewProvider(for parentView: UIView?,
-                               location: NSTextLocation,
-                               textContainer: NSTextContainer?) -> NSTextAttachmentViewProvider? {
-        return SpikeInlineAttachmentProvider(
-            textAttachment: self,
-            parentView: parentView,
-            textLayoutManager: textContainer?.textLayoutManager,
-            location: location)
-    }
 }
 
 private final class SpikeInlineAttachmentProvider: NSTextAttachmentViewProvider {

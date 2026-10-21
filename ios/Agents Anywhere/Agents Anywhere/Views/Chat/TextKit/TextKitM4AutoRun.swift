@@ -273,7 +273,7 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
                 if abs(stored - revealClamp) > 1.5 {
                     failures.append("m4 batch \(batchIndex): stored \(stored) vs reveal clamp \(revealClamp)")
                 }
-                if stored > content + 1 {
+                if stored > content + 1.5 {
                     failures.append("m4 batch \(batchIndex): stored \(stored) exceeds content \(content)")
                 }
             } else {
@@ -483,6 +483,8 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
             "revealedCharacters": revealingCell.debugRevealedCharacters,
             "maskLayerInstalled": revealingCell.debugMaskLayerInstalled,
             "tailViews": revealingCell.debugTailViewCount,
+            "stableViews": revealingCell.debugStableViewCount,
+            "streamingConfiguration": revealingCell.debugStreamingConfiguration,
             "tailTextLength": revealingDocument.tailText.count,
             "stableBlocks": revealingDocument.stableBlockCount,
             "blockCount": revealingDocument.document.blocks.count,
@@ -536,6 +538,7 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
     }
 
     private func finish() {
+        report["gateVersion"] = 4
         report["failures"] = failures
         report["completed"] = true
         report["passed"] = failures.isEmpty

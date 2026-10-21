@@ -79,6 +79,13 @@ final class AssistantMarkdownCell: UICollectionViewCell {
     private var tailViews: [AssistantBlockID: UIView] = [:]
     private var tailConstraints: [AssistantBlockID: NSLayoutConstraint] = [:]
     private var lastGeneration = -1
+    /// Non-text blocks already played their entrance; later blocks stay
+    /// hidden until the reveal cursor reaches them.
+    private var entrancedBlockIDs: Set<AssistantBlockID> = []
+    private var revealCatchUpTask: Task<Void, Never>?
+    /// The block index the driver currently masks; a cursor that crosses into
+    /// another block reconfigures the driver without waiting for new text.
+    private var lastCursorBlockIndex = -1
 
     /// The reveal driver per cell. It survives batch configurations so the
     /// mask keeps its released cursor; reuse and static configuration reset it.
@@ -94,6 +101,8 @@ final class AssistantMarkdownCell: UICollectionViewCell {
     private(set) var debugTailUpdates = 0
 
     var debugTailViewCount: Int { tailViews.count }
+    var debugStableViewCount: Int { stableViews.count }
+    var debugStreamingConfiguration: Bool { streaming != nil }
     var debugMaskInstalled: Bool {
         revealDriver.clampedHeight != nil
     }
@@ -192,6 +201,7 @@ final class AssistantMarkdownCell: UICollectionViewCell {
         if window == nil, streaming != nil {
             revealDriver.reset()
             revealCursorView = nil
+            revealCatchUpTask?.cancel()
             #if DEBUG
             debugStreamingRowHeight = nil
             #endif
@@ -362,7 +372,6 @@ final class AssistantMarkdownCell: UICollectionViewCell {
                 }
                 tailConstraints[id]?.constant = height
             } else {
-                let isNew = tailViews[id] == nil
                 removeTailView(id)
                 let made = AssistantMarkdownBlockViewFactory.make(
                     block, width: width,
@@ -373,12 +382,6 @@ final class AssistantMarkdownCell: UICollectionViewCell {
                 constraint.isActive = true
                 tailViews[id] = made.view
                 tailConstraints[id] = constraint
-                // Code/table/list/quote tails enter with the official cell
-                // fade (`revealEntrance`, 0.25 s, ease-out). Text leaves use
-                // the character mask instead.
-                if isNew, !(made.view is AssistantMarkdownBlockTextView) {
-                    applyBlockEntrance(to: made.view)
-                }
             }
         }
         tailIDs = ids
@@ -422,48 +425,132 @@ final class AssistantMarkdownCell: UICollectionViewCell {
     }
 
     /// The cursor block is the top-level block that contains the reveal
-    /// offset. A text block gets the per-line mask even when a list, quote,
-    /// code or table follows it; those later structures use the block
-    /// entrance instead of a character mask.
+    /// offset. A text block gets the per-line mask; blocks after the cursor
+    /// stay hidden, and a non-text cursor block (code/table/list/quote) uses
+    /// the official block entrance and clamps the row at its bottom.
     private func configureReveal(_ streaming: AssistantStreamingDocument) {
         guard let state = revealState else {
             revealDriver.reset()
             revealCursorView = nil
+            revealCatchUpTask?.cancel()
+            showAllBlocks(streaming)
             return
         }
         let blocks = streaming.document.blocks
         let now = ProcessInfo.processInfo.systemUptime
         let cursor = min(state.shownThrough(at: now), state.total)
-        var start = 0
-        var cursorIndex = -1
-        for (index, block) in blocks.enumerated() {
-            let end = start + block.characterCount
-            if cursor < end {
-                cursorIndex = index
-                break
+        let cursorIndex = cursorBlockIndex(in: streaming, at: cursor)
+        updateBlockPresentation(streaming, cursorIndex: cursorIndex)
+
+        let cursorID = cursorIndex >= 0 && cursorIndex < streaming.blockIDs.count
+            ? streaming.blockIDs[cursorIndex] : nil
+        if cursorIndex >= 0,
+           cursorIndex < streaming.blockIDs.count,
+           case .text = blocks[cursorIndex],
+           let id = cursorID,
+           let view = (stableViews[id] ?? tailViews[id])
+                        as? AssistantMarkdownBlockTextView {
+            revealCatchUpTask?.cancel()
+            var blockStart = 0
+            for index in 0..<cursorIndex {
+                blockStart += blocks[index].characterCount
             }
-            start = end
-        }
-        if cursorIndex < 0 { cursorIndex = blocks.count - 1 }
-        guard cursorIndex >= 0,
-              cursorIndex < streaming.blockIDs.count,
-              case .text = blocks[cursorIndex],
-              let view = (stableViews[streaming.blockIDs[cursorIndex]]
-                            ?? tailViews[streaming.blockIDs[cursorIndex]])
-                        as? AssistantMarkdownBlockTextView else {
-            revealDriver.reset()
-            revealCursorView = nil
+            revealCursorView = view
+            revealDriver.configure(
+                state: state, blockStart: blockStart,
+                blockLength: blocks[cursorIndex].characterCount,
+                textView: view)
             return
         }
-        var blockStart = 0
-        for index in 0..<cursorIndex {
-            blockStart += blocks[index].characterCount
+
+        // Non-text cursor: no character mask. The row still clamps at the
+        // block's bottom and later blocks stay hidden until the cursor
+        // reaches them. Report the height off the apply pass.
+        revealDriver.reset()
+        revealCursorView = nil
+        if let id = cursorID, let view = stableViews[id] ?? tailViews[id] {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                let bottom = view.convert(
+                    CGPoint(x: 0, y: view.bounds.maxY), to: self.contentView).y
+                let height = ceil(bottom + 1.0)
+                #if DEBUG
+                self.debugStreamingRowHeight = height
+                #endif
+                self.onStreamingRevealFrame?(height)
+            }
         }
-        revealCursorView = view
-        revealDriver.configure(
-            state: state, blockStart: blockStart,
-            blockLength: blocks[cursorIndex].characterCount,
-            textView: view)
+        scheduleRevealCatchUp(state: state)
+    }
+
+    /// The top-level block that contains a message-character offset.
+    private func cursorBlockIndex(in streaming: AssistantStreamingDocument,
+                                  at cursor: Int) -> Int {
+        let blocks = streaming.document.blocks
+        var start = 0
+        var index = blocks.count - 1
+        for (candidate, block) in blocks.enumerated() {
+            let end = start + block.characterCount
+            if cursor < end { index = candidate; break }
+            start = end
+        }
+        return index
+    }
+
+    /// Blocks at or before the cursor are visible; later ones stay hidden.
+    /// Non-text blocks play the official entrance the first time they become
+    /// visible, never while clipped off the row.
+    private func updateBlockPresentation(_ streaming: AssistantStreamingDocument,
+                                         cursorIndex: Int) {
+        let blocks = streaming.document.blocks
+        lastCursorBlockIndex = cursorIndex
+        for (index, block) in blocks.enumerated() {
+            let id = streaming.blockIDs[index]
+            guard let view = stableViews[id] ?? tailViews[id] else { continue }
+            view.isHidden = index > cursorIndex
+            guard index <= cursorIndex else { continue }
+            guard case .text = block else {
+                if !entrancedBlockIDs.contains(id) {
+                    entrancedBlockIDs.insert(id)
+                    applyBlockEntrance(to: view)
+                }
+                continue
+            }
+        }
+    }
+
+    private func showAllBlocks(_ streaming: AssistantStreamingDocument) {
+        for id in streaming.blockIDs {
+            (stableViews[id] ?? tailViews[id])?.isHidden = false
+        }
+    }
+
+    /// A non-text cursor has no display-link driver to report completion. When
+    /// the received text is complete, wait for the pure timeline to catch up
+    /// and tell the controller to hand the row over (footer install).
+    private func scheduleRevealCatchUp(state: StreamingRevealState) {
+        revealCatchUpTask?.cancel()
+        guard state.isTextComplete else { return }
+        if state.isCaughtUp(at: ProcessInfo.processInfo.systemUptime) {
+            notifyRevealCaughtUp()
+            return
+        }
+        revealCatchUpTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(50))
+                guard !Task.isCancelled else { return }
+                if state.isCaughtUp(at: ProcessInfo.processInfo.systemUptime) {
+                    self?.notifyRevealCaughtUp()
+                    return
+                }
+            }
+        }
+    }
+
+    private func notifyRevealCaughtUp() {
+        DispatchQueue.main.async { [weak self] in
+            self?.onStreamingRevealCaughtUp?()
+        }
     }
 
     /// The open text block's view (tail or already-promoted stable). The
@@ -472,6 +559,18 @@ final class AssistantMarkdownCell: UICollectionViewCell {
     private weak var revealCursorView: UIView?
 
     private func handleRevealFrame(_ clamped: CGFloat?) {
+        var clamped = clamped
+        // The cursor can cross into the next block while no new text arrives;
+        // switch the mask (and unhide later blocks) without waiting for a
+        // batch. Safe here: a display-link tick is not a layout pass.
+        if let streaming, let released = revealDriver.released {
+            let index = cursorBlockIndex(in: streaming, at: released)
+            if index != lastCursorBlockIndex {
+                rebuildStreamingIfPossible()
+                // The old clamp was in the previous view's coordinates.
+                clamped = revealDriver.clampedHeight
+            }
+        }
         guard let clamped, let cursorView = revealCursorView else {
             #if DEBUG
             debugStreamingRowHeight = nil
@@ -490,6 +589,9 @@ final class AssistantMarkdownCell: UICollectionViewCell {
     private func removeBlockViews() {
         revealDriver.reset()
         revealCursorView = nil
+        revealCatchUpTask?.cancel()
+        entrancedBlockIDs.removeAll()
+        lastCursorBlockIndex = -1
         NSLayoutConstraint.deactivate(heightConstraints)
         NSLayoutConstraint.deactivate(Array(stableConstraints.values))
         NSLayoutConstraint.deactivate(Array(tailConstraints.values))

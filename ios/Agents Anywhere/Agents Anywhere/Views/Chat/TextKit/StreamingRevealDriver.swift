@@ -104,8 +104,12 @@ final class StreamingRevealDriver: NSObject {
         needsReport = false
         clampedHeight = nil
         // A row that leaves the character reveal (for example the tail turned
-        // into a code block) must return to its measured height.
-        if hadClamp { onFrame?(nil) }
+        // into a code block) must return to its measured height. Defer the
+        // callback: reset runs inside the cell's configuration, where
+        // invalidating the collection layout would race the apply.
+        if hadClamp {
+            DispatchQueue.main.async { [weak self] in self?.onFrame?(nil) }
+        }
     }
 
     private(set) var clampedHeight: CGFloat?

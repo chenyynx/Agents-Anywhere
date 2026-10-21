@@ -338,6 +338,21 @@ import Testing
         #expect(!SubAgentProgress.statsLine(for: card).contains("55"))
     }
 
+    @Test func tokenMetricsUseGlyphsForTheSplit() throws {
+        let card = try card(try cardItem(usage: ["inputTokens": 17_593, "outputTokens": 6_398]))
+        #expect(SubAgentProgress.tokenMetrics(for: card) == [
+            SubAgentProgress.SubAgentTokenMetric(symbol: "arrow.up", value: "17.6k"),
+            SubAgentProgress.SubAgentTokenMetric(symbol: "arrow.down", value: "6.4k"),
+        ])
+        // A one-sided split keeps the side it has.
+        let inputOnly = try card(try cardItem(usage: ["inputTokens": 1_000]))
+        #expect(SubAgentProgress.tokenMetrics(for: inputOnly)
+            == [SubAgentProgress.SubAgentTokenMetric(symbol: "arrow.up", value: "1k")])
+        // The wire's single counter has no glyph form; the view falls back.
+        let plain = try card(try cardItem(usage: ["tokens": 33_555]))
+        #expect(SubAgentProgress.tokenMetrics(for: plain).isEmpty)
+    }
+
     @Test func statsLinesFallBackToTheWireCounterWithoutASplit() throws {
         let card = try card(try cardItem(usage: ["toolCalls": 7, "tokens": 33_555, "durationMs": 24_723]))
         #expect(SubAgentProgress.statsLines(for: card)

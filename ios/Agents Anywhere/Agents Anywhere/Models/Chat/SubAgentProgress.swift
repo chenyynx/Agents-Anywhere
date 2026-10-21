@@ -573,6 +573,33 @@ enum SubAgentProgress {
         statsLines(for: card).joined(separator: " · ")
     }
 
+    /// One token counter as the panel's icon form.
+    struct SubAgentTokenMetric: Equatable {
+        let symbol: String
+        let value: String
+    }
+
+    /// The token side as icons (pp, 2026-10-21): ↑ input, ↓ output — the same
+    /// pair the plain text spells "输入/输出", so VoiceOver keeps its words
+    /// while the visible line stays glyph-only. Empty when the transcript
+    /// split is unavailable; the view then renders the plain fallback line.
+    static func tokenMetrics(for card: SubAgentCard) -> [SubAgentTokenMetric] {
+        var metrics: [SubAgentTokenMetric] = []
+        if let input = card.inputTokens, input > 0 {
+            metrics.append(SubAgentTokenMetric(
+                symbol: "arrow.up",
+                value: SubAgentUsageFormat.tokens(input)
+            ))
+        }
+        if let output = card.outputTokens, output > 0 {
+            metrics.append(SubAgentTokenMetric(
+                symbol: "arrow.down",
+                value: SubAgentUsageFormat.tokens(output)
+            ))
+        }
+        return metrics
+    }
+
     /// The same row as one spoken sentence: "已完成，12 个工具，用时 8.1 秒，
     /// 输入 17.6k，输出 6.4k". VoiceOver needs the words "用时" — a bare "8.1s"
     /// is read as a stray letter — and it needs the phase word, which the badge

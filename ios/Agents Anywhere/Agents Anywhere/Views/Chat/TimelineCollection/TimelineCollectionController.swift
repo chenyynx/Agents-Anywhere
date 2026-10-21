@@ -25,6 +25,11 @@ final class TimelineCollectionController: UIViewController {
     private(set) var measurer: (any TimelineHeightMeasuring)?
 
     private var currentItems: [TimelineListItem] = []
+    /// Anchor of the history page whose prepend target is installed. The
+    /// projection is recomputed after the apply's measurement pass, because
+    /// the budgeted pass at request time can leave rows on estimates.
+    private var insertionProjection: (anchorRowID: String,
+                                      edge: TimelineHistoryLayout.Edge)?
     /// At most one snapshot may be in flight. The diffable data source
     /// performs its batch updates asynchronously, while SwiftUI can hand us a
     /// newer item list on a later runloop turn. The layout reads its items
@@ -323,6 +328,13 @@ final class TimelineCollectionController: UIViewController {
             }
         }
         measureSynchronously(toMeasure, width: columnWidth)
+        // Recompute the prepend target from the heights this apply will use.
+        if let projection = insertionProjection,
+           let projected = projectedHistoryLayout(items: items,
+                                                  anchorRowID: projection.anchorRowID,
+                                                  edge: projection.edge) {
+            layout.updateInsertionOwed(layout: projected)
+        }
         let liveIDs = Set(items.map(\.itemID))
         documentHeights = documentHeights.filter { liveIDs.contains($0.key) }
 
@@ -339,6 +351,9 @@ final class TimelineCollectionController: UIViewController {
             self.schedulePendingMeasurements()
             self.scheduleVisibleCellSettle()
             self.publishViewport()
+            if self.layout.insertionOwedIsSettled {
+                self.insertionProjection = nil
+            }
             self.performPendingSnapshotUpdate()
         }
     }
@@ -1404,10 +1419,12 @@ final class TimelineCollectionController: UIViewController {
         layout.beginInsertionOwed(generation: generation, origin: origin,
             offsetY: collectionView.contentOffset.y, topInset: collectionView.adjustedContentInset.top)
         layout.updateInsertionOwed(layout: projected)
+        insertionProjection = (anchorRowID, edge)
         return position
     }
 
     func cancelHistoryRequest() {
+        insertionProjection = nil
         layout.cancelInsertionOwed()
     }
 

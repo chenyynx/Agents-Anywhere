@@ -311,6 +311,8 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
                 "revealClamp": Double(revealClamp ?? -1),
             ])
             followOffsets.append(controller.collectionView.contentOffset.y)
+            if batchIndex == 3 { capture("m42-mid1.png") }
+            if batchIndex == batches.count - 1 { capture("m42-mid2.png") }
         }
 
         // M4.2 reveal assertions.
@@ -450,6 +452,7 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
             failures.append("m4.2 completion: reveal clamp still installed")
         }
 
+        capture("m42-final.png")
         report["follow"] = [
             "offsets": followOffsets.map(Double.init),
             "sawReveal": sawReveal,
@@ -525,6 +528,20 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
             withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) else { return }
         let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent(Self.resultFileName)
+        try? data.write(to: url)
+    }
+
+    /// Visual evidence for the gate: two mid-reveal frames and the completion
+    /// frame, written where the workflow can copy them out of the container.
+    private func capture(_ name: String) {
+        guard let window = controller?.view.window else { return }
+        let renderer = UIGraphicsImageRenderer(bounds: window.bounds)
+        let image = renderer.image { _ in
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        guard let data = image.pngData() else { return }
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(name)
         try? data.write(to: url)
     }
 

@@ -377,6 +377,9 @@ jobs:
           fi
           cp "$RESULT" "$RUNNER_TEMP/textkit-m4.json"
           cat "$RUNNER_TEMP/textkit-m4.json"
+          for name in m42-mid1.png m42-mid2.png m42-final.png; do
+            cp "$CONTAINER/Documents/$name" "$RUNNER_TEMP/$name" 2>/dev/null || true
+          done
 
       - name: Assert the M4 streaming results
         if: always()
@@ -469,6 +472,9 @@ jobs:
             ${{ runner.temp }}/textkit-m4-baseline.json
             ${{ runner.temp }}/textkit-m4.json
             ${{ runner.temp }}/textkit-mask-spike.json
+            ${{ runner.temp }}/m42-mid1.png
+            ${{ runner.temp }}/m42-mid2.png
+            ${{ runner.temp }}/m42-final.png
             ${{ runner.temp }}/m4-baseline-failure.png
             ${{ runner.temp }}/textkit-m4-failure.png
             ${{ runner.temp }}/mask-spike-failure.png

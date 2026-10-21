@@ -315,8 +315,8 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
         let tableDocument = AssistantMarkdownDocumentParser.make(
             text: "| a | b |\n|---|---|\n| 1 | 2 |",
             resolvesFileReferences: false, typography: typography)
-        // Still unsupported in M3; an image must keep falling back to hosting
-        // rather than render as a paragraph with a replacement glyph.
+        // M4.3: an image-only paragraph becomes a formal image block instead
+        // of making the whole reply fall back to hosting.
         let imageDocument = AssistantMarkdownDocumentParser.make(
             text: "![alt](https://example.com/pixel.png)",
             resolvesFileReferences: false, typography: typography)
@@ -361,7 +361,11 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
         if quoteDocument == nil { failures.append("textkit parser: quote rejected") }
         if codeDocument == nil { failures.append("textkit parser: code block rejected") }
         if tableDocument == nil { failures.append("textkit parser: table rejected") }
-        if imageDocument != nil { failures.append("textkit parser: image accepted before its M3 step") }
+        if imageDocument == nil {
+            failures.append("textkit parser: image-only paragraph rejected")
+        } else if (imageDocument?.blockCounts["image"] ?? 0) != 1 {
+            failures.append("textkit parser: image block missing")
+        }
         if topLevelBlocks != 8 {
             failures.append("textkit fixture: \(topLevelBlocks) top-level blocks, expected 8")
         }
@@ -404,7 +408,8 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
             "quoteAccepted": quoteDocument != nil,
             "codeAccepted": codeDocument != nil,
             "tableAccepted": tableDocument != nil,
-            "imageRejected": imageDocument == nil,
+            "imageAccepted": imageDocument != nil,
+            "imageBlocks": imageDocument?.blockCounts["image"] ?? 0,
             "tableSurfaceCells": tableSurfaceCells,
             "tableSurfaceSubviews": tableSurfaceSubviews,
             "tableSurfaceLabels": tableSurfaceLabels,

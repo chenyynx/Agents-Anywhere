@@ -266,7 +266,8 @@ jobs:
                tk.get("plainAccepted") is True and tk.get("unorderedAccepted") is True
                and tk.get("orderedAccepted") is True and tk.get("quoteAccepted") is True
                and tk.get("codeAccepted") is True and tk.get("tableAccepted") is True
-               and tk.get("imageRejected") is True, tk),
+               and tk.get("imageAccepted") is True
+               and counts.get("image") == 1, tk),
               ("fixture tree",
                tk.get("topLevelBlocks") == 8 and counts.get("text") == 12
                and counts.get("list") == 4 and counts.get("quote") == 1

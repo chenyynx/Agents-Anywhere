@@ -44,6 +44,10 @@ struct AssistantMarkdownDocument {
                     counts["code", default: 0] += 1
                 case .table:
                     counts["table", default: 0] += 1
+                case .image:
+                    counts["image", default: 0] += 1
+                case .math:
+                    counts["math", default: 0] += 1
                 }
             }
         }
@@ -68,6 +72,8 @@ enum AssistantMarkdownBlock {
     case quote(AssistantQuoteBlock)
     case code(AssistantCodeBlock)
     case table(AssistantTableBlock)
+    case image(AssistantImageBlock)
+    case math(AssistantMathBlock)
 
     /// Stable label for DEBUG build-cost instrumentation.
     var kindName: String {
@@ -77,12 +83,18 @@ enum AssistantMarkdownBlock {
         case .quote: return "quote"
         case .code: return "code"
         case .table: return "table"
+        case .image: return "image"
+        case .math: return "math"
         }
     }
 
     /// Rendered UTF-16 length. The reveal cursor counts characters of the
     /// blocks that are on screen (the official controller anchors on the sum
     /// of its block lengths), not the raw Markdown source.
+    ///
+    /// Image and math blocks render as one atomic attachment, so they count
+    /// as one character. The legacy renderer counted the alt/label text,
+    /// which only changes the reveal pacing, not the visible result.
     var characterCount: Int {
         switch self {
         case .text(let text):
@@ -99,7 +111,40 @@ enum AssistantMarkdownBlock {
             return table.rows.reduce(0) { total, row in
                 total + row.reduce(0) { $0 + $1.length }
             }
+        case .image, .math:
+            return 1
         }
+    }
+}
+
+/// One Markdown image that occupies its own paragraph. The reserved box is
+/// the legacy attachment's footprint (`ChatMarkdownImageAttachment`), resolved
+/// against the column the same way Textual does, so measurement never waits
+/// for the network.
+struct AssistantImageBlock {
+    let url: URL
+    let description: String
+    let isFileReference: Bool
+
+    func reservedSize(columnWidth: CGFloat) -> CGSize {
+        let width = min(420, max(0, columnWidth))
+        // `[pp]` the legacy attachment reserves a 4:3 box for remote images
+        // and a 68pt chip for a session file reference.
+        return CGSize(width: width, height: isFileReference ? 68 : width * 0.75)
+    }
+}
+
+/// One block-level formula (`$$…$$`). Inline formulas stay attachments inside
+/// a text block; a display formula gets its own centered block the way
+/// Textual's `MathBlock` does.
+struct AssistantMathBlock {
+    let latex: String
+    /// The surrounding body size; the bridge applies Textual's 1.2 scale.
+    let fontSize: CGFloat
+
+    func metrics(columnWidth: CGFloat) -> TextualMath.Metrics {
+        TextualMath.metrics(latex: latex, isBlock: true,
+                            fontSize: fontSize, proposalWidth: columnWidth)
     }
 }
 
@@ -348,12 +393,24 @@ enum AssistantMarkdownDocumentParser {
                                   typography: TimelineTypographySnapshot) -> AssistantMarkdownBlock? {
         guard !content.characters.isEmpty else { return nil }
         guard let intent else {
+            if let image = standaloneImageBlock(content) {
+                return .image(image)
+            }
+            if let math = standaloneMathBlock(content, typography: typography) {
+                return .math(math)
+            }
             return textBlock(content, headingLevel: nil,
                              foreground: foreground, typography: typography)
                 .map(AssistantMarkdownBlock.text)
         }
         switch intent.kind {
         case .paragraph:
+            if let image = standaloneImageBlock(content) {
+                return .image(image)
+            }
+            if let math = standaloneMathBlock(content, typography: typography) {
+                return .math(math)
+            }
             return textBlock(content, headingLevel: nil,
                              foreground: foreground, typography: typography)
                 .map(AssistantMarkdownBlock.text)
@@ -372,11 +429,59 @@ enum AssistantMarkdownDocumentParser {
             return tableBlock(content, tableIntent: intent, columns: columns,
                               foreground: foreground, typography: typography)
         default:
-            // Code blocks, tables, thematic breaks, math and attachment-only
-            // blocks are still hosting-only. One unsupported block makes the
-            // whole row fall back, never a half-TextKit reply.
+            // Thematic breaks, block HTML and mixed attachment runs are still
+            // hosting-only. One unsupported block makes the whole row fall
+            // back, never a half-TextKit reply.
             return nil
         }
+    }
+
+    /// A paragraph whose only visible content is one Markdown image. A mixed
+    /// text+image paragraph still returns nil: the legacy renderer keeps the
+    /// inline flow, and "宁缺勿假" forbids a half-rendered reply.
+    private static func standaloneImageBlock(
+        _ content: AttributedString
+    ) -> AssistantImageBlock? {
+        var found: (url: URL, description: String)?
+        for run in content.runs {
+            if let url = run.imageURL {
+                guard found == nil else { return nil }
+                found = (url, String(content[run.range].characters))
+                continue
+            }
+            if run.textual.attachment != nil { return nil }
+            if String(content[run.range].characters).contains(where: { !$0.isWhitespace }) {
+                return nil
+            }
+        }
+        guard let found else { return nil }
+        return AssistantImageBlock(
+            url: found.url,
+            description: found.description,
+            isFileReference: SessionFileReference.path(from: found.url) != nil)
+    }
+
+    /// A paragraph whose only visible content is one display-style formula.
+    /// Inline formulas stay attachments inside a text block.
+    private static func standaloneMathBlock(
+        _ content: AttributedString,
+        typography: TimelineTypographySnapshot
+    ) -> AssistantMathBlock? {
+        var descriptor: TextualMath.Descriptor?
+        for run in content.runs {
+            if let attachment = run.textual.attachment {
+                guard descriptor == nil,
+                      let math = TextualMath.descriptor(for: attachment) else { return nil }
+                descriptor = math
+                continue
+            }
+            if run.imageURL != nil { return nil }
+            if String(content[run.range].characters).contains(where: { !$0.isWhitespace }) {
+                return nil
+            }
+        }
+        guard let descriptor, descriptor.isBlock else { return nil }
+        return AssistantMathBlock(latex: descriptor.latex, fontSize: typography.body)
     }
 
     private static func listBlock(_ content: AttributedString,

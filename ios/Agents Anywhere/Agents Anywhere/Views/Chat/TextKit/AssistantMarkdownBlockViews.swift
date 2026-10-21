@@ -29,8 +29,78 @@ enum AssistantMarkdownBlockViewFactory {
         case .table(let table):
             return (AssistantTableBlockView(table: table, width: width,
                                             displayScale: displayScale), height)
+        case .image(let image):
+            let view = AssistantImageBlockView(
+                image: image,
+                size: image.reservedSize(columnWidth: width),
+                height: height)
+            return (view, height)
+        case .math(let math):
+            let view = AssistantMathBlockView(
+                math: math, columnWidth: width, height: height)
+            return (view, height)
         }
     }
+}
+
+/// One Markdown image. The legacy attachment view is hosted at its reserved
+/// footprint, so a slow/failed load never changes the block height. Interaction
+/// (preview, file open, retry) stays inside that view.
+final class AssistantImageBlockView: UIView {
+    private let host: UIHostingController<AnyView>
+
+    init(image: AssistantImageBlock, size: CGSize, height: CGFloat) {
+        // The live color scheme arrives through the hosted view's own
+        // environment; the stored copy only provides the defaults the legacy
+        // loader used.
+        let attachment = ChatMarkdownImageAttachment(
+            url: image.url,
+            description: image.description,
+            colors: ColorEnvironmentValues())
+        host = UIHostingController(rootView: AnyView(attachment.body))
+        super.init(frame: .zero)
+        backgroundColor = .clear
+        host.view.backgroundColor = .clear
+        host.view.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(host.view)
+        NSLayoutConstraint.activate([
+            host.view.leadingAnchor.constraint(equalTo: leadingAnchor),
+            host.view.topAnchor.constraint(equalTo: topAnchor),
+            // The legacy attachment is `min(420, column) × (0.75×width | 68)`.
+            // Pinning the hosted view keeps a wide column from stretching it.
+            host.view.widthAnchor.constraint(equalToConstant: size.width),
+            // `height` is the layout's own rounded number, so the cell's
+            // required height and this view can never disagree.
+            host.view.heightAnchor.constraint(equalToConstant: height),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+}
+
+/// One display formula, centered like Textual's `MathBlock`.
+final class AssistantMathBlockView: UIView {
+    private let host: UIHostingController<TextualMathView>
+
+    init(math: AssistantMathBlock, columnWidth: CGFloat, height: CGFloat) {
+        host = UIHostingController(rootView: TextualMathView(
+            latex: math.latex, isBlock: true, fontSize: math.fontSize))
+        super.init(frame: .zero)
+        backgroundColor = .clear
+        let metrics = math.metrics(columnWidth: columnWidth)
+        host.view.backgroundColor = .clear
+        host.view.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(host.view)
+        NSLayoutConstraint.activate([
+            host.view.centerXAnchor.constraint(equalTo: centerXAnchor),
+            host.view.topAnchor.constraint(equalTo: topAnchor),
+            host.view.widthAnchor.constraint(
+                equalToConstant: max(0, min(metrics.size.width, columnWidth))),
+            host.view.heightAnchor.constraint(equalToConstant: height),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
 /// One list block. Items are rows in a vertical stack; the marker lives in the

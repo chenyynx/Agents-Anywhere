@@ -30,7 +30,9 @@ enum AssistantMarkdownTextLayout {
             return BlockMargins(
                 top: scaled(ChatMetrics.codeBlockMargin),
                 bottom: scaled(ChatMetrics.codeBlockMargin))
-        case .list, .quote:
+        case .list, .quote, .image, .math:
+            // The legacy renderer treats an image or a display formula as a
+            // paragraph block, so it takes the paragraph's top margin.
             return BlockMargins(top: scaled(ChatMetrics.paragraphSpacing), bottom: nil)
         }
     }
@@ -120,6 +122,14 @@ enum AssistantMarkdownTextLayout {
             // Column widths are capped and fixed at parse time, so the grid
             // scrolls sideways instead of reflowing against the row width.
             return roundUp(table.totalHeight, scale: displayScale)
+        case .image(let image):
+            // The reserved box is the legacy attachment's footprint; the
+            // loaded image only ever draws inside it.
+            return roundUp(image.reservedSize(columnWidth: width).height,
+                           scale: displayScale)
+        case .math(let math):
+            return roundUp(math.metrics(columnWidth: width).size.height,
+                           scale: displayScale)
         }
     }
 

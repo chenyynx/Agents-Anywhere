@@ -621,12 +621,12 @@ enum SubAgentProgress {
     /// 分钟，输入 380k tokens，输出 12k tokens". VoiceOver needs the unit
     /// words the visible line deliberately omits, and the phase word the badge
     /// already carries visually.
-    static func statsAccessibilityLabel(for card: SubAgentCard, now: Date? = nil) -> String {
+    static func statsAccessibilityLabel(for card: SubAgentCard) -> String {
         var parts: [String] = []
         if let toolCalls = card.toolCalls, toolCalls > 0 {
             parts.append(String(localized: "\(toolCalls) 个工具"))
         }
-        if let durationMs = liveDurationMs(for: card, now: now), durationMs > 0 {
+        if let durationMs = card.durationMs, durationMs > 0 {
             parts.append(
                 String(localized: "用时 \(SubAgentUsageFormat.duration(milliseconds: durationMs))")
             )

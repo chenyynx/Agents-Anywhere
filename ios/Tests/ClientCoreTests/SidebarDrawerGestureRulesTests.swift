@@ -34,18 +34,21 @@ import Testing
         #expect(SidebarDrawerGestureRules.normalizedVelocity(
             velocityX: 300, progress: 0, targetProgress: 1, revealWidth: 300
         ) == 1)
-        // Closing from 80%: 240 pt left, -480 pt/s is -2.0.
+        // Closing from 80%: 240 pt left, -480 pt/s moves toward the target,
+        // so the normalized value is +2.0.
         #expect(SidebarDrawerGestureRules.normalizedVelocity(
             velocityX: -480, progress: 0.8, targetProgress: 0, revealWidth: 300
-        ) == -2)
+        ) == 2)
     }
 
     @Test func normalizedVelocityClampsToTenPi() {
         #expect(SidebarDrawerGestureRules.normalizedVelocity(
             velocityX: 12_000, progress: 0, targetProgress: 1, revealWidth: 300
         ) == 10 * Double.pi)
+        // Moving away from the close target while the remaining offset is
+        // negative flips the sign into the downward clamp.
         #expect(SidebarDrawerGestureRules.normalizedVelocity(
-            velocityX: -12_000, progress: 1, targetProgress: 0, revealWidth: 300
+            velocityX: 12_000, progress: 1, targetProgress: 0, revealWidth: 300
         ) == -10 * Double.pi)
     }
 

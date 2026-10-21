@@ -22,13 +22,13 @@
 - 另有 docs 提交至 `cf130b18`。
 - 全部已 push 到 `origin/feat/textkit2-assistant-body`。
 
-## 2. 测试包（构建中）
+## 2. 测试包（已构建）
 
-- 构建 run：`39582106040`（commit `cf130b18`，`build=true`，无 simulator gate）。
-- 完成后 release（分支专属，不碰 `ipa-dev`）：
-  - `https://github.com/chenyynx/Agents-Anywhere/releases/tag/ipa-feat-textkit2-assistant-body`
-  - 包名 `AgentsAnywhere-feat-textkit2-assistant-body-cf130b1.ipa`（unsigned，KSign/全能签）
-- 下个会话先查这个 run：`python3 /home/ubuntu/aa-test/ci-watch-aa-m4.py 39582106040`（10s 轮询、结束 Bark）。若失败，取 job 日志/`sim-build.log` 的 `error:`，不要猜。
+- 构建 run：`39582106040`（commit `cf130b18`，`build=true`）——**test + build 均 success**。
+- release（分支专属，未碰 `ipa-dev`）：
+  - 页面：`https://github.com/chenyynx/Agents-Anywhere/releases/tag/ipa-feat-textkit2-assistant-body`
+  - 直连：`https://github.com/chenyynx/Agents-Anywhere/releases/download/ipa-feat-textkit2-assistant-body/AgentsAnywhere-feat-textkit2-assistant-body-cf130b1.ipa`
+  - 大小 15,438,923 bytes；unsigned，需 KSign/全能签。
 - **构建只从分支出**；不要为测试包触碰 dev。
 
 ### 真机验收清单

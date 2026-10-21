@@ -850,6 +850,8 @@ final class TimelineCollectionController: UIViewController {
             return
         }
         guard collectionView != nil else { return }
+        // An explicit bottom command (pill, send, return) owns the offset.
+        stopStreamingFollow()
         userScrollSettleTask?.cancel()
         bottomAnimationWatchdog?.cancel()
         readerSettledAtBottom = false

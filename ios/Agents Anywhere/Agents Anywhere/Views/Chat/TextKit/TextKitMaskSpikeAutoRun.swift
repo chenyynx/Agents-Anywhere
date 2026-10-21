@@ -244,18 +244,25 @@ private final class SpikeInlineAttachment: NSTextAttachment {
     override func viewProvider(for parentView: UIView?,
                                location: NSTextLocation,
                                textContainer: NSTextContainer?) -> NSTextAttachmentViewProvider? {
-        let provider = SpikeInlineAttachmentProvider(
+        return SpikeInlineAttachmentProvider(
             textAttachment: self,
             parentView: parentView,
             textLayoutManager: textContainer?.textLayoutManager,
             location: location)
-        provider.tracksTextAttachmentViewBounds = true
-        return provider
     }
 }
 
 private final class SpikeInlineAttachmentProvider: NSTextAttachmentViewProvider {
     private var host: UIHostingController<SpikeInlineChip>?
+
+    // `attachmentBounds` runs before `loadView`, and the bounds-tracking flag
+    // must already be set when it does; setting it after init is too late.
+    override init(textAttachment: NSTextAttachment, parentView: UIView?,
+                  textLayoutManager: NSTextLayoutManager?, location: NSTextLocation) {
+        super.init(textAttachment: textAttachment, parentView: parentView,
+                   textLayoutManager: textLayoutManager, location: location)
+        tracksTextAttachmentViewBounds = true
+    }
 
     override func loadView() {
         let host = UIHostingController(rootView: SpikeInlineChip())

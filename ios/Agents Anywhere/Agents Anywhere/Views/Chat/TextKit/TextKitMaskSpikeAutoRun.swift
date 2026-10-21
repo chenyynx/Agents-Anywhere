@@ -158,7 +158,16 @@ enum TextKitMaskSpikeAutoRun {
                 "attachment not measured: \(measuredWithAttachment) vs plain \(measuredPlain)")
         }
 
-        let textView = AssistantMarkdownBlockTextView()
+        // Probe the engine the product should use: the TextKit 2 initializer,
+        // not the legacy `init(frame:textContainer:)` path. If the provider
+        // only mounts here, the product text view must migrate.
+        let textView = UITextView(usingTextLayoutManager: true)
+        textView.isEditable = false
+        textView.isScrollEnabled = false
+        textView.isSelectable = false
+        textView.backgroundColor = .clear
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0
         textView.translatesAutoresizingMaskIntoConstraints = true
         textView.frame = CGRect(x: 0, y: 0, width: width, height: 300)
         // The spike proves the interaction path, so unlike the product text

@@ -6,17 +6,20 @@ import Testing
         var ownership = StreamingRevealOwnership()
         ownership.begin("a")
         #expect(ownership.isActive("a"))
-        #expect(ownership.finish("a"))
+        let firstFinish = ownership.finish("a")
+        #expect(firstFinish)
         #expect(!ownership.isActive("a"))
         // A second finish must not pretend there was work to re-apply.
-        #expect(!ownership.finish("a"))
+        let secondFinish = ownership.finish("a")
+        #expect(!secondFinish)
     }
 
     @Test func rowsAreIndependent() {
         var ownership = StreamingRevealOwnership()
         ownership.begin("a")
         ownership.begin("b")
-        #expect(ownership.finish("a"))
+        let finishedA = ownership.finish("a")
+        #expect(finishedA)
         #expect(ownership.isActive("b"))
         #expect(ownership.signatureRowIDs == ["b"])
     }

@@ -168,6 +168,17 @@ shownThrough=floor(position+1e-9)
 - **无障碍旁路**：VoiceOver / Reduce Motion 时揭示关闭（官方 pacing provider 返回 nil / 不建 driver），行直接全量；底部跟随在两种情况下直接 place。已实现。
 - **已知取舍**：稳定块在游标尚未到达其末尾时即整块显示（官方逐叶 mask）；只在快速突发时可见，后续按游标推进可细化。`thinking` 进入时的 caption 谓词官方 UNKNOWN，AA 保留 `.selection`。相位 haptic 在整页生命周期内触发，不随 footer 是否在屏。手势只做 delegate 级验证（simctl 不能合成触摸）。AA 现有 `measuredAtBottom` 判定是 **8pt**（官方 1 物理像素 = 1/displayScale）；本次复用该判定以免影响 pull/回底/胶囊等既有行为，`TimelineSpringFollow.shouldRearmEnd` 的 1px 规则仅由单测覆盖。
 
+## 7.1 C3 gate flake（2026-10-21 处理）
+
+C3（`TimelineAutoRun`）在 CI 上间歇性失败，三种形态：`no cell for reasoning`、`longGroup cell 200 vs content 1471`、`inline notice expanded == collapsed`。根因是 gate 用固定等待采样，异步 Markdown 解析与 controller 的 preferred-height 补偿在 CI 负载下会晚于固定时点；另有 longGroup 测量缓存已更新但 cell 仍沿用旧 frame 的时序。
+
+修复（均为 gate 侧，断言未放宽）：
+- `cabe89fd`：把固定等待改为轮询产品自身的 settle（async Markdown 10s、其它 3s；fold/notice/tail 用高度谓词 3s），变化时重新 `remeasure`，被修正移出可见区的 cell 重新居中。
+- `d822c0f5`：当测量缓存已 settle 但 cell frame 仍旧时，强制一次完整 layout re-apply；样本记录 `attributes`/`frame` 便于诊断。
+- `59256e3d`：缺失 cell 改为 top 对齐 + 10s 重试；失败信息附原因（no index path / no cell at index / width）。
+
+已验证：run `39573714858`（`59256e3d`）**test + timeline-autorun 全绿（C3 与 M4）**；C3 `failures: []`，11 个样本 `attributes == cell == measured`（longGroup 1471/1471/1471）；M4 `failures: []`、`follow.starts: 1`。另派两轮复核 run `39575693162` / `39575701977`。
+
 ## 8. 验收
 
 - M4.2 gate 全绿；旧 SwiftUI 路径回归不变。

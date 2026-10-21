@@ -86,6 +86,10 @@ final class AssistantMarkdownCell: UICollectionViewCell {
     /// The block index the driver currently masks; a cursor that crosses into
     /// another block reconfigures the driver without waiting for new text.
     private var lastCursorBlockIndex = -1
+    /// Revealed content never disappears. A tail re-parse can move the cursor
+    /// block's boundary earlier; without this floor the row would shrink and
+    /// the bottom follow would step backwards. Reset on a full rebuild.
+    private var lastReportedRowHeight: CGFloat = 0
 
     /// The reveal driver per cell. It survives batch configurations so the
     /// mask keeps its released cursor; reuse and static configuration reset it.
@@ -477,10 +481,12 @@ final class AssistantMarkdownCell: UICollectionViewCell {
                 // A view that has not been laid out yet reports its origin;
                 // never collapse the row to a placeholder height.
                 guard height >= 8 else { return }
+                let monotonic = max(height, self.lastReportedRowHeight)
+                self.lastReportedRowHeight = monotonic
                 #if DEBUG
-                self.debugStreamingRowHeight = height
+                self.debugStreamingRowHeight = monotonic
                 #endif
-                self.onStreamingRevealFrame?(height)
+                self.onStreamingRevealFrame?(monotonic)
             }
         }
         scheduleRevealCatchUp(state: state)
@@ -606,10 +612,12 @@ final class AssistantMarkdownCell: UICollectionViewCell {
         let viewBottom = cursorView.convert(
             CGPoint(x: 0, y: cursorView.bounds.height), to: contentView).y
         let height = ceil(min(viewBottom, clampedPoint) + 1.0)
+        let monotonic = max(height, lastReportedRowHeight)
+        lastReportedRowHeight = monotonic
         #if DEBUG
-        debugStreamingRowHeight = height
+        debugStreamingRowHeight = monotonic
         #endif
-        onStreamingRevealFrame?(height)
+        onStreamingRevealFrame?(monotonic)
     }
 
     private func removeBlockViews() {

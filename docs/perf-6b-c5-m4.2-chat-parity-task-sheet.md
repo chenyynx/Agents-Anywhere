@@ -164,6 +164,7 @@ shownThrough=floor(position+1e-9)
   - 跨块同一帧：游标落在块首时 clamp 归 0；rebuild 后不转发 nil（由非文字异步上报接管）。
   - Q：`rowHeight = min(fit, clamped)+1` 在 cell 内实现；`onFrame` 回调后检测 driver 已 reset 则不再写状态；`updateBlockPresentation` 加 `blockIDs` 越界保护。
   - 待验证：run（本轮提交）的 `follow.starts`、offsets 与 gate 全绿。
+- **已验证** run `39565998390`（`f656f096`，gateVersion 6）：**M4 gate 绿（`failures: []`）**；`follow.starts: 1`、`frameCalls: 13`、`eligibleFrames: 12`，offsets `[-68, -68, -68, -68, -68, -46.67, 140, 145]` 单调、`finalOffset 194 == endTarget 194`、`dragDisarmed: true`；done 帧 `streamingConfiguration: true`、`revealedCharacters: 494`、sameCell、stored 616 == measured 616；batch 7 由单调下限保住 567（未被重解析拉回）。唯一红是 C3 gate 的另一形态已知 flake（`measurement: no cell for reasoning`）。
 - **无障碍旁路**：VoiceOver / Reduce Motion 时揭示关闭（官方 pacing provider 返回 nil / 不建 driver），行直接全量；底部跟随在两种情况下直接 place。已实现。
 - **已知取舍**：稳定块在游标尚未到达其末尾时即整块显示（官方逐叶 mask）；只在快速突发时可见，后续按游标推进可细化。`thinking` 进入时的 caption 谓词官方 UNKNOWN，AA 保留 `.selection`。相位 haptic 在整页生命周期内触发，不随 footer 是否在屏。手势只做 delegate 级验证（simctl 不能合成触摸）。AA 现有 `measuredAtBottom` 判定是 **8pt**（官方 1 物理像素 = 1/displayScale）；本次复用该判定以免影响 pull/回底/胶囊等既有行为，`TimelineSpringFollow.shouldRearmEnd` 的 1px 规则仅由单测覆盖。
 

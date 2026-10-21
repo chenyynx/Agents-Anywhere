@@ -76,6 +76,10 @@ final class AssistantImageBlockView: UIView {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    #if DEBUG
+    var debugHostSize: CGSize { host.view.bounds.size }
+    #endif
 }
 
 /// One display formula, centered like Textual's `MathBlock`.

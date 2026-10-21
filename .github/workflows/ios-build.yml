@@ -465,6 +465,70 @@ jobs:
           print("PASS TextKit mask spike")
           PY
 
+      - name: Run the M4.3 static blocks gate
+        if: always()
+        run: |
+          set -euo pipefail
+          UDID="${{ steps.sim.outputs.udid }}"
+          xcrun simctl terminate "$UDID" com.agentsanywhere.app || true
+          xcrun simctl launch "$UDID" com.agentsanywhere.app aa-textkit-m43
+          CONTAINER=$(xcrun simctl get_app_container "$UDID" com.agentsanywhere.app data)
+          RESULT="$CONTAINER/Documents/textkit-m43.json"
+          for _ in $(seq 1 120); do
+            if [ -f "$RESULT" ]; then break; fi
+            sleep 1
+          done
+          if [ ! -f "$RESULT" ]; then
+            echo "::error::M4.3 gate produced no result file"
+            xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/m43-failure.png" || true
+            exit 1
+          fi
+          cp "$RESULT" "$RUNNER_TEMP/textkit-m43.json"
+          if [ -f "$CONTAINER/Documents/m43-static.png" ]; then
+            cp "$CONTAINER/Documents/m43-static.png" "$RUNNER_TEMP/m43-static.png"
+          fi
+          cat "$RUNNER_TEMP/textkit-m43.json"
+
+      - name: Assert the M4.3 static blocks gate
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          path = os.path.join(os.environ["RUNNER_TEMP"], "textkit-m43.json")
+          if not os.path.exists(path):
+              print("::error::M4.3 gate result missing")
+              sys.exit(1)
+          with open(path) as handle:
+              data = json.load(handle)
+          failures = list(data.get("failures") or [])
+          tk = data.get("textKit") or {}
+          counts = tk.get("blockCounts") or {}
+          if not data.get("completed"):
+              failures.append("M4.3 gate did not complete")
+          if counts.get("image") != 1:
+              failures.append("M4.3: image block count %r" % counts.get("image"))
+          if counts.get("math") != 1:
+              failures.append("M4.3: math block count %r" % counts.get("math"))
+          if abs(tk.get("stored", 0) - tk.get("measured", -1)) > 0.5:
+              failures.append("M4.3: stored != measured")
+          if abs(tk.get("footerDelta", 0) - tk.get("footerHeight", -1)) > 1:
+              failures.append("M4.3: footer delta %r vs %r"
+                              % (tk.get("footerDelta"), tk.get("footerHeight")))
+          if tk.get("imageHeightBefore") != tk.get("imageHeightAfter"):
+              failures.append("M4.3: image height changed across the load")
+          if abs(tk.get("imageWideHeight", 0) - 315) > 0.5:
+              failures.append("M4.3: wide image height %r" % tk.get("imageWideHeight"))
+          if not (tk.get("imageNarrowHeight", 0) > 0
+                  and tk.get("imageNarrowHeight", 0) < tk.get("imageWideHeight", 0)):
+              failures.append("M4.3: narrow image height %r"
+                              % tk.get("imageNarrowHeight"))
+          for failure in failures:
+              print("::error::M4.3: " + failure)
+          if failures:
+              sys.exit(1)
+          print("PASS M4.3 static blocks gate")
+          PY
+
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
@@ -477,6 +541,9 @@ jobs:
             ${{ runner.temp }}/textkit-m4-baseline.json
             ${{ runner.temp }}/textkit-m4.json
             ${{ runner.temp }}/textkit-mask-spike.json
+            ${{ runner.temp }}/textkit-m43.json
+            ${{ runner.temp }}/m43-static.png
+            ${{ runner.temp }}/m43-failure.png
             ${{ runner.temp }}/m42-mid1.png
             ${{ runner.temp }}/m42-mid2.png
             ${{ runner.temp }}/m42-final.png

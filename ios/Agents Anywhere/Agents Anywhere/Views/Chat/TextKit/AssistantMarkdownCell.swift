@@ -107,6 +107,13 @@ final class AssistantMarkdownCell: UICollectionViewCell {
     var debugTailViewCount: Int { tailViews.count }
     var debugStableViewCount: Int { stableViews.count }
     var debugStreamingConfiguration: Bool { streaming != nil }
+    /// The height installed for each document block, in document order. The
+    /// M4.3 gate compares them with the layout's own numbers.
+    var debugBlockHeights: [CGFloat] {
+        let count = document?.blocks.count ?? 0
+        return heightConstraints.prefix(count).map(\.constant)
+    }
+    var debugFooterHeight: CGFloat? { footer?.height }
     var debugMaskInstalled: Bool {
         revealDriver.clampedHeight != nil
     }

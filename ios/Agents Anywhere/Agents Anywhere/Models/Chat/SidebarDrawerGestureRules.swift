@@ -51,7 +51,9 @@ enum SidebarDrawerGestureRules {
 
     /// Difference quotient for the release velocity when SwiftUI's coordinate
     /// converter does not provide one (fast flicks often outrun it). Spans
-    /// outside `(0, 0.25]` seconds are not a usable flick sample.
+    /// outside `[1/240, 0.25]` seconds are not a usable flick sample: a
+    /// sub-frame span would turn a few points of dispatch jitter into a huge
+    /// velocity and flip the half-way decision.
     static func estimatedVelocityX(
         previousTranslationX: CGFloat,
         previousTime: TimeInterval,
@@ -59,7 +61,7 @@ enum SidebarDrawerGestureRules {
         currentTime: TimeInterval
     ) -> CGFloat? {
         let span = currentTime - previousTime
-        guard span > 0, span <= 0.25 else { return nil }
+        guard span >= 1.0 / 240.0, span <= 0.25 else { return nil }
         return (currentTranslationX - previousTranslationX) / CGFloat(span)
     }
 

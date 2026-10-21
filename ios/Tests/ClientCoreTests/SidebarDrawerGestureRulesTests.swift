@@ -129,6 +129,36 @@ import Testing
         ))
     }
 
+    @Test func shouldBeginUsesTheInclusiveTenPointBoundary() {
+        // Manhattan exactly 10 chooses the translation (6, 4); the skewed
+        // start velocity must not override it.
+        #expect(SidebarDrawerGestureRules.shouldBegin(
+            progress: 0,
+            translationX: 6, translationY: 4,
+            velocityX: -100, velocityY: 0
+        ))
+    }
+
+    @Test func shouldBeginTreatsTheProgressEndpointsAsSettled() {
+        // 0.001 belongs to the closed branch: leftward cannot open.
+        #expect(!SidebarDrawerGestureRules.shouldBegin(
+            progress: 0.001,
+            translationX: -20, translationY: 5,
+            velocityX: 200, velocityY: 30
+        ))
+        // 0.999 belongs to the open branch: only leftward closes.
+        #expect(SidebarDrawerGestureRules.shouldBegin(
+            progress: 0.999,
+            translationX: -20, translationY: 5,
+            velocityX: -200, velocityY: -30
+        ))
+        #expect(!SidebarDrawerGestureRules.shouldBegin(
+            progress: 0.999,
+            translationX: 20, translationY: 5,
+            velocityX: 200, velocityY: 30
+        ))
+    }
+
     @Test func estimatedVelocityUsesOnlyUsableSpans() {
         // 30 pt over 0.25 s is 120 pt/s; the upper bound is inclusive.
         #expect(SidebarDrawerGestureRules.estimatedVelocityX(
@@ -152,5 +182,17 @@ import Testing
             previousTranslationX: 0, previousTime: 1.00,
             currentTranslationX: 30, currentTime: 1.2501
         ) == nil)
+        // Sub-frame spans would turn dispatch jitter into a huge velocity.
+        #expect(SidebarDrawerGestureRules.estimatedVelocityX(
+            previousTranslationX: 0, previousTime: 1.0,
+            currentTranslationX: 1, currentTime: 1.0 + 1.0 / 300.0
+        ) == nil)
+        // One frame at 240 Hz is the inclusive lower bound.
+        let frameVelocity = SidebarDrawerGestureRules.estimatedVelocityX(
+            previousTranslationX: 0, previousTime: 1.0,
+            currentTranslationX: 1, currentTime: 1.0 + 1.0 / 240.0
+        )
+        #expect(frameVelocity != nil)
+        #expect(abs((frameVelocity ?? 0) - 240) < 1e-9)
     }
 }

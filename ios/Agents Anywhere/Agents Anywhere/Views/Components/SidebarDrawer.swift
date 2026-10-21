@@ -392,11 +392,7 @@ private struct SidebarDrawerInteractive<
                 }
 
                 let nextProgress = dragStartProgress + (value.translation.width / revealWidth)
-                var transaction = Transaction(animation: nil)
-                transaction.disablesAnimations = true
-                withTransaction(transaction) {
-                    motion.move(to: nextProgress.clamped(to: 0 ... 1))
-                }
+                moveWithoutAnimation(to: nextProgress.clamped(to: 0 ... 1))
             }
             .onEnded { value in
                 defer { resetDrag() }

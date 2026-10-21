@@ -132,6 +132,11 @@ struct SubAgentCard: Identifiable, Equatable {
     /// else the item's completion (or last update) time. Only consulted for
     /// failed/interrupted cards.
     let failedAt: Date?
+    /// When the connector last republished this card (the item's `updatedAt`).
+    /// A running card's `durationMs` is the engine's number at that moment, so
+    /// the panel lets the clock run on from here between publications instead
+    /// of freezing until the next task event (pp, 2026-10-21: 实时).
+    let updatedAt: Date?
 
     var isTopLevel: Bool { parentItemID == nil }
 
@@ -197,7 +202,8 @@ enum SubAgentProgress {
             liveTasks: liveTasks(in: item),
             taskIDs: taskIDs(in: item),
             dispatchedAt: Self.date(item.createdAt),
-            failedAt: Self.terminalDate(raw: raw, item: item)
+            failedAt: Self.terminalDate(raw: raw, item: item),
+            updatedAt: Self.date(item.updatedAt)
         )
     }
 
@@ -566,12 +572,12 @@ enum SubAgentProgress {
     ///   counter is a context estimate and is not shown (宁缺勿假).
     /// Empty when every counter is missing or zero; the values freeze when the
     /// card closes because the task events stop writing.
-    static func metrics(for card: SubAgentCard) -> [SubAgentMetric] {
+    static func metrics(for card: SubAgentCard, now: Date? = nil) -> [SubAgentMetric] {
         var metrics: [SubAgentMetric] = []
         if let toolCalls = card.toolCalls, toolCalls > 0 {
             metrics.append(SubAgentMetric(symbol: "hammer", value: "\(toolCalls)"))
         }
-        if let durationMs = card.durationMs, durationMs > 0 {
+        if let durationMs = liveDurationMs(for: card, now: now), durationMs > 0 {
             metrics.append(
                 SubAgentMetric(
                     symbol: "clock",
@@ -596,6 +602,19 @@ enum SubAgentProgress {
             )
         }
         return metrics
+    }
+
+    /// A running card's elapsed time as of `now`, else the stored value.
+    ///
+    /// The engine measures `durationMs` at the publication point and the wire
+    /// carries no heartbeat between task events, so a long tool call froze the
+    /// clock. Adding the gap since `updatedAt` lets the panel tick every second
+    /// on its own; terminal cards keep the engine's final number verbatim.
+    static func liveDurationMs(for card: SubAgentCard, now: Date?) -> Int? {
+        guard card.phase.isActive, let now, let updatedAt = card.updatedAt,
+              let base = card.durationMs else { return card.durationMs }
+        let delta = now.timeIntervalSince(updatedAt)
+        return delta > 0 ? base + Int(delta * 1_000) : base
     }
 
     /// The same strip as one spoken sentence: "已完成，100 个工具，用时 37.8

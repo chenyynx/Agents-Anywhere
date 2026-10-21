@@ -314,6 +314,38 @@ import Testing
         ])
     }
 
+    @Test func runningCardClockTicksBetweenPublications() throws {
+        // The engine's durationMs is measured at the last publication; the
+        // panel adds the wall time elapsed since `updatedAt` so a running
+        // card's clock keeps moving between task events (pp, 2026-10-21 实时).
+        let published = "2026-10-21T14:00:00.000Z"
+        let running = try card(try cardItem(status: "running",
+            usage: ["toolCalls": 3, "durationMs": 60_000], updatedAt: published))
+        let now = try #require(SubAgentProgress.date(published)?.addingTimeInterval(12))
+        #expect(SubAgentProgress.metrics(for: running, now: now) == [
+            SubAgentProgress.SubAgentMetric(symbol: "hammer", value: "3"),
+            SubAgentProgress.SubAgentMetric(symbol: "clock", value: "1:12"),
+        ])
+        // No clock reference (the terminal render path): the stored value.
+        #expect(SubAgentProgress.liveDurationMs(for: running, now: nil) == 60_000)
+    }
+
+    @Test func finishedCardKeepsTheEnginesFinalDuration() throws {
+        let published = "2026-10-21T14:00:00.000Z"
+        let done = try card(try cardItem(status: "done",
+            usage: ["durationMs": 60_000], updatedAt: published))
+        let later = try #require(SubAgentProgress.date(published)?.addingTimeInterval(3_600))
+        #expect(SubAgentProgress.liveDurationMs(for: done, now: later) == 60_000)
+    }
+
+    @Test func runningCardWithoutAPublicationTimeStaysFrozen() throws {
+        // The wire always carries `updatedAt`; an unparsable stamp is the only
+        // way the card has none, and then the engine's number is all we know.
+        let running = try card(try cardItem(status: "running",
+            usage: ["durationMs": 5_000], updatedAt: "not-a-timestamp"))
+        #expect(SubAgentProgress.liveDurationMs(for: running, now: Date()) == 5_000)
+    }
+
     @Test func metricsStripOmitsTheWireCounterWithoutASplit() throws {
         // The wire's single counter is a context estimate, not a total: without
         // the transcript split the strip shows only tools and time (宁缺勿假).

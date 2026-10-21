@@ -170,9 +170,23 @@ struct SubAgentPanelSheet: View {
     /// Redesigned as a status badge plus trimmed metrics: the phase word wears
     /// its own color on a wash of that color, the numbers stay neutral gray so
     /// the row scans as one glanceable state + one line of numbers.
+    @ViewBuilder
     private func statsRow(_ card: SubAgentCard) -> some View {
+        // A running card's clock ticks locally every second between the
+        // connector's publications (pp, 2026-10-21: 实时); a finished card is
+        // static, so it skips the per-second redraw entirely.
+        if card.phase.isActive {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                statsContent(card, now: context.date)
+            }
+        } else {
+            statsContent(card, now: nil)
+        }
+    }
+
+    private func statsContent(_ card: SubAgentCard, now: Date?) -> some View {
         let phaseColor = SubAgentPalette.phase(card.phase)
-        let metrics = SubAgentProgress.metrics(for: card)
+        let metrics = SubAgentProgress.metrics(for: card, now: now)
         return HStack(spacing: 8) {
             HStack(spacing: 8) {
                 HStack(spacing: 5) {
@@ -191,8 +205,8 @@ struct SubAgentPanelSheet: View {
                     HStack(spacing: 10) {
                         ForEach(Array(metrics.enumerated()), id: \.offset) { _, metric in
                             HStack(spacing: 4) {
-                                AppSymbol(metric.symbol, size: 10)
-                                    .foregroundStyle(.tertiary)
+                                AppSymbol(metric.symbol, size: 12)
+                                    .foregroundStyle(.secondary)
                                 Text(metric.value)
                                     .font(.footnote)
                                     .foregroundStyle(.secondary)
@@ -208,6 +222,9 @@ struct SubAgentPanelSheet: View {
             // and the metrics separately. The stop controls stay outside this
             // element — children-ignoring would swallow the buttons.
             .accessibilityElement(children: .ignore)
+            // Spoken from the stored numbers, never from the ticking clock: a
+            // label that changes every second can make VoiceOver re-announce
+            // the element while a user is still on it.
             .accessibilityLabel(SubAgentProgress.statsAccessibilityLabel(for: card))
             Spacer(minLength: 0)
             stopControls(for: card)

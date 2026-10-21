@@ -1148,18 +1148,19 @@ class ClaudeTurnRunner:
                 # event and the dispatch on one card instead of two.
                 await self._update_external_session_id(session, event.session_id)
             overlay, status = agent_task_overlay_for_event(event)
-            if agent_task_terminal_status(event.status) is not None:
-                # The wire's single total_tokens is the last call's context,
-                # not what the run consumed (2026-10-21). At closure the task's
-                # own transcript is final, so publish the real split beside the
-                # tool/duration counters: 输入/输出 for the panel.
-                usage = subagent_token_usage(
-                    cwd=session.cwd,
-                    external_session_id=session.external_session_id,
-                    task_id=event.task_id,
-                )
-                if usage:
-                    overlay.usage.update(usage)
+            # The wire's single total_tokens is the last call's context, not
+            # what the run consumed (2026-10-21). The task's transcript has the
+            # real split; keep it current on every event (throttled inside) so
+            # a RUNNING card shows ↑/↓ too, and force the final read at
+            # closure.
+            usage = subagent_token_usage(
+                cwd=session.cwd,
+                external_session_id=session.external_session_id,
+                task_id=event.task_id,
+                force=agent_task_terminal_status(event.status) is not None,
+            )
+            if usage:
+                overlay.usage.update(usage)
             items = self.timeline.fold_agent_task_items(
                 session,
                 tool_use_id=tool_use_id,

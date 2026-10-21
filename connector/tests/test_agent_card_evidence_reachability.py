@@ -584,6 +584,57 @@ def test_subagent_usage_sums_the_transcripts_per_call_rows(
     }
 
 
+def test_subagent_usage_reads_run_transcripts_incrementally(
+    tmp_path: Any,
+    monkeypatch: Any,
+) -> None:
+    # A running card asks on every task event; the reader must resume from the
+    # last complete line, and a half-written row must not be counted.
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    path = (
+        tmp_path
+        / "projects"
+        / "-repo"
+        / EXTERNAL_SESSION_ID
+        / "subagents"
+        / f"agent-{TASK_ID}.jsonl"
+    )
+    path.parent.mkdir(parents=True)
+    second = _usage_row(500, 300, cache_read=9_000)
+    path.write_text(
+        _usage_row(1_000, 200) + "\n" + second[: len(second) // 2],
+        encoding="utf-8",
+    )
+
+    first = subagent_token_usage(
+        cwd=CWD,
+        external_session_id=EXTERNAL_SESSION_ID,
+        task_id=TASK_ID,
+        force=True,
+    )
+    assert first == {
+        "inputTokens": 1_000,
+        "outputTokens": 200,
+        "cacheCreationTokens": 0,
+        "cacheReadTokens": 0,
+    }
+
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(second[len(second) // 2 :] + "\n")
+    second_read = subagent_token_usage(
+        cwd=CWD,
+        external_session_id=EXTERNAL_SESSION_ID,
+        task_id=TASK_ID,
+        force=True,
+    )
+    assert second_read == {
+        "inputTokens": 1_500,
+        "outputTokens": 500,
+        "cacheCreationTokens": 0,
+        "cacheReadTokens": 9_000,
+    }
+
+
 def test_compacted_window_publishes_the_real_input_output_split(
     tmp_path: Any,
     monkeypatch: Any,

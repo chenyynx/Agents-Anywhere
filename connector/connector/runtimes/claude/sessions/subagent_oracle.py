@@ -383,10 +383,30 @@ def agent_transcript_path(
 
 
 #: Subagent usage summaries keyed by (path, size, mtime ms). The live fold and
-#: the evidence sweep both ask at closure time, when the file has stopped
-#: growing; the size/mtime key keeps a still-running task from reading stale.
-_AGENT_USAGE_CACHE: dict[tuple[str, int, int], Mapping[str, int]] = {}
-_AGENT_USAGE_CACHE_LIMIT = 256
+#: Incremental usage state per subagent transcript. The live fold asks on every
+#: task event (once per tool start), so the reader resumes from the last
+#: complete line instead of re-parsing a growing file; ``last_check`` throttles
+#: the stat/read to one pass per interval unless a terminal event forces the
+#: final read. Totals accumulate across resumes — the card is one task.
+@dataclass(slots=True)
+class _UsageState:
+    offset: int = 0
+    last_check: float = 0.0
+    totals: dict[str, int] = field(default_factory=dict)
+
+
+_AGENT_USAGE_STATE: dict[str, _UsageState] = {}
+_AGENT_USAGE_STATE_LIMIT = 256
+_AGENT_USAGE_MIN_INTERVAL_SECONDS = 10.0
+
+
+def _empty_usage() -> dict[str, int]:
+    return {
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cacheCreationTokens": 0,
+        "cacheReadTokens": 0,
+    }
 
 
 def subagent_token_usage(
@@ -394,6 +414,7 @@ def subagent_token_usage(
     cwd: str | None,
     external_session_id: str | None,
     task_id: str,
+    force: bool = False,
 ) -> Mapping[str, int] | None:
     """Sum the subagent transcript's own per-call token usage.
 
@@ -404,6 +425,11 @@ def subagent_token_usage(
     recoverable: ``inputTokens``/``outputTokens`` sum the non-cached input and
     the output over all calls, and the cache counters ride along for callers
     that want them. ``None`` when the file is missing or has no usage rows.
+
+    The read is incremental and throttled (``_AGENT_USAGE_MIN_INTERVAL_SECONDS``)
+    so a running card can show the split without re-parsing the whole file on
+    every task event; ``force=True`` reads the tail now (terminal folds and
+    evidence closures, where the file is final).
 
     Measured 2026-10-21: a 6.2-minute resumed reviewer run reported 55 through
     the wire (an early streamed estimate) while its transcript sums to
@@ -420,60 +446,79 @@ def subagent_token_usage(
     )
     if path is None:
         return None
+    return _transcript_usage(path, force=force)
+
+
+def _transcript_usage(path: Path, *, force: bool) -> Mapping[str, int] | None:
+    key = str(path)
+    state = _AGENT_USAGE_STATE.get(key)
+    now = time.monotonic()
+    if state is None:
+        if len(_AGENT_USAGE_STATE) >= _AGENT_USAGE_STATE_LIMIT:
+            _AGENT_USAGE_STATE.clear()
+        state = _UsageState(totals=_empty_usage())
+        _AGENT_USAGE_STATE[key] = state
+    if not force and now - state.last_check < _AGENT_USAGE_MIN_INTERVAL_SECONDS:
+        return dict(state.totals) if any(state.totals.values()) else None
+    state.last_check = now
     try:
-        stat = path.stat()
+        size = path.stat().st_size
     except OSError:
         return None
-    key = (str(path), stat.st_size, int(stat.st_mtime * 1000))
-    cached = _AGENT_USAGE_CACHE.get(key)
-    if cached is not None:
-        return cached
-    usage = _sum_transcript_usage(path)
-    if usage is None:
-        return None
-    if len(_AGENT_USAGE_CACHE) >= _AGENT_USAGE_CACHE_LIMIT:
-        _AGENT_USAGE_CACHE.clear()
-    _AGENT_USAGE_CACHE[key] = usage
-    return usage
+    if size < state.offset:
+        # Rewritten (a fresh session or a repair): start over.
+        state.offset = 0
+        state.totals = _empty_usage()
+    if size > state.offset:
+        try:
+            with path.open("rb") as handle:
+                handle.seek(state.offset)
+                data = handle.read(size - state.offset)
+        except OSError:
+            return None
+        complete = data.rfind(b"\n")
+        consumed = data[: complete + 1] if complete >= 0 else b""
+        remainder = data[complete + 1 :]
+        if consumed:
+            state.offset += len(consumed)
+            for raw_line in consumed.splitlines():
+                row = _decode_json_line(raw_line)
+                if row is not None:
+                    _accumulate_usage_row(row, state.totals)
+        if remainder:
+            # The CLI's last row may not be terminated yet. Count it only when
+            # it already parses; a half-written row stays unread for the next
+            # pass (it must never be counted twice).
+            row = _decode_json_line(remainder)
+            if row is not None:
+                state.offset += len(remainder)
+                _accumulate_usage_row(row, state.totals)
+    return dict(state.totals) if any(state.totals.values()) else None
 
 
-def _sum_transcript_usage(path: Path) -> Mapping[str, int] | None:
-    """Sum one transcript's per-call usage rows (``None`` when there are none)."""
-
-    totals = {
-        "inputTokens": 0,
-        "outputTokens": 0,
-        "cacheCreationTokens": 0,
-        "cacheReadTokens": 0,
-    }
-    found = False
+def _decode_json_line(raw_line: bytes) -> Mapping[str, Any] | None:
     try:
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                if '"usage"' not in line:
-                    continue
-                try:
-                    row = json.loads(line)
-                except (ValueError, TypeError):
-                    continue
-                if not isinstance(row, Mapping) or row.get("type") != "assistant":
-                    continue
-                message = row.get("message")
-                usage = message.get("usage") if isinstance(message, Mapping) else None
-                if not isinstance(usage, Mapping):
-                    continue
-                found = True
-                totals["inputTokens"] += _usage_int(usage.get("input_tokens"))
-                totals["outputTokens"] += _usage_int(usage.get("output_tokens"))
-                totals["cacheCreationTokens"] += _usage_int(
-                    usage.get("cache_creation_input_tokens")
-                )
-                totals["cacheReadTokens"] += _usage_int(
-                    usage.get("cache_read_input_tokens")
-                )
-    except OSError:
+        row = json.loads(raw_line.decode("utf-8", "replace"))
+    except (ValueError, TypeError):
         return None
-    return totals if found else None
+    return row if isinstance(row, Mapping) else None
+
+
+def _accumulate_usage_row(row: Mapping[str, Any], totals: dict[str, int]) -> None:
+    """Add one transcript row's usage to ``totals`` (no-op for other rows)."""
+
+    if row.get("type") != "assistant":
+        return
+    message = row.get("message")
+    usage = message.get("usage") if isinstance(message, Mapping) else None
+    if not isinstance(usage, Mapping):
+        return
+    totals["inputTokens"] += _usage_int(usage.get("input_tokens"))
+    totals["outputTokens"] += _usage_int(usage.get("output_tokens"))
+    totals["cacheCreationTokens"] += _usage_int(
+        usage.get("cache_creation_input_tokens")
+    )
+    totals["cacheReadTokens"] += _usage_int(usage.get("cache_read_input_tokens"))
 
 
 def _usage_int(value: object) -> int:

@@ -2048,6 +2048,7 @@ def _evidence_usage(
             cwd=session.cwd,
             external_session_id=session.external_session_id,
             task_id=task_id,
+            force=True,
         )
         for key, value in (usage or {}).items():
             totals[key] = totals.get(key, 0) + value

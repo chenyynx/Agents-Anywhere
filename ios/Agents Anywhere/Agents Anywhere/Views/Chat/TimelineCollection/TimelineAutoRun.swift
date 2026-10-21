@@ -188,16 +188,24 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
 
     private var prependBatch = 0
 
-    @discardableResult
-    func prependPlain(_ count: Int) -> [TimelineListItem] {
-        // Unique ids per call: a second prepend with the same `pre-N` ids
-        // makes the diffable snapshot throw ("identifiers must be unique").
+    /// Entries for a page that has not been inserted yet, so a history
+    /// projection can use the exact ids the apply will carry.
+    func makePrependEntries(_ count: Int) -> [Entry] {
         prependBatch += 1
         let batch = prependBatch
-        let new = (0..<count).map { offset in
+        return (0..<count).map { offset in
             Entry(id: "pre-\(batch)-\(offset)", kind: .plain,
                   text: String(repeating: "Earlier page line \(offset). ", count: 3))
         }
+    }
+
+    @discardableResult
+    func prependPlain(_ count: Int) -> [TimelineListItem] {
+        prependEntries(makePrependEntries(count))
+    }
+
+    @discardableResult
+    func prependEntries(_ new: [Entry]) -> [TimelineListItem] {
         entries.insert(contentsOf: new, at: 0)
         contentGeneration += 1
         return allItems
@@ -222,10 +230,12 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         // has expanded rows below it — the shape of pp's device report.
         await toolStorm(); persist(phase: "toolStorm")
         await collapseGap(); persist(phase: "collapseGap")
+        await collapseWhileStreaming(); persist(phase: "collapseWhileStreaming")
         await streaming(); persist(phase: "streaming")
         await bottom(); persist(phase: "bottom")
         await prepend(); persist(phase: "prepend")
         await prependDuringApply(); persist(phase: "prependDuringApply")
+        await owedRace(); persist(phase: "owedRace")
         await tailFlap(); persist(phase: "tailFlap")
         await foldCycles(); persist(phase: "foldCycles")
         await interleavedApplies(); persist(phase: "interleavedApplies")
@@ -537,6 +547,104 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             "contentHeight": Double(controller.layout.contentHeight),
             "offset": Double(controller.collectionView.contentOffset.y),
         ]
+    }
+
+    /// Device report (6a18aa3): collapsing a tool while its turn was still
+    /// streaming left the area below blank until a scroll. Run batches, then
+    /// collapse a tool above the live row and keep streaming; the visible
+    /// band must stay covered and every visible cell current.
+    private func collapseWhileStreaming() async {
+        guard let controller,
+              let stream = entries.last(where: { $0.kind == .plain }),
+              let streamIndex = entries.firstIndex(where: { $0.id == stream.id }) else { return }
+        let tool = Entry(id: "stream-tool", kind: .toolExpanded,
+                         text: "工具组", expanded: true)
+        entries.insert(tool, at: streamIndex)
+        contentGeneration += 1
+        controller.reloadFromContent()
+        await wait(500)
+        let toolItem = listItem(tool)
+        if let indexPath = controller.indexPath(for: toolItem) {
+            controller.collectionView.scrollToItem(at: indexPath, at: .top, animated: false)
+        }
+        await wait(200)
+        streamingIDs.insert(stream.id)
+        defer { streamingIDs.remove(stream.id) }
+        for _ in 0..<3 {
+            appendStreamLine(to: stream.id)
+            controller.reloadFromContent()
+            await wait(120)
+        }
+        setExpanded(tool.id, false)
+        contentGeneration += 1
+        controller.reloadFromContent()
+        for _ in 0..<3 {
+            appendStreamLine(to: stream.id)
+            controller.reloadFromContent()
+            await wait(120)
+        }
+        await wait(700)
+        controller.collectionView.layoutIfNeeded()
+        let coverage = visibleCoverage(controller)
+        let stale = staleVisibleCells(controller)
+        if coverage.missing > 0 || coverage.gap > 1 {
+            failures.append("stream collapse: missing \(coverage.missing), gap \(coverage.gap)")
+        }
+        if stale > 0 {
+            failures.append("stream collapse: \(stale) stale cells")
+        }
+        report["streamCollapse"] = ["missing": coverage.missing,
+                                    "gap": Double(coverage.gap),
+                                    "stale": stale,
+                                    "contentHeight": Double(controller.layout.contentHeight)]
+    }
+
+    /// Device report (6a18aa3): load-older jumped to the top of the loaded
+    /// page. Reproduce the layout race deterministically: install the prepend
+    /// target, let an unrelated snapshot update run first, then land the page.
+    /// The anchor must not move.
+    private func owedRace() async {
+        guard let controller, entries.count > 10 else { return }
+        let anchor = entries[5]
+        let anchorItem = listItem(anchor)
+        guard let anchorIndex = controller.indexPath(for: anchorItem) else { return }
+        controller.collectionView.scrollToItem(at: anchorIndex, at: .top, animated: false)
+        await wait(120)
+        let before = controller.screenY(for: anchorItem) ?? 0
+        guard let origin = controller.historyLayout(anchorRowID: anchor.id, edge: .top) else {
+            failures.append("owed race: no origin")
+            return
+        }
+        let prepended = makePrependEntries(40)
+        guard let projected = controller.projectedHistoryLayout(
+            items: prepended.map(listItem) + entries.map(listItem),
+            anchorRowID: anchor.id, edge: .top) else {
+            failures.append("owed race: no projected layout")
+            return
+        }
+        controller.layout.beginInsertionOwed(generation: 900, origin: origin,
+            offsetY: controller.collectionView.contentOffset.y,
+            topInset: controller.collectionView.adjustedContentInset.top)
+        controller.layout.updateInsertionOwed(layout: projected)
+
+        // An unrelated update lands first (a streaming batch during the
+        // history request); it must not consume or clear the prepend target.
+        guard let plain = entries.last(where: { $0.kind == .plain }) else { return }
+        appendStreamLine(to: plain.id)
+        controller.reloadFromContent()
+        await wait(500)
+
+        prependEntries(prepended)
+        controller.reloadFromContent()
+        await wait(800)
+        let after = controller.screenY(for: anchorItem) ?? 0
+        let delta = abs(after - before)
+        if delta > 1 {
+            failures.append("owed race: anchor moved \(delta)pt")
+        }
+        report["owedRace"] = ["before": Double(before), "after": Double(after),
+                              "delta": Double(delta),
+                              "targetCalls": controller.layout.targetContentOffsetCallCount]
     }
 
     /// Rows intersecting the viewport, how many have no cell, and the largest

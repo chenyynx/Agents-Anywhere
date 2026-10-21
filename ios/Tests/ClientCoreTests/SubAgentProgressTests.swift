@@ -319,8 +319,8 @@ import Testing
         // panel adds the wall time elapsed since `updatedAt` so a running
         // card's clock keeps moving between task events (pp, 2026-10-21 实时).
         let published = "2026-10-21T14:00:00.000Z"
-        let running = try card(try cardItem(status: "running", updatedAt: published,
-            usage: ["toolCalls": 3, "durationMs": 60_000]))
+        let running = try card(try cardItem(status: "running",
+            usage: ["toolCalls": 3, "durationMs": 60_000], updatedAt: published))
         let now = try #require(SubAgentProgress.date(published)?.addingTimeInterval(12))
         #expect(SubAgentProgress.metrics(for: running, now: now) == [
             SubAgentProgress.SubAgentMetric(symbol: "hammer", value: "3"),
@@ -332,8 +332,8 @@ import Testing
 
     @Test func finishedCardKeepsTheEnginesFinalDuration() throws {
         let published = "2026-10-21T14:00:00.000Z"
-        let done = try card(try cardItem(status: "done", updatedAt: published,
-            usage: ["durationMs": 60_000]))
+        let done = try card(try cardItem(status: "done",
+            usage: ["durationMs": 60_000], updatedAt: published))
         let later = try #require(SubAgentProgress.date(published)?.addingTimeInterval(3_600))
         #expect(SubAgentProgress.liveDurationMs(for: done, now: later) == 60_000)
     }

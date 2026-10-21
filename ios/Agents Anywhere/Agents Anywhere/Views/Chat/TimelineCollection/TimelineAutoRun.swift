@@ -488,12 +488,21 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     }
 
     private func staleVisibleCells(_ controller: TimelineCollectionController) -> Int {
-        var stale = 0
+        staleCellDetails(controller, limit: 0).count
+    }
+
+    private func staleCellDetails(_ controller: TimelineCollectionController,
+                                  limit: Int) -> [String] {
+        var stale: [String] = []
         for attributes in controller.layout.orderedAttributes {
             guard let cell = controller.collectionView.cellForItem(at: attributes.indexPath) else { continue }
             if abs(cell.frame.minY - attributes.frame.minY) > 0.5
                 || abs(cell.frame.height - attributes.frame.height) > 0.5 {
-                stale += 1
+                if limit > 0, stale.count < limit {
+                    stale.append("\(attributes.item?.itemID ?? "?"): cell \(cell.frame.minY)/\(cell.frame.height) vs attr \(attributes.frame.minY)/\(attributes.frame.height)")
+                } else if limit == 0 {
+                    stale.append("stale")
+                }
             }
         }
         return stale
@@ -519,9 +528,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         controller.reloadFromContent()
         await wait(700)
         controller.collectionView.layoutIfNeeded()
-        let stale = staleVisibleCells(controller)
-        if stale > 0 {
-            failures.append("fold cycles: \(stale) visible cells sit at stale frames")
+        let staleDetails = staleCellDetails(controller, limit: 3)
+        if !staleDetails.isEmpty {
+            failures.append("fold cycles: \(staleDetails.count)+ visible cells sit at stale frames \(staleDetails)")
         }
         var overlaps = 0
         let attributes = controller.layout.orderedAttributes
@@ -532,7 +541,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         if overlaps > 0 {
             failures.append("fold cycles: \(overlaps) adjacent frames overlap")
         }
-        report["foldCycles"] = ["staleCells": stale, "overlaps": overlaps]
+        report["foldCycles"] = ["staleCells": staleDetails.count,
+                                "staleDetails": staleDetails,
+                                "overlaps": overlaps]
     }
 
     /// Device report (cf130b1): SIGABRT in `dequeueReusableCell` during a

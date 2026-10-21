@@ -215,6 +215,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await prepend()
         await toolStorm()
         await tailFlap()
+        await interleavedApplies()
         writeReport()
     }
 
@@ -458,6 +459,38 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         }
         report["tailFlap"] = ["height": Double(height), "visible": visible,
                               "contentHeight": Double(contentBottom)]
+    }
+
+    /// Device report (cf130b1): SIGABRT in `dequeueReusableCell` during a
+    /// diffable update, caused by the layout describing a newer item list
+    /// than the snapshot UIKit was performing. Two applies back to back must
+    /// queue, and the final layout must describe the last snapshot exactly.
+    private func interleavedApplies() async {
+        guard let controller else { return }
+        entries.insert(Entry(id: "interleave-a", kind: .plain, text: "A"),
+                       at: entries.count - 1)
+        contentGeneration += 1
+        let first = entries.map(listItem)
+        controller.apply(items: first)
+        entries.insert(Entry(id: "interleave-b", kind: .plain, text: "B"),
+                       at: entries.count - 1)
+        contentGeneration += 1
+        let second = entries.map(listItem)
+        controller.apply(items: second)
+        await wait(800)
+        controller.collectionView.layoutIfNeeded()
+        let attributes = controller.layout.orderedAttributes
+        let ids = Set(attributes.compactMap { $0.item?.itemID })
+        let missing = second.map(\.itemID).filter { !ids.contains($0) }
+        if attributes.count != second.count {
+            failures.append("interleaved applies: \(attributes.count) rows, expected \(second.count)")
+        }
+        if !missing.isEmpty {
+            failures.append("interleaved applies: missing rows \(missing.prefix(4))")
+        }
+        report["interleaved"] = ["rows": attributes.count,
+                                 "expected": second.count,
+                                 "missing": missing.count]
     }
 
     private func streaming() async {

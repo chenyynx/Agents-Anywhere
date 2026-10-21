@@ -25,6 +25,21 @@ final class TimelineCollectionController: UIViewController {
     private(set) var measurer: (any TimelineHeightMeasuring)?
 
     private var currentItems: [TimelineListItem] = []
+    /// At most one snapshot may be in flight. The diffable data source
+    /// performs its batch updates asynchronously, while SwiftUI can hand us a
+    /// newer item list on a later runloop turn. The layout reads its items
+    /// through `currentItems`, so advancing that list before the in-flight
+    /// update finishes makes the layout describe a different snapshot than
+    /// UIKit is performing: a missing attribute for the reconfigured index
+    /// path aborts `dequeueReusableCell` (SIGABRT), and with equal counts it
+    /// silently places cells at another snapshot's frames, which is the
+    /// overlapping-rows report. Queue the newest request instead.
+    private var isPerformingSnapshot = false
+    private enum PendingSnapshotUpdate {
+        case apply(items: [TimelineListItem], animating: Bool)
+        case reconfigure(items: [TimelineListItem])
+    }
+    private var pendingSnapshotUpdate: PendingSnapshotUpdate?
     /// Items whose assistant body was measured synchronously with TextKit 2.
     /// The same set decides which cell the data source returns, so a row can
     /// never render in the TextKit cell with an estimate height.
@@ -277,6 +292,11 @@ final class TimelineCollectionController: UIViewController {
             pendingApply = (items: items, animating: animating)
             return
         }
+        guard !isPerformingSnapshot else {
+            pendingSnapshotUpdate = .apply(items: items, animating: animating)
+            return
+        }
+        isPerformingSnapshot = true
         let oldItems = currentItems
         let oldIDs = Set(oldItems)
         let entries: [TimelineContentEntry] = items.map { item in
@@ -313,10 +333,25 @@ final class TimelineCollectionController: UIViewController {
         if !existingChanges.isEmpty { snapshot.reconfigureItems(existingChanges) }
         currentItems = items
         dataSource.apply(snapshot, animatingDifferences: animating) { [weak self] in
-            self?.onApplyCompleted?()
-            self?.schedulePendingMeasurements()
-            self?.scheduleVisibleCellSettle()
-            self?.publishViewport()
+            guard let self else { return }
+            self.isPerformingSnapshot = false
+            self.onApplyCompleted?()
+            self.schedulePendingMeasurements()
+            self.scheduleVisibleCellSettle()
+            self.publishViewport()
+            self.performPendingSnapshotUpdate()
+        }
+    }
+
+    /// Run the newest snapshot request once the in-flight one has finished.
+    private func performPendingSnapshotUpdate() {
+        guard let pending = pendingSnapshotUpdate else { return }
+        pendingSnapshotUpdate = nil
+        switch pending {
+        case .apply(let items, let animating):
+            apply(items: items, animating: animating)
+        case .reconfigure(let items):
+            reconfigure(items)
         }
     }
 
@@ -325,15 +360,23 @@ final class TimelineCollectionController: UIViewController {
     /// the correction signal, exactly as a disclosure toggle behaves.
     func reconfigure(_ items: [TimelineListItem]) {
         guard dataSource != nil else { return }
+        guard !isPerformingSnapshot else {
+            pendingSnapshotUpdate = .reconfigure(items: items)
+            return
+        }
         var snapshot = dataSource.snapshot()
         let present = items.filter { snapshot.itemIdentifiers.contains($0) }
         guard !present.isEmpty else { return }
+        isPerformingSnapshot = true
         snapshot.reconfigureItems(present)
         dataSource.apply(snapshot, animatingDifferences: false) { [weak self] in
+            guard let self else { return }
+            self.isPerformingSnapshot = false
             // The hosting cell has no heightDidChange callback; ask the
             // visible exception rows for their fitting height after the new
             // content has laid out.
             DispatchQueue.main.async { [weak self] in self?.applyPreferredHeights(for: present) }
+            self.performPendingSnapshotUpdate()
         }
     }
 

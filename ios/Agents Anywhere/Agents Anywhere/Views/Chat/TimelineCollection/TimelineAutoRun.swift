@@ -206,21 +206,23 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         // Async first: the automatic pending pass may settle Markdown shortly
         // after apply, so the first-displayed snapshot is captured by
         // `onApplyCompleted`.
-        await firstMeasurement()
-        await asyncMarkdown()
-        await measureConsistency()
-        await foldAndTail()
+        // Persist after every phase: a crash mid-gate still leaves the last
+        // completed phase and its assertions on disk.
+        await firstMeasurement(); persist(phase: "firstMeasurement")
+        await asyncMarkdown(); persist(phase: "asyncMarkdown")
+        await measureConsistency(); persist(phase: "measureConsistency")
+        await foldAndTail(); persist(phase: "foldAndTail")
         // Build the tool rows before the stream scenario, so the growing row
         // has expanded rows below it — the shape of pp's device report.
-        await toolStorm()
-        await collapseGap()
-        await streaming()
-        await bottom()
-        await prepend()
-        await prependDuringApply()
-        await tailFlap()
-        await foldCycles()
-        await interleavedApplies()
+        await toolStorm(); persist(phase: "toolStorm")
+        await collapseGap(); persist(phase: "collapseGap")
+        await streaming(); persist(phase: "streaming")
+        await bottom(); persist(phase: "bottom")
+        await prepend(); persist(phase: "prepend")
+        await prependDuringApply(); persist(phase: "prependDuringApply")
+        await tailFlap(); persist(phase: "tailFlap")
+        await foldCycles(); persist(phase: "foldCycles")
+        await interleavedApplies(); persist(phase: "interleavedApplies")
         writeReport()
     }
 
@@ -1001,10 +1003,19 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
 
     // MARK: - Report
 
-    private func writeReport() {
+    /// Writes the report as a checkpoint after a phase. `completed` stays
+    /// false so a crash later in the gate still leaves the last phase and its
+    /// failures on disk for the CI assertion step.
+    private func persist(phase: String) {
+        report["phase"] = phase
+        writeReport(completed: false)
+    }
+
+    private func writeReport(completed: Bool = true) {
         var output: [String: Any] = report
         output["failures"] = failures
-        output["completed"] = failures.isEmpty
+        output["completed"] = completed
+        output["passed"] = completed && failures.isEmpty
         output["device"] = UIDevice.current.name
         output["system"] = UIDevice.current.systemVersion
         output["viewSize"] = "\(Int(controller?.collectionView.bounds.width ?? 0))x\(Int(controller?.collectionView.bounds.height ?? 0))"

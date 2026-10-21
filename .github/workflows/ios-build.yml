@@ -151,8 +151,10 @@ jobs:
           xcrun simctl launch "$UDID" com.agentsanywhere.app aa-timeline-autorun
           CONTAINER=$(xcrun simctl get_app_container "$UDID" com.agentsanywhere.app data)
           RESULT="$CONTAINER/Documents/timeline-autorun.json"
+          # The gate writes a checkpoint after every phase (completed=false), so
+          # wait for the final marker instead of the file's existence.
           for _ in $(seq 1 180); do
-            if [ -f "$RESULT" ]; then break; fi
+            if [ -f "$RESULT" ] && grep -q '"completed"[[:space:]]*:[[:space:]]*true' "$RESULT"; then break; fi
             sleep 1
           done
           if [ ! -f "$RESULT" ]; then
@@ -162,7 +164,21 @@ jobs:
           fi
           cp "$RESULT" "$RUNNER_TEMP/timeline-autorun.json"
           cat "$RUNNER_TEMP/timeline-autorun.json"
+          if ! grep -q '"completed"[[:space:]]*:[[:space:]]*true' "$RESULT"; then
+            echo "::error::timeline auto-run did not complete (see the last phase checkpoint)"
+            xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/timeline-failure.png" || true
+            exit 1
+          fi
           xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/timeline-final.png" || true
+
+      - name: Collect simulator crash logs
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/crashes"
+          cp ~/Library/Logs/DiagnosticReports/*.ips "$RUNNER_TEMP/crashes" 2>/dev/null || true
+          find ~/Library/Logs/CoreSimulator -maxdepth 5 -name "*.ips" \
+            -exec cp {} "$RUNNER_TEMP/crashes" \; 2>/dev/null || true
+          ls -la "$RUNNER_TEMP/crashes" || true
 
       - name: Assert gate results
         run: |
@@ -555,6 +571,7 @@ jobs:
             ${{ runner.temp }}/parity-failure.png
             ${{ runner.temp }}/timeline-failure.png
             ${{ runner.temp }}/timeline-final.png
+            ${{ runner.temp }}/crashes/*.ips
             ${{ runner.temp }}/textkit-m3-failure.png
             ${{ runner.temp }}/sim-build.log
           if-no-files-found: ignore

@@ -130,7 +130,10 @@ struct ChatComposer: View {
     }
 
     private var accentSymbolSize: CGFloat {
-        affordance.shape == .stop ? 13 : 18
+        // The stop asset is a filled rounded square that fills 75% of its box;
+        // 16 makes it read at the send arrow's weight inside the 36 pt circle
+        // (pp, 2026-10-21: 13 looked small beside the other controls).
+        affordance.shape == .stop ? 16 : 18
     }
 
     private var accentLabel: String {

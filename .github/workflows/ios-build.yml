@@ -397,6 +397,15 @@ jobs:
               failures.append("gate never exercised the done+revealing completion frame")
           elif not data["doneRevealing"].get("sameCell"):
               failures.append("the completion frame replaced the TextKit cell")
+          follow = data.get("follow") or {}
+          if not follow.get("sawReveal"):
+              failures.append("the reveal never painted a masked run")
+          if not follow.get("sawClamp"):
+              failures.append("the streaming row never used a clamped reveal height")
+          if not follow.get("dragDisarmed"):
+              failures.append("dragging did not disarm the bottom target")
+          if not follow.get("offsetAtBottom"):
+              failures.append("the completion frame is not pinned to the bottom")
           for failure in failures:
               print("::error::textkit M4: " + failure)
           if failures:

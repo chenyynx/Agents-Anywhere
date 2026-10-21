@@ -194,6 +194,14 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
         var lastStreamingHeight: CGFloat = 0
         var expectedStable = 0
         var cellIdentity: ObjectIdentifier?
+        // M4.2: the reveal must paint, clamp the row and keep the bottom
+        // followed while the scripted stream grows.
+        var sawReveal = false
+        var sawClamp = false
+        var followOffsets: [CGFloat] = []
+        var dragDisarmed = false
+        controller.requestBottom(animated: false, forced: true)
+        await wait(80)
 
         // Batch 0 is the document the model starts with; the remaining batches
         // append text and reload. Every batch, including the first, is asserted.
@@ -247,6 +255,10 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
                 failures.append("m4 batch \(batchIndex): \(arranged) views, expected \(expectedArranged)")
             }
             if let revealClamp {
+                sawClamp = true
+                if cell.debugRevealedCharacters > 0, cell.debugMaskInstalled {
+                    sawReveal = true
+                }
                 // The reveal owns the visible bottom: the row is the clamped
                 // line bottom while the text below is still masked. The cell
                 // content (full document) is taller than the row by design.
@@ -298,7 +310,31 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
                 "maskInstalled": cell.debugMaskInstalled,
                 "revealClamp": Double(revealClamp ?? -1),
             ])
+            followOffsets.append(controller.collectionView.contentOffset.y)
         }
+
+        // M4.2 reveal assertions.
+        if !sawReveal {
+            failures.append("m4.2: the reveal never painted a masked run")
+        }
+        if !sawClamp {
+            failures.append("m4.2: the row never used a clamped reveal height")
+        }
+        for (upper, lower) in zip(followOffsets, followOffsets.dropFirst())
+            where lower < upper - 0.5 {
+            failures.append("m4.2: follow offset went backwards \(upper) -> \(lower)")
+        }
+        // Delegate-level drag test: a finger always beats the follow. simctl
+        // cannot synthesize touches, so the callback is invoked directly.
+        controller.scrollViewWillBeginDragging(controller.collectionView)
+        dragDisarmed = !controller.armedBottom.isArmed
+        controller.scrollViewDidEndDragging(controller.collectionView,
+                                            willDecelerate: false)
+        if !dragDisarmed {
+            failures.append("m4.2: dragging did not disarm the bottom target")
+        }
+        controller.requestBottom(animated: false, forced: true)
+        await wait(60)
 
         if expectedStable <= 0 {
             failures.append("m4: the stream never promoted a stable block")
@@ -396,6 +432,33 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
         }
         if overlaps > 0 { failures.append("m4: \(overlaps) adjacent frames overlap") }
 
+        // The reveal override is gone; the row is back on the measured height
+        // and the bottom follow has settled at the end target.
+        await wait(500)
+        controller.collectionView.layoutIfNeeded()
+        let endTarget = TimelineOffsetTarget.bottomOffset(
+            contentHeight: controller.layout.contentHeight,
+            containerHeight: controller.collectionView.bounds.height,
+            topInset: controller.collectionView.adjustedContentInset.top,
+            bottomInset: controller.collectionView.adjustedContentInset.bottom)
+        let finalOffset = controller.collectionView.contentOffset.y
+        let offsetAtBottom = abs(finalOffset - endTarget) <= 1.5
+        if !offsetAtBottom {
+            failures.append("m4.2 completion: offset \(finalOffset) not at bottom \(endTarget)")
+        }
+        if cell.debugStreamingRowHeight != nil {
+            failures.append("m4.2 completion: reveal clamp still installed")
+        }
+
+        report["follow"] = [
+            "offsets": followOffsets.map(Double.init),
+            "sawReveal": sawReveal,
+            "sawClamp": sawClamp,
+            "dragDisarmed": dragDisarmed,
+            "finalOffset": Double(finalOffset),
+            "endTarget": Double(endTarget),
+            "offsetAtBottom": offsetAtBottom,
+        ] as [String: Any]
         report["batches"] = samples
         report["doneRevealing"] = [
             "stored": Double(revealingStored),

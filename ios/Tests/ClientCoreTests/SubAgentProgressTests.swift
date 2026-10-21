@@ -322,6 +322,28 @@ import Testing
         #expect(SubAgentProgress.statsLine(for: tokensOnly) == "31.2k tokens")
     }
 
+    @Test func statsLinesPreferTheRealInputOutputSplit() throws {
+        // The connector sums the subagent transcript's own per-call usage; the
+        // wire's single counter (the last call's context size) is not repeated.
+        let card = try card(try cardItem(usage: [
+            "toolCalls": 20, "tokens": 55, "durationMs": 372_836,
+            "inputTokens": 17_593, "outputTokens": 6_398,
+        ]))
+        #expect(SubAgentProgress.statsLines(for: card)
+            == ["20 个工具 · 6.2 分钟", "输入 17.6k · 输出 6.4k"])
+        #expect(SubAgentProgress.statsLine(for: card)
+            == "20 个工具 · 6.2 分钟 · 输入 17.6k · 输出 6.4k")
+        #expect(SubAgentProgress.statsAccessibilityLabel(for: card)
+            == "运行中，20 个工具，用时 6.2 分钟，输入 17.6k，输出 6.4k")
+        #expect(!SubAgentProgress.statsLine(for: card).contains("55"))
+    }
+
+    @Test func statsLinesFallBackToTheWireCounterWithoutASplit() throws {
+        let card = try card(try cardItem(usage: ["toolCalls": 7, "tokens": 33_555, "durationMs": 24_723]))
+        #expect(SubAgentProgress.statsLines(for: card)
+            == ["7 个工具 · 24.7 秒", "33.6k tokens"])
+    }
+
     @Test func statsAccessibilityLabelReadsAsOneSentence() throws {
         // The badge dot, the badge word and the metrics must not become three
         // separate stops: one label, phase first, unit words restored.

@@ -172,7 +172,7 @@ struct SubAgentPanelSheet: View {
     /// the row scans as one glanceable state + one line of numbers.
     private func statsRow(_ card: SubAgentCard) -> some View {
         let phaseColor = SubAgentPalette.phase(card.phase)
-        let metrics = SubAgentProgress.statsLine(for: card)
+        let metricLines = SubAgentProgress.statsLines(for: card)
         return HStack(spacing: 8) {
             HStack(spacing: 8) {
                 HStack(spacing: 5) {
@@ -185,12 +185,16 @@ struct SubAgentPanelSheet: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
                 .background(phaseColor.opacity(Self.badgeFillOpacity(colorScheme)), in: .capsule)
-                if !metrics.isEmpty {
-                    Text(metrics)
+                if !metricLines.isEmpty {
+                    // Two visual groups at most: tools+time, then 输入/输出. A
+                    // single line stays one line (2026-10-21).
+                    Text(metricLines.joined(separator: "\n"))
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
                         .truncationMode(.tail)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             // One element, one sentence: VoiceOver should read the state and

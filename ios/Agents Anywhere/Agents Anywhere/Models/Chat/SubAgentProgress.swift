@@ -105,6 +105,11 @@ struct SubAgentCard: Identifiable, Equatable {
     let phase: SubAgentPhase
     let toolCalls: Int?
     let tokens: Int?
+    /// The transcript's summed non-cached input / output over the task's
+    /// calls (connector, 2026-10-21). The wire's single `tokens` is the last
+    /// call's context size, so these are what the panel prefers to show.
+    let inputTokens: Int?
+    let outputTokens: Int?
     let durationMs: Int?
     /// The subagent's verbatim final reply (task_notification fold).
     let summary: String?
@@ -183,6 +188,8 @@ enum SubAgentProgress {
                          launching: entry?["status"]?.stringValue == asyncLaunchedStatus),
             toolCalls: usage["toolCalls"]?.intValue,
             tokens: usage["tokens"]?.intValue,
+            inputTokens: usage["inputTokens"]?.intValue,
+            outputTokens: usage["outputTokens"]?.intValue,
             durationMs: usage["durationMs"]?.intValue,
             summary: TimelineText.first(raw["summary"]),
             parentItemID: parent,
@@ -544,45 +551,68 @@ enum SubAgentProgress {
         return date(item.completedAt) ?? date(item.updatedAt)
     }
 
-    /// The panel's metrics, beside the status badge: "12 个工具 · 8.1 秒 ·
-    /// 31.2k tokens". Every value carries its unit: "6.2m" and a bare "55"
-    /// read as stray letters/numbers (pp, 2026-10-21). The phase word stays the
-    /// badge's job. Empty when every counter is missing or zero; the values
-    /// freeze when the card closes because the task events stop writing.
+    /// The panel's stats block: at most two lines — tools + duration, then the
+    /// real input/output split. Every value carries its unit ("6.2m"/a bare
+    /// "55" read as stray letters/numbers, pp 2026-10-21). The wire's single
+    /// `tokens` (the last call's context size) is only the fallback for a card
+    /// whose transcript is gone. Empty when every counter is missing or zero;
+    /// the values freeze when the card closes because the task events stop
+    /// writing.
+    static func statsLines(for card: SubAgentCard) -> [String] {
+        let parts = metricParts(
+            for: card,
+            duration: { SubAgentUsageFormat.duration(milliseconds: $0) }
+        )
+        return [parts.primary, parts.secondary]
+            .map { $0.joined(separator: " · ") }
+            .filter { !$0.isEmpty }
+    }
+
+    /// The whole block on one line, for callers that need a single string.
     static func statsLine(for card: SubAgentCard) -> String {
-        metrics(for: card).joined(separator: " · ")
+        statsLines(for: card).joined(separator: " · ")
     }
 
     /// The same row as one spoken sentence: "已完成，12 个工具，用时 8.1 秒，
-    /// 31.2k tokens". VoiceOver needs the words "用时"/"tokens" — a bare "8.1s"
+    /// 输入 17.6k，输出 6.4k". VoiceOver needs the words "用时" — a bare "8.1s"
     /// is read as a stray letter — and it needs the phase word, which the badge
     /// already carries visually.
     static func statsAccessibilityLabel(for card: SubAgentCard) -> String {
-        let spoken = metrics(for: card,
-            duration: { String(localized: "用时 \(SubAgentUsageFormat.duration(milliseconds: $0))") },
-            tokens: { String(localized: "\(SubAgentUsageFormat.tokens($0)) tokens") })
-        return ([card.phase.word] + spoken).joined(separator: "，")
+        let parts = metricParts(
+            for: card,
+            duration: { String(localized: "用时 \(SubAgentUsageFormat.duration(milliseconds: $0))") }
+        )
+        return ([card.phase.word] + parts.primary + parts.secondary)
+            .joined(separator: "，")
     }
 
     /// The counters in display order, dropping the missing and the zero ones
-    /// (缺失不显、不留 "0"). Only the unit wording changes between the visible
-    /// line and the spoken label, so the drop rule stays in one place.
-    private static func metrics(for card: SubAgentCard,
-                                duration: (Int) -> String = { SubAgentUsageFormat.duration(milliseconds: $0) },
-                                tokens: (Int) -> String = {
-                                    String(localized: "\(SubAgentUsageFormat.tokens($0)) tokens")
-                                }) -> [String] {
-        var parts: [String] = []
+    /// (缺失不显、不留 "0"). Split into the two visual groups the panel stacks:
+    /// primary = tools + duration, secondary = the token side. The transcript's
+    /// input/output split wins; the wire's single counter is the fallback, and
+    /// its unit word is added here so both surfaces agree.
+    private static func metricParts(
+        for card: SubAgentCard,
+        duration: (Int) -> String
+    ) -> (primary: [String], secondary: [String]) {
+        var primary: [String] = []
         if let toolCalls = card.toolCalls, toolCalls > 0 {
-            parts.append(String(localized: "\(toolCalls) 个工具"))
+            primary.append(String(localized: "\(toolCalls) 个工具"))
         }
         if let durationMs = card.durationMs, durationMs > 0 {
-            parts.append(duration(durationMs))
+            primary.append(duration(durationMs))
         }
-        if let tokenCount = card.tokens, tokenCount > 0 {
-            parts.append(tokens(tokenCount))
+        var secondary: [String] = []
+        if let input = card.inputTokens, input > 0 {
+            secondary.append(String(localized: "输入 \(SubAgentUsageFormat.tokens(input))"))
         }
-        return parts
+        if let output = card.outputTokens, output > 0 {
+            secondary.append(String(localized: "输出 \(SubAgentUsageFormat.tokens(output))"))
+        }
+        if secondary.isEmpty, let tokenCount = card.tokens, tokenCount > 0 {
+            secondary.append(String(localized: "\(SubAgentUsageFormat.tokens(tokenCount)) tokens"))
+        }
+        return (primary, secondary)
     }
 
     /// The `agents` entry that belongs to the card. The map is normally keyed

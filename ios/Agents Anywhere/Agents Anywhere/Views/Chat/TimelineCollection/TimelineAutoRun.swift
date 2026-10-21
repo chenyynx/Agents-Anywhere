@@ -187,9 +187,15 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     var allItems: [TimelineListItem] { entries.map(listItem) }
 
     @discardableResult
+    private var prependBatch = 0
+
     func prependPlain(_ count: Int) -> [TimelineListItem] {
+        // Unique ids per call: a second prepend with the same `pre-N` ids
+        // makes the diffable snapshot throw ("identifiers must be unique").
+        prependBatch += 1
+        let batch = prependBatch
         let new = (0..<count).map { offset in
-            Entry(id: "pre-\(offset)", kind: .plain,
+            Entry(id: "pre-\(batch)-\(offset)", kind: .plain,
                   text: String(repeating: "Earlier page line \(offset). ", count: 3))
         }
         entries.insert(contentsOf: new, at: 0)
@@ -552,13 +558,20 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                                   min(attributes.frame.maxY, bottom)))
             }
         }
+        // Items are separated by `itemSpacing`; that gap is expected, not a
+        // hole. Anything beyond it (minus rounding) is a missing band.
+        let allowed = TimelineListMetrics.itemSpacing + 1
         var gap: CGFloat = 0
         var covered = top
         for (start, end) in intervals.sorted(by: { $0.0 < $1.0 }) {
-            if start > covered + 1 { gap += start - covered }
+            if start > covered + allowed {
+                gap += start - covered - TimelineListMetrics.itemSpacing
+            }
             covered = max(covered, end)
         }
-        if covered < bottom - 1 { gap += bottom - covered }
+        if covered < bottom - allowed {
+            gap += bottom - covered - TimelineListMetrics.itemSpacing
+        }
         return (missing, gap)
     }
 

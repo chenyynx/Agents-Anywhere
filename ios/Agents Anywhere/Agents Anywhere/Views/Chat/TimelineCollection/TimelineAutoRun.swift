@@ -217,6 +217,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await streaming()
         await bottom()
         await prepend()
+        await prependDuringApply()
         await tailFlap()
         await foldCycles()
         await interleavedApplies()
@@ -822,6 +823,50 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                              "proposed": proposed, "returned": returned,
                              "settled": settled, "doubleQuerySame": doubleQuerySame,
                              "cancelledUnchanged": cancelledUnchanged]
+    }
+
+    /// Device report (6a18aa3): tapping "load older" jumped elsewhere instead
+    /// of keeping the reader's place. Reproduce the product shape: a normal
+    /// apply is still in flight when the history request starts, so the
+    /// prepend apply is queued behind it by the snapshot serialization.
+    private func prependDuringApply() async {
+        guard let controller, entries.count > 12 else { return }
+        let anchor = entries[5]
+        let anchorItem = listItem(anchor)
+        guard let index = controller.indexPath(for: anchorItem) else {
+            failures.append("prepend during apply: no anchor index path")
+            return
+        }
+        controller.collectionView.scrollToItem(at: index, at: .top, animated: false)
+        await wait(120)
+        let before = controller.screenY(for: anchorItem) ?? 0
+
+        // Leave a normal apply in flight: a streamed line changes the list.
+        guard let plain = entries.last(where: { $0.kind == .plain }) else { return }
+        appendStreamLine(to: plain.id)
+        controller.apply(items: entries.map(listItem))
+
+        let newItems = prependPlain(60)
+        guard var position = controller.beginHistoryRequest(generation: 123,
+            anchorRowID: anchor.id, edge: .top, newItems: newItems) else {
+            failures.append("prepend during apply: no history position")
+            return
+        }
+        controller.reloadFromContent()
+        await wait(900)
+        let after = controller.screenY(for: anchorItem) ?? 0
+        let delta = abs(after - before)
+        let firstRow = controller.content?.rowIDs(in: controller.items.first ?? .tail).first
+        position.receivedPage(firstRowID: firstRow)
+        if let latest = controller.historyLayout(anchorRowID: anchor.id, edge: .top) {
+            _ = position.laidOut(latest, generation: 123)
+        }
+        if delta > 1 {
+            failures.append("prepend during apply: anchor moved \(delta)pt")
+        }
+        report["prependDuringApply"] = ["before": Double(before), "after": Double(after),
+                                        "delta": Double(delta),
+                                        "settled": position.isReadyToFinish]
     }
 
     // MARK: - Sampling helpers

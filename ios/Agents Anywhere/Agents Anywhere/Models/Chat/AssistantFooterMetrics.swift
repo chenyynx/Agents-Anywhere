@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// Height constants for the TextKit cell's footer.

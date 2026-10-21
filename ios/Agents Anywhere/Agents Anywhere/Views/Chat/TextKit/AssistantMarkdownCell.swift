@@ -97,6 +97,11 @@ final class AssistantMarkdownCell: UICollectionViewCell {
     var debugMaskInstalled: Bool {
         revealDriver.clampedHeight != nil
     }
+    /// Whether the cursor text view actually carries the reveal mask. The
+    /// clamp flag is a proxy; the gate checks the layer itself.
+    var debugMaskLayerInstalled: Bool {
+        revealCursorView?.layer.mask != nil
+    }
     var debugRevealedCharacters: Int { revealDriver.released ?? 0 }
     /// Last row height the reveal reported (`nil` once the row uses its full
     /// measured height).
@@ -186,6 +191,7 @@ final class AssistantMarkdownCell: UICollectionViewCell {
         super.didMoveToWindow()
         if window == nil, streaming != nil {
             revealDriver.reset()
+            revealCursorView = nil
             #if DEBUG
             debugStreamingRowHeight = nil
             #endif
@@ -415,29 +421,58 @@ final class AssistantMarkdownCell: UICollectionViewCell {
         tailConstraints.removeValue(forKey: id)
     }
 
-    /// The open block is the last top-level text block. Lists, quotes, code
-    /// and tables use the block entrance instead of a character mask.
+    /// The cursor block is the top-level block that contains the reveal
+    /// offset. A text block gets the per-line mask even when a list, quote,
+    /// code or table follows it; those later structures use the block
+    /// entrance instead of a character mask.
     private func configureReveal(_ streaming: AssistantStreamingDocument) {
-        guard let state = revealState,
-              let last = streaming.document.blocks.last,
-              case .text = last,
-              let lastID = streaming.blockIDs.last,
-              let textView = tailViews[lastID] as? AssistantMarkdownBlockTextView else {
+        guard let state = revealState else {
             revealDriver.reset()
+            revealCursorView = nil
+            return
+        }
+        let blocks = streaming.document.blocks
+        let now = ProcessInfo.processInfo.systemUptime
+        let cursor = min(state.shownThrough(at: now), state.total)
+        var start = 0
+        var cursorIndex = -1
+        for (index, block) in blocks.enumerated() {
+            let end = start + block.characterCount
+            if cursor < end {
+                cursorIndex = index
+                break
+            }
+            start = end
+        }
+        if cursorIndex < 0 { cursorIndex = blocks.count - 1 }
+        guard cursorIndex >= 0,
+              cursorIndex < streaming.blockIDs.count,
+              case .text = blocks[cursorIndex],
+              let view = (stableViews[streaming.blockIDs[cursorIndex]]
+                            ?? tailViews[streaming.blockIDs[cursorIndex]])
+                        as? AssistantMarkdownBlockTextView else {
+            revealDriver.reset()
+            revealCursorView = nil
             return
         }
         var blockStart = 0
-        for index in 0..<(streaming.document.blocks.count - 1) {
-            blockStart += streaming.document.blocks[index].characterCount
+        for index in 0..<cursorIndex {
+            blockStart += blocks[index].characterCount
         }
-        revealDriver.configure(state: state, blockStart: blockStart,
-                               textView: textView)
+        revealCursorView = view
+        revealDriver.configure(
+            state: state, blockStart: blockStart,
+            blockLength: blocks[cursorIndex].characterCount,
+            textView: view)
     }
 
+    /// The open text block's view (tail or already-promoted stable). The
+    /// cursor is chosen by character offset, not by "last block": a text
+    /// paragraph followed by a list must still be masked while revealing.
+    private weak var revealCursorView: UIView?
+
     private func handleRevealFrame(_ clamped: CGFloat?) {
-        guard let clamped,
-              let lastID = tailIDs.last,
-              let cursorView = tailViews[lastID] else {
+        guard let clamped, let cursorView = revealCursorView else {
             #if DEBUG
             debugStreamingRowHeight = nil
             #endif
@@ -454,6 +489,7 @@ final class AssistantMarkdownCell: UICollectionViewCell {
 
     private func removeBlockViews() {
         revealDriver.reset()
+        revealCursorView = nil
         NSLayoutConstraint.deactivate(heightConstraints)
         NSLayoutConstraint.deactivate(Array(stableConstraints.values))
         NSLayoutConstraint.deactivate(Array(tailConstraints.values))

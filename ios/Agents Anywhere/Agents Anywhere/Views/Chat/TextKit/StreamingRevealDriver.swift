@@ -24,6 +24,7 @@ final class StreamingRevealDriver: NSObject {
     private var total = 0
     private var textComplete = false
     private var blockStart = 0
+    private var blockLength = 0
     private weak var textView: UITextView?
     private var mask: CALayer?
     private var link: CADisplayLink?
@@ -32,7 +33,6 @@ final class StreamingRevealDriver: NSObject {
     private var policy = StreamingRevealRunPolicy()
     private var nextRun = 1
     private var waitingSince: TimeInterval?
-    private var firstRunAge: TimeInterval = 0
     /// Bottom of the last painted line, in the text view's coordinates.
     private var seatedMaxY: CGFloat?
     private var seatedMinY: CGFloat?
@@ -55,12 +55,14 @@ final class StreamingRevealDriver: NSObject {
 
     func configure(state: StreamingRevealState,
                    blockStart: Int,
+                   blockLength: Int,
                    textView: UITextView?) {
         let now = ProcessInfo.processInfo.systemUptime
         timeline = state.timeline
         total = state.total
         textComplete = state.isTextComplete
         self.blockStart = max(0, blockStart)
+        self.blockLength = max(0, blockLength)
         if let released {
             self.released = min(released, total)
         } else {
@@ -91,10 +93,10 @@ final class StreamingRevealDriver: NSObject {
         total = 0
         textComplete = false
         blockStart = 0
+        blockLength = 0
         released = nil
         nextRun = 1
         waitingSince = nil
-        firstRunAge = 0
         seatedMaxY = nil
         seatedMinY = nil
         finishAt = nil
@@ -150,7 +152,14 @@ final class StreamingRevealDriver: NSObject {
         let released = self.released ?? 0
         if target <= released {
             if waitingSince == nil { waitingSince = now }
-            if textComplete, released >= total { finishIfFaded(now: now) }
+            if textComplete, released >= total {
+                finishIfFaded(now: now)
+            } else if !textComplete {
+                // Caught up between batches (a tool pause): no frames to
+                // paint until new text arrives, and the next configuration
+                // restarts the link.
+                stopLink()
+            }
             return
         }
 
@@ -166,17 +175,16 @@ final class StreamingRevealDriver: NSObject {
 
         let lower = max(released, blockStart)
         let upper = max(lower, target)
-        let localLower = lower - blockStart
-        let localUpper = upper - blockStart
+        let localLower = min(lower - blockStart, blockLength)
+        let localUpper = min(upper - blockStart, blockLength)
         if localUpper > localLower {
             let range = NSRange(location: localLower,
                                 length: localUpper - localLower)
             let rects = AssistantMarkdownMaskRenderer.lineRects(
                 for: range, in: textView)
             if !rects.isEmpty, let mask {
-                let fade = max(0, Self.fadeDuration - firstRunAge)
                 if let layer = AssistantMarkdownMaskRenderer.makeRunLayer(
-                    rects: rects, in: textView, fadeDuration: fade) {
+                    rects: rects, in: textView, fadeDuration: Self.fadeDuration) {
                     CATransaction.begin()
                     CATransaction.setDisableActions(true)
                     mask.addSublayer(layer)
@@ -196,7 +204,6 @@ final class StreamingRevealDriver: NSObject {
         self.released = upper
         nextRun = generator.nextRun()
         waitingSince = nil
-        firstRunAge = 0
         if textComplete, upper >= total {
             finishAt = now + Self.fadeDuration
         }
@@ -221,7 +228,7 @@ final class StreamingRevealDriver: NSObject {
     // MARK: - Mask
 
     private var localRevealedLength: Int {
-        max(0, min(released ?? 0, total) - blockStart)
+        min(max(0, min(released ?? 0, total) - blockStart), blockLength)
     }
 
     private func attachMaskPreservingRevealed() {

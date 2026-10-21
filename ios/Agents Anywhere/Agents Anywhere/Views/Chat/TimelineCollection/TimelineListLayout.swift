@@ -487,6 +487,13 @@ final class TimelineListLayout: UICollectionViewLayout {
                          contentSizeDelta: delta, state: state)
     }
 
+    /// Drop the override without invalidating. The controller calls this
+    /// while measuring a handed-over row, before the next `prepare` reads it;
+    /// invalidating there would race the apply.
+    func discardStreamingHeight(for itemID: String) {
+        streamingHeights.removeValue(forKey: itemID)
+    }
+
     /// The reveal finished. The row returns to the cached measurement.
     func clearStreamingHeight(for itemID: String) {
         guard streamingHeights.removeValue(forKey: itemID) != nil else { return }

@@ -264,7 +264,7 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
             }
             if let revealClamp {
                 sawClamp = true
-                if cell.debugRevealedCharacters > 0, cell.debugMaskInstalled {
+                if cell.debugRevealedCharacters > 0, cell.debugMaskLayerInstalled {
                     sawReveal = true
                 }
                 // The reveal owns the visible bottom: the row is the clamped
@@ -376,6 +376,11 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
         if let cellIdentity, cellIdentity != ObjectIdentifier(revealingCell) {
             failures.append("m4 done+revealing: cell instance replaced")
         }
+        // The done frame must still be owned by the reveal driver: a reset
+        // cursor means the final text was handed over without revealing.
+        if revealingCell.debugRevealedCharacters == 0 {
+            failures.append("m4.2 done+revealing: the reveal driver was reset")
+        }
         let revealingWidth = revealingCell.contentView.bounds.width
         let revealingStored = revealingAttributes.frame.height
         let revealingMeasured = AssistantMarkdownTextLayout.measure(
@@ -460,6 +465,7 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
 
         capture("m42-final.png")
         report["follow"] = [
+            "starts": controller.debugStreamingFollowStarts,
             "offsets": followOffsets.map(Double.init),
             "sawReveal": sawReveal,
             "sawClamp": sawClamp,
@@ -475,6 +481,11 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
             "revealClamp": Double(revealingCell.debugStreamingRowHeight ?? -1),
             "arrangedViews": revealingCell.debugArrangedBlockViews.count,
             "revealedCharacters": revealingCell.debugRevealedCharacters,
+            "maskLayerInstalled": revealingCell.debugMaskLayerInstalled,
+            "tailViews": revealingCell.debugTailViewCount,
+            "tailTextLength": revealingDocument.tailText.count,
+            "stableBlocks": revealingDocument.stableBlockCount,
+            "blockCount": revealingDocument.document.blocks.count,
             "sameCell": cellIdentity == ObjectIdentifier(revealingCell),
         ] as [String: Any]
         report["completion"] = [

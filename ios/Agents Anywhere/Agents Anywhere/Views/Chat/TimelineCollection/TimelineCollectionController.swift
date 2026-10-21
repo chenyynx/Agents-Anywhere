@@ -86,6 +86,11 @@ final class TimelineCollectionController: UIViewController {
     /// true the follower keeps running even when it momentarily reaches the
     /// current bottom, because the target is still growing.
     private var streamingFollowActive = false
+    #if DEBUG
+    /// Number of sprung follows started; the M4 gate asserts the follower
+    /// actually ran (an instant pin would leave this at zero).
+    private(set) var debugStreamingFollowStarts = 0
+    #endif
     private var isScrollingToTop = false
     private var scrollToTopWatchdog: Task<Void, Never>?
     private var scrollToTopToken = 0
@@ -174,7 +179,11 @@ final class TimelineCollectionController: UIViewController {
                         self?.streamingRevealFrame(height, for: item)
                     }
                     cell.onStreamingRevealCaughtUp = { [weak self] in
-                        DispatchQueue.main.async { self?.reloadFromContent() }
+                        DispatchQueue.main.async {
+                            guard let self else { return }
+                            self.content?.streamingRevealDidFinish(for: item)
+                            self.reloadFromContent()
+                        }
                     }
                     return cell
                 }
@@ -327,7 +336,10 @@ final class TimelineCollectionController: UIViewController {
         let state = layoutInteractionState()
         // While the reader is pinned to the bottom the follower owns the
         // offset; the layout only invalidates the item height.
+        // A programmatic return (pill/send/keyboard) owns the offset until
+        // its animation ends; the reveal follower must not cancel it.
         let following = height != nil && state.isAutoScrollPinning
+            && phase.phase != .animating
         if let height {
             layout.applyStreamingHeight(height, for: item.itemID,
                                         adjustOffset: !following)
@@ -352,7 +364,7 @@ final class TimelineCollectionController: UIViewController {
     /// start so the motion does not restart each frame.
     private func startStreamingFollowIfNeeded() {
         guard let collectionView, !navigationSuspended,
-              armedBottom.isArmed else { return }
+              armedBottom.isArmed, phase.phase != .animating else { return }
         let state = layoutInteractionState()
         guard !state.isTracking, !state.isDecelerating else { return }
         guard !UIAccessibility.isReduceMotionEnabled,
@@ -372,6 +384,11 @@ final class TimelineCollectionController: UIViewController {
             target: target, current: current, displayScale: scale) else { return }
 
         let visible = streamingFollowVisibleHeight()
+        // The curve is chosen from the original distance; the pre-place only
+        // moves the takeoff point (official: >1 viewport pre-places, then
+        // flies the remainder).
+        let spring = TimelineSpringFollow.spring(
+            target: target, current: current, visibleHeight: visible)
         let preplaced = TimelineSpringFollow.preplacedOffset(
             target: target, current: current, visibleHeight: visible)
         if abs(preplaced - current) >= TimelineSpringFollow.pixel(displayScale: scale) {
@@ -379,9 +396,7 @@ final class TimelineCollectionController: UIViewController {
                 CGPoint(x: collectionView.contentOffset.x, y: preplaced),
                 animated: false)
         }
-        streamingFollowSpring = TimelineSpringFollow.spring(
-            target: target, current: collectionView.contentOffset.y,
-            visibleHeight: visible)
+        streamingFollowSpring = spring
         streamingFollowStartPosition = collectionView.contentOffset.y
         streamingFollowStartTime = ProcessInfo.processInfo.systemUptime
         streamingFollowLastTime = streamingFollowStartTime
@@ -397,6 +412,9 @@ final class TimelineCollectionController: UIViewController {
             preferred: 0)
         link.add(to: .main, forMode: .common)
         streamingFollowLink = link
+        #if DEBUG
+        debugStreamingFollowStarts += 1
+        #endif
     }
 
     @objc private func streamingFollowTick(_ link: CADisplayLink) {
@@ -406,11 +424,23 @@ final class TimelineCollectionController: UIViewController {
         }
         let state = layoutInteractionState()
         guard armedBottom.isArmed, !navigationSuspended,
+              phase.phase != .animating,
               !state.isTracking, !state.isDecelerating else {
             stopStreamingFollow()
             return
         }
         let now = ProcessInfo.processInfo.systemUptime
+        // Another writer (keyboard snap, explicit return, inset change) moved
+        // the page between frames. Re-seed the spring at the real offset so the
+        // next step cannot pull it back toward the old takeoff point.
+        let actual = collectionView.contentOffset.y
+        if abs(actual - streamingFollowLastPosition) > 1.0 {
+            streamingFollowStartPosition = actual
+            streamingFollowStartTime = now
+            streamingFollowLastPosition = actual
+            streamingFollowLastTime = now
+            streamingFollowLastMoveAt = now
+        }
         let maxFPS = Double(max(60, view.window?.screen.maximumFramesPerSecond ?? 60))
         let dt = min(max(0, now - streamingFollowLastTime), 2 / maxFPS)
         let target = streamingFollowEndOffset()
@@ -629,6 +659,10 @@ final class TimelineCollectionController: UIViewController {
                 documentHeights.removeValue(forKey: item.itemID)
                 continue
             }
+            // A row that just handed over from the reveal must take the
+            // measured static height in this same apply; the display override
+            // from the streaming cell would otherwise win the first prepare.
+            layout.discardStreamingHeight(for: item.itemID)
             let footerHeight = content.assistantTurnFooter(for: item) == nil
                 ? 0 : AssistantTurnFooter.height
             let key = content.heightKey(for: item, width: width)

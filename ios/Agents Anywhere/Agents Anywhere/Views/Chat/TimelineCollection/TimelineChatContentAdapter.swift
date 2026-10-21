@@ -241,6 +241,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// First moment the renderer-owned cursor caught up. Kept briefly so the
     /// cell's final run and fade can finish before the static body takes over.
     private var revealCaughtUpAt: [String: TimeInterval] = [:]
+    /// Rows whose renderer-owned reveal is still running. The cell driver
+    /// clears this through `streamingRevealDidFinish` after the final fade;
+    /// the signature includes it so the completion triggers one more apply
+    /// (footer install + measured static height).
+    private var rendererRevealOwnership = StreamingRevealOwnership()
     /// Rows whose stream contained a block the TextKit path cannot render stay
     /// on the hosting path for the rest of the turn. Flipping engines mid-stream
     /// would be a visible jump.
@@ -261,10 +266,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         guard !row.value.isStreamingText, !row.isRevealing else { return nil }
         // A done row whose renderer-owned cursor is still revealing stays on
         // the streaming path; the static body would cut the animation short.
-        if isRevealEnabled,
-           let timeline = revealTimelines[row.id], timeline.total > 0,
-           timeline.shownThrough(at: ProcessInfo.processInfo.systemUptime)
-            < timeline.total {
+        if isRevealEnabled, rendererRevealOwnership.isActive(row.id) {
             return nil
         }
         guard row.value.status == .done else { return nil }
@@ -357,14 +359,19 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         guard isRevealEnabled else {
             revealTimelines.removeValue(forKey: row.id)
             revealCaughtUpAt.removeValue(forKey: row.id)
+            rendererRevealOwnership.finish(row.id)
             return
         }
         let total = document.document.revealCharacterCount
         let now = ProcessInfo.processInfo.systemUptime
         var timeline = revealTimelines[row.id] ?? StreamingRevealTimeline()
-        guard timeline.total != total else { return }
+        guard timeline.total != total else {
+            if total > 0 { rendererRevealOwnership.begin(row.id) }
+            return
+        }
         timeline.retarget(total: total, at: now)
         revealTimelines[row.id] = timeline
+        if total > 0 { rendererRevealOwnership.begin(row.id) }
         if timeline.shownThrough(at: now) >= total {
             revealCaughtUpAt[row.id] = revealCaughtUpAt[row.id] ?? now
         } else {
@@ -410,6 +417,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 streamingFallbacks.remove(row.id)
                 revealTimelines.removeValue(forKey: row.id)
                 revealCaughtUpAt.removeValue(forKey: row.id)
+                rendererRevealOwnership.finish(row.id)
             }
             return nil
         }
@@ -437,16 +445,36 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private func revealPending(for row: ChatTimelineRowModel,
                                at now: TimeInterval) -> Bool {
         guard isRevealEnabled,
-              let timeline = revealTimelines[row.id], timeline.total > 0 else {
+              rendererRevealOwnership.isActive(row.id) else { return false }
+        guard let timeline = revealTimelines[row.id], timeline.total > 0 else {
+            rendererRevealOwnership.finish(row.id)
             return false
         }
-        if timeline.shownThrough(at: now) >= timeline.total {
-            let caught = revealCaughtUpAt[row.id] ?? now
-            revealCaughtUpAt[row.id] = caught
-            return now - caught < 0.7
+        if timeline.shownThrough(at: now) < timeline.total {
+            revealCaughtUpAt.removeValue(forKey: row.id)
+            return true
         }
-        revealCaughtUpAt.removeValue(forKey: row.id)
+        // The formula caught up; keep the row until the cell driver reports
+        // that the final run and fade finished. The fallback bounds a driver
+        // that never reports (its cell scrolled away).
+        let caught = revealCaughtUpAt[row.id] ?? now
+        revealCaughtUpAt[row.id] = caught
+        if now - caught > 1.5 {
+            rendererRevealOwnership.finish(row.id)
+            return false
+        }
         return true
+    }
+
+    /// The cell finished the final fade for this item's streaming row. Drop
+    /// the reveal ownership so the next apply measures and configures the
+    /// static body (which is what installs the copy/timestamp footer).
+    func streamingRevealDidFinish(for item: TimelineListItem) {
+        guard case .group(let id) = item, let group = groupsByID[id],
+              let row = group.rows.first else { return }
+        guard rendererRevealOwnership.finish(row.id) else { return }
+        revealCaughtUpAt.removeValue(forKey: row.id)
+        prepareForUpdate()
     }
 
     /// A nil action is fine. A text-only action is the fixed copy/retry row
@@ -615,8 +643,22 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // timeline so a long session does not retain old replies.
         assistantDocuments = assistantDocuments.filter { rowToItem[$0.key] != nil }
         let streamingNow = ProcessInfo.processInfo.systemUptime
+        let presentRowIDs = Set(model.timeline.rows.map(\.id))
+        rendererRevealOwnership.prune(keeping: presentRowIDs)
+        for rowID in Array(rendererRevealOwnership.activeRowIDs) {
+            guard let timeline = revealTimelines[rowID], timeline.total > 0 else { continue }
+            if timeline.shownThrough(at: streamingNow) < timeline.total {
+                revealCaughtUpAt.removeValue(forKey: rowID)
+                continue
+            }
+            let caught = revealCaughtUpAt[rowID] ?? streamingNow
+            revealCaughtUpAt[rowID] = caught
+            if streamingNow - caught > 1.5 { rendererRevealOwnership.finish(rowID) }
+        }
         let streamingRowIDs = Set(model.timeline.rows.compactMap { row -> String? in
-            if row.value.isStreamingText { return row.id }
+            if row.value.isStreamingText || rendererRevealOwnership.isActive(row.id) {
+                return row.id
+            }
             // A done row whose cursor is still behind the received text keeps
             // its document and builder until the reveal hands back.
             if let timeline = revealTimelines[row.id], timeline.total > 0,
@@ -721,7 +763,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             rows.append(TimelineRowContentSignature(id: row.id, revision: row.value.revision,
                                                    updatedSeq: row.value.updatedSeq))
             if model.disclosures.isExpanded(row.id) { expandedRowIDs.append(row.id) }
-            if row.isRevealing { revealingRowIDs.append(row.id) }
+            if row.isRevealing || rendererRevealOwnership.isActive(row.id) {
+                revealingRowIDs.append(row.id)
+            }
             for notice in inlineNoticesByRow[row.id] ?? [] {
                 inlineNotices.append(TimelineInlineNoticeSignature(id: notice.id,
                     status: notice.notice.status, revision: notice.notice.revision))

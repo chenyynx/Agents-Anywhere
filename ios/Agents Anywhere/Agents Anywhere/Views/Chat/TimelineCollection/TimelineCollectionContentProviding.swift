@@ -39,6 +39,11 @@ protocol TimelineCollectionContentProviding: AnyObject {
     /// document so frame ticks do not rebuild parsed blocks.
     func assistantStreamingReveal(for item: TimelineListItem) -> StreamingRevealState?
 
+    /// The cell's reveal driver finished its final fade. The provider drops
+    /// its reveal ownership so the next apply measures and configures the
+    /// static body (which installs the turn-action footer).
+    func streamingRevealDidFinish(for item: TimelineListItem)
+
     /// The text-only turn action footer for a TextKit assistant row. Nil for
     /// rows whose footer includes a variable-height file-change summary (those
     /// keep hosting) and for every hosting row.
@@ -68,6 +73,7 @@ extension TimelineCollectionContentProviding {
     func assistantMarkdown(for item: TimelineListItem) -> AssistantMarkdownDocument? { nil }
     func assistantStreamingDocument(for item: TimelineListItem) -> AssistantStreamingDocument? { nil }
     func assistantStreamingReveal(for item: TimelineListItem) -> StreamingRevealState? { nil }
+    func streamingRevealDidFinish(for item: TimelineListItem) {}
     func assistantTurnFooter(for item: TimelineListItem) -> AssistantTurnFooter? { nil }
 
     /// Typography changes every height key. The C3 gate's synthetic rows keep

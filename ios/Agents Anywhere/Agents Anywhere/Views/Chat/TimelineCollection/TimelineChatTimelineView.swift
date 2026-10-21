@@ -86,6 +86,7 @@ struct TimelineChatTimelineView: View {
         let _ = model.isRunning
         let _ = model.sendingPlaceholder
         let _ = model.orbActivity
+        let phase = self.turnPhase
         let _ = model.session.hasNewerItems
         let _ = model.session.hasOlderItems
         let _ = model.session.isLoadingHistory
@@ -172,11 +173,11 @@ struct TimelineChatTimelineView: View {
             // Official TurnStatusView transfer: the end of a stream is the
             // one light impact; other phase changes are selections. Streamed
             // tokens never play a haptic.
-            .sensoryFeedback(.selection, trigger: turnPhase) { old, new in
+            .sensoryFeedback(.selection, trigger: phase) { old, new in
                 TurnPhaseHaptics.feedback(from: old, to: new) == .selection
             }
             .sensoryFeedback(.impact(weight: .light, intensity: 1.0),
-                             trigger: turnPhase) { old, new in
+                             trigger: phase) { old, new in
                 TurnPhaseHaptics.feedback(from: old, to: new) == .impactLight
             }
     }

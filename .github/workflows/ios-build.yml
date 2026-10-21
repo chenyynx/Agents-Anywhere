@@ -407,6 +407,8 @@ jobs:
               failures.append("the streaming row never used a clamped reveal height")
           if not follow.get("eligibleFrames"):
               failures.append("the reveal never fed the bottom-follow path")
+          if not follow.get("starts"):
+              failures.append("the sprung bottom follow never started")
           if not follow.get("dragDisarmed"):
               failures.append("dragging did not disarm the bottom target")
           if not follow.get("offsetAtBottom"):

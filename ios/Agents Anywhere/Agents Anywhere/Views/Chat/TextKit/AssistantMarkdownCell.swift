@@ -508,6 +508,7 @@ final class AssistantMarkdownCell: UICollectionViewCell {
         let blocks = streaming.document.blocks
         lastCursorBlockIndex = cursorIndex
         for (index, block) in blocks.enumerated() {
+            guard index < streaming.blockIDs.count else { continue }
             let id = streaming.blockIDs[index]
             guard let view = stableViews[id] ?? tailViews[id] else { continue }
             view.isHidden = index > cursorIndex
@@ -528,23 +529,36 @@ final class AssistantMarkdownCell: UICollectionViewCell {
         }
     }
 
-    /// A non-text cursor has no display-link driver to report completion. When
-    /// the received text is complete, wait for the pure timeline to catch up
-    /// and tell the controller to hand the row over (footer install).
+    /// A non-text cursor has no display-link driver. Poll the pure timeline so
+    /// the cursor keeps advancing through code/table/list blocks even when the
+    /// model pauses (blocks after it stay hidden, and the row clamp follows).
+    /// Once the cursor catches up, only a completed text hands the row over;
+    /// an unfinished stream restarts this on its next batch.
     private func scheduleRevealCatchUp(state: StreamingRevealState) {
         revealCatchUpTask?.cancel()
-        guard state.isTextComplete else { return }
         if state.isCaughtUp(at: ProcessInfo.processInfo.systemUptime) {
-            notifyRevealCaughtUp()
+            if state.isTextComplete { notifyRevealCaughtUp() }
             return
         }
         revealCatchUpTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(50))
-                guard !Task.isCancelled else { return }
-                if state.isCaughtUp(at: ProcessInfo.processInfo.systemUptime) {
-                    self?.notifyRevealCaughtUp()
+                guard !Task.isCancelled, let self else { return }
+                let now = ProcessInfo.processInfo.systemUptime
+                if state.isCaughtUp(at: now) {
+                    if state.isTextComplete { self.notifyRevealCaughtUp() }
                     return
+                }
+                guard let streaming = self.streaming else { return }
+                let index = self.cursorBlockIndex(
+                    in: streaming, at: state.shownThrough(at: now))
+                if index != self.lastCursorBlockIndex {
+                    self.rebuildStreamingIfPossible()
+                    if state.isTextComplete,
+                       state.isCaughtUp(at: ProcessInfo.processInfo.systemUptime) {
+                        self.notifyRevealCaughtUp()
+                        return
+                    }
                 }
             }
         }
@@ -566,15 +580,20 @@ final class AssistantMarkdownCell: UICollectionViewCell {
         // The cursor can cross into the next block while no new text arrives;
         // switch the mask (and unhide later blocks) without waiting for a
         // batch. Safe here: a display-link tick is not a layout pass.
+        var rebuilt = false
         if let streaming, let released = revealDriver.released {
             let index = cursorBlockIndex(in: streaming, at: released)
             if index != lastCursorBlockIndex {
+                rebuilt = true
                 rebuildStreamingIfPossible()
                 // The old clamp was in the previous view's coordinates.
                 clamped = revealDriver.clampedHeight
             }
         }
         guard let clamped, let cursorView = revealCursorView else {
+            // A non-text cursor rebuild owns the next height report; do not
+            // clear the override for one frame in between.
+            if rebuilt { return }
             #if DEBUG
             debugStreamingRowHeight = nil
             #endif
@@ -582,8 +601,11 @@ final class AssistantMarkdownCell: UICollectionViewCell {
             return
         }
         guard cursorView.bounds.height > 0 else { return }
-        let point = cursorView.convert(CGPoint(x: 0, y: clamped), to: contentView)
-        let height = ceil(point.y + 1.0)
+        let clampedPoint = cursorView.convert(
+            CGPoint(x: 0, y: clamped), to: contentView).y
+        let viewBottom = cursorView.convert(
+            CGPoint(x: 0, y: cursorView.bounds.height), to: contentView).y
+        let height = ceil(min(viewBottom, clampedPoint) + 1.0)
         #if DEBUG
         debugStreamingRowHeight = height
         #endif

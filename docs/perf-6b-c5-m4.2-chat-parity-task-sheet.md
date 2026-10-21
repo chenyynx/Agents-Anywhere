@@ -158,6 +158,12 @@ shownThrough=floor(position+1e-9)
   - gate 判定口径：`stored`（clamp+1）与 content 的舍入差放宽到 2pt；跟随断言改为 `eligibleFrames > 0`（内容短于一屏时 `starts` 合法为 0，instant repin 已满足目标）；done 诊断在完成重配前快照。
 - **已验证** run `39559608529`（`2b2499ca`，gateVersion 5）：**test + timeline-autorun 全绿（含 C3 gate）**；`textkit-m4.json failures: []`；done 帧 `streamingConfiguration: true`、`revealedCharacters: 494`、`stableViews: 7`、`tailViews: 1`、sameCell、stored 616 == measured 616；`frameCalls: 10`、`eligibleFrames: 9`、`dragDisarmed: true`、`offsetAtBottom: true`（194=194）。artifact 同时暴露 batch 4 的 1pt 塌陷。
 - **已验证** run `39561154042`（`996cd564`，gateVersion 6）：**M4 gate 绿**（`failures: []`，batch 4 `stored 251` 不再塌陷，新增 `stored >= 8` 断言通过）；唯一红是 C3 gate 已知 flake（`longGroup cell 200 vs content 1471`，hosting 异步 Markdown 未及时 settle，与本改动路径无关）。
+- **第三轮窄核验（2026-10-21）**：发现 P1——artifact `starts: 0`，弹簧 follower 从未启动：`repinIfArmed` 每次内容高度变化即时钉底，而 follower 读到的 `layout.contentHeight` 目标恰好等于已钉位置，形成自锁；`eligibleFrames` 断言掩盖了它。修复：
+  - `repinIfArmed` 在揭示期（`streamingRevealActive`）先尝试启动弹簧（此时 prepare 已更新 `contentHeight`、offset 尚未钉），失败才回退即时 pin；gate 恢复 `follow.starts > 0`。
+  - 非文字游标在流式中途停顿：轮询 ticker 不再要求 `isTextComplete`，持续推进游标/解隐藏块；追平且未完成时停表，下一批重启。
+  - 跨块同一帧：游标落在块首时 clamp 归 0；rebuild 后不转发 nil（由非文字异步上报接管）。
+  - Q：`rowHeight = min(fit, clamped)+1` 在 cell 内实现；`onFrame` 回调后检测 driver 已 reset 则不再写状态；`updateBlockPresentation` 加 `blockIDs` 越界保护。
+  - 待验证：run（本轮提交）的 `follow.starts`、offsets 与 gate 全绿。
 - **无障碍旁路**：VoiceOver / Reduce Motion 时揭示关闭（官方 pacing provider 返回 nil / 不建 driver），行直接全量；底部跟随在两种情况下直接 place。已实现。
 - **已知取舍**：稳定块在游标尚未到达其末尾时即整块显示（官方逐叶 mask）；只在快速突发时可见，后续按游标推进可细化。`thinking` 进入时的 caption 谓词官方 UNKNOWN，AA 保留 `.selection`。相位 haptic 在整页生命周期内触发，不随 footer 是否在屏。手势只做 delegate 级验证（simctl 不能合成触摸）。AA 现有 `measuredAtBottom` 判定是 **8pt**（官方 1 物理像素 = 1/displayScale）；本次复用该判定以免影响 pull/回底/胶囊等既有行为，`TimelineSpringFollow.shouldRearmEnd` 的 1px 规则仅由单测覆盖。
 

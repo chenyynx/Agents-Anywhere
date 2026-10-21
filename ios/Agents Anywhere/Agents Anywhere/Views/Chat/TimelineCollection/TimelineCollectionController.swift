@@ -86,6 +86,10 @@ final class TimelineCollectionController: UIViewController {
     /// true the follower keeps running even when it momentarily reaches the
     /// current bottom, because the target is still growing.
     private var streamingFollowActive = false
+    /// True between the first and last reveal height frame. While set, the
+    /// instant re-pin yields to the sprung follower (otherwise the pin would
+    /// satisfy the target before the follower could ever see a delta).
+    private var streamingRevealActive = false
     #if DEBUG
     /// Number of sprung follows started; the M4 gate asserts the follower
     /// actually ran (an instant pin would leave this at zero).
@@ -183,6 +187,7 @@ final class TimelineCollectionController: UIViewController {
                     cell.onStreamingRevealCaughtUp = { [weak self] in
                         DispatchQueue.main.async {
                             guard let self else { return }
+                            self.streamingRevealActive = false
                             self.content?.streamingRevealDidFinish(for: item)
                             self.reloadFromContent()
                         }
@@ -344,6 +349,7 @@ final class TimelineCollectionController: UIViewController {
         // its animation ends; the reveal follower must not cancel it.
         let animating = phase.phase == .animating
         let following = height != nil && state.isAutoScrollPinning && !animating
+        streamingRevealActive = height != nil
         if let height {
             #if DEBUG
             debugStreamingFrameCalls += 1
@@ -1192,6 +1198,19 @@ final class TimelineCollectionController: UIViewController {
         // The reveal follower owns the offset while it runs; an instant pin
         // here would fight the spring on every content change.
         guard streamingFollowLink == nil else { return }
+        // A streaming height change arrives here *after* prepare refreshed
+        // `layout.contentHeight` and before any pin, so this is the one place
+        // the follower can see a real target delta. Start it instead of
+        // pinning; if it cannot start, fall through to the instant pin.
+        if streamingRevealActive, !isPinningBottom {
+            let state = layoutInteractionState()
+            if state.isAutoScrollPinning,
+               !state.isTracking, !state.isDecelerating,
+               phase.phase != .animating {
+                startStreamingFollowIfNeeded()
+                if streamingFollowLink != nil { return }
+            }
+        }
         guard !isPinningBottom, armedBottom.isArmed else { return }
         guard let target = armedBottom.contentChanged(contentHeight: layout.contentHeight,
             containerHeight: collectionView.bounds.height,

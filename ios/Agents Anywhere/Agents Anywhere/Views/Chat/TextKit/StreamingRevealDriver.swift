@@ -74,6 +74,13 @@ final class StreamingRevealDriver: NSObject {
             detachMask()
             self.textView = textView
             attachMaskPreservingRevealed()
+            // The cursor sits at the very start of this block: the row ends
+            // where the block starts. Reporting the previous view's clamp here
+            // would offset it by a whole block.
+            if localRevealedLength == 0, (released ?? 0) > 0 {
+                clampedHeight = 0
+                needsReport = true
+            }
         } else if let textView {
             rebuildMaskIfSeatedDrifted(in: textView)
         }
@@ -202,6 +209,10 @@ final class StreamingRevealDriver: NSObject {
                 if clamped != clampedHeight {
                     clampedHeight = clamped
                     onFrame?(clamped)
+                    // The cell may have reconfigured the driver from inside
+                    // the callback (cursor crossed a block, full rebuild);
+                    // do not write state into a reset driver.
+                    guard self.timeline != nil else { return }
                 }
             }
         }

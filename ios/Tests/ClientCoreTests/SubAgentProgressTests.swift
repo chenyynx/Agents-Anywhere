@@ -291,79 +291,59 @@ import Testing
         #expect(SubAgentUsageFormat.duration(milliseconds: 60_000) == "1 分钟")
         #expect(SubAgentUsageFormat.duration(milliseconds: 90_000) == "1.5 分钟")
         #expect(SubAgentUsageFormat.duration(milliseconds: 120_000) == "2 分钟")
+        // The visible strip uses clock notation beside the clock glyph.
+        #expect(SubAgentUsageFormat.clock(milliseconds: 400) == "0:00")
+        #expect(SubAgentUsageFormat.clock(milliseconds: 4_858) == "0:04")
+        #expect(SubAgentUsageFormat.clock(milliseconds: 60_000) == "1:00")
+        #expect(SubAgentUsageFormat.clock(milliseconds: 90_000) == "1:30")
+        #expect(SubAgentUsageFormat.clock(milliseconds: 2_268_000) == "37:48")
+        #expect(SubAgentUsageFormat.clock(milliseconds: 3_723_000) == "1:02:03")
     }
 
-    @Test func statsLineDropsMissingAndZeroCounters() throws {
-        let full = try card(try cardItem(usage: ["toolCalls": 7, "tokens": 33_555, "durationMs": 24_723]))
-        #expect(SubAgentProgress.statsLine(for: full) == "7 个工具 · 24.7 秒 · 33.6k tokens")
-        let bare = try card(try cardItem())
-        #expect(SubAgentProgress.statsLine(for: bare) == "")
-        let zeros = try card(try cardItem(usage: ["toolCalls": 0, "tokens": 0, "durationMs": 0]))
-        #expect(SubAgentProgress.statsLine(for: zeros) == "")
-        let closed = try card(try cardItem(status: "done", usage: ["toolCalls": 3]))
-        #expect(SubAgentProgress.statsLine(for: closed) == "3 个工具")
-    }
-
-    @Test func statsLineCarriesEveryCounterWithItsUnit() throws {
-        // The phase word lives in the status badge; every counter keeps its
-        // place AND its unit — "6.2m" / a bare "55" read as stray
-        // letters/numbers (pp, 2026-10-21).
-        let full = try card(try cardItem(usage: ["toolCalls": 12, "tokens": 31_200, "durationMs": 8_100]))
-        let line = SubAgentProgress.statsLine(for: full)
-        #expect(line == "12 个工具 · 8.1 秒 · 31.2k tokens")
-        #expect(!line.contains("用时"))
-        #expect(!line.contains("运行中"))
-        // One counter at a time still renders, and never with a leading separator.
-        let toolsOnly = try card(try cardItem(usage: ["toolCalls": 12, "tokens": 0, "durationMs": 0]))
-        #expect(SubAgentProgress.statsLine(for: toolsOnly) == "12 个工具")
-        let timeOnly = try card(try cardItem(usage: ["toolCalls": 0, "tokens": 0, "durationMs": 8_100]))
-        #expect(SubAgentProgress.statsLine(for: timeOnly) == "8.1 秒")
-        let tokensOnly = try card(try cardItem(usage: ["toolCalls": 0, "tokens": 31_200, "durationMs": 0]))
-        #expect(SubAgentProgress.statsLine(for: tokensOnly) == "31.2k tokens")
-    }
-
-    @Test func statsLinesPreferTheRealInputOutputSplit() throws {
-        // The connector sums the subagent transcript's own per-call usage; the
-        // wire's single counter (the last call's context size) is not repeated.
+    @Test func metricsStripUsesGlyphsAndClockTime() throws {
+        // One telemetry strip: ⚒ 100  ◷ 37:48  ↑ 380k  ↓ 12k (pp, 2026-10-21).
         let split = try card(try cardItem(usage: [
-            "toolCalls": 20, "tokens": 55, "durationMs": 372_836,
-            "inputTokens": 17_593, "outputTokens": 6_398,
+            "toolCalls": 100, "tokens": 502, "durationMs": 2_268_000,
+            "inputTokens": 380_000, "outputTokens": 12_000,
         ]))
-        #expect(SubAgentProgress.statsLines(for: split)
-            == ["20 个工具 · 6.2 分钟", "输入 17.6k · 输出 6.4k"])
-        #expect(SubAgentProgress.statsLine(for: split)
-            == "20 个工具 · 6.2 分钟 · 输入 17.6k · 输出 6.4k")
-        #expect(SubAgentProgress.statsAccessibilityLabel(for: split)
-            == "运行中，20 个工具，用时 6.2 分钟，输入 17.6k，输出 6.4k")
-        #expect(!SubAgentProgress.statsLine(for: split).contains("55"))
+        #expect(SubAgentProgress.metrics(for: split) == [
+            SubAgentProgress.SubAgentMetric(symbol: "hammer", value: "100"),
+            SubAgentProgress.SubAgentMetric(symbol: "clock", value: "37:48"),
+            SubAgentProgress.SubAgentMetric(symbol: "arrow.up", value: "380k"),
+            SubAgentProgress.SubAgentMetric(symbol: "arrow.down", value: "12k"),
+        ])
     }
 
-    @Test func tokenMetricsUseGlyphsForTheSplit() throws {
-        let split = try card(try cardItem(usage: ["inputTokens": 17_593, "outputTokens": 6_398]))
-        #expect(SubAgentProgress.tokenMetrics(for: split) == [
-            SubAgentProgress.SubAgentTokenMetric(symbol: "arrow.up", value: "17.6k"),
-            SubAgentProgress.SubAgentTokenMetric(symbol: "arrow.down", value: "6.4k"),
+    @Test func metricsStripOmitsTheWireCounterWithoutASplit() throws {
+        // The wire's single counter is a context estimate, not a total: without
+        // the transcript split the strip shows only tools and time (宁缺勿假).
+        let plain = try card(try cardItem(usage: ["toolCalls": 7, "tokens": 33_555, "durationMs": 24_723]))
+        #expect(SubAgentProgress.metrics(for: plain) == [
+            SubAgentProgress.SubAgentMetric(symbol: "hammer", value: "7"),
+            SubAgentProgress.SubAgentMetric(symbol: "clock", value: "0:24"),
         ])
+    }
+
+    @Test func metricsStripDropsMissingAndZeroCounters() throws {
+        let bare = try card(try cardItem())
+        #expect(SubAgentProgress.metrics(for: bare).isEmpty)
+        let zeros = try card(try cardItem(usage: ["toolCalls": 0, "tokens": 0, "durationMs": 0]))
+        #expect(SubAgentProgress.metrics(for: zeros).isEmpty)
         // A one-sided split keeps the side it has.
         let inputOnly = try card(try cardItem(usage: ["inputTokens": 1_000]))
-        #expect(SubAgentProgress.tokenMetrics(for: inputOnly)
-            == [SubAgentProgress.SubAgentTokenMetric(symbol: "arrow.up", value: "1k")])
-        // The wire's single counter has no glyph form; the view falls back.
-        let plain = try card(try cardItem(usage: ["tokens": 33_555]))
-        #expect(SubAgentProgress.tokenMetrics(for: plain).isEmpty)
-    }
-
-    @Test func statsLinesFallBackToTheWireCounterWithoutASplit() throws {
-        let fallback = try card(try cardItem(usage: ["toolCalls": 7, "tokens": 33_555, "durationMs": 24_723]))
-        #expect(SubAgentProgress.statsLines(for: fallback)
-            == ["7 个工具 · 24.7 秒", "33.6k tokens"])
+        #expect(SubAgentProgress.metrics(for: inputOnly)
+            == [SubAgentProgress.SubAgentMetric(symbol: "arrow.up", value: "1k")])
     }
 
     @Test func statsAccessibilityLabelReadsAsOneSentence() throws {
-        // The badge dot, the badge word and the metrics must not become three
-        // separate stops: one label, phase first, unit words restored.
-        let full = try card(try cardItem(usage: ["toolCalls": 7, "tokens": 33_555, "durationMs": 24_723]))
-        #expect(SubAgentProgress.statsAccessibilityLabel(for: full) == "运行中，7 个工具，用时 24.7 秒，33.6k tokens")
+        // The badge dot, the badge word and the strip must not become separate
+        // stops: one label, phase first, the unit words the strip omits.
+        let full = try card(try cardItem(usage: [
+            "toolCalls": 7, "durationMs": 24_723,
+            "inputTokens": 17_593, "outputTokens": 6_398,
+        ]))
+        #expect(SubAgentProgress.statsAccessibilityLabel(for: full)
+            == "运行中，7 个工具，用时 24.7 秒，输入 17.6k tokens，输出 6.4k tokens")
         let bare = try card(try cardItem())
         #expect(SubAgentProgress.statsAccessibilityLabel(for: bare) == "运行中")
         let zeros = try card(try cardItem(usage: ["toolCalls": 0, "tokens": 0, "durationMs": 0]))

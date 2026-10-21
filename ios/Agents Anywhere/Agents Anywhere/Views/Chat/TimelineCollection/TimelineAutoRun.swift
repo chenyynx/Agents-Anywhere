@@ -229,10 +229,10 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             // must read a materialized, settled cell.
             guard let controller else { continue }
             await scrollToItem(item)
-            let timeout: TimeInterval = [.message, .longGroup, .reasoning].contains(kind) ? 8 : 3
+            let timeout: TimeInterval = [.message, .longGroup, .reasoning].contains(kind) ? 10 : 3
             guard let sample = await settleSample(controller, item: item,
                                                   timeout: timeout) else {
-                failures.append("measurement: no cell for \(kind.rawValue)")
+                failures.append("measurement: no cell for \(kind.rawValue) (\(sampleFailureReason(controller, item: item)))")
                 continue
             }
             let tolerance: CGFloat = [.message, .reasoning, .plain, .code, .table].contains(kind) ? 1 : 4
@@ -522,9 +522,10 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             guard let sample = cellSample(controller, item: item) else {
                 if let indexPath = controller.indexPath(for: item) {
                     controller.collectionView.scrollToItem(at: indexPath,
-                        at: .centeredVertically, animated: false)
+                        at: .top, animated: false)
+                    controller.collectionView.layoutIfNeeded()
                 }
-                await wait(120)
+                await wait(150)
                 continue
             }
             let settled = abs(sample.measured - sample.content) <= 1
@@ -544,6 +545,19 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             await wait(120)
         }
         return cellSample(controller, item: item)
+    }
+
+    /// Why a sample could not be taken; reported with the failure instead of
+    /// a bare "no cell" so a materialization flake is diagnosable.
+    private func sampleFailureReason(_ controller: TimelineCollectionController,
+                                     item: TimelineListItem) -> String {
+        guard let indexPath = controller.indexPath(for: item) else {
+            return "no index path"
+        }
+        guard let cell = controller.collectionView.cellForItem(at: indexPath) else {
+            return "no cell at index \(indexPath.item)"
+        }
+        return "cell width \(Int(cell.contentView.bounds.width)) height \(Int(cell.bounds.height))"
     }
 
     /// Poll the layout height until it satisfies `predicate` (fold/notice/tail

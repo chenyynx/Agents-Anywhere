@@ -1,8 +1,9 @@
-# C5 / Code 展示 profile 任务单（2026-10-22）
+# C5 / Code 页全量复刻任务单（2026-10-22）
 
 > 依据：`/home/ubuntu/aa-test/claude-ios-re/`（官方 build 1.261005.20 / 2026-10-05）CANONICAL 00–23 + DATA/tokens.json；AA 现状另做代码走查。
-> 取代：`docs/perf-6b-c5-code-page-parity-task.md` §4（2026-10-20 pp 决定“先保持 AA 胶囊聚合”）。本单按 pp 2026-10-22「全面对标 Code 页」重开。
-> 原则：**行为对标官方（EVIDENCE 优先），实现走“一套引擎 + profile”**；视觉常数改动单独确认；dev 不碰不合，测试包只从分支出。
+> 取代：`docs/perf-6b-c5-code-page-parity-task.md` §4（2026-10-20 pp 决定“先保持 AA 胶囊聚合”）。本单按 pp 2026-10-22「这次目标很明确：全量复刻 Code 页」重开。
+> **范围口径（pp 2026-10-22）**：只做 Code 页复刻；**暂不做 Chat 页的东西**，不建 Chat/Code 双 profile 开关；Chat 页效果以后单独改。
+> 原则：行为与可见结构对标官方（EVIDENCE 优先）；不做为未来预留的抽象；dev 不碰不合，测试包只从分支出。
 > 证据标记：**[E]** 指令/类型/字节直读；**[I]** 结构或视频推断；**[U]** 静态未闭合，不得当事实用。
 
 ## 0. 结论（这是什么）
@@ -27,9 +28,11 @@ AA 现状（代码走查）：
 
 ## 1. 范围
 
-**做**：Code 行模型、runtime-neutral 工具段、折叠行、全屏工具详情、五路输出视图、chunk 流式、working mark、高度/滚动接入、`timelineStyle` 开关、Code gate、Claude Code / Codex / DSH 三 runtime 适配。
+**做**：Code 行模型、runtime-neutral 工具段、折叠行、全屏工具详情、五路输出视图、chunk 流式、working mark、高度/滚动接入、Code gate、Claude Code / Codex / DSH 三 runtime 适配。
 
-**不做**：整页 shell（导航/抽屉/输入框/键盘/开屏遮罩）、本地消息库、Settings/Connectors/Dispatch、Chat profile 默认行为、服务端与 wire 契约。
+**不做**：Chat 页及其揭示效果（以后单独改）、双 profile 开关、整页 shell（导航/抽屉/输入框/键盘/开屏遮罩）、本地消息库、Settings/Connectors/Dispatch、服务端与 wire 契约。
+
+**落地形态**：Code 页即 AA 会话时间线的新形态，直接替换当前 Chat 形态的渲染路径；不做用户可见的样式切换。旧的揭示/胶囊代码保留在仓库里不接线，等 Chat 页单独开工时再处理。
 
 ## 2. 阶段 0：模型与身份（前置，风险最高）
 
@@ -37,7 +40,7 @@ AA 现状（代码走查）：
 2. **`ToolSegment`（runtime-neutral）**：`span(calls, summary?, settledTasks, outputImages)` / `workflow` / `writingDraft` / `backgroundTask` / `threadSessionCard` / `artifactCard` / `other`。字段对齐官方 `ToolCall` UI 子集：id、name、status(running/complete/failed)、input(展示原文)、toolInput、output、fileWriteKind、subagentToolCalls、artifactId/taskReference（`02-transcript-model.md` §1.3；`04-tool-calls.md` §1.3）。
 3. **成组器（纯函数，先写单测）**：按官方算法；用例矩阵：普通×1 / 普通×N / 特殊段夹在中间 / 连续特殊段 / 跨 block 不合并 / ExitPlanMode+AskUserQuestion 跳过 / 空数组不产段。
 4. **runtime 适配层**：每个 runtime 一个 mapper（Claude Code / Codex / DSH），把原始 tool 调用映射成 `ToolSegment`；**未知工具一律 `other`，仍参与成组**；各 runtime 的特殊段/跳过集是配置表，不在分组算法里写死。
-5. **迁移策略**：Code profile 下 `TimelineGrouping` 不把 assistant 正文与工具拆成两个 item；Chat profile 保持现状。切换由 style 决定，**不做两套数据模型**。
+5. **迁移策略**：直接把 `TimelineGrouping` 改为“一条消息一个 item、工具块行内”，**不做两套数据模型**；Chat 形态的旧渲染路径不再接线，代码保留待 Chat 页单独开工时处理。
 
 ## 3. 阶段 1：折叠行 + 全屏详情（交互骨架）
 
@@ -58,7 +61,7 @@ AA 现状（代码走查）：
 
 1. 流式 item 用独立固定 id；落库时删除 + 插入，不原地改 id。
 2. 发布节拍按官方 0.1 s 前沿节流（[E]），无定时器、下一事件补发。
-3. 外观参数按 `DECISIONS.md:19`：4–8 词 / 50–100 ms / 30–50 ms 淡入，**无逐字揭示**（[I]，CI 标 observed）；粒度做成参数，细粒度（逐 token）作为 Beta 开关默认关。
+3. 外观参数按 `DECISIONS.md:19`：4–8 词 / 50–100 ms / 30–50 ms 淡入，**无逐字揭示**（[I]，CI 标 observed）；粒度做成内部参数（默认官方值），逐 token 只保留参数能力、不暴露用户开关。
 4. 行更新包 `performWithoutAnimation`；Code profile **不启用** reveal ownership / `RevealDriver`。
 5. 同帧双行（`.message` 与 `.streamingText` 并存）按官方“可能一帧重复”接受，不额外做兜底（官方兜底 [U]）。
 
@@ -75,11 +78,11 @@ AA 现状（代码走查）：
 - 行边距/间距按 §0 的 [E] 值；若与 AA 视觉冲突，单独拍板。
 - 底部跟随按 [E] 参数接入现有状态机；LoadOlder 先做“顶部哨兵 + 自动加载观察器”骨架，视觉后置（[U]）。
 
-## 8. 设置与切换
+## 8. 开关与回退
 
-- 新增 `ChatTimelineStyle = chat | code` + `@AppStorage` key；默认 `chat`，`code` 标 Beta。
-- 切换必须使高度键失效（走 `applyTypography` 的 generation 杠杆或把 style 并入高度键/签名），否则行高沿用旧缓存。
-- 落点：`TimelineCollectionSwitch.swift`、`SessionChatView.swift:61-69,137`、`TimelineChatTimelineView.swift:30-37,208-215`、`TimelineChatContentAdapter.swift:91-102`、`AccountSettingsSheet.swift:89-105`。
+- **不做用户可见的样式开关**：Code 页直接替换 AA 会话时间线的渲染形态。
+- 回退靠分支/git revert；阶段内比对用 DEBUG launch arg（如 `aa-code-profile`），不进设置页。
+- 行身份与高度键随新模型变化，旧缓存自然失效；不需要额外的 style 失效杠杆。
 
 ## 9. 验收（Code gate）
 
@@ -104,14 +107,15 @@ AA 现状（代码走查）：
 
 `interBlockSpacing` 系统默认值 blocked；Code 估高公式 [U]；详情页呈现方式（push/sheet/fullScreenCover）[U]；30–50 ms 淡入实现 [U]；`CollapsedToolCallList.title` 呈现 [U]；ToolInput 38 tag 完整标题表 [U]；todos 两态颜色 [U]；`submittedAnswers/approvedPlan` 视图绑定 [I]；`stopFollowingTail/askedToStay` 在 Code 的触发路径 [U]。完整 34 条见两份调研报告（会话内）。
 
-## 12. 需要 pp 拍板
+## 12. 已定口径（pp 2026-10-22）
 
-1. **形态**：按官方 B 形态（消息内平铺工具、一行一消息）改分组（推翻 2026-10-20 的“先保持胶囊”）？
-2. **视觉常数**：Code profile 采用官方 [E] token（15pt mono 折叠行、rowMargins 5/16、10pt 消息间距），还是保持 AA 现值？
-3. **出包节奏**：完成阶段 0–1 先出一包验证交互骨架，还是一次性做到阶段 3（含 chunk 流式）再出包？
+1. **形态**：官方 B 形态——一条消息一行、工具块行内平铺、折叠条点开全屏详情。
+2. **范围**：只做 Code 页；Chat 页与揭示效果以后单独改，不做双 profile。
+3. **视觉**：布局/间距/字号采用官方 [E] token（15pt mono 折叠行、rowMargins 5/16、消息间距 10pt 等）；颜色与图标仍用 AA 自己的资源（官方资源不可分发）。若某项 token 与 AA 现状冲突，单独列出再定。
+4. **出包节奏**：阶段 0–1 先出一包验证交互骨架；chunk 流式（阶段 3）下一包。
 
 ## 13. 分支与门禁
 
 - 从 `feat/textkit2-assistant-body`（head `fae943c5`）拉 `feat/code-profile-beta`，复用现有 TextKit/collection 引擎。
-- 每个阶段独立提交；style 开关默认 `chat`，Code 不达标不影响 Chat。
+- 每个阶段独立提交；Code 页不达标不影响现有行为（回退=分支/revert）。
 - 不合 dev、不碰 ipa-dev；测试包只从 feature 分支出。

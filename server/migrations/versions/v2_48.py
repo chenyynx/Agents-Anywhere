@@ -19,9 +19,8 @@ The summary builder is copied verbatim from
 immutable and must not import application code that will keep changing. The
 two copies are held together by a parity test on the write path side.
 
-Backfill reads ``payload_json`` in Python (not dialect SQL) so the same code
-runs on SQLite tests and PostgreSQL production and a malformed payload is
-skipped rather than aborting the deploy. It pages by the ``(session_id, id)``
+Backfill reads ``payload_json`` in Python (not dialect SQL) so a malformed
+payload is skipped rather than aborting the deploy. It pages by the ``(session_id, id)``
 primary key with ``payload_bytes IS NULL`` as the "not yet backfilled" marker:
 every parsed row gets ``payload_bytes`` in the same UPDATE as its other
 columns, so a re-run never reprocesses it. A row whose payload does not parse

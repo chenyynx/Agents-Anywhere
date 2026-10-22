@@ -101,11 +101,9 @@ from agent_server.infra.event_preparation import EventPreparationCapacityError
 from agent_server.infra.repositories.facade import Store
 from agent_server.infra.timeline_broker import TimelineBroker
 from agent_server.infra.timeline_store import (
-    DEFERRED_STUB_THRESHOLD_BYTES,
     DEFERRED_TAIL_FULL_BYTES,
     build_stub_content,
     is_deferred_display_item,
-    is_deferred_reasoning_item,
 )
 from agent_server.infra.ws_tickets import ClientWsTicketManager
 from agent_server.services.catalogs import CatalogService
@@ -879,11 +877,16 @@ async def session_timeline(
                     await db.list_timeline_deferred_window(
                         session_id=session_id,
                         limit=limit,
-                        before_order_seq=before_order_seq,
+                        # The legacy latest reader ignores a cursor; keep that
+                        # contract exactly. Only history is a backward page.
+                        before_order_seq=(
+                            before_order_seq if mode == "history" else None
+                        ),
                     )
                 )
                 if deferred_applied:
                     items, trimmed = _trim_deferred_window_items(
+                        session_id,
                         items,
                         budget=_snapshot_timeline_byte_budget(),
                     )
@@ -1090,6 +1093,7 @@ def _deferred_content_is_stub(content: Any) -> bool:
 
 
 def _trim_deferred_window_items(
+    session_id: str,
     items: list[TimelineItem],
     *,
     budget: int | None = None,
@@ -1097,22 +1101,27 @@ def _trim_deferred_window_items(
     """Fit one deferred-activity window into the snapshot byte budget.
 
     ``items`` arrive oldest-first. Summarising a row keeps it in the window
-    (it still renders as its collapsed line), so trimming walks three levels
+    (it still renders as its collapsed line), so trimming walks two levels
     before it gives up a row:
 
-    1. **Newest activity segment.** Every row after the last display row is
-       what the user is looking at right now. Keep it complete up to
-       ``DEFERRED_TAIL_FULL_BYTES``; past that, summarise its oldest rows first
-       (already-summarised rows are skipped).
-    2. **Reasoning rows.** Still over the total budget: summarise reasoning
-       rows older than the segment, oldest first, while each is larger than
-       ``DEFERRED_STUB_THRESHOLD_BYTES``.
-    3. **Drop the oldest display rows.** Still over budget: drop the oldest
+    1. **Newest activity segment.** The store already serves tail tool rows
+       over the stub threshold as summaries. If the rows after the last
+       display row still hold more than ``DEFERRED_TAIL_FULL_BYTES`` of
+       complete payload, summarise its oldest *tool* rows too
+       (already-summarised rows are skipped). Reasoning rows are never
+       summarised: their stub carries no text, and the Chat page hides a
+       reasoning row whose text is empty — a summarised reasoning row would
+       silently disappear with no way to fetch it back.
+    2. **Drop the oldest display rows.** Still over budget: drop the oldest
        display row and every row before it, so the window starts at the next
        display row still present. ``trimmed=True`` then raises ``hasMore`` —
        the dropped range is reachable through history paging.
-    4. The newest display row is never dropped: at least one row always comes
+    3. The newest display row is never dropped: at least one row always comes
        back, even if it alone exceeds the budget.
+
+    A window with no display row at all (the reader usually returns
+    ``applied=False`` for that shape) falls back to the plain newest-first
+    budget, so a response can never be unbounded.
 
     Only the deferred branch calls this; the default readers keep their exact
     pre-existing byte semantics. Returns ``(items, trimmed)``.
@@ -1124,6 +1133,17 @@ def _trim_deferred_window_items(
         return [], False
 
     items = list(items)
+    if not any(is_deferred_display_item(item) for item in items):
+        logger.info(
+            "deferred window has no display row; using the plain byte budget "
+            "session_id={} items={}",
+            session_id,
+            len(items),
+        )
+        return _apply_snapshot_timeline_byte_budget(
+            session_id, items, budget=budget
+        )
+
     sizes = [_snapshot_timeline_item_bytes(item) for item in items]
     total_bytes = sum(sizes)
     trimmed = False
@@ -1140,6 +1160,8 @@ def _trim_deferred_window_items(
                 if tail_bytes <= DEFERRED_TAIL_FULL_BYTES:
                     break
                 item = items[index]
+                if item.type != "tool":
+                    continue
                 if _deferred_content_is_stub(item.content):
                     continue
                 item_bytes = sizes[index]
@@ -1151,25 +1173,6 @@ def _trim_deferred_window_items(
                 tail_bytes += replacement_bytes - item_bytes
                 total_bytes += replacement_bytes - item_bytes
                 sizes[index] = replacement_bytes
-
-    if total_bytes > budget:
-        for index, item in enumerate(items):
-            if total_bytes <= budget:
-                break
-            if _deferred_content_is_stub(item.content):
-                continue
-            if not is_deferred_reasoning_item(item):
-                continue
-            item_bytes = sizes[index]
-            if item_bytes <= DEFERRED_STUB_THRESHOLD_BYTES:
-                continue
-            stub = build_stub_content(item.content, payload_bytes=item_bytes)
-            if stub is None:
-                continue
-            items[index] = item.model_copy(update={"content": stub})
-            replacement_bytes = _snapshot_timeline_item_bytes(items[index])
-            total_bytes += replacement_bytes - item_bytes
-            sizes[index] = replacement_bytes
 
     while total_bytes > budget:
         display_indexes = [
@@ -1184,6 +1187,15 @@ def _trim_deferred_window_items(
         items = items[cut:]
         sizes = sizes[cut:]
         trimmed = True
+    if trimmed:
+        logger.info(
+            "deferred window trimmed to the byte budget session_id={} kept={} "
+            "bytes={} budget={}",
+            session_id,
+            len(items),
+            total_bytes,
+            budget,
+        )
     return items, trimmed
 
 
@@ -1285,6 +1297,7 @@ async def session_snapshot(
                 )
                 if deferred_applied:
                     items, trimmed = _trim_deferred_window_items(
+                        session_id,
                         items,
                         budget=_snapshot_timeline_byte_budget(),
                     )

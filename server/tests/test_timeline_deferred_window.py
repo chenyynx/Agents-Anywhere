@@ -281,6 +281,24 @@ async def test_python_and_sql_row_predicates_agree(tmp_path) -> None:
                     parent_item_id="card-A",
                 ),
                 _reasoning_payload(session.id, "reasoning", order_seq=11),
+                # An artifact without ``kind`` must not be swallowed by SQL's
+                # three-valued logic: Python keeps it as a display row.
+                {
+                    "id": "artifact_no_kind",
+                    "sessionId": session.id,
+                    "type": "artifact",
+                    "status": "done",
+                    "content": {"title": "file"},
+                    "source": {
+                        "runtime": "claude",
+                        "sessionId": EXTERNAL_SESSION_ID,
+                        "itemId": "artifact_no_kind",
+                        "itemType": "artifact",
+                    },
+                    "orderSeq": 12,
+                    "revision": 1,
+                    "contentHash": "sha256:artifact_no_kind",
+                },
             ],
         )
         async with store._engine.connect() as conn:
@@ -323,6 +341,7 @@ async def test_python_and_sql_row_predicates_agree(tmp_path) -> None:
             "tool_agent",
             "tool_input",
             "tool_no_kind",
+            "artifact_no_kind",
         }
         assert python_activity == sql_activity == {"tool_bash", "reasoning"}
         # Child rows and the artifact diff are neither: the window excludes the
@@ -631,8 +650,16 @@ async def test_display_rows_are_never_summarized(tmp_path) -> None:
 
 
 @pytest.mark.anyio
-async def test_newest_activity_segment_stays_complete(tmp_path) -> None:
-    """Rows above the newest display row are the live tail: never summarized."""
+async def test_tail_tool_rows_are_summarized_while_reasoning_stays_complete(
+    tmp_path,
+) -> None:
+    """The live tail stays bounded too.
+
+    Serving every tail row in full made the server read a long burst's whole
+    payload before trimming it. A large tail tool row now arrives as its
+    stored summary; reasoning is never summarized (its stub would hide the
+    row and no read could bring it back).
+    """
 
     store, session = await _store_with_session()
     try:
@@ -642,7 +669,15 @@ async def test_newest_activity_segment_stays_complete(tmp_path) -> None:
             [
                 _message_payload(session.id, "m1", order_seq=1),
                 _tool_payload(
-                    session.id, "tail_tool", order_seq=2, output=BIG_OUTPUT
+                    session.id,
+                    "tail_tool",
+                    order_seq=2,
+                    output="\n".join(
+                        f"tail result line {index}" for index in range(1200)
+                    ),
+                ),
+                _reasoning_payload(
+                    session.id, "tail_reasoning", order_seq=3, text=BIG_OUTPUT
                 ),
             ],
         )
@@ -651,9 +686,13 @@ async def test_newest_activity_segment_stays_complete(tmp_path) -> None:
             session_id=session.id, limit=1
         )
         assert applied is True
-        assert _ids(items) == ["m1", "tail_tool"]
-        assert items[1].content["output"] == BIG_OUTPUT
-        assert "deferred" not in items[1].content
+        assert _ids(items) == ["m1", "tail_tool", "tail_reasoning"]
+        by_id = {item.id: item for item in items}
+        assert by_id["tail_tool"].content["deferred"] is True
+        assert "output" not in by_id["tail_tool"].content
+        assert by_id["tail_tool"].content["outputPreview"]
+        assert by_id["tail_reasoning"].content["text"] == BIG_OUTPUT
+        assert "deferred" not in by_id["tail_reasoning"].content
     finally:
         await store.close()
 
@@ -1222,3 +1261,151 @@ def test_single_item_endpoint_hides_other_users_sessions(tmp_path) -> None:
         headers=intruder_headers,
     )
     assert response.status_code == 404, response.text
+
+
+# ---------------------------------------------------------------------------
+# Span-cap / budget edge cases found in review
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_a_span_without_a_display_row_reports_not_applied(tmp_path) -> None:
+    """A display row exists, but only *above* the 800-row span.
+
+    The anchor query sees it, yet the window (the newest 800 rows) is pure
+    activity. Serving that window would be a full-payload activity tail with
+    no conversational anchor, so the reader must decline and let the API keep
+    its pre-existing bounded page.
+    """
+
+    store, session = await _store_with_session()
+    payloads = [_message_payload(session.id, "m1", order_seq=1)]
+    payloads += [
+        _tool_payload(session.id, f"t{index}", order_seq=2 + index, output="small")
+        for index in range(801)
+    ]
+    await _seed_store(store, session.id, payloads)
+
+    items, has_more, applied = await store.list_timeline_deferred_window(
+        session_id=session.id, limit=100
+    )
+    assert applied is False
+    assert items == []
+    assert has_more is False
+
+
+def test_activity_only_span_falls_back_to_the_default_reader(tmp_path) -> None:
+    client = make_client(tmp_path)
+    _, access_token, session_id, headers = create_connector_and_session(
+        client, runtime="claude"
+    )
+    _post_sync(
+        client,
+        access_token,
+        session_id,
+        [_message_payload(session_id, "m1", order_seq=1)]
+        + [
+            _tool_payload(session_id, f"t{index}", order_seq=2 + index, output="small")
+            for index in range(801)
+        ],
+    )
+    response = client.get(
+        f"/sessions/{session_id}/timeline",
+        headers=headers,
+        params={
+            "mode": "latest",
+            "limit": 100,
+            "excludeAgentChildren": True,
+            "deferActivity": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["deferredActivity"] is False
+    # The pre-existing main-only reader: the newest 100 rows, all activity.
+    assert len(body["items"]) == 100
+    assert all(item["type"] == "tool" for item in body["items"])
+
+
+def test_budget_trimming_never_summarizes_reasoning(
+    tmp_path, monkeypatch
+) -> None:
+    """Reasoning rows stay complete even when the window is over budget.
+
+    A reasoning stub would drop its text; the Chat page hides a reasoning row
+    whose text is empty, so the row would silently disappear with no read that
+    could bring it back. The trim may drop older display rows instead.
+    """
+
+    client = make_client(tmp_path)
+    _, access_token, session_id, headers = create_connector_and_session(
+        client, runtime="claude"
+    )
+    long_reasoning = "r" * 300_000
+    _post_sync(
+        client,
+        access_token,
+        session_id,
+        [
+            _message_payload(session_id, "m1", order_seq=1),
+            _message_payload(session_id, "m2", order_seq=2),
+            _reasoning_payload(
+                session_id, "r1", order_seq=3, text=long_reasoning
+            ),
+            _reasoning_payload(
+                session_id, "r2", order_seq=4, text=long_reasoning
+            ),
+        ],
+    )
+    # Below the 256KB newest-segment allowance and below the total budget.
+    monkeypatch.setenv(SNAPSHOT_TIMELINE_BYTE_BUDGET_ENV, "400000")
+
+    response = client.get(
+        f"/sessions/{session_id}/timeline",
+        headers=headers,
+        params={
+            "mode": "latest",
+            "limit": 100,
+            "excludeAgentChildren": True,
+            "deferActivity": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    reasoning = [item for item in body["items"] if item["type"] == "system"]
+    assert reasoning, "reasoning rows must not be dropped or hidden"
+    for item in reasoning:
+        assert item["content"].get("deferred") is not True
+        assert item["content"].get("text")
+
+
+@pytest.mark.anyio
+async def test_the_window_keeps_the_anchor_when_the_span_is_wide_enough(
+    tmp_path,
+) -> None:
+    """The review repro: 100 messages followed by 700 activity rows.
+
+    A 600-row span dropped every message; the window is sized so this shape
+    (the observed worst case) still opens on the conversation.
+    """
+
+    store, session = await _store_with_session()
+    payloads = [
+        _message_payload(session.id, f"m{index}", order_seq=index)
+        for index in range(1, 101)
+    ]
+    payloads += [
+        _tool_payload(
+            session.id, f"t{index}", order_seq=100 + index, output="small"
+        )
+        for index in range(1, 701)
+    ]
+    await _seed_store(store, session.id, payloads)
+
+    items, has_more, applied = await store.list_timeline_deferred_window(
+        session_id=session.id, limit=100
+    )
+    assert applied is True
+    assert len(items) == 800
+    assert sum(1 for item in items if item.type == "message") == 100
+    assert has_more is False

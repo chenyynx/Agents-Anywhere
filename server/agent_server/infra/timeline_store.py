@@ -35,7 +35,7 @@ STUB_MAX_BYTES = 2048
 #: emitted hundreds of tool calls between two messages would still read them
 #: all. The oldest rows past the cap are dropped and reported through
 #: ``has_more`` so the client can page back through history.
-DEFERRED_WINDOW_MAX_ROWS = 600
+DEFERRED_WINDOW_MAX_ROWS = 800
 #: A main-timeline tool activity row larger than this is served from
 #: ``stub_json`` (the writer's render-ready summary) instead of its full
 #: payload. Below the threshold the full payload is cheaper than a second
@@ -278,7 +278,15 @@ def _deferred_display_row_expr(columns: Any) -> Any:
         columns.parent_item_id.is_(None),
         not_(_deferred_activity_row_expr(columns)),
         columns.type.not_in(sorted(_DEFERRED_HIDDEN_TYPES)),
-        not_(and_(columns.type == "artifact", columns.kind == "diff")),
+        # NULL-safe ``NOT (artifact AND kind='diff')``: SQL three-valued logic
+        # would drop an artifact row whose kind is NULL, while the Python
+        # predicate keeps it as a display row (a hidden diff is the only
+        # artifact the timeline suppresses).
+        or_(
+            columns.type != "artifact",
+            columns.kind.is_(None),
+            columns.kind != "diff",
+        ),
     )
 
 
@@ -368,6 +376,11 @@ def build_stub_content(content: Any, payload_bytes: int) -> dict[str, Any] | Non
     collapsed row renders, marks the content ``deferred`` with the full payload
     size, then shrinks optional keys largest-first and required strings
     stepwise until the serialized stub fits ``STUB_MAX_BYTES``.
+
+    The wrapped item keeps the original ``revision``/``updatedSeq`` (the
+    client's supersede rule needs them) and the original ``contentHash`` (it
+    describes the complete content, exactly as the protocol defines it), while
+    ``content.deferred`` marks the body as summarised.
 
     ``v2_48._build_stub_content`` is a verbatim copy of this function (a
     migration cannot import application code); ``tests/test_timeline_stub_payload.py``
@@ -686,24 +699,30 @@ class SqlTimelineStore:
         1. **Anchor.** Scan the newest ``anchor_scan_rows`` main rows (honouring
            ``before_order_seq`` for history paging), filter to display rows in
            the subquery, and take the newest ``limit``. The smallest
-           ``order_seq`` found is where the window starts; the largest is the
-           end of the "newest activity segment" (rows above it stay complete).
+           ``order_seq`` found is where the window starts. If the window's
+           span cap would start above the newest display row (a very long
+           activity tail), the read declines (``applied=False``) instead of
+           returning a conversation-free page.
         2. **Window.** Every main row at or above the anchor — and, for a
            history read, strictly below ``before_order_seq`` — newest first,
            capped at ``span_rows``, returned ascending. The cursor bound is what
            keeps a history page from re-serving rows the client already holds
            (and from letting the budget trim drop the oldest rows, which are the
            only ones that page exists to fetch). Each row's payload is chosen
-           in SQL so a summarised tool row never reads its full payload: the
-           newest activity segment (measured inside the window) and everything
-           below the stub threshold come back complete, a larger main tool
+           in SQL so a summarised tool row never reads its full payload:
+           activity rows below the stub threshold come back complete, a larger
+           main tool
            activity row comes from ``stub_json`` (only when it carries the
            current ``stub_version``).
 
         ``has_more`` reports whether any main row exists *before* the oldest
         returned row, compared on the full ``(order_seq, updated_seq, id)``
         boundary — ``order_seq`` alone would report "no more" for a row tied
-        with the page's first row and skip it.
+        with the page's first row and skip it. The client-side cursor remains
+        the existing single ``order_seq``; the write buffer normalizes the
+        sequence within a session, so a tie at the cursor is not reachable
+        through the product path (a synthetic tie would still be unreachable
+        through that cursor — an existing limitation of every timeline page).
 
         Returns ``(items_ascending, has_more, applied)``. ``applied=False``
         (no display row in the scan) tells the API to fall back to the
@@ -765,6 +784,35 @@ class SqlTimelineStore:
             anchor = min(anchored)
             newest_counted = max(anchored)
 
+            # If the newest counted row is older than the oldest row the span
+            # keeps, the span holds only activity rows: the reader would come
+            # back with no conversational anchor at all. Report "not applied"
+            # so the API keeps its pre-existing bounded reader instead of
+            # serving a full-payload activity tail.
+            boundary_filters = [
+                timeline_items.c.session_id == session_id,
+                timeline_items.c.parent_item_id.is_(None),
+            ]
+            if before_order_seq is not None:
+                boundary_filters.append(
+                    timeline_items.c.order_seq < before_order_seq
+                )
+            span_oldest = (
+                await conn.execute(
+                    select(timeline_items.c.order_seq)
+                    .where(*boundary_filters)
+                    .order_by(
+                        timeline_items.c.order_seq.desc(),
+                        timeline_items.c.updated_seq.desc(),
+                        timeline_items.c.id.desc(),
+                    )
+                    .offset(span_rows - 1)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if span_oldest is not None and newest_counted < span_oldest:
+                return [], False, False
+
             window_filters = [
                 timeline_items.c.session_id == session_id,
                 timeline_items.c.parent_item_id.is_(None),
@@ -784,10 +832,6 @@ class SqlTimelineStore:
                     timeline_items.c.updated_seq,
                     timeline_items.c.id,
                     case(
-                        (
-                            timeline_items.c.order_seq > newest_counted,
-                            timeline_items.c.payload_json,
-                        ),
                         (stub_eligible, timeline_items.c.stub_json),
                         else_=timeline_items.c.payload_json,
                     ).label("payload"),

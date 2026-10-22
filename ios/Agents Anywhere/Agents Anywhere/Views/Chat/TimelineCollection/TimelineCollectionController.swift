@@ -645,6 +645,9 @@ final class TimelineCollectionController: UIViewController {
         let duration: TimeInterval
     }
     private var rowHeightAnimations: [ObjectIdentifier: (RowHeightAnimation, CADisplayLink)] = [:]
+    #if DEBUG
+    private(set) var debugRowHeightAnimationsStarted = 0
+    #endif
     /// Displayed height of interactive rows at the last apply, so a fold
     /// animation starts where the reader saw the row, even if UIKit already
     /// adopted the fitted height during the update.
@@ -667,9 +670,16 @@ final class TimelineCollectionController: UIViewController {
                                            to: target,
                                            start: CACurrentMediaTime(),
                                            duration: Self.rowHeightAnimationDuration)
+        #if DEBUG
+        debugRowHeightAnimationsStarted += 1
+        #endif
         let link = CADisplayLink(target: self, selector: #selector(stepRowHeight(_:)))
         link.add(to: .main, forMode: .common)
         rowHeightAnimations[ObjectIdentifier(link)] = (animation, link)
+    }
+
+    private func isAnimatingRowHeight(_ itemID: String) -> Bool {
+        rowHeightAnimations.values.contains { $0.0.item.itemID == itemID }
     }
 
     private func stopRowHeightAnimation(for itemID: String) {
@@ -712,6 +722,7 @@ final class TimelineCollectionController: UIViewController {
             guard content.heightPolicy(for: item).acceptsPreferredHeight else {
                 notePreferred("notInteractive"); continue
             }
+            if isAnimatingRowHeight(item.itemID) { continue }
             guard let indexPath = indexPath(for: item) else {
                 notePreferred("noIndexPath"); continue
             }
@@ -1005,6 +1016,9 @@ final class TimelineCollectionController: UIViewController {
             // TextKit 2 rows were measured before apply with the same engine
             // the cell renders; the visible-fit loop must not second-guess it.
             if documentHeights[item.itemID] != nil { continue }
+            // Leave a row that is mid-animation alone: re-fitting it would
+            // restart the animation from its current frame and stretch it.
+            if isAnimatingRowHeight(item.itemID) { continue }
             guard let height = cellFit(cell, minimum: plausibleFloor(for: item)) else {
                 // Pre-parse stack spacing or a probe: wait for the async content.
                 needsMore = true

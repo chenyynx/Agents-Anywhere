@@ -338,7 +338,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             let expanded = await waitForCellHeight(controller, item: item,
                 timeout: 3) { $0 > collapsed + 1 }
             // The row height now animates over 0.18 s; sample after it lands.
-            await wait(400)
+            await wait(700)
             let sample = await sampleItem(controller, item: item)
             if expanded <= collapsed + 1 {
                 failures.append("fold: expanded \(expanded) not taller than collapsed \(collapsed)")
@@ -549,6 +549,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             failures.append("collapse: expansion jumped in \(distinct.count) step(s)")
         }
         report["collapseGap"] = [
+            "animations": controller.debugRowHeightAnimationsStarted,
             "beforeMissing": before.missing, "beforeGap": Double(before.gap),
             "afterMissing": after.missing, "afterGap": Double(after.gap),
             "expansionHeights": distinct.map(Double.init),

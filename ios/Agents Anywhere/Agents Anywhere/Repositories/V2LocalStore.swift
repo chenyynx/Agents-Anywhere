@@ -14,15 +14,32 @@ actor V2LocalStore {
     func dashboard() -> V2DashboardArchive? { read("dashboard", as: V2DashboardArchive.self) }
     func session(_ id: String) -> V2SessionArchive? { read(sessionKey(id), as: V2SessionArchive.self) }
     /// Decodes the archived timeline here, off the main actor; a malformed item
-    /// is skipped instead of discarding the whole session.
+    /// is skipped instead of discarding the whole session. The SubAgent
+    /// activity cache is decoded here too, so restoring a few hundred child
+    /// rows never blocks the main actor.
     func restoreSession(_ id: String) -> V2SessionRestore? {
         guard let archive = session(id) else { return nil }
-        return V2SessionRestore(archive: archive, items: archive.items.compactMap { try? V2TimelineItem(json: $0) })
+        let activity = (archive.subAgentActivity ?? [:]).mapValues { values in
+            values.compactMap { try? V2TimelineItem(json: $0) }
+        }
+        return V2SessionRestore(archive: archive,
+            items: archive.items.compactMap { try? V2TimelineItem(json: $0) },
+            subAgentActivity: activity)
     }
     func saveDashboard(_ value: V2DashboardArchive) { write(value, key: "dashboard") }
     func saveSession(_ value: V2SessionArchive) {
         guard !removedSessions.contains(value.session.id) else { return }
         let key = sessionKey(value.session.id)
+        var value = value
+        // The activity cache's byte budget needs encoded sizes, so it is
+        // applied here, off the main actor, right before serialization.
+        if let cached = value.subAgentActivity, !cached.isEmpty {
+            let cards = cached.mapValues { values in
+                values.compactMap { try? V2TimelineItem(json: $0) }
+            }
+            let bounded = SubAgentActivityArchive.bounded(cards, limits: .default)
+            value.subAgentActivity = bounded.isEmpty ? nil : bounded.mapValues { $0.map(\.raw) }
+        }
         // Rewriting an existing archive cannot exceed the session count; only a
         // new file or a byte-limit check needs the directory scan.
         let isNew = !FileManager.default.fileExists(atPath: url(key).path)

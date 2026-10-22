@@ -729,6 +729,41 @@ import Testing
         #expect(!SubAgentProgress.isContentLoaded(alias, in: withoutAlias.filter { $0.id != "dispatch" }))
     }
 
+    @Test func aMainOnlyWindowLoadsActivityOnlyFromChildRows() throws {
+        let cardRow = try cardItem("card", order: 1, status: "done")
+        let child = try item("t1", status: "done", order: 2,
+                             content: ["kind": "command", "command": "ls", "parentItemId": "card"])
+        let parsed = try card(cardRow)
+        // C2: a main-only window always holds the card itself (it is a main
+        // row), so that row alone says nothing about the activity.
+        #expect(!SubAgentProgress.isContentLoaded(parsed, in: [cardRow], windowExcludesAgentChildren: true))
+        // A child row is the proof it can render.
+        #expect(SubAgentProgress.isContentLoaded(parsed, in: [cardRow, child], windowExcludesAgentChildren: true))
+        // The lineage merge keeps working: an alias card loads through its
+        // sibling's child rows even in a main-only window.
+        let items = try resumeAliasItems()
+        let alias = try card(items[3])
+        let withoutAlias = items.filter { $0.id != "alias" }
+        #expect(SubAgentProgress.isContentLoaded(alias, in: withoutAlias, windowExcludesAgentChildren: true))
+        // The panel's on-demand rows are child rows only (no card rows at all):
+        // deriving the lineage from that list would collapse it to the alias id
+        // and drop the dispatch sibling's rows — the C3 regression. The caller
+        // passes the lineage it resolved from the window instead.
+        let childRowsOnly = items.filter { SubAgentProgress.parentItemID($0) != nil }
+        #expect(!SubAgentProgress.isContentLoaded(alias, in: childRowsOnly, windowExcludesAgentChildren: true))
+        #expect(SubAgentProgress.isContentLoaded(alias, in: childRowsOnly, windowExcludesAgentChildren: true,
+            lineage: ["alias", "dispatch"]))
+        #expect(SubAgentProgress.activityRows(of: alias, in: childRowsOnly,
+            lineage: ["alias", "dispatch"]).map(\.id) == ["r1", "t1", "m1"])
+        // Outside a main-only window the card's own row still passes, exactly
+        // as before this flag existed.
+        #expect(SubAgentProgress.isContentLoaded(parsed, in: [cardRow]))
+        #expect(SubAgentProgress.isContentLoaded(parsed, in: [cardRow], windowExcludesAgentChildren: false))
+        // The sidecar-only case stays unloaded in both modes.
+        #expect(!SubAgentProgress.isContentLoaded(parsed, in: [], windowExcludesAgentChildren: true))
+        #expect(!SubAgentProgress.isContentLoaded(parsed, in: []))
+    }
+
     // MARK: Main timeline filter (L2.1: keep only the dispatch card)
 
     @Test @MainActor func subagentRowsNeverEnterTheMainTimeline() throws {

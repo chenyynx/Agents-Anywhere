@@ -165,6 +165,10 @@ final class V2SessionModel: Identifiable {
     private(set) var acknowledgedNotifications = V2NotificationAcknowledgements()
     private(set) var hasOlderItems = false
     private(set) var hasNewerItems = false
+    /// Whether the window was read from a server that excluded SubAgent child
+    /// rows (`excludeAgentChildren`). The SubAgent panel reads it: a card's own
+    /// row being present says nothing about activity rows in such a window.
+    private(set) var windowExcludesAgentChildren = false
     /// The projection's active SubAgent cards, mirroring the same field on
     /// `V2SessionData`. They are read beside the presented rows so the capsule
     /// does not depend on which part of the timeline the client holds.
@@ -192,6 +196,10 @@ final class V2SessionModel: Identifiable {
     @ObservationIgnored private(set) var awaitingEchoSince: Date?
     let composer = ComposerDraft()
     let attachmentPreviews = ChatAttachmentStore()
+    /// C3: the SubAgent panel's on-demand child rows and their offline cache.
+    /// Session-scoped so it outlives the sheet, feeds the local archive, and
+    /// keeps a cold offline launch from opening the panel on an empty body.
+    let subAgentActivity: SubAgentActivityStore
     var draft: String {
         get { composer.text }
         set { composer.text = newValue }
@@ -202,6 +210,19 @@ final class V2SessionModel: Identifiable {
 
     init(id: V2SessionID, scope: V2ClientScope, repository: V2SessionRepository) {
         self.id = id; self.scope = scope; self.repository = repository
+        // The repository holds this model through its entries; the closures
+        // capture it weakly so the store cannot close that cycle. A completed
+        // read marks the session dirty so the local archive picks the rows up.
+        subAgentActivity = SubAgentActivityStore(
+            fetch: { [weak repository] parentItemId, beforeOrderSeq in
+                guard let repository else { throw CancellationError() }
+                return try await repository.loadSubAgentChildren(
+                    sessionId: id, parentItemId: parentItemId, beforeOrderSeq: beforeOrderSeq, limit: 100)
+            },
+            onCacheChanged: { [weak repository] in
+                repository?.localWorkDidChange(sessionID: id)
+            }
+        )
     }
 
     var canSend: Bool { isValid && runtime.allows("session.send_message") && !notices.notices.contains { $0.blocks(id) } }
@@ -492,6 +513,9 @@ final class V2SessionModel: Identifiable {
         notices.update(runtime.notices, sessionID: id)
         if hasOlderItems != (data?.hasOlderItems ?? false) { hasOlderItems = data?.hasOlderItems ?? false }
         if hasNewerItems != (data?.hasNewerItems ?? false) { hasNewerItems = data?.hasNewerItems ?? false }
+        if windowExcludesAgentChildren != (data?.windowExcludesAgentChildren ?? false) {
+            windowExcludesAgentChildren = data?.windowExcludesAgentChildren ?? false
+        }
         let activeCards = data?.activeAgentCards ?? []
         if activeAgentCards != activeCards { activeAgentCards = activeCards }
         // A streamed token updates one existing row. Keep the id index across
@@ -597,7 +621,12 @@ final class V2SessionModel: Identifiable {
         return true
     }
 
-    func restoreLocal(_ archive: V2SessionArchive) {
+    func restoreLocal(_ archive: V2SessionArchive, subAgentActivity cachedActivity: [String: [V2TimelineItem]] = [:]) {
+        // The activity cache is read-only content, independent of the
+        // local-work guard below: seed it even when a draft or queue write
+        // raced the disk read, so the panel can show it offline. The rows are
+        // already decoded by the store actor.
+        if !cachedActivity.isEmpty { subAgentActivity.restore(cachedActivity) }
         guard isValid, !hasLocalWork else { return }
         if let previews = archive.previews { attachmentPreviews.restore(previews) }
         draft = archive.draft; composer.attachments = archive.draftAttachments
@@ -631,6 +660,7 @@ final class V2SessionModel: Identifiable {
         activeAgentCards = []; recoveryNotice = nil; acknowledgedNotifications = V2NotificationAcknowledgements()
         composer.invalidate()
         attachmentPreviews.clear()
+        subAgentActivity.cancel()
         notices.clear()
         connection = .inactive; isValid = false; repository = nil
     }

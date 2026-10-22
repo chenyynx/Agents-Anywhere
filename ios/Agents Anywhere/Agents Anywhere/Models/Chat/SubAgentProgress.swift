@@ -317,8 +317,13 @@ enum SubAgentProgress {
     /// dispatch card does, so the alias renders them instead of an empty body.
     /// Two cards of one lineage never list a row twice, and the union is merged
     /// back into timeline order (orderSeq) rather than dispatch order.
-    static func activityRows(of card: SubAgentCard, in items: [V2TimelineItem]) -> [V2TimelineItem] {
-        let ids = lineageIDs(of: card, in: items)
+    /// `lineage` lets a main-only caller pass the ids it already resolved from
+    /// the timeline window: the panel's fetched rows carry no card rows, so
+    /// deriving the lineage from `items` alone would collapse it to the card's
+    /// own id and drop a resume-alias sibling's rows (C3).
+    static func activityRows(of card: SubAgentCard, in items: [V2TimelineItem],
+                             lineage: Set<String>? = nil) -> [V2TimelineItem] {
+        let ids = lineage ?? lineageIDs(of: card, in: items)
         var seen: Set<String> = []
         return items
             .filter { item in
@@ -511,10 +516,28 @@ enum SubAgentProgress {
     /// sibling's rows are in the window and the activity list can render them,
     /// so the panel must not claim "内容未加载" and then show nothing.
     ///
+    /// A main-only window (`excludeAgentChildren`) is the exception to the
+    /// first rule: the card is a main row, so it is always present while its
+    /// child rows can never be. Only the activity rows the panel would render
+    /// prove the content loaded there; otherwise the panel would show a silent
+    /// empty activity area.
+    ///
     /// False means the panel can still show the card's own facts (name, phase,
     /// prompt) but none of its tool / thinking / output rows, and must say so
     /// rather than render an empty body or a silent "finished".
-    static func isContentLoaded(_ card: SubAgentCard, in items: [V2TimelineItem]) -> Bool {
+    static func isContentLoaded(
+        _ card: SubAgentCard,
+        in items: [V2TimelineItem],
+        windowExcludesAgentChildren: Bool = false,
+        lineage: Set<String>? = nil
+    ) -> Bool {
+        // The card's own row is always in a main-only window and its children
+        // never are, so only the rows the activity list would actually render
+        // are evidence there. `lineage` comes from the window's card rows when
+        // the caller's items are the fetched child rows alone (C3).
+        if windowExcludesAgentChildren {
+            return !activityRows(of: card, in: items, lineage: lineage).isEmpty
+        }
         if items.contains(where: { $0.id == card.id }) { return true }
         let ids = lineageIDs(of: card, in: items)
         return items.contains { item in

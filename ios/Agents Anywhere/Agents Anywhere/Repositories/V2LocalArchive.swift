@@ -51,10 +51,17 @@ nonisolated struct V2SessionArchive: Codable {
     /// a notification toast stays one-shot across a relaunch. Optional: bytes
     /// written before this field existed decode without it.
     var acknowledgedNotifications: V2NotificationAcknowledgements? = nil
+    /// Whether the archived window was read with `excludeAgentChildren`. It has
+    /// to survive the relaunch: a restored main-only window has no child rows,
+    /// and without the flag the panel would read the card's own row as loaded
+    /// content and render a silent empty activity area. Optional: archives
+    /// written before this field existed decode without it.
+    var excludesAgentChildren: Bool? = nil
 
     @MainActor init(data: V2SessionData, model: V2SessionModel) {
         session = data.session; items = data.items.map(\.raw); cursor = data.cursor
         hasOlderItems = data.hasOlderItems; hasNewerItems = data.hasNewerItems
+        excludesAgentChildren = data.windowExcludesAgentChildren ? true : nil
         previews = model.attachmentPreviews.archived()
         draft = model.draft; draftAttachments = model.composer.attachments.map { $0.archived() }
         var storedPending = model.pendingMessages.filter { $0.delivery != .confirmed }.map { value in
@@ -103,7 +110,8 @@ nonisolated struct V2SessionArchive: Codable {
         let snapshot = V2SessionSnapshot(session: session, state: nil,
             timeline: .init(items: decoded, nextSeq: V2SessionProjection.sequence(cursor), hasMore: hasOlderItems),
             approvals: [], notices: [], effectiveCapabilities: empty, runtimeCapabilities: empty,
-            catalogs: [:], eventCursor: cursor, serverTime: "")
+            catalogs: [:], eventCursor: cursor, serverTime: "",
+            excludesAgentChildren: excludesAgentChildren ?? false)
         return V2SessionProjection(archive: snapshot, hasNewerItems: hasNewerItems, maximumItems: maximumItems, now: now)
     }
 }

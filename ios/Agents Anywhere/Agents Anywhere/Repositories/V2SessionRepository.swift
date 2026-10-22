@@ -194,7 +194,15 @@ final class V2SessionRepository {
         // Trim before a possible latest-page request so an offline fallback
         // also stays bounded and cannot remount the entire cached history.
         if entry.projection?.limitToLatest(100) == true { emit(entry) }
-        if entry.projection?.data.hasNewerItems == true {
+        let window = entry.projection?.data
+        // A cached window can hold only SubAgent child rows: the server used
+        // to return them inside the latest page, and L2.1 drops all of them
+        // from the main timeline, so the page would open blank. One latest
+        // read re-anchors the window on visible rows. Offline keeps the cached
+        // window — the C0 fallback renders its rows.
+        let windowHoldsNoMainRow = window?.items.contains { SubAgentProgress.parentItemID($0) == nil } == false
+        if window?.hasNewerItems == true
+            || (network.availability != .offline && window?.hasOlderItems == true && windowHoldsNoMainRow) {
             return try await loadLatest(sessionId: sessionId, limit: 100)
         }
         return entry.projection!.data
@@ -319,7 +327,8 @@ final class V2SessionRepository {
         let version = entry.readVersion
         let task = Task { [self] in
             defer { if entry.readVersion == version { entry.historyTask = nil } }
-            let page = try await detail.loadOlderItems(sessionId: sessionId, beforeOrderSeq: before, limit: limit)
+            let page = try await detail.loadOlderItems(sessionId: sessionId, beforeOrderSeq: before,
+                limit: limit, excludeAgentChildren: true)
             try requireCurrent(entry, version: version)
             entry.projection?.applyHistory(page)
             emit(entry)
@@ -337,7 +346,7 @@ final class V2SessionRepository {
         entry.historyTask?.cancel()
         entry.historyTask = nil
         let version = entry.readVersion
-        let page = try await detail.latestItems(sessionId: sessionId, limit: limit)
+        let page = try await detail.latestItems(sessionId: sessionId, limit: limit, excludeAgentChildren: true)
         try requireCurrent(entry, version: version)
         entry.projection?.applyLatest(page)
         emit(entry)
@@ -652,7 +661,7 @@ final class V2SessionRepository {
                 if entry.readVersion == version { entry.loadTask = nil }
                 evict()
             }
-            let snapshot = try await detail.load(sessionId: entry.id)
+            let snapshot = try await detail.load(sessionId: entry.id, excludeAgentChildren: true)
             try requireCurrent(entry, version: version)
             guard snapshot.session.id == entry.id else { throw CacheError.invalidated }
             entry.projection = V2SessionProjection(snapshot: snapshot, maximumItems: policy.maximumTimelineItems, now: now)

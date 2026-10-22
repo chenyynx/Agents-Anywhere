@@ -165,6 +165,10 @@ final class V2SessionModel: Identifiable {
     private(set) var acknowledgedNotifications = V2NotificationAcknowledgements()
     private(set) var hasOlderItems = false
     private(set) var hasNewerItems = false
+    /// Whether the window was read from a server that excluded SubAgent child
+    /// rows (`excludeAgentChildren`). The SubAgent panel reads it: a card's own
+    /// row being present says nothing about activity rows in such a window.
+    private(set) var windowExcludesAgentChildren = false
     /// The projection's active SubAgent cards, mirroring the same field on
     /// `V2SessionData`. They are read beside the presented rows so the capsule
     /// does not depend on which part of the timeline the client holds.
@@ -492,6 +496,9 @@ final class V2SessionModel: Identifiable {
         notices.update(runtime.notices, sessionID: id)
         if hasOlderItems != (data?.hasOlderItems ?? false) { hasOlderItems = data?.hasOlderItems ?? false }
         if hasNewerItems != (data?.hasNewerItems ?? false) { hasNewerItems = data?.hasNewerItems ?? false }
+        if windowExcludesAgentChildren != (data?.windowExcludesAgentChildren ?? false) {
+            windowExcludesAgentChildren = data?.windowExcludesAgentChildren ?? false
+        }
         let activeCards = data?.activeAgentCards ?? []
         if activeAgentCards != activeCards { activeAgentCards = activeCards }
         // A streamed token updates one existing row. Keep the id index across

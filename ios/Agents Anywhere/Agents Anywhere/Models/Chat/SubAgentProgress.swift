@@ -511,10 +511,24 @@ enum SubAgentProgress {
     /// sibling's rows are in the window and the activity list can render them,
     /// so the panel must not claim "内容未加载" and then show nothing.
     ///
+    /// A main-only window (`excludeAgentChildren`) is the exception to the
+    /// first rule: the card is a main row, so it is always present while its
+    /// child rows can never be. Only the activity rows the panel would render
+    /// prove the content loaded there; otherwise the panel would show a silent
+    /// empty activity area.
+    ///
     /// False means the panel can still show the card's own facts (name, phase,
     /// prompt) but none of its tool / thinking / output rows, and must say so
     /// rather than render an empty body or a silent "finished".
-    static func isContentLoaded(_ card: SubAgentCard, in items: [V2TimelineItem]) -> Bool {
+    static func isContentLoaded(
+        _ card: SubAgentCard,
+        in items: [V2TimelineItem],
+        windowExcludesAgentChildren: Bool = false
+    ) -> Bool {
+        // The card's own row is always in a main-only window and its children
+        // never are, so only the rows the activity list would actually render
+        // are evidence there.
+        if windowExcludesAgentChildren { return !activityRows(of: card, in: items).isEmpty }
         if items.contains(where: { $0.id == card.id }) { return true }
         let ids = lineageIDs(of: card, in: items)
         return items.contains { item in

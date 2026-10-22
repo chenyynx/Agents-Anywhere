@@ -106,7 +106,8 @@ nonisolated private final class InterceptingURLProtocol: URLProtocol, @unchecked
         _ = try await api.sessions.setTakeover(sessionId: "session", enabled: true)
         _ = try await api.sessions.setTakeover(sessionId: "session", enabled: false)
         _ = try await api.sessions.sync(sessionId: "session")
-        _ = try await api.sessions.timelineHistory(sessionId: "session", beforeOrderSeq: 80, limit: 25)
+        _ = try await api.sessions.timelineHistory(sessionId: "session", beforeOrderSeq: 80, limit: 25,
+            excludeAgentChildren: true)
         _ = try await api.sessions.markRead(sessionIds: ["session"])
         _ = try await api.connectors.readWorkspaceText(connectorId: "device", root: "/workspace with spaces", request: V2WorkspaceTextRequest(path: "test.txt"))
         _ = try await api.realtime.ticket(clientId: "client", scope: .session("session"))
@@ -140,7 +141,8 @@ nonisolated private final class InterceptingURLProtocol: URLProtocol, @unchecked
             #expect(body == backend, "Request \(key) differs from the backend model")
         }
         #expect(try JSONDecoder().decode([String].self, from: #require(requests[12].httpBody)) == ["session"])
-        #expect(query(requests[11]) == ["mode": "history", "limit": "25", "beforeOrderSeq": "80"])
+        #expect(query(requests[11]) == ["mode": "history", "limit": "25", "beforeOrderSeq": "80",
+            "excludeAgentChildren": "true"])
         #expect(query(requests[13]) == ["root": "/workspace with spaces"])
         #expect(query(requests[15]) == ["after": "seq:40"])
     }

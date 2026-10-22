@@ -12,10 +12,15 @@ protocol V2SessionAPIProtocol {
     func markRead(sessionIds: [V2SessionID]) async throws -> V2SessionBulkActionResponse
     func archive(sessionIds: [V2SessionID]) async throws -> V2SessionBulkActionResponse
     func unarchive(sessionIds: [V2SessionID]) async throws -> V2SessionBulkActionResponse
-    func snapshot(sessionId: V2SessionID, limit: Int) async throws -> V2SessionSnapshot
-    func latestTimeline(sessionId: V2SessionID, limit: Int) async throws -> V2SessionTimelinePage
+    func snapshot(sessionId: V2SessionID, limit: Int, excludeAgentChildren: Bool) async throws -> V2SessionSnapshot
+    func latestTimeline(sessionId: V2SessionID, limit: Int, excludeAgentChildren: Bool) async throws -> V2SessionTimelinePage
     func timelineChanges(sessionId: V2SessionID, afterSeq: Int, limit: Int) async throws -> V2SessionTimelinePage
-    func timelineHistory(sessionId: V2SessionID, beforeOrderSeq: Int, limit: Int) async throws -> V2SessionTimelinePage
+    func timelineHistory(
+        sessionId: V2SessionID,
+        beforeOrderSeq: Int,
+        limit: Int,
+        excludeAgentChildren: Bool
+    ) async throws -> V2SessionTimelinePage
 }
 
 struct V2SessionAPI: V2SessionAPIProtocol {
@@ -82,17 +87,21 @@ struct V2SessionAPI: V2SessionAPIProtocol {
         try await bulkAction(path: "/sessions/unarchive", sessionIds: sessionIds)
     }
 
-    func snapshot(sessionId: V2SessionID, limit: Int) async throws -> V2SessionSnapshot {
+    func snapshot(sessionId: V2SessionID, limit: Int, excludeAgentChildren: Bool) async throws -> V2SessionSnapshot {
         let request = HTTPRequest<EmptyRequestBody, V2SessionSnapshot>(
             method: .get,
             path: sessionPath(sessionId, suffix: "snapshot"),
-            queryItems: [URLQueryItem(name: "limit", value: String(limit))]
+            queryItems: [
+                URLQueryItem(name: "limit", value: String(limit)),
+                URLQueryItem(name: "excludeAgentChildren", value: String(excludeAgentChildren)),
+            ]
         )
         return try await transport.send(request)
     }
 
-    func latestTimeline(sessionId: V2SessionID, limit: Int) async throws -> V2SessionTimelinePage {
-        try await timeline(sessionId: sessionId, mode: .latest, limit: limit)
+    func latestTimeline(sessionId: V2SessionID, limit: Int, excludeAgentChildren: Bool) async throws -> V2SessionTimelinePage {
+        try await timeline(sessionId: sessionId, mode: .latest, limit: limit,
+            excludeAgentChildren: excludeAgentChildren)
     }
 
     func timelineChanges(sessionId: V2SessionID, afterSeq: Int, limit: Int) async throws -> V2SessionTimelinePage {
@@ -102,13 +111,15 @@ struct V2SessionAPI: V2SessionAPIProtocol {
     func timelineHistory(
         sessionId: V2SessionID,
         beforeOrderSeq: Int,
-        limit: Int
+        limit: Int,
+        excludeAgentChildren: Bool
     ) async throws -> V2SessionTimelinePage {
         try await timeline(
             sessionId: sessionId,
             mode: .history,
             beforeOrderSeq: beforeOrderSeq,
-            limit: limit
+            limit: limit,
+            excludeAgentChildren: excludeAgentChildren
         )
     }
 
@@ -138,7 +149,8 @@ struct V2SessionAPI: V2SessionAPIProtocol {
         mode: V2TimelineMode,
         afterSeq: Int? = nil,
         beforeOrderSeq: Int? = nil,
-        limit: Int
+        limit: Int,
+        excludeAgentChildren: Bool? = nil
     ) async throws -> V2SessionTimelinePage {
         var queryItems = [
             URLQueryItem(name: "mode", value: mode.rawValue),
@@ -149,6 +161,12 @@ struct V2SessionAPI: V2SessionAPIProtocol {
         }
         if let beforeOrderSeq {
             queryItems.append(URLQueryItem(name: "beforeOrderSeq", value: String(beforeOrderSeq)))
+        }
+        // Only the reads that build the visible window opt in: the changes
+        // (catch-up) read still carries child rows, which the panel and the
+        // card's activity list render.
+        if let excludeAgentChildren {
+            queryItems.append(URLQueryItem(name: "excludeAgentChildren", value: String(excludeAgentChildren)))
         }
         let request = HTTPRequest<EmptyRequestBody, V2SessionTimelinePage>(
             method: .get,

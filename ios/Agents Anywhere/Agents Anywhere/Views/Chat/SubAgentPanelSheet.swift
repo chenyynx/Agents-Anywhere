@@ -267,7 +267,10 @@ struct SubAgentPanelSheet: View {
             // prompt but none of its activity. Say so instead of rendering a
             // blank body that reads as "nothing happened". A resume-alias card
             // passes this gate through its sibling's rows (pp 2026-10-09).
-            if !SubAgentProgress.isContentLoaded(card, in: window) {
+            // A main-only window (C2) can never carry the child rows, so the
+            // card's own row must not pass the gate there.
+            if !SubAgentProgress.isContentLoaded(card, in: window,
+                windowExcludesAgentChildren: chat.session.windowExcludesAgentChildren) {
                 notLoadedNotice
             }
             promptSection(card)

@@ -5,27 +5,48 @@ struct V2SessionDetailService {
     let runtimeAPI: any V2RuntimeAPIProtocol
     let realtimeAPI: any V2RealtimeAPIProtocol
 
-    func load(sessionId: V2SessionID, itemLimit: Int = 100) async throws -> V2SessionSnapshot {
+    /// The visible timeline is opt-in to main-agent rows only: a latest window
+    /// made entirely of SubAgent child rows would render blank (L2.1). The
+    /// parameter stays explicit so a caller that needs the raw window can say so.
+    func load(
+        sessionId: V2SessionID,
+        itemLimit: Int = 100,
+        excludeAgentChildren: Bool = true
+    ) async throws -> V2SessionSnapshot {
         try validatePageSize(itemLimit)
-        return try await sessionAPI.snapshot(sessionId: sessionId, limit: itemLimit)
+        return try await sessionAPI.snapshot(
+            sessionId: sessionId,
+            limit: itemLimit,
+            excludeAgentChildren: excludeAgentChildren
+        )
     }
 
     func loadOlderItems(
         sessionId: V2SessionID,
         beforeOrderSeq: Int,
-        limit: Int = 100
+        limit: Int = 100,
+        excludeAgentChildren: Bool = true
     ) async throws -> V2SessionTimelinePage {
         try validatePageSize(limit)
         return try await sessionAPI.timelineHistory(
             sessionId: sessionId,
             beforeOrderSeq: beforeOrderSeq,
-            limit: limit
+            limit: limit,
+            excludeAgentChildren: excludeAgentChildren
         )
     }
 
-    func latestItems(sessionId: V2SessionID, limit: Int = 100) async throws -> V2SessionTimelinePage {
+    func latestItems(
+        sessionId: V2SessionID,
+        limit: Int = 100,
+        excludeAgentChildren: Bool = true
+    ) async throws -> V2SessionTimelinePage {
         try validatePageSize(limit)
-        return try await sessionAPI.latestTimeline(sessionId: sessionId, limit: limit)
+        return try await sessionAPI.latestTimeline(
+            sessionId: sessionId,
+            limit: limit,
+            excludeAgentChildren: excludeAgentChildren
+        )
     }
 
     func refreshRuntimeState(sessionId: V2SessionID) async throws -> V2RuntimeState {

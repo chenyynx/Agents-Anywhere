@@ -353,6 +353,13 @@ final class TimelineCollectionController: UIViewController {
         snapshot.appendItems(items)
         let existingChanges = items.filter { oldIDs.contains($0) && reconfigure.contains($0) }
         if !existingChanges.isEmpty { snapshot.reconfigureItems(existingChanges) }
+        // The height a row displayed under the content this apply replaces. A
+        // cell fit equal to it is the previous content, not the new height:
+        // the hosting body updates on a later layout pass.
+        var staleFits: [String: CGFloat] = [:]
+        for item in existingChanges where changed.contains(item) {
+            if let height = beforeHeights[item.itemID] { staleFits[item.itemID] = height }
+        }
         currentItems = items
         dataSource.apply(snapshot, animatingDifferences: animating) { [weak self] in
             guard let self else { return }
@@ -363,13 +370,18 @@ final class TimelineCollectionController: UIViewController {
             // SwiftUI after the apply; the single visible-cell pass can see
             // the old content, stop early, and leave the row at its previous
             // height — the blank band under a collapsed tool. Poll the
-            // reconfigured rows like the explicit reconfigure path does.
+            // reconfigured rows like the explicit reconfigure path does, on
+            // the same one-turn deferral: the hosted body updates on the next
+            // layout pass, and reading it inside this completion measures the
+            // content the apply replaced.
             if let content = self.content {
                 let interactive = existingChanges.filter {
                     content.heightPolicy(for: $0).acceptsPreferredHeight
                 }
                 if !interactive.isEmpty {
-                    self.applyPreferredHeights(for: interactive)
+                    DispatchQueue.main.async { [weak self] in
+                        self?.applyPreferredHeights(for: interactive, staleFits: staleFits)
+                    }
                 }
             }
             self.scheduleVisibleCellSettle()
@@ -627,8 +639,9 @@ final class TimelineCollectionController: UIViewController {
         noteBottomArrival()
     }
 
-    private func applyPreferredHeights(for items: [TimelineListItem]) {
-        settlePreferredHeights(for: items, attempt: 0)
+    private func applyPreferredHeights(for items: [TimelineListItem],
+                                       staleFits: [String: CGFloat] = [:]) {
+        settlePreferredHeights(for: items, attempt: 0, staleFits: staleFits)
     }
 
     /// The hosting content of a reconfigured exception row updates on a later
@@ -692,7 +705,7 @@ final class TimelineCollectionController: UIViewController {
         rowHeightAnimations[ObjectIdentifier(link)] = (animation, link)
     }
 
-    private func isAnimatingRowHeight(_ itemID: String) -> Bool {
+    func isAnimatingRowHeight(_ itemID: String) -> Bool {
         rowHeightAnimations.values.contains { $0.0.item.itemID == itemID }
     }
 
@@ -723,7 +736,8 @@ final class TimelineCollectionController: UIViewController {
         }
     }
 
-    private func settlePreferredHeights(for items: [TimelineListItem], attempt: Int) {
+    private func settlePreferredHeights(for items: [TimelineListItem], attempt: Int,
+                                        staleFits: [String: CGFloat]) {
         guard let content, attempt <= 9 else { return }
         // Same reason as the visible-cell settle: no layout work under the
         // finger; the scroll-end settle takes over.
@@ -750,6 +764,15 @@ final class TimelineCollectionController: UIViewController {
                 withHorizontalFittingPriority: .required,
                 verticalFittingPriority: .fittingSizeLevel).height
             guard fitting > 0 else { notePreferred("zeroFitting"); continue }
+            // Right after a content change the cell still hosts the previous
+            // body; a fit that is exactly the height that body displayed is
+            // that stale read, not the new height. Ignore it for the first
+            // few passes and later take whatever the cell reports, so a row
+            // that genuinely keeps its height cannot get stuck here.
+            if attempt <= 6, let stale = staleFits[item.itemID],
+               abs(fitting - stale) <= 0.5 {
+                notePreferred("staleFit"); continue
+            }
             let current = layout.attributes(for: item.itemID)?.frame.height ?? 0
             if abs(fitting - current) > 0.5 {
                 notePreferred("applyRequested")
@@ -772,7 +795,7 @@ final class TimelineCollectionController: UIViewController {
         // the first pass and the new size only after SwiftUI lays out.
         guard attempt < 9 else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-            self?.settlePreferredHeights(for: items, attempt: attempt + 1)
+            self?.settlePreferredHeights(for: items, attempt: attempt + 1, staleFits: staleFits)
         }
     }
 

@@ -414,12 +414,22 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         var checked = 0
         var clipped = 0
         var collapsed = 0
+        var collapsedIDs: [String] = []
+        var rowReports: [[String: Any]] = []
         for entry in stormEntries {
             let item = listItem(entry)
             let height = controller.layout.attributes(for: item.itemID)?.frame.height ?? 0
-            if height < 44 { collapsed += 1 }
+            if height < 44 {
+                collapsed += 1
+                collapsedIDs.append(entry.id)
+            }
+            var row: [String: Any] = ["id": entry.id, "height": Double(height),
+                "animating": controller.isAnimatingRowHeight(item.itemID)]
             guard let indexPath = controller.indexPath(for: item),
-                  let cell = controller.collectionView.cellForItem(at: indexPath) else { continue }
+                  let cell = controller.collectionView.cellForItem(at: indexPath) else {
+                rowReports.append(row)
+                continue
+            }
             checked += 1
             let content = cell.contentView.systemLayoutSizeFitting(
                 CGSize(width: cell.contentView.bounds.width,
@@ -427,6 +437,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                 withHorizontalFittingPriority: .required,
                 verticalFittingPriority: .fittingSizeLevel).height
             if cell.bounds.height + 0.5 < content { clipped += 1 }
+            row["cell"] = Double(cell.bounds.height)
+            row["fitting"] = Double(content)
+            rowReports.append(row)
         }
         let stale = staleVisibleCells(controller)
         if overlaps > 0 {
@@ -443,7 +456,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         }
         report["toolStorm"] = ["rows": stormEntries.count, "overlaps": overlaps,
                                "checked": checked, "clipped": clipped,
-                               "collapsed": collapsed, "staleCells": stale]
+                               "collapsed": collapsed, "staleCells": stale,
+                               "collapsedIDs": collapsedIDs, "rowDetails": rowReports]
     }
 
     /// Device report (cf130b1): the status line jumped and sometimes ended

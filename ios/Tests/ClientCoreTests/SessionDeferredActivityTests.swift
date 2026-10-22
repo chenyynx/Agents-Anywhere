@@ -280,7 +280,7 @@ import Testing
     @Test func aStaleCompleteRowNeverReplacesANewerSummary() throws {
         // The summary itself was refreshed to revision 3 while the single-row
         // read was in flight; the late revision-2 body must not roll it back.
-        let summary: V2TimelineItem = try decode(deferredObject(id: "tool", order: 2, revision: 3))
+        let summary = try deferredObject(id: "tool", order: 2, revision: 3)
         var projection = V2SessionProjection(snapshot: try snapshot(items: [summary]), maximumItems: 100)
         let stale: V2TimelineItem = try decode(itemObject(id: "tool", order: 2, revision: 2))
         let replaced = projection.replaceDeferredItem(stale)

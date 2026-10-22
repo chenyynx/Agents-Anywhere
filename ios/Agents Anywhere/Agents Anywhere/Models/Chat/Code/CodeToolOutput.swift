@@ -123,7 +123,9 @@ nonisolated enum CodeToolOutput: Hashable {
                     return
                 }
             case "submittedanswers", "submitted_answers", "answers":
-                if let answers = Self.answers(from: payload) {
+                // The explicit tag names the shape, so a bare question→answer
+                // map is safe here even for a non-question tool.
+                if let answers = Self.answers(from: payload, allowBareMap: true) {
                     self = .submittedAnswers(answers)
                     return
                 }
@@ -163,9 +165,23 @@ nonisolated enum CodeToolOutput: Hashable {
         // AskUserQuestion results and structured submitted-answer payloads.
         // Input questions without an answer do not qualify (answers are never
         // invented).
-        if let answers = Self.answers(from: payload)
-            ?? Self.answers(from: content["input"])
-            ?? Self.answers(from: content["arguments"]) {
+        //
+        // Only two shapes may reach this branch:
+        // - an explicit `answers` / `submittedAnswers` wrapper on the result,
+        //   which names itself and is safe for any tool;
+        // - a question call, whose input may carry a bare question→answer map.
+        //
+        // The bare-map heuristic must never touch a non-question input: an
+        // Edit input (`file_path`, `old_string`, `new_string`, `replace_all`)
+        // is an all-scalar object too, and it was rendered as an "Answers"
+        // section on the detail page (device report 2026-10-23).
+        if let answers = Self.answers(from: payload, allowBareMap: kind == .question) {
+            self = .submittedAnswers(answers)
+            return
+        }
+        if kind == .question,
+           let answers = Self.answers(from: content["input"], allowBareMap: true)
+            ?? Self.answers(from: content["arguments"], allowBareMap: true) {
             self = .submittedAnswers(answers)
             return
         }
@@ -349,7 +365,13 @@ nonisolated enum CodeToolOutput: Hashable {
 
     // MARK: Submitted answers
 
-    private static func answers(from value: JSONValue?) -> [CodeToolSubmittedAnswer]? {
+    /// `allowBareMap` gates the question→answer-dictionary heuristic. A bare
+    /// map has no type tag, so it is only trustworthy where the call says it
+    /// is a question (or the payload explicitly declares the answers case).
+    /// Wrapped answer payloads and answer-shaped arrays are self-describing
+    /// and need no gate.
+    private static func answers(from value: JSONValue?,
+                                allowBareMap: Bool = false) -> [CodeToolSubmittedAnswer]? {
         guard let value else { return nil }
         if let direct = value.arrayValue {
             return answerPairs(direct)
@@ -374,11 +396,10 @@ nonisolated enum CodeToolOutput: Hashable {
         // A bare question -> answer map. Structural keys are excluded so an
         // input question object (`question` / `answer` / `options`) is not
         // split into two fake pairs.
-        if looksLikeAnswerDictionary(object),
-           let parsed = answerDictionary(object) {
-            return parsed
-        }
-        return nil
+        guard allowBareMap,
+              looksLikeAnswerDictionary(object),
+              let parsed = answerDictionary(object) else { return nil }
+        return parsed
     }
 
     private static func answerPairs(_ array: [JSONValue]) -> [CodeToolSubmittedAnswer]? {

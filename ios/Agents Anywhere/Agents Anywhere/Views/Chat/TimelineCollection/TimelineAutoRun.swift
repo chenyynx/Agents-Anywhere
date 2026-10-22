@@ -70,7 +70,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                 queue: [],
                 sendingPlaceholder: entry.statusLine ? "Thinking" : nil,
                 orbActivity: entry.statusLine ? "thinking" : "idle",
-                hasNewerItems: false))
+                hasNewerItems: false,
+                statusLineVisible: entry.statusLine))
         }
         return .group(TimelineGroupContentSignature(
             rows: [TimelineRowContentSignature(id: entry.id, revision: entry.revision,
@@ -236,6 +237,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await prepend(); persist(phase: "prepend")
         await prependDuringApply(); persist(phase: "prependDuringApply")
         await owedRace(); persist(phase: "owedRace")
+        await loadLatestReturn(); persist(phase: "loadLatestReturn")
         await tailFlap(); persist(phase: "tailFlap")
         await foldCycles(); persist(phase: "foldCycles")
         await interleavedApplies(); persist(phase: "interleavedApplies")
@@ -1050,6 +1052,42 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         report["prependDuringApply"] = ["before": Double(before), "after": Double(after),
                                         "delta": Double(delta),
                                         "settled": position.isReadyToFinish]
+    }
+
+    /// Device report (package 426a7ec): tapping "load latest" jumped to the
+    /// top. The newer page replaces every identity, so UIKit re-anchors the
+    /// batch update; the animated target was computed against the old content
+    /// height. Reproduce: start the explicit return, replace the whole window
+    /// while it is in flight, and assert the page lands at the *new* bottom.
+    private func loadLatestReturn() async {
+        guard let controller, entries.count > 8 else { return }
+        if let index = controller.indexPath(for: listItem(entries[1])) {
+            controller.collectionView.scrollToItem(at: index, at: .top, animated: false)
+        }
+        await wait(250)
+        let before = controller.collectionView.contentOffset.y
+        controller.beginWindowReplacementReturn()
+        controller.requestBottom(animated: true, forced: true)
+        // The latest page replaces every id (V2SessionProjection.replaceTimeline).
+        entries = (0..<16).map { index in
+            Entry(id: "win-\(index)", kind: .plain,
+                  text: String(repeating: "Latest page line \(index). ", count: 4))
+        } + [Entry(id: "win-tail", kind: .tail, text: "")]
+        contentGeneration += 1
+        controller.reloadFromContent()
+        await wait(1500)
+        let offset = controller.collectionView.contentOffset.y
+        let atBottom = controller.viewport.measuredAtBottom
+        if !atBottom {
+            failures.append("loadLatestReturn: not at bottom (offset \(offset), "
+                + "height \(controller.layout.contentHeight))")
+        }
+        if offset <= 0 {
+            failures.append("loadLatestReturn: offset stayed at the top")
+        }
+        report["loadLatestReturn"] = ["before": Double(before), "after": Double(offset),
+                                      "contentHeight": Double(controller.layout.contentHeight),
+                                      "atBottom": atBottom]
     }
 
     // MARK: - Sampling helpers

@@ -144,7 +144,7 @@ final class TimelineListLayout: UICollectionViewLayout {
         next.reserveCapacity(count)
         if prefix > 0 { next.append(contentsOf: attributesByIndex.prefix(prefix)) }
         var cursor = prefix > 0
-            ? next[prefix - 1].frame.maxY + TimelineListMetrics.itemSpacing
+            ? next[prefix - 1].frame.maxY + host.layoutItemSpacing(after: items[prefix - 1])
             : TimelineListMetrics.topInset
         for index in prefix..<count {
             let attributes = TimelineListLayoutAttributes(forCellWith: IndexPath(item: index, section: 0))
@@ -155,7 +155,7 @@ final class TimelineListLayout: UICollectionViewLayout {
             attributes.policy = host.layoutHeightPolicy(for: items[index])
             next.append(attributes)
             cursor += resolved[index]
-            if index < count - 1 { cursor += TimelineListMetrics.itemSpacing }
+            if index < count - 1 { cursor += host.layoutItemSpacing(after: items[index]) }
         }
 
         var byID: [String: TimelineListLayoutAttributes] = [:]

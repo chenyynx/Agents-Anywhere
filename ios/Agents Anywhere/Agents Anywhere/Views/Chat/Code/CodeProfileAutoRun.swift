@@ -68,6 +68,9 @@ final class CodeProfileAutoRunModel {
         runToolOutput()
         persist(phase: "toolOutput")
 
+        runToolLabels()
+        persist(phase: "toolLabels")
+
         await captureViews()
         finish()
     }
@@ -306,6 +309,7 @@ final class CodeProfileAutoRunModel {
         case diff(added: Int, removed: Int)
         case answers(question: String, answer: String)
         case approvedPlan
+        case empty
     }
 
     private func runToolOutput() {
@@ -318,6 +322,7 @@ final class CodeProfileAutoRunModel {
              .answers(question: "Which file?", answer: "TimelineTests.swift"),
              Self.answersOutputJSON),
             ("plan", .plan, .approvedPlan, Self.planOutputJSON),
+            ("editInput", .edit, .empty, Self.editInputOutputJSON),
         ]
 
         var outputs: [String: Any] = [:]
@@ -352,6 +357,8 @@ final class CodeProfileAutoRunModel {
                 && answers[0].answer == answer
         case (.approvedPlan, .approvedPlan):
             return true
+        case (.empty, .none):
+            return true
         default:
             return false
         }
@@ -367,6 +374,43 @@ final class CodeProfileAutoRunModel {
         case .approvedPlan: return "approvedPlan"
         case .none: return "none"
         }
+    }
+
+    // MARK: - Collapsed row labels (W3)
+
+    /// Device report 2026-10-23: six edits to one file rendered as
+    /// "Edited 6 files". The official summary counts files, and a span whose
+    /// calls all touch one file keeps the single-file shape.
+    private func runToolLabels() {
+        let path = "/home/ubuntu/.claude/projects/-home-ubuntu/memory/MEMORY.md"
+        var calls: [CodeToolCall] = []
+        for index in 0..<6 {
+            let json = """
+            {"id":"label-\(index)","sessionId":"gate-label","type":"tool","status":"done",
+             "orderSeq":\(index + 1),
+             "content":{"toolName":"Edit","input":{"file_path":"\(path)",
+               "old_string":"a","new_string":"b","replace_all":false}},
+             "source":{"itemId":"label-\(index)","nativeMessageId":"msg-label",
+               "blockIndex":\(index)}}
+            """
+            guard let item = Self.decodeItem(json) else {
+                failures.append("toolLabels: fixture \(index) did not decode")
+                continue
+            }
+            calls.append(CodeToolCall(item: item, kind: .edit))
+        }
+        let plan = CodeToolLabelPlan.make(calls: calls, cwd: nil)
+        let label = CodeToolLabels.label(for: calls, cwd: nil)
+        let text = [label.verb, label.target].compactMap { $0 }.joined(separator: " ")
+        let singleShape = plan?.verb == .edited
+            && plan?.target == path
+            && plan?.phrases.isEmpty == true
+        let wrongCount = text.contains("6 file")
+        check(singleShape, "toolLabels: six edits to one file lost the single-file shape (\(text))")
+        check(!wrongCount, "toolLabels: six edits to one file summarized as \(text)")
+        report["toolLabels"] = ["text": text,
+                                "singleShape": singleShape,
+                                "wrongCount": wrongCount]
     }
 
     // MARK: - Views and screenshots
@@ -805,6 +849,16 @@ final class CodeProfileAutoRunModel {
     {"id":"out-plan","sessionId":"gate-output","type":"tool","status":"done","orderSeq":1,
      "content":{"toolName":"ExitPlanMode","output":{"kind":"approved_plan"}},
      "source":{"itemId":"out-plan"}}
+    """#
+
+    /// An Edit call whose only payload is its input. The detail page used to
+    /// render these four fields as an "Answers" section (device report
+    /// 2026-10-23).
+    private static let editInputOutputJSON = #"""
+    {"id":"out-edit-input","sessionId":"gate-output","type":"tool","status":"done","orderSeq":1,
+     "content":{"toolName":"Edit","input":{"file_path":"/tmp/MEMORY.md",
+       "old_string":"a","new_string":"b","replace_all":false}},
+     "source":{"itemId":"out-edit-input"}}
     """#
 }
 

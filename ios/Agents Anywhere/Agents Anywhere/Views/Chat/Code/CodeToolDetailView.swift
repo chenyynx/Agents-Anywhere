@@ -27,6 +27,8 @@ struct CodeToolDetailView: View {
     /// Official `ToolCallDetail.footnote?`. Rendered only when the caller has
     /// something to say; the official page has no footnote in the common case.
     let footnote: String?
+    /// The session's working directory, for the following-call labels.
+    let cwd: String?
 
     private let output: CodeToolOutput
     private let inputText: String?
@@ -42,10 +44,12 @@ struct CodeToolDetailView: View {
 
     init(call: CodeToolCall,
          followingCalls: [CodeToolCall] = [],
-         footnote: String? = nil) {
+         footnote: String? = nil,
+         cwd: String? = nil) {
         self.call = call
         self.followingCalls = followingCalls
         self.footnote = footnote
+        self.cwd = cwd
         output = CodeToolOutput(item: call.item, kind: call.kind)
         inputText = Self.inputText(for: call)
     }
@@ -183,16 +187,18 @@ struct CodeToolDetailView: View {
         return parts.joined(separator: " ")
     }
 
+    /// A following call keeps the collapsed row's verb + target shape. Showing
+    /// the bare tool name ("Edit" five times) told the reader nothing about
+    /// what the siblings touched (device report 2026-10-23).
     private func followingRow(_ following: CodeToolCall) -> some View {
-        HStack(spacing: 10) {
+        let label = CodeToolLabels.label(for: [following], cwd: cwd)
+        return HStack(spacing: 10) {
             Image(systemName: Self.icon(for: following.kind))
                 .font(.system(size: sectionLabelFontSize))
                 .foregroundStyle(.secondary)
                 .frame(width: 20)
                 .accessibilityHidden(true)
-            Text(verbatim: following.name)
-                .font(.system(size: followingFontSize,
-                              design: .monospaced))
+            followingLabelText(label)
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer(minLength: 8)
@@ -206,6 +212,20 @@ struct CodeToolDetailView: View {
         .frame(minHeight: 32)
         .accessibilityElement(children: .combine)
         .accessibilityValue(following.item.status.label)
+    }
+
+    private func followingLabelText(_ label: CodeToolRowLabel) -> Text {
+        guard let target = label.target, !target.isEmpty else {
+            return Text(label.verb)
+                .font(.system(size: followingFontSize))
+                .foregroundStyle(.secondary)
+        }
+        return Text(label.verb + " ")
+            .font(.system(size: followingFontSize))
+            .foregroundStyle(.secondary)
+            + Text(target)
+            .font(.system(size: followingFontSize, design: .monospaced))
+            .foregroundStyle(.primary)
     }
 
     private var closeButton: some View {

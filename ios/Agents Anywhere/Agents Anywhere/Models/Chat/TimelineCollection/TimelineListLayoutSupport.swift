@@ -44,6 +44,9 @@ nonisolated struct TimelineLayoutInteractionState: Equatable {
     func layoutEstimateKind(for item: TimelineListItem) -> TimelineHeightEstimateKind
     func layoutHeightPolicy(for item: TimelineListItem) -> TimelineRowHeightPolicy
     func layoutContentKind(for item: TimelineListItem) -> TimelineMeasurementContent
+    /// The gap between this item's frame and the next one. Code message rows
+    /// already carry the official row margins, so they report 0.
+    func layoutItemSpacing(after item: TimelineListItem) -> CGFloat
     func layoutInteractionState() -> TimelineLayoutInteractionState
 
     /// Called in effect order when a browse gesture settles: the pull decision

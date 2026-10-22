@@ -185,7 +185,8 @@ struct TimelineChatTimelineView: View {
             // survives the streaming reconfigures that rebuild every cell.
             .sheet(item: $bridge.codeDetailRequest) { request in
                 CodeToolDetailView(call: request.call,
-                                   followingCalls: request.following)
+                                   followingCalls: request.following,
+                                   cwd: model.session.metadata?.cwd)
             }
     }
 
@@ -288,6 +289,10 @@ final class TimelineChatBridge: ObservableObject {
               !isLoadingLatest else { return }
         isLoadingLatest = true
         updateHistoryAvailability()
+        // The newer window can replace every row before the post-await return
+        // runs; record the return intent first so the apply can re-resolve the
+        // bottom against the new content (device report 2026-10-23).
+        controller?.beginWindowReplacementReturn()
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.model.session.loadLatest()

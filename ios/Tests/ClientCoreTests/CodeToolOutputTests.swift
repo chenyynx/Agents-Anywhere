@@ -277,6 +277,44 @@ struct CodeToolOutputTests {
         ]))
     }
 
+    @Test func questionInputAnswersParse() throws {
+        let output = try makeOutput([
+            "input": ["questions": [
+                ["question": "Q1", "answer": "A1"],
+            ]],
+        ], kind: .question)
+        #expect(output == .submittedAnswers([
+            CodeToolSubmittedAnswer(id: 0, question: "Q1", answer: "A1"),
+        ]))
+    }
+
+    /// Device report 2026-10-23: the Edit detail showed an "Answers" section
+    /// made of the call's own input fields. An Edit input is an all-scalar map
+    /// with no structural key, which matched the bare question→answer
+    /// heuristic. Answers must never be derived from a non-question input.
+    @Test func editInputIsNeverSubmittedAnswers() throws {
+        let output = try makeOutput([
+            "input": [
+                "file_path": "/tmp/MEMORY.md",
+                "old_string": "- old",
+                "new_string": "- new",
+                "replace_all": false,
+            ],
+        ], kind: .edit)
+        #expect(output == .none)
+    }
+
+    /// The explicit wrapper still names the answers case for any tool: only
+    /// the *bare* map heuristic is gated.
+    @Test func explicitAnswersWrapperWorksForAnyTool() throws {
+        let output = try makeOutput([
+            "output": ["answers": ["Q1": "A1"]],
+        ], kind: .bash)
+        #expect(output == .submittedAnswers([
+            CodeToolSubmittedAnswer(id: 0, question: "Q1", answer: "A1"),
+        ]))
+    }
+
     // MARK: Plan / empty / oversized
 
     @Test func approvedPlanTagIsPlaceholder() throws {

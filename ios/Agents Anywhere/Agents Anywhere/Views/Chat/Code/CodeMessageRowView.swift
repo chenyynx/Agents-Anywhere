@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 import UIKit
 
@@ -58,6 +59,12 @@ struct CodeMessageRowView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        // Official `rowMargins` top/bottom 5 pt
+        // (CANONICAL/05-layout-scroll.md §3.1). The horizontal 16 pt comes
+        // from the collection column's inset, which equals it on phones. The
+        // list's own item gap is zeroed for these rows (adapter
+        // `itemSpacing(after:)`), so this margin is the whole inter-row gap.
+        .padding(.vertical, CodePageTheme.rowMarginTop)
     }
 
     /// One message's blocks in declared order; the assistant path.
@@ -214,7 +221,7 @@ struct CodeMessageRowView: View {
 /// (CANONICAL/20-working-mark.md §1–§4): the 20×20 flipbook mark with the
 /// `.connecting` verb table, rotated once a second. The mark is decorative and
 /// hidden from accessibility; the verb text carries the announcement.
-private struct CodeThinkingStatusLine: View {
+struct CodeThinkingStatusLine: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -258,14 +265,11 @@ nonisolated struct CodeToolRowLabel {
 
 /// Maps a segment's calls to the official collapsed-row label.
 ///
-/// The official label comes from `ToolCall.toolInput` (verified-verb table,
-/// CANONICAL/04-tool-calls.md §8) plus the input target, or from the server
-/// summary for a span. AA's wire carries no `serverSummary`, so a multi-call
-/// span composes its label from the calls' kinds and counts in first-seen
-/// order — the shape the reference video shows ("Created a file, edited 2
-/// files", REFERENCES/video-mining-r3.md 03:19–03:38). Single calls keep the
-/// verb + target form from the official screenshot ("Edited
-/// validate-email.ts").
+/// The label's shape (verb, target, counts) is decided by the pure
+/// `CodeToolLabelPlan` in the model layer; this enum only turns its semantic
+/// verbs and counts into localized text. The official zh-Hans values come
+/// from the app's `ccr_verb_*` / `ccr_summary_*` tables
+/// (`EVIDENCE/resources-r6.md` §3.1-§3.3).
 nonisolated enum CodeToolLabels {
     static func calls(in segment: CodeToolSegment) -> [CodeToolCall] {
         switch segment {
@@ -281,25 +285,19 @@ nonisolated enum CodeToolLabels {
     }
 
     static func label(for calls: [CodeToolCall], cwd: String?) -> CodeToolRowLabel {
-        let running = calls.contains { $0.status == .running }
-        var added = 0
-        var removed = 0
-        var hasDiff = false
-        for call in calls {
-            guard let stat = diffStat(for: call.item) else { continue }
-            added += stat.added
-            removed += stat.removed
-            hasDiff = true
+        guard let plan = CodeToolLabelPlan.make(calls: calls, cwd: cwd) else {
+            return CodeToolRowLabel(verb: "", target: nil, diff: nil, isRunning: false)
         }
-        let diff = hasDiff ? CodeDiffStat(added: added, removed: removed) : nil
-
-        if calls.count == 1, let call = calls.first {
-            let single = singleLabel(for: call, cwd: cwd)
-            return CodeToolRowLabel(verb: single.verb, target: single.target,
-                                    diff: diff, isRunning: running)
+        if let verb = plan.verb {
+            return CodeToolRowLabel(verb: verbText(verb),
+                                    target: plan.target,
+                                    diff: plan.diff,
+                                    isRunning: plan.isRunning)
         }
-        return CodeToolRowLabel(verb: spanSummary(for: calls), target: nil,
-                                diff: diff, isRunning: running)
+        return CodeToolRowLabel(verb: phraseText(plan.phrases),
+                                target: nil,
+                                diff: plan.diff,
+                                isRunning: plan.isRunning)
     }
 
     static func icon(for kind: CodeToolKind) -> String {
@@ -318,134 +316,108 @@ nonisolated enum CodeToolLabels {
         }
     }
 
-    // MARK: - Single call
+    // MARK: - Localized text
 
-    private static func singleLabel(for call: CodeToolCall,
-                                    cwd: String?) -> (verb: String, target: String?) {
-        let target = rawTarget(for: call, cwd: cwd)
-        switch call.kind {
-        case .read: return ("Read", target)
-        case .edit: return ("Edited", target)
-        // The official split (created vs. updated) needs `fileWriteKind`,
-        // which AA's wire does not carry; "Created" is the observed case in
-        // the reference video.
-        case .write: return ("Created", target)
-        case .bash: return ("Ran", target)
-        case .search: return ("Searched", target)
-        case .todo: return (todoIsEmpty(call) ? "Cleared todos" : "Updated todos", nil)
-        case .task: return ("Ran agent", target)
-        case .plan: return ("Proposed plan", target)
-        case .question: return ("Asked", target)
-        case .mcp, .other: return ("Used", target ?? call.name)
+    private static let phraseSeparator = String(localized: "ccr_summary_separator")
+
+    private static func verbText(_ verb: CodeToolLabelPlan.Verb) -> String {
+        switch verb {
+        case .read: return String(localized: "ccr_verb_read")
+        case .edited: return String(localized: "ccr_verb_edited")
+        // No `ccr_verb_*` entry exists for Write in the official tables; the
+        // summary form is "Created a file", so the single verb stays "Created".
+        case .created: return String(localized: "ccr_verb_created")
+        case .ran: return String(localized: "ccr_verb_ran")
+        case .searched: return String(localized: "ccr_verb_searched")
+        case .searchedWeb: return String(localized: "ccr_verb_searched_web")
+        case .fetched: return String(localized: "ccr_verb_fetched")
+        case .clearedTodos: return String(localized: "ccr_verb_cleared_todos")
+        case .updatedTodos: return String(localized: "ccr_verb_updated_todos")
+        case .ranAgent: return String(localized: "ccr_verb_ran_agent")
+        case .proposedPlan: return String(localized: "ccr_verb_proposed_plan")
+        case .asked: return String(localized: "ccr_verb_asked")
+        // The official MCP form is "Used %@"; the row keeps its two-run
+        // (verb + target) shape, so the verb is the bare "Used".
+        case .used: return String(localized: "ccr_verb_used")
+        case .searchedCode: return String(localized: "ccr_summary_searched_code")
+        case .foundFiles: return String(localized: "ccr_summary_found_files")
+        case .browsedWeb: return String(localized: "ccr_summary_browsed_web")
         }
     }
 
-    /// The call's visible target: a shortened file path, the shell command, a
-    /// search query, or the agent/tool name.
-    private static func rawTarget(for call: CodeToolCall, cwd: String?) -> String? {
-        let content = call.item.raw["content"] ?? .object([:])
-        let input = content["input"] ?? content["arguments"]
-        switch call.kind {
-        case .read, .edit, .write:
-            let path = TimelineText.first(input?["file_path"], input?["notebook_path"],
-                                          input?["path"], content["path"],
-                                          content["file_path"])
-                ?? content["changes"]?.arrayValue?.first.flatMap { TimelineText.path($0) }
-            return path.map { TimelineText.displayPath($0, cwd: cwd) }
+    /// "Read 2 files, edited 1 file": only the first phrase is capitalised in
+    /// English, as in the reference video's span summary.
+    private static func phraseText(_ phrases: [CodeToolLabelPlan.Phrase]) -> String {
+        phrases.enumerated().map { index, phrase in
+            let text = phraseText(phrase)
+            return index == 0 ? text : decapitalized(text)
+        }.joined(separator: phraseSeparator)
+    }
+
+    private static func phraseText(_ phrase: CodeToolLabelPlan.Phrase) -> String {
+        switch (phrase.verb, phrase.unit) {
+        case (.read, .files): return plural(.read, count: phrase.count)
+        case (.edited, .files): return plural(.edit, count: phrase.count)
+        case (.edited, .notebooks): return plural(.notebookEdit, count: phrase.count)
+        case (.created, .files): return plural(.write, count: phrase.count)
+        case (.ran, .commands): return plural(.bash, count: phrase.count)
+        case (.ranAgent, .agents): return plural(.task, count: phrase.count)
+        case (.searched, .times): return plural(.searchTimes, count: phrase.count)
+        case (.used, .tools): return plural(.other, count: phrase.count)
+        case (.searchedCode, _): return String(localized: "ccr_summary_searched_code")
+        case (.foundFiles, _): return String(localized: "ccr_summary_found_files")
+        case (.browsedWeb, _): return String(localized: "ccr_summary_browsed_web")
+        case (.fetched, _): return String(localized: "ccr_verb_fetched")
+        case (.clearedTodos, _): return String(localized: "ccr_verb_cleared_todos")
+        case (.updatedTodos, _): return String(localized: "ccr_summary_updated_todos")
+        case (.proposedPlan, _): return String(localized: "ccr_summary_proposed_plan")
+        case (.asked, _): return String(localized: "ccr_verb_asked")
+        default: return verbText(phrase.verb)
+        }
+    }
+
+    private enum PluralKey {
+        case read, edit, notebookEdit, write, bash, task, searchTimes, other
+    }
+
+    /// English plural forms are separate keys (`_one` / `_other`) because the
+    /// official table is a stringsdict with "a file" / "%lld files"; Chinese
+    /// has only the "other" form, so its `_one` value spells the count 1.
+    private static func plural(_ key: PluralKey, count: Int) -> String {
+        let format: String
+        switch key {
+        case .read:
+            format = count == 1 ? String(localized: "ccr_summary_read_one")
+                                : String(localized: "ccr_summary_read_other")
+        case .edit:
+            format = count == 1 ? String(localized: "ccr_summary_edit_one")
+                                : String(localized: "ccr_summary_edit_other")
+        case .notebookEdit:
+            format = count == 1 ? String(localized: "ccr_summary_notebook_edit_one")
+                                : String(localized: "ccr_summary_notebook_edit_other")
+        case .write:
+            format = count == 1 ? String(localized: "ccr_summary_write_one")
+                                : String(localized: "ccr_summary_write_other")
         case .bash:
-            return TimelineText.command(content["command"])
-                ?? TimelineText.command(input?["command"])
-                ?? TimelineText.command(input?["cmd"])
-        case .search:
-            return TimelineText.first(input?["query"], input?["pattern"],
-                                      content["query"], input?["url"], content["url"])
+            format = count == 1 ? String(localized: "ccr_summary_bash_one")
+                                : String(localized: "ccr_summary_bash_other")
         case .task:
-            return TimelineText.first(input?["description"], input?["prompt"],
-                                      content["description"], content["title"])
-        case .plan, .question:
-            return TimelineText.first(content["question"], input?["question"])
-        case .todo:
-            return nil
-        case .mcp:
-            return TimelineText.first(content["tool"], input?["tool"],
-                                      content["server"], input?["server"]) ?? call.name
+            format = count == 1 ? String(localized: "ccr_summary_task_one")
+                                : String(localized: "ccr_summary_task_other")
+        case .searchTimes:
+            format = count == 1 ? String(localized: "ccr_summary_search_times_one")
+                                : String(localized: "ccr_summary_search_times_other")
         case .other:
-            return call.name
+            format = count == 1 ? String(localized: "ccr_summary_other_one")
+                                : String(localized: "ccr_summary_other_other")
         }
+        return String(format: format, count)
     }
 
-    private static func todoIsEmpty(_ call: CodeToolCall) -> Bool {
-        let content = call.item.raw["content"] ?? .object([:])
-        let todos = content["input"]?["todos"]?.arrayValue
-            ?? content["arguments"]?["todos"]?.arrayValue
-            ?? content["todos"]?.arrayValue
-        return todos?.isEmpty == true
-    }
-
-    // MARK: - Span summary
-
-    private static func spanSummary(for calls: [CodeToolCall]) -> String {
-        var kinds: [CodeToolKind] = []
-        var counts: [CodeToolKind: Int] = [:]
-        for call in calls {
-            if counts[call.kind] == nil { kinds.append(call.kind) }
-            counts[call.kind, default: 0] += 1
-        }
-        return kinds.enumerated().map { index, kind in
-            let phrase = phrase(for: kind, count: counts[kind] ?? 0)
-            return index == 0 ? phrase : decapitalized(phrase)
-        }.joined(separator: ", ")
-    }
-
-    private static func phrase(for kind: CodeToolKind, count: Int) -> String {
-        switch kind {
-        case .read: return "Read " + files(count)
-        case .edit: return "Edited " + files(count)
-        case .write: return "Created " + files(count)
-        case .bash: return count == 1 ? "Ran a command" : "Ran \(count) commands"
-        case .search: return count == 1 ? "Searched" : "Searched \(count) times"
-        case .todo: return "Updated todos"
-        case .task: return count == 1 ? "Ran an agent" : "Ran \(count) agents"
-        case .plan: return "Proposed a plan"
-        case .question: return "Asked a question"
-        case .mcp, .other: return count == 1 ? "Used a tool" : "Used \(count) tools"
-        }
-    }
-
-    private static func files(_ count: Int) -> String {
-        count == 1 ? "a file" : "\(count) files"
-    }
-
-    /// "Read 2 files, edited 1 file": only the first phrase is capitalised,
-    /// as in the reference video's span summary.
+    /// "Read 2 files, edited 1 file": only the first phrase is capitalised.
     private static func decapitalized(_ phrase: String) -> String {
         guard let first = phrase.first else { return phrase }
         return first.lowercased() + String(phrase.dropFirst())
-    }
-
-    // MARK: - Diff stat
-
-    /// A collapsed row's badge, read straight from the wire's line counts.
-    /// Parsing the whole diff here (W4's `CodeToolOutput`) would be heavy for
-    /// a one-line decorative stat; a payload without counts shows no badge
-    /// rather than guessing from the lines.
-    private static func diffStat(for item: V2TimelineItem) -> CodeDiffStat? {
-        let content = item.raw["content"] ?? .object([:])
-        let output = content["output"]?.objectValue
-        let stat = output?["lineStat"]?.objectValue
-        let added = stat?["addedLineCount"]?.intValue
-            ?? stat?["added"]?.intValue
-            ?? output?["addedLineCount"]?.intValue
-            ?? content["lineStat"]?["addedLineCount"]?.intValue
-        let removed = stat?["removedLineCount"]?.intValue
-            ?? stat?["removed"]?.intValue
-            ?? output?["removedLineCount"]?.intValue
-            ?? content["lineStat"]?["removedLineCount"]?.intValue
-        guard added != nil || removed != nil else { return nil }
-        let addedCount = max(0, added ?? 0)
-        let removedCount = max(0, removed ?? 0)
-        guard addedCount > 0 || removedCount > 0 else { return nil }
-        return CodeDiffStat(added: addedCount, removed: removedCount)
     }
 }
 

@@ -157,7 +157,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         switch item {
         case .olderPrompt: return .olderPrompt
         case .latestPrompt: return .latestPrompt
-        case .tail: return .tail(statusLine: model.sendingPlaceholder != nil)
+        case .tail: return .tail(statusLine: tailStatusLineVisible)
         case .notice: return .row
         case .pending(let id):
             guard let pending = pendingByID[id] else { return .row }
@@ -234,7 +234,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 }
             }
         }
-        return .text(textEstimate(for: item, rows: textRows, minimum: 44))
+        // The row view adds the official rowMargins itself; the estimate must
+        // budget them or every new row lands 10 pt short before its first fit.
+        let margins = CodePageTheme.rowMarginTop + CodePageTheme.rowMarginBottom
+        return .text(textEstimate(for: item, rows: textRows, minimum: 44) + margins)
     }
 
     /// The estimate is recomputed only when the row content, typography or
@@ -268,6 +271,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             return groupHasInteractiveContent(group) ? .interactive : .measured
         case .olderPrompt, .latestPrompt: return .measured
         }
+    }
+
+    /// A Code message row draws the official `rowMargins` itself (top/bottom
+    /// 5 pt), so the list must not add its historical 20 pt gap. Other item
+    /// kinds keep the list gap.
+    func itemSpacing(after item: TimelineListItem) -> CGFloat {
+        if case .group(let id) = item, groupsByID[id]?.explicitID != nil { return 0 }
+        return TimelineListMetrics.itemSpacing
     }
 
     // MARK: - C5/M3 TextKit 2 assistant body
@@ -645,7 +656,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 onAttachment: onAttachment,
                 onDismiss: { [weak self] in self?.model.session.dismissPendingMessage(id: id) }))
         case .tail:
-            return AnyView(TimelineCollectionTailRow(model: model))
+            return AnyView(TimelineCollectionTailRow(model: model,
+                                                     showsStatusLine: tailStatusLineVisible))
         }
     }
 
@@ -1017,7 +1029,21 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             },
             sendingPlaceholder: model.sendingPlaceholder,
             orbActivity: String(describing: model.orbActivity),
-            hasNewerItems: model.session.hasNewerItems)
+            hasNewerItems: model.session.hasNewerItems,
+            statusLineVisible: tailStatusLineVisible)
+    }
+
+    /// The tail's working status is Code page furniture only when the message
+    /// stack has no status line of its own. The in-message line is the
+    /// official `CodeThinkingView`; drawing the legacy orb below it as well
+    /// produced two working indicators on device (2026-10-23).
+    private var tailStatusLineVisible: Bool {
+        guard model.sendingPlaceholder != nil else { return false }
+        let hasInline = groupsByID.values.contains { group in
+            group.explicitID != nil
+                && group.rows.contains { $0.value.isReasoning && $0.value.status.isActive }
+        }
+        return !hasInline
     }
 
     /// Attachments ride inside the typed content: a message carries a list, an
@@ -1165,9 +1191,12 @@ private struct TimelineCollectionLatestPromptRow: View {
 /// in C5, where the controller computes scroll-edge visibility geometrically.
 private struct TimelineCollectionTailRow: View {
     let model: SessionChatModel
+    /// False while a message row already shows the official working status
+    /// line: one turn gets one mark, never two (device report 2026-10-23).
+    let showsStatusLine: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
 
-    private var hasStatusLine: Bool { model.sendingPlaceholder != nil }
     private var queueRoster: String {
         model.session.sendQueue.items.map { "\($0.id):\($0.state)" }.joined(separator: ",")
     }
@@ -1186,17 +1215,26 @@ private struct TimelineCollectionTailRow: View {
                 .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: queueRoster)
             }
             Group {
-                if let text = model.sendingPlaceholder {
-                    HStack(spacing: 8) {
-                        ThinkingOrbView(activity: model.orbActivity, size: 30,
-                                        pulse: model.session.incomingPulse)
-                        OrbStatusText(text: text).font(.footnote).lineLimit(1)
+                if showsStatusLine, model.isRunning {
+                    // The Code page's working row, not the Chat page's orb:
+                    // the flipbook mark plus the rotating `.connecting` verb
+                    // (CANONICAL/20-working-mark.md §1–§4).
+                    CodeThinkingStatusLine()
+                } else if showsStatusLine, let text = model.sendingPlaceholder {
+                    HStack(spacing: CodePageTheme.toolRowButtonPadding) {
+                        WorkingMarkView(body: .think, isRunning: true)
+                        Text(verbatim: text)
+                            .font(.system(size: CodePageTheme.runningStatusFontSize))
+                            .foregroundStyle(CodePageTheme.runningStatusColor
+                                .resolved(for: colorScheme))
+                            .lineLimit(1)
                         Spacer(minLength: 0)
                     }
+                    .frame(minHeight: CodePageTheme.workingMarkSize, alignment: .leading)
                 } else { Color.clear }
             }
-            .frame(height: hasStatusLine ? 32 : Self.idleHeight)
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: hasStatusLine)
+            .frame(height: showsStatusLine ? 32 : Self.idleHeight)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: showsStatusLine)
         }
     }
 }

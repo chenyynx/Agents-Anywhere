@@ -61,6 +61,15 @@ final class TimelineCollectionController: UIViewController {
 
     private(set) var phase = TimelinePhaseMapping()
     private(set) var armedBottom = TimelineArmedBottomTarget()
+    /// A "load latest" return may span a full-window replacement. UIKit
+    /// re-anchors a snapshot that replaces every id, and the animated target
+    /// was computed against the old content height; the return must be
+    /// re-resolved once the new window has laid out (device report 2026-10-23).
+    private var windowReplacementReturn = false
+    /// Bounds the flag's lifetime when the requested page turns out to be the
+    /// same window: an unrelated replacement minutes later must not inherit
+    /// the return.
+    private var windowReturnToken = 0
     private(set) var olderPull = TimelineHistoryPull(edge: .older)
     private(set) var latestPull = TimelineHistoryPull(edge: .latest)
     private(set) var streamingItemIDs: Set<String> = []
@@ -304,20 +313,34 @@ final class TimelineCollectionController: UIViewController {
         isPerformingSnapshot = true
         let oldItems = currentItems
         let oldIDs = Set(oldItems)
+        // A window replacement changes every id; a prepend/append keeps the
+        // rows it already had. Only the former invalidates a pending return.
+        let windowReplaced = !items.isEmpty
+            && (oldItems.first.map { !items.contains($0) } ?? true)
+        let resolveWindowBottom = windowReplaced && windowReplacementReturn
+            && insertionProjection == nil
+        let entries: [TimelineContentEntry] = items.map { item in
+            TimelineContentEntry(item: item, signature: content.contentSignature(for: item))
+        }
+        let change = signatures.update(entries)
+        let changed = Set(change.changed)
         // A diffable reconfigure can let UIKit apply the new preferred height
         // before our animation starts; remember where the row was so the
         // animation can start there instead of from the already-final frame.
+        //
+        // Only rows whose content just changed may animate. Recording every
+        // interactive row made a first measurement (estimate → measured while
+        // scrolling) animate too, which visibly changed the tool/body gaps
+        // under the reader's finger (device report 2026-10-22/23). A row with
+        // no recorded height applies its new height directly.
         var beforeHeights: [String: CGFloat] = [:]
-        for item in items where content.heightPolicy(for: item) == .interactive {
+        for item in items where changed.contains(item)
+            && content.heightPolicy(for: item) == .interactive {
             if let height = layout.attributes(for: item.itemID)?.frame.height {
                 beforeHeights[item.itemID] = height
             }
         }
         previousInteractiveHeights = beforeHeights
-        let entries: [TimelineContentEntry] = items.map { item in
-            TimelineContentEntry(item: item, signature: content.contentSignature(for: item))
-        }
-        let change = signatures.update(entries)
         // A content change and a key change are not the same set: rotation,
         // Dynamic Type and a typography setting produce a new width/key with
         // an unchanged signature. Measure anything the cache has no real
@@ -325,7 +348,6 @@ final class TimelineCollectionController: UIViewController {
         // SwiftUI text reads the type scale from UserDefaults, which is not
         // observable, so a new height without a reconfigure would pair the
         // new frame with the old font.
-        let changed = Set(change.changed)
         var toMeasure: [TimelineListItem] = []
         var reconfigure = changed
         for item in items {
@@ -364,6 +386,7 @@ final class TimelineCollectionController: UIViewController {
         dataSource.apply(snapshot, animatingDifferences: animating) { [weak self] in
             guard let self else { return }
             self.isPerformingSnapshot = false
+            if resolveWindowBottom { self.resolveWindowReplacementBottom() }
             self.onApplyCompleted?()
             self.schedulePendingMeasurements()
             // A reconfigured interactive row (fold, notice) changes height in
@@ -417,6 +440,19 @@ final class TimelineCollectionController: UIViewController {
         var snapshot = dataSource.snapshot()
         let present = items.filter { snapshot.itemIdentifiers.contains($0) }
         guard !present.isEmpty else { return }
+        // Explicit reconfigure (a fold toggle, a notice card) changes the
+        // hosted content without a signature change. Record the visible
+        // heights so only these rows animate from where the reader saw them;
+        // every other row's fit applies directly.
+        if let content {
+            var before: [String: CGFloat] = [:]
+            for item in present where content.heightPolicy(for: item) == .interactive {
+                if let height = layout.attributes(for: item.itemID)?.frame.height {
+                    before[item.itemID] = height
+                }
+            }
+            previousInteractiveHeights = before
+        }
         isPerformingSnapshot = true
         snapshot.reconfigureItems(present)
         dataSource.apply(snapshot, animatingDifferences: false) { [weak self] in
@@ -627,6 +663,31 @@ final class TimelineCollectionController: UIViewController {
             bottomInset: collectionView.adjustedContentInset.bottom)
     }
 
+    /// Pin an explicit return to the bottom of a just-replaced window.
+    ///
+    /// UIKit re-anchors a snapshot that replaces every id; the animated target
+    /// from `requestBottom` was computed against the old content height. Once
+    /// the new window has laid out, pin to its measured bottom and let the
+    /// ordinary follow arm keep it there through later growth.
+    private func resolveWindowReplacementBottom() {
+        guard let collectionView, !navigationSuspended else { return }
+        collectionView.layoutIfNeeded()
+        stopBottomAnimation()
+        armedBottom.forceArm()
+        mode = .returning
+        let target = TimelineOffsetTarget.bottomOffset(
+            contentHeight: layout.contentHeight,
+            containerHeight: collectionView.bounds.height,
+            topInset: collectionView.adjustedContentInset.top,
+            bottomInset: collectionView.adjustedContentInset.bottom)
+        isPinningBottom = true
+        collectionView.setContentOffset(
+            CGPoint(x: collectionView.contentOffset.x, y: target), animated: false)
+        isPinningBottom = false
+        noteBottomArrival()
+        windowReplacementReturn = false
+    }
+
     /// Accessibility/manual placement: pin instantly once.
     private func repinDirectly() {
         guard let collectionView, armedBottom.isArmed else { return }
@@ -684,7 +745,13 @@ final class TimelineCollectionController: UIViewController {
                                   key: TimelineHeightKey) {
         stopRowHeightAnimation(for: item.itemID)
         let current = layout.attributes(for: item.itemID)?.frame.height ?? target
-        let from = previousInteractiveHeights.removeValue(forKey: item.itemID) ?? current
+        // No recorded height means this is a first measurement, not a content
+        // change: apply it directly so the gap under the reader cannot move.
+        guard let from = previousInteractiveHeights.removeValue(forKey: item.itemID) else {
+            layout.applyMeasuredHeight(target, for: item.itemID, key: key)
+            layout.clearStreamingHeight(for: item.itemID)
+            return
+        }
         guard abs(target - from) >= 1 else {
             layout.applyMeasuredHeight(target, for: item.itemID, key: key)
             layout.clearStreamingHeight(for: item.itemID)
@@ -778,7 +845,9 @@ final class TimelineCollectionController: UIViewController {
                 notePreferred("applyRequested")
                 let policy = content.heightPolicy(for: item)
                 let target = ceil(fitting)
-                if policy == .interactive, abs(fitting - current) >= 8 {
+                if policy == .interactive,
+                   let before = previousInteractiveHeights[item.itemID],
+                   abs(target - before) >= 8 {
                     animateRowHeight(to: target, for: item, key: content.heightKey(for: item, width: columnWidth))
                 } else {
                     layout.applyPreferredHeight(target, for: item.itemID)
@@ -793,7 +862,13 @@ final class TimelineCollectionController: UIViewController {
         }
         // Poll several frames: the hosting content can report its old size on
         // the first pass and the new size only after SwiftUI lays out.
-        guard attempt < 9 else { return }
+        guard attempt < 9 else {
+            // The correction window is over. Drop any unconsumed pre-change
+            // height: it belongs to this content change, and a much later
+            // first measurement must not animate from it.
+            for item in items { previousInteractiveHeights.removeValue(forKey: item.itemID) }
+            return
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
             self?.settlePreferredHeights(for: items, attempt: attempt + 1, staleFits: staleFits)
         }
@@ -1069,8 +1144,7 @@ final class TimelineCollectionController: UIViewController {
             // UIKit may already have adopted the fitted height during the
             // update; decide from the height the reader last saw.
             let before = previousInteractiveHeights[item.itemID]
-            let animationDelta = before.map { abs(height - $0) } ?? abs(height - current)
-            if policy == .interactive, animationDelta >= 8 {
+            if policy == .interactive, let before, abs(height - before) >= 8 {
                 // UIKit does not animate frames set through a custom layout's
                 // invalidation; drive the height per frame instead.
                 animateRowHeight(to: height, for: item, key: key)
@@ -1108,6 +1182,24 @@ final class TimelineCollectionController: UIViewController {
         onViewportChanged?(next)
     }
 
+    /// Called by `loadLatest()` before its await: the newer window can be
+    /// applied before the post-await `requestBottom` runs, so the return
+    /// intent must exist first.
+    func beginWindowReplacementReturn() {
+        armWindowReplacementReturn()
+    }
+
+    private func armWindowReplacementReturn() {
+        windowReplacementReturn = true
+        windowReturnToken &+= 1
+        let token = windowReturnToken
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard let self, self.windowReturnToken == token else { return }
+            self.windowReplacementReturn = false
+        }
+    }
+
     /// Forced commands (pill / loadLatest / approval dismissed / window
     /// re-assert) arm unconditionally; follow requests use the gated arm.
     func requestBottom(animated: Bool, forced: Bool = true) {
@@ -1116,7 +1208,9 @@ final class TimelineCollectionController: UIViewController {
             return
         }
         guard collectionView != nil else { return }
-        // An explicit bottom command (pill, send, return) owns the offset.
+        // An explicit bottom command (pill, send, return) owns the offset. A
+        // concurrent window replacement resolves against the new content.
+        if forced { armWindowReplacementReturn() }
         stopStreamingFollow()
         userScrollSettleTask?.cancel()
         bottomAnimationWatchdog?.cancel()
@@ -1537,7 +1631,9 @@ final class TimelineCollectionController: UIViewController {
                     y: edge == .top ? y : y + height)
             }
             y += height
-            if index < items.count - 1 { y += TimelineListMetrics.itemSpacing }
+            if index < items.count - 1 {
+                y += content.itemSpacing(after: item)
+            }
         }
         return nil
     }
@@ -1668,6 +1764,10 @@ extension TimelineCollectionController: TimelineListLayoutHost {
         content?.heightPolicy(for: item) ?? .measured
     }
 
+    func layoutItemSpacing(after item: TimelineListItem) -> CGFloat {
+        content?.itemSpacing(after: item) ?? TimelineListMetrics.itemSpacing
+    }
+
     func layoutContentKind(for item: TimelineListItem) -> TimelineMeasurementContent {
         content?.measurementContent(for: item) ?? .markdown
     }
@@ -1742,8 +1842,10 @@ extension TimelineCollectionController: UICollectionViewDelegate {
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         guard !navigationSuspended else { return }
-        // The reader's finger always wins over the streaming follow.
+        // The reader's finger always wins over the streaming follow and over
+        // a window replacement whose return has not resolved yet.
         stopStreamingFollow()
+        windowReplacementReturn = false
         bottomAnimationWatchdog?.cancel()
         userScrollSettleTask?.cancel()
         endScrollToTopTracking()

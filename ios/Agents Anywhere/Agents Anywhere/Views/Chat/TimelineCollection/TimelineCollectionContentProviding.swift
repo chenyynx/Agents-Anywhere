@@ -17,6 +17,12 @@ protocol TimelineCollectionContentProviding: AnyObject {
     func heightPolicy(for item: TimelineListItem) -> TimelineRowHeightPolicy
     func measurementContent(for item: TimelineListItem) -> TimelineMeasurementContent
 
+    /// The gap the layout leaves *after* this item. The Code page's rows carry
+    /// the official `rowMargins` (5/16/5/16) themselves, so they report 0;
+    /// the Chat-era 20 pt gap would otherwise double the inter-message
+    /// spacing (device report 2026-10-23: rows sat ~60 pt apart).
+    func itemSpacing(after item: TimelineListItem) -> CGFloat
+
     /// The real row view, used both by the cell and by the offscreen measurer.
     /// Both must build the same hierarchy; that equality is the C3
     /// measurement-consistency gate.
@@ -73,6 +79,12 @@ extension TimelineCollectionContentProviding {
     /// Marks the provider's item list stale before the representable reads
     /// `contentGeneration`. The C3 gate's synthetic model wants no work here.
     func prepareForUpdate() {}
+
+    /// The C3 synthetic model has none of the Code page's in-row margins, so
+    /// it keeps the list's historical gap.
+    func itemSpacing(after item: TimelineListItem) -> CGFloat {
+        TimelineListMetrics.itemSpacing
+    }
 
     /// The C3 synthetic model keeps every row on the hosting path.
     func assistantMarkdown(for item: TimelineListItem) -> AssistantMarkdownDocument? { nil }

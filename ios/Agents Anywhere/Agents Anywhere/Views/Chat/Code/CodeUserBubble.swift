@@ -18,6 +18,8 @@ struct CodeUserBubble: View {
     var attachments: [ChatMessageAttachment] = []
 
     @Environment(\.colorScheme) private var colorScheme
+    @ScaledMetric(relativeTo: .body) private var lineSpacing =
+        CodePageTheme.userBubbleLineSpacing
 
     var body: some View {
         HStack(alignment: .bottom, spacing: CodePageTheme.userBubbleSpacing) {
@@ -26,12 +28,15 @@ struct CodeUserBubble: View {
                 if !text.isEmpty {
                     ChatSelectableText(text: text)
                         .font(.body)
-                        .foregroundStyle(CodePageTheme.userBubbleText)
+                        .lineSpacing(lineSpacing)
+                        .foregroundStyle(CodePageTheme.userBubbleText.resolved(for: colorScheme))
                         .padding(.horizontal, CodePageTheme.userBubbleHorizontalPadding)
                         .padding(.vertical, CodePageTheme.userBubbleVerticalPadding)
                         .background(
                             CodePageTheme.userBubbleFill.resolved(for: colorScheme),
-                            in: .rect(cornerRadius: CodePageTheme.userBubbleCornerRadius)
+                            in: RoundedRectangle(
+                                cornerRadius: CodePageTheme.userBubbleCornerRadius,
+                                style: .continuous)
                         )
                 }
             }

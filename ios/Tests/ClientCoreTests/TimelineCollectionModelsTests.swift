@@ -309,19 +309,30 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
 
         let tail = TimelineContentSignature.tail(TimelineTailContentSignature(
             queue: [TimelineQueueEntrySignature(id: "q", state: "queued")],
-            sendingPlaceholder: "Thinking", orbActivity: "thinking", hasNewerItems: false))
+            sendingPlaceholder: "Thinking", orbActivity: "thinking", hasNewerItems: false,
+            statusLineVisible: true))
         #expect(tail != .tail(TimelineTailContentSignature(
             queue: [TimelineQueueEntrySignature(id: "q", state: "sending")],
-            sendingPlaceholder: "Thinking", orbActivity: "thinking", hasNewerItems: false)))
+            sendingPlaceholder: "Thinking", orbActivity: "thinking", hasNewerItems: false,
+            statusLineVisible: true)))
         #expect(tail != .tail(TimelineTailContentSignature(
             queue: [TimelineQueueEntrySignature(id: "q", state: "queued")],
-            sendingPlaceholder: nil, orbActivity: "thinking", hasNewerItems: false)))
+            sendingPlaceholder: nil, orbActivity: "thinking", hasNewerItems: false,
+            statusLineVisible: false)))
         #expect(tail != .tail(TimelineTailContentSignature(
             queue: [TimelineQueueEntrySignature(id: "q", state: "queued")],
-            sendingPlaceholder: "Thinking", orbActivity: "idle", hasNewerItems: false)))
+            sendingPlaceholder: "Thinking", orbActivity: "idle", hasNewerItems: false,
+            statusLineVisible: true)))
         #expect(tail != .tail(TimelineTailContentSignature(
             queue: [TimelineQueueEntrySignature(id: "q", state: "queued")],
-            sendingPlaceholder: "Thinking", orbActivity: "thinking", hasNewerItems: true)))
+            sendingPlaceholder: "Thinking", orbActivity: "thinking", hasNewerItems: true,
+            statusLineVisible: true)))
+        // The tail's own status line is suppressed while an in-message
+        // working status is visible; the two heights must not share a key.
+        #expect(tail != .tail(TimelineTailContentSignature(
+            queue: [TimelineQueueEntrySignature(id: "q", state: "queued")],
+            sendingPlaceholder: "Thinking", orbActivity: "thinking", hasNewerItems: false,
+            statusLineVisible: false)))
     }
 
     @Test func removalIsReportedOnce() {
@@ -329,7 +340,8 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         store.update([
             TimelineContentEntry(item: .group("g"), signature: .group(groupSignature())),
             TimelineContentEntry(item: .tail, signature: .tail(TimelineTailContentSignature(
-                queue: [], sendingPlaceholder: nil, orbActivity: "idle", hasNewerItems: false))),
+                queue: [], sendingPlaceholder: nil, orbActivity: "idle", hasNewerItems: false,
+                statusLineVisible: false))),
         ])
         let change = store.update([
             TimelineContentEntry(item: .group("g"), signature: .group(groupSignature())),

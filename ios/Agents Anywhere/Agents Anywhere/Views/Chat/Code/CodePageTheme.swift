@@ -255,35 +255,41 @@ nonisolated enum CodePageTheme {
 
     // MARK: - User message bubble
 
-    // [I] 暂定，等 round18 逆向。The official Code capture has no user
-    // bubble yet, so every value in this section is inferred (the geometry
-    // follows the Chat page's `UserMessageBubble`) and the fill is a neutral
-    // placeholder — deliberately not the app accent.
+    // [E] EVIDENCE/round18/user-row-and-action-bar.md §1.3–§1.5.
 
-    /// [I] 暂定，等 round18 逆向 — light `#F0F0EE`, dark `#2C2C2A`.
+    /// [E] round18 §1.3 — light `#F0EFEC` (0.941, 0.937, 0.925), dark
+    /// `#2C2C2A` (0.173, 0.173, 0.165), sRGB dynamic colour.
     static let userBubbleFill: SchemeColor = SchemeColor(
-        light: Color(.sRGB, red: 0.941, green: 0.941, blue: 0.933),
+        light: Color(.sRGB, red: 0.941, green: 0.937, blue: 0.925),
         dark: Color(.sRGB, red: 0.173, green: 0.173, blue: 0.165))
 
-    /// [I] 暂定，等 round18 逆向 — the system primary label in both
-    /// appearances; the bubble does not reuse the accent text colour.
-    static let userBubbleText: Color = .primary
+    /// [E] round18 §1.3 — the Markdown theme's body ink, `#131313` light /
+    /// `#F9F9F7` dark. The bubble does not reuse the app accent.
+    static let userBubbleText: SchemeColor = SchemeColor(
+        light: Color(.sRGB, red: 0.0745, green: 0.0745, blue: 0.0745),
+        dark: Color(.sRGB, red: 0.9765, green: 0.9765, blue: 0.9686))
 
-    /// [I] 暂定，等 round18 逆向 — 24 pt, matching the Chat page bubble.
+    /// [E] round18 §1.2 — 24 pt `RoundedRectangle` with the `.continuous`
+    /// style; the content shape is a separate height-capped shape and does not
+    /// affect the fill.
     static let userBubbleCornerRadius: CGFloat = 24
 
-    /// [I] 暂定，等 round18 逆向 — 17 pt horizontal padding.
-    static let userBubbleHorizontalPadding: CGFloat = 17
+    /// [E] round18 §1.2 — `.padding(.horizontal, 16)`.
+    static let userBubbleHorizontalPadding: CGFloat = 16
 
-    /// [I] 暂定，等 round18 逆向 — 12 pt vertical padding.
+    /// [E] round18 §1.2 — `.padding(.vertical, 12)`.
     static let userBubbleVerticalPadding: CGFloat = 12
 
-    /// [I] 暂定，等 round18 逆向 — the leading gutter a user message can
-    /// never cross; shorter messages right-align against the row's trailing
-    /// margin.
-    static let userBubbleLeadingGutter: CGFloat = 48
+    /// [E] round18 §1.4 — the opposite-side gutter is 36 pt; a short bubble
+    /// right-aligns against the row's trailing margin.
+    static let userBubbleLeadingGutter: CGFloat = 36
 
-    /// [I] 暂定，等 round18 逆向 — 8 pt between the gutter and the bubble,
-    /// and later between stacked bubble pieces.
+    /// [E] round18 §1.4 — row inner max width = column − 36 pt gutter.
+    /// Kept as a spacing token for stacked pieces.
     static let userBubbleSpacing: CGFloat = 8
+
+    /// [E] round18 §0.7 — body copy is 17 pt at a 27.2 pt line height
+    /// (`.body`). SwiftUI line spacing is the delta over the system line
+    /// box (~20.3 pt at 17 pt).
+    static let userBubbleLineSpacing: CGFloat = 6.9
 }

@@ -1,20 +1,5 @@
 import SwiftUI
 
-/// A line-diff summary for a collapsed tool row.
-///
-/// The Code model layer does not carry a diff stat yet (`CodeToolSegments.swift`
-/// models calls and segments, not their line counts), so W3 defines the shape
-/// it consumes here. Both counts are line counts: zero means "no lines", never
-/// a negative value.
-nonisolated struct CodeDiffStat: Hashable, Sendable {
-    let added: Int
-    let removed: Int
-
-    /// A badge exists only when there is something to count; an all-zero stat
-    /// would draw an empty pill.
-    fileprivate var hasCounts: Bool { added > 0 || removed > 0 }
-}
-
 /// The Code page's collapsed tool row: one line, never an in-place expansion.
 ///
 /// Official structure (`CANONICAL/04-tool-calls.md` §4.1, §6.2): the

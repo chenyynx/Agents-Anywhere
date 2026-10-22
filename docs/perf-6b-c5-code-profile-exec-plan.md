@@ -41,6 +41,28 @@
 - **Wave 3（串行，1 代理）**：W8（Code gate + CI）。
 - **Wave 4**：CI 修红（W9）→ 阶段验收 → 出包。
 
+## 3.5 接口契约（Wave 1a 后冻结，W7 只准按此接线）
+
+- **主题**（W0）：`CodePageTheme.*` 是全页唯一视觉出口；视图禁止自带魔法数。
+- **模型**（W1）：
+  - `CodeToolKind.classify(name:wireKind:)`
+  - `CodeToolCall(item:)` / `CodeToolStatus`
+  - `CodeToolSegmentPolicy`（skippedToolNames / specialToolNames）+ `CodeToolSegmenter.segments(_:policy:)`
+  - `CodeMessageRow`（id + `[Block]`：reasoning/text/toolCalls/other）+ `CodeMessageBuilder.rows(for:policy:)`
+- **runtime 表**（W2）：`CodeRuntimeToolTable`（`kind(for:wireKind:)`、`segments(for:)`、`.claudeCode/.codex/.dsh`）
+- **runtime 接入**（W2b）：`CodeRuntimeProfile`（`init(runtime: V2RuntimeID?)` / `init(meta: V2SessionMeta)`；`segmentPolicy`、`toolTable`、`subagentShape`、`toolRowRole`、`kind(for:wireKind:)`、`segments(for:)`）
+- **流式**（W6）：`CodeStreamingPublisher.receive(delta:at:)` / `receive(fullText:at:)` → `CodeStreamingSnapshot?`；`CodeStreamingSnapshot.streamingRowID`；`CodeChunkPolicy`（4–8 词 / 50–100ms）
+- **折叠行**（W3）：`CodeCollapsedToolRow(verb:target:icon:diff:isRunning:action:)`
+- **WorkingMark**（W5）：`WorkingMarkView(body:isRunning:reduceMotion:)`
+
+**W7 接线硬规则**
+
+1. **只走 `CodeRuntimeProfile`**：W1 的 `CodeToolSegmentPolicy.forRuntime` 与 W2 的 `CodeRuntimeToolTable.forRuntime` 不再直接调用（保留但标废弃）。
+2. **工具 kind 由 profile 解析**：`CodeToolCall(item:)` 的默认 kind 只是兜底；W7 必须用 `profile.kind(for:wireKind:)` 覆盖（W1 需补一个带 kind 的构造，见 W1 复审结论）。
+3. **DSH 的 `ask_user_question` / `exit_plan_mode` 不跳过**：它们是 `input_request` 行，不是工具行；这是产品决定 [I]，不是官方证据。
+4. **行身份**：一条消息一个 item（id = `CodeMessageBuilder` 的 group key）；流式行用 `CodeStreamingSnapshot.streamingRowID`；落库时删除+插入，不原地改 id。
+5. **视觉**：视图层只引用 `CodePageTheme`；WorkingMark 只在运行态挂载；折叠行点击只回调，导航由 W7 负责。
+
 ## 4. 每个包的验收
 
 - W0：token 全部有来源注释（[E] 章节 / [I] 截图）；无散落魔法数；`swiftc -parse` 通过。

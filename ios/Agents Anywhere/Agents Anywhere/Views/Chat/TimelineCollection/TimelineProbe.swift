@@ -374,6 +374,27 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             guard let item = attribute.item,
                   controller.documentHeights[item.itemID] == nil,
                   let cell = view.cellForItem(at: attribute.indexPath) else { continue }
+            // A reconfigure swaps the hosted SwiftUI tree. Two hosting views
+            // inside one cell at the same time draw over each other; that is
+            // the in-cell "text overlap" a frame comparison cannot see.
+            let hosting = cell.contentView.subviews.filter {
+                String(describing: type(of: $0)).contains("HostingView")
+            }
+            if hosting.count > 1 {
+                counters["doubleHosting", default: 0] += 1
+                recordIssue(kind: "doubleHosting",
+                            detail: "\(item.itemID) n=\(hosting.count) "
+                                + hosting.map { "(\(f($0.frame.minY)),\(f($0.frame.height)))" }
+                                    .joined(separator: " "))
+            }
+            if let tallest = hosting.map(\.frame.height).max(),
+               tallest > cell.bounds.height + 0.5 {
+                counters["hostingOverflow", default: 0] += 1
+                recordIssue(kind: "hostingOverflow",
+                            detail: "\(item.itemID) hostingH=\(f(tallest)) "
+                                + "cellH=\(f(cell.bounds.height)) "
+                                + "attrH=\(f(attribute.frame.height))")
+            }
             let width = cell.contentView.bounds.width
             guard width > 0 else { continue }
             let raw = cell.contentView.systemLayoutSizeFitting(
@@ -446,13 +467,13 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         let counterLine = counters.keys.sorted().map { "\($0)=\(counters[$0]!)" }.joined(separator: " ")
         lines.append("counters: \(counterLine.isEmpty ? "-" : counterLine)")
 
-        if let controller {
+        if let controller, let view = controller.collectionView {
             lines.append("--- VISIBLE (top to bottom) ---")
-            let visiblePaths = Set(controller.collectionView.indexPathsForVisibleItems)
+            let visiblePaths = Set(view.indexPathsForVisibleItems)
             for attribute in controller.layout.orderedAttributes
             where visiblePaths.contains(attribute.indexPath) {
                 guard let item = attribute.item else { continue }
-                let cell = controller.collectionView.cellForItem(at: attribute.indexPath)
+                let cell = view.cellForItem(at: attribute.indexPath)
                 let cellY = cell.map { f($0.frame.minY) } ?? "-"
                 let cellH = cell.map { f($0.frame.height) } ?? "-"
                 let key = attribute.heightKey

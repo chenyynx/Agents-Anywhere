@@ -245,7 +245,7 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
             counters[key, default: 0] += 1
         }
 
-        return order.compactMap { key in
+        return order.compactMap { key -> Phrase? in
             switch key {
             case .file(let group):
                 let count = (fileTargets[group]?.count ?? 0)

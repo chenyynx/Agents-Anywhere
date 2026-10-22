@@ -289,7 +289,11 @@ nonisolated enum CodeToolLabels {
             return CodeToolRowLabel(verb: "", target: nil, diff: nil, isRunning: false)
         }
         if let verb = plan.verb {
-            return CodeToolRowLabel(verb: verbText(verb),
+            // The official row swaps to the present-participle while the call
+            // runs (`ccr_running_*`), the way the German capture reads
+            // "Web wird …"; a settled row keeps `ccr_verb_*`.
+            let text = plan.isRunning ? runningVerbText(verb) : verbText(verb)
+            return CodeToolRowLabel(verb: text,
                                     target: plan.target,
                                     diff: plan.diff,
                                     isRunning: plan.isRunning)
@@ -342,6 +346,29 @@ nonisolated enum CodeToolLabels {
         case .searchedCode: return String(localized: "ccr_summary_searched_code")
         case .foundFiles: return String(localized: "ccr_summary_found_files")
         case .browsedWeb: return String(localized: "ccr_summary_browsed_web")
+        }
+    }
+
+    /// In-progress verbs, official `ccr_running_*` (`resources-r6.md` §3.1).
+    /// A span summary has no running form in the official table, so only the
+    /// single-call / shared-target shape uses these.
+    private static func runningVerbText(_ verb: CodeToolLabelPlan.Verb) -> String {
+        switch verb {
+        case .read: return String(localized: "ccr_running_reading")
+        case .edited: return String(localized: "ccr_running_editing")
+        case .created: return String(localized: "ccr_running_creating")
+        case .ran: return String(localized: "ccr_running_running")
+        case .searched: return String(localized: "ccr_running_searching")
+        case .searchedWeb: return String(localized: "ccr_running_searching_web")
+        case .fetched: return String(localized: "ccr_running_fetching")
+        case .clearedTodos, .updatedTodos:
+            return String(localized: "ccr_running_updating_todos")
+        case .ranAgent: return String(localized: "ccr_running_running_agent")
+        case .proposedPlan: return String(localized: "ccr_running_proposing_plan")
+        case .asked: return String(localized: "ccr_running_asking")
+        case .used: return String(localized: "ccr_running_using")
+        case .searchedCode, .foundFiles, .browsedWeb:
+            return verbText(verb)
         }
     }
 

@@ -522,6 +522,10 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await wait(900)
         controller.collectionView.layoutIfNeeded()
         let after = visibleCoverage(controller)
+        let collapsedHeight = cellHeight(controller, item)
+        if collapsedHeight > 100 {
+            failures.append("collapse: row is \(collapsedHeight)pt after collapsing, expected the header height")
+        }
 
         // Expansion samples: frame height over 500ms.
         let animationsBefore = controller.debugRowHeightAnimationsStarted
@@ -553,8 +557,10 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             failures.append("collapse: expansion jumped in \(distinct.count) step(s)")
         }
         report["collapseGap"] = [
+            "collapsedHeight": Double(collapsedHeight),
             "animationsBefore": animationsBefore,
             "animationsAfter": animationsAfter,
+            "activeAnimations": controller.debugActiveRowHeightAnimations,
             "attributeHeights": attributeSamples.map(Double.init),
             "beforeMissing": before.missing, "beforeGap": Double(before.gap),
             "afterMissing": after.missing, "afterGap": Double(after.gap),

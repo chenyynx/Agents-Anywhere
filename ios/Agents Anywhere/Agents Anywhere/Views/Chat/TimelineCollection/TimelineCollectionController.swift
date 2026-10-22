@@ -647,6 +647,7 @@ final class TimelineCollectionController: UIViewController {
     private var rowHeightAnimations: [ObjectIdentifier: (RowHeightAnimation, CADisplayLink)] = [:]
     #if DEBUG
     private(set) var debugRowHeightAnimationsStarted = 0
+    var debugActiveRowHeightAnimations: Int { rowHeightAnimations.count }
     #endif
     /// Displayed height of interactive rows at the last apply, so a fold
     /// animation starts where the reader saw the row, even if UIKit already

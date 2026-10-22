@@ -206,14 +206,20 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         }
     }
 
-    /// The Code message group's estimate: body text plus one text row per
-    /// collapsed tool label, floored at 44 pt. It is an estimate only — the
-    /// group's height policy is `.interactive` whenever it carries a tool or a
-    /// reasoning status line, so the visible cell corrects it.
+    /// The Code message group's estimate.
+    ///
+    /// Body text wraps, so it goes through the text estimator. A collapsed
+    /// tool row never wraps — it renders `lineLimit(1)` regardless of how long
+    /// the command is — so it contributes one fixed line instead. Feeding the
+    /// full command into the text estimator wrapped a 300-character Bash call
+    /// into ~8 lines, reserving hundreds of points of blank space that the
+    /// visible-cell fit then collapsed while scrolling (device report
+    /// 2026-10-23).
     private func codeEstimateKind(for item: TimelineListItem,
                                   groupID: String) -> TimelineHeightEstimateKind {
-        let cwd = model.session.metadata?.cwd
         var textRows: [TimelineHeightEstimate.TextRow] = []
+        var fixedHeight: CGFloat = 0
+        var hasVisibleBlock = false
         for row in codeRowsByGroupID[groupID] ?? [] {
             for block in row.blocks {
                 switch block {
@@ -222,25 +228,46 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     // one status line for the whole message (below).
                     continue
                 case let .text(_, text):
+                    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        continue
+                    }
+                    hasVisibleBlock = true
                     textRows.append(TimelineHeightEstimate.TextRow(text: text))
                 case let .toolCalls(segments):
-                    for segment in segments {
-                        textRows.append(TimelineHeightEstimate.TextRow(
-                            text: CodeToolLabels.text(for: segment, cwd: cwd)))
-                    }
-                case let .other(_, type):
-                    textRows.append(TimelineHeightEstimate.TextRow(text: type))
+                    hasVisibleBlock = true
+                    fixedHeight += CGFloat(segments.count) * Self.collapsedToolRowHeight
+                case .other:
+                    hasVisibleBlock = true
+                    fixedHeight += Self.genericRowHeight
                 }
             }
         }
         if groupID == workingStatusGroupID {
-            textRows.append(TimelineHeightEstimate.TextRow(text: ""))
+            fixedHeight += Self.workingStatusHeight
+            if hasVisibleBlock { fixedHeight += CodePageTheme.blockSpacing }
         }
         // The row view adds the official rowMargins itself; the estimate must
         // budget them or every new row lands 10 pt short before its first fit.
         let margins = CodePageTheme.rowMarginTop + CodePageTheme.rowMarginBottom
-        return .text(textEstimate(for: item, rows: textRows, minimum: 44) + margins)
+        let textHeight = textEstimate(for: item, rows: textRows,
+                                      minimum: textRows.isEmpty ? 0 : 44)
+        return .text(textHeight + fixedHeight + margins)
     }
+
+    /// One collapsed tool row's fixed height: the 24 pt line box, the 6 pt
+    /// button padding on each side, and the block stack's 4 pt padding.
+    private static let collapsedToolRowHeight: CGFloat =
+        CodePageTheme.toolRowLineHeight
+            + 2 * CodePageTheme.toolRowButtonPadding
+            + 2 * CodePageTheme.segmentVerticalPadding
+
+    /// The generic one-line row (`otherRow`) without the button padding.
+    private static let genericRowHeight: CGFloat =
+        CodePageTheme.toolRowLineHeight + 2 * CodePageTheme.segmentVerticalPadding
+
+    /// The working status line (20 pt mark/text) plus its block padding.
+    private static let workingStatusHeight: CGFloat =
+        CodePageTheme.workingMarkSize + 2 * CodePageTheme.segmentVerticalPadding
 
     /// The estimate is recomputed only when the row content, typography or
     /// column width changes. `prepare` asks for it for every row on every
@@ -826,8 +853,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             guard let rows = codeRowsByGroupID[explicitID] else { continue }
             let hasVisibleBlock = rows.contains { row in
                 row.blocks.contains { block in
-                    if case .reasoning = block { return false }
-                    return true
+                    switch block {
+                    case .reasoning:
+                        return false
+                    case let .text(_, text):
+                        // An empty text block renders nothing; it must not
+                        // keep a group (or a 44 pt estimate) alive.
+                        return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    case .toolCalls, .other:
+                        return true
+                    }
                 }
             }
             // `codeGroups` already drops a message whose only rows are calls

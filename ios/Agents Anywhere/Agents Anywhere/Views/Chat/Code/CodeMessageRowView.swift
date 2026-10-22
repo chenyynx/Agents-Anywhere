@@ -209,8 +209,14 @@ struct CodeMessageRowView: View {
         CodeMessageBuilder.rows(for: group.rows.map(\.value), profile: profile)
             .compactMap { row in
                 let blocks = row.blocks.filter { block in
-                    if case .reasoning = block { return false }
-                    return true
+                    switch block {
+                    case .reasoning:
+                        return false
+                    case let .text(_, text):
+                        return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    case .toolCalls, .other:
+                        return true
+                    }
                 }
                 guard !blocks.isEmpty || showsWorkingStatus else { return nil }
                 return RenderedRow(id: row.id, role: row.role, blocks: blocks)
@@ -284,12 +290,6 @@ nonisolated enum CodeToolLabels {
         case let .span(calls): return calls
         case let .special(_, call): return [call]
         }
-    }
-
-    /// The label text alone, for the collection's height estimate.
-    static func text(for segment: CodeToolSegment, cwd: String?) -> String {
-        let label = label(for: calls(in: segment), cwd: cwd)
-        return [label.verb, label.target].compactMap { $0 }.joined(separator: " ")
     }
 
     static func label(for calls: [CodeToolCall], cwd: String?) -> CodeToolRowLabel {

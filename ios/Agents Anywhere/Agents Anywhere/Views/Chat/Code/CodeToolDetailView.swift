@@ -115,9 +115,13 @@ struct CodeToolDetailView: View {
         }
     }
 
-    /// The main content: the official five-case output switch.
-    private var outputSection: some View {
-        CodeToolOutputView(output: output)
+    /// The main content: the official five-case output switch. With no
+    /// output the section is omitted entirely instead of drawing an empty
+    /// "Output" header.
+    @ViewBuilder private var outputSection: some View {
+        if !output.isEmpty {
+            CodeToolOutputView(output: output)
+        }
     }
 
     @ViewBuilder private var footnoteSection: some View {
@@ -150,6 +154,11 @@ struct CodeToolDetailView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
 
+            if case let .diff(diff) = output,
+               diff.added > 0 || diff.removed > 0 {
+                CodeDetailDiffIndicator(added: diff.added, removed: diff.removed)
+            }
+
             Spacer(minLength: 8)
 
             if call.status == .failed {
@@ -158,13 +167,20 @@ struct CodeToolDetailView: View {
                     .foregroundStyle(.red)
                     .accessibilityHidden(true)
             }
-
-            Text(verbatim: call.item.status.label)
-                .font(.footnote)
-                .foregroundStyle(call.status == .failed ? Color.red : Color.secondary)
         }
         .frame(minHeight: CodePageTheme.toolRowLineHeight)
         .accessibilityElement(children: .combine)
+        // The visible status word is gone; VoiceOver still gets the state.
+        .accessibilityValue(accessibilityValue)
+    }
+
+    private var accessibilityValue: String {
+        var parts = [call.item.status.label]
+        if case let .diff(diff) = output {
+            if diff.added > 0 { parts.append("+\(diff.added)") }
+            if diff.removed > 0 { parts.append("−\(diff.removed)") }
+        }
+        return parts.joined(separator: " ")
     }
 
     private func followingRow(_ following: CodeToolCall) -> some View {
@@ -180,12 +196,16 @@ struct CodeToolDetailView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer(minLength: 8)
-            Text(verbatim: following.item.status.label)
-                .font(.caption)
-                .foregroundStyle(following.status == .failed ? Color.red : Color.secondary)
+            if following.status == .failed {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.red)
+                    .accessibilityHidden(true)
+            }
         }
         .frame(minHeight: 32)
         .accessibilityElement(children: .combine)
+        .accessibilityValue(following.item.status.label)
     }
 
     private var closeButton: some View {
@@ -241,6 +261,55 @@ struct CodeToolDetailView: View {
         case .mcp: return "wrench.and.screwdriver"
         case .other: return "wrench"
         }
+    }
+}
+
+/// The row's `DiffIndicator` (`CANONICAL/04-tool-calls.md` §4.2/§6.2). The
+/// detail page has no separate component for it, so this mirrors the themed
+/// token set the collapsed row uses.
+private struct CodeDetailDiffIndicator: View {
+    let added: Int
+    let removed: Int
+
+    @Environment(\.colorScheme) private var colorScheme
+    @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
+    private var fontSize = CodePageTheme.diffIndicatorFontSize
+    @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
+    private var horizontalPadding = CodePageTheme.diffIndicatorHorizontalPadding
+    @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
+    private var verticalPadding = CodePageTheme.diffIndicatorVerticalPadding
+    @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
+    private var cornerRadius = CodePageTheme.diffIndicatorCornerRadius
+
+    var body: some View {
+        HStack(spacing: 0) {
+            if added > 0 {
+                half(text: "+\(added)",
+                     fill: CodePageTheme.diffIndicatorAddFill,
+                     ink: CodePageTheme.diffIndicatorAddText)
+            }
+            if removed > 0 {
+                half(text: "−\(removed)",
+                     fill: CodePageTheme.diffIndicatorRemoveFill,
+                     ink: CodePageTheme.diffIndicatorRemoveText)
+            }
+        }
+        .font(.system(size: fontSize, weight: .regular))
+        .lineLimit(1)
+        .fixedSize()
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .accessibilityHidden(true)
+    }
+
+    private func half(text: String,
+                      fill: CodePageTheme.SchemeColor,
+                      ink: CodePageTheme.SchemeColor) -> some View {
+        Text(verbatim: text)
+            .monospacedDigit()
+            .foregroundStyle(ink.resolved(for: colorScheme))
+            .padding(.horizontal, horizontalPadding)
+            .padding(.vertical, verticalPadding)
+            .background(fill.resolved(for: colorScheme))
     }
 }
 

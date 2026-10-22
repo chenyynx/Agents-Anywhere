@@ -2,511 +2,15 @@ import SwiftUI
 import UIKit
 
 // The Code page's five tool-output renderers (`CANONICAL/04-tool-calls.md`
-// §5.2). The official model carries `DisplayMessage.ToolCall.Output` as a
-// five-case enum; AA's wire carries no such type. A tool row's `content` holds
-// the raw result (Claude: `output` / `outputText` / `result` / `text`; Codex:
-// `output` / `result`; file changes: `patch` / `changes`) and the connector
-// never tags which of the five views it means. The parser below reads the wire
-// truth and maps it to the official five cases: an explicit tag wins, then the
-// tool kind and the payload shape, and anything unrecognised falls back to the
-// `text` view instead of guessing a richer one.
+// §5.2). The five-case model and its wire parser live in
+// `Models/Chat/Code/CodeToolOutput.swift` (ClientCore, no SwiftUI); this file
+// only switches on the parsed result and draws it.
 //
 // Visual constants the shared theme does not carry yet live in
 // `CodeToolCardMetrics` at the bottom of this file. Every one is tagged
 // `[E]` / `[I]` / `[U]` with its source (`docs/code-page-visual-evidence.md`
 // V-numbers, or the CANONICAL section) so they can be folded into
 // `CodePageTheme` once the detail page's visual gate is closed.
-
-// MARK: - Output model
-
-nonisolated struct CodeToolTodo: Identifiable, Hashable {
-    nonisolated enum Status: Hashable {
-        case pending
-        case inProgress
-        case completed
-    }
-
-    let id: Int
-    let content: String
-    let status: Status
-}
-
-nonisolated struct CodeToolSubmittedAnswer: Identifiable, Hashable {
-    let id: Int
-    let question: String
-    let answer: String
-}
-
-/// The official `DiffOutput`: lines plus the two counts and the gutter width
-/// seed. `TimelineDiff.Line` is reused as the line type: its parser already
-/// handles unified diffs, and its `oldLine` / `newLine` are exactly the two
-/// gutters the official row draws.
-nonisolated struct CodeToolDiff: Hashable {
-    let lines: [TimelineDiff.Line]
-    let added: Int
-    let removed: Int
-    let maxLineNumber: Int
-
-    /// Copy payload for the header button. Rebuilt in unified-diff shape so a
-    /// pasted diff stays readable even when the wire carried structured lines.
-    var unifiedText: String {
-        lines.map { line in
-            switch line.kind {
-            case .add: "+" + line.text
-            case .delete: "-" + line.text
-            case .context: " " + line.text
-            case .hunk, .file, .annotation: line.text
-            }
-        }.joined(separator: "\n")
-    }
-}
-
-nonisolated enum CodeToolOutput: Hashable {
-    case text(String)
-    case todos([CodeToolTodo])
-    case diff(CodeToolDiff)
-    case submittedAnswers([CodeToolSubmittedAnswer])
-    /// The official case has no payload and renders `EmptyView`; this client
-    /// renders the conditional container described in
-    /// `docs/perf-6b-c5-code-profile-task.md` §4 ([I]).
-    case approvedPlan
-    case none
-
-    init(item: V2TimelineItem, kind: CodeToolKind) {
-        let content = item.raw["content"] ?? .object([:])
-        let payload = Self.outputPayload(in: content)
-        // A failed TodoWrite never applied its input list; falling back to that
-        // list would show work that did not happen and hide the error text.
-        let failed = CodeToolStatus(item.status) == .failed
-
-        if let typed = Self.typedKind(payload) {
-            switch typed {
-            case "todos", "todo":
-                if let todos = Self.todos(from: payload) {
-                    self = .todos(todos)
-                    return
-                }
-            case "diff", "patch":
-                if let diff = Self.diff(from: payload) {
-                    self = .diff(diff)
-                    return
-                }
-            case "submittedanswers", "submitted_answers", "answers":
-                if let answers = Self.answers(from: payload) {
-                    self = .submittedAnswers(answers)
-                    return
-                }
-            case "approvedplan", "approved_plan":
-                self = .approvedPlan
-                return
-            case "text", "plain":
-                if let text = Self.text(from: payload) {
-                    self = .text(text)
-                    return
-                }
-            default:
-                break
-            }
-        }
-
-        // TodoWrite's list travels in the tool input on AA's wire; the official
-        // page renders that same list as `Output.todos`. Reading the input here
-        // is a mapping of the same truth, not a guess at a result the engine
-        // never sent.
-        if kind == .todo, !failed,
-           let todos = Self.todos(from: payload)
-            ?? Self.todos(from: content["input"])
-            ?? Self.todos(from: content["arguments"]) {
-            self = .todos(todos)
-            return
-        }
-
-        // File-change rows and Edit results carry the patch outside `output`;
-        // a unified diff string is recognised only by strong headers, so Bash
-        // prose that happens to start with a dash stays text.
-        if let diff = Self.diff(from: payload) ?? Self.diff(from: content) {
-            self = .diff(diff)
-            return
-        }
-
-        // AskUserQuestion results and structured submitted-answer payloads.
-        // Input questions without an answer do not qualify (answers are never
-        // invented).
-        if let answers = Self.answers(from: payload)
-            ?? Self.answers(from: content["input"])
-            ?? Self.answers(from: content["arguments"]) {
-            self = .submittedAnswers(answers)
-            return
-        }
-
-        if kind == .plan, Self.isApprovedPlan(payload) {
-            self = .approvedPlan
-            return
-        }
-
-        if let text = Self.text(from: payload) {
-            self = .text(text)
-            return
-        }
-        self = .none
-    }
-
-    // MARK: Wire reads
-
-    /// `output` is the one field the task names; the rest are the connector's
-    /// own aliases for the same result (Claude stamps all of them, Codex only
-    /// `output` / `result`). Empty values are skipped so a failed call's
-    /// `error` can still surface.
-    private static func outputPayload(in content: JSONValue) -> JSONValue? {
-        // Full values first; `outputPreview` is the connector's truncated
-        // fallback and is used only when no full value exists.
-        for key in ["output", "outputText", "result", "text", "outputPreview", "error"] {
-            guard let value = content[key], value != .null else { continue }
-            switch value {
-            case let .string(text) where text.isEmpty:
-                continue
-            case let .array(items) where items.isEmpty:
-                continue
-            case let .object(fields) where fields.isEmpty:
-                continue
-            default:
-                return value
-            }
-        }
-        return nil
-    }
-
-    /// The first recognised five-case tag on the payload. `tool_result` and
-    /// `file_change` are wire kinds, not output kinds, so they are ignored.
-    private static func typedKind(_ value: JSONValue?) -> String? {
-        guard let object = value?.objectValue else { return nil }
-        let tokens = ["outputType", "kind", "type"]
-            .compactMap { object[$0]?.stringValue?.lowercased() }
-        let known = ["todos", "todo", "diff", "patch",
-                     "submittedanswers", "submitted_answers", "answers",
-                     "approvedplan", "approved_plan", "text", "plain"]
-        return tokens.first { known.contains($0) }
-    }
-
-    // MARK: Todos
-
-    private static func todos(from value: JSONValue?) -> [CodeToolTodo]? {
-        guard let value else { return nil }
-        let array: [JSONValue]?
-        if let direct = value.arrayValue {
-            array = direct
-        } else if let object = value.objectValue {
-            array = object["todos"]?.arrayValue
-                ?? object["items"]?.arrayValue
-                ?? object["tasks"]?.arrayValue
-                // DSH's `update_plan` carries its steps under `plan`.
-                ?? object["plan"]?.arrayValue
-        } else {
-            array = nil
-        }
-        guard let array, !array.isEmpty else { return nil }
-
-        let parsed = array.enumerated().compactMap { index, entry -> CodeToolTodo? in
-            guard let object = entry.objectValue else {
-                guard let text = entry.stringValue, !text.isEmpty else { return nil }
-                return CodeToolTodo(id: index, content: text, status: .pending)
-            }
-            guard let content = TimelineText.first(object["content"],
-                                                   object["text"],
-                                                   object["title"],
-                                                   object["subject"],
-                                                   object["step"]),
-                  !content.isEmpty else { return nil }
-            return CodeToolTodo(id: index,
-                                content: content,
-                                status: todoStatus(object))
-        }
-        return parsed.isEmpty ? nil : parsed
-    }
-
-    private static func todoStatus(_ object: [String: JSONValue]) -> CodeToolTodo.Status {
-        let raw = TimelineText.first(object["status"], object["state"])?
-            .lowercased()
-            .replacingOccurrences(of: "-", with: "_")
-            .replacingOccurrences(of: " ", with: "_")
-        switch raw {
-        case "completed", "complete", "done", "checked": return .completed
-        case "in_progress", "inprogress", "active", "running", "current", "started":
-            return .inProgress
-        default:
-            return .pending
-        }
-    }
-
-    // MARK: Submitted answers
-
-    private static func answers(from value: JSONValue?) -> [CodeToolSubmittedAnswer]? {
-        guard let value else { return nil }
-        let array: [JSONValue]?
-        if let direct = value.arrayValue {
-            array = direct
-        } else if let object = value.objectValue {
-            array = object["submittedAnswers"]?.arrayValue
-                ?? object["submitted_answers"]?.arrayValue
-                ?? object["answers"]?.arrayValue
-                ?? object["questions"]?.arrayValue
-        } else {
-            array = nil
-        }
-        guard let array, !array.isEmpty else { return nil }
-
-        let parsed = array.enumerated().compactMap { index, entry -> CodeToolSubmittedAnswer? in
-            guard let object = entry.objectValue else { return nil }
-            let question = TimelineText.first(object["question"],
-                                              object["prompt"],
-                                              object["header"],
-                                              object["title"]) ?? ""
-            // An answer is mandatory: `AskUserQuestion` input without a
-            // response must not render as an answered question.
-            guard let answer = answerText(object["answer"]
-                                          ?? object["response"]
-                                          ?? object["value"]
-                                          ?? object["selected"]),
-                  !answer.isEmpty else { return nil }
-            return CodeToolSubmittedAnswer(id: index, question: question, answer: answer)
-        }
-        return parsed.isEmpty ? nil : parsed
-    }
-
-    private static func answerText(_ value: JSONValue?) -> String? {
-        guard let value, value != .null else { return nil }
-        if let text = value.stringValue { return text.isEmpty ? nil : text }
-        if let array = value.arrayValue {
-            let parts = array.compactMap { item in
-                item.stringValue
-                    ?? TimelineText.first(item["label"], item["text"],
-                                          item["value"], item["answer"])
-            }
-            return parts.isEmpty ? nil : parts.joined(separator: ", ")
-        }
-        if let object = value.objectValue {
-            return TimelineText.first(object["label"], object["text"],
-                                      object["value"], object["answer"])
-        }
-        return nil
-    }
-
-    // MARK: Diff
-
-    private static func diff(from value: JSONValue?) -> CodeToolDiff? {
-        guard let value else { return nil }
-
-        if let object = value.objectValue {
-            if let lineValues = object["lines"]?.arrayValue, !lineValues.isEmpty,
-               looksLikeDiffPayload(object, lines: lineValues) {
-                let lines = structuredLines(lineValues)
-                if !lines.isEmpty { return makeDiff(lines: lines, from: object) }
-            }
-            if let nested = object["diff"], let parsed = diff(from: nested) { return parsed }
-            if let nested = object["patch"], let parsed = diff(from: nested) { return parsed }
-
-            // Codex/Claude file-change rows publish one entry per file.
-            if let changes = object["changes"]?.arrayValue {
-                var lines: [TimelineDiff.Line] = []
-                for change in changes {
-                    let action = TimelineText.first(change["action"],
-                                                    change["kind"]?["type"])?
-                        .lowercased()
-                    if let nested = change["diff"] ?? change["patch"] {
-                        if let parsed = diff(from: nested) {
-                            lines.append(contentsOf: parsed.lines)
-                        } else if let text = nested.stringValue,
-                                  isAddAction(action) {
-                            // A created file's `diff` is the whole new file,
-                            // not a unified patch; every line is an addition.
-                            lines.append(contentsOf: addedLines(text))
-                        }
-                    } else if let nestedLines = change["lines"]?.arrayValue {
-                        lines.append(contentsOf: structuredLines(nestedLines))
-                    }
-                }
-                if !lines.isEmpty {
-                    return makeDiff(lines: reindexed(lines), from: object)
-                }
-            }
-        }
-
-        if let text = value.stringValue, isUnifiedDiff(text) {
-            return makeDiff(lines: reindexed(TimelineDiff(text).lines), from: nil)
-        }
-        return nil
-    }
-
-    private static func isAddAction(_ action: String?) -> Bool {
-        guard let action else { return false }
-        return ["add", "added", "create", "created", "new"].contains(action)
-    }
-
-    /// A created file's `diff` field is its full content, so represent it as
-    /// an all-add page rather than pretending it is a unified patch.
-    private static func addedLines(_ text: String) -> [TimelineDiff.Line] {
-        var parts = text.components(separatedBy: "\n")
-        if parts.last == "" { parts.removeLast() }
-        return parts.enumerated().map { index, line in
-            TimelineDiff.Line(id: index, kind: .add, text: line,
-                              oldLine: nil, newLine: index + 1)
-        }
-    }
-
-    /// A bare `lines` array is not enough to claim a diff: a generic JSON tool
-    /// result may contain one. Require a diff stat / max-line key, a tagged
-    /// payload, or at least one line that actually carries a diff prefix or
-    /// kind. Anything weaker stays text.
-    private static func looksLikeDiffPayload(_ object: [String: JSONValue],
-                                             lines: [JSONValue]) -> Bool {
-        if object["lineStat"] != nil || object["maxLineNumber"] != nil
-            || object["addedLineCount"] != nil || object["removedLineCount"] != nil {
-            return true
-        }
-        if let tag = TimelineText.first(object["type"], object["kind"])?.lowercased(),
-           tag == "diff" || tag == "patch" {
-            return true
-        }
-        return lines.contains { value in
-            if let text = value.stringValue {
-                return text.hasPrefix("+") || text.hasPrefix("-")
-                    || text.hasPrefix("@@") || text.hasPrefix("diff --git")
-            }
-            guard let line = value.objectValue else { return false }
-            let kind = TimelineText.first(line["type"], line["kind"])?.lowercased() ?? ""
-            return ["add", "added", "insert", "insertion",
-                    "remove", "removed", "delete", "deleted", "deletion",
-                    "hunk", "header"].contains(kind)
-        }
-    }
-
-    /// `DiffOutput.lines` from the official model, or the same shape as JSON.
-    private static func structuredLines(_ values: [JSONValue]) -> [TimelineDiff.Line] {
-        values.enumerated().compactMap { index, value -> TimelineDiff.Line? in
-            if let text = value.stringValue, !text.isEmpty {
-                let kind = prefixKind(text)
-                let content = (kind == .add || kind == .delete
-                    || (kind == .context && text.hasPrefix(" ")))
-                    ? String(text.dropFirst()) : text
-                return TimelineDiff.Line(id: index, kind: kind, text: content,
-                                         oldLine: nil, newLine: nil)
-            }
-            guard let object = value.objectValue else { return nil }
-            let rawKind = TimelineText.first(object["type"], object["kind"])?
-                .lowercased() ?? "normal"
-            let kind: TimelineDiff.Line.Kind
-            switch rawKind {
-            case "add", "added", "insert", "insertion": kind = .add
-            case "remove", "removed", "delete", "deleted", "deletion": kind = .delete
-            case "hunk", "header", "@@": kind = .hunk
-            case "file", "meta", "metadata": kind = .file
-            case "annotation", "note": kind = .annotation
-            default: kind = .context
-            }
-            guard let text = TimelineText.first(object["content"],
-                                                object["text"],
-                                                object["value"],
-                                                object["line"]) else { return nil }
-            return TimelineDiff.Line(
-                id: index,
-                kind: kind,
-                text: text,
-                oldLine: object["oldLineNumber"]?.intValue
-                    ?? object["oldLine"]?.intValue
-                    ?? object["old"]?.intValue,
-                newLine: object["newLineNumber"]?.intValue
-                    ?? object["newLine"]?.intValue
-                    ?? object["new"]?.intValue)
-        }
-    }
-
-    private static func prefixKind(_ text: String) -> TimelineDiff.Line.Kind {
-        if text.hasPrefix("@@") { return .hunk }
-        if ["diff --git", "index ", "--- ", "+++ "].contains(where: text.hasPrefix) {
-            return .file
-        }
-        if text.hasPrefix("\\") { return .annotation }
-        if text.hasPrefix("+") { return .add }
-        if text.hasPrefix("-") { return .delete }
-        return .context
-    }
-
-    /// A plain string becomes a diff only with a real unified-diff header.
-    /// Prose that begins with `-` (a bullet list in Bash output) must stay text.
-    private static func isUnifiedDiff(_ code: String) -> Bool {
-        let lines = code.components(separatedBy: "\n")
-        if lines.contains(where: { $0.hasPrefix("diff --git") || $0.hasPrefix("@@") }) {
-            return true
-        }
-        return lines.contains(where: { $0.hasPrefix("--- ") })
-            && lines.contains(where: { $0.hasPrefix("+++ ") })
-    }
-
-    /// Duplicate ids appear when several files' patches are concatenated;
-    /// `ForEach` requires one id per row.
-    private static func reindexed(_ lines: [TimelineDiff.Line]) -> [TimelineDiff.Line] {
-        lines.enumerated().map { index, line in
-            TimelineDiff.Line(id: index, kind: line.kind, text: line.text,
-                              oldLine: line.oldLine, newLine: line.newLine)
-        }
-    }
-
-    private static func makeDiff(lines: [TimelineDiff.Line],
-                                 from object: [String: JSONValue]?) -> CodeToolDiff {
-        let stat = object?["lineStat"]?.objectValue
-        let added = stat?["addedLineCount"]?.intValue
-            ?? stat?["added"]?.intValue
-            ?? object?["addedLineCount"]?.intValue
-            ?? lines.filter { $0.kind == .add }.count
-        let removed = stat?["removedLineCount"]?.intValue
-            ?? stat?["removed"]?.intValue
-            ?? object?["removedLineCount"]?.intValue
-            ?? lines.filter { $0.kind == .delete }.count
-        let maxLineNumber = object?["maxLineNumber"]?.intValue
-            ?? lines.compactMap { line in
-                [line.oldLine, line.newLine].compactMap { $0 }.max()
-            }.max()
-            ?? 0
-        return CodeToolDiff(lines: lines,
-                            added: added,
-                            removed: removed,
-                            maxLineNumber: maxLineNumber)
-    }
-
-    // MARK: Approved plan
-
-    private static func isApprovedPlan(_ value: JSONValue?) -> Bool {
-        guard let object = value?.objectValue else { return false }
-        if object["approvedPlan"]?.boolValue == true { return true }
-        if object["approved"]?.boolValue == true { return true }
-        let typed = typedKind(value)
-        return typed == "approvedplan" || typed == "approved_plan"
-    }
-
-    // MARK: Text
-
-    private static func text(from value: JSONValue?) -> String? {
-        guard let value, value != .null else { return nil }
-        if let text = value.stringValue { return text.isEmpty ? nil : text }
-        if let object = value.objectValue {
-            // Claude's tool result may wrap text blocks in an envelope; show
-            // the text rather than pretty-printing the envelope.
-            if let blocks = object["content"]?.arrayValue {
-                let texts = blocks.compactMap { block -> String? in
-                    guard block["type"]?.stringValue == "text" else { return nil }
-                    return block["text"]?.stringValue
-                }
-                if !texts.isEmpty { return texts.joined(separator: "\n") }
-            }
-            if let text = TimelineText.first(object["text"], object["content"],
-                                             object["value"], object["output"]) {
-                return text
-            }
-        }
-        let json = value.formattedJSON
-        return json.isEmpty ? nil : json
-    }
-}
 
 // MARK: - Output switcher
 
@@ -526,15 +30,18 @@ struct CodeToolOutputView: View {
         case .approvedPlan:
             CodeToolApprovedPlanOutputView()
         case .none:
-            CodeToolEmptyOutputView()
+            // The detail page hides its output section entirely for `.none`;
+            // a bare switch still needs a branch.
+            EmptyView()
         }
     }
 }
 
 // MARK: - Text output (official `CodeBlockContent`)
 
-/// The official code-card chrome: 44 pt header, 13/20.8 mono title, 24 pt
-/// continuous corners, 16 pt content inset, 1 physical-pixel border and
+/// The official code-card chrome: 44 pt base header (scaled with Dynamic
+/// Type), 13/20.8 mono title, 24 pt continuous corners, 16 pt content inset,
+/// 1 physical-pixel border and
 /// divider (`docs/code-page-visual-evidence.md` V61-V69). The text is a
 /// monospaced block that scrolls horizontally; the page scrolls vertically, so
 /// this view does not nest a second vertical scroller.
@@ -546,18 +53,22 @@ struct CodeToolCodeCard: View {
     let title: String
     let code: String
 
-    private let displayCode: String
+    /// Cached at init and refreshed only when `code` changes, so a body
+    /// re-evaluation never re-slices a 200 000-character string.
+    @State private var displayCode: String
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.displayScale) private var displayScale
     @ScaledMetric(relativeTo: .footnote) private var codeFontSize =
         CodeToolCardMetrics.codeFontSize
     @ScaledMetric(relativeTo: .caption) private var titleFontSize =
         CodeToolCardMetrics.titleFontSize
+    @ScaledMetric(relativeTo: .caption) private var headerHeight =
+        CodeToolCardMetrics.headerHeight
 
     init(title: String, code: String) {
         self.title = title
         self.code = code
-        displayCode = String(code.prefix(CodeToolCardMetrics.previewLimit))
+        _displayCode = State(initialValue: String(code.prefix(CodeToolCardMetrics.previewLimit)))
     }
 
     private var surface: Color {
@@ -575,7 +86,7 @@ struct CodeToolCodeCard: View {
                 .fill(border)
                 .frame(height: 1 / displayScale)
             codeBody
-            if displayCode.count < code.count {
+            if code.count > CodeToolCardMetrics.previewLimit {
                 Text(String(localized: "预览已截断，复制可获取完整内容"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -591,6 +102,9 @@ struct CodeToolCodeCard: View {
                              style: .continuous)
                 .stroke(border, lineWidth: 1 / displayScale)
                 .allowsHitTesting(false)
+        }
+        .onChange(of: code) { _, newCode in
+            displayCode = String(newCode.prefix(CodeToolCardMetrics.previewLimit))
         }
     }
 
@@ -609,7 +123,7 @@ struct CodeToolCodeCard: View {
                                size: 44)
         }
         .padding(.horizontal, CodeToolCardMetrics.headerHorizontalPadding)
-        .frame(height: CodeToolCardMetrics.headerHeight)
+        .frame(height: headerHeight)
     }
 
     private var codeBody: some View {
@@ -649,10 +163,25 @@ private struct CodeToolTodosOutputView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            CodeToolSectionHeader(title: String(localized: "Todos"), copyText: copyText)
-            VStack(alignment: .leading, spacing: CodeToolCardMetrics.todoRowSpacing) {
-                ForEach(todos) { todo in
-                    row(todo)
+            CodeToolSectionHeader(title: String(localized: "Todos"),
+                                  copyText: todos.isEmpty ? nil : copyText)
+            if todos.isEmpty {
+                // An explicit empty TodoWrite list is the official cleared
+                // state, not "no data" (`ccr_verb_cleared_todos`).
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle")
+                        .accessibilityHidden(true)
+                    Text(String(localized: "已清空待办"))
+                }
+                .font(.system(size: todoFontSize))
+                .foregroundStyle(.secondary)
+                .frame(minHeight: 24)
+                .accessibilityElement(children: .combine)
+            } else {
+                VStack(alignment: .leading, spacing: CodeToolCardMetrics.todoRowSpacing) {
+                    ForEach(todos) { todo in
+                        row(todo)
+                    }
                 }
             }
         }
@@ -710,6 +239,8 @@ private struct CodeToolDiffOutputView: View {
         CodeToolCardMetrics.diffFontSize
     @ScaledMetric(relativeTo: .caption) private var diffStatFontSize =
         CodeToolCardMetrics.diffStatFontSize
+    @ScaledMetric(relativeTo: .caption) private var headerHeight =
+        CodeToolCardMetrics.headerHeight
 
     private var visibleLines: [TimelineDiff.Line] {
         Array(diff.lines.prefix(visibleCount))
@@ -776,13 +307,13 @@ private struct CodeToolDiffOutputView: View {
                 Text(verbatim: "+\(diff.added)")
                     .font(.system(size: diffStatFontSize,
                                   design: .monospaced))
-                    .foregroundStyle(CodePageTheme.diffAdd.resolved(for: colorScheme))
+                    .foregroundStyle(CodeToolCardMetrics.diffStatAdd.resolved(for: colorScheme))
             }
             if diff.removed > 0 {
                 Text(verbatim: "−\(diff.removed)")
                     .font(.system(size: diffStatFontSize,
                                   design: .monospaced))
-                    .foregroundStyle(CodePageTheme.diffRemove.resolved(for: colorScheme))
+                    .foregroundStyle(CodeToolCardMetrics.diffStatRemove.resolved(for: colorScheme))
             }
             Spacer(minLength: 8)
             CodeToolCopyButton(text: { diff.unifiedText },
@@ -790,7 +321,7 @@ private struct CodeToolDiffOutputView: View {
                                size: 44)
         }
         .padding(.horizontal, CodeToolCardMetrics.headerHorizontalPadding)
-        .frame(height: CodeToolCardMetrics.headerHeight)
+        .frame(height: headerHeight)
     }
 
     private var loadMore: some View {
@@ -798,8 +329,8 @@ private struct CodeToolDiffOutputView: View {
             visibleCount = min(visibleCount + CodeToolCardMetrics.diffPageSize,
                                diff.lines.count)
         } label: {
-            Text(String(localized: "加载更多"))
-                .font(.system(size: 13, weight: .medium))
+            Text(String(localized: "Expand"))
+                .font(.footnote.weight(.medium))
                 .frame(maxWidth: .infinity, minHeight: 44)
                 .contentShape(Rectangle())
         }
@@ -869,8 +400,8 @@ private struct CodeToolDiffOutputView: View {
 
     private func barColor(_ kind: TimelineDiff.Line.Kind) -> Color? {
         switch kind {
-        case .add: return CodePageTheme.diffAdd.resolved(for: colorScheme)
-        case .delete: return CodePageTheme.diffRemove.resolved(for: colorScheme)
+        case .add: return CodePageTheme.diffLineAdd.resolved(for: colorScheme)
+        case .delete: return CodePageTheme.diffLineRemove.resolved(for: colorScheme)
         default: return nil
         }
     }
@@ -959,19 +490,6 @@ private struct CodeToolApprovedPlanOutputView: View {
     }
 }
 
-// MARK: - Empty output
-
-private struct CodeToolEmptyOutputView: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            CodeToolSectionHeader(title: String(localized: "Output"), copyText: nil)
-            Text(String(localized: "暂无输出"))
-                .font(.system(size: 15))
-                .foregroundStyle(.secondary)
-        }
-    }
-}
-
 // MARK: - Shared pieces
 
 /// The copy control shared by the code card, the diff header and the list
@@ -1051,7 +569,8 @@ private enum CodeToolCardMetrics {
 
     // MARK: Code card (official `CodeBlockContent`)
 
-    /// [E] V61 / CANONICAL/06-visuals-assets.md §3.3 — header height 44 pt.
+    /// [E] V61 / CANONICAL/06-visuals-assets.md §3.3 — header height 44 pt
+    /// base; both card views scale it with `@ScaledMetric`.
     static let headerHeight: CGFloat = 44
 
     /// [E] V62 / tokens.json `codeCard.title.typography` — 13 pt.
@@ -1082,9 +601,9 @@ private enum CodeToolCardMetrics {
         light: Color(.sRGB, red: 0.118, green: 0.118, blue: 0.114, opacity: 0.3),
         dark: Color(.sRGB, red: 0.882, green: 0.878, blue: 0.851, opacity: 0.3))
 
-    /// [E] V63 — monospaced body 15 pt / 24 pt line height.
+    /// [E] V63 — monospaced body 15 pt; the 24 pt line height is realised as
+    /// the derived `codeLineSpacing` below, so no separate unused token stays.
     static let codeFontSize: CGFloat = 15
-    static let codeLineHeight: CGFloat = 24
 
     /// [I] Derived from the [E] 24 pt line height: SF Mono at 15 pt has a
     /// ~17.9 pt default line box, so SwiftUI needs ~6.1 pt extra spacing.
@@ -1114,19 +633,36 @@ private enum CodeToolCardMetrics {
     /// [I] V77 — diff stats use the code-card title preset (13 pt mono).
     static let diffStatFontSize: CGFloat = 13
 
+    /// [I] V79 — diff stat green `#10AC0D` and red `#B4263E`. There is no dark
+    /// capture, so the sampled light values are reused until one lands.
+    static let diffStatAdd = CodePageTheme.SchemeColor(
+        light: Color(.sRGB, red: 16.0 / 255.0,
+                    green: 172.0 / 255.0,
+                    blue: 13.0 / 255.0),
+        dark: Color(.sRGB, red: 16.0 / 255.0,
+                    green: 172.0 / 255.0,
+                    blue: 13.0 / 255.0))
+    static let diffStatRemove = CodePageTheme.SchemeColor(
+        light: Color(.sRGB, red: 180.0 / 255.0,
+                    green: 38.0 / 255.0,
+                    blue: 62.0 / 255.0),
+        dark: Color(.sRGB, red: 180.0 / 255.0,
+                    green: 38.0 / 255.0,
+                    blue: 62.0 / 255.0))
+
     /// [I] V79 — light add-row fill `#E0F1DE`. There is no dark capture, so the
     /// dark row derives the same tint from the [E] add colour at 14 %.
     static let diffAddRowFill = CodePageTheme.SchemeColor(
         light: Color(.sRGB, red: 224.0 / 255.0,
                     green: 241.0 / 255.0,
                     blue: 222.0 / 255.0),
-        dark: CodePageTheme.diffAdd.dark.opacity(0.14))
+        dark: CodePageTheme.diffLineAdd.dark.opacity(0.14))
 
     /// [U] V79 gives no remove-row fill; the row derives it from the [E]
     /// remove colour (10 % light, 14 % dark) so add/remove stay symmetric.
     static let diffRemoveRowFill = CodePageTheme.SchemeColor(
-        light: CodePageTheme.diffRemove.light.opacity(0.10),
-        dark: CodePageTheme.diffRemove.dark.opacity(0.14))
+        light: CodePageTheme.diffLineRemove.light.opacity(0.10),
+        dark: CodePageTheme.diffLineRemove.dark.opacity(0.14))
 
     // MARK: Todos / answers / plan
 

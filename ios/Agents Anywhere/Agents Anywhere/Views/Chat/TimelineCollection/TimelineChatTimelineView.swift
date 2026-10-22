@@ -188,6 +188,11 @@ struct TimelineChatTimelineView: View {
                                    followingCalls: request.following,
                                    cwd: model.session.metadata?.cwd)
             }
+            // Probe builds add a floating diagnostics button; other builds
+            // compile the call site to `self` (TimelineProbe.swift).
+            .timelineProbeOverlay(controller: bridge.controller,
+                                  adapter: bridge.adapter,
+                                  ready: bridge.controllerAttached)
     }
 
     private func keyboardTransitionBegan(_ event: TimelineKeyboardEvent) {
@@ -204,6 +209,9 @@ final class TimelineChatBridge: ObservableObject {
     let model: SessionChatModel
     let adapter: TimelineChatContentAdapter
     private(set) weak var controller: TimelineCollectionController?
+    /// Probe-only attach trigger: a weak `controller` cannot publish, and the
+    /// floating overlay must learn when the representable hands one over.
+    @Published private(set) var controllerAttached = false
     /// The Code page's tool detail sheet. Held at the page level, not in the
     /// row: a streaming reconfigure rebuilds the hosted cell's view, and a
     /// cell-local `@State` sheet could be dismissed mid-read.
@@ -233,6 +241,7 @@ final class TimelineChatBridge: ObservableObject {
 
     func attach(_ controller: TimelineCollectionController) {
         self.controller = controller
+        controllerAttached = true
         adapter.attach(controller)
         controller.onApplyCompleted = { [weak self] in self?.applyCompleted() }
         controller.onBottomArrived = { [weak self] in self?.openingArrived() }

@@ -327,6 +327,12 @@ final class TimelineCollectionController: UIViewController {
         }
         let change = signatures.update(entries)
         let changed = Set(change.changed)
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteApply(items: items, changedCount: change.changed.count,
+                                            animating: animating,
+                                            contentHeight: layout.contentHeight,
+                                            pendingMeasurements: layout.pendingMeasurements.count)
+#endif
         // A diffable reconfigure can let UIKit apply the new preferred height
         // before our animation starts; remember where the row was so the
         // animation can start there instead of from the already-final frame.
@@ -891,6 +897,11 @@ final class TimelineCollectionController: UIViewController {
                 notePreferred("applyRequested")
                 let policy = content.heightPolicy(for: item)
                 let target = ceil(fitting)
+#if AA_TIMELINE_PROBE
+                TimelineProbeStore.shared.noteHeightChange(
+                    itemID: item.itemID, item: item, old: current, new: target,
+                    source: "preferredFit")
+#endif
                 if policy == .interactive,
                    let before = beforeHeights[item.itemID],
                    abs(target - before) >= 8 {
@@ -1202,6 +1213,11 @@ final class TimelineCollectionController: UIViewController {
             let fresh = before.map {
                 CACurrentMediaTime() - $0.recordedAt <= Self.preChangeRecordLifetime
             } ?? false
+#if AA_TIMELINE_PROBE
+            TimelineProbeStore.shared.noteHeightChange(
+                itemID: item.itemID, item: item, old: current, new: height,
+                source: "visibleFit")
+#endif
             if policy == .interactive, let before, fresh,
                abs(height - before.height) >= 8 {
                 // UIKit does not animate frames set through a custom layout's
@@ -1924,6 +1940,9 @@ extension TimelineCollectionController: UICollectionViewDelegate {
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard !navigationSuspended else { return }
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.scrollTick()
+#endif
         let current = viewport
         if phase.phase == .interacting { rearmVisiblePulls(at: current) }
         if phase.phase == .interacting || phase.phase == .decelerating { updatePulls(current) }

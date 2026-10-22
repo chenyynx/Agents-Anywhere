@@ -800,6 +800,134 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         generation &+= 1
     }
 
+    // MARK: - Probe (probe builds only)
+
+#if AA_TIMELINE_PROBE
+    /// A one-line identity for the probe report. The item id alone is opaque
+    /// on a phone screenshot; the preview and the block counts let the reader
+    /// match a report line to the row they see.
+    func probeDescribe(_ item: TimelineListItem) -> String {
+        switch item {
+        case .group(let id):
+            guard let group = groupsByID[id] else { return "missing group \(id)" }
+            guard group.explicitID != nil else {
+                return "group kind=\(group.kind) rows=\(group.rows.count)"
+            }
+            let rows = codeRowsByGroupID[id] ?? []
+            var textBlocks = 0
+            var toolBlocks = 0
+            var segments = 0
+            var others = 0
+            var preview = ""
+            for row in rows {
+                for block in row.blocks {
+                    switch block {
+                    case .reasoning:
+                        continue
+                    case let .text(_, text):
+                        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                            continue
+                        }
+                        textBlocks += 1
+                        if preview.isEmpty {
+                            preview = text.replacingOccurrences(of: "\n", with: " ")
+                        }
+                    case let .toolCalls(blockSegments):
+                        toolBlocks += 1
+                        segments += blockSegments.count
+                    case .other:
+                        others += 1
+                    }
+                }
+            }
+            let status = id == workingStatusGroupID ? " status=1" : ""
+            return "code rows=\(rows.count) text=\(textBlocks) toolBlocks=\(toolBlocks) "
+                + "segs=\(segments) other=\(others)\(status) preview=\"\(preview.prefix(36))\""
+        case .pending: return "pending"
+        case .notice: return "notice"
+        case .tail: return "tail"
+        case .olderPrompt: return "olderPrompt"
+        case .latestPrompt: return "latestPrompt"
+        }
+    }
+
+    /// The estimate's parts. `est` is what the layout reserved; `struct` is
+    /// the same text estimate re-assembled with the row view's real paddings
+    /// (8 pt per block, 4 pt between blocks, 16 pt between rows, 10 pt row
+    /// margins, 28 pt status line). The gap between the two is the estimate's
+    /// structural error; the gap between `struct` and a visible cell's fit is
+    /// the text model's error.
+    func probeBreakdown(_ item: TimelineListItem) -> String? {
+        guard case .group(let id) = item,
+              groupsByID[id]?.explicitID != nil else { return nil }
+        let rows = codeRowsByGroupID[id] ?? []
+        let width = TimelineHeightKey.quantize(lastWidth > 0 ? lastWidth : 361)
+        var textBlocks = 0
+        var textHeight: CGFloat = 0
+        var toolBlocks = 0
+        var segments = 0
+        var others = 0
+        var renderedRows = 0
+        var structural: CGFloat = 0
+        for row in rows {
+            var blocks = 0
+            for block in row.blocks {
+                switch block {
+                case .reasoning:
+                    continue
+                case let .text(_, text):
+                    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        continue
+                    }
+                    textBlocks += 1
+                    let height = TimelineHeightEstimate.height(
+                        rows: [TimelineHeightEstimate.TextRow(text: text)], width: width,
+                        bodySize: typography.body, lineSpacing: typography.lineSpacing,
+                        paragraphSpacing: typography.paragraphSpacing, minimum: 0)
+                    textHeight += height
+                    structural += height + 8
+                    blocks += 1
+                case let .toolCalls(blockSegments):
+                    toolBlocks += 1
+                    segments += blockSegments.count
+                    // CollapsedRowButton: 24 pt min line + 2 x 6 pt padding,
+                    // plus the block's 2 x 4 pt vertical padding.
+                    structural += CGFloat(blockSegments.count)
+                        * (CodePageTheme.toolRowLineHeight + 2 * CodePageTheme.toolRowButtonPadding)
+                        + 2 * CodePageTheme.segmentVerticalPadding
+                    blocks += 1
+                case .other:
+                    others += 1
+                    structural += CodePageTheme.toolRowLineHeight
+                        + 2 * CodePageTheme.segmentVerticalPadding
+                    blocks += 1
+                }
+            }
+            if blocks > 0 {
+                renderedRows += 1
+                structural += CGFloat(max(0, blocks - 1))
+                    * CodePageTheme.segmentVerticalPadding
+            }
+        }
+        structural += CGFloat(max(0, renderedRows - 1)) * CodePageTheme.blockSpacing
+        if id == workingStatusGroupID {
+            structural += CodePageTheme.workingMarkSize
+                + 2 * CodePageTheme.segmentVerticalPadding
+                + (renderedRows > 0 ? CodePageTheme.blockSpacing : 0)
+        }
+        structural += CodePageTheme.rowMarginTop + CodePageTheme.rowMarginBottom
+        let estimate = estimateKind(for: item).height
+        return "est=\(probeFormat(estimate)) struct=\(probeFormat(structural)) "
+            + "textBlocks=\(textBlocks) textEstH=\(probeFormat(textHeight)) "
+            + "toolBlocks=\(toolBlocks) segs=\(segments) other=\(others) rows=\(renderedRows) "
+            + "status=\(id == workingStatusGroupID ? 1 : 0)"
+    }
+
+    private func probeFormat(_ value: CGFloat) -> String {
+        String(format: "%.1f", value)
+    }
+#endif
+
     // MARK: - Refresh
 
     private func refresh() {

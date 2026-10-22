@@ -388,7 +388,8 @@ final class TimelineListLayout: UICollectionViewLayout {
             return
         }
         invalidateHeight(itemID: itemID, attributes: attributes,
-                         correction: decision.correction, contentSizeDelta: delta, state: state)
+                         correction: decision.correction, contentSizeDelta: delta,
+                         state: state, probeSource: "measured")
     }
 
     /// The changed item plus the visible rows below it. A height change moves
@@ -421,8 +422,18 @@ final class TimelineListLayout: UICollectionViewLayout {
     /// be clamped by the stale maximum offset.
     private func invalidateHeight(itemID: String, attributes: TimelineListLayoutAttributes,
                                   correction: CGFloat?, contentSizeDelta: CGFloat,
-                                  state: TimelineLayoutInteractionState) {
+                                  state: TimelineLayoutInteractionState,
+                                  probeSource: String) {
         guard let collectionView else { return }
+#if AA_TIMELINE_PROBE
+        if !probeSource.isEmpty {
+            TimelineProbeStore.shared.noteHeightChange(
+                itemID: itemID, item: attributes.item,
+                old: attributes.frame.height,
+                new: attributes.frame.height + contentSizeDelta,
+                source: probeSource)
+        }
+#endif
         let context = UICollectionViewLayoutInvalidationContext()
         context.invalidateItems(at: cellUpdatesAffected(by: attributes))
         if contentSizeDelta != 0 {
@@ -499,7 +510,8 @@ final class TimelineListLayout: UICollectionViewLayout {
         heights.set(height, for: key, tier: .measured)
         heights.noteDisplayedHeight(height, for: itemID)
         invalidateHeight(itemID: itemID, attributes: attributes,
-                         correction: decision.correction, contentSizeDelta: delta, state: state)
+                         correction: decision.correction, contentSizeDelta: delta,
+                         state: state, probeSource: "preferred")
     }
 
     // MARK: - Streaming reveal height (per frame)
@@ -536,7 +548,7 @@ final class TimelineListLayout: UICollectionViewLayout {
         if decision.height == .deferUntilSettled { return }
         invalidateHeight(itemID: itemID, attributes: attributes,
                          correction: adjustOffset ? decision.correction : nil,
-                         contentSizeDelta: delta, state: state)
+                         contentSizeDelta: delta, state: state, probeSource: "")
     }
 
     /// Drop the override without invalidating. The controller calls this
@@ -614,6 +626,12 @@ final class TimelineListLayout: UICollectionViewLayout {
                       let attributes = attributesByItemID[correction.itemID] else { continue }
                 heights.set(deferred.height, for: deferred.key, tier: .measured)
                 heights.noteDisplayedHeight(deferred.height, for: correction.itemID)
+#if AA_TIMELINE_PROBE
+                TimelineProbeStore.shared.noteHeightChange(
+                    itemID: correction.itemID, item: attributes.item,
+                    old: attributes.frame.height, new: deferred.height,
+                    source: "deferred")
+#endif
                 total += correction.delta
                 contentSizeTotal += deferred.height - attributes.frame.height
                 invalidated.formUnion(cellUpdatesAffected(by: attributes))

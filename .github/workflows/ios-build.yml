@@ -39,6 +39,10 @@ on:
         description: "Run the C5 Code-profile simulator gate"
         type: boolean
         default: false
+      probe:
+        description: "Compile the on-device timeline probe overlay (AA_TIMELINE_PROBE)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -935,6 +939,11 @@ jobs:
           restore-keys: dd-${{ runner.os }}-
 
       - name: Build (unsigned)
+        env:
+          # Probe builds add the on-device timeline diagnostics overlay; the
+          # flag is absent from every other build, so shipping binaries never
+          # compile the probe file's body.
+          PROBE_FLAG: ${{ inputs.probe && '-DAA_TIMELINE_PROBE' || '' }}
         run: |
           set -o pipefail
           cd "ios/Agents Anywhere"
@@ -949,7 +958,7 @@ jobs:
             ENABLE_DEBUG_DYLIB=NO \
             SWIFT_NUM_THREADS=2 \
             SWIFT_COMPILATION_MODE=incremental \
-            'OTHER_SWIFT_FLAGS=-Xfrontend -disable-batch-mode' \
+            "OTHER_SWIFT_FLAGS=-Xfrontend -disable-batch-mode ${PROBE_FLAG}" \
             -derivedDataPath build/DerivedData \
             2>&1 | tee "$RUNNER_TEMP/build.log" | tail -40
 

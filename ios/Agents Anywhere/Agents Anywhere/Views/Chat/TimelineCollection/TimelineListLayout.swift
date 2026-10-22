@@ -131,9 +131,12 @@ final class TimelineListLayout: UICollectionViewLayout {
             resolved.append(height)
         }
 
+        // One entry per item (the last one's gap is unused, but keeping the
+        // array aligned with `items` makes the prefix cursor safe when every
+        // item is reused: `spacings[prefix - 1]` must exist for prefix == count).
         var spacings: [CGFloat] = []
-        spacings.reserveCapacity(max(0, count - 1))
-        for index in 0..<max(0, count - 1) {
+        spacings.reserveCapacity(count)
+        for index in 0..<count {
             spacings.append(host.layoutItemSpacing(after: items[index]))
         }
 

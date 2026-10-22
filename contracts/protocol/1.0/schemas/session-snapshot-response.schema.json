@@ -1350,6 +1350,11 @@
       "title": "Eventcursor",
       "type": "string"
     },
+    "excludesAgentChildren": {
+      "default": false,
+      "title": "Excludesagentchildren",
+      "type": "boolean"
+    },
     "notices": {
       "items": {
         "$ref": "#/$defs/NoticeIn"

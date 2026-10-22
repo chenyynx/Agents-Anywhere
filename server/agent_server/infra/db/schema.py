@@ -503,6 +503,13 @@ timeline_items = Table(
     # the field (v2_43 has no way to derive it) and for items whose Runtime
     # never reported one.
     Column("native_message_id", Text),
+    # The Agent card this row was emitted inside (``content.parentItemId``).
+    # Clients hide child rows from the main timeline; the server filters and
+    # pages on this column (v2_47) so an opt-in main-only window never ends up
+    # empty just because the newest rows all belong to subagents. NULL for
+    # every row that is not a subagent child, and for pre-v2_47 rows whose
+    # payload has no such id.
+    Column("parent_item_id", Text),
     Column("item_time", Text),
     Column("payload_json", Text, nullable=False),
     PrimaryKeyConstraint("session_id", "id"),
@@ -527,6 +534,12 @@ timeline_items = Table(
     Index(
         "idx_timeline_items_session_order_seq",
         "session_id",
+        "order_seq",
+    ),
+    Index(
+        "idx_timeline_items_session_parent_order",
+        "session_id",
+        "parent_item_id",
         "order_seq",
     ),
     Index("idx_timeline_items_item_time_type_role", "item_time", "type", "role"),

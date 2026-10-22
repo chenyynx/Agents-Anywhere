@@ -210,18 +210,37 @@ class SqlTimelineStore:
         items = [TimelineItem.model_validate_json(row["payload_json"]) for row in rows[:limit]]
         return items, has_more
 
-    async def list_latest(self, session_id: str, *, limit: int) -> tuple[list[TimelineItem], bool]:
+    async def list_latest(
+        self,
+        session_id: str,
+        *,
+        limit: int,
+        main_only: bool = False,
+    ) -> tuple[list[TimelineItem], bool]:
+        """The newest ``limit`` rows, oldest first.
+
+        ``main_only`` drops subagent child rows (``parent_item_id`` set) in
+        SQL, *before* the LIMIT. Filtering afterwards would let a window made
+        entirely of child rows come back empty even though the session has
+        main-timeline content — the exact session-open blank page this opt-in
+        reader exists for.
+        """
+
+        statement = timeline_items.select().where(
+            timeline_items.c.session_id == session_id
+        )
+        if main_only:
+            statement = statement.where(
+                timeline_items.c.parent_item_id.is_(None)
+            )
         async with self._engine.connect() as conn:
             rows = (
                 await conn.execute(
-                    timeline_items.select()
-                    .where(timeline_items.c.session_id == session_id)
-                    .order_by(
+                    statement.order_by(
                         timeline_items.c.order_seq.desc(),
                         timeline_items.c.updated_seq.desc(),
                         timeline_items.c.id.desc(),
-                    )
-                    .limit(limit + 1)
+                    ).limit(limit + 1)
                 )
             ).mappings().all()
         has_more = len(rows) > limit
@@ -230,22 +249,78 @@ class SqlTimelineStore:
         return items, has_more
 
     async def list_before_order_seq(
-        self, session_id: str, *, before_order_seq: int, limit: int
+        self,
+        session_id: str,
+        *,
+        before_order_seq: int,
+        limit: int,
+        main_only: bool = False,
     ) -> tuple[list[TimelineItem], bool]:
+        """One history page ending before ``before_order_seq``, oldest first.
+
+        ``main_only`` has the same meaning as in ``list_latest``: child rows
+        are excluded in SQL before the LIMIT, so a page is filled with main
+        rows rather than a filtered subset of an arbitrary window.
+        """
+
+        statement = timeline_items.select().where(
+            timeline_items.c.session_id == session_id,
+            timeline_items.c.order_seq < before_order_seq,
+        )
+        if main_only:
+            statement = statement.where(
+                timeline_items.c.parent_item_id.is_(None)
+            )
         async with self._engine.connect() as conn:
             rows = (
                 await conn.execute(
-                    timeline_items.select()
-                    .where(
-                        timeline_items.c.session_id == session_id,
-                        timeline_items.c.order_seq < before_order_seq,
-                    )
-                    .order_by(
+                    statement.order_by(
                         timeline_items.c.order_seq.desc(),
                         timeline_items.c.updated_seq.desc(),
                         timeline_items.c.id.desc(),
-                    )
-                    .limit(limit + 1)
+                    ).limit(limit + 1)
+                )
+            ).mappings().all()
+        has_more = len(rows) > limit
+        items = [TimelineItem.model_validate_json(row["payload_json"]) for row in rows[:limit]]
+        items.reverse()
+        return items, has_more
+
+    async def list_children(
+        self,
+        session_id: str,
+        *,
+        parent_item_id: str,
+        before_order_seq: int | None = None,
+        limit: int,
+    ) -> tuple[list[TimelineItem], bool]:
+        """One page of the child rows of one Agent card, oldest first.
+
+        Ordered by ``(order_seq, updated_seq, id)`` descending and returned
+        ascending, matching the other list readers so the client can append
+        pages without re-sorting. ``before_order_seq`` pages backwards through
+        a card's children and, like the history reader, assumes ``order_seq``
+        is unique within the session: the cursor carries only that value, so a
+        row tied with the page boundary would be skipped rather than repeated.
+        ``has_more`` is raised by the extra row read past ``limit``.
+        """
+
+        statement = timeline_items.select().where(
+            timeline_items.c.session_id == session_id,
+            timeline_items.c.parent_item_id == parent_item_id,
+        )
+        if before_order_seq is not None:
+            statement = statement.where(
+                timeline_items.c.order_seq < before_order_seq
+            )
+        async with self._engine.connect() as conn:
+            rows = (
+                await conn.execute(
+                    statement.order_by(
+                        timeline_items.c.order_seq.desc(),
+                        timeline_items.c.updated_seq.desc(),
+                        timeline_items.c.id.desc(),
+                    ).limit(limit + 1)
                 )
             ).mappings().all()
         has_more = len(rows) > limit
@@ -343,6 +418,11 @@ class SqlTimelineStore:
             # optional — absent on rows whose Runtime does not declare it, which
             # then store NULL, exactly as ``native_item_id`` does.
             "native_message_id": item.source.nativeMessageId,
+            # The Agent card this row belongs to (``content.parentItemId``),
+            # mirrored to a column (v2_47) so the main-timeline window can
+            # exclude child rows in SQL before LIMIT. Free-JSON content: only
+            # a non-empty string counts; anything else stores NULL.
+            "parent_item_id": _parent_item_id(item),
             "item_time": _item_time(item),
             "payload_json": _json_dumps(item.model_dump(exclude_none=True)),
         }
@@ -351,6 +431,22 @@ class SqlTimelineStore:
 def _item_time(item: TimelineItem) -> str | None:
     values = [value for value in (item.createdAt, item.completedAt, item.updatedAt) if value]
     return max(values) if values else None
+
+
+def _parent_item_id(item: TimelineItem) -> str | None:
+    """The Agent card a row was emitted inside (``content.parentItemId``).
+
+    Total by construction: a payload whose content is not a mapping has no
+    parent, and only a non-empty string id counts — the same rule the migration
+    backfill applies, so a row written now and one backfilled from an identical
+    payload land on the same column value.
+    """
+
+    content = item.content
+    if not isinstance(content, Mapping):
+        return None
+    value = content.get("parentItemId")
+    return value if isinstance(value, str) and value else None
 
 
 def _is_agent_call_item(item: TimelineItem) -> bool:

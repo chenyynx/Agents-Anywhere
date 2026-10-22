@@ -223,11 +223,12 @@ private struct TimelineFold<Content: View>: View {
     var onStopTask: ((String) -> Void)?
     @ViewBuilder var content: () -> Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.collectionTimelineHeightAnimation) private var heightAnimatedByHost
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 Button {
-                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { disclosures.toggle(id) }
+                    toggleDisclosure()
                 } label: { TimelineMarkerRow(title: title, symbol: symbol, status: status, expanded: disclosures.isExpanded(id)) }
                 .buttonStyle(.plain).accessibilityValue(disclosures.isExpanded(id) ? String(localized: "已展开") : String(localized: "已折叠"))
                 if let detailsAction {
@@ -260,12 +261,25 @@ private struct TimelineFold<Content: View>: View {
     /// folds attach no gesture and keep their exact interaction surface.
     /// A plain two-tap gesture, so single taps (links), scrolling and
     /// long-press selection keep working as before.
+    /// The collection timeline animates the row height in its controller; the
+    /// fold then only flips its state. The SwiftUI path keeps its own 0.18 s
+    /// content animation.
+    private func toggleDisclosure() {
+        if heightAnimatedByHost {
+            disclosures.toggle(id)
+        } else {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
+                disclosures.toggle(id)
+            }
+        }
+    }
+
     @ViewBuilder private var expandedBody: some View {
         if collapsesOnBodyDoubleTap {
             content()
                 .contentShape(Rectangle())
                 .onTapGesture(count: 2) {
-                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { disclosures.toggle(id) }
+                    toggleDisclosure()
                 }
         } else {
             content()

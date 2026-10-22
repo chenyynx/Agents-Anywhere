@@ -36,6 +36,7 @@ final class TimelineHostingCell: UICollectionViewCell {
             // height and let the cell bounds clip until the visible-cell fit
             // corrects the frame.
             view
+                .environment(\.collectionTimelineHeightAnimation, true)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .margins(.all, 0)

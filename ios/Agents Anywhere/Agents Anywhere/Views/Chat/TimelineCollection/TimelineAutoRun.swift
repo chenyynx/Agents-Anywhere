@@ -541,6 +541,11 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         if after.missing > 0 || after.gap > 1 {
             failures.append("collapse: missing \(after.missing) cells, gap \(after.gap)pt")
         }
+        // A host-animated expansion must produce intermediate frames, not one
+        // jump (the "not smooth" device report).
+        if distinct.count < 3 {
+            failures.append("collapse: expansion jumped in \(distinct.count) step(s)")
+        }
         report["collapseGap"] = [
             "beforeMissing": before.missing, "beforeGap": Double(before.gap),
             "afterMissing": after.missing, "afterGap": Double(after.gap),

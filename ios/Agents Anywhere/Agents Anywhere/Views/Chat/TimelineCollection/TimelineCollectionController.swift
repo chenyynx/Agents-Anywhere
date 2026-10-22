@@ -620,8 +620,15 @@ final class TimelineCollectionController: UIViewController {
         preferredDiagnostics[key, default: 0] += 1
     }
 
+    private static let rowHeightAnimationDuration: TimeInterval = 0.18
+
     private func settlePreferredHeights(for items: [TimelineListItem], attempt: Int) {
         guard let content, attempt <= 9 else { return }
+        // Same reason as the visible-cell settle: no layout work under the
+        // finger; the scroll-end settle takes over.
+        if collectionView.isTracking || collectionView.isDecelerating {
+            return
+        }
         notePreferred("pass")
         for item in items {
             notePreferred("item")
@@ -644,10 +651,21 @@ final class TimelineCollectionController: UIViewController {
             let current = layout.attributes(for: item.itemID)?.frame.height ?? 0
             if abs(fitting - current) > 0.5 {
                 notePreferred("applyRequested")
-                layout.applyPreferredHeight(ceil(fitting), for: item.itemID)
-                // The controller owns this correction path; force the layout
-                // pass so the new value is observable in the same turn.
-                collectionView.layoutIfNeeded()
+                let policy = content.heightPolicy(for: item)
+                let target = ceil(fitting)
+                if policy == .interactive, abs(fitting - current) >= 8 {
+                    UIView.animate(withDuration: Self.rowHeightAnimationDuration,
+                                   delay: 0, options: [.curveEaseInOut, .beginFromCurrentState]) {
+                        self.layout.applyPreferredHeight(target, for: item.itemID)
+                        self.collectionView.layoutIfNeeded()
+                    }
+                } else {
+                    layout.applyPreferredHeight(target, for: item.itemID)
+                    // The controller owns this correction path; force the
+                    // layout pass so the new value is observable in the same
+                    // turn.
+                    collectionView.layoutIfNeeded()
+                }
             } else {
                 notePreferred("alreadyEqual")
             }
@@ -898,6 +916,12 @@ final class TimelineCollectionController: UIViewController {
         // row correction inside that animation would add a second offset
         // change; the animation-end callback starts a fresh settle instead.
         guard phase.phase != .animating else { return false }
+        // Measuring and forcing layout during a drag/deceleration is the
+        // device's scroll stutter. Keep the passes alive; a fresh settle is
+        // scheduled when the scroll ends.
+        if collectionView.isTracking || collectionView.isDecelerating {
+            return true
+        }
         guard let content, !navigationSuspended, columnWidth > 0,
               !collectionView.indexPathsForVisibleItems.isEmpty else { return false }
         var needsMore = false
@@ -917,7 +941,16 @@ final class TimelineCollectionController: UIViewController {
             let current = layout.attributes(for: item.itemID)?.frame.height ?? 0
             guard abs(height - current) > 0.5 else { continue }
             measurementPipeline.complete(item.itemID)
-            layout.applyMeasuredHeight(height, for: item.itemID, key: key)
+            let policy = content.heightPolicy(for: item)
+            if policy == .interactive, abs(height - current) >= 8 {
+                UIView.animate(withDuration: Self.rowHeightAnimationDuration,
+                               delay: 0, options: [.curveEaseInOut, .beginFromCurrentState]) {
+                    self.layout.applyMeasuredHeight(height, for: item.itemID, key: key)
+                    self.collectionView.layoutIfNeeded()
+                }
+            } else {
+                layout.applyMeasuredHeight(height, for: item.itemID, key: key)
+            }
             needsMore = true
         }
         return needsMore
@@ -1614,6 +1647,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         onPhaseChanged?(transition)
         if !decelerate { readerSettledAtBottom = viewport.measuredAtBottom }
         layout.noteDragDidEnd(willDecelerate: decelerate)
+        scheduleVisibleCellSettle()
         scheduleUserScrollSettle()
         publishViewport()
     }
@@ -1624,6 +1658,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         onPhaseChanged?(transition)
         readerSettledAtBottom = viewport.measuredAtBottom
         layout.noteDecelerationDidEnd()
+        scheduleVisibleCellSettle()
         scheduleUserScrollSettle()
         scheduleVisibleCellSettle()
         publishViewport()

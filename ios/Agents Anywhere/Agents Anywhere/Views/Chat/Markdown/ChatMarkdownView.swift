@@ -3,6 +3,12 @@ import Textual
 
 extension EnvironmentValues {
     @Entry var chatLayoutTraceOwner = "markdown"
+    /// True while a row is hosted by the collection timeline. Its controller
+    /// animates the row height itself (one 0.18 s ease-in-out), so a fold must
+    /// change state without SwiftUI's own content animation; otherwise the
+    /// content and the cell frame run on two different clocks (the "not
+    /// smooth" device report).
+    @Entry var collectionTimelineHeightAnimation = false
     /// Running-text size for every block. When nil the view resolves the
     /// user's preferred size from `ChatMetrics.bodySize`, so a size change in
     /// Settings reaches the chat without a relaunch. Callers that need a

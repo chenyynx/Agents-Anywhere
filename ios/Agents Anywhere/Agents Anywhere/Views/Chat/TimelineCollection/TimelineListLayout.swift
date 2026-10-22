@@ -45,6 +45,10 @@ final class TimelineListLayout: UICollectionViewLayout {
     /// attribute object for all 1000 rows.
     private var previousItems: [TimelineListItem] = []
     private var previousKeys: [TimelineHeightKey] = []
+    /// Gap after each item, from the previous prepare. The provider's gap is
+    /// per item and can change without the item's identity or height key
+    /// moving; the prefix must not reuse positions across such a change.
+    private var previousSpacings: [CGFloat] = []
     private var isInsideUpdate = false
     private var insertionOwed: TimelineInsertionOwed?
     private var deferral = TimelinePullDeferOrdering()
@@ -127,15 +131,25 @@ final class TimelineListLayout: UICollectionViewLayout {
             resolved.append(height)
         }
 
+        var spacings: [CGFloat] = []
+        spacings.reserveCapacity(max(0, count - 1))
+        for index in 0..<max(0, count - 1) {
+            spacings.append(host.layoutItemSpacing(after: items[index]))
+        }
+
         // Longest common prefix: same item, same height key, same displayed
-        // height. The prefix keeps its attribute objects and y positions.
+        // height, same gap after it. The prefix keeps its attribute objects
+        // and y positions.
         var prefix = 0
         if width == lastLayoutWidth {
             let limit = min(count, attributesByIndex.count, previousItems.count, previousKeys.count)
             while prefix < limit,
                   previousItems[prefix] == items[prefix],
                   previousKeys[prefix] == keys[prefix],
-                  abs(attributesByIndex[prefix].frame.height - resolved[prefix]) <= 0.5 {
+                  abs(attributesByIndex[prefix].frame.height - resolved[prefix]) <= 0.5,
+                  prefix >= spacings.count
+                    || (prefix < previousSpacings.count
+                        && previousSpacings[prefix] == spacings[prefix]) {
                 prefix += 1
             }
         }
@@ -144,7 +158,7 @@ final class TimelineListLayout: UICollectionViewLayout {
         next.reserveCapacity(count)
         if prefix > 0 { next.append(contentsOf: attributesByIndex.prefix(prefix)) }
         var cursor = prefix > 0
-            ? next[prefix - 1].frame.maxY + host.layoutItemSpacing(after: items[prefix - 1])
+            ? next[prefix - 1].frame.maxY + spacings[prefix - 1]
             : TimelineListMetrics.topInset
         for index in prefix..<count {
             let attributes = TimelineListLayoutAttributes(forCellWith: IndexPath(item: index, section: 0))
@@ -155,7 +169,7 @@ final class TimelineListLayout: UICollectionViewLayout {
             attributes.policy = host.layoutHeightPolicy(for: items[index])
             next.append(attributes)
             cursor += resolved[index]
-            if index < count - 1 { cursor += host.layoutItemSpacing(after: items[index]) }
+            if index < count - 1 { cursor += spacings[index] }
         }
 
         var byID: [String: TimelineListLayoutAttributes] = [:]
@@ -169,6 +183,7 @@ final class TimelineListLayout: UICollectionViewLayout {
         attributesByItemID = byID
         previousItems = items
         previousKeys = keys
+        previousSpacings = spacings
         contentHeight = next.last?.frame.maxY ?? 0
         lastLayoutWidth = width
         pendingMeasurements = pending

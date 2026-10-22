@@ -252,4 +252,38 @@ nonisolated enum CodePageTheme {
     /// [E] CANONICAL/20-working-mark.md §4 — the connecting verb list rotates
     /// once a second (`PeriodicTimelineSchedule(by: 1.0)`).
     static let runningStatusVerbRotationInterval: Double = 1.0
+
+    // MARK: - User message bubble
+
+    // [I] 暂定，等 round18 逆向。The official Code capture has no user
+    // bubble yet, so every value in this section is inferred (the geometry
+    // follows the Chat page's `UserMessageBubble`) and the fill is a neutral
+    // placeholder — deliberately not the app accent.
+
+    /// [I] 暂定，等 round18 逆向 — light `#F0F0EE`, dark `#2C2C2A`.
+    static let userBubbleFill: SchemeColor = SchemeColor(
+        light: Color(.sRGB, red: 0.941, green: 0.941, blue: 0.933),
+        dark: Color(.sRGB, red: 0.173, green: 0.173, blue: 0.165))
+
+    /// [I] 暂定，等 round18 逆向 — the system primary label in both
+    /// appearances; the bubble does not reuse the accent text colour.
+    static let userBubbleText: Color = .primary
+
+    /// [I] 暂定，等 round18 逆向 — 24 pt, matching the Chat page bubble.
+    static let userBubbleCornerRadius: CGFloat = 24
+
+    /// [I] 暂定，等 round18 逆向 — 17 pt horizontal padding.
+    static let userBubbleHorizontalPadding: CGFloat = 17
+
+    /// [I] 暂定，等 round18 逆向 — 12 pt vertical padding.
+    static let userBubbleVerticalPadding: CGFloat = 12
+
+    /// [I] 暂定，等 round18 逆向 — the leading gutter a user message can
+    /// never cross; shorter messages right-align against the row's trailing
+    /// margin.
+    static let userBubbleLeadingGutter: CGFloat = 48
+
+    /// [I] 暂定，等 round18 逆向 — 8 pt between the gutter and the bubble,
+    /// and later between stacked bubble pieces.
+    static let userBubbleSpacing: CGFloat = 8
 }

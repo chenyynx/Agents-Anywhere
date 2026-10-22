@@ -50,15 +50,53 @@ struct CodeMessageRowView: View {
         let rows = renderRows
         VStack(alignment: .leading, spacing: CodePageTheme.blockSpacing) {
             ForEach(rows) { row in
-                VStack(alignment: .leading, spacing: CodePageTheme.segmentVerticalPadding) {
-                    ForEach(Array(row.blocks.enumerated()), id: \.offset) { _, block in
-                        blockView(block, statuses: row.statuses)
-                            .padding(.vertical, CodePageTheme.segmentVerticalPadding)
-                    }
+                if row.role == .user {
+                    userRow(row)
+                } else {
+                    blockStack(row)
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// One message's blocks in declared order; the assistant path.
+    private func blockStack(_ row: RenderedRow) -> some View {
+        VStack(alignment: .leading, spacing: CodePageTheme.segmentVerticalPadding) {
+            ForEach(Array(row.blocks.enumerated()), id: \.offset) { _, block in
+                blockView(block, statuses: row.statuses)
+                    .padding(.vertical, CodePageTheme.segmentVerticalPadding)
+            }
+        }
+    }
+
+    /// A user message renders as one right-aligned bubble. AA publishes one
+    /// message's body as several text rows, so every `.text` block joins in
+    /// block order instead of stacking as separate paragraphs. A non-text
+    /// block on a user row does not occur today; it keeps the generic path
+    /// rather than being dropped.
+    private func userRow(_ row: RenderedRow) -> some View {
+        var texts: [String] = []
+        var others: [CodeMessageRow.Block] = []
+        for block in row.blocks {
+            switch block {
+            case let .text(id, text):
+                let value = displayedText(id: id, fallback: text)
+                if !value.isEmpty { texts.append(value) }
+            default:
+                others.append(block)
+            }
+        }
+        return VStack(alignment: .leading, spacing: CodePageTheme.segmentVerticalPadding) {
+            if !texts.isEmpty {
+                CodeUserBubble(text: texts.joined(separator: "\n\n"))
+                    .padding(.vertical, CodePageTheme.segmentVerticalPadding)
+            }
+            ForEach(Array(others.enumerated()), id: \.offset) { _, block in
+                blockView(block, statuses: row.statuses)
+                    .padding(.vertical, CodePageTheme.segmentVerticalPadding)
+            }
+        }
     }
 
     // MARK: - Blocks
@@ -141,6 +179,7 @@ struct CodeMessageRowView: View {
     /// once per body keeps the status dictionary out of every block view.
     private struct RenderedRow: Identifiable {
         let id: String
+        let role: V2MessageRole
         let blocks: [CodeMessageRow.Block]
         let statuses: [String: V2TimelineItemStatus]
     }
@@ -158,7 +197,8 @@ struct CodeMessageRowView: View {
                     return statuses[id]?.isActive == true
                 }
                 guard !blocks.isEmpty else { return nil }
-                return RenderedRow(id: row.id, blocks: blocks, statuses: statuses)
+                return RenderedRow(id: row.id, role: row.role,
+                                   blocks: blocks, statuses: statuses)
             }
     }
 
@@ -489,4 +529,21 @@ private struct CodeMessageRowPreview: View {
          "source":{"itemId":"m2"}}
         """#),
     ], profile: .codex)
+}
+
+#Preview("Code message — user bubble") {
+    // Two body rows of the same user message: the row joins them into one
+    // bubble, in block order.
+    CodeMessageRowPreview(items: [
+        codeMessagePreviewItem(#"""
+        {"id":"u1","sessionId":"s","type":"message","status":"done","role":"user","orderSeq":1,
+         "content":{"text":"The email check should trim the value before it tests it."},
+         "source":{"itemId":"m3"}}
+        """#),
+        codeMessagePreviewItem(#"""
+        {"id":"u2","sessionId":"s","type":"message","status":"done","role":"user","orderSeq":2,
+         "content":{"text":"Keep the existing error message."},
+         "source":{"itemId":"m3"}}
+        """#),
+    ], profile: .claudeCode)
 }

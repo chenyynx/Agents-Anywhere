@@ -255,7 +255,7 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
                               unit: group.notebook ? .notebooks : .files,
                               count: count)
             case .other(let phraseKey):
-                let count = counters[phraseKey] ?? 1
+                let count = counters[.other(phraseKey)] ?? 1
                 return phraseKey.phrase(count: count)
             }
         }

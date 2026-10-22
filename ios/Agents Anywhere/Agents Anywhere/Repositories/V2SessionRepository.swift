@@ -249,7 +249,7 @@ final class V2SessionRepository {
         // restored beside the projection it belongs to.
         entry.recoveryDiagnostics = archive.recoveryDiagnostics ?? []
         entry.acknowledgedNotifications = archive.acknowledgedNotifications ?? V2NotificationAcknowledgements()
-        entry.model.restoreLocal(archive)
+        entry.model.restoreLocal(archive, subAgentActivity: saved.subAgentActivity)
         emit(entry, persist: false)
     }
 
@@ -351,6 +351,22 @@ final class V2SessionRepository {
         entry.projection?.applyLatest(page)
         emit(entry)
         return entry.projection!.data
+    }
+
+    /// One SubAgent card's child rows (C3) for a main-only window. Kept out of
+    /// the projection on purpose: the panel's on-demand read must never touch
+    /// the timeline window, whose paging boundaries and live/recovery rules
+    /// belong to the repository. A 422 propagates unchanged — the caller reads
+    /// it as "server does not support this read" and does not retry.
+    func loadSubAgentChildren(
+        sessionId: V2SessionID,
+        parentItemId: String,
+        beforeOrderSeq: Int? = nil,
+        limit: Int = 100
+    ) async throws -> V2SessionTimelinePage {
+        try requireNetwork()
+        return try await detail.childrenItems(
+            sessionId: sessionId, parentItemId: parentItemId, beforeOrderSeq: beforeOrderSeq, limit: limit)
     }
 
     func catalogs(sessionId: V2SessionID, force: Bool = false, capabilities: V2RuntimeCapabilitySnapshot? = nil) async throws -> V2SessionCatalogs {

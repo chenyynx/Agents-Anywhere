@@ -4,6 +4,9 @@ nonisolated enum V2TimelineMode: String {
     case latest
     case changes
     case history
+    /// One SubAgent card's child rows (C3): the panel's on-demand read for a
+    /// main-only window, which carries no child rows at all.
+    case children
 }
 
 nonisolated struct V2SessionTimelinePage: Decodable, Hashable {

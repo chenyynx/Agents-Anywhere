@@ -18,7 +18,9 @@ import UIKit
 ///   no chip strip, so an ended dispatch stays browsable from history.
 ///
 /// Everything renders from the presented rows, so the panel restores after a
-/// relaunch and follows live updates exactly like the timeline does.
+/// relaunch and follows live updates exactly like the timeline does. A
+/// main-only window (C2) carries no child rows at all, so its activity is read
+/// on demand (C3) and merged with the live rows the window still receives.
 struct SubAgentPanelSheet: View {
     let chat: SessionChatModel
     let deviceName: String?
@@ -38,6 +40,10 @@ struct SubAgentPanelSheet: View {
     private var accent: AppAccent { AppAccent.resolve(accentValue) }
     @State private var selection: String?
     @State private var showsFullPrompt = false
+    /// C3: the on-demand child-row source. It lives on the session model so
+    /// its per-card cache outlives the sheet and feeds the local archive; this
+    /// view only drives activation and cancellation.
+    private var activity: SubAgentActivityStore { chat.session.subAgentActivity }
 
     private static let collapsedPromptLimit = 8
     /// Below this the prompt renders whole; no fold affordance for short text.
@@ -119,6 +125,56 @@ struct SubAgentPanelSheet: View {
         }
         .appSheetPresentation(.compact)
         .onChange(of: selection) { _, _ in showsFullPrompt = false }
+        // Every presentation starts a refresh window: rows restored from the
+        // archive (or read by an earlier presentation) show immediately but
+        // are fetched again online. Activation runs from both hooks so the
+        // order SwiftUI picks between them cannot leave a stale first card.
+        .onAppear {
+            activity.beginPresentation()
+            activateActivity()
+        }
+        .task(id: selectedCard?.id) { activateActivity() }
+        // Live child rows reach the panel through the window; push them into
+        // the store only when their identity set changes, so the merge stays
+        // out of the body and a streaming token never re-sorts the list.
+        .onChange(of: activityWindowRowIDs, initial: true) { _, _ in
+            activity.updateWindow(childRows: liveActivityChildRows)
+        }
+        .onDisappear { activity.cancel() }
+    }
+
+    /// Only a main-only window needs the on-demand read; a normal one already
+    /// carries the child rows in `chat.timeline.rows`.
+    private func activateActivity() {
+        guard chat.session.windowExcludesAgentChildren, let card = selectedCard else { return }
+        activity.activate(cardID: card.id,
+            lineageIDs: SubAgentProgress.lineageIDs(of: card, in: window))
+        // The lineage just changed; hand over this card's live rows at once.
+        activity.updateWindow(childRows: liveActivityChildRows)
+    }
+
+    /// The identity set of the window rows belonging to the shown card. The
+    /// ids — not the row contents — drive the merge: a streaming token updates
+    /// the live row model in place, and the panel renders that model anyway.
+    private var activityWindowRowIDs: [V2TimelineItemID] {
+        let lineage = activity.lineageIDs
+        guard !lineage.isEmpty else { return [] }
+        var ids: [V2TimelineItemID] = []
+        for row in chat.timeline.rows {
+            if case .agents(let parent) = row.structure.groupKind, lineage.contains(parent) {
+                ids.append(row.id)
+            }
+        }
+        return ids
+    }
+
+    private var liveActivityChildRows: [V2TimelineItem] {
+        let lineage = activity.lineageIDs
+        guard !lineage.isEmpty else { return [] }
+        return chat.timeline.rows.compactMap { row in
+            guard case .agents(let parent) = row.structure.groupKind, lineage.contains(parent) else { return nil }
+            return row.value
+        }
     }
 
     // MARK: Header controls
@@ -260,6 +316,9 @@ struct SubAgentPanelSheet: View {
     // MARK: Body
 
     @ViewBuilder private func sections(_ card: SubAgentCard) -> some View {
+        // C3 owns the (window ∪ fetched) union as store state; a normal window
+        // still reads the timeline directly, exactly as before.
+        let items = activityItems
         VStack(alignment: .leading, spacing: 20) {
             // §3.3 honesty: a card with no loaded row anywhere in its lineage —
             // its own row gone from the window (the sidecar still holds the
@@ -268,14 +327,39 @@ struct SubAgentPanelSheet: View {
             // blank body that reads as "nothing happened". A resume-alias card
             // passes this gate through its sibling's rows (pp 2026-10-09).
             // A main-only window (C2) can never carry the child rows, so the
-            // card's own row must not pass the gate there.
-            if !SubAgentProgress.isContentLoaded(card, in: window,
-                windowExcludesAgentChildren: chat.session.windowExcludesAgentChildren) {
+            // card's own row must not pass the gate there; C3's fetched rows
+            // are the only thing that can.
+            if showsContentNotLoaded(card, in: items) {
                 notLoadedNotice
             }
             promptSection(card)
-            activitySection(card)
+            activitySection(card, in: items)
             outputSection(card)
+        }
+    }
+
+    /// The rows the activity list reads. A main-only window uses the store's
+    /// merged state (live child rows ∪ fetched pages); a normal window already
+    /// carries everything in `chat.timeline.rows`.
+    private var activityItems: [V2TimelineItem] {
+        chat.session.windowExcludesAgentChildren ? activity.displayRows : window
+    }
+
+    /// Whether the panel must say 「内容未加载」. Today's rule (no row of the
+    /// card's lineage in the window) stays for a normal window. A main-only
+    /// window settles it only after its on-demand read: zero child rows then
+    /// means the activity really is not loaded, while a read still in flight
+    /// must not claim it.
+    private func showsContentNotLoaded(_ card: SubAgentCard, in items: [V2TimelineItem]) -> Bool {
+        guard chat.session.windowExcludesAgentChildren else {
+            return !SubAgentProgress.isContentLoaded(card, in: window)
+        }
+        switch activity.phase {
+        case .loaded, .unsupported, .offline:
+            return !SubAgentProgress.isContentLoaded(card, in: items, windowExcludesAgentChildren: true)
+        case .idle, .loading, .loadingOlder, .failed:
+            // Not known yet, or the failure row below already says why.
+            return false
         }
     }
 
@@ -327,15 +411,75 @@ struct SubAgentPanelSheet: View {
     /// `isVisibleInChat` gate the chat applies, so hidden rows and empty
     /// reasoning never enter the panel; the row component itself is unchanged
     /// and gets no `onSubAgent` (v1 renders one nested layer).
-    @ViewBuilder private func activitySection(_ card: SubAgentCard) -> some View {
-        let rows = activityRows(of: card)
-        if !rows.isEmpty {
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(rows) { row in
-                    SessionTimelineRow(row: row, chat: chat, onAttachment: onAttachment,
-                        cwd: chat.session.metadata?.cwd, disclosures: chat.disclosures, onFile: onFile)
+    @ViewBuilder private func activitySection(_ card: SubAgentCard, in items: [V2TimelineItem]) -> some View {
+        let rows = activityRows(of: card, in: items)
+        // An empty, settled read renders nothing here (the not-loaded notice
+        // already speaks for it); an empty VStack would still eat the outer
+        // stack's spacing.
+        if !rows.isEmpty || hasActivityStatus(rows: rows) {
+            VStack(alignment: .leading, spacing: 8) {
+                // The on-demand read's own state (C3). Only a main-only window
+                // ever leaves `.idle`: a normal window already holds the rows.
+                switch activity.phase {
+                case .loading:
+                    loadingRow(String(localized: "正在加载子代理活动…"))
+                case .loadingOlder:
+                    loadingRow(String(localized: "正在加载更早的活动…"))
+                case .failed(let message):
+                    activityFailure(message)
+                case .loaded:
+                    if activity.hasMore, let oldest = rows.first?.value.orderSeq {
+                        Button(String(localized: "加载更早的活动")) {
+                            activity.loadOlder(beforeOrderSeq: oldest)
+                        }
+                        .font(.footnote.weight(.medium))
+                        .frame(minHeight: 32)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.tint)
+                    }
+                case .idle, .unsupported, .offline:
+                    EmptyView()
+                }
+                if !rows.isEmpty {
+                    // Lazy: after a few pages this list can hold hundreds of
+                    // rows, and eagerly building every row makes the sheet's
+                    // first layout (and every body tick) pay for all of them.
+                    // It stays above the final-output section, both inside the
+                    // ScrollView.
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(rows) { row in
+                            SessionTimelineRow(row: row, chat: chat, onAttachment: onAttachment,
+                                cwd: chat.session.metadata?.cwd, disclosures: chat.disclosures, onFile: onFile)
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    private func hasActivityStatus(rows: [ChatTimelineRowModel]) -> Bool {
+        switch activity.phase {
+        case .loading, .loadingOlder, .failed: return true
+        case .loaded: return activity.hasMore && rows.first != nil
+        case .idle, .unsupported, .offline: return false
+        }
+    }
+
+    private func loadingRow(_ text: String) -> some View {
+        HStack(spacing: 8) {
+            ProgressView().progressViewStyle(.circular).controlSize(.small)
+            Text(text).font(.footnote).foregroundStyle(.secondary)
+        }.accessibilityElement(children: .combine)
+    }
+
+    private func activityFailure(_ message: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(message).font(.footnote).foregroundStyle(.secondary)
+            Button(String(localized: "重试")) { activity.retry() }
+                .font(.footnote.weight(.medium))
+                .frame(minHeight: 32)
+                .buttonStyle(.plain)
+                .foregroundStyle(.tint)
         }
     }
 
@@ -354,16 +498,21 @@ struct SubAgentPanelSheet: View {
         }
     }
 
-    /// The card's visible activity rows, as the row models the chat already
-    /// holds. Membership and order come from the ClientCore rule
-    /// (`SubAgentProgress.activityRows`, which merges a resume alias with its
-    /// original dispatch card); the lookup only swaps item ids for those live
-    /// models, so the panel renders the chat's own reveal state.
-    private func activityRows(of card: SubAgentCard) -> [ChatTimelineRowModel] {
-        let rowsByID = Dictionary(chat.timeline.rows.map { ($0.id, $0) },
-                                  uniquingKeysWith: { first, _ in first })
-        return SubAgentProgress.activityRows(of: card, in: chat.timeline.rows.map(\.value))
-            .compactMap { rowsByID[$0.id] }
+    /// The card's visible activity rows, as row models. Membership and order
+    /// come from the ClientCore rule (`SubAgentProgress.activityRows`, which
+    /// merges a resume alias with its original dispatch card). A row the live
+    /// window holds keeps the chat's own model (and its reveal state); a row
+    /// that came only from the on-demand read (C3) gets a model owned by the
+    /// activity store, so it survives body re-evaluations.
+    private func activityRows(of card: SubAgentCard, in items: [V2TimelineItem]) -> [ChatTimelineRowModel] {
+        let visible = SubAgentProgress.activityRows(of: card, in: items)
+        guard !visible.isEmpty else { return [] }
+        // Index only the wanted rows: the window can hold a thousand rows, and
+        // building a dictionary of all of them on every body tick is waste.
+        let wanted = Set(visible.map(\.id))
+        var rowsByID: [V2TimelineItemID: ChatTimelineRowModel] = [:]
+        for row in chat.timeline.rows where wanted.contains(row.id) { rowsByID[row.id] = row }
+        return visible.map { rowsByID[$0.id] ?? activity.rowModel(for: $0) }
     }
 
     private func sectionLabel(_ text: String) -> some View {

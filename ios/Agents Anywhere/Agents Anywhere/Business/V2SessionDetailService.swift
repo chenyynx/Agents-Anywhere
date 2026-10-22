@@ -49,6 +49,24 @@ struct V2SessionDetailService {
         )
     }
 
+    /// C3: one card's child rows for the SubAgent panel. Only asked for when
+    /// the window itself was read main-only; a 422 from an older server is
+    /// left for the caller to treat as "unsupported".
+    func childrenItems(
+        sessionId: V2SessionID,
+        parentItemId: String,
+        beforeOrderSeq: Int? = nil,
+        limit: Int = 100
+    ) async throws -> V2SessionTimelinePage {
+        try validatePageSize(limit)
+        return try await sessionAPI.timelineChildren(
+            sessionId: sessionId,
+            parentItemId: parentItemId,
+            beforeOrderSeq: beforeOrderSeq,
+            limit: limit
+        )
+    }
+
     func refreshRuntimeState(sessionId: V2SessionID) async throws -> V2RuntimeState {
         try await runtimeAPI.state(sessionId: sessionId).state
     }

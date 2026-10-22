@@ -57,11 +57,17 @@ nonisolated struct V2SessionArchive: Codable {
     /// content and render a silent empty activity area. Optional: archives
     /// written before this field existed decode without it.
     var excludesAgentChildren: Bool? = nil
+    /// The child rows the SubAgent panel fetched per card (C3 offline cache),
+    /// bounded by `SubAgentActivityLimits`. Optional: archives written before
+    /// this field existed decode without it.
+    var subAgentActivity: [String: [JSONValue]]? = nil
 
     @MainActor init(data: V2SessionData, model: V2SessionModel) {
         session = data.session; items = data.items.map(\.raw); cursor = data.cursor
         hasOlderItems = data.hasOlderItems; hasNewerItems = data.hasNewerItems
         excludesAgentChildren = data.windowExcludesAgentChildren ? true : nil
+        let activity = model.subAgentActivity.archived()
+        subAgentActivity = activity.isEmpty ? nil : activity
         previews = model.attachmentPreviews.archived()
         draft = model.draft; draftAttachments = model.composer.attachments.map { $0.archived() }
         var storedPending = model.pendingMessages.filter { $0.delivery != .confirmed }.map { value in
@@ -116,10 +122,12 @@ nonisolated struct V2SessionArchive: Codable {
     }
 }
 
-/// An archive plus its timeline already decoded by the store actor.
+/// An archive plus its timeline and SubAgent activity already decoded by the
+/// store actor.
 nonisolated struct V2SessionRestore {
     let archive: V2SessionArchive
     let items: [V2TimelineItem]
+    let subAgentActivity: [String: [V2TimelineItem]]
 }
 
 extension ChatAttachment {

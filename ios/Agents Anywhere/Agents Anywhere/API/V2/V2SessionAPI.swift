@@ -21,6 +21,15 @@ protocol V2SessionAPIProtocol {
         limit: Int,
         excludeAgentChildren: Bool
     ) async throws -> V2SessionTimelinePage
+    /// One SubAgent card's child rows (C3). The server may answer 422 when it
+    /// does not implement `mode=children`; the caller treats that as "not
+    /// supported", never as a retryable failure.
+    func timelineChildren(
+        sessionId: V2SessionID,
+        parentItemId: String,
+        beforeOrderSeq: Int?,
+        limit: Int
+    ) async throws -> V2SessionTimelinePage
 }
 
 struct V2SessionAPI: V2SessionAPIProtocol {
@@ -123,6 +132,21 @@ struct V2SessionAPI: V2SessionAPIProtocol {
         )
     }
 
+    func timelineChildren(
+        sessionId: V2SessionID,
+        parentItemId: String,
+        beforeOrderSeq: Int?,
+        limit: Int
+    ) async throws -> V2SessionTimelinePage {
+        try await timeline(
+            sessionId: sessionId,
+            mode: .children,
+            beforeOrderSeq: beforeOrderSeq,
+            limit: limit,
+            parentItemId: parentItemId
+        )
+    }
+
     func setTakeover(sessionId: V2SessionID, enabled: Bool) async throws -> V2SessionTakeoverResponse {
         try await transport.send(HTTPRequest<EmptyRequestBody, V2SessionTakeoverResponse>(
             method: enabled ? .post : .delete, path: sessionPath(sessionId, suffix: "takeover")
@@ -150,7 +174,8 @@ struct V2SessionAPI: V2SessionAPIProtocol {
         afterSeq: Int? = nil,
         beforeOrderSeq: Int? = nil,
         limit: Int,
-        excludeAgentChildren: Bool? = nil
+        excludeAgentChildren: Bool? = nil,
+        parentItemId: String? = nil
     ) async throws -> V2SessionTimelinePage {
         var queryItems = [
             URLQueryItem(name: "mode", value: mode.rawValue),
@@ -161,6 +186,9 @@ struct V2SessionAPI: V2SessionAPIProtocol {
         }
         if let beforeOrderSeq {
             queryItems.append(URLQueryItem(name: "beforeOrderSeq", value: String(beforeOrderSeq)))
+        }
+        if let parentItemId {
+            queryItems.append(URLQueryItem(name: "parentItemId", value: parentItemId))
         }
         // Only the reads that build the visible window opt in: the changes
         // (catch-up) read still carries child rows, which the panel and the

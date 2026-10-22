@@ -164,6 +164,22 @@ nonisolated private final class InterceptingURLProtocol: URLProtocol, @unchecked
         #expect(InterceptingURLProtocol.state.requests.count == 1)
     }
 
+    @Test func a422ChildrenReadIsNeverRetried() async throws {
+        let session = session(); defer { session.invalidateAndCancel() }
+        var sleeps: [Duration] = []
+        let transport = URLSessionHTTPTransport(serverURL: URL(string: "https://example.test")!, urlSession: session,
+                                               tokenProvider: StaticAuthTokenProvider(token: "token"), sleep: { sleeps.append($0) })
+        InterceptingURLProtocol.state.reset([.response(422, Data())])
+        await #expect(throws: HTTPError.self) {
+            _ = try await V2SessionAPI(transport: transport).timelineChildren(
+                sessionId: "session", parentItemId: "card", beforeOrderSeq: nil, limit: 100)
+        }
+        // 422 is the server saying the mode does not exist; a read retry would
+        // ask the same question again.
+        #expect(InterceptingURLProtocol.state.requests.count == 1)
+        #expect(sleeps.isEmpty)
+    }
+
     @Test func authAndStructuredServerErrorsNeverRetry() async throws {
         let session = session(); defer { session.invalidateAndCancel() }
         let transport = URLSessionHTTPTransport(serverURL: URL(string: "https://example.test")!, urlSession: session, tokenProvider: StaticAuthTokenProvider(token: "token"))

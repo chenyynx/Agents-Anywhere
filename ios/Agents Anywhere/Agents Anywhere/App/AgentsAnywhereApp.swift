@@ -38,6 +38,9 @@ struct AgentsAnywhereApp: App {
                 } else if ProcessInfo.processInfo.arguments.contains(TextKitM4_3AutoRunModel.launchArgument) {
                     // C5/M4.3 image/formula/footer gate; never reachable from the product UI.
                     TextKitM4_3AutoRunRootView()
+                } else if ProcessInfo.processInfo.arguments.contains(CodeProfileAutoRunModel.launchArgument) {
+                    // C5/W8 Code-profile gate; never reachable from the product UI.
+                    CodeProfileAutoRunRootView()
                 } else {
                     RootView()
                 }

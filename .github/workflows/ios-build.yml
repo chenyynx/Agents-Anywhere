@@ -35,6 +35,10 @@ on:
         description: "Run the C5/M1 TextKit 2 measurement spike"
         type: boolean
         default: false
+      code_profile:
+        description: "Run the C5 Code-profile simulator gate"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -577,6 +581,173 @@ jobs:
             ${{ runner.temp }}/crashes/*.ips
             ${{ runner.temp }}/textkit-m3-failure.png
             ${{ runner.temp }}/sim-build.log
+          if-no-files-found: ignore
+
+      - name: Shut down simulator
+        if: always()
+        run: xcrun simctl shutdown "${{ steps.sim.outputs.udid }}" || true
+
+  code-profile:
+    # C5/W8 gate: drive the Code page's model and views in a simulator. The
+    # app is launched with `aa-code-profile`; it writes `code-profile.json`
+    # (checkpoint after every phase, final `completed: true`) plus three PNGs,
+    # and this job fails when the report completed with any failure.
+    needs: test
+    if: inputs.code_profile == true
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pin Xcode
+        run: |
+          sudo xcode-select -s /Applications/${{ github.event.inputs.xcode || 'Xcode_26.5.app' }}
+          xcodebuild -version
+
+      - name: Cache SwiftPM checkouts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/org.swift.swiftpm
+            ~/Library/Caches/org.swift.swiftpm
+          key: swiftpm-code-profile-${{ runner.os }}-${{ hashFiles('ios/**/Package.resolved', 'ios/**/Package.swift') }}
+
+      - name: Pick an iPhone simulator
+        id: sim
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, re, subprocess
+          data = json.loads(subprocess.check_output(["xcrun", "simctl", "list", "devices", "available", "-j"]))
+          best = None
+          for runtime, devices in data.get("devices", {}).items():
+              if "iOS" not in runtime:
+                  continue
+              match = re.search(r"iOS-(\d+)-(\d+)", runtime)
+              version = (int(match.group(1)), int(match.group(2))) if match else (0, 0)
+              for device in devices:
+                  if not device.get("name", "").startswith("iPhone"):
+                      continue
+                  if not device.get("isAvailable", False):
+                      continue
+                  key = (version, device["name"])
+                  if best is None or key > best[0]:
+                      best = (key, device)
+          if best is None:
+              raise SystemExit("no available iPhone simulator runtime")
+          print(f"udid={best[1]['udid']}")
+          print(f"name={best[1]['name']}")
+          print(f"runtime={best[0][0]}.{best[0][1]}")
+          PY
+
+      - name: Boot simulator
+        run: |
+          xcrun simctl boot "${{ steps.sim.outputs.udid }}" || true
+          xcrun simctl bootstatus "${{ steps.sim.outputs.udid }}" -b
+
+      - name: Build for simulator
+        run: |
+          set -o pipefail
+          cd "ios/Agents Anywhere"
+          xcodebuild build \
+            -project "Agents Anywhere.xcodeproj" \
+            -scheme "Agents Anywhere" \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            ENABLE_DEBUG_DYLIB=NO \
+            -derivedDataPath build/DDSim \
+            2>&1 | tee "$RUNNER_TEMP/code-profile-build.log" | tail -40
+
+      - name: Install and run the Code profile gate
+        run: |
+          set -euo pipefail
+          UDID="${{ steps.sim.outputs.udid }}"
+          APP="ios/Agents Anywhere/build/DDSim/Build/Products/Debug-iphonesimulator/Agents Anywhere.app"
+          xcrun simctl install "$UDID" "$APP"
+          xcrun simctl terminate "$UDID" com.agentsanywhere.app || true
+          xcrun simctl launch "$UDID" com.agentsanywhere.app aa-code-profile
+          CONTAINER=$(xcrun simctl get_app_container "$UDID" com.agentsanywhere.app data)
+          RESULT="$CONTAINER/Documents/code-profile.json"
+          # The gate writes a checkpoint after every phase (completed=false), so
+          # wait for the final marker instead of the file's existence.
+          for _ in $(seq 1 180); do
+            if [ -f "$RESULT" ] && grep -q '"completed"[[:space:]]*:[[:space:]]*true' "$RESULT"; then break; fi
+            sleep 1
+          done
+          if [ ! -f "$RESULT" ]; then
+            echo "::error::code profile gate produced no result file"
+            xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/code-profile-failure.png" || true
+            exit 1
+          fi
+          cp "$RESULT" "$RUNNER_TEMP/code-profile.json"
+          cat "$RUNNER_TEMP/code-profile.json"
+          if ! grep -q '"completed"[[:space:]]*:[[:space:]]*true' "$RESULT"; then
+            echo "::error::code profile gate did not complete (see the last phase checkpoint)"
+            xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/code-profile-failure.png" || true
+            exit 1
+          fi
+          for name in code-message-row.png code-detail.png code-working-mark.png; do
+            cp "$CONTAINER/Documents/$name" "$RUNNER_TEMP/$name" 2>/dev/null || true
+          done
+          xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/code-profile-final.png" || true
+
+      - name: Assert the Code profile results
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          temp = os.environ["RUNNER_TEMP"]
+          path = os.path.join(temp, "code-profile.json")
+          if not os.path.exists(path):
+              print("::error::code profile result missing")
+              sys.exit(1)
+          with open(path) as handle:
+              data = json.load(handle)
+          failures = list(data.get("failures") or [])
+          if data.get("completed") is not True:
+              failures.append("gate did not complete")
+          if data.get("passed") is not True:
+              failures.append("gate reported passed=false")
+          for name in ("code-message-row.png", "code-detail.png", "code-working-mark.png"):
+              shot = os.path.join(temp, name)
+              if not os.path.exists(shot) or os.path.getsize(shot) == 0:
+                  failures.append("missing screenshot " + name)
+          for name, scenario in (data.get("runtimes") or {}).items():
+              print(f"runtime {name}: blocks={scenario.get('blocks')} segments={scenario.get('segments')}")
+          print("streaming:", json.dumps(data.get("streaming") or {}, sort_keys=True, ensure_ascii=False))
+          print("toolOutput:", json.dumps(data.get("toolOutput") or {}, sort_keys=True, ensure_ascii=False))
+          print("views:", json.dumps(data.get("views") or {}, sort_keys=True))
+          for failure in failures:
+              print("::error::code profile: " + failure)
+          if failures:
+              sys.exit(1)
+          print("PASS code profile gate")
+          PY
+
+      - name: Collect simulator crash logs
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/crashes"
+          cp ~/Library/Logs/DiagnosticReports/*.ips "$RUNNER_TEMP/crashes" 2>/dev/null || true
+          find ~/Library/Logs/CoreSimulator -maxdepth 5 -name "*.ips" \
+            -exec cp {} "$RUNNER_TEMP/crashes" \; 2>/dev/null || true
+          ls -la "$RUNNER_TEMP/crashes" || true
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-profile
+          path: |
+            ${{ runner.temp }}/code-profile.json
+            ${{ runner.temp }}/code-message-row.png
+            ${{ runner.temp }}/code-detail.png
+            ${{ runner.temp }}/code-working-mark.png
+            ${{ runner.temp }}/code-profile-failure.png
+            ${{ runner.temp }}/code-profile-final.png
+            ${{ runner.temp }}/code-profile-build.log
+            ${{ runner.temp }}/crashes/*.ips
           if-no-files-found: ignore
 
       - name: Shut down simulator

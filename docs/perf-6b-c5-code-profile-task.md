@@ -3,6 +3,7 @@
 > 依据：`/home/ubuntu/aa-test/claude-ios-re/`（官方 build 1.261005.20 / 2026-10-05）CANONICAL 00–23 + DATA/tokens.json；AA 现状另做代码走查。
 > 取代：`docs/perf-6b-c5-code-page-parity-task.md` §4（2026-10-20 pp 决定“先保持 AA 胶囊聚合”）。本单按 pp 2026-10-22「这次目标很明确：全量复刻 Code 页」重开。
 > **范围口径（pp 2026-10-22）**：只做 Code 页复刻；**暂不做 Chat 页的东西**，不建 Chat/Code 双 profile 开关；Chat 页效果以后单独改。
+> **视觉口径（pp 2026-10-22 追加）**：**100% 还原官方视觉**——时间线全部用官方形态，包括运行中动画（`••• Computing...` / WorkingMark）；**不再保留 AA 现有视觉**。此前“AA 视觉保持自己的、视觉常数单独确认”的边界，仅在本 Code 页范围内作废。
 > 原则：行为与可见结构对标官方（EVIDENCE 优先）；不做为未来预留的抽象；dev 不碰不合，测试包只从分支出。
 > 证据标记：**[E]** 指令/类型/字节直读；**[I]** 结构或视频推断；**[U]** 静态未闭合，不得当事实用。
 
@@ -28,7 +29,7 @@ AA 现状（代码走查）：
 
 ## 1. 范围
 
-**做**：Code 行模型、runtime-neutral 工具段、折叠行、全屏工具详情、五路输出视图、chunk 流式、working mark、高度/滚动接入、Code gate、Claude Code / Codex / DSH 三 runtime 适配。
+**做**：Code 行模型、runtime-neutral 工具段、折叠行、全屏工具详情、五路输出视图、chunk 流式、working mark（官方运行中动画）、**官方视觉复刻**、高度/滚动接入、Code gate、Claude Code / Codex / DSH 三 runtime 适配。
 
 **不做**：Chat 页及其揭示效果（以后单独改）、双 profile 开关、整页 shell（导航/抽屉/输入框/键盘/开屏遮罩）、本地消息库、Settings/Connectors/Dispatch、服务端与 wire 契约。
 
@@ -65,11 +66,27 @@ AA 现状（代码走查）：
 4. 行更新包 `performWithoutAnimation`；Code profile **不启用** reveal ownership / `RevealDriver`。
 5. 同帧双行（`.message` 与 `.streamingText` 并存）按官方“可能一帧重复”接受，不额外做兜底（官方兜底 [U]）。
 
-## 6. 阶段 4：working mark
+## 6. 阶段 4：working mark（官方运行中动画）
 
-- `Block.thinking` 状态行（不是独立行）：20×20 flipbook、30 fps、think `0.53 s in / 3.67 s loop / 0.50 s out`、Spring(0.5,0)、Reduce Motion 单帧、退出 0.4 s（scale→0.01 + opacity）（[E]，`20-working-mark.md`）。
-- 文案三态：server 原样 / compacting 本地化 / connecting 20 动词每秒轮换。
+- **替换 AA 现有的思考球**：Code 页用官方的 `WorkingMarkView`——`•••` 三点是 **20×20 flipbook 雪碧图**（不是文本省略号），30 fps，每个 body 三段 `_in/_loop/_out`；think：`0.53 s / 3.67 s / 0.50 s`；Spring(0.5,0)；Reduce Motion 只播单帧；退出 `0.4 s`（scale→0.01 + opacity）（[E]，`20-working-mark.md`）。
+- 状态行位置：消息 block 栈内的 `Block.thinking`，不是独立 transcript 行；左侧 20×20 mark + 右侧状态文本（截图：`••• Computing...`，暖棕色文本）。
+- 文案三态：server 原样 / compacting 本地化 / connecting 20 动词每秒轮换（`PeriodicTimelineSchedule(by: 1.0)`）。
 - `ShownWords`（显示当前 live 工具行）先不做（[U]）。
+
+## 6.5 视觉基线（官方，全部采用）
+
+**已由 [E] 给出的常量**
+
+- 折叠工具行：`Typography.monospaced` 15 pt / lineHeight 24 / weight 400；按钮 padding 6；label + DiffIndicator(+N/−N，圆角 4.5) + 图标 + caret（`04-tool-calls.md` §2.1；`tokens.json`）
+- 行边距 `(5,16,5,16)`；`interMessageSpacing=10`；`segmentVerticalPadding=4`；Markdown 块间距 `16`；行底 padding 0（`05-layout-scroll.md` §4.2）
+- diff 行色：add light `(0,0.576,0)` / dark `(0.047,0.639,0.047)`；remove light `(0.816,0.231,0.231)` / dark `(0.89,0.286,0.282)`（`04-tool-calls.md` §2.4）
+- working mark：20×20、30 fps、三段时长、Spring(0.5,0)、退出 0.4 s（`20-working-mark.md`）
+
+**只能近似、不能照搬的部分**
+
+- 官方图标/字体资源不可分发：图标按官方形状用 SF Symbols / 自绘复刻，字号字重按 token 值；像素级 exact 0（逆向侧像素 gate 已关），只做组件级 gate。
+- [U] 项（`interBlockSpacing` 系统默认、todos 两态颜色、详情页标题呈现等）先按截图取色/取值，标 [I]，真机抓图对比后逐项收敛。
+- 截图取色属于 [I]（示例：`Computing...` 暖棕色、`Edited validate-email.ts` 的 mono 样式与 `+1/−1` 徽章），与 `tokens.json` 冲突时以 token/证据为准。
 
 ## 7. 阶段 5：高度 / 滚动 / LoadOlder
 
@@ -93,6 +110,7 @@ AA 现状（代码走查）：
 - 详情五路输出渲染 + 300 行分页
 - 流式：块追加、无逐字、流式→落库不闪双行、同帧重复可接受
 - 高度：首次估计 → 实测收敛，切换 style 后高度失效
+- **视觉 gate（组件级）**：折叠行 / working mark / 详情页各出截图，与 `REFERENCES/` 的官方参考图做组件级比对；像素级不设判据（逆向侧 exact 0）
 - 与 Chat gate 并行跑、互不阻塞
 
 ## 10. 明确不做（第一批）
@@ -111,8 +129,8 @@ AA 现状（代码走查）：
 
 1. **形态**：官方 B 形态——一条消息一行、工具块行内平铺、折叠条点开全屏详情。
 2. **范围**：只做 Code 页；Chat 页与揭示效果以后单独改，不做双 profile。
-3. **视觉**：布局/间距/字号采用官方 [E] token（15pt mono 折叠行、rowMargins 5/16、消息间距 10pt 等）；颜色与图标仍用 AA 自己的资源（官方资源不可分发）。若某项 token 与 AA 现状冲突，单独列出再定。
-4. **出包节奏**：阶段 0–1 先出一包验证交互骨架；chunk 流式（阶段 3）下一包。
+3. **视觉**：**100% 官方**——布局/间距/字号/颜色/圆角/动效全部按官方 [E] token（含运行中 WorkingMark 动画）；AA 现有视觉不再保留。官方图标/字体资源不可分发，图标用 SF Symbols/自绘按官方形状复刻；[U] 项按截图取值并标 [I]，真机对比后收敛。
+4. **出包节奏**：首包 = 阶段 0–1（行模型 + 折叠行 + 全屏详情）+ **官方视觉骨架 + WorkingMark 运行中动画**；chunk 流式（阶段 3）与五路输出（阶段 2）下一包。
 
 ## 13. 分支与门禁
 

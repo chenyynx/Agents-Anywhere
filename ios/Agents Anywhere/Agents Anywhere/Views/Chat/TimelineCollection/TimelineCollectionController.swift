@@ -359,6 +359,19 @@ final class TimelineCollectionController: UIViewController {
             self.isPerformingSnapshot = false
             self.onApplyCompleted?()
             self.schedulePendingMeasurements()
+            // A reconfigured interactive row (fold, notice) changes height in
+            // SwiftUI after the apply; the single visible-cell pass can see
+            // the old content, stop early, and leave the row at its previous
+            // height — the blank band under a collapsed tool. Poll the
+            // reconfigured rows like the explicit reconfigure path does.
+            if let content = self.content {
+                let interactive = existingChanges.filter {
+                    content.heightPolicy(for: $0).acceptsPreferredHeight
+                }
+                if !interactive.isEmpty {
+                    self.applyPreferredHeights(for: interactive)
+                }
+            }
             self.scheduleVisibleCellSettle()
             self.publishViewport()
             if self.layout.insertionOwedIsSettled {

@@ -40,7 +40,9 @@ import Testing
         let two = try child("a2", parent: "card-a", order: 2)
         let other = try child("b1", parent: "card-b", order: 3)
         let groups = TimelineGrouping.fallbackGroups([one, two, other], interactionTargets: [])
-        #expect(groups.map(\.kind) == [.agents("card-a"), .agents("card-b")])
+        // The existing grouping convention keeps a one-row group `.single`;
+        // only a run of two or more folds into `.agents(parent)`.
+        #expect(groups.map(\.kind) == [.agents("card-a"), .single])
         #expect(groups[0].rows.map(\.id) == ["a1", "a2"])
         #expect(groups[1].rows.map(\.id) == ["b1"])
     }
@@ -67,7 +69,9 @@ import Testing
         #expect(defaults[0].rows.map(\.id) == ["t1"])
         #expect(TimelineGrouping.needsAgentFallback([anchor, other]))
         let fallback = TimelineGrouping.fallbackGroups([anchor, other], interactionTargets: ["t1"])
-        #expect(fallback.map(\.kind) == [.single, .agents("card")])
+        // The lone remaining child is its own one-row group (`.single`); it is
+        // still rendered, which is all the fallback promises.
+        #expect(fallback.map(\.kind) == [.single, .single])
         #expect(fallback[0].rows.map(\.id) == ["t1"])
         #expect(fallback[1].rows.map(\.id) == ["t2"])
     }

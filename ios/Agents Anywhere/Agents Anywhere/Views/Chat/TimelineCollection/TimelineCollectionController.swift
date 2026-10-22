@@ -1029,7 +1029,11 @@ final class TimelineCollectionController: UIViewController {
             guard abs(height - current) > 0.5 else { continue }
             measurementPipeline.complete(item.itemID)
             let policy = content.heightPolicy(for: item)
-            if policy == .interactive, abs(height - current) >= 8 {
+            // UIKit may already have adopted the fitted height during the
+            // update; decide from the height the reader last saw.
+            let before = previousInteractiveHeights[item.itemID]
+            let animationDelta = before.map { abs(height - $0) } ?? abs(height - current)
+            if policy == .interactive, animationDelta >= 8 {
                 // UIKit does not animate frames set through a custom layout's
                 // invalidation; drive the height per frame instead.
                 animateRowHeight(to: height, for: item, key: key)

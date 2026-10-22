@@ -10643,6 +10643,23 @@
         }
       }
     },
+    "加载更早的活动": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Load earlier activity"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "加载更早的活动"
+          }
+        }
+      }
+    },
     "加载预览…": {
       "comment": "Shared with Web: common.loading. Sync with ios/scripts/web_copy.py.",
       "extractionState": "manual",
@@ -13663,6 +13680,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在加载较早的消息…"
+          }
+        }
+      }
+    },
+    "正在加载更早的活动…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading earlier activity…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在加载更早的活动…"
+          }
+        }
+      }
+    },
+    "正在加载子代理活动…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading subagent activity…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在加载子代理活动…"
           }
         }
       }

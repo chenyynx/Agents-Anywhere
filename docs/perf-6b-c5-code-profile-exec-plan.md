@@ -63,6 +63,24 @@
 4. **行身份**：一条消息一个 item（id = `CodeMessageBuilder` 的 group key）；流式行用 `CodeStreamingSnapshot.streamingRowID`；落库时删除+插入，不原地改 id。
 5. **视觉**：视图层只引用 `CodePageTheme`；WorkingMark 只在运行态挂载；折叠行点击只回调，导航由 W7 负责。
 
+## 3.6 W7 接线地图（代码走查后的落地路径）
+
+目标形态：**时间线整体换成 Code 页**（无开关）。改 `TimelineChatContentAdapter` + `TimelineGrouping` + 一个新建的 `CodeMessageRowView`，不动布局/高度内核。
+
+1. **分组**：`TimelineChatContentAdapter.refresh()`（`Views/Chat/TimelineCollection/TimelineChatContentAdapter.swift:678` 附近）把 `TimelineGrouping.groups(...)` 换成消息分组：
+   - 过滤：`isVisibleInChat`、排除 `content.parentItemId` 子行（交互目标行保留，对齐现有 L2.1 豁免）；
+   - 每个 `source.nativeMessageId ?? source.itemId` 一个 `ChatTimelineGroup`，行按 `CodeMessageBuilder` 的 RBT 顺序；
+   - `ChatTimelineGroup` 增加显式 `id`（消息 key），避免"首行晚到导致身份漂移"；`id` 不进 `TimelineListItem` 前缀，`.group(key)` 复用。
+2. **行视图**：`rowView(.group)` 改为 `CodeMessageRowView(group:profile:)`（新建 `Views/Chat/Code/CodeMessageRowView.swift`）：
+   - blocks → 推理块（thinking 状态行 + `WorkingMarkView`）、正文（首包走 `ChatMarkdownView`，TextKit 进混合行列为第二批）、`toolCalls` → `CodeCollapsedToolRow`（点击回调进全屏详情）、`other` → 通用行；
+   - 折叠行点击 → `CodeToolDetailView`（W4）用 `.sheet`/`NavigationStack` 呈现（官方呈现方式 [U]，先按全屏 sheet）。
+3. **高度/签名**：
+   - 行高度策略：含工具/推理的消息行 `.interactive`（hosting 自报），纯正文 `.measured`；
+   - `estimateKind`：按消息内正文 + 工具 label 文本估算，最少 44；
+   - `contentSignature`：复用 `TimelineGroupContentSignature`（rows + expanded ids + attachments），消息 key 作为 item id。
+4. **流式**：Code 页不启用 `assistantStreamingDocument`（TextKit 揭示路径）；用 `CodeStreamingPublisher` 在 adapter 里把模型的全量文本按 0.1s/chunk 发布成 `publishedText`，行视图渲染该文本；落库时删除流式行、插入消息行。
+5. **回归门**：改完先跑现有 C3/M4 gate（`timeline-autorun`），全绿再写 Code gate；红了先回退分组改动，不允许带着 stale cell 进下一阶段。
+
 ## 4. 每个包的验收
 
 - W0：token 全部有来源注释（[E] 章节 / [I] 截图）；无散落魔法数；`swiftc -parse` 通过。

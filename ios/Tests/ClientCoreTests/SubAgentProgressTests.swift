@@ -745,6 +745,16 @@ import Testing
         let alias = try card(items[3])
         let withoutAlias = items.filter { $0.id != "alias" }
         #expect(SubAgentProgress.isContentLoaded(alias, in: withoutAlias, windowExcludesAgentChildren: true))
+        // The panel's on-demand rows are child rows only (no card rows at all):
+        // deriving the lineage from that list would collapse it to the alias id
+        // and drop the dispatch sibling's rows — the C3 regression. The caller
+        // passes the lineage it resolved from the window instead.
+        let childRowsOnly = items.filter { SubAgentProgress.parentItemID($0) != nil }
+        #expect(!SubAgentProgress.isContentLoaded(alias, in: childRowsOnly, windowExcludesAgentChildren: true))
+        #expect(SubAgentProgress.isContentLoaded(alias, in: childRowsOnly, windowExcludesAgentChildren: true,
+            lineage: ["alias", "dispatch"]))
+        #expect(SubAgentProgress.activityRows(of: alias, in: childRowsOnly,
+            lineage: ["alias", "dispatch"]).map(\.id) == ["r1", "t1", "m1"])
         // Outside a main-only window the card's own row still passes, exactly
         // as before this flag existed.
         #expect(SubAgentProgress.isContentLoaded(parsed, in: [cardRow]))

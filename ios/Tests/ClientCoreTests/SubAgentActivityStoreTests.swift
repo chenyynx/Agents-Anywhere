@@ -19,10 +19,12 @@ import Testing
     private final class FetchStub {
         var pages: [String: [Page]] = [:]
         var error: Error?
+        var delay: Duration?
         var calls: [(parent: String, before: Int?)] = []
 
         func fetch(_ parent: String, _ before: Int?) async throws -> V2SessionTimelinePage {
             calls.append((parent, before))
+            if let delay { try await Task.sleep(for: delay) }
             if let error { throw error }
             var queue = pages[parent] ?? []
             let page = queue.isEmpty ? Page([], hasMore: false) : queue.removeFirst()
@@ -131,6 +133,22 @@ import Testing
         store.activate(cardID: "card", lineageIDs: ["card"])
         try await eventually { store.phase == .unsupported }
         #expect(stub.calls.count == 1)
+    }
+
+    @Test func aCancelledRequestCannotLandOnTheNextCard() async throws {
+        let stub = FetchStub()
+        stub.delay = .milliseconds(80)
+        stub.pages = [
+            "a": [Page([try child("a1", parent: "a", order: 1)], hasMore: false)],
+            "b": [Page([try child("b1", parent: "b", order: 2)], hasMore: false)],
+        ]
+        let store = SubAgentActivityStore(fetch: stub.fetch)
+        store.activate(cardID: "a", lineageIDs: ["a"])
+        // Switch before A's read can complete: its generation is stale, so its
+        // result must never be applied to B.
+        store.activate(cardID: "b", lineageIDs: ["b"])
+        try await eventually { store.cardID == "b" && store.phase == .loaded }
+        #expect(store.rows.map(\.id) == ["b1"])
     }
 
     @Test func switchingBackToALoadedCardDoesNotRefetch() async throws {

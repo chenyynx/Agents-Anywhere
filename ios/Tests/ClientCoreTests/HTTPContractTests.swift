@@ -164,6 +164,25 @@ nonisolated private final class InterceptingURLProtocol: URLProtocol, @unchecked
         #expect(InterceptingURLProtocol.state.requests.count == 1)
     }
 
+    @Test func onlyTheVisibleWindowReadsAskForMainAgentRows() async throws {
+        let session = session(); defer { session.invalidateAndCancel() }
+        let transport = URLSessionHTTPTransport(serverURL: URL(string: "https://example.test")!, urlSession: session,
+                                               tokenProvider: StaticAuthTokenProvider(token: "token"))
+        InterceptingURLProtocol.state.reset(try (0..<3).map { _ in .response(200, try fixtureData("timeline")) })
+        let api = V2SessionAPI(transport: transport)
+        _ = try await api.timelineChanges(sessionId: "session", afterSeq: 40, limit: 500)
+        _ = try await api.timelineChildren(sessionId: "session", parentItemId: "card", beforeOrderSeq: 80, limit: 100)
+        _ = try await api.latestTimeline(sessionId: "session", limit: 100, excludeAgentChildren: true)
+        let requests = InterceptingURLProtocol.state.requests
+        #expect(requests.count == 3)
+        // The export/recovery feed keeps child rows: the flag must not leak in.
+        #expect(query(requests[0]) == ["mode": "changes", "limit": "500", "afterSeq": "40"])
+        // The panel's on-demand read is keyed by card, not by the window flag.
+        #expect(query(requests[1]) == ["mode": "children", "limit": "100", "beforeOrderSeq": "80",
+            "parentItemId": "card"])
+        #expect(query(requests[2]) == ["mode": "latest", "limit": "100", "excludeAgentChildren": "true"])
+    }
+
     @Test func a422ChildrenReadIsNeverRetried() async throws {
         let session = session(); defer { session.invalidateAndCancel() }
         var sleeps: [Duration] = []

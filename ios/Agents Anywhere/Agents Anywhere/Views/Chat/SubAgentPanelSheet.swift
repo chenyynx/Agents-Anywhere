@@ -135,9 +135,11 @@ struct SubAgentPanelSheet: View {
         }
         .task(id: selectedCard?.id) { activateActivity() }
         // Live child rows reach the panel through the window; push them into
-        // the store only when their identity set changes, so the merge stays
-        // out of the body and a streaming token never re-sorts the list.
-        .onChange(of: activityWindowRowIDs, initial: true) { _, _ in
+        // the store only when their identity/version set changes, so the merge
+        // stays out of the body. The `updatedSeq` component is what lets a
+        // status/content change (not just an id arriving) refresh the merged
+        // copy that decides which rows the panel renders.
+        .onChange(of: activityWindowRowSignature, initial: true) { _, _ in
             activity.updateWindow(childRows: liveActivityChildRows)
         }
         .onDisappear { activity.cancel() }
@@ -156,16 +158,19 @@ struct SubAgentPanelSheet: View {
     /// The identity set of the window rows belonging to the shown card. The
     /// ids — not the row contents — drive the merge: a streaming token updates
     /// the live row model in place, and the panel renders that model anyway.
-    private var activityWindowRowIDs: [V2TimelineItemID] {
+    private var activityWindowRowSignature: [String] {
         let lineage = activity.lineageIDs
         guard !lineage.isEmpty else { return [] }
-        var ids: [V2TimelineItemID] = []
+        var signature: [String] = []
         for row in chat.timeline.rows {
             if case .agents(let parent) = row.structure.groupKind, lineage.contains(parent) {
-                ids.append(row.id)
+                // A live row can change status/content under the same id; the
+                // merged copy must follow so the activity filter never keeps a
+                // row the timeline now hides.
+                signature.append("\(row.id)#\(row.value.updatedSeq)")
             }
         }
-        return ids
+        return signature
     }
 
     private var liveActivityChildRows: [V2TimelineItem] {
@@ -342,7 +347,12 @@ struct SubAgentPanelSheet: View {
     /// merged state (live child rows ∪ fetched pages); a normal window already
     /// carries everything in `chat.timeline.rows`.
     private var activityItems: [V2TimelineItem] {
-        chat.session.windowExcludesAgentChildren ? activity.displayRows : window
+        guard chat.session.windowExcludesAgentChildren else { return window }
+        // Between a card switch and the store's activation the store still
+        // holds the previous card's rows; never show one card's activity under
+        // another card's header, even for a frame.
+        guard activity.cardID == selectedCard?.id else { return [] }
+        return activity.displayRows
     }
 
     /// Whether the panel must say 「内容未加载」. Today's rule (no row of the
@@ -356,7 +366,8 @@ struct SubAgentPanelSheet: View {
         }
         switch activity.phase {
         case .loaded, .unsupported, .offline:
-            return !SubAgentProgress.isContentLoaded(card, in: items, windowExcludesAgentChildren: true)
+            return !SubAgentProgress.isContentLoaded(card, in: items, windowExcludesAgentChildren: true,
+                lineage: activity.lineageIDs.isEmpty ? nil : activity.lineageIDs)
         case .idle, .loading, .loadingOlder, .failed:
             // Not known yet, or the failure row below already says why.
             return false
@@ -489,7 +500,10 @@ struct SubAgentPanelSheet: View {
         // final answer once, not twice (pp 2026-10-15 真机). When the reply is
         // not visible as a row (it sits outside the loaded window, a killed
         // notice carries none), the summary is the only copy and still renders.
-        if let summary = SubAgentProgress.finalOutputSummary(of: card, in: window),
+        // `activityItems` (not `window`) is the body actually rendered above: a
+        // main-only window carries no child rows, so reading `window` here
+        // would miss the reply the on-demand read did load and render it twice.
+        if let summary = SubAgentProgress.finalOutputSummary(of: card, in: activityItems),
            !card.phase.isActive {
             VStack(alignment: .leading, spacing: 8) {
                 sectionLabel(String(localized: "最终输出"))
@@ -505,7 +519,12 @@ struct SubAgentPanelSheet: View {
     /// that came only from the on-demand read (C3) gets a model owned by the
     /// activity store, so it survives body re-evaluations.
     private func activityRows(of card: SubAgentCard, in items: [V2TimelineItem]) -> [ChatTimelineRowModel] {
-        let visible = SubAgentProgress.activityRows(of: card, in: items)
+        // A main-only read returns child rows only; the lineage must come from
+        // the window's card rows, or a resume-alias card would filter its
+        // dispatch sibling's rows away and render nothing.
+        let visible = SubAgentProgress.activityRows(
+            of: card, in: items,
+            lineage: activity.lineageIDs.isEmpty ? nil : activity.lineageIDs)
         guard !visible.isEmpty else { return [] }
         // Index only the wanted rows: the window can hold a thousand rows, and
         // building a dictionary of all of them on every body tick is waste.

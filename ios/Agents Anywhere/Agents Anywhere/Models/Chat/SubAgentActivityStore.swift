@@ -140,6 +140,14 @@ final class SubAgentActivityStore {
 
     private func refreshDisplayRows() {
         displayRows = SubAgentActivityMerge.items(existing: windowChildRows, incoming: rows)
+        // Keep the panel's row models in step with the merged copies. This runs
+        // on activation, window changes and page arrivals — never inside a
+        // view body, so an observable model is not mutated during a render.
+        for item in displayRows {
+            if let model = models[item.id] {
+                _ = model.flush(item, animate: false, now: 0)
+            }
+        }
     }
 
     /// More rows older than `beforeOrderSeq` (the oldest row the panel shows).
@@ -191,10 +199,9 @@ final class SubAgentActivityStore {
     /// later page that carries a newer copy of the same row updates the model
     /// in place, exactly like the timeline's own flush.
     func rowModel(for item: V2TimelineItem) -> ChatTimelineRowModel {
-        if let model = models[item.id] {
-            model.flush(item, animate: false, now: 0)
-            return model
-        }
+        if let model = models[item.id] { return model }
+        // The model is refreshed by `refreshDisplayRows`, outside the view
+        // body; this accessor only creates it on first sight.
         let model = ChatTimelineRowModel(item)
         models[item.id] = model
         return model
@@ -297,9 +304,15 @@ final class SubAgentActivityStore {
         if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
         retryOperation = retry
         // 422 is the server saying the mode does not exist; another attempt
-        // would ask the same question and get the same answer.
+        // would ask the same question and get the same answer. A failed *first*
+        // page has nothing to keep; a failed older page keeps the rows already
+        // loaded (and cached) instead of wiping the card's history.
         if (error as? HTTPError)?.statusCode == 422 {
-            rows = []; hasMore = false
+            if case .firstPage = retry {
+                rows = []; hasMore = false
+            } else {
+                hasMore = false
+            }
             phase = .unsupported
             refreshDisplayRows()
             storeCurrent()
@@ -357,10 +370,10 @@ nonisolated struct SubAgentActivityLimits: Equatable {
     /// Newest child rows kept per card. Bounds one card's memory and disk
     /// footprint; the activity list pages from the newest end.
     var rowsPerCard = 200
-    /// Encoded budget for every card of one session. The archive keeps up to
-    /// 20 sessions, so this stays small: 4MB is enough for the recent stretch
-    /// a reader needs offline, and it bounds both the in-memory copy and the
-    /// per-file write cost.
+    /// Encoded budget for every card of one session. The local store keeps up
+    /// to 8 session archives, so this stays small: 4MB is enough for the recent
+    /// stretch a reader needs offline, and it bounds both the in-memory copy
+    /// and the per-file write cost.
     var byteBudget = 4 * 1024 * 1024
 
     static let `default` = SubAgentActivityLimits()
@@ -382,8 +395,11 @@ nonisolated enum SubAgentActivityArchive {
     }
 
     /// Bounds a whole cache. Rows first — the globally oldest row goes, but a
-    /// card is never emptied this way; then whole cards, least recently used
-    /// first (ties: the card whose newest row is oldest, then the card id).
+    /// card is never emptied this way; then whole cards, oldest usage first.
+    ///
+    /// The store's archive path keeps no usage clock and passes no `lastUsed`,
+    /// so there the card order falls through to the newest row's age and then
+    /// the id. A caller that does track usage (today: tests) can pass it.
     static func bounded(
         _ cards: [String: [V2TimelineItem]],
         lastUsed: [String: Int] = [:],

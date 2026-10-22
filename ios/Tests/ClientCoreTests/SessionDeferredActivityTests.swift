@@ -85,17 +85,21 @@ import Testing
         }
         #expect(windowCalls.count == 3)
         for call in windowCalls {
-            #expect(call.query.contains { $0.name == "deferActivity" && $0.value == "true" })
-            #expect(call.query.contains { $0.name == "excludeAgentChildren" && $0.value == "true" })
+            let carriesDefer = call.query.contains { $0.name == "deferActivity" && $0.value == "true" }
+            let carriesExclusion = call.query.contains { $0.name == "excludeAgentChildren" && $0.value == "true" }
+            #expect(carriesDefer)
+            #expect(carriesExclusion)
         }
 
         // The incremental feed and the panel's child read must never ask for
         // summaries: both carry rows that a second read would have to complete.
         let api = V2SessionAPI(transport: http)
         _ = try await api.timelineChanges(sessionId: "session", afterSeq: 40, limit: 500)
-        _ = try await api.timelineChildren(sessionId: "session", parentItemId: "card", limit: 100)
+        _ = try await api.timelineChildren(sessionId: "session", parentItemId: "card",
+                                           beforeOrderSeq: nil, limit: 100)
         for call in http.calls.suffix(2) {
-            #expect(!call.query.contains { $0.name == "deferActivity" })
+            let carriesDefer = call.query.contains { $0.name == "deferActivity" }
+            #expect(!carriesDefer)
         }
     }
 

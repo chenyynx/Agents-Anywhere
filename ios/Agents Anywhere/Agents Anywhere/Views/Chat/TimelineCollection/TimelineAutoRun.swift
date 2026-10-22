@@ -34,6 +34,10 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     private(set) var entries: [Entry] = []
     private(set) var contentGeneration = 0
     private(set) var streamingIDs: Set<String> = []
+    /// Items the spacing scenario asks the layout to place with no gap. The
+    /// product adapter returns 0 for Code message rows; this lets the gate
+    /// prove the per-item spacing path itself.
+    @ObservationIgnored var zeroSpacingItemIDs: Set<String> = []
     weak var controller: TimelineCollectionController?
     @ObservationIgnored private var failures: [String] = []
     @ObservationIgnored private var report: [String: Any] = [:]
@@ -103,6 +107,11 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     func estimateKind(for item: TimelineListItem) -> TimelineHeightEstimateKind {
         guard let entry = entry(for: item) else { return .row }
         return item == .tail ? .tail(statusLine: entry.statusLine) : .row
+    }
+
+    func itemSpacing(after item: TimelineListItem) -> CGFloat {
+        zeroSpacingItemIDs.contains(item.itemID)
+            ? 0 : TimelineListMetrics.itemSpacing
     }
 
     func heightPolicy(for item: TimelineListItem) -> TimelineRowHeightPolicy {
@@ -226,6 +235,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await firstMeasurement(); persist(phase: "firstMeasurement")
         await asyncMarkdown(); persist(phase: "asyncMarkdown")
         await measureConsistency(); persist(phase: "measureConsistency")
+        await perItemSpacing(); persist(phase: "perItemSpacing")
         await foldAndTail(); persist(phase: "foldAndTail")
         // Build the tool rows before the stream scenario, so the growing row
         // has expanded rows below it — the shape of pp's device report.
@@ -243,6 +253,39 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await interleavedApplies(); persist(phase: "interleavedApplies")
         await scrollCost(); persist(phase: "scrollCost")
         writeReport()
+    }
+
+    /// Proves the layout consumes `itemSpacing(after:)` instead of its old
+    /// global constant: zero for the first row, then the default restored.
+    private func perItemSpacing() async {
+        guard let controller, entries.count >= 3 else { return }
+        let first = listItem(entries[0])
+        let second = listItem(entries[1])
+
+        zeroSpacingItemIDs = [first.itemID]
+        contentGeneration += 1
+        controller.reloadFromContent()
+        await wait(300)
+        controller.collectionView.layoutIfNeeded()
+        let zeroGap = (controller.layout.attributes(for: second.itemID)?.frame.minY ?? 0)
+            - (controller.layout.attributes(for: first.itemID)?.frame.maxY ?? 0)
+
+        zeroSpacingItemIDs = []
+        contentGeneration += 1
+        controller.reloadFromContent()
+        await wait(300)
+        controller.collectionView.layoutIfNeeded()
+        let defaultGap = (controller.layout.attributes(for: second.itemID)?.frame.minY ?? 0)
+            - (controller.layout.attributes(for: first.itemID)?.frame.maxY ?? 0)
+
+        if abs(zeroGap) > 0.5 {
+            failures.append("perItemSpacing: zero gap was \(zeroGap)pt")
+        }
+        if abs(defaultGap - TimelineListMetrics.itemSpacing) > 0.5 {
+            failures.append("perItemSpacing: default gap was \(defaultGap)pt")
+        }
+        report["perItemSpacing"] = ["zeroGap": Double(zeroGap),
+                                    "defaultGap": Double(defaultGap)]
     }
 
     private func measureConsistency() async {
@@ -1061,33 +1104,63 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     /// while it is in flight, and assert the page lands at the *new* bottom.
     private func loadLatestReturn() async {
         guard let controller, entries.count > 8 else { return }
+
+        /// Replaces every dynamic id and reloads, like
+        /// `V2SessionProjection.replaceTimeline` does for a newer page.
+        func replaceWindow(prefix: String) {
+            entries = (0..<16).map { index in
+                Entry(id: "\(prefix)-\(index)", kind: .plain,
+                      text: String(repeating: "Latest page line \(index). ", count: 4))
+            } + [Entry(id: "\(prefix)-tail", kind: .tail, text: "")]
+            contentGeneration += 1
+            controller.reloadFromContent()
+        }
+
+        // Phase A — the production await-before-request order: the intent is
+        // armed before the fetch, the window lands, and no requestBottom has
+        // run yet. Deleting `resolveWindowReplacementBottom` must fail this.
         if let index = controller.indexPath(for: listItem(entries[1])) {
             controller.collectionView.scrollToItem(at: index, at: .top, animated: false)
         }
         await wait(250)
-        let before = controller.collectionView.contentOffset.y
+        let beforeA = controller.collectionView.contentOffset.y
         controller.beginWindowReplacementReturn()
-        controller.requestBottom(animated: true, forced: true)
-        // The latest page replaces every id (V2SessionProjection.replaceTimeline).
-        entries = (0..<16).map { index in
-            Entry(id: "win-\(index)", kind: .plain,
-                  text: String(repeating: "Latest page line \(index). ", count: 4))
-        } + [Entry(id: "win-tail", kind: .tail, text: "")]
-        contentGeneration += 1
-        controller.reloadFromContent()
+        replaceWindow(prefix: "win-a")
         await wait(1500)
-        let offset = controller.collectionView.contentOffset.y
-        let atBottom = controller.viewport.measuredAtBottom
-        if !atBottom {
-            failures.append("loadLatestReturn: not at bottom (offset \(offset), "
+        let offsetA = controller.collectionView.contentOffset.y
+        let atBottomA = controller.viewport.measuredAtBottom
+        if !atBottomA {
+            failures.append("loadLatestReturn pre-await: not at bottom (offset \(offsetA), "
                 + "height \(controller.layout.contentHeight))")
         }
-        if offset <= 0 {
-            failures.append("loadLatestReturn: offset stayed at the top")
+        if offsetA <= 0 {
+            failures.append("loadLatestReturn pre-await: offset stayed at the top")
         }
-        report["loadLatestReturn"] = ["before": Double(before), "after": Double(offset),
-                                      "contentHeight": Double(controller.layout.contentHeight),
-                                      "atBottom": atBottom]
+
+        // Phase B — the animated return is in flight when the window lands
+        // (the packaged 426a7ec shape). The old target was computed against
+        // the old content height; the resolve must pin the new bottom.
+        if let index = controller.indexPath(for: listItem(entries[1])) {
+            controller.collectionView.scrollToItem(at: index, at: .top, animated: false)
+        }
+        await wait(250)
+        let beforeB = controller.collectionView.contentOffset.y
+        controller.beginWindowReplacementReturn()
+        controller.requestBottom(animated: true, forced: true)
+        replaceWindow(prefix: "win-b")
+        await wait(1500)
+        let offsetB = controller.collectionView.contentOffset.y
+        let atBottomB = controller.viewport.measuredAtBottom
+        if !atBottomB {
+            failures.append("loadLatestReturn animated: not at bottom (offset \(offsetB), "
+                + "height \(controller.layout.contentHeight))")
+        }
+
+        report["loadLatestReturn"] = [
+            "beforeA": Double(beforeA), "afterA": Double(offsetA), "atBottomA": atBottomA,
+            "beforeB": Double(beforeB), "afterB": Double(offsetB), "atBottomB": atBottomB,
+            "contentHeight": Double(controller.layout.contentHeight),
+        ]
     }
 
     // MARK: - Sampling helpers

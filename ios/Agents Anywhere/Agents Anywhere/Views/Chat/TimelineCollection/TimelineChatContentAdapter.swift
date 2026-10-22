@@ -273,12 +273,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         }
     }
 
-    /// A Code message row draws the official `rowMargins` itself (top/bottom
-    /// 5 pt), so the list must not add its historical 20 pt gap. Other item
-    /// kinds keep the list gap.
+    /// Code message, notice and pending rows draw the official top/bottom
+    /// 5 pt margins themselves, so the list must not add its historical 20 pt
+    /// gap. Without the pair, a pending bubble sat 5 pt under the previous
+    /// Code row and 25 pt above the next one (review 2026-10-23).
     func itemSpacing(after item: TimelineListItem) -> CGFloat {
-        if case .group(let id) = item, groupsByID[id]?.explicitID != nil { return 0 }
-        return TimelineListMetrics.itemSpacing
+        switch item {
+        case .group(let id) where groupsByID[id]?.explicitID != nil: return 0
+        case .notice, .pending: return 0
+        default: return TimelineListMetrics.itemSpacing
+        }
     }
 
     // MARK: - C5/M3 TextKit 2 assistant body
@@ -649,12 +653,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 inlineNotices: group.rows.flatMap { inlineNoticesByRow[$0.id] ?? [] }))
         case .notice(let id):
             guard let notice = tailNoticesByID[id] else { return AnyView(EmptyView()) }
-            return AnyView(SessionInteractionCard(item: notice, chat: model))
+            // The same row margins as a Code message row: these rows report 0
+            // list gap, so their own margins are the whole inter-row gap.
+            return AnyView(SessionInteractionCard(item: notice, chat: model)
+                .padding(.vertical, CodePageTheme.rowMarginTop))
         case .pending(let id):
             guard let pending = pendingByID[id] else { return AnyView(EmptyView()) }
             return AnyView(PendingMessageRow(pending: pending, chat: model,
                 onAttachment: onAttachment,
-                onDismiss: { [weak self] in self?.model.session.dismissPendingMessage(id: id) }))
+                onDismiss: { [weak self] in self?.model.session.dismissPendingMessage(id: id) })
+                .padding(.vertical, CodePageTheme.rowMarginTop))
         case .tail:
             return AnyView(TimelineCollectionTailRow(model: model,
                                                      showsStatusLine: tailStatusLineVisible))
@@ -1038,12 +1046,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// official `CodeThinkingView`; drawing the legacy orb below it as well
     /// produced two working indicators on device (2026-10-23).
     private var tailStatusLineVisible: Bool {
-        guard model.sendingPlaceholder != nil else { return false }
         let hasInline = groupsByID.values.contains { group in
             group.explicitID != nil
                 && group.rows.contains { $0.value.isReasoning && $0.value.status.isActive }
         }
-        return !hasInline
+        return CodeWorkingIndicator.showsTailStatusLine(
+            hasPlaceholder: model.sendingPlaceholder != nil,
+            hasActiveReasoningStatus: hasInline)
     }
 
     /// Attachments ride inside the typed content: a message carries a list, an

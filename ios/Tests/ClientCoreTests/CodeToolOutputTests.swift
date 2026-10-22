@@ -315,6 +315,26 @@ struct CodeToolOutputTests {
         ]))
     }
 
+    @Test func explicitAnswersWrapperInInputWorksForAnyTool() throws {
+        let output = try makeOutput([
+            "input": ["submittedAnswers": [["question": "Q1", "answer": "A1"]]],
+        ], kind: .bash)
+        #expect(output == .submittedAnswers([
+            CodeToolSubmittedAnswer(id: 0, question: "Q1", answer: "A1"),
+        ]))
+    }
+
+    /// An explicit answers tag names the shape; the tag key is structural and
+    /// must not stop a bare map from parsing.
+    @Test func typedAnswersTagAllowsBareMap() throws {
+        let output = try makeOutput([
+            "output": ["kind": "answers", "Q1": "A1"],
+        ], kind: .bash)
+        #expect(output == .submittedAnswers([
+            CodeToolSubmittedAnswer(id: 0, question: "Q1", answer: "A1"),
+        ]))
+    }
+
     // MARK: Plan / empty / oversized
 
     @Test func approvedPlanTagIsPlaceholder() throws {

@@ -313,10 +313,13 @@ final class TimelineCollectionController: UIViewController {
         isPerformingSnapshot = true
         let oldItems = currentItems
         let oldIDs = Set(oldItems)
-        // A window replacement changes every id; a prepend/append keeps the
-        // rows it already had. Only the former invalidates a pending return.
+        // A window replacement drops the old dynamic rows; a prepend/append
+        // keeps them. Compare the first *dynamic* item because `.olderPrompt`
+        // / `.latestPrompt` / `.tail` have static identities and both windows
+        // can start with `.olderPrompt` (device report 2026-10-23).
+        let oldFirstDynamic = oldItems.first(where: Self.isDynamicItem)
         let windowReplaced = !items.isEmpty
-            && (oldItems.first.map { !items.contains($0) } ?? true)
+            && (oldFirstDynamic.map { !items.contains($0) } ?? true)
         let resolveWindowBottom = windowReplaced && windowReplacementReturn
             && insertionProjection == nil
         let entries: [TimelineContentEntry] = items.map { item in
@@ -340,7 +343,10 @@ final class TimelineCollectionController: UIViewController {
                 beforeHeights[item.itemID] = height
             }
         }
-        previousInteractiveHeights = beforeHeights
+        let recordedAt = CACurrentMediaTime()
+        previousInteractiveHeights = beforeHeights.mapValues {
+            PreChangeHeight(height: $0, recordedAt: recordedAt)
+        }
         // A content change and a key change are not the same set: rotation,
         // Dynamic Type and a typography setting produce a new width/key with
         // an unchanged signature. Measure anything the cache has no real
@@ -403,7 +409,11 @@ final class TimelineCollectionController: UIViewController {
                 }
                 if !interactive.isEmpty {
                     DispatchQueue.main.async { [weak self] in
-                        self?.applyPreferredHeights(for: interactive, staleFits: staleFits)
+                        // The local copy is this apply's truth; a queued next
+                        // apply may have replaced the shared dictionary.
+                        self?.applyPreferredHeights(for: interactive,
+                                                    staleFits: staleFits,
+                                                    beforeHeights: beforeHeights)
                     }
                 }
             }
@@ -444,14 +454,17 @@ final class TimelineCollectionController: UIViewController {
         // hosted content without a signature change. Record the visible
         // heights so only these rows animate from where the reader saw them;
         // every other row's fit applies directly.
+        var beforeHeights: [String: CGFloat] = [:]
         if let content {
-            var before: [String: CGFloat] = [:]
             for item in present where content.heightPolicy(for: item) == .interactive {
                 if let height = layout.attributes(for: item.itemID)?.frame.height {
-                    before[item.itemID] = height
+                    beforeHeights[item.itemID] = height
                 }
             }
-            previousInteractiveHeights = before
+        }
+        let recordedAt = CACurrentMediaTime()
+        previousInteractiveHeights = beforeHeights.mapValues {
+            PreChangeHeight(height: $0, recordedAt: recordedAt)
         }
         isPerformingSnapshot = true
         snapshot.reconfigureItems(present)
@@ -461,8 +474,19 @@ final class TimelineCollectionController: UIViewController {
             // The hosting cell has no heightDidChange callback; ask the
             // visible exception rows for their fitting height after the new
             // content has laid out.
-            DispatchQueue.main.async { [weak self] in self?.applyPreferredHeights(for: present) }
+            DispatchQueue.main.async { [weak self] in
+                self?.applyPreferredHeights(for: present, beforeHeights: beforeHeights)
+            }
             self.performPendingSnapshotUpdate()
+        }
+    }
+
+    /// An item whose identity changes when the timeline window is replaced.
+    /// The prompts and the tail are fixed cases and survive every window.
+    private static func isDynamicItem(_ item: TimelineListItem) -> Bool {
+        switch item {
+        case .group, .notice, .pending: return true
+        case .olderPrompt, .latestPrompt, .tail: return false
         }
     }
 
@@ -671,6 +695,20 @@ final class TimelineCollectionController: UIViewController {
     /// ordinary follow arm keep it there through later growth.
     private func resolveWindowReplacementBottom() {
         guard let collectionView, !navigationSuspended else { return }
+        // The apply completion is asynchronous: the reader may have started a
+        // drag, a deceleration or a status-bar scroll-to-top after the apply
+        // was enqueued. A gesture always wins over the pending return.
+        guard windowReplacementReturn,
+              !phase.userIsScrolling,
+              !isScrollingToTop,
+              !collectionView.isTracking,
+              !collectionView.isDecelerating else {
+            if !windowReplacementReturn {
+                mode = .reading
+                armedBottom.disarm()
+            }
+            return
+        }
         collectionView.layoutIfNeeded()
         stopBottomAnimation()
         armedBottom.forceArm()
@@ -701,8 +739,10 @@ final class TimelineCollectionController: UIViewController {
     }
 
     private func applyPreferredHeights(for items: [TimelineListItem],
-                                       staleFits: [String: CGFloat] = [:]) {
-        settlePreferredHeights(for: items, attempt: 0, staleFits: staleFits)
+                                       staleFits: [String: CGFloat] = [:],
+                                       beforeHeights: [String: CGFloat] = [:]) {
+        settlePreferredHeights(for: items, attempt: 0, staleFits: staleFits,
+                               beforeHeights: beforeHeights)
     }
 
     /// The hosting content of a reconfigured exception row updates on a later
@@ -718,6 +758,10 @@ final class TimelineCollectionController: UIViewController {
     }
 
     private static let rowHeightAnimationDuration: TimeInterval = 0.18
+    /// How long a pre-change height may still start an animation. The apply's
+    /// own settle window is under 0.5 s; a record older than this is a stale
+    /// measurement, not a content change the reader is watching.
+    private static let preChangeRecordLifetime: TimeInterval = 1.0
 
     /// One host-driven row-height animation. A custom layout cannot rely on
     /// `UIView.animate` to move cell frames, so a display link walks the
@@ -736,22 +780,23 @@ final class TimelineCollectionController: UIViewController {
     private(set) var debugRowHeightAnimationsStarted = 0
     var debugActiveRowHeightAnimations: Int { rowHeightAnimations.count }
     #endif
-    /// Displayed height of interactive rows at the last apply, so a fold
-    /// animation starts where the reader saw the row, even if UIKit already
-    /// adopted the fitted height during the update.
-    private var previousInteractiveHeights: [String: CGFloat] = [:]
+    /// A pre-change height recorded by the apply that is about to change a
+    /// row's content. The timestamp bounds its lifetime: a scroll-driven
+    /// first measurement a second later must not animate from it.
+    private struct PreChangeHeight {
+        let height: CGFloat
+        let recordedAt: TimeInterval
+    }
+
+    /// Displayed heights of the rows whose content changed in the latest
+    /// apply, so a fold animation starts where the reader saw the row. The
+    /// apply-completion settle gets its own copy passed in: a queued next
+    /// apply must not overwrite the records its predecessor still needs.
+    private var previousInteractiveHeights: [String: PreChangeHeight] = [:]
 
     private func animateRowHeight(to target: CGFloat, for item: TimelineListItem,
-                                  key: TimelineHeightKey) {
+                                  key: TimelineHeightKey, from: CGFloat) {
         stopRowHeightAnimation(for: item.itemID)
-        let current = layout.attributes(for: item.itemID)?.frame.height ?? target
-        // No recorded height means this is a first measurement, not a content
-        // change: apply it directly so the gap under the reader cannot move.
-        guard let from = previousInteractiveHeights.removeValue(forKey: item.itemID) else {
-            layout.applyMeasuredHeight(target, for: item.itemID, key: key)
-            layout.clearStreamingHeight(for: item.itemID)
-            return
-        }
         guard abs(target - from) >= 1 else {
             layout.applyMeasuredHeight(target, for: item.itemID, key: key)
             layout.clearStreamingHeight(for: item.itemID)
@@ -804,7 +849,8 @@ final class TimelineCollectionController: UIViewController {
     }
 
     private func settlePreferredHeights(for items: [TimelineListItem], attempt: Int,
-                                        staleFits: [String: CGFloat]) {
+                                        staleFits: [String: CGFloat],
+                                        beforeHeights: [String: CGFloat]) {
         guard let content, attempt <= 9 else { return }
         // Same reason as the visible-cell settle: no layout work under the
         // finger; the scroll-end settle takes over.
@@ -846,9 +892,11 @@ final class TimelineCollectionController: UIViewController {
                 let policy = content.heightPolicy(for: item)
                 let target = ceil(fitting)
                 if policy == .interactive,
-                   let before = previousInteractiveHeights[item.itemID],
+                   let before = beforeHeights[item.itemID],
                    abs(target - before) >= 8 {
-                    animateRowHeight(to: target, for: item, key: content.heightKey(for: item, width: columnWidth))
+                    animateRowHeight(to: target, for: item,
+                                     key: content.heightKey(for: item, width: columnWidth),
+                                     from: before)
                 } else {
                     layout.applyPreferredHeight(target, for: item.itemID)
                     // The controller owns this correction path; force the
@@ -863,14 +911,19 @@ final class TimelineCollectionController: UIViewController {
         // Poll several frames: the hosting content can report its old size on
         // the first pass and the new size only after SwiftUI lays out.
         guard attempt < 9 else {
-            // The correction window is over. Drop any unconsumed pre-change
-            // height: it belongs to this content change, and a much later
-            // first measurement must not animate from it.
-            for item in items { previousInteractiveHeights.removeValue(forKey: item.itemID) }
+            // The correction window is over. Drop only this pass's records;
+            // a queued apply may already have stored a newer height for the
+            // same item, and that one belongs to its own settle.
+            for (id, height) in beforeHeights
+            where previousInteractiveHeights[id]?.height == height {
+                previousInteractiveHeights.removeValue(forKey: id)
+            }
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-            self?.settlePreferredHeights(for: items, attempt: attempt + 1, staleFits: staleFits)
+            self?.settlePreferredHeights(for: items, attempt: attempt + 1,
+                                         staleFits: staleFits,
+                                         beforeHeights: beforeHeights)
         }
     }
 
@@ -1142,12 +1195,18 @@ final class TimelineCollectionController: UIViewController {
             measurementPipeline.complete(item.itemID)
             let policy = content.heightPolicy(for: item)
             // UIKit may already have adopted the fitted height during the
-            // update; decide from the height the reader last saw.
+            // update; decide from the height the reader last saw. The record
+            // expires: a scroll-driven first measurement later must not
+            // animate from a content change the reader never saw move.
             let before = previousInteractiveHeights[item.itemID]
-            if policy == .interactive, let before, abs(height - before) >= 8 {
+            let fresh = before.map {
+                CACurrentMediaTime() - $0.recordedAt <= Self.preChangeRecordLifetime
+            } ?? false
+            if policy == .interactive, let before, fresh,
+               abs(height - before.height) >= 8 {
                 // UIKit does not animate frames set through a custom layout's
                 // invalidation; drive the height per frame instead.
-                animateRowHeight(to: height, for: item, key: key)
+                animateRowHeight(to: height, for: item, key: key, from: before.height)
             } else {
                 layout.applyMeasuredHeight(height, for: item.itemID, key: key)
             }
@@ -1186,7 +1245,11 @@ final class TimelineCollectionController: UIViewController {
     /// applied before the post-await `requestBottom` runs, so the return
     /// intent must exist first.
     func beginWindowReplacementReturn() {
-        armWindowReplacementReturn()
+        // No wall-clock deadline here: this arm exists precisely because the
+        // window apply can land at any time during a slow `loadLatest` await.
+        // The post-await `requestBottom` re-arms with the bounded lifetime.
+        windowReplacementReturn = true
+        windowReturnToken &+= 1
     }
 
     private func armWindowReplacementReturn() {
@@ -1918,6 +1981,9 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         let transition = phase.apply(.scrollToTopBegan)
         onPhaseChanged?(transition)
         userScrollSettleTask?.cancel()
+        // The reader asked for the top; a pending window return must not
+        // resolve once its apply completion arrives.
+        windowReplacementReturn = false
         armedBottom.disarm()
         mode = .reading
         readerRestsAtBottom = false

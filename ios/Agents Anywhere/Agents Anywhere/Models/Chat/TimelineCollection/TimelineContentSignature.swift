@@ -119,9 +119,6 @@ nonisolated struct TimelineTailContentSignature: Equatable {
     /// then, so the mark is never drawn twice (device report 2026-10-23).
     let statusLineVisible: Bool
 
-    /// The tail spacer's two-tier contract: 32 with a status line, 12 at rest.
-    var statusLineHeight: CGFloat { statusLineVisible ? 32 : 12 }
-
     var contentRevision: Int {
         var hasher = TimelineStableHasher()
         for entry in queue {

@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import QuartzCore
 
 /// Adapts one `SessionChatModel` projection to the collection timeline.
 ///
@@ -23,6 +24,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
 
     weak var controller: TimelineCollectionController?
 
+    /// The Code page reports a collapsed tool row's tap here; the page owns the
+    /// sheet (a cell-local `@State` would be rebuilt by every streaming
+    /// reconfigure and could dismiss an open detail).
+    var onCodeToolDetail: ((CodeToolDetailRequest) -> Void)?
+
     /// The representable marks the list stale once per SwiftUI update; reading
     /// the generation rebuilds the maps, and every later `item(at:)` /
     /// `contentSignature` call reads them without re-grouping.
@@ -42,6 +48,17 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private var itemsValue: [TimelineListItem] = []
     private var itemsByID: [String: TimelineListItem] = [:]
     private var groupsByID: [String: ChatTimelineGroup] = [:]
+    /// Runtime resolved once per refresh from the session metadata; every code
+    /// group is built and rendered against this profile.
+    private var codeProfile: CodeRuntimeProfile = .generic
+    /// `CodeMessageBuilder` output for each message group, keyed by the group's
+    /// explicit message id. Built once per refresh so `estimateKind` /
+    /// `heightPolicy` do not re-run the builder for every layout pass.
+    private var codeRowsByGroupID: [String: [CodeMessageRow]] = [:]
+    /// One chunked streaming publisher per in-flight assistant text row. The
+    /// publisher is fed with the row's full text on every refresh and dropped
+    /// as soon as the row settles (the persisted block text is complete then).
+    private var codeStreamingPublishers: [String: CodeStreamingPublisher] = [:]
     private var tailNoticesByID: [String: SessionNoticeModel] = [:]
     private var pendingByID: [String: V2PendingMessage] = [:]
     private var rowToItem: [String: TimelineListItem] = [:]
@@ -150,6 +167,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 minimum: 60))
         case .group(let id):
             guard let group = groupsByID[id] else { return .row }
+            // A Code message group has no folds: its estimate is the message's
+            // body text plus one line per collapsed tool row (W7 §3.6 / §6).
+            if group.explicitID != nil {
+                return codeEstimateKind(for: item, groupID: id)
+            }
             // A folded group renders its header only; estimating the hidden
             // rows would park a large blank block above the fold.
             let expanded = group.kind == .single || model.disclosures.isExpanded("group:\(group.id)")
@@ -178,6 +200,41 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             }
             return .text(textEstimate(for: item, rows: textRows, minimum: expanded ? 44 : 64))
         }
+    }
+
+    /// The Code message group's estimate: body text plus one text row per
+    /// collapsed tool label, floored at 44 pt. It is an estimate only — the
+    /// group's height policy is `.interactive` whenever it carries a tool or a
+    /// reasoning status line, so the visible cell corrects it.
+    private func codeEstimateKind(for item: TimelineListItem,
+                                  groupID: String) -> TimelineHeightEstimateKind {
+        let cwd = model.session.metadata?.cwd
+        let statuses: [String: V2TimelineItemStatus] = Dictionary(
+            groupsByID[groupID]?.rows.map { ($0.id, $0.value.status) } ?? [],
+            uniquingKeysWith: { first, _ in first })
+        var textRows: [TimelineHeightEstimate.TextRow] = []
+        for row in codeRowsByGroupID[groupID] ?? [] {
+            for block in row.blocks {
+                switch block {
+                case let .reasoning(id, _):
+                    // A status line exists only while the row works; a
+                    // settled reasoning row renders nothing
+                    // (`CodeMessageRowView.renderRows`).
+                    guard statuses[id]?.isActive == true else { continue }
+                    textRows.append(TimelineHeightEstimate.TextRow(text: ""))
+                case let .text(_, text):
+                    textRows.append(TimelineHeightEstimate.TextRow(text: text))
+                case let .toolCalls(segments):
+                    for segment in segments {
+                        textRows.append(TimelineHeightEstimate.TextRow(
+                            text: CodeToolLabels.text(for: segment, cwd: cwd)))
+                    }
+                case let .other(_, type):
+                    textRows.append(TimelineHeightEstimate.TextRow(text: type))
+                }
+            }
+        }
+        return .text(textEstimate(for: item, rows: textRows, minimum: 44))
     }
 
     /// The estimate is recomputed only when the row content, typography or
@@ -256,80 +313,22 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// allowed when its height is a constant (M3.1 action row, M4.3 file
     /// summary). Any block the parser does not render still makes the whole
     /// row return nil.
+    ///
+    /// W7: the Code page hosts every message itself (`CodeMessageRowView` in
+    /// the hosting cell), so the controller is never offered a TextKit
+    /// document. The C3/M4 gates keep exercising this path through their own
+    /// independent providers (`TimelineAutoRun`, `TextKitM4*AutoRun`); the
+    /// machinery below stays compiled for the mixed-row phase.
     func assistantMarkdown(for item: TimelineListItem) -> AssistantMarkdownDocument? {
-        guard case .group(let id) = item, let group = groupsByID[id],
-              group.kind == .single, group.rows.count == 1,
-              footerIsSupported(turnActions[group.id], groupID: group.id),
-              let row = group.rows.first else { return nil }
-        guard inlineNoticesByRow[row.id] == nil else { return nil }
-        guard case .message = row.value.content, row.value.role == .assistant else { return nil }
-        guard !row.value.isStreamingText, !row.isRevealing else { return nil }
-        // A done row whose renderer-owned cursor is still revealing stays on
-        // the streaming path; the static body would cut the animation short.
-        if isRevealEnabled, rendererRevealOwnership.isActive(row.id) {
-            return nil
-        }
-        guard row.value.status == .done else { return nil }
-        guard attachments(of: row.value).isEmpty, !row.text.isEmpty else { return nil }
-
-        let typographyRevision = typography.revision
-        if let cached = assistantDocuments[row.id],
-           cached.revision == row.value.revision,
-           cached.text == row.text,
-           cached.typographyRevision == typographyRevision {
-            return cached.document
-        }
-        let document = AssistantMarkdownDocumentParser.make(
-            text: row.text,
-            resolvesFileReferences: true,
-            typography: typography)
-        assistantDocuments[row.id] = CachedAssistantDocument(
-            revision: row.value.revision,
-            text: row.text,
-            typographyRevision: typographyRevision,
-            document: document)
-        return document
+        nil
     }
 
-    /// The streaming counterpart of `assistantMarkdown`: the same admission
-    /// rules, but the row may be pending/running and its text may still grow.
+    /// The streaming counterpart of `assistantMarkdown`. W7 hands the live
+    /// body to `CodeMessageRowView` + W6's chunked publisher instead (no
+    /// character reveal, full-text snapshots), so the TextKit streaming cell
+    /// is not offered either.
     func assistantStreamingDocument(for item: TimelineListItem) -> AssistantStreamingDocument? {
-        guard let row = streamingRow(for: item) else { return nil }
-        if streamingFallbacks.contains(row.id) { return nil }
-        let typographyRevision = typography.revision
-        if let cached = streamingDocuments[row.id],
-           cached.revision == row.value.revision,
-           cached.typographyRevision == typographyRevision,
-           cached.text == row.text {
-            return cached.document
-        }
-        if let cached = streamingDocuments[row.id],
-           cached.typographyRevision != typographyRevision {
-            // Converted blocks bake colours and fonts; a type-scale change
-            // must rebuild them from the text.
-            streamingBuilders[row.id]?.reset()
-        }
-        let builder: AssistantStreamingDocumentBuilder
-        if let existing = streamingBuilders[row.id] {
-            builder = existing
-        } else {
-            let created = AssistantStreamingDocumentBuilder()
-            streamingBuilders[row.id] = created
-            builder = created
-        }
-        let document = builder.make(text: row.text, typography: typography)
-        if document == nil, builder.isRejected {
-            streamingFallbacks.insert(row.id)
-        }
-        if let document {
-            anchorRevealTimeline(for: row, document: document)
-        }
-        streamingDocuments[row.id] = CachedStreamingDocument(
-            revision: row.value.revision,
-            typographyRevision: typographyRevision,
-            text: row.text,
-            document: document)
-        return document
+        nil
     }
 
     func assistantStreamingReveal(for item: TimelineListItem) -> StreamingRevealState? {
@@ -616,6 +615,19 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 onLoad: { [weak self] in self?.onLoadLatest?() }))
         case .group(let id):
             guard let group = groupsByID[id] else { return AnyView(EmptyView()) }
+            // A message group (declared message id) renders through the Code
+            // row; a single-row group is either an interaction target or a row
+            // with no message key and keeps the existing renderer.
+            if group.explicitID != nil {
+                return AnyView(CodeMessageRowView(
+                    group: group,
+                    profile: codeProfile,
+                    cwd: model.session.metadata?.cwd,
+                    streaming: codeStreamingText(for: item),
+                    onToolDetail: { [weak self] request in
+                        self?.onCodeToolDetail?(request)
+                    }))
+            }
             return AnyView(SessionTimelineGroupView(
                 group: group,
                 chat: model,
@@ -635,6 +647,73 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         case .tail:
             return AnyView(TimelineCollectionTailRow(model: model))
         }
+    }
+
+    // MARK: - Code streaming (W6 publisher)
+
+    /// The paced snapshot for the message's in-flight body, if it has one.
+    ///
+    /// The Code page has no per-character reveal: W6 publishes full-text
+    /// snapshots on the model's 0.1 s leading-edge throttle, and the row view
+    /// renders the last snapshot. A completed publisher is dropped during the
+    /// refresh that notices the row settled, so the view falls back to the
+    /// persisted block text (which is complete at that point).
+    func codeStreamingText(for item: TimelineListItem) -> CodeStreamingText? {
+        guard case .group(let id) = item, let group = groupsByID[id] else { return nil }
+        for row in group.rows.reversed() where row.value.isStreamingText {
+            guard let publisher = codeStreamingPublishers[row.id],
+                  !publisher.publishedText.isEmpty else { continue }
+            return CodeStreamingText(rowID: row.id, text: publisher.publishedText)
+        }
+        return nil
+    }
+
+    /// Feeds every in-flight assistant text row of a Code message group into
+    /// its publisher and completes the ones that settled. Called once per
+    /// refresh, which the wrapper triggers on every stream flush
+    /// (`flushRevision`).
+    ///
+    /// The rows switch to renderer-owned reveal before feeding: the Chat
+    /// page's batching (a 0.24 s reveal that withholds the last glyph) belongs
+    /// to the reveal renderer, which the Code page does not use. With the row
+    /// publishing its full received text, W6's 0.1 s leading-edge throttle is
+    /// the single pacing layer (official streaming has no character reveal).
+    /// The switch is deferred one runloop turn because `row` is observable and
+    /// this refresh runs inside a SwiftUI update (same rule as the retired
+    /// `streamingRow` path); the next flush then feeds the full text.
+    private func updateCodeStreaming(groups: [ChatTimelineGroup]) {
+        let now = CACurrentMediaTime()
+        var rowsByID: [String: ChatTimelineRowModel] = [:]
+        // Only message groups render through `CodeMessageRowView`; an
+        // interaction-target row keeps the Chat renderer (and its reveal), so
+        // it must not be switched to renderer-owned reveal.
+        for group in groups where group.explicitID != nil {
+            for row in group.rows where rowsByID[row.id] == nil {
+                rowsByID[row.id] = row
+            }
+        }
+        for (rowID, row) in rowsByID {
+            if row.value.isStreamingText {
+                if !row.rendererOwnedReveal {
+                    DispatchQueue.main.async {
+                        row.useRendererOwnedReveal()
+                    }
+                }
+                var publisher = codeStreamingPublishers[rowID] ?? CodeStreamingPublisher()
+                _ = publisher.receive(fullText: row.text, at: now)
+                codeStreamingPublishers[rowID] = publisher
+            } else if let publisher = codeStreamingPublishers[rowID] {
+                // The row stopped streaming: publish the remainder once, then
+                // drop the publisher. Keeping one per settled message would
+                // duplicate every reply's text for the whole window.
+                var completed = publisher
+                _ = completed.complete(at: now)
+                codeStreamingPublishers.removeValue(forKey: rowID)
+            }
+        }
+        // A row that left the timeline (history page swap, recovery) stops
+        // being fed immediately.
+        codeStreamingPublishers = codeStreamingPublishers.filter { rowsByID[$0.key] != nil }
     }
 
     func rowIDs(in item: TimelineListItem) -> [String] {
@@ -689,7 +768,29 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let notices = model.session.notices.notices
         let visibleNotices = notices.filter { $0.isVisible && !$0.blocks(model.session.id) }
         let interactionTargets = Set(notices.filter(\.isVisible).compactMap(\.timelineTargetID))
-        let groups = TimelineGrouping.groups(model.timeline.rows, interactionTargets: interactionTargets)
+        // W7: the timeline is the Code page. One message = one group, keyed by
+        // the wire's declared message id (`nativeMessageId ?? itemId`), so a
+        // late first row cannot rename an item and drop its height/scroll state.
+        let profile = model.session.metadata.map { CodeRuntimeProfile(meta: $0) } ?? .generic
+        let codeGroups = TimelineGrouping.codeGroups(model.timeline.rows,
+                                                     profile: profile,
+                                                     interactionTargets: interactionTargets)
+        var groups: [ChatTimelineGroup] = []
+        groups.reserveCapacity(codeGroups.count)
+        var codeRowsByGroupID: [String: [CodeMessageRow]] = [:]
+        for group in codeGroups {
+            guard let explicitID = group.explicitID else {
+                groups.append(group)
+                continue
+            }
+            let rows = CodeMessageBuilder.rows(for: group.rows.map(\.value), profile: profile)
+            // `codeGroups` already drops a message whose only rows are calls
+            // the runtime skips; this guard keeps a group the builder cannot
+            // render from becoming an empty item with an estimate attached.
+            guard !rows.isEmpty else { continue }
+            codeRowsByGroupID[explicitID] = rows
+            groups.append(group)
+        }
         let timelineRowIDs = Set(model.timeline.rows.map(\.id))
         let tailNotices = SessionNoticeRouting.tailNotices(notices, sessionID: model.session.id,
                                                           timelineRowIDs: timelineRowIDs)
@@ -730,11 +831,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 && (!model.timeline.pendingMessages.isEmpty || !model.session.pendingMessages.isEmpty))
 
         self.groupsByID = groupsByID
+        self.codeProfile = profile
+        self.codeRowsByGroupID = codeRowsByGroupID
         self.tailNoticesByID = tailNoticesByID
         self.pendingByID = pendingByID
         self.rowToItem = rowToItem
         self.inlineNoticesByRow = inlineNoticesByRow
         self.turnActions = turnActions
+        // Feed the chunked publishers from the rows' full text before any
+        // signature/measurement pass reads `codeStreamingText`.
+        updateCodeStreaming(groups: groups)
         // Parsed documents are keyed by row id; drop rows that left the
         // timeline so a long session does not retain old replies.
         assistantDocuments = assistantDocuments.filter { rowToItem[$0.key] != nil }

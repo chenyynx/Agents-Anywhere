@@ -180,6 +180,13 @@ struct TimelineChatTimelineView: View {
                              trigger: phase) { old, new in
                 TurnPhaseHaptics.feedback(from: old, to: new) == .impactLight
             }
+            // The Code page's tool detail (official full-screen presentation).
+            // Rows report taps through the adapter; this page-level sheet
+            // survives the streaming reconfigures that rebuild every cell.
+            .sheet(item: $bridge.codeDetailRequest) { request in
+                CodeToolDetailView(call: request.call,
+                                   followingCalls: request.following)
+            }
     }
 
     private func keyboardTransitionBegan(_ event: TimelineKeyboardEvent) {
@@ -196,6 +203,10 @@ final class TimelineChatBridge: ObservableObject {
     let model: SessionChatModel
     let adapter: TimelineChatContentAdapter
     private(set) weak var controller: TimelineCollectionController?
+    /// The Code page's tool detail sheet. Held at the page level, not in the
+    /// row: a streaming reconfigure rebuilds the hosted cell's view, and a
+    /// cell-local `@State` sheet could be dismissed mid-read.
+    @Published var codeDetailRequest: CodeToolDetailRequest?
     private(set) var readerTookOver = false
     private var navigationSuspended = false
     private var reduceMotion = false
@@ -210,8 +221,13 @@ final class TimelineChatBridge: ObservableObject {
          onFile: @escaping (String) -> Void,
          onSubAgent: @escaping (String) -> Void) {
         self.model = model
-        adapter = TimelineChatContentAdapter(model: model, onAttachment: onAttachment,
-                                             onFile: onFile, onSubAgent: onSubAgent)
+        let adapter = TimelineChatContentAdapter(model: model, onAttachment: onAttachment,
+                                                 onFile: onFile, onSubAgent: onSubAgent)
+        self.adapter = adapter
+        // The adapter owns the row views; the page owns the presentation.
+        adapter.onCodeToolDetail = { [weak self] request in
+            self?.codeDetailRequest = request
+        }
     }
 
     func attach(_ controller: TimelineCollectionController) {

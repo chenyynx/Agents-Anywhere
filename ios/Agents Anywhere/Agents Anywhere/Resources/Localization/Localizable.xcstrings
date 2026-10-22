@@ -17724,6 +17724,23 @@
         }
       }
     },
+    "离线": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Offline"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "离线"
+          }
+        }
+      }
+    },
     "完整输出未加载": {
       "extractionState": "manual",
       "localizations": {

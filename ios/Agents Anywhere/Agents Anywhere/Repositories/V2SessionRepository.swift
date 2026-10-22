@@ -12,7 +12,7 @@ nonisolated struct V2SessionCachePolicy {
     /// old 100-row open because a summary row stands in for a large payload;
     /// the repository trim and the chat page's first cached screen both read
     /// this constant so the two lengths can never disagree.
-    static let deferredWindowItems = 600
+    static let deferredWindowItems = 800
 }
 
 /// The observed-session self-healing cadence. Doubling from `initial` up to
@@ -367,11 +367,11 @@ final class V2SessionRepository {
             excludeAgentChildren: true, deferActivity: true)
         try requireCurrent(entry, version: version)
         entry.projection?.applyLatest(page)
-        // The echo is the only proof this server honours the deferred read. A
-        // `false` (or absent, from an old server) retires the open-time
-        // repair for the rest of the process instead of re-asking on every
-        // visit.
-        if page.sessionId == sessionId { entry.deferredWindowUnsupported = !page.deferredActivity }
+        // A missing echo is the only proof this server predates the deferred
+        // read. An explicit `false` means a current server answered without
+        // deferring (for example, no display row to anchor on), and must not
+        // retire the open-time repair forever.
+        if page.sessionId == sessionId { entry.deferredWindowUnsupported = (page.deferredActivity == nil) }
         emit(entry)
         return entry.projection!.data
     }
@@ -386,7 +386,12 @@ final class V2SessionRepository {
         let item = try await detail.timelineItem(sessionId: sessionId, itemId: itemId)
         try requireCurrent(entry)
         guard item.sessionId == sessionId else { throw CacheError.invalidated }
-        guard entry.projection?.replaceDeferredItem(item) == true else { return }
+        // A stale read (the window moved to a newer copy while the request was
+        // in flight) must surface as a retryable failure, not silently leave
+        // the summary on screen with no way to ask again.
+        guard entry.projection?.replaceDeferredItem(item) == true else {
+            throw V2ClientFailure(kind: .unavailable, message: String(localized: "完整输出未加载"))
+        }
         emit(entry)
     }
 
@@ -718,9 +723,10 @@ final class V2SessionRepository {
             try requireCurrent(entry, version: version)
             guard snapshot.session.id == entry.id else { throw CacheError.invalidated }
             entry.projection = V2SessionProjection(snapshot: snapshot, maximumItems: policy.maximumTimelineItems, now: now)
-            // The snapshot is already a window read with `deferActivity`; its
-            // echo settles whether a later open-time repair could ever help.
-            entry.deferredWindowUnsupported = !snapshot.deferredActivity
+            // The snapshot is already a window read with `deferActivity`; a
+            // missing echo settles that the server predates the feature. An
+            // explicit `false` is a current server whose read did not apply.
+            entry.deferredWindowUnsupported = (snapshot.deferredActivity == nil)
             invalidateCatalogs(entry)
             entry.error = nil
             emit(entry)
@@ -1352,10 +1358,11 @@ private final class Entry {
     let id: V2SessionID
     let model: V2SessionModel
     var needsSnapshot = false
-    /// Set once a window read echoed `deferredActivity: false`, proving the
-    /// server does not implement the deferred read. Process-local on purpose:
-    /// a server upgrade is picked up by the next launch's single probe instead
-    /// of needing a client update.
+    /// Set once a window read omitted the `deferredActivity` echo, proving the
+    /// server predates the deferred read. An explicit `false` does not set it:
+    /// a current server can answer false for one read without lacking the
+    /// feature. Process-local on purpose: a server upgrade is picked up by the
+    /// next launch's single probe instead of needing a client update.
     var deferredWindowUnsupported = false
     var hasReadLocal = false
     var isDirty = false

@@ -103,22 +103,31 @@ import Testing
         }
     }
 
-    @Test func aResponseWithoutTheEchoReadsAsNotDeferred() throws {
-        let page: V2SessionTimelinePage = try decode([
+    @Test func aMissingEchoIsNotTheSameAsAnExplicitFalse() throws {
+        // 老服务端: absent. Only this retires the open-time repair.
+        let absent: V2SessionTimelinePage = try decode([
             "sessionId": "session", "items": [], "nextSeq": 10, "hasMore": false,
         ])
-        #expect(page.deferredActivity == false)
+        #expect(absent.deferredActivity == nil)
+        // A current server answered without deferring this read.
+        let explicitFalse: V2SessionTimelinePage = try decode([
+            "sessionId": "session", "items": [], "nextSeq": 10, "hasMore": false,
+            "deferredActivity": false,
+        ])
+        #expect(explicitFalse.deferredActivity == false)
         let honored: V2SessionTimelinePage = try decode([
             "sessionId": "session", "items": [], "nextSeq": 10, "hasMore": false,
             "deferredActivity": true,
         ])
-        #expect(honored.deferredActivity)
+        #expect(honored.deferredActivity == true)
+        let plainSnapshot: V2SessionSnapshot = try fixture("snapshot")
+        #expect(!V2SessionData(snapshot: plainSnapshot).windowDeferredActivity)
 
         let snapshot: V2SessionSnapshot = try fixture("snapshot")
-        #expect(snapshot.deferredActivity == false)
+        #expect(snapshot.deferredActivity == nil)
         var object = try fixtureObject("snapshot")
         object["deferredActivity"] = true
-        #expect(try decode(object, as: V2SessionSnapshot.self).deferredActivity)
+        #expect(try decode(object, as: V2SessionSnapshot.self).deferredActivity == true)
     }
 
     // MARK: Open-time repair
@@ -166,6 +175,28 @@ import Testing
         await store.close(removing: true)
     }
 
+    @Test func aCurrentServerThatSkippedDeferralIsAskedAgain() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        let store = V2LocalStore(directory: url)
+        await store.saveSession(try makeArchive([try itemObject(id: "main", order: 3)]))
+        let http = TestHTTPTransport()
+        http.respond = { _ in
+            // A current server, but this read did not defer (no display row to
+            // anchor on). That is not proof the server lacks the feature.
+            try self.pageResponse(items: [try itemObject(id: "main", order: 3)], hasMore: true,
+                                  deferredActivity: false)
+        }
+        let repo = makeRepository(http, localStore: store)
+        defer { repo.reset() }
+
+        let first = try await repo.open(sessionId: "session")
+        #expect(latestRequests(http) == 1)
+        #expect(!first.windowDeferredActivity)
+        _ = try await repo.open(sessionId: "session")
+        #expect(latestRequests(http) == 2)
+        await store.close(removing: true)
+    }
+
     @Test func anOfflineOpenKeepsTheCachedWindow() async throws {
         let url = location(); defer { try? FileManager.default.removeItem(at: url) }
         let store = V2LocalStore(directory: url)
@@ -193,9 +224,9 @@ import Testing
         defer { repo.reset() }
 
         let opened = try await repo.open(sessionId: "session")
-        #expect(V2SessionCachePolicy.deferredWindowItems == 600)
-        #expect(opened.items.count == 600)
-        #expect(opened.items.first?.id == "item-401")
+        #expect(V2SessionCachePolicy.deferredWindowItems == 800)
+        #expect(opened.items.count == 800)
+        #expect(opened.items.first?.id == "item-201")
         #expect(opened.items.last?.id == "item-1000")
         #expect(http.calls.isEmpty)
         await store.close(removing: true)
@@ -229,7 +260,8 @@ import Testing
         let hasOlder = projection.data.hasOlderItems
 
         let full: V2TimelineItem = try decode(itemObject(id: "tool", order: 2, revision: 1))
-        #expect(projection.replaceDeferredItem(full))
+        let replaced = projection.replaceDeferredItem(full)
+        #expect(replaced)
         #expect(projection.data.items.map(\.id) == ["first", "tool", "last"])
         #expect(projection.data.items[1].isDeferred == false)
         #expect(projection.data.hasOlderItems == hasOlder)
@@ -240,15 +272,29 @@ import Testing
         let items = [try itemObject(id: "tool", order: 2, revision: 3)]
         var projection = V2SessionProjection(snapshot: try snapshot(items: items), maximumItems: 100)
         let stale: V2TimelineItem = try decode(itemObject(id: "tool", order: 2, revision: 2))
-        #expect(projection.replaceDeferredItem(stale) == false)
+        let replaced = projection.replaceDeferredItem(stale)
+        #expect(replaced == false)
         #expect(projection.data.items.first?.revision == 3)
+    }
+
+    @Test func aStaleCompleteRowNeverReplacesANewerSummary() throws {
+        // The summary itself was refreshed to revision 3 while the single-row
+        // read was in flight; the late revision-2 body must not roll it back.
+        let summary: V2TimelineItem = try decode(deferredObject(id: "tool", order: 2, revision: 3))
+        var projection = V2SessionProjection(snapshot: try snapshot(items: [summary]), maximumItems: 100)
+        let stale: V2TimelineItem = try decode(itemObject(id: "tool", order: 2, revision: 2))
+        let replaced = projection.replaceDeferredItem(stale)
+        #expect(replaced == false)
+        #expect(projection.data.items.first?.revision == 3)
+        #expect(projection.data.items.first?.isDeferred == true)
     }
 
     @Test func aRowOutsideTheWindowIsNeverInserted() throws {
         let items = [try itemObject(id: "tool", order: 2)]
         var projection = V2SessionProjection(snapshot: try snapshot(items: items), maximumItems: 100)
         let outside: V2TimelineItem = try decode(itemObject(id: "outside", order: 9))
-        #expect(projection.replaceDeferredItem(outside) == false)
+        let replaced = projection.replaceDeferredItem(outside)
+        #expect(replaced == false)
         #expect(projection.data.items.map(\.id) == ["tool"])
     }
 

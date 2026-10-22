@@ -177,7 +177,7 @@ struct V2SessionProjection {
         // This page now builds the window, so it also owns the window's read
         // mode (the panel's loaded gate reads it).
         data.windowExcludesAgentChildren = page.excludesAgentChildren
-        data.windowDeferredActivity = page.deferredActivity
+        data.windowDeferredActivity = page.deferredActivity == true
         merge(newer, history: false)
     }
 
@@ -192,7 +192,11 @@ struct V2SessionProjection {
         guard item.sessionId == data.session.id,
               let index = data.items.firstIndex(where: { $0.id == item.id }) else { return false }
         let existing = data.items[index]
-        guard existing.isDeferred || item.supersedes(existing) else { return false }
+        // The fetched row must still be the current version. The summary it
+        // replaces carries the same revision, and supersedes() accepts an
+        // equal pair, so this rejects only a fetch that really raced a newer
+        // window — never the normal deferred-to-complete replacement.
+        guard item.supersedes(existing) else { return false }
         data.items[index] = item
         return true
     }

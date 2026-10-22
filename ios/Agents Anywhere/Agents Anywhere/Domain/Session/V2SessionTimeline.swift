@@ -20,11 +20,13 @@ nonisolated struct V2SessionTimelinePage: Decodable, Hashable {
     /// the client must keep its own fallback for child-only windows.
     var excludesAgentChildren = false
     /// Whether the server applied the `deferActivity` opt-in to this page
-    /// (large tool payloads replaced by summary rows). Same lenient rule as
-    /// the exclusion flag: an absent key (老服务端) reads `false`, which tells
-    /// the client it must not expect summary rows to be replaceable by the
-    /// single-item read.
-    var deferredActivity = false
+    /// (large tool payloads replaced by summary rows). Optional on purpose:
+    /// an absent key means the server predates the feature, while an explicit
+    /// `false` means a current server answered without deferring this read
+    /// (for example, the window held no display row to anchor on). The
+    /// repository must not confuse the two when deciding whether the
+    /// open-time repair can ever help.
+    var deferredActivity: Bool? = nil
 }
 
 extension V2SessionTimelinePage {
@@ -42,7 +44,7 @@ extension V2SessionTimelinePage {
         hasMore = try container.decode(Bool.self, forKey: .hasMore)
         serverTime = try container.decodeIfPresent(String.self, forKey: .serverTime)
         excludesAgentChildren = try container.decodeIfPresent(Bool.self, forKey: .excludesAgentChildren) ?? false
-        deferredActivity = try container.decodeIfPresent(Bool.self, forKey: .deferredActivity) ?? false
+        deferredActivity = try container.decodeIfPresent(Bool.self, forKey: .deferredActivity)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -79,10 +81,10 @@ nonisolated struct V2SessionSnapshot: Decodable, Hashable {
     /// `false`, which keeps the C0 fallback in charge of child-only windows.
     var excludesAgentChildren = false
     /// Whether the server applied the `deferActivity` opt-in to this snapshot
-    /// (large tool payloads replaced by summary rows). An absent key reads
-    /// `false`, so the repository knows not to wait for replaceable summary
-    /// rows from a pre-field server.
-    var deferredActivity = false
+    /// (large tool payloads replaced by summary rows). An absent key means a
+    /// pre-field server; an explicit `false` is a current server that did not
+    /// defer this read. Only the absent case retires the open-time repair.
+    var deferredActivity: Bool? = nil
 
     /// A custom `init(from:)` suppresses the synthesized keys, so they are
     /// spelled out (the `V2TimelineItem` convention).
@@ -123,7 +125,7 @@ extension V2SessionSnapshot {
         serverTime = try container.decode(String.self, forKey: .serverTime)
         activeAgents = ((try? container.decode(LossyElements<V2TimelineItem>.self, forKey: .activeAgents))?.elements) ?? []
         excludesAgentChildren = try container.decodeIfPresent(Bool.self, forKey: .excludesAgentChildren) ?? false
-        deferredActivity = try container.decodeIfPresent(Bool.self, forKey: .deferredActivity) ?? false
+        deferredActivity = try container.decodeIfPresent(Bool.self, forKey: .deferredActivity)
     }
 }
 

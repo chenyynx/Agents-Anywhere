@@ -109,7 +109,7 @@ private func imageThumbnailFixture(width: Int, height: Int) -> Data? {
             guard call.path.hasSuffix("snapshot") else { return try http.defaultResponse(call) }
             var snapshot = try fixtureObject("snapshot")
             var timeline = snapshot["timeline"] as! [String: Any]
-            timeline["items"] = try (1...600).map { index in
+            timeline["items"] = try (1...1000).map { index in
                 try itemObject(id: "reply-\(index)", order: index,
                     text: String(repeating: "Cached paragraph with `src/main.swift:42`.\n\n", count: 50))
             }
@@ -128,7 +128,7 @@ private func imageThumbnailFixture(width: Int, height: Int) -> Data? {
         #expect(http.calls.count == requests)
         await model.prepareOpening()
         #expect(model.isOpeningReady && model.timeline.rows.count == V2SessionCachePolicy.deferredWindowItems)
-        #expect(model.timeline.rows.first?.id == "reply-1" && model.timeline.rows.last?.id == "reply-600")
+        #expect(model.timeline.rows.first?.id == "reply-201" && model.timeline.rows.last?.id == "reply-1000")
         #expect(model.session.hasOlderItems)
         #expect(http.calls.count == requests)
     }

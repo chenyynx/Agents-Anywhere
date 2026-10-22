@@ -236,11 +236,11 @@ private struct TimelineDeferredOutputFooter: View {
             .background(.quaternary.opacity(0.3))
         }
     }
-    /// Reuses the existing `Offline` catalog entry so the combined copy keeps
-    /// both languages in sync without a duplicate fourth string.
+    /// Uses the iOS-only capitalized `离线` entry: the shared Web `Offline`
+    /// key's English value is lowercase and would read as `offline · …`.
     private func status(_ phase: DeferredItemStore.Phase) -> String {
         let text = String(localized: "完整输出未加载")
-        return phase == .offline ? "\(String(localized: "Offline")) · \(text)" : text
+        return phase == .offline ? "\(String(localized: "离线")) · \(text)" : text
     }
 }
 

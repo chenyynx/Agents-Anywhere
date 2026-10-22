@@ -75,7 +75,7 @@ nonisolated struct V2SessionData: Hashable {
         notices = snapshot.notices
         cursor = snapshot.eventCursor
         windowExcludesAgentChildren = snapshot.excludesAgentChildren
-        windowDeferredActivity = snapshot.deferredActivity
+        windowDeferredActivity = snapshot.deferredActivity == true
         // session-open-coverage P1: the snapshot's active cards seed the
         // sidecar through the very same absorb rule every other source uses, so
         // a card the window does not hold yet — the cold-open case — is on the

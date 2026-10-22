@@ -524,18 +524,22 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         let after = visibleCoverage(controller)
 
         // Expansion samples: frame height over 500ms.
+        let animationsBefore = controller.debugRowHeightAnimationsStarted
         setExpanded(entry.id, true)
         contentGeneration += 1
         controller.reloadFromContent()
         var samples: [CGFloat] = []
+        var attributeSamples: [CGFloat] = []
         for _ in 0..<30 {
             controller.collectionView.layoutIfNeeded()
             if let indexPath = controller.indexPath(for: item),
                let cell = controller.collectionView.cellForItem(at: indexPath) {
                 samples.append(cell.frame.height)
             }
+            attributeSamples.append(controller.layout.attributes(for: item.itemID)?.frame.height ?? -1)
             await wait(16)
         }
+        let animationsAfter = controller.debugRowHeightAnimationsStarted
         var distinct: [CGFloat] = []
         for value in samples where distinct.last.map({ abs($0 - value) > 0.5 }) ?? true {
             distinct.append(value)
@@ -549,7 +553,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             failures.append("collapse: expansion jumped in \(distinct.count) step(s)")
         }
         report["collapseGap"] = [
-            "animations": controller.debugRowHeightAnimationsStarted,
+            "animationsBefore": animationsBefore,
+            "animationsAfter": animationsAfter,
+            "attributeHeights": attributeSamples.map(Double.init),
             "beforeMissing": before.missing, "beforeGap": Double(before.gap),
             "afterMissing": after.missing, "afterGap": Double(after.gap),
             "expansionHeights": distinct.map(Double.init),

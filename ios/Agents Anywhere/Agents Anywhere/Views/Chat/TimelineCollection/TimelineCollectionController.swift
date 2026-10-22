@@ -304,6 +304,16 @@ final class TimelineCollectionController: UIViewController {
         isPerformingSnapshot = true
         let oldItems = currentItems
         let oldIDs = Set(oldItems)
+        // A diffable reconfigure can let UIKit apply the new preferred height
+        // before our animation starts; remember where the row was so the
+        // animation can start there instead of from the already-final frame.
+        var beforeHeights: [String: CGFloat] = [:]
+        for item in items where content.heightPolicy(for: item) == .interactive {
+            if let height = layout.attributes(for: item.itemID)?.frame.height {
+                beforeHeights[item.itemID] = height
+            }
+        }
+        previousInteractiveHeights = beforeHeights
         let entries: [TimelineContentEntry] = items.map { item in
             TimelineContentEntry(item: item, signature: content.contentSignature(for: item))
         }
@@ -635,16 +645,24 @@ final class TimelineCollectionController: UIViewController {
         let duration: TimeInterval
     }
     private var rowHeightAnimations: [ObjectIdentifier: (RowHeightAnimation, CADisplayLink)] = [:]
+    /// Displayed height of interactive rows at the last apply, so a fold
+    /// animation starts where the reader saw the row, even if UIKit already
+    /// adopted the fitted height during the update.
+    private var previousInteractiveHeights: [String: CGFloat] = [:]
 
     private func animateRowHeight(to target: CGFloat, for item: TimelineListItem,
                                   key: TimelineHeightKey) {
         stopRowHeightAnimation(for: item.itemID)
-        let from = layout.attributes(for: item.itemID)?.frame.height ?? target
+        let current = layout.attributes(for: item.itemID)?.frame.height ?? target
+        let from = previousInteractiveHeights.removeValue(forKey: item.itemID) ?? current
         guard abs(target - from) >= 1 else {
             layout.applyMeasuredHeight(target, for: item.itemID, key: key)
             layout.clearStreamingHeight(for: item.itemID)
             return
         }
+        // Pin the display to the old height first; the layout may already
+        // carry the fitted one.
+        layout.applyStreamingHeight(from, for: item.itemID)
         let animation = RowHeightAnimation(item: item, key: key, from: from,
                                            to: target,
                                            start: CACurrentMediaTime(),

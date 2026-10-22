@@ -337,6 +337,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             controller.reconfigure([item])
             let expanded = await waitForCellHeight(controller, item: item,
                 timeout: 3) { $0 > collapsed + 1 }
+            // The row height now animates over 0.18 s; sample after it lands.
+            await wait(400)
             let sample = await sampleItem(controller, item: item)
             if expanded <= collapsed + 1 {
                 failures.append("fold: expanded \(expanded) not taller than collapsed \(collapsed)")

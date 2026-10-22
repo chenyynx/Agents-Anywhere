@@ -5,15 +5,15 @@ import Testing
 struct CodeWorkingIndicatorTests {
     @Test func tailShowsOnlyWithoutAnInlineStatus() {
         #expect(CodeWorkingIndicator.showsTailStatusLine(
-            hasPlaceholder: true, hasActiveReasoningStatus: false))
+            hasPlaceholder: true, hasInlineStatus: false))
         #expect(!CodeWorkingIndicator.showsTailStatusLine(
-            hasPlaceholder: true, hasActiveReasoningStatus: true))
+            hasPlaceholder: true, hasInlineStatus: true))
     }
 
     @Test func noPlaceholderMeansNoTailLine() {
         #expect(!CodeWorkingIndicator.showsTailStatusLine(
-            hasPlaceholder: false, hasActiveReasoningStatus: false))
+            hasPlaceholder: false, hasInlineStatus: false))
         #expect(!CodeWorkingIndicator.showsTailStatusLine(
-            hasPlaceholder: false, hasActiveReasoningStatus: true))
+            hasPlaceholder: false, hasInlineStatus: true))
     }
 }

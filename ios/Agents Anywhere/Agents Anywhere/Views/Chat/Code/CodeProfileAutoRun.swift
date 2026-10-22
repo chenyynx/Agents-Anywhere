@@ -895,7 +895,10 @@ struct CodeProfileAutoRunRootView: View {
 
     private func messageStage(_ group: ChatTimelineGroup) -> some View {
         ScrollView {
-            CodeMessageRowView(group: group, profile: .claudeCode, cwd: "/repo")
+            // The fixture is a live turn: its last message owns the single
+            // working status line, exactly as the adapter assigns it.
+            CodeMessageRowView(group: group, profile: .claudeCode, cwd: "/repo",
+                               showsWorkingStatus: true)
                 .padding(.horizontal, CodePageTheme.rowMarginLeading)
                 .padding(.vertical, 20)
         }

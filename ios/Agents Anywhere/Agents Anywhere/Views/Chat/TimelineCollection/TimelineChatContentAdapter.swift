@@ -55,6 +55,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// explicit message id. Built once per refresh so `estimateKind` /
     /// `heightPolicy` do not re-run the builder for every layout pass.
     private var codeRowsByGroupID: [String: [CodeMessageRow]] = [:]
+    /// The last message group of a live turn. It owns the transcript's single
+    /// working status line; every other reasoning-only group is not rendered
+    /// (device report 2026-10-23: two "Computing…" lines plus the tail orb).
+    private var workingStatusGroupID: String?
     /// One chunked streaming publisher per in-flight assistant text row. The
     /// publisher is fed with the row's full text on every refresh and dropped
     /// as soon as the row settles (the persisted block text is complete then).
@@ -209,19 +213,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private func codeEstimateKind(for item: TimelineListItem,
                                   groupID: String) -> TimelineHeightEstimateKind {
         let cwd = model.session.metadata?.cwd
-        let statuses: [String: V2TimelineItemStatus] = Dictionary(
-            groupsByID[groupID]?.rows.map { ($0.id, $0.value.status) } ?? [],
-            uniquingKeysWith: { first, _ in first })
         var textRows: [TimelineHeightEstimate.TextRow] = []
         for row in codeRowsByGroupID[groupID] ?? [] {
             for block in row.blocks {
                 switch block {
-                case let .reasoning(id, _):
-                    // A status line exists only while the row works; a
-                    // settled reasoning row renders nothing
-                    // (`CodeMessageRowView.renderRows`).
-                    guard statuses[id]?.isActive == true else { continue }
-                    textRows.append(TimelineHeightEstimate.TextRow(text: ""))
+                case .reasoning:
+                    // Reasoning never renders its text; the live turn draws
+                    // one status line for the whole message (below).
+                    continue
                 case let .text(_, text):
                     textRows.append(TimelineHeightEstimate.TextRow(text: text))
                 case let .toolCalls(segments):
@@ -233,6 +232,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     textRows.append(TimelineHeightEstimate.TextRow(text: type))
                 }
             }
+        }
+        if groupID == workingStatusGroupID {
+            textRows.append(TimelineHeightEstimate.TextRow(text: ""))
         }
         // The row view adds the official rowMargins itself; the estimate must
         // budget them or every new row lands 10 pt short before its first fit.
@@ -639,6 +641,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     profile: codeProfile,
                     cwd: model.session.metadata?.cwd,
                     streaming: codeStreamingText(for: item),
+                    showsWorkingStatus: id == workingStatusGroupID,
                     onToolDetail: { [weak self] request in
                         self?.onCodeToolDetail?(request)
                     }))
@@ -795,20 +798,43 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let codeGroups = TimelineGrouping.codeGroups(model.timeline.rows,
                                                      profile: profile,
                                                      interactionTargets: interactionTargets)
+        var codeRowsByGroupID: [String: [CodeMessageRow]] = [:]
+        for group in codeGroups {
+            guard let explicitID = group.explicitID else { continue }
+            let rows = CodeMessageBuilder.rows(for: group.rows.map(\.value), profile: profile)
+            guard !rows.isEmpty else { continue }
+            codeRowsByGroupID[explicitID] = rows
+        }
+        // One working line per turn: the last message group that can render
+        // owns it. A reasoning-only group before it contributes no visible
+        // block and is left out below instead of becoming an empty row.
+        let workingOwnerID: String? = {
+            guard model.sendingPlaceholder != nil else { return nil }
+            for group in codeGroups.reversed() where group.explicitID != nil {
+                if codeRowsByGroupID[group.id] != nil { return group.id }
+            }
+            return nil
+        }()
+        workingStatusGroupID = workingOwnerID
         var groups: [ChatTimelineGroup] = []
         groups.reserveCapacity(codeGroups.count)
-        var codeRowsByGroupID: [String: [CodeMessageRow]] = [:]
         for group in codeGroups {
             guard let explicitID = group.explicitID else {
                 groups.append(group)
                 continue
             }
-            let rows = CodeMessageBuilder.rows(for: group.rows.map(\.value), profile: profile)
+            guard let rows = codeRowsByGroupID[explicitID] else { continue }
+            let hasVisibleBlock = rows.contains { row in
+                row.blocks.contains { block in
+                    if case .reasoning = block { return false }
+                    return true
+                }
+            }
             // `codeGroups` already drops a message whose only rows are calls
-            // the runtime skips; this guard keeps a group the builder cannot
-            // render from becoming an empty item with an estimate attached.
-            guard !rows.isEmpty else { continue }
-            codeRowsByGroupID[explicitID] = rows
+            // the runtime skips; this guard keeps a message whose only block
+            // is reasoning (or no visible block) from becoming an empty item —
+            // unless it is the working-status owner, whose row is the status.
+            guard hasVisibleBlock || explicitID == workingOwnerID else { continue }
             groups.append(group)
         }
         let timelineRowIDs = Set(model.timeline.rows.map(\.id))
@@ -1027,7 +1053,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 isRunning: model.isRunning,
                 hasNewerItems: model.session.hasNewerItems,
                 hasPendingUserMessage: !model.session.hasNewerItems
-                    && (!model.timeline.pendingMessages.isEmpty || !model.session.pendingMessages.isEmpty)))
+                    && (!model.timeline.pendingMessages.isEmpty || !model.session.pendingMessages.isEmpty)),
+            showsWorkingStatus: group.id == workingStatusGroupID)
     }
 
     private func tailSignature() -> TimelineTailContentSignature {
@@ -1046,13 +1073,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// official `CodeThinkingView`; drawing the legacy orb below it as well
     /// produced two working indicators on device (2026-10-23).
     private var tailStatusLineVisible: Bool {
-        let hasInline = groupsByID.values.contains { group in
-            group.explicitID != nil
-                && group.rows.contains { $0.value.isReasoning && $0.value.status.isActive }
-        }
-        return CodeWorkingIndicator.showsTailStatusLine(
+        CodeWorkingIndicator.showsTailStatusLine(
             hasPlaceholder: model.sendingPlaceholder != nil,
-            hasActiveReasoningStatus: hasInline)
+            hasInlineStatus: workingStatusGroupID != nil)
     }
 
     /// Attachments ride inside the typed content: a message carries a list, an
@@ -1078,6 +1101,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     }
 
     private func groupHasInteractiveContent(_ group: ChatTimelineGroup) -> Bool {
+        // The working status line is hosted content inside this row; its
+        // height is corrected by the cell, even when the message is plain text.
+        if group.id == workingStatusGroupID { return true }
         if group.kind != .single { return true }
         if group.rows.contains(where: { row in !(inlineNoticesByRow[row.id] ?? []).isEmpty }) { return true }
         let cwd = model.session.metadata?.cwd

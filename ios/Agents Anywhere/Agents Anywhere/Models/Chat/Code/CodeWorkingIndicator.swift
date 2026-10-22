@@ -12,10 +12,10 @@ nonisolated enum CodeWorkingIndicator {
     /// True when the tail is the only place a working status can appear.
     ///
     /// - `hasPlaceholder`: the session has a live "waiting / working" line.
-    /// - `hasActiveReasoningStatus`: a message row already renders the
-    ///   official status line for an active reasoning block.
+    /// - `hasInlineStatus`: the turn's last message row already owns the
+    ///   official status line.
     static func showsTailStatusLine(hasPlaceholder: Bool,
-                                    hasActiveReasoningStatus: Bool) -> Bool {
-        hasPlaceholder && !hasActiveReasoningStatus
+                                    hasInlineStatus: Bool) -> Bool {
+        hasPlaceholder && !hasInlineStatus
     }
 }

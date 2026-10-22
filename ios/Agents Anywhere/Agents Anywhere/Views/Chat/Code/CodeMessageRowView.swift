@@ -30,6 +30,10 @@ struct CodeMessageRowView: View {
     var cwd: String?
     /// The paced streaming snapshot while this message's body is still growing.
     var streaming: CodeStreamingText?
+    /// This message owns the live turn's single working status line. The
+    /// adapter assigns it to the last message of the turn; a reasoning block
+    /// itself never draws the line.
+    var showsWorkingStatus: Bool
     /// A collapsed tool row's tap. Navigation belongs to the page: a sheet
     /// owned by this row would sit inside a hosting cell that every streaming
     /// reconfigure rebuilds, and could dismiss an open detail.
@@ -39,39 +43,56 @@ struct CodeMessageRowView: View {
          profile: CodeRuntimeProfile,
          cwd: String? = nil,
          streaming: CodeStreamingText? = nil,
+         showsWorkingStatus: Bool = false,
          onToolDetail: @escaping (CodeToolDetailRequest) -> Void = { _ in }) {
         self.group = group
         self.profile = profile
         self.cwd = cwd
         self.streaming = streaming
+        self.showsWorkingStatus = showsWorkingStatus
         self.onToolDetail = onToolDetail
     }
 
     var body: some View {
         let rows = renderRows
-        VStack(alignment: .leading, spacing: CodePageTheme.blockSpacing) {
-            ForEach(rows) { row in
-                if row.role == .user {
-                    userRow(row)
-                } else {
-                    blockStack(row)
+        Group {
+            if rows.isEmpty && !showsWorkingStatus {
+                // A message whose only blocks are reasoning contributes no
+                // height at all (the turn's status lives in the owner row).
+                Color.clear.frame(height: 0)
+            } else {
+                VStack(alignment: .leading, spacing: CodePageTheme.blockSpacing) {
+                    ForEach(rows) { row in
+                        if row.role == .user {
+                            userRow(row)
+                        } else {
+                            blockStack(row)
+                        }
+                    }
+                    if showsWorkingStatus {
+                        // The official working row sits at the end of the
+                        // turn, not inside the reasoning block.
+                        CodeThinkingStatusLine()
+                            .padding(.vertical, CodePageTheme.segmentVerticalPadding)
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // Official `rowMargins` top/bottom 5 pt
+                // (CANONICAL/05-layout-scroll.md §3.1). The horizontal 16 pt
+                // comes from the collection column's inset, which equals it on
+                // phones. The list's own item gap is zeroed for these rows
+                // (adapter `itemSpacing(after:)`), so this margin is the whole
+                // inter-row gap.
+                .padding(.vertical, CodePageTheme.rowMarginTop)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        // Official `rowMargins` top/bottom 5 pt
-        // (CANONICAL/05-layout-scroll.md §3.1). The horizontal 16 pt comes
-        // from the collection column's inset, which equals it on phones. The
-        // list's own item gap is zeroed for these rows (adapter
-        // `itemSpacing(after:)`), so this margin is the whole inter-row gap.
-        .padding(.vertical, CodePageTheme.rowMarginTop)
     }
 
     /// One message's blocks in declared order; the assistant path.
     private func blockStack(_ row: RenderedRow) -> some View {
         VStack(alignment: .leading, spacing: CodePageTheme.segmentVerticalPadding) {
             ForEach(Array(row.blocks.enumerated()), id: \.offset) { _, block in
-                blockView(block, statuses: row.statuses)
+                blockView(block)
                     .padding(.vertical, CodePageTheme.segmentVerticalPadding)
             }
         }
@@ -100,7 +121,7 @@ struct CodeMessageRowView: View {
                     .padding(.vertical, CodePageTheme.segmentVerticalPadding)
             }
             ForEach(Array(others.enumerated()), id: \.offset) { _, block in
-                blockView(block, statuses: row.statuses)
+                blockView(block)
                     .padding(.vertical, CodePageTheme.segmentVerticalPadding)
             }
         }
@@ -109,20 +130,13 @@ struct CodeMessageRowView: View {
     // MARK: - Blocks
 
     @ViewBuilder
-    private func blockView(_ block: CodeMessageRow.Block,
-                           statuses: [String: V2TimelineItemStatus]) -> some View {
+    private func blockView(_ block: CodeMessageRow.Block) -> some View {
         switch block {
-        case let .reasoning(id, _):
-            // The official `Block.thinking` is a status line, not a body
-            // (CANONICAL/02-transcript-model.md §4.2 tag 3; task sheet §71).
-            // It exists only while the row is working; a settled reasoning row
-            // has no status to show. `renderRows` already dropped inactive
-            // reasoning blocks, so reaching here means the status is active.
-            if statuses[id]?.isActive == true {
-                CodeThinkingStatusLine()
-            } else {
-                EmptyView()
-            }
+        case .reasoning:
+            // Reasoning never renders here: the official `Block.thinking` is
+            // a single working status line for the turn, owned by
+            // `showsWorkingStatus` (CANONICAL/20-working-mark.md §0).
+            EmptyView()
 
         case let .text(id, text):
             // First packet: the existing Markdown view. The Code page has no
@@ -182,30 +196,24 @@ struct CodeMessageRowView: View {
 
     // MARK: - Row projection
 
-    /// One builder row plus the statuses of the blocks it kept. Computing this
-    /// once per body keeps the status dictionary out of every block view.
+    /// One builder row with its reasoning blocks removed: reasoning text is
+    /// not part of the Code transcript, and the turn's single status line is
+    /// drawn by the owner row (`showsWorkingStatus`).
     private struct RenderedRow: Identifiable {
         let id: String
         let role: V2MessageRole
         let blocks: [CodeMessageRow.Block]
-        let statuses: [String: V2TimelineItemStatus]
     }
 
-    /// Builder rows with inactive reasoning blocks removed. Reasoning text is
-    /// not part of the Code transcript (the block is a status line), so a
-    /// settled reasoning row contributes no height at all.
     private var renderRows: [RenderedRow] {
-        let statuses = Dictionary(group.rows.map { ($0.id, $0.value.status) },
-                                  uniquingKeysWith: { first, _ in first })
-        return CodeMessageBuilder.rows(for: group.rows.map(\.value), profile: profile)
+        CodeMessageBuilder.rows(for: group.rows.map(\.value), profile: profile)
             .compactMap { row in
                 let blocks = row.blocks.filter { block in
-                    guard case let .reasoning(id, _) = block else { return true }
-                    return statuses[id]?.isActive == true
+                    if case .reasoning = block { return false }
+                    return true
                 }
-                guard !blocks.isEmpty else { return nil }
-                return RenderedRow(id: row.id, role: row.role,
-                                   blocks: blocks, statuses: statuses)
+                guard !blocks.isEmpty || showsWorkingStatus else { return nil }
+                return RenderedRow(id: row.id, role: row.role, blocks: blocks)
             }
     }
 

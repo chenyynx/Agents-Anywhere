@@ -8,6 +8,11 @@ struct TimelineEntryPresentation: Hashable {
     let title: String
     let symbol: String
     let command: String?
+    /// The wire row still carries only a preview; the full output is fetched
+    /// when the row is expanded. Kept as a stored projection so `hasToolDetails`
+    /// can make a summary-only row expandable — without it the fold would
+    /// degrade into a non-tappable marker line.
+    let deferred: Bool
     private let raw: JSONValue
     private let rawChanges: [JSONValue]
     private let cwd: String?
@@ -23,7 +28,7 @@ struct TimelineEntryPresentation: Hashable {
             ?? raw["output"].flatMap { $0 == .null ? nil : $0.formattedJSON }
     }
     var hasToolDetails: Bool {
-        command != nil || !rawChanges.isEmpty || input.map { $0 != .null && $0 != .object([:]) } == true
+        deferred || command != nil || !rawChanges.isEmpty || input.map { $0 != .null && $0 != .object([:]) } == true
             || ["output", "outputPreview", "outputText", "error"].contains { key in
                 guard let value = raw[key] else { return false }
                 return value != .null && value != .string("")
@@ -66,6 +71,7 @@ struct TimelineEntryPresentation: Hashable {
         command = TimelineText.command(raw["command"]) ?? TimelineText.command(toolInput?["command"]) ?? TimelineText.command(toolInput?["cmd"])
         let rawChanges = TimelineFileChange.rawChanges(raw, allowDirect: wireKind == "file_change")
         self.raw = raw; self.cwd = cwd
+        deferred = item.isDeferred
         self.rawChanges = rawChanges.isEmpty && wireKind == "file_change" && TimelineText.path(raw) != nil ? [raw] : rawChanges
         input = command == nil && self.rawChanges.isEmpty ? toolInput : nil
         filePath = TimelineText.path(raw)

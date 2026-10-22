@@ -12,15 +12,22 @@ protocol V2SessionAPIProtocol {
     func markRead(sessionIds: [V2SessionID]) async throws -> V2SessionBulkActionResponse
     func archive(sessionIds: [V2SessionID]) async throws -> V2SessionBulkActionResponse
     func unarchive(sessionIds: [V2SessionID]) async throws -> V2SessionBulkActionResponse
-    func snapshot(sessionId: V2SessionID, limit: Int, excludeAgentChildren: Bool) async throws -> V2SessionSnapshot
-    func latestTimeline(sessionId: V2SessionID, limit: Int, excludeAgentChildren: Bool) async throws -> V2SessionTimelinePage
+    func snapshot(sessionId: V2SessionID, limit: Int, excludeAgentChildren: Bool,
+                  deferActivity: Bool) async throws -> V2SessionSnapshot
+    func latestTimeline(sessionId: V2SessionID, limit: Int, excludeAgentChildren: Bool,
+                        deferActivity: Bool) async throws -> V2SessionTimelinePage
     func timelineChanges(sessionId: V2SessionID, afterSeq: Int, limit: Int) async throws -> V2SessionTimelinePage
     func timelineHistory(
         sessionId: V2SessionID,
         beforeOrderSeq: Int,
         limit: Int,
-        excludeAgentChildren: Bool
+        excludeAgentChildren: Bool,
+        deferActivity: Bool
     ) async throws -> V2SessionTimelinePage
+    /// One row's full payload, addressed by id. Exists because a deferred
+    /// window carries summary rows: this read replaces one summary in place.
+    /// 404 means the row does not exist (or the caller has no access to it).
+    func timelineItem(sessionId: V2SessionID, itemId: V2TimelineItemID) async throws -> V2TimelineItem
     /// One SubAgent card's child rows (C3). The server may answer 422 when it
     /// does not implement `mode=children`; the caller treats that as "not
     /// supported", never as a retryable failure.
@@ -96,21 +103,24 @@ struct V2SessionAPI: V2SessionAPIProtocol {
         try await bulkAction(path: "/sessions/unarchive", sessionIds: sessionIds)
     }
 
-    func snapshot(sessionId: V2SessionID, limit: Int, excludeAgentChildren: Bool) async throws -> V2SessionSnapshot {
+    func snapshot(sessionId: V2SessionID, limit: Int, excludeAgentChildren: Bool,
+                  deferActivity: Bool) async throws -> V2SessionSnapshot {
         let request = HTTPRequest<EmptyRequestBody, V2SessionSnapshot>(
             method: .get,
             path: sessionPath(sessionId, suffix: "snapshot"),
             queryItems: [
                 URLQueryItem(name: "limit", value: String(limit)),
                 URLQueryItem(name: "excludeAgentChildren", value: String(excludeAgentChildren)),
+                URLQueryItem(name: "deferActivity", value: String(deferActivity)),
             ]
         )
         return try await transport.send(request)
     }
 
-    func latestTimeline(sessionId: V2SessionID, limit: Int, excludeAgentChildren: Bool) async throws -> V2SessionTimelinePage {
+    func latestTimeline(sessionId: V2SessionID, limit: Int, excludeAgentChildren: Bool,
+                        deferActivity: Bool) async throws -> V2SessionTimelinePage {
         try await timeline(sessionId: sessionId, mode: .latest, limit: limit,
-            excludeAgentChildren: excludeAgentChildren)
+            excludeAgentChildren: excludeAgentChildren, deferActivity: deferActivity)
     }
 
     func timelineChanges(sessionId: V2SessionID, afterSeq: Int, limit: Int) async throws -> V2SessionTimelinePage {
@@ -121,15 +131,22 @@ struct V2SessionAPI: V2SessionAPIProtocol {
         sessionId: V2SessionID,
         beforeOrderSeq: Int,
         limit: Int,
-        excludeAgentChildren: Bool
+        excludeAgentChildren: Bool,
+        deferActivity: Bool
     ) async throws -> V2SessionTimelinePage {
         try await timeline(
             sessionId: sessionId,
             mode: .history,
             beforeOrderSeq: beforeOrderSeq,
             limit: limit,
-            excludeAgentChildren: excludeAgentChildren
+            excludeAgentChildren: excludeAgentChildren,
+            deferActivity: deferActivity
         )
+    }
+
+    func timelineItem(sessionId: V2SessionID, itemId: V2TimelineItemID) async throws -> V2TimelineItem {
+        let path = "/sessions/\(sessionId.v2URLPathComponentEncoded)/timeline/items/\(itemId.v2URLPathComponentEncoded)"
+        return try await transport.send(HTTPRequest<EmptyRequestBody, V2TimelineItem>(method: .get, path: path))
     }
 
     func timelineChildren(
@@ -175,6 +192,7 @@ struct V2SessionAPI: V2SessionAPIProtocol {
         beforeOrderSeq: Int? = nil,
         limit: Int,
         excludeAgentChildren: Bool? = nil,
+        deferActivity: Bool? = nil,
         parentItemId: String? = nil
     ) async throws -> V2SessionTimelinePage {
         var queryItems = [
@@ -195,6 +213,12 @@ struct V2SessionAPI: V2SessionAPIProtocol {
         // card's activity list render.
         if let excludeAgentChildren {
             queryItems.append(URLQueryItem(name: "excludeAgentChildren", value: String(excludeAgentChildren)))
+        }
+        // Deferred-activity summaries are a window read too: `changes` and
+        // `children` must never ask for them, or the incremental feed would
+        // carry rows that need a second read to be complete.
+        if let deferActivity {
+            queryItems.append(URLQueryItem(name: "deferActivity", value: String(deferActivity)))
         }
         let request = HTTPRequest<EmptyRequestBody, V2SessionTimelinePage>(
             method: .get,

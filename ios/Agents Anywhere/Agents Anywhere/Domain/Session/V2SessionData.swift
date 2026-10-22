@@ -29,8 +29,9 @@ nonisolated enum V2SessionConnectionState: Hashable {
 ///
 /// `confirmedAt` is when this client last read a version of the card (any
 /// source: initial page, history page, live frame, recovery replay). It is the
-/// only evidence available for ageing the entry out, because the API exposes no
-/// single-timeline-item read to reconcile it against.
+/// evidence used for ageing the entry out. The API's single-item read exists
+/// for deferred tool summaries (`GET …/timeline/items/{item_id}`), not as a
+/// general card reconciliation source, so it does not feed this timestamp.
 struct V2ActiveAgentCard: Hashable {
     let item: V2TimelineItem
     let confirmedAt: Date
@@ -54,6 +55,12 @@ nonisolated struct V2SessionData: Hashable {
     /// Live child rows may still arrive; this flag describes the read mode,
     /// not the current membership.
     var windowExcludesAgentChildren = false
+    /// Whether the window was read with `deferActivity`: large tool payloads
+    /// may have arrived as summary rows (`V2TimelineItem.isDeferred`) that the
+    /// single-item read can replace. This describes the whole read mode — a
+    /// deferred window can still contain no summary rows at all — so it is not
+    /// a count of deferred rows.
+    var windowDeferredActivity = false
     /// Active top-level SubAgent cards, kept beside the window rather than in
     /// it. Fed by every merge, window guards included, so a card that has been
     /// pushed out of the window by later traffic still drives the capsule.
@@ -68,6 +75,7 @@ nonisolated struct V2SessionData: Hashable {
         notices = snapshot.notices
         cursor = snapshot.eventCursor
         windowExcludesAgentChildren = snapshot.excludesAgentChildren
+        windowDeferredActivity = snapshot.deferredActivity
         // session-open-coverage P1: the snapshot's active cards seed the
         // sidecar through the very same absorb rule every other source uses, so
         // a card the window does not hold yet — the cold-open case — is on the

@@ -42,7 +42,9 @@ struct SessionTimelineGroupView: View, Equatable {
                 symbol: group.kind == .reconnect ? "wifi.slash" : agentGroup ? "person.2" : "hammer",
                 status: group.status, disclosures: chat.disclosures,
                 detailsAction: groupDetailsAction) {
-                rows
+                // The closure is evaluated only while the fold is expanded, so
+                // the prefetch starts with the reveal and dies with it.
+                rows.task { chat.deferredItems.prefetch(group.rows.map(\.value)) }
             }
         }
     }
@@ -128,7 +130,7 @@ struct SessionTimelineEventView: View {
                 TimelineFold(id: row.id, title: value.title, symbol: value.symbol, status: row.value.status,
                     disclosures: disclosures, detailsAction: agentCardDetailsAction,
                     stopTasks: stopTasks, stoppingTaskIDs: chat.stoppingSubagentTaskIDs, onStopTask: stopTask) {
-                    TimelineToolDetails(row: row, cwd: cwd, onFile: onFile)
+                    TimelineToolDetails(row: row, chat: chat, cwd: cwd, onFile: onFile)
                 }
             } else { TimelineMarkerRow(title: value.title, symbol: value.symbol, status: row.value.status) }
         case .artifact:
@@ -183,10 +185,12 @@ struct TimelineMarkerRow: View {
 /// Collapsing destroys parsed output, patch rows, code panels and their state.
 private struct TimelineToolDetails: View {
     let row: ChatTimelineRowModel
+    let chat: SessionChatModel
     let cwd: String?
     let onFile: (String) -> Void
     var body: some View {
         let value = row.entry(cwd: cwd)
+        let deferred = row.value.isDeferred
         let changes = value.changes
         VStack(spacing: 0) {
             if let command = value.command { TimelineCodePanel(label: String(localized: "Command"), code: command) }
@@ -194,8 +198,49 @@ private struct TimelineToolDetails: View {
                 TimelineCodePanel(label: String(localized: "Input"), code: input.formattedJSON)
             }
             ForEach(changes) { change in TimelineFileChangeView(change: change, onFile: onFile) }
-            if let output = value.output { TimelineCodePanel(label: String(localized: "Output"), code: output) }
-        }.clipShape(.rect(cornerRadius: 14))
+            // The summary's preview is already on screen; the panel says so
+            // instead of pretending to be the complete output.
+            if let output = value.output {
+                TimelineCodePanel(label: deferred ? String(localized: "输出预览") : String(localized: "Output"), code: output)
+            }
+            if deferred { TimelineDeferredOutputFooter(chat: chat, id: row.id) }
+        }
+        .clipShape(.rect(cornerRadius: 14))
+        // Only the full output is fetched, in the background, after the fold
+        // opens; collapsing destroys this view and cancels the task. There is
+        // deliberately no loading affordance — the preview above is the
+        // content, and a replacement silently takes its place.
+        .task(id: row.id) {
+            if row.value.isDeferred { chat.deferredItems.load(row.id) }
+        }
+    }
+}
+
+/// The only affordance a deferred row gains on failure or offline: a static
+/// status line plus a plain retry button. No spinner and no "loading" copy.
+private struct TimelineDeferredOutputFooter: View {
+    let chat: SessionChatModel
+    let id: V2TimelineItemID
+    var body: some View {
+        let phase = chat.deferredItems.phase(id)
+        if phase == .failed || phase == .offline {
+            HStack(spacing: 8) {
+                Text(status(phase)).font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                Button(String(localized: "重试")) { chat.deferredItems.retry(id) }
+                    .buttonStyle(.plain).font(.caption.weight(.medium)).foregroundStyle(.tint)
+                    .padding(.horizontal, 8).frame(minHeight: 44)
+            }
+            .padding(.leading, 12)
+            .frame(minHeight: 44)
+            .background(.quaternary.opacity(0.3))
+        }
+    }
+    /// Reuses the existing `Offline` catalog entry so the combined copy keeps
+    /// both languages in sync without a duplicate fourth string.
+    private func status(_ phase: DeferredItemStore.Phase) -> String {
+        let text = String(localized: "完整输出未加载")
+        return phase == .offline ? "\(String(localized: "Offline")) · \(text)" : text
     }
 }
 

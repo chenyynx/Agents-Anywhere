@@ -11,13 +11,15 @@ struct V2SessionDetailService {
     func load(
         sessionId: V2SessionID,
         itemLimit: Int = 100,
-        excludeAgentChildren: Bool = true
+        excludeAgentChildren: Bool = true,
+        deferActivity: Bool = true
     ) async throws -> V2SessionSnapshot {
         try validatePageSize(itemLimit)
         return try await sessionAPI.snapshot(
             sessionId: sessionId,
             limit: itemLimit,
-            excludeAgentChildren: excludeAgentChildren
+            excludeAgentChildren: excludeAgentChildren,
+            deferActivity: deferActivity
         )
     }
 
@@ -25,28 +27,38 @@ struct V2SessionDetailService {
         sessionId: V2SessionID,
         beforeOrderSeq: Int,
         limit: Int = 100,
-        excludeAgentChildren: Bool = true
+        excludeAgentChildren: Bool = true,
+        deferActivity: Bool = true
     ) async throws -> V2SessionTimelinePage {
         try validatePageSize(limit)
         return try await sessionAPI.timelineHistory(
             sessionId: sessionId,
             beforeOrderSeq: beforeOrderSeq,
             limit: limit,
-            excludeAgentChildren: excludeAgentChildren
+            excludeAgentChildren: excludeAgentChildren,
+            deferActivity: deferActivity
         )
     }
 
     func latestItems(
         sessionId: V2SessionID,
         limit: Int = 100,
-        excludeAgentChildren: Bool = true
+        excludeAgentChildren: Bool = true,
+        deferActivity: Bool = true
     ) async throws -> V2SessionTimelinePage {
         try validatePageSize(limit)
         return try await sessionAPI.latestTimeline(
             sessionId: sessionId,
             limit: limit,
-            excludeAgentChildren: excludeAgentChildren
+            excludeAgentChildren: excludeAgentChildren,
+            deferActivity: deferActivity
         )
+    }
+
+    /// One row's complete payload, for replacing a deferred summary in place.
+    /// The caller owns the placement rules; this only performs the read.
+    func timelineItem(sessionId: V2SessionID, itemId: V2TimelineItemID) async throws -> V2TimelineItem {
+        try await sessionAPI.timelineItem(sessionId: sessionId, itemId: itemId)
     }
 
     /// C3: one card's child rows for the SubAgent panel. Only asked for when

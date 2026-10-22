@@ -622,6 +622,65 @@ final class TimelineCollectionController: UIViewController {
 
     private static let rowHeightAnimationDuration: TimeInterval = 0.18
 
+    /// One host-driven row-height animation. A custom layout cannot rely on
+    /// `UIView.animate` to move cell frames, so a display link walks the
+    /// height from the current frame to the measured target and the layout's
+    /// display override repositions the cells each frame.
+    private struct RowHeightAnimation {
+        let item: TimelineListItem
+        let key: TimelineHeightKey
+        let from: CGFloat
+        let to: CGFloat
+        let start: TimeInterval
+        let duration: TimeInterval
+    }
+    private var rowHeightAnimations: [ObjectIdentifier: (RowHeightAnimation, CADisplayLink)] = [:]
+
+    private func animateRowHeight(to target: CGFloat, for item: TimelineListItem,
+                                  key: TimelineHeightKey) {
+        stopRowHeightAnimation(for: item.itemID)
+        let from = layout.attributes(for: item.itemID)?.frame.height ?? target
+        guard abs(target - from) >= 1 else {
+            layout.applyMeasuredHeight(target, for: item.itemID, key: key)
+            layout.clearStreamingHeight(for: item.itemID)
+            return
+        }
+        let animation = RowHeightAnimation(item: item, key: key, from: from,
+                                           to: target,
+                                           start: CACurrentMediaTime(),
+                                           duration: Self.rowHeightAnimationDuration)
+        let link = CADisplayLink(target: self, selector: #selector(stepRowHeight(_:)))
+        link.add(to: .main, forMode: .common)
+        rowHeightAnimations[ObjectIdentifier(link)] = (animation, link)
+    }
+
+    private func stopRowHeightAnimation(for itemID: String) {
+        for (id, entry) in rowHeightAnimations where entry.0.item.itemID == itemID {
+            entry.1.invalidate()
+            rowHeightAnimations.removeValue(forKey: id)
+        }
+    }
+
+    @objc private func stepRowHeight(_ link: CADisplayLink) {
+        guard let entry = rowHeightAnimations[ObjectIdentifier(link)] else {
+            link.invalidate()
+            return
+        }
+        let (animation, _) = entry
+        let progress = min(1, max(0, (CACurrentMediaTime() - animation.start) / animation.duration))
+        // Smoothstep, the same shape as ease-in-out.
+        let eased = progress * progress * (3 - 2 * progress)
+        let height = animation.from + (animation.to - animation.from) * eased
+        if progress >= 1 {
+            link.invalidate()
+            rowHeightAnimations.removeValue(forKey: ObjectIdentifier(link))
+            layout.applyMeasuredHeight(animation.to, for: animation.item.itemID, key: animation.key)
+            layout.clearStreamingHeight(for: animation.item.itemID)
+        } else {
+            layout.applyStreamingHeight(height, for: animation.item.itemID)
+        }
+    }
+
     private func settlePreferredHeights(for items: [TimelineListItem], attempt: Int) {
         guard let content, attempt <= 9 else { return }
         // Same reason as the visible-cell settle: no layout work under the
@@ -654,11 +713,7 @@ final class TimelineCollectionController: UIViewController {
                 let policy = content.heightPolicy(for: item)
                 let target = ceil(fitting)
                 if policy == .interactive, abs(fitting - current) >= 8 {
-                    UIView.animate(withDuration: Self.rowHeightAnimationDuration,
-                                   delay: 0, options: [.curveEaseInOut, .beginFromCurrentState]) {
-                        self.layout.applyPreferredHeight(target, for: item.itemID)
-                        self.collectionView.layoutIfNeeded()
-                    }
+                    animateRowHeight(to: target, for: item, key: content.heightKey(for: item, width: columnWidth))
                 } else {
                     layout.applyPreferredHeight(target, for: item.itemID)
                     // The controller owns this correction path; force the
@@ -943,11 +998,9 @@ final class TimelineCollectionController: UIViewController {
             measurementPipeline.complete(item.itemID)
             let policy = content.heightPolicy(for: item)
             if policy == .interactive, abs(height - current) >= 8 {
-                UIView.animate(withDuration: Self.rowHeightAnimationDuration,
-                               delay: 0, options: [.curveEaseInOut, .beginFromCurrentState]) {
-                    self.layout.applyMeasuredHeight(height, for: item.itemID, key: key)
-                    self.collectionView.layoutIfNeeded()
-                }
+                // UIKit does not animate frames set through a custom layout's
+                // invalidation; drive the height per frame instead.
+                animateRowHeight(to: height, for: item, key: key)
             } else {
                 layout.applyMeasuredHeight(height, for: item.itemID, key: key)
             }

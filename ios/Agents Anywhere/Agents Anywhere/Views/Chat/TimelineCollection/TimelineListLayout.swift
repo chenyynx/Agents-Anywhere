@@ -857,7 +857,7 @@ final class TimelineListLayout: UICollectionViewLayout {
             context.heightKey = original.heightKey
             // The custom context replaces the default one, so name the row
             // explicitly: the changed row and the visible rows below it.
-            context.invalidateItems(at: cellUpdatesAffected(by: original))
+            context.invalidateItems(at: invalidatablePaths(by: original))
         }
         context.preferredHeight = preferredAttributes.frame.height
         return context

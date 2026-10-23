@@ -91,12 +91,14 @@ nonisolated struct TimelinePreferredAttributesDecision: Equatable {
     }
 
     /// Offset compensation for a height change applied outside an update
-    /// transaction. A row whose top sits above the viewport moves the text the
-    /// reader is looking at; a row at or below the top does not.
+    /// transaction. Any row whose top starts above the viewport's bottom moves
+    /// the rows below it; compensating by the whole delta keeps those rows
+    /// where the reader saw them (the changed row's own content moves inside
+    /// its frame). A row that starts below the viewport moves nothing visible.
     static func heightChangeCorrection(delta: CGFloat,
                                        cellMinY: CGFloat,
-                                       viewportTop: CGFloat) -> CGFloat? {
-        guard cellMinY < viewportTop, delta != 0 else { return nil }
+                                       viewportBottom: CGFloat) -> CGFloat? {
+        guard delta != 0, cellMinY < viewportBottom else { return nil }
         return delta
     }
 

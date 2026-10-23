@@ -783,12 +783,35 @@ final class TimelineListLayout: UICollectionViewLayout {
     override func shouldInvalidateLayout(forPreferredLayoutAttributes preferredAttributes: UICollectionViewLayoutAttributes,
                                          withOriginalAttributes originalAttributes: UICollectionViewLayoutAttributes) -> Bool {
         guard let original = originalAttributes as? TimelineListLayoutAttributes,
+              // Phase 1 migrates the Code rows only. The Chat rows still use
+              // the controller's visible-cell polling; letting their async
+              // Markdown self-measure here as well would race that path (the
+              // first pass often reports pre-parse stack spacing).
+              original.usesCellReportedHeight,
               original.item.map({
                   deferredHeights[$0.itemID] == nil
                       && pendingHostedHeights[$0.itemID] == nil
               }) ?? false,
               !original.isMeasured else {
             notePreferred("uikitPreferredRejected")
+            return false
+        }
+        // The same rule as a hosted heightDidChange: while the reader's finger
+        // is down or the list is coasting, a measurement that would move a
+        // visible row is parked instead of applied. Rejecting the preferred
+        // attributes keeps the cell at the displayed height; the parked value
+        // lands in the release flush.
+        let state = host?.layoutInteractionState() ?? TimelineLayoutInteractionState()
+        if state.userIsScrolling,
+           let item = original.item,
+           TimelinePreferredAttributesDecision.heightChangeAffectsVisibleRows(
+               cellMinY: original.frame.minY, cellMaxY: original.frame.maxY,
+               contentHeight: contentHeight, viewportTop: viewportTop,
+               viewportBottom: viewportBottom),
+           let key = original.heightKey {
+            pendingHostedHeights[item.itemID] = PendingHostedHeight(
+                key: key, height: preferredAttributes.frame.height)
+            notePreferred("uikitPreferredParked")
             return false
         }
         notePreferred("uikitPreferredAccepted")
@@ -846,7 +869,7 @@ final class TimelineListLayout: UICollectionViewLayout {
             return
         }
         let correction = TimelinePreferredAttributesDecision.heightChangeCorrection(
-            delta: delta, cellMinY: attributes.frame.minY, viewportTop: viewportTop)
+            delta: delta, cellMinY: attributes.frame.minY, viewportBottom: viewportBottom)
         applyHeightUpdates([
             HeightUpdate(itemID: itemID, key: key, height: height,
                          attributes: attributes, offsetDelta: correction,
@@ -866,12 +889,23 @@ final class TimelineListLayout: UICollectionViewLayout {
         if let application = deferral.endDrag(willDecelerate: willDecelerate) {
             apply(application)
         }
+        // Hosted reports parked under the finger land when the gesture ends.
+        // A drag that turns into deceleration waits for the coast to stop.
+        if !willDecelerate { flushPendingHostedHeights() }
     }
 
     func noteDecelerationDidEnd() {
         if let application = deferral.endDeceleration() {
             apply(application)
         }
+        flushPendingHostedHeights()
+    }
+
+    /// Simulator-test seam: `setTestGestureState` changes the interaction
+    /// state without the scroll delegate's end callbacks. Release the parked
+    /// hosted heights the same way a real drag end would.
+    func flushParkedHeightsAfterGesture() {
+        flushPendingHostedHeights()
     }
 
     /// Navigation suspension: parked corrections belong to the old viewport.
@@ -941,7 +975,7 @@ final class TimelineListLayout: UICollectionViewLayout {
             return
         }
         let correction = TimelinePreferredAttributesDecision.heightChangeCorrection(
-            delta: delta, cellMinY: attributes.frame.minY, viewportTop: viewportTop)
+            delta: delta, cellMinY: attributes.frame.minY, viewportBottom: viewportBottom)
         applyHeightUpdates([
             HeightUpdate(itemID: itemID, key: key, height: height,
                          attributes: attributes, offsetDelta: correction,
@@ -1089,7 +1123,7 @@ final class TimelineListLayout: UICollectionViewLayout {
                                       attributes: attributes)
                 let offset = TimelinePreferredAttributesDecision.heightChangeCorrection(
                     delta: contentSizeDelta, cellMinY: attributes.frame.minY,
-                    viewportTop: viewportTop)
+                    viewportBottom: viewportBottom)
                 updates.append(HeightUpdate(itemID: correction.itemID, key: deferred.key,
                     height: deferred.height, attributes: attributes,
                     offsetDelta: offset, contentSizeDelta: contentSizeDelta,
@@ -1105,7 +1139,7 @@ final class TimelineListLayout: UICollectionViewLayout {
                 - displayedHeight(for: itemID, key: deferred.key, attributes: attributes)
             let offset = TimelinePreferredAttributesDecision.heightChangeCorrection(
                 delta: contentSizeDelta, cellMinY: attributes.frame.minY,
-                viewportTop: viewportTop)
+                viewportBottom: viewportBottom)
             updates.append(HeightUpdate(itemID: itemID, key: deferred.key,
                 height: deferred.height, attributes: attributes,
                 offsetDelta: offset, contentSizeDelta: contentSizeDelta,
@@ -1129,7 +1163,7 @@ final class TimelineListLayout: UICollectionViewLayout {
                 - displayedHeight(for: itemID, key: pending.key, attributes: attributes)
             let offset = TimelinePreferredAttributesDecision.heightChangeCorrection(
                 delta: contentSizeDelta, cellMinY: attributes.frame.minY,
-                viewportTop: viewportTop)
+                viewportBottom: viewportBottom)
             updates.append(HeightUpdate(itemID: itemID, key: pending.key,
                 height: pending.height, attributes: attributes,
                 offsetDelta: offset, contentSizeDelta: contentSizeDelta,

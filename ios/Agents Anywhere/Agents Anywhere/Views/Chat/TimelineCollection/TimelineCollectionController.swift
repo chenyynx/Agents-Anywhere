@@ -257,7 +257,8 @@ final class TimelineCollectionController: UIViewController {
                 }
                 cell.configure(content.rowView(for: item),
                                policy: content.heightPolicy(for: item),
-                               isMeasured: isMeasured)
+                               isMeasured: isMeasured,
+                               reportsContentHeight: content.usesCellReportedHeight(for: item))
             }
             return cell
         }
@@ -2018,6 +2019,9 @@ extension TimelineCollectionController: TimelineListLayoutHost {
 
     func setTestGestureState(tracking: Bool, decelerating: Bool) {
         testGestureState = (tracking: tracking, decelerating: decelerating)
+        if !tracking, !decelerating {
+            layout.flushParkedHeightsAfterGesture()
+        }
     }
 #endif
 

@@ -38,7 +38,8 @@ final class TimelineHostingCell: UICollectionViewCell {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func configure(_ view: AnyView, policy: TimelineRowHeightPolicy, isMeasured: Bool) {
+    func configure(_ view: AnyView, policy: TimelineRowHeightPolicy,
+                   isMeasured: Bool, reportsContentHeight: Bool) {
         self.policy = policy
         self.isMeasured = isMeasured
         configurationToken &+= 1
@@ -49,21 +50,28 @@ final class TimelineHostingCell: UICollectionViewCell {
             // the row into that estimate and the row's own children overlap;
             // clip alone cannot hide that. Lay the content out at its ideal
             // height and let the cell bounds clip until the height arrives.
-            view
+            let content = view
                 .environment(\.collectionTimelineHeightAnimation, true)
                 .fixedSize(horizontal: false, vertical: true)
+            if reportsContentHeight {
                 // Measure the content, never the cell bounds: feeding the
                 // cell's own frame back would make every application of a
                 // height produce another report for the same value. The
                 // hosting window's safe area is not part of a row's height
                 // (the M1 parity spike saw a 64 pt status-bar inset).
-                .onGeometryChange(for: CGFloat.self, of: { proxy in
+                content.onGeometryChange(for: CGFloat.self, of: { proxy in
                     proxy.size.height - proxy.safeAreaInsets.top
                         - proxy.safeAreaInsets.bottom
                 }) { [weak self] height in
                     guard let self, self.configurationToken == token else { return }
                     self.onContentHeightChange?(height)
                 }
+            } else {
+                // The Chat rows keep the controller's visible-cell polling;
+                // installing a geometry observer on every scroll cell would
+                // only add layout work.
+                content
+            }
         }
         .margins(.all, 0)
         .minSize(width: 0, height: 0)

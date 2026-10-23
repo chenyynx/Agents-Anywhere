@@ -18,20 +18,21 @@ import Testing
             isVisible: false, isUserScrolling: false) == .accept)
     }
 
-    @Test func heightChangeCorrectionOnlyCompensatesRowsAboveTheViewport() {
+    @Test func heightChangeCorrectionKeepsRowsBelowStable() {
         // Partially visible (top above the viewport): the reader's text below
         // moves, so the offset takes the whole delta.
         #expect(TimelinePreferredAttributesDecision.heightChangeCorrection(
-            delta: 12, cellMinY: 100, viewportTop: 300) == 12)
-        // Top exactly at the viewport top is not above it.
+            delta: 12, cellMinY: 100, viewportBottom: 900) == 12)
+        // A row starting at the viewport top still moves the rows below it;
+        // compensating keeps the next row anchored (the gate's release check).
         #expect(TimelinePreferredAttributesDecision.heightChangeCorrection(
-            delta: 12, cellMinY: 300, viewportTop: 300) == nil)
-        // Below the viewport: nothing displayed moves.
+            delta: 12, cellMinY: 300, viewportBottom: 900) == 12)
+        // Starting at or below the bottom: nothing displayed moves.
         #expect(TimelinePreferredAttributesDecision.heightChangeCorrection(
-            delta: -12, cellMinY: 900, viewportTop: 300) == nil)
+            delta: -12, cellMinY: 900, viewportBottom: 900) == nil)
         // A zero change has no compensation.
         #expect(TimelinePreferredAttributesDecision.heightChangeCorrection(
-            delta: 0, cellMinY: 0, viewportTop: 300) == nil)
+            delta: 0, cellMinY: 0, viewportBottom: 900) == nil)
     }
 
     @Test func heightChangeAffectsVisibleRows() {

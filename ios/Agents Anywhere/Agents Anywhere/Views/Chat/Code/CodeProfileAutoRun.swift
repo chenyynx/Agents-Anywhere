@@ -418,6 +418,7 @@ final class CodeProfileAutoRunModel {
     private func captureViews() async {
         prepareViews()
         await verifyMessageRowHeight()
+        await verifyRowHeights()
 
         var views: [String: Any] = [:]
 
@@ -547,6 +548,222 @@ final class CodeProfileAutoRunModel {
             "safeBottom": Double(safeBottom),
             "delta": Double(delta),
         ]
+    }
+
+    // MARK: - Row-height matrix (official height contract)
+
+    /// One measured row-height case: the same `CodeMessageRowView` the Code
+    /// page installs, offscreen at a chosen content width and Dynamic Type,
+    /// compared with `CodeMessageHeightMeasurer` — the value the adapter
+    /// stores before apply. A delta beyond the class threshold means the row
+    /// corrects its height when it first becomes visible (the movement the
+    /// device probe caught).
+    private struct RowHeightFixture {
+        enum Kind: String {
+            case text
+            case bubble
+            case tool
+
+            /// Text and the user bubble must match the renderer within 1 pt;
+            /// the pure-tool arithmetic is allowed 2 pt.
+            var threshold: CGFloat { self == .tool ? 2 : 1 }
+        }
+
+        struct Size {
+            let name: String
+            let dynamicType: DynamicTypeSize
+            let category: UIContentSizeCategory
+
+            static let regular = Size(name: "large",
+                                      dynamicType: .large,
+                                      category: .large)
+            static let accessibility = Size(name: "accessibility3",
+                                            dynamicType: .accessibility3,
+                                            category: .accessibilityExtraLarge)
+        }
+
+        let name: String
+        let kind: Kind
+        let json: String
+        let widths: [CGFloat]
+        let sizes: [Size]
+    }
+
+    private static let rowHeightFixtures: [RowHeightFixture] = [
+        // One collapsed tool segment.
+        RowHeightFixture(name: "tool-one", kind: .tool,
+                         json: RowHeightFixtureJSON.toolOne,
+                         widths: [361, 320],
+                         sizes: [.regular, .accessibility]),
+        // Three segments: a span, the Workflow special, then a second span.
+        RowHeightFixture(name: "tool-three", kind: .tool,
+                         json: RowHeightFixtureJSON.toolThree,
+                         widths: [361, 320],
+                         sizes: [.regular]),
+        // Long CJK with hard line breaks (two trailing spaces + newline).
+        RowHeightFixture(name: "cjk-hard-break", kind: .text,
+                         json: RowHeightFixtureJSON.cjk,
+                         widths: [361, 320],
+                         sizes: [.regular, .accessibility]),
+        // Emoji clusters and flags with hard line breaks.
+        RowHeightFixture(name: "emoji-hard-break", kind: .text,
+                         json: RowHeightFixtureJSON.emoji,
+                         widths: [361, 320],
+                         sizes: [.regular]),
+        // The user bubble, long CJK + emoji.
+        RowHeightFixture(name: "bubble-cjk", kind: .bubble,
+                         json: RowHeightFixtureJSON.bubble,
+                         widths: [361, 320],
+                         sizes: [.regular]),
+    ]
+
+    /// Renders every fixture at every requested width and size, reports each
+    /// measured/rendered/delta, and fails past the class threshold. The CI job
+    /// re-checks the same table independently.
+    private func verifyRowHeights() async {
+        guard let window = keyWindow else {
+            failures.append("rowHeights: no key window")
+            return
+        }
+        var cases: [[String: Any]] = []
+        var expected = 0
+        for fixture in Self.rowHeightFixtures {
+            guard let items = Self.decodeItems(fixture.json) else {
+                failures.append("rowHeights \(fixture.name): fixture JSON did not decode")
+                continue
+            }
+            let group = ChatTimelineGroup(kind: .single,
+                rows: items.map { ChatTimelineRowModel($0) },
+                explicitID: "gate-height-\(fixture.name)")
+            let built = CodeMessageBuilder.rows(for: items, profile: .claudeCode)
+            let components = built.map { row -> [String: Any] in
+                ["id": row.id,
+                 "role": row.role.rawValue,
+                 "blocks": Self.blockDescriptors(row.blocks)]
+            }
+            // `CodeMessageHeightMeasurer` exposes no per-block breakdown, so
+            // the component line reports the builder's rows and blocks — the
+            // parts both the measurer and the rendered view consume.
+            let componentText = built.map { row in
+                "\(row.role.rawValue):" + Self.blockDescriptors(row.blocks).joined(separator: ",")
+            }.joined(separator: " | ")
+            for width in fixture.widths {
+                for size in fixture.sizes {
+                    expected += 1
+                    var record = await measureRowHeight(group: group, fixture: fixture,
+                                                        width: width, size: size,
+                                                        window: window)
+                    let threshold = Double(fixture.kind.threshold)
+                    let delta = record["delta"] as? Double ?? .greatestFiniteMagnitude
+                    let measuredValue = record["measured"] as? Double ?? -1
+                    let renderedValue = record["rendered"] as? Double ?? -1
+                    record["fixture"] = fixture.name
+                    record["class"] = fixture.kind.rawValue
+                    record["width"] = Double(width)
+                    record["dynamicType"] = size.name
+                    record["threshold"] = threshold
+                    record["passed"] = delta <= threshold
+                    record["components"] = components
+                    record["componentText"] = componentText
+                    cases.append(record)
+                    check(delta <= threshold,
+                          "rowHeights \(fixture.name) [\(fixture.kind.rawValue)]"
+                            + " width \(Int(width)) type \(size.name): measured"
+                            + " \(measuredValue) rendered \(renderedValue)"
+                            + " delta \(delta) > \(threshold)")
+                    // The CI log carries the per-case table even when the JSON
+                    // artifact is the only thing a later reader has.
+                    print("rowHeight \(fixture.name) [\(fixture.kind.rawValue)]"
+                        + " width=\(Int(width)) type=\(size.name)"
+                        + " measured=\(measuredValue) rendered=\(renderedValue)"
+                        + " delta=\(delta) threshold=\(threshold)"
+                        + " components=\(componentText)")
+                }
+            }
+        }
+        if cases.isEmpty || cases.count != expected {
+            failures.append("rowHeights: \(cases.count) cases, expected \(expected)")
+        }
+        report["rowHeights"] = [
+            "thresholds": ["text": 1.0, "bubble": 1.0, "tool": 2.0],
+            "widths": [361.0, 320.0],
+            "fixtureCount": Self.rowHeightFixtures.count,
+            "caseCount": cases.count,
+            "expectedCaseCount": expected,
+            "componentSource": "CodeMessageBuilder.rows; the measurer exposes no per-block breakdown",
+            "cases": cases,
+        ] as [String: Any]
+        persist(phase: "views.rowHeights")
+    }
+
+    /// Hosts one `CodeMessageRowView` the way `verifyMessageRowHeight` does:
+    /// add it to the key window so `ChatMarkdownView`'s parse task runs, let
+    /// the fitting height settle, then measure the same hierarchy off the
+    /// window — `sizeThatFits` keeps the window's safe-area insets even with
+    /// `.ignoresSafeArea()`, and the timeline row has none.
+    ///
+    /// `width` is the row's content width (the collection column minus the
+    /// 16 pt horizontal margins); the host is that width plus both margins so
+    /// the row lays out at exactly the measured width.
+    private func measureRowHeight(group: ChatTimelineGroup,
+                                  fixture: RowHeightFixture,
+                                  width: CGFloat,
+                                  size: RowHeightFixture.Size,
+                                  window: UIWindow) async -> [String: Any] {
+        let margin = CodePageTheme.rowMarginLeading
+        let hostWidth = width + 2 * margin
+        let host = UIHostingController(rootView:
+            CodeMessageRowView(group: group, profile: .claudeCode, cwd: "/repo",
+                               showsWorkingStatus: false)
+                .padding(.horizontal, margin)
+                .ignoresSafeArea())
+        host.view.backgroundColor = .clear
+        host.traitOverrides.preferredContentSizeCategory = size.category
+        host.view.frame = CGRect(x: 0, y: 0, width: hostWidth, height: 120)
+        window.addSubview(host.view)
+        host.view.layoutIfNeeded()
+
+        let proposed = CGSize(width: hostWidth, height: .greatestFiniteMagnitude)
+        var settled = host.sizeThatFits(in: proposed).height
+        var previous: CGFloat = -1
+        // Poll the fitting height: an async Markdown parse publishes its
+        // blocks after the first layout pass, and a pure tool row settles on
+        // the first. A stable pair ends the wait; 4 s is the ceiling.
+        for _ in 0..<40 {
+            await wait(100)
+            host.view.layoutIfNeeded()
+            settled = host.sizeThatFits(in: proposed).height
+            if settled > 1, abs(settled - previous) <= 0.5 { break }
+            previous = settled
+        }
+        let inWindow = settled
+        let safeTop = host.view.safeAreaInsets.top
+        let safeBottom = host.view.safeAreaInsets.bottom
+        let traits = UITraitCollection(traitsFrom: [
+            window.traitCollection,
+            UITraitCollection(preferredContentSizeCategory: size.category),
+        ])
+
+        host.view.removeFromSuperview()
+        host.view.frame = CGRect(x: 0, y: 0, width: hostWidth, height: 120)
+        host.view.layoutIfNeeded()
+        let rendered = host.sizeThatFits(in: proposed).height
+
+        let typography = TimelineChatContentAdapter.typography(
+            dynamicType: String(describing: size.dynamicType),
+            layoutDirection: 0,
+            boldText: false)
+        let measured = CodeMessageHeightMeasurer.height(
+            group: group, profile: .claudeCode, showsWorkingStatus: false,
+            width: width, typography: typography, traits: traits, measured: true)
+        return ["measured": Double(measured),
+                "rendered": Double(rendered),
+                "delta": Double(abs(measured - rendered)),
+                "inWindow": Double(inWindow),
+                "safeTop": Double(safeTop),
+                "safeBottom": Double(safeBottom),
+                "hostWidth": Double(hostWidth),
+                "contentWidth": Double(width)]
     }
 
     /// Captures the app window. The stage view fills it, so the PNG shows the
@@ -921,6 +1138,59 @@ final class CodeProfileAutoRunModel {
        "old_string":"a","new_string":"b","replace_all":false}},
      "source":{"itemId":"out-edit-input"}}
     """#
+
+    /// Row-height matrix fixtures. Pure-tool messages carry only tool rows, so
+    /// the builder groups them into one `.system` row; the text fixtures use
+    /// intentional Markdown hard line breaks (two trailing spaces + newline).
+    private enum RowHeightFixtureJSON {
+        static let toolOne = #"""
+        [
+          {"id":"h-t1","sessionId":"gate-height","type":"tool","status":"done","orderSeq":1,
+           "content":{"toolName":"Read","input":{"file_path":"/repo/Sources/App.swift"}},
+           "source":{"nativeMessageId":"gate-tool-one","blockIndex":0}}
+        ]
+        """#
+
+        /// span(Read), special(Workflow), span(Bash): three collapsed rows in
+        /// one `toolCalls` block.
+        static let toolThree = #"""
+        [
+          {"id":"h-t1","sessionId":"gate-height","type":"tool","status":"done","orderSeq":1,
+           "content":{"toolName":"Read","input":{"file_path":"/repo/Sources/App.swift"}},
+           "source":{"nativeMessageId":"gate-tool-three","blockIndex":0}},
+          {"id":"h-t2","sessionId":"gate-height","type":"tool","status":"done","orderSeq":2,
+           "content":{"toolName":"Workflow"},
+           "source":{"nativeMessageId":"gate-tool-three","blockIndex":1}},
+          {"id":"h-t3","sessionId":"gate-height","type":"tool","status":"done","orderSeq":3,
+           "content":{"toolName":"Bash","input":{"command":"swift test --filter TimelineTests"}},
+           "source":{"nativeMessageId":"gate-tool-three","blockIndex":2}}
+        ]
+        """#
+
+        static let cjk = #"""
+        [
+          {"id":"h-cjk","sessionId":"gate-height","type":"message","status":"done","role":"assistant","orderSeq":1,
+           "content":{"text":"第一行：这是一个用于验证 Code 页行高测量的长中文段落，包含全角标点、括号（以及中文引号「测试」）。  \n第二行：两个尾随空格形成硬换行，内容仍然很长，用来触发多次折行，测量引擎必须按字符边界处理，不能按空格分词。  \n第三行：继续追加中文内容，确保这一行在两种宽度下都会折行，并且和上一行之间没有空行。  \n最后一行：完成。"},
+           "source":{"itemId":"gate-cjk"}}
+        ]
+        """#
+
+        static let emoji = #"""
+        [
+          {"id":"h-emoji","sessionId":"gate-height","type":"message","status":"done","role":"assistant","orderSeq":1,
+           "content":{"text":"第一行 😀🚀🎯 混合 emoji：👨‍👩‍👧‍👦 家庭、🇨🇳🇺🇸 旗帜、🧑🏽‍💻 职业。  \n第二行：连续 emoji 😀😀😀😀😀😀😀😀😀😀 与 CJK 混排，宽度必须按字素簇计算。  \n第三行：结束。"},
+           "source":{"itemId":"gate-emoji"}}
+        ]
+        """#
+
+        static let bubble = #"""
+        [
+          {"id":"h-bubble","sessionId":"gate-height","type":"message","status":"done","role":"user","orderSeq":1,
+           "content":{"text":"请检查这个中文用户气泡的高度：第一行比较长，包含标点和 emoji 😀🚀🎯，第二行继续说明为什么气泡在两种宽度下都必须与测量值一致。"},
+           "source":{"itemId":"gate-bubble"}}
+        ]
+        """#
+    }
 }
 
 /// Only reachable through the launch argument; the product root is untouched.

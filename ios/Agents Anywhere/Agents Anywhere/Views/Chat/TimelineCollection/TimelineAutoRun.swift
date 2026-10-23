@@ -17,6 +17,10 @@ import UIKit
 final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     static let launchArgument = "aa-timeline-autorun"
     static let resultFileName = "timeline-autorun.json"
+    /// Row-id prefix for the gesture-freeze fixture; also the marker the
+    /// official cell-reported height contract is keyed on (see
+    /// `usesCellReportedHeight(for:)`).
+    static let gestureRowPrefix = "gesture-"
 
     enum Kind: String, CaseIterable {
         case message, longGroup, reasoning, toolExpanded, code, table, image, notice, pending, tail, plain
@@ -118,6 +122,16 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         guard let entry = entry(for: item) else { return .measured }
         if item == .tail { return .tail }
         return [.toolExpanded, .notice].contains(entry.kind) ? .interactive : .measured
+    }
+
+    /// The gesture-freeze fixture rows opt into the official height contract:
+    /// the cell reports its own height once and later content-height changes;
+    /// the controller/layout must park those changes while the reader's finger
+    /// is down or the list is coasting. Every other synthetic row keeps the
+    /// legacy polling path this gate already exercises.
+    func usesCellReportedHeight(for item: TimelineListItem) -> Bool {
+        guard case .group(let id) = item else { return false }
+        return id.hasPrefix(Self.gestureRowPrefix)
     }
 
     func measurementContent(for item: TimelineListItem) -> TimelineMeasurementContent {
@@ -252,6 +266,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await foldCycles(); persist(phase: "foldCycles")
         await interleavedApplies(); persist(phase: "interleavedApplies")
         await scrollCost(); persist(phase: "scrollCost")
+        await gestureFreeze(); persist(phase: "gestureFreeze")
         writeReport()
     }
 
@@ -750,6 +765,320 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                                 "medianMs": median, "p95Ms": p95, "maxMs": maxValue,
                                 "prepares": prepares,
                                 "contentHeight": Double(view.contentSize.height)]
+    }
+
+    // MARK: - Gesture freeze (official cell-reported height contract)
+
+    /// One visible cell's geometry, in content coordinates plus its position
+    /// on screen. The gesture assertions compare all of them: a height applied
+    /// under the finger moves both the layout frame and the cell frame, and an
+    /// uncompensated offset shows up in `screenY` even when the frame itself
+    /// stayed put.
+    private struct GestureCellSample {
+        let itemID: String
+        let attributeMinY: CGFloat
+        let attributeHeight: CGFloat
+        let cellMinY: CGFloat
+        let cellHeight: CGFloat
+        let screenY: CGFloat
+    }
+
+    private struct GestureSnapshotDiff {
+        var changed = 0
+        var missing = 0
+        var maxDelta: CGFloat = 0
+        var details: [String] = []
+    }
+
+    private func visibleGestureSamples(
+        _ controller: TimelineCollectionController
+    ) -> [String: GestureCellSample] {
+        var samples: [String: GestureCellSample] = [:]
+        let visible = Set(controller.collectionView.indexPathsForVisibleItems)
+        for attributes in controller.layout.orderedAttributes
+        where visible.contains(attributes.indexPath) {
+            guard let item = attributes.item,
+                  let cell = controller.collectionView.cellForItem(at: attributes.indexPath)
+            else { continue }
+            samples[item.itemID] = GestureCellSample(
+                itemID: item.itemID,
+                attributeMinY: attributes.frame.minY,
+                attributeHeight: attributes.frame.height,
+                cellMinY: cell.frame.minY,
+                cellHeight: cell.frame.height,
+                screenY: controller.screenY(for: item) ?? 0)
+        }
+        return samples
+    }
+
+    private func diffGestureSamples(_ before: [String: GestureCellSample],
+                                    _ after: [String: GestureCellSample])
+        -> GestureSnapshotDiff {
+        var diff = GestureSnapshotDiff()
+        for (itemID, old) in before {
+            guard let new = after[itemID] else {
+                diff.missing += 1
+                continue
+            }
+            let deltas = [abs(new.attributeMinY - old.attributeMinY),
+                          abs(new.attributeHeight - old.attributeHeight),
+                          abs(new.cellMinY - old.cellMinY),
+                          abs(new.cellHeight - old.cellHeight)]
+            let worst = deltas.max() ?? 0
+            diff.maxDelta = max(diff.maxDelta, worst)
+            guard worst > 0.5 else { continue }
+            diff.changed += 1
+            if diff.details.count < 4 {
+                diff.details.append("\(itemID) attr y \(old.attributeMinY)->\(new.attributeMinY)"
+                    + " h \(old.attributeHeight)->\(new.attributeHeight),"
+                    + " cell y \(old.cellMinY)->\(new.cellMinY)"
+                    + " h \(old.cellHeight)->\(new.cellHeight)")
+            }
+        }
+        return diff
+    }
+
+    /// The official height contract gate. A content-height change that lands
+    /// while the reader is dragging or the list is coasting must not move a
+    /// single row: the cell reports the new height, the layout parks it, and
+    /// one application after the gesture ends lands it with the offset
+    /// compensated so the rows below stay where the reader saw them.
+    ///
+    /// `setTestGestureState` feeds every interaction decision because the
+    /// simulator cannot synthesize touches (see the report's `drag` note). The
+    /// phase runs twice, tracking and decelerating, because they are separate
+    /// inputs to the decision helpers. The fixture rows opt into
+    /// `usesCellReportedHeight`, so the legacy polling path cannot mask a
+    /// regression in the official one.
+    private func gestureFreeze() async {
+        guard let controller else { return }
+        // Mid-timeline, like the device report's tool-heavy turn: rows above
+        // and below the visible band, so the anchor and the offset
+        // compensation are both observable.
+        let insertAt = max(0, entries.count / 2)
+        var fixtures: [Entry] = []
+        for index in 0..<12 {
+            let entry = Entry(id: "\(Self.gestureRowPrefix)\(index)",
+                              kind: .toolExpanded, text: "工具组 \(index)")
+            entries.insert(entry, at: insertAt + index)
+            fixtures.append(entry)
+        }
+        contentGeneration += 1
+        controller.reloadFromContent()
+        await wait(600)
+        controller.collectionView.layoutIfNeeded()
+        guard fixtures.count >= 8 else {
+            failures.append("gesture freeze: only \(fixtures.count) fixture rows")
+            return
+        }
+
+        var phases: [[String: Any]] = []
+        var releases: [[String: Any]] = []
+        for (offset, gesture) in ["tracking", "decelerating"].enumerated() {
+            // The tracking phase scrolls fixture row 6 to the viewport top
+            // and uses row 7 as the visible anchor below it; the decelerating
+            // phase shifts both by one row. Growing the target must either be
+            // parked (while the gesture is active) or, on release, leave the
+            // anchor's screen position untouched through the offset
+            // compensation.
+            let target = fixtures[6 + offset]
+            let anchor = fixtures[7 + offset]
+            phases.append(await runGesturePhase(controller, gesture: gesture,
+                tracking: gesture == "tracking",
+                decelerating: gesture == "decelerating",
+                target: target, anchor: anchor))
+            releases.append(await releaseGesture(controller, gesture: gesture,
+                target: target, anchor: anchor))
+        }
+        report["gestureFreeze"] = [
+            "toolRows": fixtures.count,
+            "rowPrefix": Self.gestureRowPrefix,
+            "phases": phases,
+            "releases": releases,
+        ]
+    }
+
+    /// Expands one visible tool row through the product content path (signature
+    /// change → reload) while the test gesture is active, then asserts nothing
+    /// moved and no height application reached the layout.
+    private func runGesturePhase(_ controller: TimelineCollectionController,
+                                 gesture: String,
+                                 tracking: Bool,
+                                 decelerating: Bool,
+                                 target: Entry,
+                                 anchor: Entry) async -> [String: Any] {
+        let targetItem = listItem(target)
+        let anchorItem = listItem(anchor)
+        guard let indexPath = controller.indexPath(for: targetItem) else {
+            failures.append("gesture freeze [\(gesture)]: no index path for \(target.id)")
+            return ["gesture": gesture, "error": "no index path"]
+        }
+        controller.collectionView.scrollToItem(at: indexPath, at: .top, animated: false)
+        await wait(250)
+        controller.collectionView.layoutIfNeeded()
+
+        let before = visibleGestureSamples(controller)
+        let targetBefore = controller.layout.attributes(for: targetItem.itemID)?.frame.height ?? 0
+        let anchorScreenBefore = before[anchorItem.itemID]?.screenY
+        let counterBefore = controller.layout.debugHeightApplicationsDuringGesture
+
+        let usesOfficialContract = usesCellReportedHeight(for: targetItem)
+        controller.setTestGestureState(tracking: tracking, decelerating: decelerating)
+        let userScrolling = controller.isUserScrolling
+        setExpanded(target.id, true)
+        contentGeneration += 1
+        controller.reloadFromContent()
+        // One turn for the snapshot apply, its completion dispatch and the
+        // hosting body's next layout pass; still well inside the gesture.
+        await wait(320)
+        controller.collectionView.layoutIfNeeded()
+
+        let after = visibleGestureSamples(controller)
+        let diff = diffGestureSamples(before, after)
+        let counter = controller.layout.debugHeightApplicationsDuringGesture
+        let targetDuring = controller.layout.attributes(for: targetItem.itemID)?.frame.height ?? 0
+        let stale = staleCellDetails(controller, limit: 3)
+        let overlaps = adjacentFrameOverlaps(controller)
+        let targetTracked = before[targetItem.itemID] != nil
+        let anchorTracked = anchorScreenBefore != nil
+
+        if !usesOfficialContract {
+            failures.append("gesture freeze [\(gesture)]: \(target.id) is not on the"
+                + " cell-reported height contract")
+        }
+        if !userScrolling {
+            failures.append("gesture freeze [\(gesture)]: the test gesture did not"
+                + " reach controller.isUserScrolling")
+        }
+        if counter != 0 {
+            failures.append("gesture freeze [\(gesture)]: \(counter) height application(s)"
+                + " during the gesture (before \(counterBefore))")
+        }
+        if !targetTracked {
+            failures.append("gesture freeze [\(gesture)]: target \(target.id) was not visible")
+        }
+        if !anchorTracked {
+            failures.append("gesture freeze [\(gesture)]: anchor \(anchor.id) was not visible")
+        }
+        if diff.changed > 0 {
+            failures.append("gesture freeze [\(gesture)]: \(diff.changed) visible cell(s) moved,"
+                + " max \(diff.maxDelta)pt \(diff.details)")
+        }
+        if diff.missing > 0 {
+            failures.append("gesture freeze [\(gesture)]: \(diff.missing) visible cell(s) left the visible set")
+        }
+        if abs(targetDuring - targetBefore) > 0.5 {
+            failures.append("gesture freeze [\(gesture)]: target height \(targetBefore)->\(targetDuring)"
+                + " changed during the gesture")
+        }
+        if !stale.isEmpty {
+            failures.append("gesture freeze [\(gesture)]: \(stale.count) stale visible cell(s) \(stale)")
+        }
+        if overlaps > 0 {
+            failures.append("gesture freeze [\(gesture)]: \(overlaps) adjacent frame overlap(s)")
+        }
+        return ["gesture": gesture,
+                "tracking": tracking,
+                "decelerating": decelerating,
+                "target": target.id,
+                "anchor": anchor.id,
+                "usesCellReportedHeight": usesOfficialContract,
+                "isUserScrolling": userScrolling,
+                "visibleCells": before.count,
+                "changedFrames": diff.changed,
+                "missingCells": diff.missing,
+                "maxFrameDelta": Double(diff.maxDelta),
+                "heightApplicationsDuringGesture": counter,
+                "heightApplicationsBefore": counterBefore,
+                "targetHeightBefore": Double(targetBefore),
+                "targetHeightDuring": Double(targetDuring),
+                "anchorScreenY": anchorScreenBefore.map(Double.init) ?? -1,
+                "staleCells": stale.count,
+                "overlaps": overlaps]
+    }
+
+    /// Releases the test gesture and asserts the parked height lands once: the
+    /// target grows, the visible anchor keeps its screen position through the
+    /// offset compensation, and the visible band has no stale or overlapping
+    /// cells.
+    private func releaseGesture(_ controller: TimelineCollectionController,
+                                gesture: String,
+                                target: Entry,
+                                anchor: Entry) async -> [String: Any] {
+        let targetItem = listItem(target)
+        let anchorItem = listItem(anchor)
+        let collapsed = controller.layout.attributes(for: targetItem.itemID)?.frame.height ?? 0
+        let anchorBefore = controller.screenY(for: anchorItem)
+
+        controller.setTestGestureState(tracking: false, decelerating: false)
+        let stillScrolling = controller.isUserScrolling
+        let applied = await waitForCellHeight(controller, item: targetItem, timeout: 3) {
+            $0 > collapsed + 1
+        }
+        // The row height animates over 0.18 s on the interactive path; let the
+        // application finish before reading the final layout.
+        await wait(450)
+        controller.collectionView.layoutIfNeeded()
+
+        let finalHeight = controller.layout.attributes(for: targetItem.itemID)?.frame.height ?? 0
+        let anchorAfter = controller.screenY(for: anchorItem)
+        let anchorDelta = abs((anchorAfter ?? 0) - (anchorBefore ?? 0))
+        // "Once" means the released height settles and stays: sample a few
+        // frames after the application and require a single stable value.
+        var samples: [CGFloat] = []
+        for _ in 0..<18 {
+            controller.collectionView.layoutIfNeeded()
+            samples.append(controller.layout.attributes(for: targetItem.itemID)?.frame.height ?? 0)
+            await wait(16)
+        }
+        let stable = samples.allSatisfy { abs($0 - finalHeight) <= 0.5 }
+        let stale = staleCellDetails(controller, limit: 3)
+        let overlaps = adjacentFrameOverlaps(controller)
+        let pendingApplied = finalHeight > collapsed + 1
+
+        if stillScrolling {
+            failures.append("gesture freeze [\(gesture)]: releasing the test gesture left"
+                + " controller.isUserScrolling true")
+        }
+        if !pendingApplied {
+            failures.append("gesture freeze [\(gesture)]: release did not apply the parked height"
+                + " (still \(collapsed)pt)")
+        }
+        if !stable {
+            failures.append("gesture freeze [\(gesture)]: released height did not settle \(samples)")
+        }
+        if anchorDelta > 1 {
+            failures.append("gesture freeze [\(gesture)]: visible anchor \(anchor.id) jumped"
+                + " \(anchorDelta)pt on release")
+        }
+        if !stale.isEmpty {
+            failures.append("gesture freeze [\(gesture)] release: \(stale.count) stale visible cell(s) \(stale)")
+        }
+        if overlaps > 0 {
+            failures.append("gesture freeze [\(gesture)] release: \(overlaps) adjacent frame overlap(s)")
+        }
+        var cellFitDelta = -1.0
+        if let sample = await sampleItem(controller, item: targetItem, attempts: 2) {
+            cellFitDelta = Double(abs(sample.cell - sample.content))
+            if sample.cell + 0.5 < sample.content {
+                failures.append("gesture freeze [\(gesture)] release: cell \(sample.cell)"
+                    + " clips content \(sample.content)")
+            }
+        }
+        return ["gesture": gesture,
+                "collapsedHeight": Double(collapsed),
+                "appliedHeight": Double(applied),
+                "finalHeight": Double(finalHeight),
+                "pendingApplied": pendingApplied,
+                "stable": stable,
+                "isUserScrolling": stillScrolling,
+                "anchor": anchor.id,
+                "anchorScreenBefore": anchorBefore.map(Double.init) ?? -1,
+                "anchorScreenAfter": anchorAfter.map(Double.init) ?? -1,
+                "screenAnchorDelta": Double(anchorDelta),
+                "cellFitDelta": cellFitDelta,
+                "staleCells": stale.count,
+                "overlaps": overlaps]
     }
 
     /// Rows intersecting the viewport, how many have no cell, and the largest

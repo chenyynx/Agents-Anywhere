@@ -230,6 +230,55 @@ jobs:
           check("prepend cancellation releases", p.get("cancelledUnchanged") is True, p)
           check("history settled", p.get("settled") is True, p)
 
+          # Official height contract: no height application may reach the
+          # layout while the test gesture is tracking or decelerating, and the
+          # parked change must land once on release without moving the visible
+          # content.
+          g = r.get("gestureFreeze") or {}
+          phases = g.get("phases") or []
+          releases = g.get("releases") or []
+          check("gestureFreeze table present", bool(g), g)
+          check("gestureFreeze has tracking + decelerating", len(phases) == 2, phases)
+          for phase in phases:
+              name = phase.get("gesture", "?")
+              check(f"gestureFreeze {name}: fixture on the cell-reported contract",
+                    phase.get("usesCellReportedHeight") is True, phase)
+              check(f"gestureFreeze {name}: test gesture reaches isUserScrolling",
+                    phase.get("isUserScrolling") is True, phase)
+              check(f"gestureFreeze {name}: zero height applications during gesture",
+                    phase.get("heightApplicationsDuringGesture") == 0, phase)
+              check(f"gestureFreeze {name}: visible cell frames unchanged",
+                    phase.get("changedFrames") == 0, phase)
+              check(f"gestureFreeze {name}: no visible cell left the set",
+                    phase.get("missingCells") == 0, phase)
+              check(f"gestureFreeze {name}: no stale visible cells",
+                    phase.get("staleCells") == 0, phase)
+              check(f"gestureFreeze {name}: no adjacent frame overlap",
+                    phase.get("overlaps") == 0, phase)
+              before = phase.get("targetHeightBefore")
+              during = phase.get("targetHeightDuring")
+              check(f"gestureFreeze {name}: target height frozen",
+                    isinstance(before, (int, float)) and isinstance(during, (int, float))
+                    and abs(during - before) <= 0.5, phase)
+          check("gestureFreeze has two releases", len(releases) == 2, releases)
+          for release in releases:
+              name = release.get("gesture", "?")
+              check(f"gestureFreeze {name}: release clears isUserScrolling",
+                    release.get("isUserScrolling") is False, release)
+              check(f"gestureFreeze {name}: parked height applied",
+                    release.get("pendingApplied") is True, release)
+              check(f"gestureFreeze {name}: released row grew",
+                    release.get("finalHeight", 0) > release.get("collapsedHeight", 0) + 1,
+                    release)
+              check(f"gestureFreeze {name}: released height settled once",
+                    release.get("stable") is True, release)
+              check(f"gestureFreeze {name}: visible anchor <= 1pt on release",
+                    release.get("screenAnchorDelta", 99) <= 1.0, release)
+              check(f"gestureFreeze {name}: release has no stale cells",
+                    release.get("staleCells") == 0, release)
+              check(f"gestureFreeze {name}: release has no adjacent overlap",
+                    release.get("overlaps") == 0, release)
+
           failed = [c for c in checks if not c[1]]
           for name, ok, detail in checks:
               print(("PASS " if ok else "FAIL ") + name + ("" if ok else f" | {detail}"))
@@ -722,6 +771,40 @@ jobs:
           print("streaming:", json.dumps(data.get("streaming") or {}, sort_keys=True, ensure_ascii=False))
           print("toolOutput:", json.dumps(data.get("toolOutput") or {}, sort_keys=True, ensure_ascii=False))
           print("views:", json.dumps(data.get("views") or {}, sort_keys=True))
+
+          # Row-height matrix: every measured/rendered case is re-checked here
+          # against its class threshold (text/bubble 1 pt, pure tool 2 pt), so
+          # the gate's own check cannot be relaxed without this job failing.
+          table = data.get("rowHeights") or {}
+          cases = table.get("cases") or []
+          expected = table.get("expectedCaseCount")
+          thresholds = table.get("thresholds") or {}
+          if not cases:
+              failures.append("rowHeights table missing or empty")
+          if isinstance(expected, int) and len(cases) != expected:
+              failures.append("rowHeights: %d cases, expected %d"
+                              % (len(cases), expected))
+          for case in cases:
+              name = case.get("fixture", "?")
+              klass = case.get("class")
+              width = case.get("width")
+              dtype = case.get("dynamicType")
+              measured = case.get("measured")
+              rendered = case.get("rendered")
+              delta = case.get("delta")
+              threshold = case.get("threshold", thresholds.get(klass))
+              ok = (isinstance(delta, (int, float))
+                    and isinstance(threshold, (int, float))
+                    and delta <= threshold + 1e-9)
+              print("%s rowHeight %s [%s] width=%s type=%s measured=%s rendered=%s delta=%s threshold=%s"
+                    % ("PASS" if ok else "FAIL", name, klass, width, dtype,
+                       measured, rendered, delta, threshold))
+              if not ok:
+                  failures.append(
+                      "rowHeight %s [%s] width=%s type=%s: measured %s rendered %s "
+                      "delta %s > %s" % (name, klass, width, dtype,
+                                         measured, rendered, delta, threshold))
+
           for failure in failures:
               print("::error::code profile: " + failure)
           if failures:

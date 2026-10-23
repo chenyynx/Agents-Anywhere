@@ -87,9 +87,16 @@ public final class TimelineProbe {
     }
 
     func recordBody(rows: Int) {
+        // The row count is a property of the window, not of the measurement,
+        // so it is kept even outside a window: a report taken after a scroll
+        // still needs to say which window produced it.
+        lastBodyRows = rows
         guard isEnabled else { return }
         bodyEvals += 1
-        lastBodyRows = rows
+    }
+
+    func recordGroupCount(_ count: Int) {
+        lastGroupCount = count
     }
 
     func measureGrouping(rows: Int, _ body: () -> [ChatTimelineGroup]) -> [ChatTimelineGroup] {
@@ -131,12 +138,22 @@ public final class TimelineProbe {
         let scrollFrames = frames.filter(\.scrolling).map(\.interval)
         let idleFrames = frames.filter { !$0.scrolling }.map(\.interval)
 
+        /// Frame-budget buckets. A display link capped at 60 Hz can never show
+        /// whether the UI itself stopped at 60, so the buckets are expressed as
+        /// multiples of the nominal interval the screen actually allows.
         func stats(_ intervals: [Double]) -> String {
             guard !intervals.isEmpty else { return "0 帧" }
-            let hitch = intervals.filter { $0 > nominalInterval * 1.5 }.count
-            let worst = intervals.max()! * 1000
-            let avg = intervals.reduce(0, +) / Double(intervals.count) * 1000
-            return "\(intervals.count) 帧 · 抖动 \(hitch) · 平均 \(String(format: "%.1f", avg))ms · 最差 \(String(format: "%.1f", worst))ms"
+            let nominal = nominalInterval
+            let avg = intervals.reduce(0, +) / Double(intervals.count)
+            let worst = intervals.max()!
+            let best = intervals.min()!
+            let count = Double(intervals.count)
+            func pct(_ n: Int) -> String { String(format: "%.0f%%", Double(n) / count * 100) }
+            let onTime = intervals.filter { $0 <= nominal * 1.5 }.count
+            let oneMiss = intervals.filter { $0 > nominal * 1.5 && $0 <= nominal * 2.5 }.count
+            let fewMiss = intervals.filter { $0 > nominal * 2.5 && $0 <= nominal * 5.5 }.count
+            let stall = intervals.filter { $0 > nominal * 5.5 }.count
+            return "\(intervals.count) 帧 · \(String(format: "%.0f", 1 / avg))fps · 最快 \(String(format: "%.1f", best * 1000))ms · 平均 \(String(format: "%.1f", avg * 1000))ms · 最差 \(String(format: "%.1f", worst * 1000))ms\n  预算 \(String(format: "%.0f", 1 / nominal))Hz: 按时 \(pct(onTime)) · 掉1帧 \(pct(oneMiss)) · 掉2-4帧 \(pct(fewMiss)) · ≥5帧 \(pct(stall))"
         }
 
         let groupingAvg = groupingCalls > 0 ? groupingTotal / Double(groupingCalls) : 0
@@ -182,7 +199,10 @@ extension TimelineProbe {
     @inline(__always) static func setScrolling(_ value: Bool) { shared.recordScrolling(value) }
     @inline(__always) static func bodyEvaluated(rows: Int) { shared.recordBody(rows: rows) }
     @inline(__always) static func grouping(rows: Int, _ body: () -> [ChatTimelineGroup]) -> [ChatTimelineGroup] {
-        shared.isEnabled ? shared.measureGrouping(rows: rows, body) : body()
+        if shared.isEnabled { return shared.measureGrouping(rows: rows, body) }
+        let groups = body()
+        shared.recordGroupCount(groups.count)
+        return groups
     }
     @inline(__always) static func flush(rows: Int, _ body: () -> Void) {
         shared.isEnabled ? shared.measureFlush(rows: rows, body) : body()

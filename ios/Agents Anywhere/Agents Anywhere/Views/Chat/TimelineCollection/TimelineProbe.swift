@@ -610,57 +610,6 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         }
     }
 
-    /// The visible cell is the only exact source for a hosting row. Comparing
-    /// its fitting height with the frame predicts the next correction: the
-    /// row is currently at the wrong height and will move when the settle
-    /// pass runs.
-    private func checkFits(controller: TimelineCollectionController,
-                           view: UICollectionView,
-                           attributes: [TimelineListLayoutAttributes]) {
-        for attribute in attributes {
-            guard let item = attribute.item,
-                  controller.documentHeights[item.itemID] == nil,
-                  let cell = view.cellForItem(at: attribute.indexPath) else { continue }
-            // A reconfigure swaps the hosted SwiftUI tree. Two hosting views
-            // inside one cell at the same time draw over each other; that is
-            // the in-cell "text overlap" a frame comparison cannot see.
-            let hosting = cell.contentView.subviews.filter {
-                String(describing: type(of: $0)).contains("HostingView")
-            }
-            if hosting.count > 1 {
-                counters["doubleHosting", default: 0] += 1
-                recordIssue(kind: "doubleHosting",
-                            detail: "\(item.itemID) n=\(hosting.count) "
-                                + hosting.map { "(\(f($0.frame.minY)),\(f($0.frame.height)))" }
-                                    .joined(separator: " "))
-            }
-            if let tallest = hosting.map(\.frame.height).max(),
-               tallest > cell.bounds.height + 0.5 {
-                counters["hostingOverflow", default: 0] += 1
-                recordIssue(kind: "hostingOverflow",
-                            detail: "\(item.itemID) hostingH=\(f(tallest)) "
-                                + "cellH=\(f(cell.bounds.height)) "
-                                + "attrH=\(f(attribute.frame.height))")
-            }
-            let width = cell.contentView.bounds.width
-            guard width > 0 else { continue }
-            let raw = cell.contentView.systemLayoutSizeFitting(
-                CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
-                withHorizontalFittingPriority: .required,
-                verticalFittingPriority: .fittingSizeLevel).height
-            guard raw.isFinite, raw > 8 else { continue }
-            counters["fitChecks", default: 0] += 1
-            let fit = ceil(raw)
-            let delta = fit - attribute.frame.height
-            guard abs(delta) > 1 else { continue }
-            counters["fitMismatch", default: 0] += 1
-            recordIssue(kind: "fitMismatch",
-                        detail: "\(item.itemID) frameH=\(f(attribute.frame.height)) fit=\(f(fit)) "
-                            + "delta=\(f(delta)) est=\(f(estimate(of: item))) "
-                            + "policy=\(attribute.policy) visible=1 off=\(f(view.contentOffset.y)) "
-                            + "\(describe(item))")
-        }
-    }
 
     /// The cell's rendered text, sampled every 0.5 s while the row is visible.
     /// A row whose text changed but whose height did not is a content bug the

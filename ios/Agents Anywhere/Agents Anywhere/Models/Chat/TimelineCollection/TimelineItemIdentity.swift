@@ -47,8 +47,9 @@ nonisolated struct TimelineItemIdentityList: Equatable {
 }
 
 /// Builds the collection's top-level order. It mirrors the SwiftUI body's
-/// order exactly: older prompt, groups, tail notices, pending messages, latest
-/// prompt, tail. Each category is deduplicated independently, first wins.
+/// order exactly: older prompt, groups, tail notices, pending messages,
+/// working status, latest prompt, tail. Each category is deduplicated
+/// independently, first wins.
 nonisolated enum TimelineItemIdentity {
     static func build(hasOlderPrompt: Bool,
                       groupIDs: [String],
@@ -63,13 +64,14 @@ nonisolated enum TimelineItemIdentity {
 
         let groups = deduplicate(groupIDs)
         items.append(contentsOf: groups.values.map { .group($0) })
-        // The working status row sits after the turn's last message and before
-        // any tail notice or pending row: it describes the turn, not a notice.
-        if hasWorkingStatus { items.append(.workingStatus) }
         let notices = deduplicate(noticeIDs)
         items.append(contentsOf: notices.values.map { .notice($0) })
         let pending = deduplicate(pendingIDs)
         items.append(contentsOf: pending.values.map { .pending($0) })
+        // The working status row is the turn's last item: it follows the
+        // messages and a just-sent pending bubble (the reader must see it
+        // below their own message), and sits before the latest/tail rows.
+        if hasWorkingStatus { items.append(.workingStatus) }
 
         if hasLatestPrompt { items.append(.latestPrompt) }
         if hasTail { items.append(.tail) }

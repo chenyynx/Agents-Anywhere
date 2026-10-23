@@ -964,7 +964,12 @@ final class TimelineListLayout: UICollectionViewLayout {
               let exact = structuralHost.layoutStructuralExactHeight(for: item,
                                                                      width: key.width),
               exact > 1 else { return false }
-        let floor = exact - max(8, exact * 0.15)
+        // A placeholder is a one-line/empty stack (2–56 pt) on a row whose
+        // content is hundreds of points tall. Use a proportional floor with a
+        // 24 pt minimum: a structural estimate can itself over-reserve (the
+        // 2.3× crude case), so a 15 % band would reject a legitimate render.
+        // A genuinely short row keeps its exact value, which is also short.
+        let floor = max(24, exact * 0.35)
         guard height < floor else {
             placeholderGuards[itemID] = nil
             return false

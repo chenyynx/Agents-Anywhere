@@ -60,6 +60,21 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         var repeatCount: Int
     }
 
+    /// A visible cell's rendered content, sampled for the content-mismatch
+    /// check. The probe only reads what the reader sees; it never writes.
+    struct ContentSample {
+        let itemID: String
+        /// The first 100 visible characters, whitespace collapsed.
+        let text: String
+        /// A stable hash of the full text, so two samples with the same
+        /// prefix but different tails still differ.
+        let textHash: Int
+        /// The height the cell actually displays.
+        let frameHeight: CGFloat
+        /// The height the layout attributes claim.
+        let attributeHeight: CGFloat
+    }
+
     struct Issue {
         let at: TimeInterval
         let kind: String
@@ -89,6 +104,10 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     private(set) var changes: [HeightChange] = []
     private(set) var issues: [Issue] = []
     private(set) var applies: [ApplyRecord] = []
+    /// The last content sample per item, for the content-mismatch check.
+    /// A row whose text changed but whose height did not is a content bug the
+    /// height probes cannot see.
+    private var lastContentSamples: [String: ContentSample] = [:]
 
     private weak var controller: TimelineCollectionController?
     private weak var adapter: TimelineChatContentAdapter?
@@ -99,6 +118,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     private var lastHeights: [String: CGFloat] = [:]
     private var lastOffset: CGFloat?
     private var lastTickAt: CFTimeInterval = 0
+    private var lastContentSampleAt: TimeInterval = 0
     /// The controller records a fit before handing it to the layout, and the
     /// layout records the applied height again. Keep one line for the pair.
     private var lastRecorded: [String: (at: TimeInterval, new: CGFloat)] = [:]
@@ -451,6 +471,15 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             }
         }
 
+        // Content mismatch: the cell's rendered text changed but its height
+        // did not, or the text is identical to the previous sample but the
+        // height moved. Either is a content bug the height probes cannot see.
+        if now - lastContentSampleAt >= 0.5 {
+            lastContentSampleAt = now
+            checkContent(controller: controller, view: view,
+                         attributes: visibleAttributes)
+        }
+
         // A fitting pass is a SwiftUI layout pass. Run it only when the reader
         // is not scrolling: measuring during a scroll would change the very
         // behaviour this probe is observing.
@@ -513,6 +542,102 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                             + "delta=\(f(delta)) est=\(f(estimate(of: item))) "
                             + "policy=\(attribute.policy) visible=1 off=\(f(view.contentOffset.y)) "
                             + "\(describe(item))")
+        }
+    }
+
+    /// The visible cell is the only exact source for a hosting row. Comparing
+    /// its fitting height with the frame predicts the next correction: the
+    /// row is currently at the wrong height and will move when the settle
+    /// pass runs.
+    private func checkFits(controller: TimelineCollectionController,
+                           view: UICollectionView,
+                           attributes: [TimelineListLayoutAttributes]) {
+        for attribute in attributes {
+            guard let item = attribute.item,
+                  controller.documentHeights[item.itemID] == nil,
+                  let cell = view.cellForItem(at: attribute.indexPath) else { continue }
+            // A reconfigure swaps the hosted SwiftUI tree. Two hosting views
+            // inside one cell at the same time draw over each other; that is
+            // the in-cell "text overlap" a frame comparison cannot see.
+            let hosting = cell.contentView.subviews.filter {
+                String(describing: type(of: $0)).contains("HostingView")
+            }
+            if hosting.count > 1 {
+                counters["doubleHosting", default: 0] += 1
+                recordIssue(kind: "doubleHosting",
+                            detail: "\(item.itemID) n=\(hosting.count) "
+                                + hosting.map { "(\(f($0.frame.minY)),\(f($0.frame.height)))" }
+                                    .joined(separator: " "))
+            }
+            if let tallest = hosting.map(\.frame.height).max(),
+               tallest > cell.bounds.height + 0.5 {
+                counters["hostingOverflow", default: 0] += 1
+                recordIssue(kind: "hostingOverflow",
+                            detail: "\(item.itemID) hostingH=\(f(tallest)) "
+                                + "cellH=\(f(cell.bounds.height)) "
+                                + "attrH=\(f(attribute.frame.height))")
+            }
+            let width = cell.contentView.bounds.width
+            guard width > 0 else { continue }
+            let raw = cell.contentView.systemLayoutSizeFitting(
+                CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
+                withHorizontalFittingPriority: .required,
+                verticalFittingPriority: .fittingSizeLevel).height
+            guard raw.isFinite, raw > 8 else { continue }
+            counters["fitChecks", default: 0] += 1
+            let fit = ceil(raw)
+            let delta = fit - attribute.frame.height
+            guard abs(delta) > 1 else { continue }
+            counters["fitMismatch", default: 0] += 1
+            recordIssue(kind: "fitMismatch",
+                        detail: "\(item.itemID) frameH=\(f(attribute.frame.height)) fit=\(f(fit)) "
+                            + "delta=\(f(delta)) est=\(f(estimate(of: item))) "
+                            + "policy=\(attribute.policy) visible=1 off=\(f(view.contentOffset.y)) "
+                            + "\(describe(item))")
+        }
+    }
+
+    /// The cell's rendered text, sampled every 0.5 s while the row is visible.
+    /// A row whose text changed but whose height did not is a content bug the
+    /// height probes cannot see; a row whose text is identical but whose
+    /// height moved is a layout bug the text probes cannot see.
+    private func checkContent(controller: TimelineCollectionController,
+                              view: UICollectionView,
+                              attributes: [TimelineListLayoutAttributes]) {
+        for attribute in attributes {
+            guard let item = attribute.item,
+                  let cell = view.cellForItem(at: attribute.indexPath) else { continue }
+            let text = cell.contentView.recursiveDescription
+                .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            let sample = ContentSample(
+                itemID: item.itemID,
+                text: String(text.prefix(100)),
+                textHash: text.hash,
+                frameHeight: cell.frame.height,
+                attributeHeight: attribute.frame.height)
+            guard let previous = lastContentSamples[item.itemID] else {
+                lastContentSamples[item.itemID] = sample
+                continue
+            }
+            let textChanged = previous.textHash != sample.textHash
+            let heightChanged = abs(previous.attributeHeight - sample.attributeHeight) > 0.5
+            if textChanged, !heightChanged {
+                counters["contentMismatch", default: 0] += 1
+                recordIssue(kind: "contentMismatch",
+                            detail: "\(item.itemID) text changed, height did not "
+                                + "prevH=\(f(previous.attributeHeight)) "
+                                + "currH=\(f(sample.attributeHeight)) "
+                                + "prev=\"\(previous.text.prefix(36))\" "
+                                + "curr=\"\(sample.text.prefix(36))\"")
+            }
+            if !textChanged, heightChanged {
+                counters["heightWithoutContent", default: 0] += 1
+                recordIssue(kind: "heightWithoutContent",
+                            detail: "\(item.itemID) height changed, text did not "
+                                + "prevH=\(f(previous.attributeHeight)) "
+                                + "currH=\(f(sample.attributeHeight))")
+            }
+            lastContentSamples[item.itemID] = sample
         }
     }
 

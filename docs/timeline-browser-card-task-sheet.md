@@ -42,12 +42,12 @@ WKWebView ──HTTPS/WSS──> nginx(8443, browser.pipicore.cn)
                               │ auth_request（校验 cookie）
                               ▼
                         browser-gateway (127.0.0.1:8090)
-                              │ 代理 HTTP + WS
+                              │ 运行时适配（Steel 默认 / Neko 备选）
                               ▼
-                        Neko container (127.0.0.1:8080)
+                  Chrome 运行时（Steel 容器 或 Neko 容器）
                               │
                               ├─ Chromium（CDP 127.0.0.1:9222）
-                              └─ profile volume /data/neko/profile（登录态）
+                              └─ profile volume（登录态持久）
 
 Claude 会话 (connector)
   │  MCP 工具 browser_open
@@ -60,30 +60,48 @@ agent 用 Playwright 通过 cdpUrl 操作同一 Chromium
 
 关键决定：
 
-1. **浏览器运行时与 agent 控制端共用同一个 Chromium 实例**（Neko 画面 + CDP 端口），pp 看到的和 agent 操作的是同一页面。
+1. **浏览器运行时与 agent 控制端共用同一个 Chromium 实例**（运行时画面 + CDP 端口），pp 看到的和 agent 操作的是同一页面。
 2. **卡片不新增 timeline 类型**：复用 `type="tool"` + `content` 自由 JSON，iOS 按 `content.server == "browser"` 识别；不改 server enum、不改数据库、不改契约、旧客户端退化为普通工具行。
-3. **实时画面走 Neko 的 WebRTC 页面**，首版嵌 WKWebView；若真机 WebRTC 不可用，降级为 `SFSafariViewController` 全屏打开同一 URL（仍可用，只是外框不是原生）。
-4. **鉴权走服务端签发的短时 token**：一次性 open token（fragment，不落访问日志）→ 换取 HttpOnly cookie → nginx `auth_request` 同时保护页面与 WSS。不复用 7 天用户 token 到 URL（参照终端 WS 的 query token 先例，但更严格）。
+3. **默认运行时 = Steel Browser**：它是 agent-first 的浏览器基础设施，自带会话、`persist`/`userDataDir`（登录态）、CDP、以及专为 iframe 嵌入设计的 live view 页面（CDP 截帧走 WSS/TCP，跨网络更稳，也没有 Neko 的远程桌面 UI 冗余）。
+4. **Neko 作为「丝滑备选」**：WebRTC 30fps 手感更好，但 UI 是完整远程桌面客户端、CDP 需改启动参数、集成成本高。gateway 做运行时抽象，M0 实测两边后在两者间切换，connector 与 iOS 不用改。
+5. **鉴权走服务端签发的短时 token**：一次性 open token（fragment，不落访问日志）→ 换取 HttpOnly cookie → nginx `auth_request` 同时保护页面与 WSS。不复用 7 天用户 token 到 URL（参照终端 WS 的 query token 先例，但更严格）。
 
 ---
 
 ## 4. 三端改动清单
 
-### 4.1 新增：浏览器运行时（部署产物，不进 App 仓库）
+### 4.1 新增：浏览器运行时（运行时抽象；Steel 默认 / Neko 备选）
 
-位置：`/data/neko/`（docker compose + 自定义镜像）
+位置：`/data/browser-runtime/`（docker compose + 自定义镜像）
 
-- 基础镜像：`ghcr.io/m1k1o/neko/chromium:latest`
-- 自定义 Dockerfile（5 行）：覆写 `/etc/neko/supervisord/chromium.conf`，在启动参数加：
-  - `--remote-debugging-port=9222`
-  - `--remote-debugging-address=0.0.0.0`（容器内监听，宿主侧只映射到 127.0.0.1）
+**默认：Steel Browser（`steel-dev/steel-browser`，Apache-2.0）**
+
+- 镜像：`ghcr.io/steel-dev/steel-browser`（API + UI 合一，Docker）
+- 会话创建参数：`persist=true` + `userDataDir=/data/browser-runtime/profile`（登录态持久）
 - 端口映射：
-  - `127.0.0.1:8080:8080`（Neko Web，nginx 才能访问，不直接暴露公网）
-  - `127.0.0.1:9222:9222`（CDP，仅本机 agent 可用）
-- 卷：`/data/neko/profile:/home/neko/.config/chromium`（登录态持久）
-- 环境：`NEKO_SCREEN=720x1280@30`（竖屏手机尺寸，省 CPU）；`NEKO_PASSWORD`/`NEKO_PASSWORD_ADMIN` 随机值落 `0600` 文件
-- 资源：`mem_limit=2g`、`cpus=2`；容器常驻约 0.6–1G（本机可用 2.7G，需监控）
-- 空闲回收：gateway 侧 30 分钟无连接则 `docker stop`（profile 保留，重开需重新加载页面）
+  - `127.0.0.1:3000:3000`（Steel API + live 页，nginx/gateway 访问）
+  - `127.0.0.1:9223:9223`（Steel 提供的 CDP/调试口，仅本机 agent 可用）
+- live view：`/sessions/:id/live`（Steel Session Player，iframe 可用，自带鼠标/键盘转发）
+- 资源：`mem_limit=2g`、`cpus=2`；单会话常驻约 0.5–1G
+- 验证点（M0 必测）：
+  1. `userDataDir` 在自托管 OSS 版本中确实跨会话复用 Cookie（schema 已确认字段存在，行为需实测）
+  2. live 页在 iOS WKWebView 中的键盘/触摸/拖拽手感
+  3. live 页的 WebSocket 是否同源（决定 gateway 代理能否直接复用）
+  4. 截帧帧率与香港线路延迟
+
+**备选：Neko（`m1k1o/neko`，Apache-2.0）**
+
+- 基础镜像：`ghcr.io/m1k1o/neko/chromium:latest`，自定义 Dockerfile（5 行）覆写 `/etc/neko/supervisord/chromium.conf`，启动参数加 `--remote-debugging-port=9222` 与 `--remote-debugging-address=0.0.0.0`
+- 端口：`127.0.0.1:8080:8080`（Neko Web）、`127.0.0.1:9222:9222`（CDP）
+- 卷：`/data/browser-runtime/neko-profile:/home/neko/.config/chromium`
+- 环境：`NEKO_SCREEN=720x1280@30`；`NEKO_PASSWORD`/`NEKO_PASSWORD_ADMIN` 随机值落 `0600`
+- 适用条件：M0 实测 Steel 手感不可接受时启用；gateway 只需换 adapter，connector/iOS 不改
+
+**共同**
+
+- CDP 永远只绑 127.0.0.1，不对外
+- 空闲回收：gateway 侧 30 分钟无连接则 `docker stop`（profile 保留）
+- 运行时互斥：同一时刻只跑一个（内存原因），M0 对比时错峰启动
 
 ### 4.2 新增：browser-gateway（宿主机小服务）
 
@@ -91,12 +109,12 @@ agent 用 Playwright 通过 cdpUrl 操作同一 Chromium
 
 职责：
 
-1. `POST /open`（只绑 127.0.0.1）：入参 `{sessionId, url?}`；确保 Neko 容器运行；若 url 提供则用 CDP 打开；签发一次性 token；返回 `{browserId, liveUrl, cdpUrl, status}`。同一 session 复用同一 browserId。
+1. `POST /open`（只绑 127.0.0.1）：入参 `{sessionId, url?}`；通过 runtime adapter 确保 Steel/Neko 容器运行；若 url 提供则用 CDP 打开；签发一次性 token；返回 `{browserId, liveUrl, cdpUrl, status}`。同一 session 复用同一 browserId。
 2. `POST /close`：关闭浏览器网页（容器保留）；会话归档时由 connector 调用。
 3. `GET /auth/check`：nginx `auth_request` 子请求，校验 `browser_session` cookie。
 4. `POST /auth/exchange`：一次性 token → 设置 HttpOnly/Secure/SameSite=Lax cookie（TTL 12h，绑定 browserId）。
 5. `GET /live`：landing 页；从 fragment 读 token，POST 换 cookie，然后 302 到 `/`（Neko 客户端）。
-6. 反向代理 `/` 与 `/ws` 到 `127.0.0.1:8080`（HTTP + WebSocket Upgrade）。
+6. 反向代理 `/` 与 `/ws` 到当前运行时的本地端口（Steel 3000 / Neko 8080），HTTP + WebSocket Upgrade。
 7. 生命周期：记录 browserId ↔ sessionId；空闲计时；token 消耗与过期清理。
 
 安全：
@@ -231,8 +249,10 @@ agent 用 Playwright 通过 cdpUrl 操作同一 Chromium
 
 | 风险 | 影响 | 处置 |
 |---|---|---|
-| WKWebView 对 Neko WebRTC 兼容性未知 | 卡片点开黑屏 | M0 先用最小页面验证；失败降级 SFSafariViewController |
-| 国内→香港 UDP 质量 | 画面卡顿 | 先测 Tailscale；必要时 TURN/TCP |
+| WKWebView 对 Steel live 页 / Neko WebRTC 的兼容性未知 | 卡片点开黑屏 | M0 两者都测；失败降级 SFSafariViewController |
+| Steel OSS 的 `userDataDir` 跨会话复用行为未实测 | 登录态不能持久 | M0 必测；不行则改用容器内固定 profile 或切 Neko |
+| Steel live 页的 WebSocket 非同源 | gateway 代理要额外改路径 | M0 看 EJS/WS URL；必要时页面注 base 路径 |
+| 国内→香港 UDP 质量（Neko） | 画面卡顿 | 先测 Tailscale；必要时 TURN/TCP |
 | 内存（Chromium ~1G） | 本机 2.7G 可用，易紧 | 单浏览器 + 空闲回收 + 监控 |
 | connector 单 control 覆盖 | title 工具被覆盖（回归） | 先改合并 + 双 server 单测锁死 |
 | 会话归档不杀浏览器 | 进程/内存泄漏 | 归档钩子 + 空闲回收 + 验证 |
@@ -243,7 +263,7 @@ agent 用 Playwright 通过 cdpUrl 操作同一 Chromium
 **未决（需要 pp 决定）**：
 
 1. 是否同意新增 DNS 记录 `browser.pipicore.cn`（指向 206，走现有 8443 TLS）；若不改 DNS，退回 Tailscale-only 方案（手机需常开 Tailscale）
-2. 是否同意在 206 安装并常驻 Neko 容器 + browser-gateway（内存 +~1G）
+2. 是否同意在 206 安装 Steel + browser-gateway（M0 期间临时再装 Neko 做对比，错峰运行），内存 +~1G
 
 ---
 
@@ -251,7 +271,7 @@ agent 用 Playwright 通过 cdpUrl 操作同一 Chromium
 
 | 里程碑 | 内容 | 预估 |
 |---|---|---|
-| M0 | Neko + CDP + profile 卷；手机浏览器验证画面/接管；agent CDP 读页面 | 0.5–1 天 |
+| M0 | 运行时对比：Steel 与 Neko 错峰启动，手机验证画面/接管手感、agent CDP 读页面、登录态持久；pp 试完拍板默认运行时 | 0.5–1 天 |
 | M1 | gateway + nginx token 鉴权；connector 多 MCP 合并 + browser 工具 + 单测 | 1–1.5 天 |
 | M2 | iOS 卡片 + 全屏视图 + 单测 + CI | 1.5–2 天 |
 | M3 | 生命周期/安全加固 + 独立审查（L 级）+ 真机验收 | 1 天 |

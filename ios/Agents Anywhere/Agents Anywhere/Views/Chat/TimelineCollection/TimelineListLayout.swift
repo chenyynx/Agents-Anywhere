@@ -749,6 +749,12 @@ final class TimelineListLayout: UICollectionViewLayout {
             keyboardTransition: state.keyboardTransition,
             hasCachedHeight: true)
         if decision.height == .deferUntilSettled { return }
+#if DEBUG
+        traceOffset("streaming", itemID: itemID, delta: delta,
+                    correction: adjustOffset ? decision.correction : nil,
+                    before: collectionView?.contentOffset.y,
+                    note: adjustOffset ? "\(decision.height)" : "noAdjust")
+#endif
         invalidateHeight(itemID: itemID, attributes: attributes,
                          correction: adjustOffset ? decision.correction : nil,
                          contentSizeDelta: delta, state: state, probeSource: "")

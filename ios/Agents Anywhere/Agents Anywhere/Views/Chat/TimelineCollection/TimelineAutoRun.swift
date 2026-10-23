@@ -997,6 +997,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         let anchorBefore = controller.screenY(for: anchorItem) ?? .nan
         let fixtureScreenBefore = controller.screenY(for: item) ?? .nan
         controller.setTestGestureState(tracking: true, decelerating: false)
+        controller.disarmBottom()
         entries[index].text += "\nlet more = 41"
         entries[index].revision += 1
         contentGeneration += 1
@@ -1227,6 +1228,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
 
         let usesOfficialContract = usesCellReportedHeight(for: targetItem)
         controller.setTestGestureState(tracking: tracking, decelerating: decelerating)
+        // A real drag disarms the bottom target in `scrollViewWillBeginDragging`;
+        // the simulator seam bypasses that callback, so mirror it here.
+        controller.disarmBottom()
         let userScrolling = controller.isUserScrolling
         setExpanded(target.id, true)
         contentGeneration += 1
@@ -1307,6 +1311,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                 "anchorScreenY": anchorScreenBefore.map(Double.init) ?? -1,
                 "offsetBefore": Double(offsetBefore),
                 "offsetAfter": Double(offsetAfter),
+                "isAutoScrollPinning": controller.layoutInteractionState().isAutoScrollPinning,
                 "targetMinYBefore": Double(before[targetItem.itemID]?.attributeMinY ?? -1),
                 "targetMinYAfter": Double(after[targetItem.itemID]?.attributeMinY ?? -1),
                 "offsetTrace": controller.layout.debugOffsetTrace,

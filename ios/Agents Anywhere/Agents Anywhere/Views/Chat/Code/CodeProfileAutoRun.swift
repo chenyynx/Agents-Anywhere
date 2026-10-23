@@ -417,6 +417,7 @@ final class CodeProfileAutoRunModel {
 
     private func captureViews() async {
         prepareViews()
+        await verifyMessageRowHeight()
 
         var views: [String: Any] = [:]
 
@@ -486,6 +487,50 @@ final class CodeProfileAutoRunModel {
         }
         check(!detailFollowing.isEmpty,
               "views: detail fixture has no following call")
+    }
+
+    /// The exact height the controller stores before apply must equal the
+    /// height the hosting row actually lays out at, or the row will correct
+    /// itself when it first becomes visible — the movement the device probe
+    /// caught. Render the same fixture offscreen, wait for ChatMarkdownView's
+    /// parse, and compare.
+    private func verifyMessageRowHeight() async {
+        guard let group = messageGroup, let window = keyWindow else { return }
+        let rowWidth = window.bounds.width - 2 * CodePageTheme.rowMarginLeading
+        let host = UIHostingController(rootView:
+            CodeMessageRowView(group: group, profile: .claudeCode, cwd: "/repo",
+                               showsWorkingStatus: true)
+                .padding(.horizontal, CodePageTheme.rowMarginLeading))
+        host.view.frame = CGRect(x: 0, y: 0, width: window.bounds.width, height: 200)
+        host.view.backgroundColor = .clear
+        window.addSubview(host.view)
+        host.view.layoutIfNeeded()
+        // `ChatMarkdownView` parses its body in a task; the task only runs once
+        // the view is in a window.
+        await wait(1200)
+        host.view.layoutIfNeeded()
+        let rendered = host.sizeThatFits(in: CGSize(
+            width: window.bounds.width, height: .greatestFiniteMagnitude)).height
+        let traits = host.traitCollection
+        host.view.removeFromSuperview()
+
+        let typography = TimelineChatContentAdapter.typography(
+            dynamicType: String(describing: DynamicTypeSize.large),
+            layoutDirection: 0,
+            boldText: false)
+        let measured = CodeMessageHeightMeasurer.height(
+            group: group, profile: .claudeCode, showsWorkingStatus: true,
+            width: rowWidth, typography: typography, traits: traits, measured: true)
+        let delta = abs(measured - rendered)
+        // Three points covers the Textual/TextKit parity gap measured on the
+        // shared fixture (~1.7 pt); anything larger is a structural mistake.
+        check(delta <= 3,
+              "views: message row measured \(measured) pt, rendered \(rendered) pt (delta \(delta)); the pre-apply height disagrees with the row")
+        report["messageRowHeight"] = [
+            "measured": Double(measured),
+            "rendered": Double(rendered),
+            "delta": Double(delta),
+        ]
     }
 
     /// Captures the app window. The stage view fills it, so the PNG shows the

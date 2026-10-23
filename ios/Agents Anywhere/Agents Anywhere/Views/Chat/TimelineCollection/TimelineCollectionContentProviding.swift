@@ -34,6 +34,13 @@ protocol TimelineCollectionContentProviding: AnyObject {
     /// and every non-assistant row return nil.
     func assistantMarkdown(for item: TimelineListItem) -> AssistantMarkdownDocument?
 
+    /// The exact height of a settled Code message group. The Code page hosts
+    /// every message itself, so `assistantMarkdown` stays nil there; without
+    /// this hook the layout would start each group on an estimate and correct
+    /// it when the cell first became visible (the device's scroll movement).
+    /// Nil for non-Code items and for groups whose text is still streaming.
+    func measuredCodeGroupHeight(for item: TimelineListItem, width: CGFloat) -> CGFloat?
+
     /// The C5/M4 streaming path: the same TextKit cell renders settled blocks
     /// and hosts the revealing tail in the existing Markdown view. Nil means
     /// the row stays on the hosting path (unsupported blocks, attachments,
@@ -88,6 +95,7 @@ extension TimelineCollectionContentProviding {
 
     /// The C3 synthetic model keeps every row on the hosting path.
     func assistantMarkdown(for item: TimelineListItem) -> AssistantMarkdownDocument? { nil }
+    func measuredCodeGroupHeight(for item: TimelineListItem, width: CGFloat) -> CGFloat? { nil }
     func assistantStreamingDocument(for item: TimelineListItem) -> AssistantStreamingDocument? { nil }
     func assistantStreamingReveal(for item: TimelineListItem) -> StreamingRevealState? { nil }
     func streamingRevealDidFinish(for item: TimelineListItem) {}

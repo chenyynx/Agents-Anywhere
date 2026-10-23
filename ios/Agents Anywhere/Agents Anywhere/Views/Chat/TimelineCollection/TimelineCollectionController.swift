@@ -55,6 +55,7 @@ final class TimelineCollectionController: UIViewController {
     private var pendingApply: (items: [TimelineListItem], animating: Bool)?
     private var pendingMeasurementTask: Task<Void, Never>?
     private var visibleCellSettleTask: Task<Void, Never>?
+    private var cellFrameSyncScheduled = false
     private var visibleCellSettleGeneration = 0
     private var bottomAnimationWatchdog: Task<Void, Never>?
     private var lastPublishedViewport = TimelineViewport()
@@ -257,6 +258,7 @@ final class TimelineCollectionController: UIViewController {
         }
         pinBottomForKeyboardIfNeeded()
         handleContainerHeightChange()
+        scheduleVisibleCellFrameSync()
     }
 
     override func viewSafeAreaInsetsDidChange() {
@@ -424,6 +426,7 @@ final class TimelineCollectionController: UIViewController {
                 }
             }
             self.scheduleVisibleCellSettle()
+            self.scheduleVisibleCellFrameSync()
             self.publishViewport()
             if self.layout.insertionOwedIsSettled {
                 self.insertionProjection = nil
@@ -976,6 +979,17 @@ final class TimelineCollectionController: UIViewController {
         // The cell only exists for items that got a real height here, so the
         // row never pairs a TextKit cell with an estimate.
         for item in items {
+            // The Code page renders every message with its own row view, so
+            // the TextKit branches below never see it. Measure the group from
+            // the same parts the row draws, before the snapshot applies: a
+            // settled row must never correct its height while the reader is
+            // looking at it (device report 2026-10-23).
+            if let exact = content.measuredCodeGroupHeight(for: item, width: width) {
+                let key = content.heightKey(for: item, width: width)
+                layout.heights.set(exact, for: key, tier: .measured)
+                documentHeights.removeValue(forKey: item.itemID)
+                continue
+            }
             // C5/M4: the streaming row is measured by the same engine that
             // renders its settled blocks. The tail view is constrained to the
             // remainder, so the stored height is exact instead of an estimate.
@@ -1078,6 +1092,18 @@ final class TimelineCollectionController: UIViewController {
             for item in pending {
                 guard let self, !Task.isCancelled, self.currentItems.contains(item) else { return }
                 guard let content = self.content else { return }
+                // A Code group's height comes from its own structural
+                // measurement. A width or typography change re-keys it without
+                // an apply that would carry the new measurement; settle it
+                // here instead of leaving it on an estimate until the cell is
+                // first seen.
+                if let exact = content.measuredCodeGroupHeight(for: item, width: width) {
+                    self.measurementPipeline.complete(item.itemID)
+                    self.layout.applyMeasuredHeight(
+                        exact, for: item.itemID,
+                        key: content.heightKey(for: item, width: width))
+                    continue
+                }
                 // Async Markdown is settled by the visible cell, not by this
                 // hostless loop; retrying an offscreen pass would only burn
                 // main-thread layout for the same 2pt answer.
@@ -1229,6 +1255,47 @@ final class TimelineCollectionController: UIViewController {
             needsMore = true
         }
         return needsMore
+    }
+
+    // MARK: - Visible cell frame sync
+
+    /// The layout invalidates the changed row and every visible row below it,
+    /// but a path that moves rows without that context — a cleared streaming
+    /// override, a window-prefix change — can leave a cell at its previous
+    /// frame. The reader sees the cells overlap and the text draw over itself
+    /// (device probe 2026-10-23: seven samples, 42 pt overlap).
+    ///
+    /// One visible-only check after each settled layout pass closes that gap.
+    /// It never runs during a drag and only names cells that disagree with the
+    /// layout's own attributes, so a converged list costs one comparison per
+    /// visible row.
+    private func scheduleVisibleCellFrameSync(delay: TimeInterval = 0.05) {
+        guard !cellFrameSyncScheduled else { return }
+        cellFrameSyncScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            self.cellFrameSyncScheduled = false
+            self.syncVisibleCellFrames()
+        }
+    }
+
+    private func syncVisibleCellFrames() {
+        guard isViewLoaded, !navigationSuspended, !isPerformingSnapshot,
+              phase.phase != .animating, !collectionView.isTracking,
+              !collectionView.isDecelerating else { return }
+        var stale: [IndexPath] = []
+        for indexPath in collectionView.indexPathsForVisibleItems {
+            guard let cell = collectionView.cellForItem(at: indexPath),
+                  let attributes = layout.layoutAttributesForItem(at: indexPath) else { continue }
+            if abs(cell.frame.minY - attributes.frame.minY) > 0.5
+                || abs(cell.frame.height - attributes.frame.height) > 0.5 {
+                stale.append(indexPath)
+            }
+        }
+        guard !stale.isEmpty else { return }
+        let context = UICollectionViewLayoutInvalidationContext()
+        context.invalidateItems(at: stale)
+        collectionView.collectionViewLayout.invalidateLayout(with: context)
     }
 
     // MARK: - Viewport and bottom
@@ -1917,6 +1984,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
                         forItemAt indexPath: IndexPath) {
         guard currentItems.indices.contains(indexPath.item) else { return }
         layout.clearStreamingHeight(for: currentItems[indexPath.item].itemID)
+        scheduleVisibleCellFrameSync()
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
@@ -1958,6 +2026,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         if !decelerate { readerSettledAtBottom = viewport.measuredAtBottom }
         layout.noteDragDidEnd(willDecelerate: decelerate)
         scheduleVisibleCellSettle()
+        scheduleVisibleCellFrameSync()
         scheduleUserScrollSettle()
         publishViewport()
     }
@@ -1969,6 +2038,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         readerSettledAtBottom = viewport.measuredAtBottom
         layout.noteDecelerationDidEnd()
         scheduleVisibleCellSettle()
+        scheduleVisibleCellFrameSync()
         scheduleUserScrollSettle()
         scheduleVisibleCellSettle()
         publishViewport()
@@ -1979,6 +2049,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         let transition = phase.apply(.animationEnded)
         onPhaseChanged?(transition)
         scheduleVisibleCellSettle()
+        scheduleVisibleCellFrameSync()
         noteBottomArrival()
         publishViewport()
     }

@@ -1126,4 +1126,29 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         let withImage = TimelineHeightEstimate.TextRow(text: "see image", attachmentCount: 1)
         #expect(height([withImage]) > height([text]))
     }
+
+    /// The Code page's estimate is assembled from exact structural parts and
+    /// passes `cushion: 1`; the Chat rows keep the deliberate 20% reserve.
+    @Test func cushionIsConfigurable() {
+        let row = TimelineHeightEstimate.TextRow(text: String(repeating: "a", count: 400))
+        let plain = TimelineHeightEstimate.height(
+            rows: [row], width: 360, bodySize: 13, lineSpacing: 8,
+            paragraphSpacing: 20, minimum: 0, cushion: 1)
+        let cushioned = TimelineHeightEstimate.height(
+            rows: [row], width: 360, bodySize: 13, lineSpacing: 8,
+            paragraphSpacing: 20, minimum: 0, cushion: 1.2)
+        #expect(plain > 0)
+        #expect(cushioned > plain)
+        #expect(TimelineHeightEstimate.height(
+            rows: [row], width: 360, bodySize: 13, lineSpacing: 8,
+            paragraphSpacing: 20, minimum: 0, cushion: 0) == 0)
+    }
+
+    /// `.fixed` carries an exact structural height; it must not inherit the
+    /// 44 pt floor `.text` applies to an unknown row.
+    @Test func fixedEstimateKeepsSmallRows() {
+        #expect(TimelineHeightEstimateKind.fixed(38).height == 38)
+        #expect(TimelineHeightEstimateKind.fixed(0).height == 0)
+        #expect(TimelineHeightEstimateKind.text(38).height == 44)
+    }
 }

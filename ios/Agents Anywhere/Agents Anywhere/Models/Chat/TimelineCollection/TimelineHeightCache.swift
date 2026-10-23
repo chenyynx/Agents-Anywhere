@@ -21,6 +21,10 @@ nonisolated enum TimelineHeightEstimateKind: Equatable {
     /// yet. The value is an estimate, never a measurement; the visible cell
     /// replaces it as soon as its real content has laid out.
     case text(CGFloat)
+    /// A height assembled from exact parts (the Code row's paddings, scaled
+    /// line box, measured text blocks). Unlike `.text` there is no 44 pt floor:
+    /// a status-only Code row is legitimately 38 pt tall.
+    case fixed(CGFloat)
 
     var height: CGFloat {
         switch self {
@@ -28,6 +32,7 @@ nonisolated enum TimelineHeightEstimateKind: Equatable {
         case .tail(let statusLine): return statusLine ? 32 : 12
         case .row: return 200
         case .text(let height): return max(44, height)
+        case .fixed(let height): return max(0, height)
         }
     }
 }

@@ -30,9 +30,15 @@ nonisolated enum TimelineHeightEstimate {
     ///   - bodySize: the running-text point size (`ChatTypeScale.body`).
     ///   - lineSpacing: the extra leading between line fragments, in points.
     ///   - paragraphSpacing: the gap between blocks, in points.
+    /// - Parameter cushion: Multiplier over the line-count model. The Chat
+    ///   rows keep the deliberate 20% cushion; the Code page's estimate is
+    ///   assembled from exact structural parts and passes 1 so the estimate
+    ///   does not reserve a fifth of a screen it will give back on first fit
+    ///   (device report 2026-10-23).
     static func height(rows: [TextRow], width: CGFloat, bodySize: CGFloat,
                        lineSpacing: CGFloat, paragraphSpacing: CGFloat,
-                       minimum: CGFloat = 44) -> CGFloat {
+                       minimum: CGFloat = 44,
+                       cushion: CGFloat = 1.2) -> CGFloat {
         guard width > 0, bodySize > 0 else { return max(minimum, 92) }
         let lineHeight = max(1, bodySize + lineSpacing)
         // 0.55 em is a conservative average advance for mixed Latin text. CJK
@@ -48,7 +54,7 @@ nonisolated enum TimelineHeightEstimate {
             height += CGFloat(row.attachmentCount) * 180
         }
         height += CGFloat(max(0, rows.count - 1)) * 4
-        return max(minimum, ceil(height * 1.2))
+        return max(minimum, ceil(height * max(0, cushion)))
     }
 
     /// Display width in half-em units: wide glyphs occupy two Latin advances.

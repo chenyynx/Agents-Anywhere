@@ -206,68 +206,95 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         }
     }
 
-    /// The Code message group's estimate.
+    /// The Code message group's estimate. It is only used while the group is
+    /// still streaming: a settled group is measured exactly before apply
+    /// (`measuredCodeGroupHeight`), so the row never corrects itself under the
+    /// reader's finger.
     ///
-    /// Body text wraps, so it goes through the text estimator. A collapsed
-    /// tool row never wraps — it renders `lineLimit(1)` regardless of how long
-    /// the command is — so it contributes one fixed line instead. Feeding the
-    /// full command into the text estimator wrapped a 300-character Bash call
-    /// into ~8 lines, reserving hundreds of points of blank space that the
-    /// visible-cell fit then collapsed while scrolling (device report
-    /// 2026-10-23).
+    /// The arithmetic is `CodeRowHeightPlan`: the same paddings, scaled line
+    /// box and row spacing the row view uses. The old plain-text model took
+    /// the unscaled 24 pt line box and wrapped long Bash commands, so every
+    /// tool-only row arrived 2 pt too tall and long commands reserved hundreds
+    /// of points the first fit had to give back (device report 2026-10-23).
     private func codeEstimateKind(for item: TimelineListItem,
                                   groupID: String) -> TimelineHeightEstimateKind {
-        var textRows: [TimelineHeightEstimate.TextRow] = []
-        var fixedHeight: CGFloat = 0
-        var hasVisibleBlock = false
-        for row in codeRowsByGroupID[groupID] ?? [] {
+        let height = CodeMessageHeightMeasurer.height(
+            rows: codeRowsByGroupID[groupID] ?? [],
+            showsWorkingStatus: groupID == workingStatusGroupID,
+            width: TimelineHeightKey.quantize(lastWidth > 0 ? lastWidth : 361),
+            typography: typography,
+            traits: controller?.traitCollection,
+            measured: false)
+        return .fixed(height)
+    }
+
+    /// The exact height of a settled Code group, measured before the snapshot
+    /// applies. The controller needs this because the Code page hosts every
+    /// message itself: the TextKit document path below is never offered a Code
+    /// row, so without this hook the layout starts every group on an estimate
+    /// and corrects it when the cell first becomes visible.
+    ///
+    /// Text blocks are measured with the parser + TextKit engine the parity
+    /// gate compares against `ChatMarkdownView` (608.3 vs 610 pt on the shared
+    /// fixture). A live group is skipped: parsing the growing text on every
+    /// 0.1 s flush would be quadratic, and its estimate is only visible while
+    /// the reader is watching the streaming row.
+    func measuredCodeGroupHeight(for item: TimelineListItem, width: CGFloat) -> CGFloat? {
+        guard case .group(let id) = item,
+              let group = groupsByID[id], group.explicitID != nil,
+              let rows = codeRowsByGroupID[id] else { return nil }
+        guard !group.rows.contains(where: { $0.isRevealing || $0.value.isStreamingText }) else {
+            return nil
+        }
+        let showsStatus = id == workingStatusGroupID
+        let digest = codeHeightDigest(rows: rows, showsStatus: showsStatus, width: width)
+        if let cached = codeHeightCache[id], cached.digest == digest {
+            return cached.height
+        }
+        let height = CodeMessageHeightMeasurer.height(
+            rows: rows,
+            showsWorkingStatus: showsStatus,
+            width: width,
+            typography: typography,
+            traits: controller?.traitCollection,
+            measured: true)
+        codeHeightCache[id] = CachedCodeHeight(digest: digest, height: height)
+        return height
+    }
+
+    private struct CachedCodeHeight {
+        let digest: Int
+        let height: CGFloat
+    }
+    private var codeHeightCache: [String: CachedCodeHeight] = [:]
+
+    private func codeHeightDigest(rows: [CodeMessageRow], showsStatus: Bool,
+                                  width: CGFloat) -> Int {
+        var hasher = TimelineStableHasher()
+        for row in rows {
+            hasher.combine(row.role.rawValue)
             for block in row.blocks {
                 switch block {
                 case .reasoning:
-                    // Reasoning never renders its text; the live turn draws
-                    // one status line for the whole message (below).
-                    continue
+                    hasher.combine(0)
                 case let .text(_, text):
-                    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                        continue
-                    }
-                    hasVisibleBlock = true
-                    textRows.append(TimelineHeightEstimate.TextRow(text: text))
+                    hasher.combine(1)
+                    hasher.combine(text)
                 case let .toolCalls(segments):
-                    hasVisibleBlock = true
-                    fixedHeight += CGFloat(segments.count) * Self.collapsedToolRowHeight
+                    hasher.combine(2)
+                    hasher.combine(segments.count)
                 case .other:
-                    hasVisibleBlock = true
-                    fixedHeight += Self.genericRowHeight
+                    hasher.combine(3)
                 }
             }
         }
-        if groupID == workingStatusGroupID {
-            fixedHeight += Self.workingStatusHeight
-            if hasVisibleBlock { fixedHeight += CodePageTheme.blockSpacing }
-        }
-        // The row view adds the official rowMargins itself; the estimate must
-        // budget them or every new row lands 10 pt short before its first fit.
-        let margins = CodePageTheme.rowMarginTop + CodePageTheme.rowMarginBottom
-        let textHeight = textEstimate(for: item, rows: textRows,
-                                      minimum: textRows.isEmpty ? 0 : 44)
-        return .text(textHeight + fixedHeight + margins)
+        hasher.combine(showsStatus)
+        hasher.combine(TimelineHeightKey.quantize(width))
+        hasher.combine(typography.revision)
+        let scale = controller?.traitCollection.displayScale ?? 2
+        hasher.combine(Int((scale * 100).rounded()))
+        return hasher.revision
     }
-
-    /// One collapsed tool row's fixed height: the 24 pt line box, the 6 pt
-    /// button padding on each side, and the block stack's 4 pt padding.
-    private static let collapsedToolRowHeight: CGFloat =
-        CodePageTheme.toolRowLineHeight
-            + 2 * CodePageTheme.toolRowButtonPadding
-            + 2 * CodePageTheme.segmentVerticalPadding
-
-    /// The generic one-line row (`otherRow`) without the button padding.
-    private static let genericRowHeight: CGFloat =
-        CodePageTheme.toolRowLineHeight + 2 * CodePageTheme.segmentVerticalPadding
-
-    /// The working status line (20 pt mark/text) plus its block padding.
-    private static let workingStatusHeight: CGFloat =
-        CodePageTheme.workingMarkSize + 2 * CodePageTheme.segmentVerticalPadding
 
     /// The estimate is recomputed only when the row content, typography or
     /// column width changes. `prepare` asks for it for every row on every
@@ -297,6 +324,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         case .notice, .pending: return .interactive
         case .group(let id):
             guard let group = groupsByID[id] else { return .measured }
+            // A Code message row is measured before apply and owned by the
+            // layout: every part of its height is known. Letting it self-size
+            // made UIKit ask for preferred attributes on every scroll and
+            // routed it through the interactive correction path.
+            if group.explicitID != nil { return .measured }
             return groupHasInteractiveContent(group) ? .interactive : .measured
         case .olderPrompt, .latestPrompt: return .measured
         }
@@ -851,75 +883,44 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         }
     }
 
-    /// The estimate's parts. `est` is what the layout reserved; `struct` is
-    /// the same text estimate re-assembled with the row view's real paddings
-    /// (8 pt per block, 4 pt between blocks, 16 pt between rows, 10 pt row
-    /// margins, 28 pt status line). The gap between the two is the estimate's
-    /// structural error; the gap between `struct` and a visible cell's fit is
-    /// the text model's error.
+    /// `est` is what the layout reserves (the structural plan); `exact` is the
+    /// same plan with the text blocks measured by the renderer. A visible
+    /// cell's fit should match `exact` within the parity gap; a gap between
+    /// the two is the cost of using the streaming text model.
     func probeBreakdown(_ item: TimelineListItem) -> String? {
         guard case .group(let id) = item,
               groupsByID[id]?.explicitID != nil else { return nil }
         let rows = codeRowsByGroupID[id] ?? []
         let width = TimelineHeightKey.quantize(lastWidth > 0 ? lastWidth : 361)
         var textBlocks = 0
-        var textHeight: CGFloat = 0
         var toolBlocks = 0
         var segments = 0
         var others = 0
-        var renderedRows = 0
-        var structural: CGFloat = 0
         for row in rows {
-            var blocks = 0
             for block in row.blocks {
                 switch block {
                 case .reasoning:
                     continue
                 case let .text(_, text):
-                    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                        continue
+                    if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        textBlocks += 1
                     }
-                    textBlocks += 1
-                    let height = TimelineHeightEstimate.height(
-                        rows: [TimelineHeightEstimate.TextRow(text: text)], width: width,
-                        bodySize: typography.body, lineSpacing: typography.lineSpacing,
-                        paragraphSpacing: typography.paragraphSpacing, minimum: 0)
-                    textHeight += height
-                    structural += height + 8
-                    blocks += 1
                 case let .toolCalls(blockSegments):
                     toolBlocks += 1
                     segments += blockSegments.count
-                    // CollapsedRowButton: 24 pt min line + 2 x 6 pt padding,
-                    // plus the block's 2 x 4 pt vertical padding.
-                    structural += CGFloat(blockSegments.count)
-                        * (CodePageTheme.toolRowLineHeight + 2 * CodePageTheme.toolRowButtonPadding)
-                        + 2 * CodePageTheme.segmentVerticalPadding
-                    blocks += 1
                 case .other:
                     others += 1
-                    structural += CodePageTheme.toolRowLineHeight
-                        + 2 * CodePageTheme.segmentVerticalPadding
-                    blocks += 1
                 }
             }
-            if blocks > 0 {
-                renderedRows += 1
-                structural += CGFloat(max(0, blocks - 1))
-                    * CodePageTheme.segmentVerticalPadding
-            }
         }
-        structural += CGFloat(max(0, renderedRows - 1)) * CodePageTheme.blockSpacing
-        if id == workingStatusGroupID {
-            structural += CodePageTheme.workingMarkSize
-                + 2 * CodePageTheme.segmentVerticalPadding
-                + (renderedRows > 0 ? CodePageTheme.blockSpacing : 0)
-        }
-        structural += CodePageTheme.rowMarginTop + CodePageTheme.rowMarginBottom
         let estimate = estimateKind(for: item).height
-        return "est=\(probeFormat(estimate)) struct=\(probeFormat(structural)) "
-            + "textBlocks=\(textBlocks) textEstH=\(probeFormat(textHeight)) "
-            + "toolBlocks=\(toolBlocks) segs=\(segments) other=\(others) rows=\(renderedRows) "
+        let exact = CodeMessageHeightMeasurer.height(
+            rows: rows, showsWorkingStatus: id == workingStatusGroupID,
+            width: width, typography: typography,
+            traits: controller?.traitCollection, measured: true)
+        return "est=\(probeFormat(estimate)) exact=\(probeFormat(exact)) "
+            + "textBlocks=\(textBlocks) toolBlocks=\(toolBlocks) segs=\(segments) "
+            + "other=\(others) rows=\(rows.count) "
             + "status=\(id == workingStatusGroupID ? 1 : 0)"
     }
 
@@ -1042,6 +1043,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         self.groupsByID = groupsByID
         self.codeProfile = profile
         self.codeRowsByGroupID = codeRowsByGroupID
+        codeHeightCache = codeHeightCache.filter { codeRowsByGroupID[$0.key] != nil }
         self.tailNoticesByID = tailNoticesByID
         self.pendingByID = pendingByID
         self.rowToItem = rowToItem
@@ -1167,6 +1169,29 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     }
 
     private func groupSignature(_ group: ChatTimelineGroup) -> TimelineGroupContentSignature {
+        // The Code row renders only its rows and the working status line. The
+        // generic signature also hashes the turn action, suppression, inline
+        // notices and attachments; none of them reach `CodeMessageRowView`,
+        // and hashing the turn state re-keyed every group when a turn ended
+        // (probe 2026-10-23: one apply reconfigured 192 rows, dropping every
+        // measured height). Keep the Code signature to what the row draws.
+        if group.explicitID != nil {
+            return TimelineGroupContentSignature(
+                rows: group.rows.map {
+                    TimelineRowContentSignature(id: $0.id,
+                                                revision: $0.value.revision,
+                                                updatedSeq: $0.value.updatedSeq)
+                },
+                disclosureExpanded: false,
+                expandedRowIDs: [],
+                revealingRowIDs: [],
+                inlineNotices: [],
+                attachments: [],
+                turnAction: nil,
+                turnSuppression: TimelineTurnSuppression(
+                    isRunning: false, hasNewerItems: false, hasPendingUserMessage: false),
+                showsWorkingStatus: group.id == workingStatusGroupID)
+        }
         var rows: [TimelineRowContentSignature] = []
         rows.reserveCapacity(group.rows.count)
         let expanded = group.kind != .single && model.disclosures.isExpanded("group:\(group.id)")

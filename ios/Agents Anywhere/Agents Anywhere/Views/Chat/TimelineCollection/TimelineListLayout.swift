@@ -558,13 +558,34 @@ final class TimelineListLayout: UICollectionViewLayout {
         streamingHeights.removeValue(forKey: itemID)
     }
 
-    /// The reveal finished. The row returns to the cached measurement.
+    /// The reveal finished (or the cell left the display). The row returns to
+    /// the cached measurement.
+    ///
+    /// The height change moves every following row, exactly like a measurement
+    /// correction; invalidating only this item left the rows below at their
+    /// previous frames, which is the overlapping-band report. A streaming row
+    /// that scrolls out at the top is the common trigger (device probe
+    /// 2026-10-23: a 42 pt cell overlap that survived seven samples).
     func clearStreamingHeight(for itemID: String) {
         guard streamingHeights.removeValue(forKey: itemID) != nil else { return }
         guard let collectionView = collectionView,
-              let attributes = attributesByItemID[itemID] else { return }
+              let attributes = attributesByItemID[itemID],
+              let key = attributes.heightKey else { return }
+        let fallback = attributes.item.map {
+            host?.layoutEstimateKind(for: $0) ?? .row
+        } ?? .row
+        let resolved = heights.resolvedHeight(for: key, itemID: itemID, fallback: fallback)
+        let delta = resolved - attributes.frame.height
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteHeightChange(
+            itemID: itemID, item: attributes.item,
+            old: attributes.frame.height, new: resolved, source: "streamEnd")
+#endif
         let context = UICollectionViewLayoutInvalidationContext()
-        context.invalidateItems(at: [attributes.indexPath])
+        context.invalidateItems(at: cellUpdatesAffected(by: attributes))
+        if abs(delta) > 0.5 {
+            context.contentSizeAdjustment = CGSize(width: 0, height: delta)
+        }
         collectionView.collectionViewLayout.invalidateLayout(with: context)
     }
 

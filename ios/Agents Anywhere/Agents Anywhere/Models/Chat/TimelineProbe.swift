@@ -1,31 +1,31 @@
 import Foundation
-import Observation
 #if canImport(QuartzCore)
 import QuartzCore
 #endif
 
 /// On-device scroll diagnostics for the SwiftUI timeline.
 ///
-/// The store is inert until a probe build flips `isEnabled`; every hook then
-/// costs one boolean check, so the shipping app pays nothing measurable. The
-/// overlay and the display link live in the app target
-/// (`Views/Chat/TimelineProbe.swift`) and only compile under
-/// `-DAA_TIMELINE_PROBE`; this half sits in ClientCore because the timeline
-/// model counts its own work here.
+/// Everything here is a plain main-actor store: no SwiftUI observation, no
+/// timers, no I/O. The first probe build auto-started a CADisplayLink and
+/// published per-frame values through an `@Observable`; SwiftUI then rebuilt
+/// the overlay — report() included — on every frame, which froze the session
+/// view on device. This version does nothing at all until the floating 探针
+/// button opens an explicit measurement window, and every hook below is one
+/// boolean check while that window is closed.
 ///
-/// It answers the questions a simulator cannot:
+/// What the report answers:
 ///
-/// 1. **How bad is scrolling?** Frame intervals are sampled and framed into
-///    hitches (a frame later than 1.5x the nominal period), split into
-///    scrolling and idle stretches.
-/// 2. **Who costs what per frame?** The timeline's two non-render costs are
-///    counted and timed: `TimelineGrouping` (rebuilt inside the content body)
-///    and `SessionTimelinePresentation.flush` (the row-model update pass). A
-///    body count that climbs while the finger is down points at state churn,
-///    not at row count.
+/// 1. **How bad was scrolling?** Frame intervals are sampled by the app target
+///    and framed into hitches (a frame later than 1.5x the nominal period),
+///    split into scrolling and idle stretches.
+/// 2. **Who costs what?** The timeline's two non-render costs are counted and
+///    timed: `TimelineGrouping` (rebuilt inside the content body) and
+///    `SessionTimelinePresentation.flush` (the row-model update pass). A body
+///    count that climbs while the finger is down points at state churn, not at
+///    row count.
 /// 3. **Does the window matter?** The report records the row and group count
 ///    of the last body evaluation, so two sessions compare directly.
-@MainActor @Observable
+@MainActor
 public final class TimelineProbe {
     public static let shared = TimelineProbe()
 
@@ -35,12 +35,13 @@ public final class TimelineProbe {
         let scrolling: Bool
     }
 
-    public var isEnabled = false
-    /// Nominal refresh period, set by the overlay from the screen's maximum
-    /// frame rate. Defaults to 60 Hz.
-    public var nominalInterval: Double = 1.0 / 60.0
-    public private(set) var liveFPS: Double = 0
-    private(set) var sessionID: String = "—"
+    /// True only inside an explicit measurement window. All hooks except
+    /// `recordSession` return immediately when this is false.
+    public private(set) var isEnabled = false
+    public private(set) var sessionID: String = "—"
+    /// Nominal refresh period, supplied when the window opens. Defaults to
+    /// 60 Hz so a report taken before the screen value is known stays sane.
+    public private(set) var nominalInterval: Double = 1.0 / 60.0
 
     private var frames: [FrameSample] = []
     private var groupingCalls = 0
@@ -58,14 +59,26 @@ public final class TimelineProbe {
 
     private init() {}
 
+    // MARK: - Measurement window
+
+    /// Opens a fresh window. Called only by the probe overlay, on a user tap.
+    public func startSampling(fps: Int) {
+        nominalInterval = 1.0 / Double(max(1, fps))
+        resetCounters()
+        isEnabled = true
+    }
+
+    /// Closes the window. Collected data stays available to `report()`.
+    public func stopSampling() {
+        isEnabled = false
+        scrolling = false
+    }
+
     // MARK: - Hooks
 
+    /// Cheap even outside a window: one string compare against the current id.
     func recordSession(_ id: String) {
-        guard isEnabled else { return }
-        if sessionID != id {
-            sessionID = id
-            resetCounters()
-        }
+        if sessionID != id { sessionID = id }
     }
 
     func recordScrolling(_ value: Bool) {
@@ -104,23 +117,19 @@ public final class TimelineProbe {
     public func recordFrame(interval: Double, at timestamp: CFTimeInterval) {
         guard isEnabled else { return }
         frames.append(FrameSample(at: timestamp, interval: interval, scrolling: scrolling))
-        let cutoff = timestamp - 30
-        if frames.first?.at ?? timestamp < cutoff {
+        // A 30 s window at 120 Hz is 3600 samples; trim only past 4000 so the
+        // per-frame path stays two appends and no scanning.
+        if frames.count > 4000 {
+            let cutoff = timestamp - 30
             frames.removeAll { $0.at < cutoff }
-        }
-        let recent = frames.suffix(30)
-        if let first = recent.first, let last = recent.last, last.at > first.at {
-            liveFPS = Double(recent.count - 1) / (last.at - first.at)
         }
     }
 
     // MARK: - Report
 
     public func report() -> String {
-        let now = CACurrentMediaTime()
-        let window = frames.filter { $0.at >= now - 15 }
-        let scrollFrames = window.filter(\.scrolling).map(\.interval)
-        let idleFrames = window.filter { !$0.scrolling }.map(\.interval)
+        let scrollFrames = frames.filter(\.scrolling).map(\.interval)
+        let idleFrames = frames.filter { !$0.scrolling }.map(\.interval)
 
         func stats(_ intervals: [Double]) -> String {
             guard !intervals.isEmpty else { return "0 帧" }
@@ -138,8 +147,9 @@ public final class TimelineProbe {
         构建: \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?")
         会话: \(sessionID)
         窗口: 行 \(lastBodyRows) · 分组 \(lastGroupCount)
+        状态: \(isEnabled ? "测量中" : "已停止")
 
-        [最近 15 秒帧间隔]
+        [帧间隔]
         滚动: \(stats(scrollFrames))
         静止: \(stats(idleFrames))
 
@@ -161,6 +171,7 @@ public final class TimelineProbe {
         groupingCalls = 0; groupingRows = 0; groupingTotal = 0; groupingWorst = 0
         flushCalls = 0; flushRows = 0; flushTotal = 0; flushWorst = 0
         bodyEvals = 0; lastBodyRows = 0; lastGroupCount = 0
+        scrolling = false
     }
 }
 

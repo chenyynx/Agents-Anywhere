@@ -871,6 +871,16 @@ import Testing
         running.failLiveState = true
         try await repo.setTakeover(sessionId: "session", enabled: true)
         #expect(!session.runtime.isFresh)
+        // One-shot diagnostic: name the capability triple and the freshness
+        // gate at the failing assertion so the CI log settles which guard
+        // actually closed. Removed once the flake's mechanism is known.
+        if let capability = session.runtime.capabilities?.capability(id: "session.interrupt") {
+            print("PROBE874 fresh=\(session.runtime.isFresh)"
+                + " supported=\(capability.supported) allowed=\(capability.allowed)"
+                + " available=\(capability.available)")
+        } else {
+            print("PROBE874 fresh=\(session.runtime.isFresh) capability=nil")
+        }
         #expect(session.runtime.permitsInterruptAttempt())
     }
 }

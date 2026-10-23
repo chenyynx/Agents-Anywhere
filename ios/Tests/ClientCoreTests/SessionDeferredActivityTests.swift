@@ -298,6 +298,26 @@ import Testing
         #expect(projection.data.items.map(\.id) == ["tool"])
     }
 
+    @Test func aDeferredReasoningSummaryStaysVisibleWithItsHead() throws {
+        // The budget trim may summarise a thinking row, but never to an empty
+        // shell: the Chat page hides a reasoning row whose text is empty, so
+        // the summary must keep a readable head and the single-item read
+        // completes it on expand.
+        var value = try itemObject(id: "r1", order: 1)
+        value["type"] = "system"
+        value["content"] = [
+            "kind": "reasoning",
+            "text": "opening thought…",
+            "deferred": true,
+            "deferredBytes": 20000,
+        ]
+        let item: V2TimelineItem = try decode(value)
+        #expect(item.isReasoning && item.isDeferred)
+        #expect(item.isVisibleInChat)
+        #expect(!item.displayText.isEmpty)
+        #expect(TimelineEntryPresentation(item: item, cwd: nil).kind == .reasoning)
+    }
+
     // MARK: Archive round trip
 
     @Test func aDeferredArchiveRoundTripsAndAnOldOneStillDecodes() throws {

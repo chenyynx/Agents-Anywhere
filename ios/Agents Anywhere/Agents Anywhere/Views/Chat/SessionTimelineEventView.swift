@@ -108,15 +108,31 @@ struct SessionTimelineEventView: View {
         let value = row.entry(cwd: cwd)
         switch value.kind {
         case .reasoning:
-            if row.text.isEmpty || TimelineText.inlineSummary(row.text) != nil {
+            // A deferred reasoning row must stay a fold: the one-line marker
+            // has no expansion, so it would strand the row on its preview.
+            if row.text.isEmpty || (!row.value.isDeferred && TimelineText.inlineSummary(row.text) != nil) {
                 TimelineMarkerRow(title: value.title, symbol: value.symbol, status: row.value.status)
             } else {
-                TimelineFold(id: row.id, title: value.title, symbol: value.symbol, status: row.value.status, disclosures: disclosures,
+                // A budget-trim summary keeps a text head (never an empty
+                // shell) and completes itself from the single-item read.
+                let deferred = row.value.isDeferred
+                TimelineFold(id: row.id,
+                    title: deferred ? String(localized: "思考预览") : value.title,
+                    symbol: value.symbol, status: row.value.status, disclosures: disclosures,
                     collapsesOnBodyDoubleTap: true) {
-                    ChatMarkdownView(text: row.text, isStreaming: row.isRevealing, resolvesFileReferences: true)
-                        .id(row.layoutGeneration).padding(.leading, 24).foregroundStyle(.secondary)
-                        // Reasoning stays well below the reply text.
-                        .environment(\.chatMarkdownFont, .caption2)
+                    VStack(alignment: .leading, spacing: 0) {
+                        ChatMarkdownView(text: row.text, isStreaming: row.isRevealing, resolvesFileReferences: true)
+                            .id(row.layoutGeneration).padding(.leading, 24).foregroundStyle(.secondary)
+                            // Reasoning stays well below the reply text.
+                            .environment(\.chatMarkdownFont, .caption2)
+                        if deferred {
+                            TimelineDeferredFooter(chat: chat, id: row.id,
+                                missingText: String(localized: "完整思考未加载"))
+                        }
+                    }
+                    .task(id: row.id) {
+                        if row.value.isDeferred { chat.deferredItems.load(row.id) }
+                    }
                 }
             }
         case .compact:
@@ -203,7 +219,10 @@ private struct TimelineToolDetails: View {
             if let output = value.output {
                 TimelineCodePanel(label: deferred ? String(localized: "输出预览") : String(localized: "Output"), code: output)
             }
-            if deferred { TimelineDeferredOutputFooter(chat: chat, id: row.id) }
+            if deferred {
+                TimelineDeferredFooter(chat: chat, id: row.id,
+                    missingText: String(localized: "完整输出未加载"))
+            }
         }
         .clipShape(.rect(cornerRadius: 14))
         // Only the full output is fetched, in the background, after the fold
@@ -218,9 +237,11 @@ private struct TimelineToolDetails: View {
 
 /// The only affordance a deferred row gains on failure or offline: a static
 /// status line plus a plain retry button. No spinner and no "loading" copy.
-private struct TimelineDeferredOutputFooter: View {
+private struct TimelineDeferredFooter: View {
     let chat: SessionChatModel
     let id: V2TimelineItemID
+    /// "完整输出未加载" for a tool row, "完整思考未加载" for reasoning.
+    let missingText: String
     var body: some View {
         let phase = chat.deferredItems.phase(id)
         if phase == .failed || phase == .offline {
@@ -239,8 +260,7 @@ private struct TimelineDeferredOutputFooter: View {
     /// Uses the iOS-only capitalized `离线` entry: the shared Web `Offline`
     /// key's English value is lowercase and would read as `offline · …`.
     private func status(_ phase: DeferredItemStore.Phase) -> String {
-        let text = String(localized: "完整输出未加载")
-        return phase == .offline ? "\(String(localized: "离线")) · \(text)" : text
+        return phase == .offline ? "\(String(localized: "离线")) · \(missingText)" : missingText
     }
 }
 

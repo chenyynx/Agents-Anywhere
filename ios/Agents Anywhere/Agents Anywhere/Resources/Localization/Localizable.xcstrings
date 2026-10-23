@@ -17757,6 +17757,40 @@
           }
         }
       }
+    },
+    "思考预览": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thinking preview"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "思考预览"
+          }
+        }
+      }
+    },
+    "完整思考未加载": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Full thinking not loaded"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完整思考未加载"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

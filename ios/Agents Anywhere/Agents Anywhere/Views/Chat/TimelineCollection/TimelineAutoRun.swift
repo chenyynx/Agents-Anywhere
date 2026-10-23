@@ -992,7 +992,13 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         let revisionAfter = contentSignature(for: rekeyItem).contentRevision
         let width = controller.layout.attributes(for: item.itemID)?.heightKey?.width ?? 361
         let freshKey = heightKey(for: rekeyItem, width: width)
-        let rekeyEstimate = controller.layout.heights.tieredHeight(for: freshKey)
+        // The contract is about the *structural* estimate the controller must
+        // not write for a displayed row. `tieredHeight` also answers with a
+        // measurement: a reconfigured cell can self-measure the content it
+        // still shows (the old height) in the same runloop as the apply, and
+        // that legitimately lands on the fresh key before the real report.
+        let rekeyProvisional = controller.layout.heights.provisionalHeight(for: freshKey)
+        let rekeyTierAtCheck = controller.layout.heights.tieredHeight(for: freshKey)
         await wait(900)
         controller.collectionView.layoutIfNeeded()
         let selfMeasuresAfterRekey = controller.layout.debugSelfMeasureCount
@@ -1017,8 +1023,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             failures.append("code hosted: a measured key self-measured again"
                 + " (\(selfMeasuresAfterRekey)->\(selfMeasuresStable))")
         }
-        if rekeyEstimate != nil {
-            failures.append("code hosted: a displayed row got a fresh estimate on re-key")
+        if rekeyProvisional != nil {
+            failures.append("code hosted: a displayed row got a fresh provisional on re-key")
         }
         if !controller.layout.heights.hasMeasuredOrPrecalcHeight(for: freshKey) {
             failures.append("code hosted: the fresh key never became measured")
@@ -1066,7 +1072,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         hostedReport["structuralEstimate"] = 56.0
         hostedReport["firstHeight"] = Double(firstHeight)
         hostedReport["rekeyContentRevision"] = revisionAfter
-        hostedReport["rekeyEstimateWritten"] = rekeyEstimate.map(Double.init) ?? -1
+        hostedReport["rekeyEstimateWritten"] = rekeyProvisional.map(Double.init) ?? -1
+        hostedReport["rekeyTierAtCheck"] = rekeyTierAtCheck.map(Double.init) ?? -1
         hostedReport["rekeyHeight"] = Double(rekeyHeight)
         hostedReport["selfMeasuresBeforeRekey"] = selfMeasuresBefore
         hostedReport["selfMeasuresAfterRekey"] = selfMeasuresAfterRekey

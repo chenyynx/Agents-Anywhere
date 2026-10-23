@@ -790,17 +790,6 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
 
     // MARK: - Hosted cell height contract (Code-shaped row)
 
-    private struct HostedAccounting {
-        let contentHeight: CGFloat
-        let offset: CGFloat
-    }
-
-    private func hostedAccounting(_ controller: TimelineCollectionController) -> HostedAccounting {
-        controller.collectionView.layoutIfNeeded()
-        return HostedAccounting(contentHeight: controller.layout.contentHeight,
-                                offset: controller.collectionView.contentOffset.y)
-    }
-
     /// Wait until the async measurement pipeline stops moving the layout.
     /// Rows inserted by the previous phase are still on their 200 pt estimate;
     /// scrolling to a row before those settle leaves it above the viewport
@@ -912,6 +901,16 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     /// measured. The at-rest placeholder leg is the stage-2 guard's contract;
     /// on the stage-0 code it is expected to fail (the placeholder overwrites
     /// the measured tier and compensates).
+    /// The official hosted-height contract on a Code-shaped row.
+    ///
+    /// The height is the cell's own `systemLayoutSizeFitting` (the official
+    /// first-fit call), read at settled moments. The geometry callback is a
+    /// trigger only; no reported number is ever written as a height.
+    ///
+    /// Assertions: the frame equals the fit after materialization; one content
+    /// change produces exactly one self-measure and one final frame; a content
+    /// change that lands while the reader drags keeps the anchor below at the
+    /// same screen position, and the release does not apply a second height.
     private func codeHostedHeight() async {
         guard let controller else { return }
         let entry = Entry(id: "\(Self.hostedRowPrefix)0", kind: .code,
@@ -934,162 +933,103 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         controller.collectionView.scrollToItem(at: indexPath, at: .top, animated: false)
         await wait(400)
         controller.collectionView.layoutIfNeeded()
-        guard let firstHeight = await settleHostedHeight(controller, item: item, timeout: 8) else {
-            failures.append("code hosted: the cell never settled on its rendered height")
-            return
-        }
-        let stateAfterFirstSettle = hostedState(controller, item: item)
-        // Materialize the rows below once and come back. The re-key's height
-        // change must not introduce a fresh unmeasured row into the self-measure
-        // count this scenario attributes to the fixture.
-        let scrollView = controller.collectionView!
-        let restingOffset = scrollView.contentOffset
-        // A full viewport lands on the bottom in this short list and arms the
-        // bottom follow; the next height change then repins and yanks the
-        // fixture out of view. Materialize the rows below with a smaller step.
-        scrollView.setContentOffset(CGPoint(x: 0,
-            y: restingOffset.y + scrollView.bounds.height * 0.4), animated: false)
-        await wait(350)
-        controller.collectionView.layoutIfNeeded()
-        scrollView.setContentOffset(restingOffset, animated: false)
-        await wait(350)
-        controller.collectionView.layoutIfNeeded()
         // A synthetic scroll never runs the drag callbacks that disarm the
         // bottom target; this scenario is mid-list, so disarm explicitly.
         controller.disarmBottom()
-        // Coming back is not enough: materializing the rows below can finish
-        // measurements that move this row, so anchor again and prove it is on
-        // screen before the gesture legs read its cell.
-        await settleLayout(controller)
-        controller.collectionView.scrollToItem(at: indexPath, at: .top, animated: false)
-        await wait(250)
-        controller.collectionView.layoutIfNeeded()
-        let stateAfterReanchor = hostedState(controller, item: item)
-        if !(stateAfterReanchor["visible"] as? Bool ?? false) {
-            failures.append("code hosted: the fixture left the viewport after re-anchoring")
+        guard let firstFit = await settleHostedHeight(controller, item: item, timeout: 8) else {
+            failures.append("code hosted: the cell never settled on its fit")
+            return
         }
-
-        var phases: [[String: Any]] = []
-        for gesture in ["tracking", "decelerating"] {
-            phases.append(await runHostedGesturePhase(
-                controller, gesture: gesture,
-                tracking: gesture == "tracking", decelerating: gesture == "decelerating",
-                item: item, placeholder: 20, realHeight: firstHeight))
+        let stateAfterFirstSettle = hostedState(controller, item: item)
+        let frameAfterFirst = controller.layout.attributes(for: item.itemID)?.frame.height ?? -1
+        if abs(frameAfterFirst - firstFit) > 0.5 {
+            failures.append("code hosted: frame \(frameAfterFirst) != first fit \(firstFit)")
         }
+        let selfMeasuresAfterFirst = controller.layout.debugSelfMeasureCount
 
-        // Re-key: new content revision, so the height key starts empty and the
-        // cell must self-measure once. This row has been displayed, so
-        // `measureSynchronously` must NOT write the structural value into the
-        // new key; the displayed height stays until the cell reports.
         guard let index = entries.firstIndex(where: { $0.id == entry.id }) else { return }
-        let revisionBefore = contentSignature(for: item).contentRevision
-        let selfMeasuresBefore = controller.layout.debugSelfMeasureCount
+        // The next row is the reader's anchor for the gesture leg.
+        let anchorIndex = min(index + 1, entries.count - 1)
+        let anchorItem = listItem(entries[anchorIndex])
+
+        // Leg 1 — content change at rest: one fresh measurement, one frame.
         entries[index].text += "\nlet extra = 40"
         entries[index].revision += 1
         contentGeneration += 1
         controller.reloadFromContent()
-        let rekeyItem = listItem(entries[index])
-        let revisionAfter = contentSignature(for: rekeyItem).contentRevision
-        let width = controller.layout.attributes(for: item.itemID)?.heightKey?.width ?? 361
-        let freshKey = heightKey(for: rekeyItem, width: width)
-        // The contract is about the *structural* estimate the controller must
-        // not write for a displayed row. `tieredHeight` also answers with a
-        // measurement: a reconfigured cell can self-measure the content it
-        // still shows (the old height) in the same runloop as the apply, and
-        // that legitimately lands on the fresh key before the real report.
-        let rekeyProvisional = controller.layout.heights.provisionalHeight(for: freshKey)
-        let rekeyTierAtCheck = controller.layout.heights.tieredHeight(for: freshKey)
-        await wait(900)
+        await wait(600)
         controller.collectionView.layoutIfNeeded()
-        let selfMeasuresAfterRekey = controller.layout.debugSelfMeasureCount
-        let stateAfterRekey = hostedState(controller, item: item)
-        let rekeyHeight = await settleHostedHeight(controller, item: item, timeout: 8) ?? 0
-        // Three settled passes: a key that already carries a measurement must
-        // reject a second self-measure.
-        for _ in 0..<3 {
-            controller.collectionView.layoutIfNeeded()
-            await wait(80)
+        guard let secondFit = await settleHostedHeight(controller, item: item, timeout: 8) else {
+            failures.append("code hosted: the cell never settled after a content change")
+            return
         }
-        let selfMeasuresStable = controller.layout.debugSelfMeasureCount
-
-        if revisionAfter == revisionBefore {
-            failures.append("code hosted: the re-key did not change the content revision")
+        let frameAfterSecond = controller.layout.attributes(for: item.itemID)?.frame.height ?? -1
+        let selfMeasuresAfterSecond = controller.layout.debugSelfMeasureCount
+        if abs(frameAfterSecond - secondFit) > 0.5 {
+            failures.append("code hosted: frame \(frameAfterSecond) != fit \(secondFit)"
+                + " after a content change")
         }
-        if selfMeasuresAfterRekey - selfMeasuresBefore > 1 {
-            failures.append("code hosted: \(selfMeasuresAfterRekey - selfMeasuresBefore)"
-                + " self-measures for one fresh key")
-        }
-        if selfMeasuresStable != selfMeasuresAfterRekey {
-            failures.append("code hosted: a measured key self-measured again"
-                + " (\(selfMeasuresAfterRekey)->\(selfMeasuresStable))")
-        }
-        if rekeyProvisional != nil {
-            failures.append("code hosted: a displayed row got a fresh provisional on re-key")
-        }
-        if !controller.layout.heights.hasMeasuredOrPrecalcHeight(for: freshKey) {
-            failures.append("code hosted: the fresh key never became measured")
-        }
-        if rekeyHeight <= 0.5 {
-            failures.append("code hosted: the re-keyed cell never reported a height")
+        if selfMeasuresAfterSecond - selfMeasuresAfterFirst != 1 {
+            failures.append("code hosted: \(selfMeasuresAfterSecond - selfMeasuresAfterFirst)"
+                + " self-measures for one content change")
         }
 
-        // The scenario's third step: report again on the fresh key under a
-        // gesture. The placeholder must not win, and the row must stay put.
-        phases.append(await runHostedGesturePhase(
-            controller, gesture: "after-rekey", tracking: true, decelerating: false,
-            item: item, placeholder: 20, realHeight: rekeyHeight))
-
-        // A placeholder reported at rest must not become the key's height nor
-        // change the content size/offset. Stage 2 adds the rejection guard;
-        // stage 0 records the failure so the gate has discriminating power.
-        let before = hostedAccounting(controller)
-        controller.layout.applyHostedHeight(itemID: item.itemID, height: 20)
+        // Leg 2 — the same content change while the reader drags: the row may
+        // grow, but the anchor below keeps its screen position, and releasing
+        // must not apply the height a second time.
+        controller.collectionView.scrollToItem(at: indexPath, at: .top, animated: false)
         await wait(250)
-        let after = hostedAccounting(controller)
-        let keyHeightAfterPlaceholder = controller.layout.heights
-            .tieredHeight(for: freshKey)
+        controller.collectionView.layoutIfNeeded()
+        let anchorBefore = controller.screenY(for: anchorItem) ?? .nan
+        controller.setTestGestureState(tracking: true, decelerating: false)
+        entries[index].text += "\nlet more = 41"
+        entries[index].revision += 1
+        contentGeneration += 1
+        controller.reloadFromContent()
+        await wait(400)
+        controller.collectionView.layoutIfNeeded()
+        let anchorDuring = controller.screenY(for: anchorItem) ?? .nan
+        let heightAtRelease = controller.layout.attributes(for: item.itemID)?.frame.height ?? -1
+        controller.setTestGestureState(tracking: false, decelerating: false)
+        await wait(700)
+        controller.collectionView.layoutIfNeeded()
+        guard let finalFit = await settleHostedHeight(controller, item: item, timeout: 8) else {
+            failures.append("code hosted: the cell never settled after the gesture change")
+            return
+        }
+        let frameFinal = controller.layout.attributes(for: item.itemID)?.frame.height ?? -1
+        let anchorAfter = controller.screenY(for: anchorItem) ?? .nan
+        if abs(frameFinal - finalFit) > 0.5 {
+            failures.append("code hosted: frame \(frameFinal) != fit \(finalFit) after the gesture")
+        }
+        if abs(frameFinal - heightAtRelease) > 0.5 {
+            failures.append("code hosted: release applied a second height"
+                + " \(heightAtRelease)->\(frameFinal)")
+        }
+        if anchorBefore.isFinite, abs(anchorDuring - anchorBefore) > 0.5 {
+            failures.append("code hosted: the anchor moved during the drag"
+                + " \(anchorBefore)->\(anchorDuring)")
+        }
+        if anchorBefore.isFinite, abs(anchorAfter - anchorBefore) > 0.5 {
+            failures.append("code hosted: the anchor moved after release"
+                + " \(anchorBefore)->\(anchorAfter)")
+        }
 
-        if abs(after.contentHeight - before.contentHeight) > 0.5 {
-            failures.append("code hosted: placeholder changed contentHeight"
-                + " \(before.contentHeight)->\(after.contentHeight)")
-        }
-        if abs(after.offset - before.offset) > 0.5 {
-            failures.append("code hosted: placeholder moved the offset"
-                + " \(before.offset)->\(after.offset)")
-        }
-        if let keyHeightAfterPlaceholder,
-           abs(keyHeightAfterPlaceholder - 20) <= 0.5 {
-            failures.append("code hosted: the placeholder became the key's height")
-        }
-        // Leave the row at the height its cell reported.
-        controller.layout.applyHostedHeight(itemID: item.itemID, height: rekeyHeight)
-        await wait(200)
-
-        // Build the dictionary incrementally: one heterogeneous literal with
-        // this many mixed types exceeds the type-checker's budget.
         var hostedReport: [String: Any] = [:]
         hostedReport["row"] = entry.id
         hostedReport["structuralEstimate"] = 56.0
-        hostedReport["firstHeight"] = Double(firstHeight)
-        hostedReport["rekeyContentRevision"] = revisionAfter
-        hostedReport["rekeyEstimateWritten"] = rekeyProvisional.map(Double.init) ?? -1
-        hostedReport["rekeyTierAtCheck"] = rekeyTierAtCheck.map(Double.init) ?? -1
-        hostedReport["rekeyHeight"] = Double(rekeyHeight)
-        hostedReport["selfMeasuresBeforeRekey"] = selfMeasuresBefore
-        hostedReport["selfMeasuresAfterRekey"] = selfMeasuresAfterRekey
-        hostedReport["selfMeasuresStable"] = selfMeasuresStable
-        hostedReport["rekeyKeyMeasured"] = controller.layout.heights
-            .hasMeasuredOrPrecalcHeight(for: freshKey)
-        hostedReport["placeholderContentHeightBefore"] = Double(before.contentHeight)
-        hostedReport["placeholderContentHeightAfter"] = Double(after.contentHeight)
-        hostedReport["placeholderOffsetBefore"] = Double(before.offset)
-        hostedReport["placeholderOffsetAfter"] = Double(after.offset)
-        hostedReport["keyHeightAfterPlaceholder"] = keyHeightAfterPlaceholder
-            .map(Double.init) ?? -1
-        hostedReport["phases"] = phases
+        hostedReport["firstFit"] = Double(firstFit)
+        hostedReport["secondFit"] = Double(secondFit)
+        hostedReport["finalFit"] = Double(finalFit)
+        hostedReport["frameAfterFirst"] = Double(frameAfterFirst)
+        hostedReport["frameAfterSecond"] = Double(frameAfterSecond)
+        hostedReport["frameAfterGesture"] = Double(frameFinal)
+        hostedReport["selfMeasuresAfterFirst"] = selfMeasuresAfterFirst
+        hostedReport["selfMeasuresAfterSecond"] = selfMeasuresAfterSecond
+        hostedReport["anchorBefore"] = anchorBefore.isFinite ? Double(anchorBefore) : -1
+        hostedReport["anchorDuring"] = anchorDuring.isFinite ? Double(anchorDuring) : -1
+        hostedReport["anchorAfter"] = anchorAfter.isFinite ? Double(anchorAfter) : -1
         hostedReport["stateAfterFirstSettle"] = stateAfterFirstSettle
-        hostedReport["stateAfterReanchor"] = stateAfterReanchor
-        hostedReport["stateAfterRekey"] = stateAfterRekey
         report["codeHostedHeight"] = hostedReport
 
         // Leave the timeline as the earlier scenarios found it.
@@ -1099,124 +1039,6 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await wait(300)
     }
 
-    /// One gesture leg: placeholder then real height under the test gesture.
-    /// The row and every visible row must stay put; the real report replaces
-    /// the parked placeholder, so the content-size delta is the real report's
-    /// delta (the placeholder never enters the accounting).
-    private func runHostedGesturePhase(_ controller: TimelineCollectionController,
-                                       gesture: String,
-                                       tracking: Bool,
-                                       decelerating: Bool,
-                                       item: TimelineListItem,
-                                       placeholder: CGFloat,
-                                       realHeight: CGFloat) async -> [String: Any] {
-        controller.collectionView.layoutIfNeeded()
-        let stateAtStart = hostedState(controller, item: item)
-        let before = visibleGestureSamples(controller)
-        let targetBefore = controller.layout.attributes(for: item.itemID)?.frame.height ?? 0
-        let appsBefore = controller.layout.debugHeightApplicationsDuringGesture
-        let contentBefore = controller.layout.contentHeight
-        let reportsBefore = controller.layout.debugHeightDidChangeCount
-
-        controller.setTestGestureState(tracking: tracking, decelerating: decelerating)
-        let userScrolling = controller.isUserScrolling
-        controller.layout.applyHostedHeight(itemID: item.itemID, height: placeholder)
-        await wait(200)
-        controller.layout.applyHostedHeight(itemID: item.itemID, height: realHeight)
-        await wait(250)
-        controller.collectionView.layoutIfNeeded()
-
-        let during = visibleGestureSamples(controller)
-        let diff = diffGestureSamples(before, during)
-        let appsDuring = controller.layout.debugHeightApplicationsDuringGesture - appsBefore
-        let targetDuring = controller.layout.attributes(for: item.itemID)?.frame.height ?? 0
-        let staleDuring = staleCellDetails(controller, limit: 3)
-
-        controller.setTestGestureState(tracking: false, decelerating: false)
-        await wait(600)
-        controller.collectionView.layoutIfNeeded()
-
-        let finalHeight = controller.layout.attributes(for: item.itemID)?.frame.height ?? 0
-        let cellHeight = controller.indexPath(for: item).flatMap {
-            controller.collectionView.cellForItem(at: $0)?.frame.height
-        } ?? -1
-        let contentAfter = controller.layout.contentHeight
-        let reportsAfter = controller.layout.debugHeightDidChangeCount
-        let staleAfter = staleCellDetails(controller, limit: 3)
-        let overlapsAfter = adjacentFrameOverlaps(controller)
-        let sizeDelta = contentAfter - contentBefore
-        let expectedDelta = realHeight - targetBefore
-
-        if !userScrolling {
-            failures.append("code hosted [\(gesture)]: the test gesture did not"
-                + " reach controller.isUserScrolling")
-        }
-        if diff.changed > 0 {
-            failures.append("code hosted [\(gesture)]: \(diff.changed) visible cell(s)"
-                + " moved during the gesture, max \(diff.maxDelta)pt \(diff.details)")
-        }
-        if diff.missing > 0 {
-            failures.append("code hosted [\(gesture)]: \(diff.missing) visible cell(s)"
-                + " left the visible set")
-        }
-        if appsDuring != 0 {
-            failures.append("code hosted [\(gesture)]: \(appsDuring) height application(s)"
-                + " during the gesture")
-        }
-        if abs(targetDuring - targetBefore) > 0.5 {
-            failures.append("code hosted [\(gesture)]: target height"
-                + " \(targetBefore)->\(targetDuring) changed during the gesture")
-        }
-        if !staleDuring.isEmpty {
-            failures.append("code hosted [\(gesture)]: \(staleDuring.count) stale"
-                + " visible cell(s) during the gesture \(staleDuring)")
-        }
-        if abs(finalHeight - realHeight) > 0.5 {
-            failures.append("code hosted [\(gesture)]: final frame \(finalHeight)"
-                + " != last report \(realHeight)")
-        }
-        if abs(cellHeight - finalHeight) > 0.5 {
-            failures.append("code hosted [\(gesture)]: cell \(cellHeight)"
-                + " != layout frame \(finalHeight)")
-        }
-        if abs(sizeDelta - expectedDelta) > 1 {
-            failures.append("code hosted [\(gesture)]: size delta \(sizeDelta)"
-                + " != real report delta \(expectedDelta) (placeholder entered the accounting)")
-        }
-        if !staleAfter.isEmpty {
-            failures.append("code hosted [\(gesture)] release: \(staleAfter.count)"
-                + " stale visible cell(s) \(staleAfter)")
-        }
-        if overlapsAfter > 0 {
-            failures.append("code hosted [\(gesture)] release: \(overlapsAfter)"
-                + " adjacent frame overlap(s)")
-        }
-
-        return ["gesture": gesture,
-                "tracking": tracking,
-                "decelerating": decelerating,
-                "fixtureVisible": before.keys.contains(item.itemID),
-                "stateAtStart": stateAtStart,
-                "state": hostedState(controller, item: item),
-                "placeholder": Double(placeholder),
-                "realHeight": Double(realHeight),
-                "isUserScrolling": userScrolling,
-                "visibleCells": before.count,
-                "changedFrames": diff.changed,
-                "missingCells": diff.missing,
-                "maxFrameDelta": Double(diff.maxDelta),
-                "heightApplicationsDuringGesture": appsDuring,
-                "targetHeightBefore": Double(targetBefore),
-                "targetHeightDuring": Double(targetDuring),
-                "finalHeight": Double(finalHeight),
-                "cellHeight": Double(cellHeight),
-                "contentHeightDelta": Double(sizeDelta),
-                "expectedContentHeightDelta": Double(expectedDelta),
-                "heightDidChangeReports": reportsAfter - reportsBefore,
-                "staleCellsDuring": staleDuring.count,
-                "staleCellsAfter": staleAfter.count,
-                "overlaps": overlapsAfter]
-    }
 
     // MARK: - Gesture freeze (official cell-reported height contract)
 
@@ -1271,19 +1093,16 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                 diff.missing += 1
                 continue
             }
-            let deltas = [abs(new.attributeMinY - old.attributeMinY),
-                          abs(new.attributeHeight - old.attributeHeight),
-                          abs(new.cellMinY - old.cellMinY),
-                          abs(new.cellHeight - old.cellHeight)]
-            let worst = deltas.max() ?? 0
-            diff.maxDelta = max(diff.maxDelta, worst)
-            guard worst > 0.5 else { continue }
+            // The official contract compensates the offset, so what must stay
+            // put is where the reader sees each row, not its content
+            // coordinate: a row that legitimately grows moves every row below
+            // it in content space while their screen positions stay.
+            let delta = abs(new.screenY - old.screenY)
+            diff.maxDelta = max(diff.maxDelta, delta)
+            guard delta > 0.5 else { continue }
             diff.changed += 1
             if diff.details.count < 4 {
-                diff.details.append("\(itemID) attr y \(old.attributeMinY)->\(new.attributeMinY)"
-                    + " h \(old.attributeHeight)->\(new.attributeHeight),"
-                    + " cell y \(old.cellMinY)->\(new.cellMinY)"
-                    + " h \(old.cellHeight)->\(new.cellHeight)")
+                diff.details.append("\(itemID) screenY \(old.screenY)->\(new.screenY)")
             }
         }
         return diff
@@ -1334,12 +1153,14 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             // compensation.
             let target = fixtures[6 + offset]
             let anchor = fixtures[7 + offset]
-            phases.append(await runGesturePhase(controller, gesture: gesture,
+            let phase = await runGesturePhase(controller, gesture: gesture,
                 tracking: gesture == "tracking",
                 decelerating: gesture == "decelerating",
-                target: target, anchor: anchor))
+                target: target, anchor: anchor)
+            phases.append(phase)
+            let heightBefore = (phase["targetHeightBefore"] as? Double).map(CGFloat.init) ?? 0
             releases.append(await releaseGesture(controller, gesture: gesture,
-                target: target, anchor: anchor))
+                target: target, anchor: anchor, heightBefore: heightBefore))
         }
         report["gestureFreeze"] = [
             "toolRows": fixtures.count,
@@ -1418,9 +1239,12 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         if diff.missing > 0 {
             failures.append("gesture freeze [\(gesture)]: \(diff.missing) visible cell(s) left the visible set")
         }
-        if abs(targetDuring - targetBefore) > 0.5 {
-            failures.append("gesture freeze [\(gesture)]: target height \(targetBefore)->\(targetDuring)"
-                + " changed during the gesture")
+        // The official contract lands a content change immediately with an
+        // offset compensation; a target that never grew means the change was
+        // lost, not that it was deferred.
+        if targetDuring - targetBefore < 8 {
+            failures.append("gesture freeze [\(gesture)]: the content change did not land"
+                + " during the gesture (\(targetBefore)->\(targetDuring))")
         }
         if !stale.isEmpty {
             failures.append("gesture freeze [\(gesture)]: \(stale.count) stale visible cell(s) \(stale)")
@@ -1455,17 +1279,17 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     private func releaseGesture(_ controller: TimelineCollectionController,
                                 gesture: String,
                                 target: Entry,
-                                anchor: Entry) async -> [String: Any] {
+                                anchor: Entry,
+                                heightBefore: CGFloat) async -> [String: Any] {
         let targetItem = listItem(target)
         let anchorItem = listItem(anchor)
-        let collapsed = controller.layout.attributes(for: targetItem.itemID)?.frame.height ?? 0
+        // Under the official contract the expansion landed during the gesture
+        // (with compensation); release must not apply it a second time.
+        let heightAtRelease = controller.layout.attributes(for: targetItem.itemID)?.frame.height ?? 0
         let anchorBefore = controller.screenY(for: anchorItem)
 
         controller.setTestGestureState(tracking: false, decelerating: false)
         let stillScrolling = controller.isUserScrolling
-        let applied = await waitForCellHeight(controller, item: targetItem, timeout: 3) {
-            $0 > collapsed + 1
-        }
         // The row height animates over 0.18 s on the interactive path; let the
         // application finish before reading the final layout.
         await wait(450)
@@ -1485,15 +1309,20 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         let stable = samples.allSatisfy { abs($0 - finalHeight) <= 0.5 }
         let stale = staleCellDetails(controller, limit: 3)
         let overlaps = adjacentFrameOverlaps(controller)
-        let pendingApplied = finalHeight > collapsed + 1
+        let expandedBeforeRelease = heightAtRelease > heightBefore + 1
+        let appliedAgain = abs(finalHeight - heightAtRelease) > 0.5
 
         if stillScrolling {
             failures.append("gesture freeze [\(gesture)]: releasing the test gesture left"
                 + " controller.isUserScrolling true")
         }
-        if !pendingApplied {
-            failures.append("gesture freeze [\(gesture)]: release did not apply the parked height"
-                + " (still \(collapsed)pt)")
+        if !expandedBeforeRelease {
+            failures.append("gesture freeze [\(gesture)]: the content change had not landed"
+                + " at release (\(heightBefore)->\(heightAtRelease))")
+        }
+        if appliedAgain {
+            failures.append("gesture freeze [\(gesture)]: release applied the height again"
+                + " \(heightAtRelease)->\(finalHeight)")
         }
         if !stable {
             failures.append("gesture freeze [\(gesture)]: released height did not settle \(samples)")
@@ -1517,10 +1346,10 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             }
         }
         return ["gesture": gesture,
-                "collapsedHeight": Double(collapsed),
-                "appliedHeight": Double(applied),
+                "heightBefore": Double(heightBefore),
+                "heightAtRelease": Double(heightAtRelease),
+                "expandedBeforeRelease": expandedBeforeRelease,
                 "finalHeight": Double(finalHeight),
-                "pendingApplied": pendingApplied,
                 "stable": stable,
                 "isUserScrolling": stillScrolling,
                 "anchor": anchor.id,

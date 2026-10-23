@@ -12,10 +12,11 @@ import UIKit
 final class TimelineHostingCell: UICollectionViewCell {
     static let reuseIdentifier = "TimelineHostingCell"
 
-    /// Content height reported after layout (`heightDidChange`). Only rows the
-    /// provider marks `usesCellReportedHeight` install a listener; the layout
-    /// owns the decision and the compensation.
-    var onContentHeightChange: ((CGFloat) -> Void)?
+    /// The hosting content changed its laid-out size. This is a **trigger**,
+    /// not a measurement: the row's height is always read back from
+    /// `systemLayoutSizeFitting` at a settled moment (the official first-fit
+    /// call), because SwiftUI reports intermediate sizes while it lays out.
+    var onContentChanged: (() -> Void)?
 
     private var policy: TimelineRowHeightPolicy = .measured
     /// Whether the height cache holds a measured/precalc height for the row's
@@ -62,9 +63,9 @@ final class TimelineHostingCell: UICollectionViewCell {
                 content.onGeometryChange(for: CGFloat.self, of: { proxy in
                     proxy.size.height - proxy.safeAreaInsets.top
                         - proxy.safeAreaInsets.bottom
-                }) { [weak self] height in
+                }) { [weak self] _ in
                     guard let self, self.configurationToken == token else { return }
-                    self.onContentHeightChange?(height)
+                    self.onContentChanged?()
                 }
             } else {
                 // The Chat rows keep the controller's visible-cell polling;
@@ -83,7 +84,7 @@ final class TimelineHostingCell: UICollectionViewCell {
         contentConfiguration = nil
         policy = .measured
         isMeasured = false
-        onContentHeightChange = nil
+        onContentChanged = nil
     }
 
     override func preferredLayoutAttributesFitting(

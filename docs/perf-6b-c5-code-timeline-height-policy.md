@@ -1,4 +1,6 @@
 # Code 页时间线高度策略治根（任务单）
+> ⚠️ 2026-10-23 起，阶段 1–3 的 `provisional` 守卫 / 滚动停车 / hosted 数值上报已被 [官方对齐方案](perf-6b-c5-code-height-official-alignment.md) 取代；本文档保留为历史与下游验证记录。
+
 
 > 状态：阶段 0–3 已实现（2026-10-23，`386f1eb8` / `69065485` / `cd217f8e` / `80956196`），待 CI 全绿与真机探针复测；阶段 4 未做。分支：`feat/code-profile-beta`。不合并 dev。
 > 依据：2026-10-23 15:51:36 真机探针（app 2.1.1(395)，会话 `sess_Ub_FQIoh-F3N8w`）+ 官方契约（`CANONICAL/05-layout-scroll.md`）。

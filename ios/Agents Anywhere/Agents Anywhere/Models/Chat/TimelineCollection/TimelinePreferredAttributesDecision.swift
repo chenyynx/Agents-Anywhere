@@ -81,15 +81,6 @@ nonisolated struct TimelinePreferredAttributesDecision: Equatable {
         return .accept
     }
 
-    /// Category C — the official hosted-cell contract. A row reports its
-    /// content height through `heightDidChange` after it has been measured.
-    /// While the reader drags or coasts, a change the reader can see (the row
-    /// itself or any row below it) is parked; an off-screen change may apply
-    /// at once because it cannot move the visible text.
-    static func hostedHeightChange(isVisible: Bool, isUserScrolling: Bool) -> Height {
-        isUserScrolling && isVisible ? .deferUntilSettled : .accept
-    }
-
     /// Offset compensation for a height change applied outside an update
     /// transaction. Any row whose top starts above the viewport's bottom moves
     /// the rows below it; compensating by the whole delta keeps those rows

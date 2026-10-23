@@ -45,15 +45,6 @@ protocol TimelineListLayoutCellReportedHeightHost: AnyObject {
     func layoutUsesCellReportedHeight(for item: TimelineListItem) -> Bool
 }
 
-/// Optional host capability: the structured height the row's content should
-/// occupy at a width, independent of the cell. Used only to tell a pre-parse
-/// placeholder report from a legitimate short row; the hosting report stays
-/// the truth.
-@MainActor
-protocol TimelineListLayoutStructuralHeightHost: AnyObject {
-    func layoutStructuralExactHeight(for item: TimelineListItem, width: CGFloat) -> CGFloat?
-}
-
 /// The collection timeline's only layout.
 ///
 /// It owns the height truth (via `TimelineHeightCache`), the absolute prepend
@@ -97,16 +88,9 @@ final class TimelineListLayout: UICollectionViewLayout {
     /// written to `heights`, so the row returns to its measured height when
     /// the reveal finishes.
     private var streamingHeights: [String: CGFloat] = [:]
-    /// Content heights reported by a hosted cell (`heightDidChange`) while the
-    /// reader drags or coasts. Their rows or the rows below them are visible,
-    /// so applying them under the finger would move displayed content.
-    /// Flushed once when the gesture settles (or on the next report outside a
-    /// gesture, which covers the simulator's state-only seam).
-    private struct PendingHostedHeight {
-        let key: TimelineHeightKey
-        let height: CGFloat
-    }
-    private var pendingHostedHeights: [String: PendingHostedHeight] = [:]
+    /// Hosted rows carry no reported height between moments: their height is
+    /// read from the cell's own fit at a settled pass, so there is nothing to
+    /// park across a gesture.
     /// Last value this layout applied for a row (self-measure or hosting
     /// report), scoped to the height key that produced it. A geometry action
     /// can fire repeatedly with the same height; ±0.5 is the same pixel and
@@ -282,7 +266,6 @@ final class TimelineListLayout: UICollectionViewLayout {
         heights.prune(keeping: Set(byID.keys))
         deferredHeights = deferredHeights.filter { byID[$0.key] != nil }
         streamingHeights = streamingHeights.filter { byID[$0.key] != nil }
-        pendingHostedHeights = pendingHostedHeights.filter { byID[$0.key] != nil }
         lastAppliedHeight = lastAppliedHeight.filter { byID[$0.key] != nil }
         if abs(previousHeight - contentHeight) > 0.5 {
             host.layoutDidChangeContentHeight(contentHeight)
@@ -637,8 +620,6 @@ final class TimelineListLayout: UICollectionViewLayout {
     /// asserts an unmeasured row measures itself once, never again after the
     /// cache says measured.
     private(set) var debugSelfMeasureCount = 0
-    /// Hosted-cell `heightDidChange` reports (`applyHostedHeight` entries).
-    private(set) var debugHeightDidChangeCount = 0
 #endif
 
     private func notePreferred(_ key: String) {
@@ -736,6 +717,13 @@ final class TimelineListLayout: UICollectionViewLayout {
         streamingHeights.removeValue(forKey: itemID)
     }
 
+    /// Whether the row is currently showing a per-frame reveal height. The
+    /// controller's settle pass leaves such a row alone: its visible height is
+    /// the reveal, not the stored measurement.
+    func hasStreamingHeight(for itemID: String) -> Bool {
+        streamingHeights[itemID] != nil
+    }
+
     /// The reveal finished (or the cell left the display). The row returns to
     /// the cached measurement.
     ///
@@ -806,45 +794,14 @@ final class TimelineListLayout: UICollectionViewLayout {
               // Markdown self-measure here as well would race that path (the
               // first pass often reports pre-parse stack spacing).
               original.usesCellReportedHeight,
-              original.item.map({
-                  deferredHeights[$0.itemID] == nil
-                      && pendingHostedHeights[$0.itemID] == nil
-              }) ?? false,
+              original.item.map({ deferredHeights[$0.itemID] == nil }) ?? false,
               !original.isMeasured else {
             notePreferred("uikitPreferredRejected")
             return false
         }
-        // A pre-parse self-measure must be rejected **here**, not only after
-        // UIKit has committed to it. Answering accept and then dropping the
-        // value in `applySelfMeasuredHeight` leaves `isMeasured` false; UIKit
-        // re-runs the visible-cells pass, asks again inside the same update,
-        // and the passes recurse until UIKit traps (`_setNeedsVisibleCellsUpdate`
-        // on the datasource-diffing queue). The cell's later geometry report
-        // still carries the real height.
-        if let item = original.item, let key = original.heightKey,
-           isPreParsePlaceholder(preferredAttributes.frame.height,
-                                 itemID: item.itemID, key: key) {
-            notePreferred("uikitPreferredPlaceholderDropped")
-            return false
-        }
-        // The same rule as a hosted heightDidChange: while the reader's finger
-        // is down or the list is coasting, a measurement that would move a
-        // visible row is parked instead of applied. Rejecting the preferred
-        // attributes keeps the cell at the displayed height; the parked value
-        // lands in the release flush.
-        let state = host?.layoutInteractionState() ?? TimelineLayoutInteractionState()
-        if state.userIsScrolling,
-           let item = original.item,
-           TimelinePreferredAttributesDecision.heightChangeAffectsVisibleRows(
-               cellMinY: original.frame.minY, cellMaxY: original.frame.maxY,
-               contentHeight: contentHeight, viewportTop: viewportTop,
-               viewportBottom: viewportBottom),
-           let key = original.heightKey {
-            pendingHostedHeights[item.itemID] = PendingHostedHeight(
-                key: key, height: preferredAttributes.frame.height)
-            notePreferred("uikitPreferredParked")
-            return false
-        }
+        // The official first materialization: an unmeasured cell fits its real
+        // content once. Later changes never come through this path; the
+        // controller re-reads the same fit at a settled pass.
         notePreferred("uikitPreferredAccepted")
         return true
     }
@@ -887,9 +844,6 @@ final class TimelineListLayout: UICollectionViewLayout {
               let key = context.heightKey,
               attributes.heightKey == key,
               heights.currentKey(for: itemID) == key else { return }
-        // The cell's one self-measure can also land on the pre-parse
-        // placeholder; the hosted geometry report that follows is the retry.
-        if isPreParsePlaceholder(height, itemID: itemID, key: key) { return }
 #if DEBUG
         debugSelfMeasureCount += 1
 #endif
@@ -923,30 +877,18 @@ final class TimelineListLayout: UICollectionViewLayout {
         if let application = deferral.endDrag(willDecelerate: willDecelerate) {
             apply(application)
         }
-        // Hosted reports parked under the finger land when the gesture ends.
-        // A drag that turns into deceleration waits for the coast to stop.
-        if !willDecelerate { flushPendingHostedHeights() }
     }
 
     func noteDecelerationDidEnd() {
         if let application = deferral.endDeceleration() {
             apply(application)
         }
-        flushPendingHostedHeights()
-    }
-
-    /// Simulator-test seam: `setTestGestureState` changes the interaction
-    /// state without the scroll delegate's end callbacks. Release the parked
-    /// hosted heights the same way a real drag end would.
-    func flushParkedHeightsAfterGesture() {
-        flushPendingHostedHeights()
     }
 
     /// Navigation suspension: parked corrections belong to the old viewport.
     func cancelBrowsingCorrections() {
         deferral.cancel()
         deferredHeights.removeAll()
-        pendingHostedHeights.removeAll()
         heightOwedToUpdate = nil
         insertionOwed?.cancel()
         insertionOwed = nil
@@ -956,90 +898,7 @@ final class TimelineListLayout: UICollectionViewLayout {
     /// belong to; they must not land on another window's snapshot.
     func discardParkedHeights() {
         deferredHeights.removeAll()
-        pendingHostedHeights.removeAll()
         heightOwedToUpdate = nil
-    }
-
-    // MARK: - Hosted cell height reports (category C)
-
-    /// Whether this report is the SwiftUI pre-parse placeholder rather than
-    /// the row's real height. Runs **before** any cache write: a rejected
-    /// value must not set `displayedHeight` or the next delta baseline.
-    private func isPreParsePlaceholder(_ height: CGFloat, itemID: String,
-                                       key: TimelineHeightKey) -> Bool {
-        guard let host,
-              let structuralHost = host as? TimelineListLayoutStructuralHeightHost,
-              let item = attributesByItemID[itemID]?.item,
-              let exact = structuralHost.layoutStructuralExactHeight(for: item,
-                                                                     width: key.width),
-              exact > 1 else { return false }
-        // A placeholder is a one-line/empty stack (2–56 pt) on a row whose
-        // content is hundreds of points tall. Use a proportional floor with a
-        // 24 pt minimum: a live group's estimate can over-reserve, and 35 %
-        // still rejects every observed placeholder (20–56 pt) without
-        // rejecting a real render. A genuinely short row keeps its exact
-        // value, which is short too, so the floor scales with it. A below-
-        // floor report is always dropped: accepting the second one would let
-        // a SwiftUI intermediate value (for example 20 then 56) through.
-        return height < max(24, exact * 0.35)
-    }
-
-    /// A hosted cell's `heightDidChange`. The row's key and measured/precalc
-    /// state decide whether the report is current; while the reader drags or
-    /// coasts, a visible row (or a change that moves visible rows below) is
-    /// parked until the gesture settles.
-    func applyHostedHeight(itemID: String, height: CGFloat) {
-        guard height.isFinite, height > 0 else { return }
-        let state = host?.layoutInteractionState() ?? TimelineLayoutInteractionState()
-        // The simulator test seam can turn the gesture state off without the
-        // scroll delegate's end callback. The next report outside a gesture
-        // is the natural point to land everything that was parked.
-        if !state.userIsScrolling, !pendingHostedHeights.isEmpty {
-            flushPendingHostedHeights()
-        }
-        // The controller installs the new key before its snapshot applies, so
-        // the cache's current key is newer than a still-old attribute object.
-        // The report belongs to the key the apply established. Re-read after
-        // the flush: a synchronous prepare may have rebuilt the attributes.
-        guard let attributes = attributesByItemID[itemID],
-              isCurrent(attributes),
-              let key = heights.currentKey(for: itemID),
-              rowUsesCellReportedHeight(attributes) else { return }
-        // Validate before the dedupe and any cache write: a placeholder must
-        // never become `lastAppliedHeight` or the next delta baseline.
-        if isPreParsePlaceholder(height, itemID: itemID, key: key) { return }
-#if DEBUG
-        debugHeightDidChangeCount += 1
-#endif
-        // The geometry action can repeat the value that was just applied; the
-        // cell and the layout would otherwise ping-pong the same height.
-        if let last = lastAppliedHeight[itemID], last.key == key,
-           abs(last.height - height) <= 0.5 { return }
-        let delta = height - displayedHeight(for: itemID, key: key, attributes: attributes)
-        if abs(delta) <= 0.5 {
-            heights.set(height, for: key, tier: .measured)
-            heights.resolvePending(itemID)
-            heights.noteDisplayedHeight(height, for: itemID)
-            attributes.isMeasured = true
-            lastAppliedHeight[itemID] = AppliedHeight(key: key, height: height)
-            return
-        }
-        let decision = TimelinePreferredAttributesDecision.hostedHeightChange(
-            isVisible: heightChangeAffectsVisibleRows(attributes),
-            isUserScrolling: state.userIsScrolling)
-        if decision == .deferUntilSettled {
-            // The frozen height stays displayed; the newest report replaces
-            // an older parked value for the same row.
-            pendingHostedHeights[itemID] = PendingHostedHeight(key: key, height: height)
-            return
-        }
-        let correction = TimelinePreferredAttributesDecision.heightChangeCorrection(
-            delta: delta, cellMinY: attributes.frame.minY, viewportBottom: viewportBottom)
-        applyHeightUpdates([
-            HeightUpdate(itemID: itemID, key: key, height: height,
-                         attributes: attributes, offsetDelta: correction,
-                         contentSizeDelta: delta, source: "hosted")
-        ])
     }
 
     /// The attribute object still belongs to the snapshot the layout is
@@ -1209,35 +1068,6 @@ final class TimelineListLayout: UICollectionViewLayout {
                 source: "deferred"))
         }
         deferredHeights.removeAll()
-        // Hosted reports parked under the finger, newest value per row.
-        updates.append(contentsOf: pendingHostedUpdates())
-        pendingHostedHeights.removeAll()
-        applyHeightUpdates(updates)
-    }
-
-    /// Builds the one-context batch for hosted reports parked under a gesture.
-    private func pendingHostedUpdates() -> [HeightUpdate] {
-        var updates: [HeightUpdate] = []
-        for (itemID, pending) in pendingHostedHeights.sorted(by: { $0.key < $1.key }) {
-            guard heights.currentKey(for: itemID) == pending.key,
-                  let attributes = attributesByItemID[itemID],
-                  rowUsesCellReportedHeight(attributes) else { continue }
-            let contentSizeDelta = pending.height
-                - displayedHeight(for: itemID, key: pending.key, attributes: attributes)
-            let offset = TimelinePreferredAttributesDecision.heightChangeCorrection(
-                delta: contentSizeDelta, cellMinY: attributes.frame.minY,
-                viewportBottom: viewportBottom)
-            updates.append(HeightUpdate(itemID: itemID, key: pending.key,
-                height: pending.height, attributes: attributes,
-                offsetDelta: offset, contentSizeDelta: contentSizeDelta,
-                source: "hostedDeferred"))
-        }
-        return updates
-    }
-
-    private func flushPendingHostedHeights() {
-        let updates = pendingHostedUpdates()
-        pendingHostedHeights.removeAll()
         applyHeightUpdates(updates)
     }
 

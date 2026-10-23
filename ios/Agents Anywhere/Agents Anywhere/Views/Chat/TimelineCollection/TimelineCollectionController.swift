@@ -55,6 +55,9 @@ final class TimelineCollectionController: UIViewController {
     private var pendingApply: (items: [TimelineListItem], animating: Bool)?
     private var pendingMeasurementTask: Task<Void, Never>?
     private var visibleCellSettleTask: Task<Void, Never>?
+    /// The last fitting height seen for a hosted row. A height is committed
+    /// only after two settle passes return the same deterministic fit.
+    private var pendingCellFits: [String: CGFloat] = [:]
     private var cellFrameSyncScheduled = false
     private var visibleCellSettleGeneration = 0
     private var bottomAnimationWatchdog: Task<Void, Never>?
@@ -250,14 +253,15 @@ final class TimelineCollectionController: UIViewController {
                 // still carries the previous key's measured flag.
                 let isMeasured = self.layout.heights.hasMeasuredOrPrecalcHeight(
                     for: content.heightKey(for: item, width: self.columnWidth))
-                // Only the official-contract rows report later content
-                // changes; the Chat rows keep the controller polling path.
+                // A hosted row's geometry change is only a trigger: the height
+                // is read back from `systemLayoutSizeFitting` at a settled
+                // moment. The Chat rows keep the controller polling path.
                 if content.usesCellReportedHeight(for: item) {
-                    cell.onContentHeightChange = { [weak self] height in
-                        self?.layout.applyHostedHeight(itemID: item.itemID, height: height)
+                    cell.onContentChanged = { [weak self] in
+                        self?.noteHostedContentChanged()
                     }
                 } else {
-                    cell.onContentHeightChange = nil
+                    cell.onContentChanged = nil
                 }
                 cell.configure(content.rowView(for: item),
                                policy: content.heightPolicy(for: item),
@@ -418,6 +422,7 @@ final class TimelineCollectionController: UIViewController {
         }
         let liveIDs = Set(items.map(\.itemID))
         documentHeights = documentHeights.filter { liveIDs.contains($0.key) }
+        pendingCellFits = pendingCellFits.filter { liveIDs.contains($0.key) }
 
         var snapshot = NSDiffableDataSourceSnapshot<TimelineCollectionSection, TimelineListItem>()
         snapshot.appendSections([.main])
@@ -1256,9 +1261,18 @@ final class TimelineCollectionController: UIViewController {
         layout.applyMeasuredHeight(height, for: item.itemID, key: key)
     }
 
+    /// A hosted row's content changed its laid-out size. Not a measurement:
+    /// let the settle passes read the deterministic fit at a settled moment.
+    /// A running settle already re-fits every pass, so it is left alone
+    /// instead of being restarted (a restart would postpone the next read).
+    private func noteHostedContentChanged() {
+        guard visibleCellSettleTask == nil else { return }
+        scheduleVisibleCellSettle()
+    }
+
     /// Every visible legacy row may correct its height after the cell has
     /// rendered; this is their equivalent of the official cell's
-    /// `heightDidChange` (the hosted-contract rows report directly instead).
+    /// `heightDidChange` (the hosted-contract rows are confirmed by fit).
     /// Passes stop as soon as each visible cell's fitting height equals its
     /// frame; a pre-parse cell keeps them alive until the last pass.
     private func scheduleVisibleCellSettle() {
@@ -1266,6 +1280,7 @@ final class TimelineCollectionController: UIViewController {
         visibleCellSettleGeneration &+= 1
         let generation = visibleCellSettleGeneration
         visibleCellSettleTask = Task { @MainActor [weak self] in
+            defer { self?.clearVisibleCellSettleTask(generation: generation) }
             for delay in Self.visibleCellSettleDelays {
                 if delay > .zero { try? await Task.sleep(for: delay) }
                 guard let self, !Task.isCancelled,
@@ -1274,6 +1289,11 @@ final class TimelineCollectionController: UIViewController {
                 if !self.settleVisibleCellHeightsOnce() { return }
             }
         }
+    }
+
+    private func clearVisibleCellSettleTask(generation: Int) {
+        guard visibleCellSettleGeneration == generation else { return }
+        visibleCellSettleTask = nil
     }
 
     /// Returns false when every visible cell already matches its frame, so
@@ -1297,24 +1317,48 @@ final class TimelineCollectionController: UIViewController {
             guard currentItems.indices.contains(indexPath.item),
                   let cell = collectionView.cellForItem(at: indexPath) else { continue }
             let item = currentItems[indexPath.item]
-            // Hosted-contract rows self-measure once and then report content
-            // changes through `heightDidChange`; a second fitting pass from
-            // the controller would fight the layout's own accounting.
-            if content.usesCellReportedHeight(for: item) { continue }
-            // TextKit 2 rows were measured before apply with the same engine
-            // the cell renders; the visible-fit loop must not second-guess it.
-            if documentHeights[item.itemID] != nil { continue }
-            // Leave a row that is mid-animation alone: re-fitting it would
-            // restart the animation from its current frame and stretch it.
-            if isAnimatingRowHeight(item.itemID) { continue }
-            guard let height = cellFit(cell, minimum: plausibleFloor(for: item)) else {
+            let hosted = content.usesCellReportedHeight(for: item)
+            // A streaming row's visible height is the reveal override; the
+            // stored measurement must not chase it frame by frame.
+            if hosted, layout.hasStreamingHeight(for: item.itemID) { continue }
+            if !hosted {
+                // TextKit 2 rows were measured before apply with the same
+                // engine the cell renders; the visible-fit loop must not
+                // second-guess it.
+                if documentHeights[item.itemID] != nil { continue }
+                // Leave a row that is mid-animation alone: re-fitting it would
+                // restart the animation from its current frame and stretch it.
+                if isAnimatingRowHeight(item.itemID) { continue }
+            }
+            // The hosted row's height is the official first-fit measurement,
+            // never the geometry value SwiftUI reported. No estimate floor:
+            // a genuinely short row (a collapsed tool header) is legitimate.
+            guard let height = cellFit(cell,
+                                       minimum: hosted ? 0 : plausibleFloor(for: item)) else {
                 // Pre-parse stack spacing or a probe: wait for the async content.
                 needsMore = true
                 continue
             }
             let key = content.heightKey(for: item, width: columnWidth)
             let current = layout.attributes(for: item.itemID)?.frame.height ?? 0
-            guard abs(height - current) > 0.5 else { continue }
+            guard abs(height - current) > 0.5 else {
+                pendingCellFits[item.itemID] = nil
+                continue
+            }
+            if hosted {
+                // SwiftUI lays out in passes; a single read can still be an
+                // intermediate. Require the deterministic fit to agree across
+                // two settle passes — it compares the current fit only, so no
+                // value is ever carried across time.
+                if let pending = pendingCellFits[item.itemID],
+                   abs(pending - height) <= 0.5 {
+                    pendingCellFits[item.itemID] = nil
+                } else {
+                    pendingCellFits[item.itemID] = height
+                    needsMore = true
+                    continue
+                }
+            }
             measurementPipeline.complete(item.itemID)
             let policy = content.heightPolicy(for: item)
             // UIKit may already have adopted the fitted height during the
@@ -1328,7 +1372,7 @@ final class TimelineCollectionController: UIViewController {
 #if AA_TIMELINE_PROBE
             TimelineProbeStore.shared.noteHeightChange(
                 itemID: item.itemID, item: item, old: current, new: height,
-                source: "visibleFit")
+                source: hosted ? "cellFit" : "visibleFit")
 #endif
             if policy == .interactive, let before, fresh,
                abs(height - before.height) >= 8 {
@@ -2045,8 +2089,11 @@ extension TimelineCollectionController: TimelineListLayoutHost {
 #if DEBUG
     func setTestGestureState(tracking: Bool, decelerating: Bool) {
         testGestureState = (tracking: tracking, decelerating: decelerating)
+        // The settle passes stop under a gesture; a released gesture must look
+        // for the cells that changed while it ran, exactly like a real scroll
+        // end does.
         if !tracking, !decelerating {
-            layout.flushParkedHeightsAfterGesture()
+            scheduleVisibleCellSettle()
         }
     }
 #endif
@@ -2093,29 +2140,6 @@ extension TimelineCollectionController: TimelineListLayoutCellReportedHeightHost
     }
 }
 
-extension TimelineCollectionController: TimelineListLayoutStructuralHeightHost {
-    /// The structured height the row's content should occupy. The layout uses
-    /// it only to recognize a pre-parse placeholder report; nil means the row
-    /// has no settled structural measurement (streaming, or not a Code group)
-    /// and the report is accepted as-is.
-    func layoutStructuralExactHeight(for item: TimelineListItem,
-                                     width: CGFloat) -> CGFloat? {
-        if let exact = content?.measuredCodeGroupHeight(for: item, width: width) {
-            return exact
-        }
-        guard let content, content.usesCellReportedHeight(for: item) else { return nil }
-        // A live group (streaming or revealing) has no settled structural
-        // value; a **content-derived** estimate is still a usable floor,
-        // because a one-line placeholder is far below it even when the
-        // estimate over-reserves. The crude constants are not: `.row` (200)
-        // would judge a legitimately short row — a collapsed tool header at
-        // 16 pt — as a pre-parse placeholder and discard its real first fit.
-        switch content.estimateKind(for: item) {
-        case .fixed, .text: return content.estimateKind(for: item).height
-        case .olderPrompt, .latestPrompt, .tail, .row: return nil
-        }
-    }
-}
 
 extension TimelineCollectionController: UICollectionViewDelegate {
     func collectionView(_ collectionView: UICollectionView,

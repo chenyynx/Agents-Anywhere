@@ -7,16 +7,6 @@ import Testing
 /// compensation. The layout itself is UIKit and lives in the app target, so
 /// only the decision rules are exercised here.
 @Suite struct TimelineHeightPipelineTests {
-    @Test func hostedHeightChangeParksVisibleRowsUnderTheFinger() {
-        #expect(TimelinePreferredAttributesDecision.hostedHeightChange(
-            isVisible: true, isUserScrolling: true) == .deferUntilSettled)
-        #expect(TimelinePreferredAttributesDecision.hostedHeightChange(
-            isVisible: false, isUserScrolling: true) == .accept)
-        #expect(TimelinePreferredAttributesDecision.hostedHeightChange(
-            isVisible: true, isUserScrolling: false) == .accept)
-        #expect(TimelinePreferredAttributesDecision.hostedHeightChange(
-            isVisible: false, isUserScrolling: false) == .accept)
-    }
 
     @Test func heightChangeCorrectionKeepsRowsBelowStable() {
         // Partially visible (top above the viewport): the reader's text below

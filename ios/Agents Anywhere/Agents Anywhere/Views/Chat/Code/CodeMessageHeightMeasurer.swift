@@ -168,9 +168,15 @@ enum CodeMessageHeightMeasurer {
             .font: font,
             .paragraphStyle: paragraph,
         ])
-        let rect = attributed.boundingRect(
-            with: CGSize(width: available, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
-        return ceil(rect.height) + 2 * CodePageTheme.userBubbleVerticalPadding
+        // The bubble renders through Textual's `InlineText`; its line height
+        // and wrapping follow TextKit 2, not `NSString.boundingRect`. The old
+        // bounding-rect measurement over-reserved 6.7–8.3 pt on the CJK
+        // fixtures (code-profile gate 2026-10-23). The assistant body uses the
+        // same TextKit engine and matches the rendered Textual block within
+        // 0.7 pt, so the bubble uses it too.
+        let scale = traits?.displayScale ?? 2
+        let height = AssistantMarkdownTextLayout.height(
+            of: attributed, width: available, displayScale: scale)
+        return ceil(height) + 2 * CodePageTheme.userBubbleVerticalPadding
     }
 }

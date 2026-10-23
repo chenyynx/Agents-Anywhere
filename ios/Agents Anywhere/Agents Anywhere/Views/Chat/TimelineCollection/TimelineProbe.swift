@@ -217,8 +217,8 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         if let controller, let collectionView = controller.collectionView {
             let point = collectionView.convert(location, from: view)
             itemID = collectionView.indexPathForItem(at: point).flatMap {
-                controller.currentItems.indices.contains($0.item)
-                    ? controller.currentItems[$0.item].itemID : nil
+                controller.items.indices.contains($0.item)
+                    ? controller.items[$0.item].itemID : nil
             }
         } else {
             itemID = nil
@@ -611,6 +611,21 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     }
 
 
+    /// The cell's rendered text. `recursiveDescription` is private API; walk
+    /// the hosting subtree instead and read every UILabel the reader can
+    /// actually see. The probe only reads what is on screen.
+    private func visibleText(of cell: UICollectionViewCell) -> String {
+        var labels: [String] = []
+        func walk(_ view: UIView) {
+            if let label = view as? UILabel, let text = label.text {
+                labels.append(text)
+            }
+            for subview in view.subviews { walk(subview) }
+        }
+        walk(cell.contentView)
+        return labels.joined(separator: " ")
+    }
+
     /// The cell's rendered text, sampled every 0.5 s while the row is visible.
     /// A row whose text changed but whose height did not is a content bug the
     /// height probes cannot see; a row whose text is identical but whose
@@ -621,7 +636,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         for attribute in attributes {
             guard let item = attribute.item,
                   let cell = view.cellForItem(at: attribute.indexPath) else { continue }
-            let text = cell.contentView.recursiveDescription
+            let text = visibleText(of: cell)
                 .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             let sample = ContentSample(
                 itemID: item.itemID,

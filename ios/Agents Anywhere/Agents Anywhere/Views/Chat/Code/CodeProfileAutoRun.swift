@@ -513,10 +513,19 @@ final class CodeProfileAutoRunModel {
         // the view is in a window.
         await wait(1200)
         host.view.layoutIfNeeded()
+        let inWindow = host.sizeThatFits(in: CGSize(
+            width: window.bounds.width, height: .greatestFiniteMagnitude)).height
+        let safeTop = host.view.safeAreaInsets.top
+        let safeBottom = host.view.safeAreaInsets.bottom
+        let traits = host.traitCollection
+        // `sizeThatFits` keeps the window's safe-area insets even with
+        // `.ignoresSafeArea()` on the content. Measure the same parsed view
+        // off the window: the row inside the timeline has no window inset.
+        host.view.removeFromSuperview()
+        host.view.frame = CGRect(x: 0, y: 0, width: window.bounds.width, height: 200)
+        host.view.layoutIfNeeded()
         let rendered = host.sizeThatFits(in: CGSize(
             width: window.bounds.width, height: .greatestFiniteMagnitude)).height
-        let traits = host.traitCollection
-        host.view.removeFromSuperview()
 
         let typography = TimelineChatContentAdapter.typography(
             dynamicType: String(describing: DynamicTypeSize.large),
@@ -533,6 +542,9 @@ final class CodeProfileAutoRunModel {
         report["messageRowHeight"] = [
             "measured": Double(measured),
             "rendered": Double(rendered),
+            "inWindow": Double(inWindow),
+            "safeTop": Double(safeTop),
+            "safeBottom": Double(safeBottom),
             "delta": Double(delta),
         ]
     }

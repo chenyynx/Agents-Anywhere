@@ -62,7 +62,7 @@ import Testing
         let restored = repo(http, local: store)
         restored.updateConnectivity(.init(availability: .offline))
         let opening = try await restored.open(sessionId: "session")
-        #expect(opening.items.map(\.orderSeq) == Array(201...1000))
+        #expect(opening.items.map(\.orderSeq) == Array(701...1000))
         #expect(opening.hasOlderItems && !opening.hasNewerItems && http.calls.isEmpty)
         #expect(restored.session(id: "session").draft == "Keep my draft")
         restored.reset(); first.reset(); await store.close(removing: true)

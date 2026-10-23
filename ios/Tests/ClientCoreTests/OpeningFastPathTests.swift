@@ -228,7 +228,7 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         // The refresh is still blocked in the network. The cached window was
         // presented before it, trimmed to the newest
         // `V2SessionCachePolicy.deferredWindowItems` rows.
-        #expect(model.timeline.rows.map(\.id) == (201...1000).map { "reply-\($0)" })
+        #expect(model.timeline.rows.map(\.id) == (701...1000).map { "reply-\($0)" })
         gate.release()
         await opening.value
         #expect(model.isOpeningReady && model.openingError == nil)

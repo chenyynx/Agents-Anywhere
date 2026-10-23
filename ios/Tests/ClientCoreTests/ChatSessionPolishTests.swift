@@ -128,7 +128,7 @@ private func imageThumbnailFixture(width: Int, height: Int) -> Data? {
         #expect(http.calls.count == requests)
         await model.prepareOpening()
         #expect(model.isOpeningReady && model.timeline.rows.count == V2SessionCachePolicy.deferredWindowItems)
-        #expect(model.timeline.rows.first?.id == "reply-201" && model.timeline.rows.last?.id == "reply-1000")
+        #expect(model.timeline.rows.first?.id == "reply-701" && model.timeline.rows.last?.id == "reply-1000")
         #expect(model.session.hasOlderItems)
         #expect(http.calls.count == requests)
     }

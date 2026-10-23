@@ -500,7 +500,11 @@ final class CodeProfileAutoRunModel {
         let host = UIHostingController(rootView:
             CodeMessageRowView(group: group, profile: .claudeCode, cwd: "/repo",
                                showsWorkingStatus: true)
-                .padding(.horizontal, CodePageTheme.rowMarginLeading))
+                .padding(.horizontal, CodePageTheme.rowMarginLeading)
+                // `sizeThatFits` includes the hosting window's safe area; the
+                // row itself is laid out below the status bar in the timeline.
+                // The parity gate hit the same 68 pt inset in the M1 spike.
+                .ignoresSafeArea())
         host.view.frame = CGRect(x: 0, y: 0, width: window.bounds.width, height: 200)
         host.view.backgroundColor = .clear
         window.addSubview(host.view)

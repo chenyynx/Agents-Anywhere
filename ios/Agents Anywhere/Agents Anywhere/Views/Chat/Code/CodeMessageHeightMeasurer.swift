@@ -177,6 +177,11 @@ enum CodeMessageHeightMeasurer {
         let scale = traits?.displayScale ?? 2
         let height = AssistantMarkdownTextLayout.height(
             of: attributed, width: available, displayScale: scale)
-        return ceil(height) + 2 * CodePageTheme.userBubbleVerticalPadding
+        // SwiftUI's `lineSpacing` is the gap *between* lines. The TextKit
+        // usage height includes one trailing gap after the last line; the
+        // rendered bubble does not (the gate measured 6.7–8.3 pt of
+        // over-reservation before this subtraction).
+        return ceil(max(0, height - lineSpacing))
+            + 2 * CodePageTheme.userBubbleVerticalPadding
     }
 }

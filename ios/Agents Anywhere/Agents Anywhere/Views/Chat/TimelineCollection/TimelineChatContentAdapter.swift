@@ -218,15 +218,27 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// of points the first fit had to give back (device report 2026-10-23).
     private func codeEstimateKind(for item: TimelineListItem,
                                   groupID: String) -> TimelineHeightEstimateKind {
+        let width = TimelineHeightKey.quantize(lastWidth > 0 ? lastWidth : 361)
+        let scale = Int(((controller?.traitCollection.displayScale ?? 2) * 100).rounded())
+        var hasher = TimelineStableHasher()
+        hasher.combine(contentSignature(for: item).contentRevision)
+        hasher.combine(width)
+        hasher.combine(typography.revision)
+        hasher.combine(scale)
+        let cacheKey = hasher.revision
+        if let cached = codeEstimateCache[cacheKey] { return .fixed(cached) }
         let height = CodeMessageHeightMeasurer.height(
             rows: codeRowsByGroupID[groupID] ?? [],
             showsWorkingStatus: groupID == workingStatusGroupID,
-            width: TimelineHeightKey.quantize(lastWidth > 0 ? lastWidth : 361),
+            width: width,
             typography: typography,
             traits: controller?.traitCollection,
             measured: false)
+        if codeEstimateCache.count > 600 { codeEstimateCache.removeAll() }
+        codeEstimateCache[cacheKey] = height
         return .fixed(height)
     }
+    private var codeEstimateCache: [Int: CGFloat] = [:]
 
     /// The exact height of a settled Code group, measured before the snapshot
     /// applies. The controller needs this because the Code page hosts every

@@ -76,6 +76,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     private var lastFitCheckAt: TimeInterval = 0
     private var lastHeights: [String: CGFloat] = [:]
     private var lastOffset: CGFloat?
+    private var lastTickAt: CFTimeInterval = 0
     /// The controller records a fit before handing it to the layout, and the
     /// layout records the applied height again. Keep one line for the pair.
     private var lastRecorded: [String: (at: TimeInterval, new: CGFloat)] = [:]
@@ -128,6 +129,18 @@ final class TimelineProbeStore: NSObject, ObservableObject {
 
     @objc private func tick(_ link: CADisplayLink) {
         let now = CACurrentMediaTime()
+        // Main-thread hitches while the reader is dragging show up as long
+        // display-link intervals. A height correction can also look like
+        // jitter; these counters separate the two.
+        if lastTickAt > 0, let view = controller?.collectionView,
+           view.isTracking || view.isDecelerating {
+            let ms = (now - lastTickAt) * 1000
+            counters["frameSamples", default: 0] += 1
+            counters["maxFrameMs", default: 0] =
+                max(counters["maxFrameMs"] ?? 0, Int(ms.rounded()))
+            if ms > 20 { counters["slowFrames", default: 0] += 1 }
+        }
+        lastTickAt = now
         guard now - lastSampleAt >= 0.1 else { return }
         lastSampleAt = now
         sample(now: now)

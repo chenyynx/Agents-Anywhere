@@ -108,7 +108,16 @@ final class TimelineListLayout: UICollectionViewLayout {
             let item = host.layoutItem(at: index)
             let key = host.layoutHeightKey(for: item, width: column.width)
             heights.setCurrentKey(key)
-            let estimate = host.layoutEstimateKind(for: item)
+            // The provider's estimate walks the row's text and rebuilds the
+            // structural plan. A measured tier or a displayed height answers
+            // first, so the estimate is only needed for a key neither can
+            // serve. Asking for it unconditionally made every streaming apply
+            // re-walk the whole window's text on the main thread — the
+            // scroll jitter reported on 2026-10-23.
+            let hasResolved = heights.tieredHeight(for: key) != nil
+                || heights.displayedHeight(for: item.itemID) != nil
+            let estimate: TimelineHeightEstimateKind = hasResolved
+                ? .row : host.layoutEstimateKind(for: item)
             // A streaming row's per-frame clamped height is a display override:
             // it is used for this prepare but never written to the height
             // cache, so clearing it restores the measured height.

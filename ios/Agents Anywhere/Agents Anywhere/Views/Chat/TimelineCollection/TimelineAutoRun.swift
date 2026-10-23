@@ -883,7 +883,10 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         var last: CGFloat?
         while ProcessInfo.processInfo.systemUptime - start < timeout {
             controller.collectionView.layoutIfNeeded()
+            // A recycled cell can still answer `cellForItem` for a row the
+            // visible set no longer contains; its fit is not the row's height.
             if let indexPath = controller.indexPath(for: item),
+               controller.collectionView.indexPathsForVisibleItems.contains(indexPath),
                let cell = controller.collectionView.cellForItem(at: indexPath) {
                 let width = cell.contentView.bounds.width
                 if width > 0 {
@@ -941,13 +944,19 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         // count this scenario attributes to the fixture.
         let scrollView = controller.collectionView!
         let restingOffset = scrollView.contentOffset
+        // A full viewport lands on the bottom in this short list and arms the
+        // bottom follow; the next height change then repins and yanks the
+        // fixture out of view. Materialize the rows below with a smaller step.
         scrollView.setContentOffset(CGPoint(x: 0,
-            y: restingOffset.y + scrollView.bounds.height), animated: false)
+            y: restingOffset.y + scrollView.bounds.height * 0.4), animated: false)
         await wait(350)
         controller.collectionView.layoutIfNeeded()
         scrollView.setContentOffset(restingOffset, animated: false)
         await wait(350)
         controller.collectionView.layoutIfNeeded()
+        // A synthetic scroll never runs the drag callbacks that disarm the
+        // bottom target; this scenario is mid-list, so disarm explicitly.
+        controller.disarmBottom()
         // Coming back is not enough: materializing the rows below can finish
         // measurements that move this row, so anchor again and prove it is on
         // screen before the gesture legs read its cell.

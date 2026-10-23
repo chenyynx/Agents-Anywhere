@@ -11,11 +11,11 @@ nonisolated struct V2SessionCachePolicy {
     /// Rows a page visit keeps. The deferred-activity window is wider than the
     /// old 100-row open because a summary row stands in for a large payload,
     /// but it is also what the plain (non-lazy) timeline VStack lays out on
-    /// every open, so it must stay near the scroll cost we had before: 300
-    /// rows matches the server's span cap. The repository trim and the chat
-    /// page's first cached screen both read this constant so the two lengths
-    /// can never disagree.
-    static let deferredWindowItems = 300
+    /// every open, so it has to stay near the scroll cost we had before. 150
+    /// also matches the deploy server's span cap; the repository trim and the
+    /// chat page's first cached screen both read this constant so the two
+    /// lengths can never disagree.
+    static let deferredWindowItems = 150
 }
 
 /// The observed-session self-healing cadence. Doubling from `initial` up to

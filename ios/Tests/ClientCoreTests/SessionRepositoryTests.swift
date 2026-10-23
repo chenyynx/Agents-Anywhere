@@ -38,14 +38,14 @@ import Testing
         #expect(all.items.count == 1000 && !all.hasOlderItems)
         let requests = http.calls.count
         let reopened = try await repo.open(sessionId: "session")
-        // Reopening keeps exactly the deferred window (300 rows) and spends no
+        // Reopening keeps exactly the deferred window (150 rows) and spends no
         // network; the accumulated history beyond it becomes the older tail.
-        #expect(reopened.items.map(\.orderSeq) == Array(701...1000))
+        #expect(reopened.items.map(\.orderSeq) == Array(851...1000))
         #expect(reopened.hasOlderItems && !reopened.hasNewerItems && reopened.cursor == initial.cursor)
         #expect(http.calls.count == requests)
         let older = try await repo.loadOlder(sessionId: "session", limit: 500)
-        #expect(older.items.map(\.orderSeq) == Array(201...1000))
-        #expect(http.calls.last?.query.contains { $0.name == "beforeOrderSeq" && $0.value == "701" } == true)
+        #expect(older.items.map(\.orderSeq) == Array(351...1000))
+        #expect(http.calls.last?.query.contains { $0.name == "beforeOrderSeq" && $0.value == "851" } == true)
     }
 
     @Test func cachedModelLookupDoesNotSubscribeItsCallerToHistoricalRows() async throws {

@@ -34,6 +34,12 @@ struct CodeMessageRowView: View {
     /// adapter assigns it to the last message of the turn; a reasoning block
     /// itself never draws the line.
     var showsWorkingStatus: Bool
+    /// Pre-parsed Markdown snapshots, keyed by `ChatMarkdownPrepared.key(for:)`
+    /// of the text the row will draw. The adapter supplies them so a freshly
+    /// configured cell paints its body on the first frame instead of waiting
+    /// for `ChatMarkdownView`'s async parse (and so the measurer can lay the
+    /// real view out synchronously).
+    var preparedBlocks: [String: [MarkdownBlockSnapshot]]?
     /// A collapsed tool row's tap. Navigation belongs to the page: a sheet
     /// owned by this row would sit inside a hosting cell that every streaming
     /// reconfigure rebuilds, and could dismiss an open detail.
@@ -44,12 +50,14 @@ struct CodeMessageRowView: View {
          cwd: String? = nil,
          streaming: CodeStreamingText? = nil,
          showsWorkingStatus: Bool = false,
+         preparedBlocks: [String: [MarkdownBlockSnapshot]]? = nil,
          onToolDetail: @escaping (CodeToolDetailRequest) -> Void = { _ in }) {
         self.group = group
         self.profile = profile
         self.cwd = cwd
         self.streaming = streaming
         self.showsWorkingStatus = showsWorkingStatus
+        self.preparedBlocks = preparedBlocks
         self.onToolDetail = onToolDetail
     }
 
@@ -141,9 +149,17 @@ struct CodeMessageRowView: View {
         case let .text(id, text):
             // First packet: the existing Markdown view. The Code page has no
             // reveal, so the text is always the settled full snapshot.
-            ChatMarkdownView(text: displayedText(id: id, fallback: text),
+            let displayed = displayedText(id: id, fallback: text)
+            let preparedKey = ChatMarkdownPrepared.key(for: displayed)
+            let prepared = preparedBlocks?[preparedKey]
+            ChatMarkdownView(text: displayed,
                              isStreaming: false,
-                             resolvesFileReferences: true)
+                             resolvesFileReferences: true,
+                             initialBlocks: prepared)
+                // A seeded view keeps its first blocks across a root-view
+                // update; tie the identity to the text so a streaming
+                // snapshot reseeds instead of drawing the previous one.
+                .id(prepared == nil ? "async:\(id)" : "prepared:\(id):\(preparedKey)")
 
         case let .toolCalls(segments):
             VStack(alignment: .leading, spacing: 0) {

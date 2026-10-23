@@ -1186,7 +1186,11 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         }
         contentGeneration += 1
         controller.reloadFromContent()
-        await wait(600)
+        // Anchor only after the fixture estimates collapse to their real
+        // heights: a row above the target that shrinks after the scroll pulls
+        // the target out of the visible set, and a phase with no target proves
+        // nothing.
+        await settleLayout(controller)
         controller.collectionView.layoutIfNeeded()
         guard fixtures.count >= 8 else {
             failures.append("gesture freeze: only \(fixtures.count) fixture rows")
@@ -1238,6 +1242,14 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         controller.collectionView.scrollToItem(at: indexPath, at: .top, animated: false)
         await wait(250)
         controller.collectionView.layoutIfNeeded()
+        // A row above the target can still take its first measurement after
+        // the scroll; re-anchor rather than measuring a phase whose target is
+        // outside the visible set.
+        if !controller.collectionView.indexPathsForVisibleItems.contains(indexPath) {
+            controller.collectionView.scrollToItem(at: indexPath, at: .top, animated: false)
+            await wait(250)
+            controller.collectionView.layoutIfNeeded()
+        }
         controller.layout.clearDebugOffsetTrace()
         controller.layout.clearDebugHeightUpdateTrace()
         controller.clearDebugScrollCallSites()

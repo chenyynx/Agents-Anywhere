@@ -41,8 +41,6 @@ nonisolated enum CodeRowHeightPlan {
         var toolButtonPadding: CGFloat
         /// The generic row's line box (unscaled).
         var otherLineHeight: CGFloat
-        /// The working status line: 20 pt mark plus both vertical paddings.
-        var statusLineHeight: CGFloat
         /// `rowMarginTop + rowMarginBottom`.
         var rowMargins: CGFloat
     }
@@ -50,8 +48,7 @@ nonisolated enum CodeRowHeightPlan {
     /// Empty rows contribute nothing, exactly as `CodeMessageRowView` drops
     /// them before its stack. The status line is a sibling of the rows, so it
     /// adds `rowSpacing` only when at least one row rendered.
-    static func height(rows: [Row], showsWorkingStatus: Bool,
-                       metrics: Metrics) -> CGFloat {
+    static func height(rows: [Row], metrics: Metrics) -> CGFloat {
         var total: CGFloat = 0
         var renderedRows = 0
         for row in rows where !row.blocks.isEmpty {
@@ -72,10 +69,6 @@ nonisolated enum CodeRowHeightPlan {
         }
         if renderedRows > 1 {
             total += CGFloat(renderedRows - 1) * metrics.rowSpacing
-        }
-        if showsWorkingStatus {
-            total += metrics.statusLineHeight
-            if renderedRows > 0 { total += metrics.rowSpacing }
         }
         total += metrics.rowMargins
         return ceil(max(0, total))

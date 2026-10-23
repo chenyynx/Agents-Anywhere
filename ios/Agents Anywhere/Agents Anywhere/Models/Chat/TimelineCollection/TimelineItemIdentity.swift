@@ -10,6 +10,10 @@ nonisolated enum TimelineListItem: Hashable, Sendable {
     case olderPrompt
     /// The group's first row id (the same identity the SwiftUI list used).
     case group(String)
+    /// The turn's working status (`CodeThinkingStatusLine`). It is its own
+    /// transcript row, the official `CodeThinkingView` shape, so its
+    /// appearance and disappearance never re-key a message group.
+    case workingStatus
     case notice(String)
     case pending(String)
     case latestPrompt
@@ -19,6 +23,7 @@ nonisolated enum TimelineListItem: Hashable, Sendable {
         switch self {
         case .olderPrompt: return "prompt:older"
         case .group(let id): return "g:\(id)"
+        case .workingStatus: return "working:status"
         case .notice(let id): return "n:\(id)"
         case .pending(let id): return "p:\(id)"
         case .latestPrompt: return "prompt:latest"
@@ -47,16 +52,20 @@ nonisolated struct TimelineItemIdentityList: Equatable {
 nonisolated enum TimelineItemIdentity {
     static func build(hasOlderPrompt: Bool,
                       groupIDs: [String],
+                      hasWorkingStatus: Bool = false,
                       noticeIDs: [String],
                       pendingIDs: [String],
                       hasLatestPrompt: Bool,
                       hasTail: Bool = true) -> TimelineItemIdentityList {
         var items: [TimelineListItem] = []
-        items.reserveCapacity(groupIDs.count + noticeIDs.count + pendingIDs.count + 3)
+        items.reserveCapacity(groupIDs.count + noticeIDs.count + pendingIDs.count + 4)
         if hasOlderPrompt { items.append(.olderPrompt) }
 
         let groups = deduplicate(groupIDs)
         items.append(contentsOf: groups.values.map { .group($0) })
+        // The working status row sits after the turn's last message and before
+        // any tail notice or pending row: it describes the turn, not a notice.
+        if hasWorkingStatus { items.append(.workingStatus) }
         let notices = deduplicate(noticeIDs)
         items.append(contentsOf: notices.values.map { .notice($0) })
         let pending = deduplicate(pendingIDs)

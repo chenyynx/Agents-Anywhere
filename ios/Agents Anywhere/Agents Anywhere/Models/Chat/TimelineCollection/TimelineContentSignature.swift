@@ -64,10 +64,6 @@ nonisolated struct TimelineGroupContentSignature: Equatable {
     let attachments: [TimelineAttachmentPreviewSignature]
     let turnAction: TimelineTurnActionSignature?
     let turnSuppression: TimelineTurnSuppression
-    /// This group owns the live turn's single working status line. The owner
-    /// moves as new messages arrive, and the status line changes the group's
-    /// height without changing any row, so it must be signed.
-    var showsWorkingStatus: Bool = false
 
     var contentRevision: Int {
         var hasher = TimelineStableHasher()
@@ -102,7 +98,6 @@ nonisolated struct TimelineGroupContentSignature: Equatable {
         hasher.combine(turnSuppression.isRunning)
         hasher.combine(turnSuppression.hasNewerItems)
         hasher.combine(turnSuppression.hasPendingUserMessage)
-        hasher.combine(showsWorkingStatus)
         return hasher.revision
     }
 }
@@ -144,6 +139,9 @@ nonisolated enum TimelineContentSignature: Equatable {
     case group(TimelineGroupContentSignature)
     case olderPrompt(pullReady: Bool, isLoading: Bool, keepsPrompt: Bool, hasOlderItems: Bool)
     case latestPrompt(pullReady: Bool, isLoading: Bool, hasNewerItems: Bool)
+    /// The working status row draws only the flipbook mark and the rotating
+    /// verb; neither changes its height, so one stable signature is enough.
+    case workingStatus
     case notice(id: String, status: V2RuntimeNoticeStatus, revision: Int)
     case pending(id: String, attachments: [TimelineAttachmentPreviewSignature])
     case tail(TimelineTailContentSignature)
@@ -164,6 +162,8 @@ nonisolated enum TimelineContentSignature: Equatable {
             var hasher = TimelineStableHasher()
             hasher.combine(pullReady); hasher.combine(isLoading); hasher.combine(hasNewerItems)
             return hasher.revision
+        case .workingStatus:
+            return 0
         case .notice(let id, let status, let revision):
             var hasher = TimelineStableHasher()
             hasher.combine(id); hasher.combine(status.rawValue); hasher.combine(revision)

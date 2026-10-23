@@ -56,6 +56,14 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         #expect(!identity.hasDuplicates)
     }
 
+    @Test func workingStatusSitsAfterTheLastGroupAndBeforeNotices() {
+        let identity = TimelineItemIdentity.build(hasOlderPrompt: false,
+            groupIDs: ["g1", "g2"], hasWorkingStatus: true,
+            noticeIDs: ["n1"], pendingIDs: [], hasLatestPrompt: false)
+        #expect(identity.items == [.group("g1"), .group("g2"),
+            .workingStatus, .notice("n1"), .tail])
+    }
+
     @Test func duplicateIDsKeepTheFirstOccurrenceAndAreReported() {
         let identity = TimelineItemIdentity.build(hasOlderPrompt: false,
             groupIDs: ["a", "b", "a"], noticeIDs: ["n", "n"], pendingIDs: ["p", "p"],
@@ -71,6 +79,7 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         #expect(TimelineListItem.group("x").itemID == "g:x")
         #expect(TimelineListItem.notice("x").itemID == "n:x")
         #expect(TimelineListItem.pending("x").itemID == "p:x")
+        #expect(TimelineListItem.workingStatus.itemID == "working:status")
         #expect(TimelineListItem.olderPrompt.itemID == "prompt:older")
         #expect(TimelineListItem.latestPrompt.itemID == "prompt:latest")
         #expect(TimelineListItem.tail.itemID == "tail")

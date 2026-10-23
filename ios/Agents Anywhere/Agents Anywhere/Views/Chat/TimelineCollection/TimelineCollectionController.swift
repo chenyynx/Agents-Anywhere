@@ -533,7 +533,7 @@ final class TimelineCollectionController: UIViewController {
     private static func isDynamicItem(_ item: TimelineListItem) -> Bool {
         switch item {
         case .group, .notice, .pending: return true
-        case .olderPrompt, .latestPrompt, .tail: return false
+        case .olderPrompt, .latestPrompt, .workingStatus, .tail: return false
         }
     }
 

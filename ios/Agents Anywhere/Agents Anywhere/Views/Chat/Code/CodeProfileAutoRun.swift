@@ -499,8 +499,7 @@ final class CodeProfileAutoRunModel {
         guard let group = messageGroup, let window = keyWindow else { return }
         let rowWidth = window.bounds.width - 2 * CodePageTheme.rowMarginLeading
         let host = UIHostingController(rootView:
-            CodeMessageRowView(group: group, profile: .claudeCode, cwd: "/repo",
-                               showsWorkingStatus: true)
+            CodeMessageRowView(group: group, profile: .claudeCode, cwd: "/repo")
                 .padding(.horizontal, CodePageTheme.rowMarginLeading)
                 // `sizeThatFits` includes the hosting window's safe area; the
                 // row itself is laid out below the status bar in the timeline.
@@ -535,7 +534,7 @@ final class CodeProfileAutoRunModel {
             layoutDirection: 0,
             boldText: false)
         let measured = CodeMessageHeightMeasurer.height(
-            group: group, profile: .claudeCode, showsWorkingStatus: true,
+            group: group, profile: .claudeCode,
             width: rowWidth, typography: typography, traits: traits, measured: true)
         let delta = abs(measured - rendered)
         // Three points covers the Textual/TextKit parity gap measured on the
@@ -724,8 +723,7 @@ final class CodeProfileAutoRunModel {
         let margin = CodePageTheme.rowMarginLeading
         let hostWidth = width + 2 * margin
         let host = UIHostingController(rootView:
-            CodeMessageRowView(group: group, profile: .claudeCode, cwd: "/repo",
-                               showsWorkingStatus: false)
+            CodeMessageRowView(group: group, profile: .claudeCode, cwd: "/repo")
                 .padding(.horizontal, margin)
                 .ignoresSafeArea())
         host.view.backgroundColor = .clear
@@ -766,7 +764,7 @@ final class CodeProfileAutoRunModel {
             layoutDirection: 0,
             boldText: false)
         let measured = CodeMessageHeightMeasurer.height(
-            group: group, profile: .claudeCode, showsWorkingStatus: false,
+            group: group, profile: .claudeCode,
             width: width, typography: typography, traits: traits, measured: true)
         return ["measured": Double(measured),
                 "rendered": Double(rendered),
@@ -1238,10 +1236,9 @@ struct CodeProfileAutoRunRootView: View {
 
     private func messageStage(_ group: ChatTimelineGroup) -> some View {
         ScrollView {
-            // The fixture is a live turn: its last message owns the single
-            // working status line, exactly as the adapter assigns it.
-            CodeMessageRowView(group: group, profile: .claudeCode, cwd: "/repo",
-                               showsWorkingStatus: true)
+            // The fixture is a message row on its own; the live turn's
+            // working status is the separate `CodeWorkingStatusRow`.
+            CodeMessageRowView(group: group, profile: .claudeCode, cwd: "/repo")
                 .padding(.horizontal, CodePageTheme.rowMarginLeading)
                 .padding(.vertical, 20)
         }

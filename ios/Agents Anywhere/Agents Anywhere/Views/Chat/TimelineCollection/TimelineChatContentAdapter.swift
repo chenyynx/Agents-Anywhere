@@ -58,7 +58,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// The last message group of a live turn. It owns the transcript's single
     /// working status line; every other reasoning-only group is not rendered
     /// (device report 2026-10-23: two "Computing…" lines plus the tail orb).
-    private var workingStatusGroupID: String?
     /// One chunked streaming publisher per in-flight assistant text row. The
     /// publisher is fed with the row's full text on every refresh and dropped
     /// as soon as the row settles (the persisted block text is complete then).
@@ -161,6 +160,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         switch item {
         case .olderPrompt: return .olderPrompt
         case .latestPrompt: return .latestPrompt
+        case .workingStatus: return .fixed(CodeWorkingStatusRow.estimatedHeight)
         case .tail: return .tail(statusLine: tailStatusLineVisible)
         case .notice: return .row
         case .pending(let id):
@@ -232,7 +232,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         if let cached = codeEstimateCache[cacheKey] { return .fixed(cached) }
         let height = CodeMessageHeightMeasurer.height(
             rows: codeRowsByGroupID[groupID] ?? [],
-            showsWorkingStatus: groupID == workingStatusGroupID,
             width: width,
             typography: typography,
             traits: controller?.traitCollection,
@@ -306,6 +305,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// self-measures once and reports later content changes. The Chat rows keep
     /// the legacy controller polling path for now.
     func usesCellReportedHeight(for item: TimelineListItem) -> Bool {
+        if case .workingStatus = item { return true }
         guard case .group(let id) = item else { return false }
         return groupsByID[id]?.explicitID != nil
     }
@@ -317,14 +317,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         guard !group.rows.contains(where: { $0.isRevealing || $0.value.isStreamingText }) else {
             return nil
         }
-        let showsStatus = id == workingStatusGroupID
-        let digest = codeHeightDigest(rows: rows, showsStatus: showsStatus, width: width)
+        let digest = codeHeightDigest(rows: rows, width: width)
         if let cached = codeHeightCache[id], cached.digest == digest {
             return cached.height
         }
         let height = CodeMessageHeightMeasurer.height(
             rows: rows,
-            showsWorkingStatus: showsStatus,
             width: width,
             typography: typography,
             traits: controller?.traitCollection,
@@ -339,7 +337,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     }
     private var codeHeightCache: [String: CachedCodeHeight] = [:]
 
-    private func codeHeightDigest(rows: [CodeMessageRow], showsStatus: Bool,
+    private func codeHeightDigest(rows: [CodeMessageRow],
                                   width: CGFloat) -> Int {
         var hasher = TimelineStableHasher()
         for row in rows {
@@ -359,7 +357,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 }
             }
         }
-        hasher.combine(showsStatus)
         hasher.combine(TimelineHeightKey.quantize(width))
         hasher.combine(typography.revision)
         let scale = controller?.traitCollection.displayScale ?? 2
@@ -401,7 +398,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // routed it through the interactive correction path.
             if group.explicitID != nil { return .measured }
             return groupHasInteractiveContent(group) ? .interactive : .measured
-        case .olderPrompt, .latestPrompt: return .measured
+        case .olderPrompt, .latestPrompt, .workingStatus: return .measured
         }
     }
 
@@ -412,7 +409,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     func itemSpacing(after item: TimelineListItem) -> CGFloat {
         switch item {
         case .group(let id) where groupsByID[id]?.explicitID != nil: return 0
-        case .notice, .pending: return 0
+        case .workingStatus, .notice, .pending: return 0
         default: return TimelineListMetrics.itemSpacing
         }
     }
@@ -742,7 +739,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         case .group(let id):
             guard let group = groupsByID[id] else { return .markdown }
             return groupHasInteractiveContent(group) ? .interactive : .markdown
-        case .olderPrompt, .latestPrompt: return .plainText
+        case .olderPrompt, .latestPrompt, .workingStatus: return .plainText
         }
     }
 
@@ -760,6 +757,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 isLoading: isLoadingLatest || isLoadingOlder,
                 pullReady: latestPullReady,
                 onLoad: { [weak self] in self?.onLoadLatest?() }))
+        case .workingStatus:
+            return AnyView(CodeWorkingStatusRow())
         case .group(let id):
             guard let group = groupsByID[id] else { return AnyView(EmptyView()) }
             // A message group (declared message id) renders through the Code
@@ -772,7 +771,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     profile: codeProfile,
                     cwd: model.session.metadata?.cwd,
                     streaming: streamingText,
-                    showsWorkingStatus: id == workingStatusGroupID,
                     preparedBlocks: preparedTextBlocks(
                         for: codeRowsByGroupID[id] ?? [], streaming: streamingText),
                     onToolDetail: { [weak self] request in
@@ -878,6 +876,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             return groupsByID[id]?.rows.map(\.id) ?? [id]
         case .notice(let id): return [id]
         case .pending(let id): return [id]
+        case .workingStatus: return ["working:status"]
         case .tail: return ["tail"]
         case .olderPrompt:
             // `historyLayout.firstRowID` is the first *timeline row*, not the
@@ -946,9 +945,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     }
                 }
             }
-            let status = id == workingStatusGroupID ? " status=1" : ""
             return "code rows=\(rows.count) text=\(textBlocks) toolBlocks=\(toolBlocks) "
-                + "segs=\(segments) other=\(others)\(status) preview=\"\(preview.prefix(36))\""
+                + "segs=\(segments) other=\(others) preview=\"\(preview.prefix(36))\""
+        case .workingStatus: return "workingStatus"
         case .pending: return "pending"
         case .notice: return "notice"
         case .tail: return "tail"
@@ -989,13 +988,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         }
         let estimate = estimateKind(for: item).height
         let exact = CodeMessageHeightMeasurer.height(
-            rows: rows, showsWorkingStatus: id == workingStatusGroupID,
+            rows: rows,
             width: width, typography: typography,
             traits: controller?.traitCollection, measured: true)
         return "est=\(probeFormat(estimate)) exact=\(probeFormat(exact)) "
             + "textBlocks=\(textBlocks) toolBlocks=\(toolBlocks) segs=\(segments) "
-            + "other=\(others) rows=\(rows.count) "
-            + "status=\(id == workingStatusGroupID ? 1 : 0)"
+            + "other=\(others) rows=\(rows.count)"
     }
 
     private func probeFormat(_ value: CGFloat) -> String {
@@ -1035,17 +1033,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             guard !rows.isEmpty else { continue }
             codeRowsByGroupID[explicitID] = rows
         }
-        // One working line per turn: the last message group that can render
-        // owns it. A reasoning-only group before it contributes no visible
-        // block and is left out below instead of becoming an empty row.
-        let workingOwnerID: String? = {
-            guard model.sendingPlaceholder != nil else { return nil }
-            for group in codeGroups.reversed() where group.explicitID != nil {
-                if codeRowsByGroupID[group.id] != nil { return group.id }
-            }
-            return nil
-        }()
-        workingStatusGroupID = workingOwnerID
+        // The working status is its own transcript row (the official
+        // `CodeThinkingView` shape). It no longer lives inside the last
+        // message, so a reasoning-only group is never kept alive by it and
+        // the status line cannot re-key a message group.
+        let hasWorkingStatus = model.sendingPlaceholder != nil
         var groups: [ChatTimelineGroup] = []
         groups.reserveCapacity(codeGroups.count)
         for group in codeGroups {
@@ -1070,9 +1062,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             }
             // `codeGroups` already drops a message whose only rows are calls
             // the runtime skips; this guard keeps a message whose only block
-            // is reasoning (or no visible block) from becoming an empty item —
-            // unless it is the working-status owner, whose row is the status.
-            guard hasVisibleBlock || explicitID == workingOwnerID else { continue }
+            // is reasoning (or no visible block) from becoming an empty item.
+            guard hasVisibleBlock else { continue }
             groups.append(group)
         }
         let timelineRowIDs = Set(model.timeline.rows.map(\.id))
@@ -1082,6 +1073,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let identity = TimelineItemIdentity.build(
             hasOlderPrompt: model.session.hasOlderItems || keepsOlderPrompt,
             groupIDs: groups.map(\.id),
+            hasWorkingStatus: hasWorkingStatus,
             noticeIDs: tailNotices.map(\.id),
             pendingIDs: pending.map(\.id),
             hasLatestPrompt: model.session.hasNewerItems)
@@ -1225,6 +1217,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         case .latestPrompt:
             return .latestPrompt(pullReady: latestPullReady, isLoading: isLoadingLatest,
                                  hasNewerItems: model.session.hasNewerItems)
+        case .workingStatus:
+            return .workingStatus
         case .notice(let id):
             guard let notice = tailNoticesByID[id] else {
                 return .notice(id: id, status: .unknown, revision: 0)
@@ -1243,12 +1237,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     }
 
     private func groupSignature(_ group: ChatTimelineGroup) -> TimelineGroupContentSignature {
-        // The Code row renders only its rows and the working status line. The
-        // generic signature also hashes the turn action, suppression, inline
-        // notices and attachments; none of them reach `CodeMessageRowView`,
-        // and hashing the turn state re-keyed every group when a turn ended
-        // (probe 2026-10-23: one apply reconfigured 192 rows, dropping every
-        // measured height). Keep the Code signature to what the row draws.
+        // The Code row renders only its rows. The generic signature also
+        // hashes the turn action, suppression, inline notices and attachments;
+        // none of them reach `CodeMessageRowView`, and hashing the turn state
+        // re-keyed every group when a turn ended (probe 2026-10-23: one apply
+        // reconfigured 192 rows, dropping every measured height). Keep the
+        // Code signature to what the row draws. The working status is its own
+        // row now, so it is not signed here either.
         if group.explicitID != nil {
             return TimelineGroupContentSignature(
                 rows: group.rows.map {
@@ -1263,8 +1258,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 attachments: [],
                 turnAction: nil,
                 turnSuppression: TimelineTurnSuppression(
-                    isRunning: false, hasNewerItems: false, hasPendingUserMessage: false),
-                showsWorkingStatus: group.id == workingStatusGroupID)
+                    isRunning: false, hasNewerItems: false, hasPendingUserMessage: false))
         }
         var rows: [TimelineRowContentSignature] = []
         rows.reserveCapacity(group.rows.count)
@@ -1315,8 +1309,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 isRunning: model.isRunning,
                 hasNewerItems: model.session.hasNewerItems,
                 hasPendingUserMessage: !model.session.hasNewerItems
-                    && (!model.timeline.pendingMessages.isEmpty || !model.session.pendingMessages.isEmpty)),
-            showsWorkingStatus: group.id == workingStatusGroupID)
+                    && (!model.timeline.pendingMessages.isEmpty || !model.session.pendingMessages.isEmpty)))
     }
 
     private func tailSignature() -> TimelineTailContentSignature {
@@ -1330,15 +1323,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             statusLineVisible: tailStatusLineVisible)
     }
 
-    /// The tail's working status is Code page furniture only when the message
-    /// stack has no status line of its own. The in-message line is the
-    /// official `CodeThinkingView`; drawing the legacy orb below it as well
-    /// produced two working indicators on device (2026-10-23).
-    private var tailStatusLineVisible: Bool {
-        CodeWorkingIndicator.showsTailStatusLine(
-            hasPlaceholder: model.sendingPlaceholder != nil,
-            hasInlineStatus: workingStatusGroupID != nil)
-    }
+    /// The working status is its own transcript row (`CodeWorkingStatusRow`)
+    /// now, so the Code tail must not draw a second indicator.
+    private var tailStatusLineVisible: Bool { false }
 
     /// Attachments ride inside the typed content: a message carries a list, an
     /// attachment item carries one. `V2TimelineItem` itself exposes neither.
@@ -1363,9 +1350,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     }
 
     private func groupHasInteractiveContent(_ group: ChatTimelineGroup) -> Bool {
-        // The working status line is hosted content inside this row; its
-        // height is corrected by the cell, even when the message is plain text.
-        if group.id == workingStatusGroupID { return true }
         if group.kind != .single { return true }
         if group.rows.contains(where: { row in !(inlineNoticesByRow[row.id] ?? []).isEmpty }) { return true }
         let cwd = model.session.metadata?.cwd

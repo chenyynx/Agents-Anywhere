@@ -18,19 +18,17 @@ import UIKit
 enum CodeMessageHeightMeasurer {
     static func height(group: ChatTimelineGroup,
                        profile: CodeRuntimeProfile,
-                       showsWorkingStatus: Bool,
                        width: CGFloat,
                        typography: TimelineTypographySnapshot,
                        traits: UITraitCollection?,
                        measured: Bool) -> CGFloat {
         let rows = CodeMessageBuilder.rows(for: group.rows.map(\.value), profile: profile)
-        return height(rows: rows, showsWorkingStatus: showsWorkingStatus,
+        return height(rows: rows,
                       width: width, typography: typography, traits: traits,
                       measured: measured)
     }
 
     static func height(rows: [CodeMessageRow],
-                       showsWorkingStatus: Bool,
                        width: CGFloat,
                        typography: TimelineTypographySnapshot,
                        traits: UITraitCollection?,
@@ -38,7 +36,6 @@ enum CodeMessageHeightMeasurer {
         CodeRowHeightPlan.height(
             rows: planRows(rows, width: width, typography: typography,
                            traits: traits, measured: measured),
-            showsWorkingStatus: showsWorkingStatus,
             metrics: metrics(traits: traits))
     }
 
@@ -123,8 +120,6 @@ enum CodeMessageHeightMeasurer {
             toolLineHeight: lineHeight,
             toolButtonPadding: CodePageTheme.toolRowButtonPadding,
             otherLineHeight: CodePageTheme.toolRowLineHeight,
-            statusLineHeight: CodePageTheme.workingMarkSize
-                + 2 * CodePageTheme.segmentVerticalPadding,
             rowMargins: CodePageTheme.rowMarginTop + CodePageTheme.rowMarginBottom)
     }
 

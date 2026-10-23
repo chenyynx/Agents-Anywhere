@@ -30,10 +30,6 @@ struct CodeMessageRowView: View {
     var cwd: String?
     /// The paced streaming snapshot while this message's body is still growing.
     var streaming: CodeStreamingText?
-    /// This message owns the live turn's single working status line. The
-    /// adapter assigns it to the last message of the turn; a reasoning block
-    /// itself never draws the line.
-    var showsWorkingStatus: Bool
     /// Pre-parsed Markdown snapshots, keyed by `ChatMarkdownPrepared.key(for:)`
     /// of the text the row will draw. The adapter supplies them so a freshly
     /// configured cell paints its body on the first frame instead of waiting
@@ -49,14 +45,12 @@ struct CodeMessageRowView: View {
          profile: CodeRuntimeProfile,
          cwd: String? = nil,
          streaming: CodeStreamingText? = nil,
-         showsWorkingStatus: Bool = false,
          preparedBlocks: [String: [MarkdownBlockSnapshot]]? = nil,
          onToolDetail: @escaping (CodeToolDetailRequest) -> Void = { _ in }) {
         self.group = group
         self.profile = profile
         self.cwd = cwd
         self.streaming = streaming
-        self.showsWorkingStatus = showsWorkingStatus
         self.preparedBlocks = preparedBlocks
         self.onToolDetail = onToolDetail
     }
@@ -64,9 +58,9 @@ struct CodeMessageRowView: View {
     var body: some View {
         let rows = renderRows
         Group {
-            if rows.isEmpty && !showsWorkingStatus {
+            if rows.isEmpty {
                 // A message whose only blocks are reasoning contributes no
-                // height at all (the turn's status lives in the owner row).
+                // height at all; the turn's working status is its own row.
                 Color.clear.frame(height: 0)
             } else {
                 VStack(alignment: .leading, spacing: CodePageTheme.blockSpacing) {
@@ -76,12 +70,6 @@ struct CodeMessageRowView: View {
                         } else {
                             blockStack(row)
                         }
-                    }
-                    if showsWorkingStatus {
-                        // The official working row sits at the end of the
-                        // turn, not inside the reasoning block.
-                        CodeThinkingStatusLine()
-                            .padding(.vertical, CodePageTheme.segmentVerticalPadding)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -142,8 +130,8 @@ struct CodeMessageRowView: View {
         switch block {
         case .reasoning:
             // Reasoning never renders here: the official `Block.thinking` is
-            // a single working status line for the turn, owned by
-            // `showsWorkingStatus` (CANONICAL/20-working-mark.md §0).
+            // the turn's single working status line, which is its own
+            // transcript row (`CodeWorkingStatusRow`, CANONICAL/20 §0).
             EmptyView()
 
         case let .text(id, text):
@@ -214,7 +202,7 @@ struct CodeMessageRowView: View {
 
     /// One builder row with its reasoning blocks removed: reasoning text is
     /// not part of the Code transcript, and the turn's single status line is
-    /// drawn by the owner row (`showsWorkingStatus`).
+    /// its own transcript row (`CodeWorkingStatusRow`).
     private struct RenderedRow: Identifiable {
         let id: String
         let role: V2MessageRole
@@ -234,7 +222,7 @@ struct CodeMessageRowView: View {
                         return true
                     }
                 }
-                guard !blocks.isEmpty || showsWorkingStatus else { return nil }
+                guard !blocks.isEmpty else { return nil }
                 return RenderedRow(id: row.id, role: row.role, blocks: blocks)
             }
     }

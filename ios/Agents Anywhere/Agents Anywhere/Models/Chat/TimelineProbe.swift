@@ -55,6 +55,10 @@ public final class TimelineProbe {
     private var bodyEvals = 0
     private var lastBodyRows = 0
     private var lastGroupCount = 0
+    private var blockBodies = 0
+    private var blockMeasures = 0
+    private var blockMeasureTotal = 0.0
+    private var blockMeasureWorst = 0.0
     private var scrolling = false
 
     private init() {}
@@ -97,6 +101,26 @@ public final class TimelineProbe {
 
     func recordGroupCount(_ count: Int) {
         lastGroupCount = count
+    }
+
+    /// One `MarkdownBlockView` body evaluation. Counted so a report can tell
+    /// redraw churn from a single heavy draw.
+    func recordBlockBody() {
+        guard isEnabled else { return }
+        blockBodies += 1
+    }
+
+    /// One `MarkdownBlockLayout.sizeThatFits` pass. Text layout is the
+    /// expensive half of a long reply; a count that climbs during a static
+    /// scroll means the measurement cache is being invalidated per frame.
+    func measureBlockLayout<T>(_ body: () -> T) -> T {
+        let start = CACurrentMediaTime()
+        let value = body()
+        let elapsed = (CACurrentMediaTime() - start) * 1000
+        blockMeasures += 1
+        blockMeasureTotal += elapsed
+        blockMeasureWorst = max(blockMeasureWorst, elapsed)
+        return value
     }
 
     func measureGrouping(rows: Int, _ body: () -> [ChatTimelineGroup]) -> [ChatTimelineGroup] {
@@ -158,6 +182,7 @@ public final class TimelineProbe {
 
         let groupingAvg = groupingCalls > 0 ? groupingTotal / Double(groupingCalls) : 0
         let flushAvg = flushCalls > 0 ? flushTotal / Double(flushCalls) : 0
+        let blockAvg = blockMeasures > 0 ? blockMeasureTotal / Double(blockMeasures) : 0
 
         return """
         === AA 时间线探针 ===
@@ -178,6 +203,9 @@ public final class TimelineProbe {
 
         [内容 body 重算]
         \(bodyEvals) 次（窗口变化或状态失效才会重算）
+
+        [正文块开销]
+        body 重算 \(blockBodies) 次 · 测高 \(blockMeasures) 次 · 平均 \(String(format: "%.2f", blockAvg))ms · 最差 \(String(format: "%.2f", blockMeasureWorst))ms
         """
     }
 
@@ -188,6 +216,7 @@ public final class TimelineProbe {
         groupingCalls = 0; groupingRows = 0; groupingTotal = 0; groupingWorst = 0
         flushCalls = 0; flushRows = 0; flushTotal = 0; flushWorst = 0
         bodyEvals = 0; lastBodyRows = 0; lastGroupCount = 0
+        blockBodies = 0; blockMeasures = 0; blockMeasureTotal = 0; blockMeasureWorst = 0
         scrolling = false
     }
 }
@@ -198,6 +227,10 @@ extension TimelineProbe {
     @inline(__always) static func session(_ id: String) { shared.recordSession(id) }
     @inline(__always) static func setScrolling(_ value: Bool) { shared.recordScrolling(value) }
     @inline(__always) static func bodyEvaluated(rows: Int) { shared.recordBody(rows: rows) }
+    @inline(__always) static func blockBody() { shared.recordBlockBody() }
+    @inline(__always) static func measureBlockLayout<T>(_ body: () -> T) -> T {
+        shared.isEnabled ? shared.measureBlockLayout(body) : body()
+    }
     @inline(__always) static func grouping(rows: Int, _ body: () -> [ChatTimelineGroup]) -> [ChatTimelineGroup] {
         if shared.isEnabled { return shared.measureGrouping(rows: rows, body) }
         let groups = body()

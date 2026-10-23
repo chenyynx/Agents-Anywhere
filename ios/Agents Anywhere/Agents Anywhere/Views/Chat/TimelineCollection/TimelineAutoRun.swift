@@ -801,6 +801,30 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                                 offset: controller.collectionView.contentOffset.y)
     }
 
+    /// Why the hosted gate can or cannot see its fixture cell. `cellHeight:-1`
+    /// alone does not say whether the item lost its index path, the layout
+    /// dropped its attributes, or the cell is simply off screen.
+    private func hostedState(_ controller: TimelineCollectionController,
+                             item: TimelineListItem) -> [String: Any] {
+        controller.collectionView.layoutIfNeeded()
+        let indexPath = controller.indexPath(for: item)
+        let attributes = controller.layout.attributes(for: item.itemID)
+        let visible = indexPath.map {
+            controller.collectionView.indexPathsForVisibleItems.contains($0)
+        } ?? false
+        let cell = indexPath.flatMap { controller.collectionView.cellForItem(at: $0) }
+        return ["hasIndexPath": indexPath != nil,
+                "indexPathItem": indexPath?.item ?? -1,
+                "layoutItemCount": controller.layoutItemCount,
+                "dataSourceCount": controller.collectionView.numberOfItems(inSection: 0),
+                "attributeIndex": attributes?.indexPath.item ?? -1,
+                "visible": visible,
+                "hasCell": cell != nil,
+                "cellHeight": Double(cell?.frame.height ?? -1),
+                "offset": Double(controller.collectionView.contentOffset.y),
+                "contentHeight": Double(controller.layout.contentHeight)]
+    }
+
     /// Wait until the layout frame equals the cell's rendered content height.
     /// For a cell-reported row the visible cell is the only exact source; the
     /// pre-parse placeholder is the value this must not accept.
@@ -860,6 +884,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             failures.append("code hosted: the cell never settled on its rendered height")
             return
         }
+        let stateAfterFirstSettle = hostedState(controller, item: item)
         // Materialize the rows below once and come back. The re-key's height
         // change must not introduce a fresh unmeasured row into the self-measure
         // count this scenario attributes to the fixture.
@@ -900,6 +925,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await wait(900)
         controller.collectionView.layoutIfNeeded()
         let selfMeasuresAfterRekey = controller.layout.debugSelfMeasureCount
+        let stateAfterRekey = hostedState(controller, item: item)
         let rekeyHeight = await settleHostedHeight(controller, item: item, timeout: 8) ?? 0
         // Three settled passes: a key that already carries a measurement must
         // reject a second self-measure.
@@ -983,6 +1009,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         hostedReport["keyHeightAfterPlaceholder"] = keyHeightAfterPlaceholder
             .map(Double.init) ?? -1
         hostedReport["phases"] = phases
+        hostedReport["stateAfterFirstSettle"] = stateAfterFirstSettle
+        hostedReport["stateAfterRekey"] = stateAfterRekey
         report["codeHostedHeight"] = hostedReport
 
         // Leave the timeline as the earlier scenarios found it.
@@ -1087,6 +1115,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         return ["gesture": gesture,
                 "tracking": tracking,
                 "decelerating": decelerating,
+                "fixtureVisible": before.keys.contains(item.itemID),
+                "state": hostedState(controller, item: item),
                 "placeholder": Double(placeholder),
                 "realHeight": Double(realHeight),
                 "isUserScrolling": userScrolling,

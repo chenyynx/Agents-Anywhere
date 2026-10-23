@@ -118,7 +118,16 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
 
     func estimateKind(for item: TimelineListItem) -> TimelineHeightEstimateKind {
         guard let entry = entry(for: item) else { return .row }
-        return item == .tail ? .tail(statusLine: entry.statusLine) : .row
+        if item == .tail { return .tail(statusLine: entry.statusLine) }
+        // The gesture fixtures collapse to a tool header. Pre-seeding the
+        // height keeps a scroll from materializing a dozen 200 pt estimates
+        // that then shrink and drag the phase's target out of the viewport.
+        if entry.kind == .toolExpanded,
+           entry.id.hasPrefix(Self.gestureRowPrefix),
+           !entry.id.hasPrefix(Self.hostedRowPrefix) {
+            return .fixed(17)
+        }
+        return .row
     }
 
     func itemSpacing(after item: TimelineListItem) -> CGFloat {
@@ -1239,16 +1248,21 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             failures.append("gesture freeze [\(gesture)]: no index path for \(target.id)")
             return ["gesture": gesture, "error": "no index path"]
         }
-        controller.collectionView.scrollToItem(at: indexPath, at: .top, animated: false)
-        await wait(250)
-        controller.collectionView.layoutIfNeeded()
-        // A row above the target can still take its first measurement after
-        // the scroll; re-anchor rather than measuring a phase whose target is
-        // outside the visible set.
-        if !controller.collectionView.indexPathsForVisibleItems.contains(indexPath) {
+        // Scrolling materializes rows that were estimates; each row above the
+        // target that takes its real height moves the target. Re-anchor until
+        // the target holds at the top, otherwise the phase measures a row that
+        // is already on its way out of the viewport.
+        for _ in 0..<4 {
             controller.collectionView.scrollToItem(at: indexPath, at: .top, animated: false)
-            await wait(250)
+            await wait(200)
             controller.collectionView.layoutIfNeeded()
+            await settleLayout(controller, timeout: 2)
+            let top = controller.collectionView.contentOffset.y
+                + controller.collectionView.adjustedContentInset.top
+            if let attributes = controller.layout.attributes(for: targetItem.itemID),
+               abs(attributes.frame.minY - top) <= 1 {
+                break
+            }
         }
         controller.layout.clearDebugOffsetTrace()
         controller.layout.clearDebugHeightUpdateTrace()

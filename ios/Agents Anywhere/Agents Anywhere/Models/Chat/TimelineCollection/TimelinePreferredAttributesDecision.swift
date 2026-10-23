@@ -74,8 +74,13 @@ nonisolated struct TimelinePreferredAttributesDecision: Equatable {
                                    suppressContentOffsetAdjustment: Bool,
                                    hasCachedHeight: Bool) -> Self {
         let isBrowsing = isTracking || isDecelerating
-        if isBrowsing, hasCachedHeight, delta < 0 { return .deferred }
-        if isBrowsing || keyboardTransition || suppressContentOffsetAdjustment { return .accept }
+        // Official: while the finger is on the list every height change is
+        // parked (`rowsOwedToNextUpdate` / `isFingerOnTheList`), not just
+        // the shrinking ones. A positive delta accepted here is the same
+        // write the next self-measure will undo, which is the 52↔51.3
+        // ping-pong the probe counted 288 times during deceleration.
+        if isBrowsing { return .deferred }
+        if keyboardTransition || suppressContentOffsetAdjustment { return .accept }
         // The placement anchor is the row that contains the viewport top: a
         // change there grows downward without moving the offset. Only a row
         // entirely above the anchor pushes everything the reader sees.
@@ -129,8 +134,13 @@ nonisolated struct TimelinePreferredAttributesDecision: Equatable {
                            keyboardTransition: Bool,
                            hasCachedHeight: Bool) -> Self {
         let isBrowsing = isTracking || isDecelerating
-        if isBrowsing, hasCachedHeight, delta <= 0 { return .deferred }
-        if isBrowsing || keyboardTransition { return .accept }
+        // Official: while the finger is on the list every height change is
+        // parked (`rowsOwedToNextUpdate` / `isFingerOnTheList`), not just
+        // the shrinking ones. A positive delta accepted here is the same
+        // write the next self-measure will undo, which is the 52↔51.3
+        // ping-pong the probe counted 288 times during deceleration.
+        if isBrowsing { return .deferred }
+        if keyboardTransition { return .accept }
         // 1. Fully above the placement anchor (the row containing the
         //    viewport top): its growth pushes everything the reader sees.
         if cellMaxY <= viewportTop { return .accept(correction: delta) }

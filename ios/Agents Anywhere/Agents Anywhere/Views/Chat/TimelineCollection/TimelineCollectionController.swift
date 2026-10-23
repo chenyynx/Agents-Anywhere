@@ -2105,9 +2105,15 @@ extension TimelineCollectionController: TimelineListLayoutStructuralHeightHost {
         }
         guard let content, content.usesCellReportedHeight(for: item) else { return nil }
         // A live group (streaming or revealing) has no settled structural
-        // value; its estimate is still a usable floor, because a one-line
-        // placeholder is far below it even when the estimate over-reserves.
-        return content.estimateKind(for: item).height
+        // value; a **content-derived** estimate is still a usable floor,
+        // because a one-line placeholder is far below it even when the
+        // estimate over-reserves. The crude constants are not: `.row` (200)
+        // would judge a legitimately short row — a collapsed tool header at
+        // 16 pt — as a pre-parse placeholder and discard its real first fit.
+        switch content.estimateKind(for: item) {
+        case .fixed, .text: return content.estimateKind(for: item).height
+        case .olderPrompt, .latestPrompt, .tail, .row: return nil
+        }
     }
 }
 

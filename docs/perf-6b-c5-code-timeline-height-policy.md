@@ -70,9 +70,10 @@
 - 回滚：单 commit；provisional 不改变外部契约。
 
 ### 阶段 2：占位上报防护（含对抗审查修正）
-- 在三条写入路径**任何 cache 写入之前**校验：`applyHostedHeight`、`applySelfMeasuredHeight`、以及手势中被停泊的 self-measure（`shouldInvalidateLayout` 的 park 分支）。
+- 判据在各写入路径**任何 cache 写入之前**校验：`applyHostedHeight`、`applySelfMeasuredHeight`。
+- **修正（2026-10-23 gate 崩溃后）**：self-measure 还必须在 `shouldInvalidateLayout(forPreferredLayoutAttributes:)` 里、**返回 true 之前**拒绝。只在 `applySelfMeasuredHeight` 丢弃会造成“先答应、后丢弃”：`isMeasured` 保持 false，UIKit 在同一次更新里重跑可见 cell、再问再答应，`_updateVisibleCellsNow` 递归到 trap（`_setNeedsVisibleCellsUpdate`，datasource-diffing 队列，gate 里连续三次复现）。
 - 判据：`height < max(24pt, exact × 0.35)` 才拒绝；**一律丢弃，不再“第二次接受”**（否则 SwiftUI 的 20→56 两个中间值仍会漏进来）。合法矮行的 exact 也矮，floor 随之下移；结构测量若高估，行停在 provisional 上而不是被占位覆盖。
-- live group（streaming/revealing）没有 settled exact：用 `estimateKind.height` 作 floor（粗估即使高估 2.3×，35% 仍高于 20–56pt 的占位）。
+- floor 只能用**内容推导**的结构值（settled exact，或 `.fixed`/`.text` 估计）；`.row`(200)、prompt/tail 常数会把合法矮行（折叠工具头 16pt）误判成占位符——gate 夹具的 16.33pt 首测就是这样被丢的。
 - 新行结构化预测量写 provisional（不写 measured）；已被 cell 物化过的行不再收到新预测量（`everDisplayed`）。
 - 验证：controller gate（含 at-rest 占位腿）；探针 fitMismatch=0、staleCell=0、手势中可见行变化=0。
 - 回滚：guard 可独立移除。

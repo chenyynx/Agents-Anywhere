@@ -814,6 +814,19 @@ final class TimelineListLayout: UICollectionViewLayout {
             notePreferred("uikitPreferredRejected")
             return false
         }
+        // A pre-parse self-measure must be rejected **here**, not only after
+        // UIKit has committed to it. Answering accept and then dropping the
+        // value in `applySelfMeasuredHeight` leaves `isMeasured` false; UIKit
+        // re-runs the visible-cells pass, asks again inside the same update,
+        // and the passes recurse until UIKit traps (`_setNeedsVisibleCellsUpdate`
+        // on the datasource-diffing queue). The cell's later geometry report
+        // still carries the real height.
+        if let item = original.item, let key = original.heightKey,
+           isPreParsePlaceholder(preferredAttributes.frame.height,
+                                 itemID: item.itemID, key: key) {
+            notePreferred("uikitPreferredPlaceholderDropped")
+            return false
+        }
         // The same rule as a hosted heightDidChange: while the reader's finger
         // is down or the list is coasting, a measurement that would move a
         // visible row is parked instead of applied. Rejecting the preferred
@@ -827,14 +840,6 @@ final class TimelineListLayout: UICollectionViewLayout {
                contentHeight: contentHeight, viewportTop: viewportTop,
                viewportBottom: viewportBottom),
            let key = original.heightKey {
-            // A pre-parse self-measure parked under the finger would land at
-            // release as a "measured" placeholder. Drop it instead of parking:
-            // the cell's later geometry report carries the real height.
-            if isPreParsePlaceholder(preferredAttributes.frame.height,
-                                     itemID: item.itemID, key: key) {
-                notePreferred("uikitPreferredPlaceholderDropped")
-                return false
-            }
             pendingHostedHeights[item.itemID] = PendingHostedHeight(
                 key: key, height: preferredAttributes.frame.height)
             notePreferred("uikitPreferredParked")

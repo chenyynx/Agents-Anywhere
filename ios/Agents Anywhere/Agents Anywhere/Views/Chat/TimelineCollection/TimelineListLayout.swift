@@ -650,6 +650,22 @@ final class TimelineListLayout: UICollectionViewLayout {
     /// instead of guessing which path took the reader's scroll.
     private(set) var debugOffsetTrace: [[String: Any]] = []
     func clearDebugOffsetTrace() { debugOffsetTrace.removeAll() }
+    /// Height batches that do not go through `invalidateHeight`, with the
+    /// offset they planned to apply. The gesture gate reads this to name the
+    /// writer when a height application moves the reader's scroll.
+    private(set) var debugHeightUpdateTrace: [[String: Any]] = []
+    func clearDebugHeightUpdateTrace() { debugHeightUpdateTrace.removeAll() }
+    private func traceHeightUpdate(_ kind: String, itemIDs: [String],
+                                   contentSize: CGFloat, offset: CGFloat?,
+                                   inside: Bool, before: CGFloat, after: CGFloat? = nil) {
+        if debugHeightUpdateTrace.count >= 12 { debugHeightUpdateTrace.removeFirst() }
+        var entry: [String: Any] = ["kind": kind, "items": itemIDs,
+                                    "contentSize": Double(contentSize),
+                                    "inside": inside, "before": Double(before)]
+        if let offset { entry["offset"] = Double(offset) }
+        if let after { entry["after"] = Double(after) }
+        debugHeightUpdateTrace.append(entry)
+    }
     private func traceOffset(_ kind: String, itemID: String = "",
                              delta: CGFloat = 0, correction: CGFloat? = nil,
                              before: CGFloat? = nil, after: CGFloat? = nil,
@@ -908,6 +924,12 @@ final class TimelineListLayout: UICollectionViewLayout {
         }
         let correction = TimelinePreferredAttributesDecision.heightChangeCorrection(
             delta: delta, cellMaxY: attributes.frame.maxY, viewportTop: viewportTop)
+#if DEBUG
+        traceHeightUpdate("selfMeasure", itemIDs: [itemID],
+                          contentSize: delta, offset: correction,
+                          inside: isInsideUpdate,
+                          before: collectionView?.contentOffset.y ?? 0)
+#endif
         applyHeightUpdates([
             HeightUpdate(itemID: itemID, key: key, height: height,
                          attributes: attributes, offsetDelta: correction,
@@ -1056,6 +1078,13 @@ final class TimelineListLayout: UICollectionViewLayout {
 #endif
         }
         guard changed else { return }
+#if DEBUG
+        let traceBefore = collectionView.contentOffset.y
+        traceHeightUpdate("applyUpdates", itemIDs: updates.map(\.itemID),
+                          contentSize: contentSize,
+                          offset: abs(offset) > 0.5 ? offset : nil,
+                          inside: isInsideUpdate, before: traceBefore)
+#endif
         let liveCount = host?.layoutItemCount ?? attributesByIndex.count
         context.invalidateItems(at: affected.filter { $0.item < liveCount })
         if isInsideUpdate {
@@ -1078,6 +1107,11 @@ final class TimelineListLayout: UICollectionViewLayout {
         if existingContext == nil {
             collectionView.collectionViewLayout.invalidateLayout(with: context)
         }
+#if DEBUG
+        traceHeightUpdate("applyUpdatesApplied", itemIDs: updates.map(\.itemID),
+                          contentSize: 0, offset: nil, inside: isInsideUpdate,
+                          before: traceBefore, after: collectionView.contentOffset.y)
+#endif
     }
 
     private func apply(_ application: TimelinePullDeferOrdering.Application) {

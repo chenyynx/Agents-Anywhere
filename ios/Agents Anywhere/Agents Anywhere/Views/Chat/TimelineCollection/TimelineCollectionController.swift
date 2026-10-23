@@ -93,6 +93,15 @@ final class TimelineCollectionController: UIViewController {
 #if DEBUG
     /// Set by `TimelineAutoRun` only. Never reachable from the product UI.
     private(set) var testGestureState: (tracking: Bool, decelerating: Bool)?
+    /// Call sites of offset changes that land while the test gesture is
+    /// active. The gate reads this to name the writer when a height
+    /// application moves the reader's scroll (gestureFreeze).
+    private(set) var debugScrollCallSites: [String] = []
+    private var debugScrollLastOffset: CGFloat?
+    func clearDebugScrollCallSites() {
+        debugScrollCallSites.removeAll()
+        debugScrollLastOffset = nil
+    }
 #endif
     /// Commands that arrive while the drawer owns navigation. The old state
     /// machine refused the native command but kept the intent; resume replays
@@ -2210,6 +2219,19 @@ extension TimelineCollectionController: UICollectionViewDelegate {
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard !navigationSuspended else { return }
+#if DEBUG
+        if testGestureState != nil {
+            let y = scrollView.contentOffset.y
+            if let last = debugScrollLastOffset, abs(y - last) > 0.5,
+               debugScrollCallSites.count < 6 {
+                let frames = Thread.callStackSymbols.prefix(14)
+                    .map { $0.replacingOccurrences(of: "0x", with: "") }
+                    .joined(separator: " | ")
+                debugScrollCallSites.append("\(last)->\(y): \(frames)")
+            }
+            debugScrollLastOffset = y
+        }
+#endif
 #if AA_TIMELINE_PROBE
         TimelineProbeStore.shared.scrollTick()
 #endif

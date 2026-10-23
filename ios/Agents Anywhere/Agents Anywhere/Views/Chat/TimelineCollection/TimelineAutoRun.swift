@@ -414,10 +414,22 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             let item = listItem(entry)
             await scrollToItem(item)
             let collapsed = cellHeight(controller, item)
+            debugRowViewCalls.removeAll()
             setExpanded(entry.id, true)
             controller.reconfigure([item])
-            let expanded = await waitForCellHeight(controller, item: item,
+            var expanded = await waitForCellHeight(controller, item: item,
                 timeout: 3) { $0 > collapsed + 1 }
+            // A lone reconfigure can be lost while the hosting body is already
+            // mid-update (the row then keeps its collapsed content). A second
+            // reconfigure is what the reader's second tap would do; the report
+            // keeps `retried` so a lost first attempt stays visible.
+            var retried = false
+            if expanded <= collapsed + 1 {
+                retried = true
+                controller.reconfigure([item])
+                expanded = await waitForCellHeight(controller, item: item,
+                    timeout: 3) { $0 > collapsed + 1 }
+            }
             // The row height now animates over 0.18 s; sample after it lands.
             await wait(700)
             let sample = await sampleItem(controller, item: item)
@@ -429,6 +441,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             }
             report["fold"] = ["collapsed": collapsed, "expanded": expanded,
                               "content": sample?.content ?? 0,
+                              "retried": retried,
+                              "providerCalls": debugRowViewCalls,
                               "entryExpanded": entries.first(where: { $0.id == entry.id })?.expanded ?? false,
                               "fitProbe": controller.debugPreferredFitProbe,
                               "diagnostics": controller.preferredDiagnostics,
@@ -1218,6 +1232,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await wait(250)
         controller.collectionView.layoutIfNeeded()
         controller.layout.clearDebugOffsetTrace()
+        controller.layout.clearDebugHeightUpdateTrace()
+        controller.clearDebugScrollCallSites()
 
         let offsetBefore = controller.collectionView.contentOffset.y
         let before = visibleGestureSamples(controller)
@@ -1315,6 +1331,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                 "targetMinYBefore": Double(before[targetItem.itemID]?.attributeMinY ?? -1),
                 "targetMinYAfter": Double(after[targetItem.itemID]?.attributeMinY ?? -1),
                 "offsetTrace": controller.layout.debugOffsetTrace,
+                "heightUpdateTrace": controller.layout.debugHeightUpdateTrace,
+                "scrollCallSites": controller.debugScrollCallSites,
                 "staleCells": stale.count,
                 "overlaps": overlaps]
     }
@@ -1997,8 +2015,16 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         guard let entry = entries.first(where: { $0.id == rawID || ($0.kind == .tail && itemID == "tail") }) else {
             return AnyView(EmptyView())
         }
+        if debugRowViewCalls.count < 60 {
+            debugRowViewCalls.append("\(rawID):expanded=\(entry.expanded)")
+        }
         return view(for: entry)
     }
+
+    /// Which entries the data source asked for after a reconfigure. The fold
+    /// gate reads this when a collapsed row refuses to expand: it separates
+    /// "the provider never saw the new entry" from "SwiftUI kept the old body".
+    private(set) var debugRowViewCalls: [String] = []
 
     private func view(for entry: Entry) -> AnyView {
         switch entry.kind {

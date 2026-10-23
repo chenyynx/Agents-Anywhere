@@ -238,10 +238,10 @@ jobs:
           check("prepend cancellation releases", p.get("cancelledUnchanged") is True, p)
           check("history settled", p.get("settled") is True, p)
 
-          # Official height contract: no height application may reach the
-          # layout while the test gesture is tracking or decelerating, and the
-          # parked change must land once on release without moving the visible
-          # content.
+          # Official height contract (2026-10-23 alignment): a content change
+          # lands during the gesture — there is no parking — and the placement
+          # anchor decides the offset. Rows at and above the anchor keep their
+          # screen position; rows below move. Release must not apply it twice.
           g = r.get("gestureFreeze") or {}
           phases = g.get("phases") or []
           releases = g.get("releases") or []
@@ -253,9 +253,7 @@ jobs:
                     phase.get("usesCellReportedHeight") is True, phase)
               check(f"gestureFreeze {name}: test gesture reaches isUserScrolling",
                     phase.get("isUserScrolling") is True, phase)
-              check(f"gestureFreeze {name}: zero height applications during gesture",
-                    phase.get("heightApplicationsDuringGesture") == 0, phase)
-              check(f"gestureFreeze {name}: visible cell frames unchanged",
+              check(f"gestureFreeze {name}: height application moves no visible frame",
                     phase.get("changedFrames") == 0, phase)
               check(f"gestureFreeze {name}: no visible cell left the set",
                     phase.get("missingCells") == 0, phase)
@@ -265,18 +263,21 @@ jobs:
                     phase.get("overlaps") == 0, phase)
               before = phase.get("targetHeightBefore")
               during = phase.get("targetHeightDuring")
-              check(f"gestureFreeze {name}: target height frozen",
+              check(f"gestureFreeze {name}: content change landed during the gesture",
                     isinstance(before, (int, float)) and isinstance(during, (int, float))
-                    and abs(during - before) <= 0.5, phase)
+                    and during - before >= 8, phase)
           check("gestureFreeze has two releases", len(releases) == 2, releases)
           for release in releases:
               name = release.get("gesture", "?")
               check(f"gestureFreeze {name}: release clears isUserScrolling",
                     release.get("isUserScrolling") is False, release)
-              check(f"gestureFreeze {name}: parked height applied",
-                    release.get("pendingApplied") is True, release)
+              check(f"gestureFreeze {name}: content change landed before release",
+                    release.get("expandedBeforeRelease") is True, release)
+              check(f"gestureFreeze {name}: release did not apply the height again",
+                    abs(release.get("heightAtRelease", -1)
+                        - release.get("finalHeight", -2)) <= 0.5, release)
               check(f"gestureFreeze {name}: released row grew",
-                    release.get("finalHeight", 0) > release.get("collapsedHeight", 0) + 1,
+                    release.get("finalHeight", 0) > release.get("heightBefore", 0) + 1,
                     release)
               check(f"gestureFreeze {name}: released height settled once",
                     release.get("stable") is True, release)

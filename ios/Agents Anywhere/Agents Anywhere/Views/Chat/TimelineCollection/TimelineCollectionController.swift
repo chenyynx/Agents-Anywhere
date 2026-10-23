@@ -1029,7 +1029,10 @@ final class TimelineCollectionController: UIViewController {
             // that materialization. The estimate tier keeps the row pending,
             // so the cell's self-measure still owns the final height.
             if content.usesCellReportedHeight(for: item) {
-                if let estimate = content.measuredCodeGroupHeight(for: item, width: width) {
+                // Under the finger the estimate must not replace the displayed
+                // height: the cell's own report is parked and lands on release.
+                if !isUserScrolling,
+                   let estimate = content.measuredCodeGroupHeight(for: item, width: width) {
                     let key = content.heightKey(for: item, width: width)
                     layout.heights.set(estimate, for: key, tier: .estimate)
                 }

@@ -769,6 +769,10 @@ final class TimelineCollectionController: UIViewController {
         collectionView.setContentOffset(
             CGPoint(x: collectionView.contentOffset.x, y: target), animated: false)
         isPinningBottom = false
+        // Settle the visible cells in this runloop: the probe's stale-cell
+        // sample after a window replacement was a frame the 0.05 s frame-sync
+        // pass had not applied yet.
+        collectionView.layoutIfNeeded()
         noteBottomArrival()
         windowReplacementReturn = false
     }
@@ -1029,12 +1033,16 @@ final class TimelineCollectionController: UIViewController {
             // that materialization. The estimate tier keeps the row pending,
             // so the cell's self-measure still owns the final height.
             if content.usesCellReportedHeight(for: item) {
-                // Under the finger the estimate must not replace the displayed
-                // height: the cell's own report is parked and lands on release.
-                if !isUserScrolling,
-                   let estimate = content.measuredCodeGroupHeight(for: item, width: width) {
-                    let key = content.heightKey(for: item, width: width)
-                    layout.heights.set(estimate, for: key, tier: .estimate)
+                // A structured pre-apply value is only a placeholder for a row
+                // the reader has never seen. For a displayed row it would
+                // replace the height under the finger (the device report's
+                // 1557.7 -> 56); that row keeps its displayed height until the
+                // cell reports. Writing it under a gesture is safe here
+                // because a never-displayed row is not on screen yet.
+                let key = content.heightKey(for: item, width: width)
+                if layout.heights.displayedHeight(for: item.itemID) == nil,
+                   let provisional = content.measuredCodeGroupHeight(for: item, width: width) {
+                    layout.heights.set(provisional, for: key, tier: .provisional)
                 }
                 continue
             }
@@ -1850,8 +1858,22 @@ final class TimelineCollectionController: UIViewController {
         var firstRowID: String?
         for (index, item) in items.enumerated() {
             let key = content.heightKey(for: item, width: columnWidth)
-            let height = layout.heights.resolvedHeight(for: key, itemID: item.itemID,
-                fallback: content.estimateKind(for: item))
+            // A prepended page can merge new rows into the anchor's group, so
+            // that group's height key is new while its displayed height still
+            // describes the old content. Project with the fresh structural
+            // measurement there; rows the cache already measured keep their
+            // measured height so the target matches what the layout will show.
+            let height: CGFloat
+            if layout.heights.hasMeasuredOrPrecalcHeight(for: key) {
+                height = layout.heights.resolvedHeight(for: key, itemID: item.itemID,
+                    fallback: content.estimateKind(for: item))
+            } else if let exact = content.measuredCodeGroupHeight(for: item,
+                                                                  width: columnWidth) {
+                height = exact
+            } else {
+                height = layout.heights.resolvedHeight(for: key, itemID: item.itemID,
+                    fallback: content.estimateKind(for: item))
+            }
             if index == 0 { firstRowID = content.rowIDs(in: item).first ?? item.itemID }
             if content.rowIDs(in: item).contains(anchorRowID) {
                 return TimelineHistoryLayout(firstRowID: firstRowID ?? item.itemID,
@@ -2076,6 +2098,17 @@ extension TimelineCollectionController: TimelineListLayoutCellReportedHeightHost
     /// cleanup) and to run the hosted height accounting.
     func layoutUsesCellReportedHeight(for item: TimelineListItem) -> Bool {
         content?.usesCellReportedHeight(for: item) ?? false
+    }
+}
+
+extension TimelineCollectionController: TimelineListLayoutStructuralHeightHost {
+    /// The structured height the row's content should occupy. The layout uses
+    /// it only to recognize a pre-parse placeholder report; nil means the row
+    /// has no settled structural measurement (streaming, or not a Code group)
+    /// and the report is accepted as-is.
+    func layoutStructuralExactHeight(for item: TimelineListItem,
+                                     width: CGFloat) -> CGFloat? {
+        content?.measuredCodeGroupHeight(for: item, width: width)
     }
 }
 

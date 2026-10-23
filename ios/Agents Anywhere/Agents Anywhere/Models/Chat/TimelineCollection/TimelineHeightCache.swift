@@ -5,6 +5,12 @@ nonisolated enum TimelineHeightTier: Equatable {
     case measured
     /// Plain-text precalc (TextKit 2); never Markdown/tables/code/attachments.
     case precalc
+    /// A structured pre-apply measurement for a row that has **never been
+    /// displayed**. The layout may adopt it, but it is not a measurement: it
+    /// neither suppresses the cell's one self-measure nor counts as a cache
+    /// hit. A row that has a displayed height must keep that height instead
+    /// of accepting a fresh provisional value on a re-key.
+    case provisional
     /// Cheap heuristic for a row that has not been measured yet.
     case estimate
 }
@@ -48,6 +54,7 @@ nonisolated final class TimelineHeightCache {
     private struct Entry: Equatable {
         var measured: CGFloat?
         var precalc: CGFloat?
+        var provisional: CGFloat?
         var estimate: CGFloat?
     }
 
@@ -75,15 +82,22 @@ nonisolated final class TimelineHeightCache {
         switch tier {
         case .measured: entry.measured = height
         case .precalc: entry.precalc = height
+        case .provisional: entry.provisional = height
         case .estimate: entry.estimate = height
         }
         entries[key] = entry
     }
 
-    /// measured > precalc > estimate for one key.
+    /// measured > precalc > provisional > estimate for one key.
     func tieredHeight(for key: TimelineHeightKey) -> CGFloat? {
         guard let entry = entries[key] else { return nil }
-        return entry.measured ?? entry.precalc ?? entry.estimate
+        return entry.measured ?? entry.precalc ?? entry.provisional ?? entry.estimate
+    }
+
+    /// The structured pre-apply value for a key, if one was written. It is
+    /// not a measurement; the probe uses it to name the tier that answered.
+    func provisionalHeight(for key: TimelineHeightKey) -> CGFloat? {
+        entries[key]?.provisional
     }
 
     /// Whether the key carries a real measurement (hosting or plain-text
@@ -95,13 +109,24 @@ nonisolated final class TimelineHeightCache {
         return entry.measured != nil || entry.precalc != nil
     }
 
-    /// The height the layout should use for this key. A missing entry (new
-    /// content revision) falls back to the item's last displayed height and
-    /// only then to the kind estimate.
+    /// The height the layout should use for this key.
+    ///
+    /// A real measurement wins. After that, a row that has ever been displayed
+    /// keeps the height the reader already sees: a provisional or cheap
+    /// estimate written for a new content revision must not replace it. Only a
+    /// row that has never been displayed falls through to the provisional /
+    /// estimate tiers. Keeping this order in one function keeps `prepare` and
+    /// the delta baseline (`displayedHeight(for:)`) on the same value.
     func resolvedHeight(for key: TimelineHeightKey, itemID: String,
                         fallback: TimelineHeightEstimateKind) -> CGFloat {
-        if let height = tieredHeight(for: key) { return height }
+        if let entry = entries[key] {
+            if let measured = entry.measured ?? entry.precalc { return measured }
+        }
         if let displayed = displayedHeights[itemID] { return displayed }
+        if let entry = entries[key] {
+            if let provisional = entry.provisional { return provisional }
+            if let estimate = entry.estimate { return estimate }
+        }
         return fallback.height
     }
 

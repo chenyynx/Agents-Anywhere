@@ -543,13 +543,10 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         let tier: String
         var resolved = displayed
         if let key {
-            if heights.tieredHeight(for: key) != nil {
-                // `.precalc` has no production writer today (only the unit
-                // tests set it), so measured-or-precalc is a real measurement
-                // in every build the probe ships in. The cache exposes no
-                // per-tier getter; see the stage-0 report.
-                tier = heights.hasMeasuredOrPrecalcHeight(for: key)
-                    ? "measured" : "estimate"
+            if heights.hasMeasuredOrPrecalcHeight(for: key) {
+                tier = "measured"
+            } else if heights.provisionalHeight(for: key) != nil {
+                tier = "provisional"
             } else if heights.displayedHeight(for: itemID) != nil {
                 tier = "displayed"
             } else {

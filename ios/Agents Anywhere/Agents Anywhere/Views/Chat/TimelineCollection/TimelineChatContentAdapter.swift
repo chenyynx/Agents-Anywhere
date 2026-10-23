@@ -149,11 +149,31 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     func heightKey(for item: TimelineListItem, width: CGFloat) -> TimelineHeightKey {
         lastWidth = width
         return TimelineHeightKey(itemID: item.itemID,
-            contentRevision: contentSignature(for: item).contentRevision,
+            contentRevision: heightContentRevision(for: item, width: width),
             width: width,
             dynamicType: typography.dynamicType,
             typographyRevision: typography.revision,
             layoutDirection: typography.layoutDirection)
+    }
+
+    /// The height key's content revision follows what the row **draws**, not
+    /// the wire bookkeeping. `revision`/`updatedSeq` still drive `reconfigure`
+    /// (the cell must re-read new text), but the server also bumps them while
+    /// reordering siblings and streaming without changing the drawn content;
+    /// hashing them into the height key retired measured heights for no visual
+    /// reason (probe 2026-10-23). The paced streaming snapshot is part of the
+    /// drawn content, so it is included here.
+    private func heightContentRevision(for item: TimelineListItem, width: CGFloat) -> Int {
+        guard case .group(let id) = item, groupsByID[id]?.explicitID != nil else {
+            return contentSignature(for: item).contentRevision
+        }
+        var hasher = TimelineStableHasher()
+        hasher.combine(codeHeightDigest(rows: codeRowsByGroupID[id] ?? [], width: width))
+        if let streaming = codeStreamingText(for: item) {
+            hasher.combine(streaming.rowID)
+            hasher.combine(streaming.text)
+        }
+        return hasher.revision
     }
 
     func estimateKind(for item: TimelineListItem) -> TimelineHeightEstimateKind {

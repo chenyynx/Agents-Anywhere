@@ -45,6 +45,15 @@ protocol TimelineListLayoutCellReportedHeightHost: AnyObject {
     func layoutUsesCellReportedHeight(for item: TimelineListItem) -> Bool
 }
 
+/// Optional host capability: the structured height the row's content should
+/// occupy at a width, independent of the cell. Used only to tell a pre-parse
+/// placeholder report from a legitimate short row; the hosting report stays
+/// the truth.
+@MainActor
+protocol TimelineListLayoutStructuralHeightHost: AnyObject {
+    func layoutStructuralExactHeight(for item: TimelineListItem, width: CGFloat) -> CGFloat?
+}
+
 /// The collection timeline's only layout.
 ///
 /// It owns the height truth (via `TimelineHeightCache`), the absolute prepend
@@ -84,6 +93,18 @@ final class TimelineListLayout: UICollectionViewLayout {
         let height: CGFloat
     }
     private var deferredHeights: [String: DeferredHeight] = [:]
+    /// A hosted report far below the row's structured height is the SwiftUI
+    /// pre-parse placeholder, not the row. The first such report for a key is
+    /// dropped (it must never reach the cache or the compensation math); the
+    /// next report for the same key is accepted even if it is still short, so
+    /// a legitimately short row can never be stuck. Reports under a gesture
+    /// are dropped without spending that retry — the real height arrives
+    /// while the finger is down and takes the normal parked path.
+    private struct PlaceholderGuard {
+        let revision: Int
+        var ignoredOne: Bool
+    }
+    private var placeholderGuards: [String: PlaceholderGuard] = [:]
     /// Per-frame reveal heights for streaming rows. Display-only: never
     /// written to `heights`, so the row returns to its measured height when
     /// the reveal finishes.
@@ -272,6 +293,7 @@ final class TimelineListLayout: UICollectionViewLayout {
         pendingMeasurements = pending
         heights.prune(keeping: Set(byID.keys))
         deferredHeights = deferredHeights.filter { byID[$0.key] != nil }
+        placeholderGuards = placeholderGuards.filter { byID[$0.key] != nil }
         streamingHeights = streamingHeights.filter { byID[$0.key] != nil }
         pendingHostedHeights = pendingHostedHeights.filter { byID[$0.key] != nil }
         lastAppliedHeight = lastAppliedHeight.filter { byID[$0.key] != nil }
@@ -856,6 +878,9 @@ final class TimelineListLayout: UICollectionViewLayout {
               let key = context.heightKey,
               attributes.heightKey == key,
               heights.currentKey(for: itemID) == key else { return }
+        // The cell's one self-measure can also land on the pre-parse
+        // placeholder; the hosted geometry report that follows is the retry.
+        if isPreParsePlaceholder(height, itemID: itemID, key: key) { return }
 #if DEBUG
         debugSelfMeasureCount += 1
 #endif
@@ -928,6 +953,42 @@ final class TimelineListLayout: UICollectionViewLayout {
 
     // MARK: - Hosted cell height reports (category C)
 
+    /// Whether this report is the SwiftUI pre-parse placeholder rather than
+    /// the row's real height. Runs **before** any cache write: a rejected
+    /// value must not set `displayedHeight` or the next delta baseline.
+    private func isPreParsePlaceholder(_ height: CGFloat, itemID: String,
+                                       key: TimelineHeightKey) -> Bool {
+        guard let host,
+              let structuralHost = host as? TimelineListLayoutStructuralHeightHost,
+              let item = attributesByItemID[itemID]?.item,
+              let exact = structuralHost.layoutStructuralExactHeight(for: item,
+                                                                     width: key.width),
+              exact > 1 else { return false }
+        let floor = exact - max(8, exact * 0.15)
+        guard height < floor else {
+            placeholderGuards[itemID] = nil
+            return false
+        }
+        let state = host.layoutInteractionState()
+        if state.userIsScrolling {
+            // The finger owns the screen; do not spend the retry here. The
+            // real report that follows is not below the floor and parks in
+            // the normal path.
+            return true
+        }
+        if var guardState = placeholderGuards[itemID],
+           guardState.revision == key.contentRevision {
+            if guardState.ignoredOne {
+                // Second report for this key: accept even when still short.
+                placeholderGuards[itemID] = nil
+                return false
+            }
+        }
+        placeholderGuards[itemID] = PlaceholderGuard(revision: key.contentRevision,
+                                                     ignoredOne: true)
+        return true
+    }
+
     /// A hosted cell's `heightDidChange`. The row's key and measured/precalc
     /// state decide whether the report is current; while the reader drags or
     /// coasts, a visible row (or a change that moves visible rows below) is
@@ -949,6 +1010,9 @@ final class TimelineListLayout: UICollectionViewLayout {
               isCurrent(attributes),
               let key = heights.currentKey(for: itemID),
               rowUsesCellReportedHeight(attributes) else { return }
+        // Validate before the dedupe and any cache write: a placeholder must
+        // never become `lastAppliedHeight` or the next delta baseline.
+        if isPreParsePlaceholder(height, itemID: itemID, key: key) { return }
 #if DEBUG
         debugHeightDidChangeCount += 1
 #endif
@@ -1014,11 +1078,14 @@ final class TimelineListLayout: UICollectionViewLayout {
     /// while the frame is rebuilt on the next `prepare`. Without this, two
     /// reports in one runloop (a streaming row grows twice) would both count
     /// their delta from the same old frame and double the compensation.
+    ///
+    /// This uses the same resolver as `prepare` so a report's delta is always
+    /// measured against the height the row actually shows. The frame height is
+    /// only the last resort (a row the cache no longer knows).
     private func displayedHeight(for itemID: String, key: TimelineHeightKey,
                                  attributes: TimelineListLayoutAttributes) -> CGFloat {
-        heights.tieredHeight(for: key)
-            ?? heights.displayedHeight(for: itemID)
-            ?? attributes.frame.height
+        heights.resolvedHeight(for: key, itemID: itemID,
+                               fallback: .fixed(attributes.frame.height))
     }
 
     /// Does a height change on this row move anything the reader can see?

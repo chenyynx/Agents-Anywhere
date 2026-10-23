@@ -913,12 +913,17 @@ final class TimelineListLayout: UICollectionViewLayout {
 #if DEBUG
         debugSelfMeasureCount += 1
 #endif
-        let delta = height - displayedHeight(for: itemID, key: key, attributes: attributes)
-        lastAppliedHeight[itemID] = AppliedHeight(key: key, height: height)
+        // Official first-fit (0x101a39244): the value is rounded up before it
+        // reaches the cache, so every writer sees the same number. The settle
+        // path already ceils its fit; the self-measure path must do the same
+        // or the two writers trade 52.0 ↔ 51.3 forever.
+        let measured = ceil(height)
+        let delta = measured - displayedHeight(for: itemID, key: key, attributes: attributes)
+        lastAppliedHeight[itemID] = AppliedHeight(key: key, height: measured)
         if abs(delta) <= 0.5 {
-            heights.set(height, for: key, tier: .measured)
+            heights.set(measured, for: key, tier: .measured)
             heights.resolvePending(itemID)
-            heights.noteDisplayedHeight(height, for: itemID)
+            heights.noteDisplayedHeight(measured, for: itemID)
             attributes.isMeasured = true
             return
         }
@@ -931,7 +936,7 @@ final class TimelineListLayout: UICollectionViewLayout {
                           before: collectionView?.contentOffset.y ?? 0)
 #endif
         applyHeightUpdates([
-            HeightUpdate(itemID: itemID, key: key, height: height,
+            HeightUpdate(itemID: itemID, key: key, height: measured,
                          attributes: attributes, offsetDelta: correction,
                          contentSizeDelta: delta, source: "selfMeasure")
         ], reusing: context)

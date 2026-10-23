@@ -56,18 +56,10 @@ struct SessionTimelineRow: View, Equatable {
     }
 
     private var markdown: some View {
-        ChatMarkdownView(text: markdownText, isStreaming: row.isRevealing, resolvesFileReferences: true)
+        ChatMarkdownView(text: row.text, isStreaming: row.isRevealing, resolvesFileReferences: true)
             .environment(\.chatLayoutTraceOwner, row.id)
             .id(row.layoutGeneration)
             .frame(minHeight: row.value.isStreamingText ? lineHeight : nil, alignment: .topLeading)
-    }
-
-    private var markdownText: String {
-#if AA_TIMELINE_PROBE
-        ProbeExperiment.shared.displayText(row.text)
-#else
-        row.text
-#endif
     }
 }
 

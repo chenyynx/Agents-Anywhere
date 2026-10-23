@@ -1,22 +1,6 @@
 #if AA_TIMELINE_PROBE
-import Observation
 import SwiftUI
 import UIKit
-
-/// Runtime switch for the message-length experiment. Observability is
-/// deliberate but narrow: only the flag is tracked, it changes on a user tap,
-/// and no hook writes to it per frame — unlike the first probe, which wrote
-/// observable state on every display-link tick and froze the session.
-@MainActor @Observable
-final class ProbeExperiment {
-    static let shared = ProbeExperiment()
-    var truncatesLongMessages = false
-
-    func displayText(_ text: String) -> String {
-        guard truncatesLongMessages, text.count > 2_000 else { return text }
-        return String(text.prefix(2_000)) + "\n\n…（探针截断，原文 \(text.count) 字）"
-    }
-}
 
 /// The probe's device half, compiled only into `-DAA_TIMELINE_PROBE` builds.
 ///
@@ -31,7 +15,6 @@ struct TimelineProbeOverlay: View {
     @State private var phase: Phase = .idle
     @State private var reportText = ""
     @State private var copied = false
-    @State private var truncating = false
     @State private var driver = ProbeDisplayLink()
     @State private var windowTask: Task<Void, Never>?
 
@@ -58,10 +41,6 @@ struct TimelineProbeOverlay: View {
                                 copyReport()
                                 copied = true
                             }
-                        }
-                        Button(truncating ? "长文截断：开" : "长文截断：关") {
-                            truncating.toggle()
-                            ProbeExperiment.shared.truncatesLongMessages = truncating
                         }
                         Button("重置") {
                             TimelineProbe.shared.reset()

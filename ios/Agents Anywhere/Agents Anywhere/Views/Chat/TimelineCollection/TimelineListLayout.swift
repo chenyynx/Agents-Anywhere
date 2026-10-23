@@ -67,15 +67,6 @@ final class TimelineListLayout: UICollectionViewLayout {
     private var attributesByItemID: [String: TimelineListLayoutAttributes] = [:]
     private var lastLayoutWidth: CGFloat = 0
     /// Previous snapshot's identity and keys, for longest-common-prefix reuse.
-    /// The official `rowsApplied` compares row IDs the same way and keeps the
-    /// prefix untouched; without it every streaming apply would allocate an
-    /// attribute object for all 1000 rows.
-    private var previousItems: [TimelineListItem] = []
-    private var previousKeys: [TimelineHeightKey] = []
-    /// Gap after each item, from the previous prepare. The provider's gap is
-    /// per item and can change without the item's identity or height key
-    /// moving; the prefix must not reuse positions across such a change.
-    private var previousSpacings: [CGFloat] = []
     private var isInsideUpdate = false
     private var insertionOwed: TimelineInsertionOwed?
     private var deferral = TimelinePullDeferOrdering()
@@ -203,38 +194,17 @@ final class TimelineListLayout: UICollectionViewLayout {
             spacings.append(host.layoutItemSpacing(after: items[index]))
         }
 
-        // Longest common prefix: same item, same height key, same displayed
-        // height, same gap after it. The prefix keeps its attribute objects
-        // and y positions.
-        var prefix = 0
-        if width == lastLayoutWidth {
-            let limit = min(count, attributesByIndex.count, previousItems.count, previousKeys.count)
-            while prefix < limit,
-                  previousItems[prefix] == items[prefix],
-                  previousKeys[prefix] == keys[prefix],
-                  abs(attributesByIndex[prefix].frame.height - resolved[prefix]) <= 0.5,
-                  prefix >= spacings.count
-                    || (prefix < previousSpacings.count
-                        && previousSpacings[prefix] == spacings[prefix]) {
-                prefix += 1
-            }
-        }
-
+        // Official (0x101a3ff40 / 0x1019e1468): prepare rebuilds the full
+        // `starts` prefix sum every time; there is no "reuse the common
+        // prefix" optimization. AA's LCP kept old attribute objects but their
+        // frame.minY could already be stale after a row above changed height,
+        // which the probe recorded as staleCell and cellOverlap. Rebuild
+        // every attribute from the resolved heights, exactly like the
+        // official runner.
         var next: [TimelineListLayoutAttributes] = []
         next.reserveCapacity(count)
-        if prefix > 0 { next.append(contentsOf: attributesByIndex.prefix(prefix)) }
-        // The reused prefix keeps its objects; the measurement flag can still
-        // have moved (a controller measurement wrote the same height), so copy
-        // the current truth onto it.
-        for index in 0..<prefix {
-            next[index].isMeasured = measuredFlags[index]
-            next[index].usesCellReportedHeight = cellReportedFlags[index]
-            next[index].policy = host.layoutHeightPolicy(for: items[index])
-        }
-        var cursor = prefix > 0
-            ? next[prefix - 1].frame.maxY + spacings[prefix - 1]
-            : TimelineListMetrics.topInset
-        for index in prefix..<count {
+        var cursor = TimelineListMetrics.topInset
+        for index in 0..<count {
             let attributes = TimelineListLayoutAttributes(forCellWith: IndexPath(item: index, section: 0))
             attributes.frame = CGRect(x: column.x, y: cursor, width: column.width,
                                       height: resolved[index])
@@ -257,9 +227,6 @@ final class TimelineListLayout: UICollectionViewLayout {
         let previousHeight = contentHeight
         attributesByIndex = next
         attributesByItemID = byID
-        previousItems = items
-        previousKeys = keys
-        previousSpacings = spacings
         contentHeight = next.last?.frame.maxY ?? 0
         lastLayoutWidth = width
         pendingMeasurements = pending

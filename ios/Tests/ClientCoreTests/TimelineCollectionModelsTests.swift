@@ -440,7 +440,7 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         #expect(decision.correction == 40)
     }
 
-    @Test func browsingParksCachedShrinksButLetsGrowthThrough() {
+    @Test func browsingParksEveryHeightChange() {
         func run(delta: CGFloat, cached: Bool = true) -> TimelinePreferredAttributesDecision {
             .pendingMeasurement(delta: delta, cellMaxY: -100, viewportTop: 600,
                 isStreaming: false, isAutoScrollPinning: false,
@@ -448,11 +448,12 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
                 keyboardTransition: false, suppressContentOffsetAdjustment: false,
                 hasCachedHeight: cached)
         }
+        // Official: while the finger is on the list every height change is
+        // parked (`rowsOwedToNextUpdate` / `isFingerOnTheList`), not just the
+        // shrinking ones.
         #expect(run(delta: -20).height == .deferUntilSettled)
-        #expect(run(delta: 20).height == .accept)
-        #expect(run(delta: 20).correction == nil)
-        // An uncached row may take its first measurement.
-        #expect(run(delta: -20, cached: false).height == .accept)
+        #expect(run(delta: 20).height == .deferUntilSettled)
+        #expect(run(delta: -20, cached: false).height == .deferUntilSettled)
     }
 
     @Test func keyboardTransitionAndSuppressionNeverMoveTheOffset() {
@@ -496,7 +497,7 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         #expect(run(minY: 500, maxY: 700).correction == nil)
     }
 
-    @Test func selfSizingGrowthIsAllowedWhileBrowsingAndShrinkParks() {
+    @Test func selfSizingParksEveryHeightChangeWhileBrowsing() {
         func run(delta: CGFloat, cached: Bool = true) -> TimelinePreferredAttributesDecision {
             .selfSizing(delta: delta, cellMinY: -100, cellMaxY: 100,
                 viewportTop: 600, viewportBottom: 1200,
@@ -504,9 +505,12 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
                 isTracking: false, isDecelerating: true,
                 keyboardTransition: false, hasCachedHeight: cached)
         }
+        // Official: while the finger is on the list every height change is
+        // parked (`rowsOwedToNextUpdate` / `isFingerOnTheList`), not just the
+        // shrinking ones.
         #expect(run(delta: -10).height == .deferUntilSettled)
-        #expect(run(delta: 10).height == .accept)
-        #expect(run(delta: -10, cached: false).height == .accept)
+        #expect(run(delta: 10).height == .deferUntilSettled)
+        #expect(run(delta: -10, cached: false).height == .deferUntilSettled)
     }
 
     @Test func autoScrollPinningDefinition() {

@@ -224,9 +224,9 @@ import Testing
         defer { repo.reset() }
 
         let opened = try await repo.open(sessionId: "session")
-        #expect(V2SessionCachePolicy.deferredWindowItems == 800)
-        #expect(opened.items.count == 800)
-        #expect(opened.items.first?.id == "item-201")
+        #expect(V2SessionCachePolicy.deferredWindowItems == 300)
+        #expect(opened.items.count == 300)
+        #expect(opened.items.first?.id == "item-701")
         #expect(opened.items.last?.id == "item-1000")
         #expect(http.calls.isEmpty)
         await store.close(removing: true)

@@ -75,6 +75,7 @@
 - 判据：`height < max(24pt, exact × 0.35)` 才拒绝；**一律丢弃，不再“第二次接受”**（否则 SwiftUI 的 20→56 两个中间值仍会漏进来）。合法矮行的 exact 也矮，floor 随之下移；结构测量若高估，行停在 provisional 上而不是被占位覆盖。
 - floor 只能用**内容推导**的结构值（settled exact，或 `.fixed`/`.text` 估计）；`.row`(200)、prompt/tail 常数会把合法矮行（折叠工具头 16pt）误判成占位符——gate 夹具的 16.33pt 首测就是这样被丢的。
 - 新行结构化预测量写 provisional（不写 measured）；已被 cell 物化过的行不再收到新预测量（`everDisplayed`）。
+- **gate 时序修正（2026-10-23，`codeHostedHeight` 场景）**：上一场景插入的 12 条夹具行仍停在 200pt 估算上，立刻 `scrollToItem` 会在它们被测量后把目标行顶出视口——先等测量收敛（`contentHeight` 与自测计数连续 4 次不变）再锚定。下滑一屏在这个短列表里会触底、给 `armedBottom` 上膛；程序化回位不触发 `scrollViewWillBeginDragging`，后续高度提交会被 `repinIfArmed` 拉回底部——用小步下滑并在回位后显式 `disarmBottom()`。`settleHostedHeight` 只采信可见行（回收 cell 仍会对 `cellForItem` 作答）。re-key 断言查 `provisional` 档：`tieredHeight` 会返回 reconfigure 瞬间 cell 对旧内容的自测（合法中间态，最终被真实上报覆盖）。
 - 验证：controller gate（含 at-rest 占位腿）；探针 fitMismatch=0、staleCell=0、手势中可见行变化=0。
 - 回滚：guard 可独立移除。
 

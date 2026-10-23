@@ -1011,7 +1011,6 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         let anchorBefore = controller.screenY(for: anchorItem) ?? .nan
         let fixtureScreenBefore = controller.screenY(for: item) ?? .nan
         controller.setTestGestureState(tracking: true, decelerating: false)
-        controller.disarmBottom()
         entries[index].text += "\nlet more = 41"
         entries[index].revision += 1
         contentGeneration += 1
@@ -1243,10 +1242,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         let counterBefore = controller.layout.debugHeightApplicationsDuringGesture
 
         let usesOfficialContract = usesCellReportedHeight(for: targetItem)
+        // The seam mirrors `scrollViewWillBeginDragging`: mode `.reading`,
+        // bottom target disarmed, phase `.interacting`.
         controller.setTestGestureState(tracking: tracking, decelerating: decelerating)
-        // A real drag disarms the bottom target in `scrollViewWillBeginDragging`;
-        // the simulator seam bypasses that callback, so mirror it here.
-        controller.disarmBottom()
         let userScrolling = controller.isUserScrolling
         setExpanded(target.id, true)
         contentGeneration += 1

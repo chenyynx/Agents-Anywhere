@@ -922,8 +922,9 @@ final class TimelineCollectionController: UIViewController {
                                         beforeHeights: [String: CGFloat]) {
         guard let content, attempt <= 9 else { return }
         // Same reason as the visible-cell settle: no layout work under the
-        // finger; the scroll-end settle takes over.
-        if collectionView.isTracking || collectionView.isDecelerating {
+        // finger; the scroll-end settle takes over. `isUserScrolling` also
+        // covers the gate's test gesture, which has no native tracking.
+        if isUserScrolling {
             return
         }
         notePreferred("pass")
@@ -1328,8 +1329,9 @@ final class TimelineCollectionController: UIViewController {
         guard phase.phase != .animating else { return false }
         // Measuring and forcing layout during a drag/deceleration is the
         // device's scroll stutter. Keep the passes alive; a fresh settle is
-        // scheduled when the scroll ends.
-        if collectionView.isTracking || collectionView.isDecelerating {
+        // scheduled when the scroll ends. `isUserScrolling` also covers the
+        // gate's test gesture, which has no native tracking.
+        if isUserScrolling {
             return true
         }
         guard let content, !navigationSuspended, columnWidth > 0,
@@ -2110,13 +2112,51 @@ extension TimelineCollectionController: TimelineListLayoutHost {
 
 #if DEBUG
     func setTestGestureState(tracking: Bool, decelerating: Bool) {
+        let previous = testGestureState
+        let wasScrolling = previous.map { $0.tracking || $0.decelerating } ?? false
         testGestureState = (tracking: tracking, decelerating: decelerating)
-        // The settle passes stop under a gesture; a released gesture must look
-        // for the cells that changed while it ran, exactly like a real scroll
-        // end does.
-        if !tracking, !decelerating {
-            scheduleVisibleCellSettle()
+        if tracking || decelerating {
+            guard !wasScrolling else { return }
+            // The simulator cannot synthesize touches, so the seam must move
+            // the same state `scrollViewWillBeginDragging` moves. Without
+            // `mode = .reading` a content change under the test finger let
+            // `noteBottomArrival` re-arm the bottom target on every frame;
+            // the repin then dragged the offset down with the growing row
+            // (gate: target moved 388 pt off the screen).
+            stopStreamingFollow()
+            windowReplacementReturn = false
+            bottomAnimationWatchdog?.cancel()
+            userScrollSettleTask?.cancel()
+            endScrollToTopTracking()
+            _ = phase.apply(.willBeginDragging)
+            layout.noteDragWillBegin()
+            armedBottom.disarm()
+            mode = .reading
+            readerRestsAtBottom = false
+            readerSettledAtBottom = false
+            return
         }
+        guard wasScrolling else {
+            // A release without an active test gesture still starts the
+            // settle passes; the cell that changed while it ran needs one.
+            scheduleVisibleCellSettle()
+            return
+        }
+        // Mirror the matching end callback so the phase machine and the
+        // settle passes see a finished drag, exactly like a real scroll end.
+        let decelerated = previous?.decelerating == true
+        _ = phase.apply(.didEndDragging(willDecelerate: decelerated))
+        layout.noteDragDidEnd(willDecelerate: decelerated)
+        if decelerated {
+            _ = phase.apply(.didEndDecelerating)
+            layout.noteDecelerationDidEnd()
+        }
+        readerSettledAtBottom = viewport.measuredAtBottom
+        scheduleVisibleCellSettle()
+        scheduleVisibleCellFrameSync()
+        schedulePendingMeasurements()
+        scheduleUserScrollSettle()
+        publishViewport()
     }
 #endif
 

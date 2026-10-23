@@ -8,6 +8,12 @@ struct V2SessionDetailService {
     /// The visible timeline is opt-in to main-agent rows only: a latest window
     /// made entirely of SubAgent child rows would render blank (L2.1). The
     /// parameter stays explicit so a caller that needs the raw window can say so.
+    ///
+    /// `deferActivity` is a dev-line (Chat) opt-in. The Code profile branch
+    /// (`feat/code-profile-beta`) does not send it today and must not inherit
+    /// summary rows silently when it merges this code: either wire the
+    /// single-item read into its tool views or pass `false` there. See the
+    /// merge note on the deferred-activity change.
     func load(
         sessionId: V2SessionID,
         itemLimit: Int = 100,

@@ -752,7 +752,7 @@ final class TimelineListLayout: UICollectionViewLayout {
 #if DEBUG
         traceOffset("streaming", itemID: itemID, delta: delta,
                     correction: adjustOffset ? decision.correction : nil,
-                    before: collectionView?.contentOffset.y,
+                    before: collectionView.contentOffset.y,
                     note: adjustOffset ? "\(decision.height)" : "noAdjust")
 #endif
         invalidateHeight(itemID: itemID, attributes: attributes,

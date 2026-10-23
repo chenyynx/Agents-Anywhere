@@ -56,6 +56,14 @@
 5. **E（gate）**：重写 `codeHostedHeight` 为对齐契约：首次=fit；内容变化只变一次；手势中锚点不动、松手不二次落地；`gestureFreeze` 改为屏幕坐标断言。— ✅ 已实现，待 CI
 6. **F（tests）**：删除 `hostedHeightChange` 及其测试；`TimelineHeightCache` 用例保留。— ✅ 已实现
 
+## 6.1 2026-10-24 收尾：手势 388pt 偏移的根因与门禁语义
+
+- **根因不是高度存储**。offset trace 里 13 次高度应用全部没有 `correction`，`applyHeightUpdates` 只出现过一次 −0.67 的首次自测；而 `scrollViewDidScroll` 的调用栈每一帧都是
+  `repinIfArmed → layoutDidChangeContentHeight → prepare`。
+- **触发条件**：`gestureFreeze` 的列表太短，`scrollToItem(.top)` 实际停在内容底部；测试 seam 只设了 `testGestureState`，没有搬 `scrollViewWillBeginDragging` 的 `mode = .reading`，于是 `noteBottomArrival` 在每次内容变高时重新上膛 bottom target，`repinIfArmed` 每帧把 offset 钉到新的底部，行被拖出屏幕 388pt。真机拖拽会设 `.reading`，不会走这条。
+- **修复**（`d79f925f`）：DEBUG seam 完整镜像 `scrollViewWillBeginDragging` / `scrollViewDidEndDragging`（phase、mode、disarm、settle 调度）；两处 settle 守卫改读 `isUserScrolling`，与真机一致。Release 行为不变。
+- **门禁语义修正**（`5fc444d9`）：产品在手指下不做测量，内容变更在松手时落地。断言改为可见契约——手势中零位移、松手后变更行到达 `cellFit` 一次、变更行自身顶部不动、其下方行被推开；夹具补足一屏内容，避免底部钳制造成的 0.67pt 假位移。
+
 ## 7. 验证
 
 - CI：`test` + `timeline-autorun` + `code-profile` 三轮绿。

@@ -842,7 +842,19 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         } ?? false
         let cell = indexPath.flatMap { controller.collectionView.cellForItem(at: $0) }
         let visibleItems = controller.collectionView.indexPathsForVisibleItems.map(\.item)
-        return ["hasIndexPath": indexPath != nil,
+        // The layout's own row geometry around the fixture: the visible set
+        // and the height map can disagree, and only this says which one the
+        // collection view is actually laying out.
+        let rows: [[String: Any]] = controller.layout.orderedAttributes.enumerated()
+            .filter { (8...22).contains($0.offset) }
+            .map { index, attributes in
+                ["index": index,
+                 "id": attributes.item?.itemID ?? "?",
+                 "minY": Double(attributes.frame.minY),
+                 "height": Double(attributes.frame.height)]
+            }
+        return ["rows": rows,
+                "hasIndexPath": indexPath != nil,
                 "indexPathItem": indexPath?.item ?? -1,
                 "layoutItemCount": controller.layoutItemCount,
                 "dataSourceCount": controller.collectionView.numberOfItems(inSection: 0),
@@ -943,7 +955,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         controller.collectionView.scrollToItem(at: indexPath, at: .top, animated: false)
         await wait(250)
         controller.collectionView.layoutIfNeeded()
-        if !(hostedState(controller, item: item)["visible"] as? Bool ?? false) {
+        let stateAfterReanchor = hostedState(controller, item: item)
+        if !(stateAfterReanchor["visible"] as? Bool ?? false) {
             failures.append("code hosted: the fixture left the viewport after re-anchoring")
         }
 
@@ -1059,6 +1072,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             .map(Double.init) ?? -1
         hostedReport["phases"] = phases
         hostedReport["stateAfterFirstSettle"] = stateAfterFirstSettle
+        hostedReport["stateAfterReanchor"] = stateAfterReanchor
         hostedReport["stateAfterRekey"] = stateAfterRekey
         report["codeHostedHeight"] = hostedReport
 
@@ -1081,6 +1095,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                                        placeholder: CGFloat,
                                        realHeight: CGFloat) async -> [String: Any] {
         controller.collectionView.layoutIfNeeded()
+        let stateAtStart = hostedState(controller, item: item)
         let before = visibleGestureSamples(controller)
         let targetBefore = controller.layout.attributes(for: item.itemID)?.frame.height ?? 0
         let appsBefore = controller.layout.debugHeightApplicationsDuringGesture
@@ -1165,6 +1180,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                 "tracking": tracking,
                 "decelerating": decelerating,
                 "fixtureVisible": before.keys.contains(item.itemID),
+                "stateAtStart": stateAtStart,
                 "state": hostedState(controller, item: item),
                 "placeholder": Double(placeholder),
                 "realHeight": Double(realHeight),

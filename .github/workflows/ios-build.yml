@@ -149,6 +149,14 @@ jobs:
             -derivedDataPath build/DDSim \
             2>&1 | tee "$RUNNER_TEMP/sim-build.log" | tail -40
 
+      - name: Upload simulator build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sim-build-log
+          path: ${{ runner.temp }}/sim-build.log
+          if-no-files-found: ignore
+
       - name: Install and run the gate
         run: |
           set -euo pipefail
@@ -712,6 +720,14 @@ jobs:
             ENABLE_DEBUG_DYLIB=NO \
             -derivedDataPath build/DDSim \
             2>&1 | tee "$RUNNER_TEMP/code-profile-build.log" | tail -40
+
+      - name: Upload code-profile build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-profile-build-log
+          path: ${{ runner.temp }}/code-profile-build.log
+          if-no-files-found: ignore
 
       - name: Install and run the Code profile gate
         run: |

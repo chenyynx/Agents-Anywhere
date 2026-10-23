@@ -212,7 +212,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// reader's finger.
     ///
     /// The arithmetic is `CodeRowHeightPlan`: the same paddings, scaled line
-    /// box and row spacing the row view uses. The old plain-text model took
+    /// box and row spacing the row view uses. `CodeMessageHeightMeasurer`
+    /// answers with an already-measured component when one is cached and with
+    /// the plain-text placeholder otherwise; it never hosts a view here, so
+    /// the layout's prepare pass stays cheap. The old plain-text model took
     /// the unscaled 24 pt line box and wrapped long Bash commands, so every
     /// tool-only row arrived 2 pt too tall and long commands reserved hundreds
     /// of points the first fit had to give back (device report 2026-10-23).
@@ -240,17 +243,65 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     }
     private var codeEstimateCache: [Int: CGFloat] = [:]
 
+    /// Parsed Markdown for the Code row's first frame, keyed by the text digest
+    /// plus the typography revision. The same blocks feed the row view
+    /// (`CodeMessageRowView.preparedBlocks`) and the height measurer, so the
+    /// first frame is neither blank nor a different parse than the one that
+    /// was measured. Parsing is synchronous by design: the cell must have its
+    /// blocks before it configures, and the measurer's controller never enters
+    /// a window (so an async `.task` would not run there).
+    private var preparedMarkdownCache: [String: [MarkdownBlockSnapshot]] = [:]
+
+    private func preparedMarkdownBlocks(for text: String) -> [MarkdownBlockSnapshot]? {
+        let key = "\(ChatMarkdownPrepared.key(for: text)):\(typography.revision)"
+        if let cached = preparedMarkdownCache[key] { return cached }
+        guard let blocks = CodeMessageHeightMeasurer.preparedBlocks(for: text) else {
+            return nil
+        }
+        if preparedMarkdownCache.count > 128 {
+            preparedMarkdownCache.removeAll(keepingCapacity: true)
+        }
+        preparedMarkdownCache[key] = blocks
+        return blocks
+    }
+
+    /// The blocks for every assistant text block of one Code message, keyed by
+    /// the text the row will draw (a live streaming snapshot wins over the
+    /// persisted block text, exactly as `CodeMessageRowView.displayedText`
+    /// resolves it).
+    private func preparedTextBlocks(for rows: [CodeMessageRow],
+                                    streaming: CodeStreamingText?)
+        -> [String: [MarkdownBlockSnapshot]]? {
+        var prepared: [String: [MarkdownBlockSnapshot]] = [:]
+        for row in rows where row.role != .user {
+            for block in row.blocks {
+                guard case let .text(id, fallback) = block else { continue }
+                let text = streaming?.rowID == id ? streaming?.text ?? fallback : fallback
+                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    continue
+                }
+                let key = ChatMarkdownPrepared.key(for: text)
+                if prepared[key] != nil { continue }
+                if let blocks = preparedMarkdownBlocks(for: text) {
+                    prepared[key] = blocks
+                }
+            }
+        }
+        return prepared.isEmpty ? nil : prepared
+    }
+
     /// The exact height of a settled Code group, measured before the snapshot
     /// applies. The controller needs this because the Code page hosts every
     /// message itself: the TextKit document path below is never offered a Code
     /// row, so without this hook the layout starts every group on an estimate
     /// and corrects it when the cell first becomes visible.
     ///
-    /// Text blocks are measured with the parser + TextKit engine the parity
-    /// gate compares against `ChatMarkdownView` (608.3 vs 610 pt on the shared
-    /// fixture). A live group is skipped: parsing the growing text on every
-    /// 0.1 s flush would be quadratic, and its estimate is only visible while
-    /// the reader is watching the streaming row.
+    /// Text blocks and the user bubble are measured by hosting the real
+    /// `ChatMarkdownView` / `CodeUserBubble` (`CodeMessageHeightMeasurer`), so
+    /// the stored height is the height the cell draws. A live group is
+    /// skipped: hosting the growing text on every 0.1 s flush would be
+    /// quadratic, and its estimate is only visible while the reader is
+    /// watching the streaming row.
     /// Code message rows follow the official hosted-cell contract: the cell
     /// self-measures once and reports later content changes. The Chat rows keep
     /// the legacy controller polling path for now.
@@ -715,12 +766,15 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // row; a single-row group is either an interaction target or a row
             // with no message key and keeps the existing renderer.
             if group.explicitID != nil {
+                let streamingText = codeStreamingText(for: item)
                 return AnyView(CodeMessageRowView(
                     group: group,
                     profile: codeProfile,
                     cwd: model.session.metadata?.cwd,
-                    streaming: codeStreamingText(for: item),
+                    streaming: streamingText,
                     showsWorkingStatus: id == workingStatusGroupID,
+                    preparedBlocks: preparedTextBlocks(
+                        for: codeRowsByGroupID[id] ?? [], streaming: streamingText),
                     onToolDetail: { [weak self] request in
                         self?.onCodeToolDetail?(request)
                     }))

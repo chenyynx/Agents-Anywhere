@@ -21,12 +21,33 @@ struct ChatMarkdownView: View {
     let text: String
     var isStreaming = false
     var resolvesFileReferences = false
-    @State private var blocks: [MarkdownBlockSnapshot] = []
+    /// Pre-parsed snapshots supplied by a caller that already ran the exact
+    /// parse pipeline (`AssistantMarkdownDocumentParser.parseBlocks`). The
+    /// Code row's height measurer uses this to lay the real view out
+    /// synchronously; the timeline hands its cells the same snapshots so the
+    /// first frame is not blank while the async parse runs.
+    let initialBlocks: [MarkdownBlockSnapshot]?
+    /// True when `initialBlocks` owns this view's content: the asynchronous
+    /// parse in `.task` is skipped. A caller that seeds blocks must keep them
+    /// in step with `text` (the Code cell re-identifies the view by text).
+    var preloaded: Bool { initialBlocks != nil }
+    @State private var blocks: [MarkdownBlockSnapshot]
     /// When each block's newest glyphs finish revealing. A block's drawing
     /// clock runs only until then, so a stalled or finished block stops redrawing.
     @State private var revealDeadlines: [Int: Date] = [:]
     /// Completed blocks parsed so far; each batch re-parses only the open tail.
     @State private var parseState = MarkdownParseState()
+
+    init(text: String,
+         isStreaming: Bool = false,
+         resolvesFileReferences: Bool = false,
+         initialBlocks: [MarkdownBlockSnapshot]? = nil) {
+        self.text = text
+        self.isStreaming = isStreaming
+        self.resolvesFileReferences = resolvesFileReferences
+        self.initialBlocks = initialBlocks
+        _blocks = State(initialValue: initialBlocks ?? [])
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -38,6 +59,11 @@ struct ChatMarkdownView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .task(id: ParseRequest(text: text, resolvesFileReferences: resolvesFileReferences)) {
+            // A preloaded view already carries this text's blocks. The
+            // measurer depends on that: its hosting controller never enters a
+            // window, so an async parse would never run and the row would
+            // measure as empty.
+            guard !preloaded else { return }
             let request = ParseRequest(text: text, resolvesFileReferences: resolvesFileReferences)
             // Parsing a long response must not block scroll and drawer gestures.
             // Cancelled requests cannot publish an older snapshot over a new reply.
@@ -355,5 +381,19 @@ private struct ChatTableStyle: StructuredText.TableStyle {
         ChatMarkdownTable(rows: configuration.rows, columns: configuration.columns)
             .textual.blockSpacing(.fontScaled(top: ChatMetrics.codeBlockMarginRatio,
                                               bottom: ChatMetrics.codeBlockMarginRatio))
+    }
+}
+
+/// Identity of one text's pre-parsed Markdown snapshots.
+///
+/// The adapter prepares the blocks and `CodeMessageRowView` looks them up by
+/// the text it is about to draw. Deriving the key from the displayed text
+/// (not the row id) keeps a streaming snapshot from reusing the persisted
+/// text's blocks, and lets one cache entry serve every row with the same body.
+nonisolated enum ChatMarkdownPrepared {
+    static func key(for text: String) -> String {
+        var hasher = TimelineStableHasher()
+        hasher.combine(text)
+        return String(hasher.revision)
     }
 }

@@ -12,7 +12,7 @@ import Testing
                 #expect(call.query.contains { $0.name == "limit" && $0.value == "100" })
                 var response = try fixtureObject("snapshot")
                 var timeline = response["timeline"] as! [String: Any]
-                timeline["items"] = try (701...800).map {
+                timeline["items"] = try (901...1000).map {
                     try itemObject(id: "item-\($0)", order: $0)
                 }
                 timeline["hasMore"] = true
@@ -32,19 +32,19 @@ import Testing
         let repo = repository(transport: http)
         defer { repo.reset() }
         let initial = try await repo.open(sessionId: "session")
-        #expect(initial.items.count == 100 && initial.items.first?.orderSeq == 701)
+        #expect(initial.items.count == 100 && initial.items.first?.orderSeq == 901)
         _ = try await repo.loadOlder(sessionId: "session", limit: 500)
         let all = try await repo.loadOlder(sessionId: "session", limit: 500)
-        #expect(all.items.count == 800 && !all.hasOlderItems)
+        #expect(all.items.count == 1000 && !all.hasOlderItems)
         let requests = http.calls.count
         let reopened = try await repo.open(sessionId: "session")
-        // Reopening keeps exactly the deferred window (600 rows) and spends no
+        // Reopening keeps exactly the deferred window (800 rows) and spends no
         // network; the accumulated history beyond it becomes the older tail.
-        #expect(reopened.items.map(\.orderSeq) == Array(201...800))
+        #expect(reopened.items.map(\.orderSeq) == Array(201...1000))
         #expect(reopened.hasOlderItems && !reopened.hasNewerItems && reopened.cursor == initial.cursor)
         #expect(http.calls.count == requests)
         let older = try await repo.loadOlder(sessionId: "session", limit: 500)
-        #expect(older.items.map(\.orderSeq) == Array(1...800))
+        #expect(older.items.map(\.orderSeq) == Array(1...1000))
         #expect(http.calls.last?.query.contains { $0.name == "beforeOrderSeq" && $0.value == "201" } == true)
     }
 

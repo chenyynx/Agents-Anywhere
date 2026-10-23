@@ -813,15 +813,23 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             controller.collectionView.indexPathsForVisibleItems.contains($0)
         } ?? false
         let cell = indexPath.flatMap { controller.collectionView.cellForItem(at: $0) }
+        let visibleItems = controller.collectionView.indexPathsForVisibleItems.map(\.item)
         return ["hasIndexPath": indexPath != nil,
                 "indexPathItem": indexPath?.item ?? -1,
                 "layoutItemCount": controller.layoutItemCount,
                 "dataSourceCount": controller.collectionView.numberOfItems(inSection: 0),
                 "attributeIndex": attributes?.indexPath.item ?? -1,
+                "attributeMinY": Double(attributes?.frame.minY ?? -1),
+                "attributeHeight": Double(attributes?.frame.height ?? -1),
                 "visible": visible,
+                "visibleFirst": visibleItems.min() ?? -1,
+                "visibleLast": visibleItems.max() ?? -1,
+                "visibleItems": visibleItems.sorted(),
                 "hasCell": cell != nil,
                 "cellHeight": Double(cell?.frame.height ?? -1),
                 "offset": Double(controller.collectionView.contentOffset.y),
+                "boundsHeight": Double(controller.collectionView.bounds.height),
+                "contentSizeHeight": Double(controller.collectionView.contentSize.height),
                 "contentHeight": Double(controller.layout.contentHeight)]
     }
 

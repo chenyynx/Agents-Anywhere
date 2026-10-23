@@ -93,18 +93,6 @@ final class TimelineListLayout: UICollectionViewLayout {
         let height: CGFloat
     }
     private var deferredHeights: [String: DeferredHeight] = [:]
-    /// A hosted report far below the row's structured height is the SwiftUI
-    /// pre-parse placeholder, not the row. The first such report for a key is
-    /// dropped (it must never reach the cache or the compensation math); the
-    /// next report for the same key is accepted even if it is still short, so
-    /// a legitimately short row can never be stuck. Reports under a gesture
-    /// are dropped without spending that retry — the real height arrives
-    /// while the finger is down and takes the normal parked path.
-    private struct PlaceholderGuard {
-        let revision: Int
-        var ignoredOne: Bool
-    }
-    private var placeholderGuards: [String: PlaceholderGuard] = [:]
     /// Per-frame reveal heights for streaming rows. Display-only: never
     /// written to `heights`, so the row returns to its measured height when
     /// the reveal finishes.
@@ -293,7 +281,6 @@ final class TimelineListLayout: UICollectionViewLayout {
         pendingMeasurements = pending
         heights.prune(keeping: Set(byID.keys))
         deferredHeights = deferredHeights.filter { byID[$0.key] != nil }
-        placeholderGuards = placeholderGuards.filter { byID[$0.key] != nil }
         streamingHeights = streamingHeights.filter { byID[$0.key] != nil }
         pendingHostedHeights = pendingHostedHeights.filter { byID[$0.key] != nil }
         lastAppliedHeight = lastAppliedHeight.filter { byID[$0.key] != nil }
@@ -831,6 +818,14 @@ final class TimelineListLayout: UICollectionViewLayout {
                contentHeight: contentHeight, viewportTop: viewportTop,
                viewportBottom: viewportBottom),
            let key = original.heightKey {
+            // A pre-parse self-measure parked under the finger would land at
+            // release as a "measured" placeholder. Drop it instead of parking:
+            // the cell's later geometry report carries the real height.
+            if isPreParsePlaceholder(preferredAttributes.frame.height,
+                                     itemID: item.itemID, key: key) {
+                notePreferred("uikitPreferredPlaceholderDropped")
+                return false
+            }
             pendingHostedHeights[item.itemID] = PendingHostedHeight(
                 key: key, height: preferredAttributes.frame.height)
             notePreferred("uikitPreferredParked")
@@ -966,32 +961,13 @@ final class TimelineListLayout: UICollectionViewLayout {
               exact > 1 else { return false }
         // A placeholder is a one-line/empty stack (2–56 pt) on a row whose
         // content is hundreds of points tall. Use a proportional floor with a
-        // 24 pt minimum: a structural estimate can itself over-reserve (the
-        // 2.3× crude case), so a 15 % band would reject a legitimate render.
-        // A genuinely short row keeps its exact value, which is also short.
-        let floor = max(24, exact * 0.35)
-        guard height < floor else {
-            placeholderGuards[itemID] = nil
-            return false
-        }
-        let state = host.layoutInteractionState()
-        if state.userIsScrolling {
-            // The finger owns the screen; do not spend the retry here. The
-            // real report that follows is not below the floor and parks in
-            // the normal path.
-            return true
-        }
-        if var guardState = placeholderGuards[itemID],
-           guardState.revision == key.contentRevision {
-            if guardState.ignoredOne {
-                // Second report for this key: accept even when still short.
-                placeholderGuards[itemID] = nil
-                return false
-            }
-        }
-        placeholderGuards[itemID] = PlaceholderGuard(revision: key.contentRevision,
-                                                     ignoredOne: true)
-        return true
+        // 24 pt minimum: a live group's estimate can over-reserve, and 35 %
+        // still rejects every observed placeholder (20–56 pt) without
+        // rejecting a real render. A genuinely short row keeps its exact
+        // value, which is short too, so the floor scales with it. A below-
+        // floor report is always dropped: accepting the second one would let
+        // a SwiftUI intermediate value (for example 20 then 56) through.
+        return height < max(24, exact * 0.35)
     }
 
     /// A hosted cell's `heightDidChange`. The row's key and measured/precalc

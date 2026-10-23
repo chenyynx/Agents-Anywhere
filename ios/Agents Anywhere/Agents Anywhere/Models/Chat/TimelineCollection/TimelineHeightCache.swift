@@ -61,6 +61,11 @@ nonisolated final class TimelineHeightCache {
     private var entries: [TimelineHeightKey: Entry] = [:]
     private var currentKeys: [String: TimelineHeightKey] = [:]
     private var displayedHeights: [String: CGFloat] = [:]
+    /// Items a cell has actually materialized for. `prepare` records a
+    /// displayed height for every item, including rows that have never been
+    /// on screen; only this set may let that provisional value outrank a fresh
+    /// structured measurement.
+    private var everDisplayed: Set<String> = []
     private var pendingItemIDs: Set<String> = []
 
     /// Installing a new revision drops the previous key's tiers: the item is
@@ -122,16 +127,31 @@ nonisolated final class TimelineHeightCache {
         if let entry = entries[key] {
             if let measured = entry.measured ?? entry.precalc { return measured }
         }
-        if let displayed = displayedHeights[itemID] { return displayed }
+        // Only a row a cell has actually shown may keep its displayed height
+        // over a fresh structured value. `prepare` also records a fallback for
+        // rows that were never on screen (a concurrent apply, a width change);
+        // those still take the provisional/estimate below.
+        if everDisplayed.contains(itemID), let displayed = displayedHeights[itemID] {
+            return displayed
+        }
         if let entry = entries[key] {
             if let provisional = entry.provisional { return provisional }
             if let estimate = entry.estimate { return estimate }
         }
+        if let displayed = displayedHeights[itemID] { return displayed }
         return fallback.height
     }
 
     func noteDisplayedHeight(_ height: CGFloat, for itemID: String) {
         displayedHeights[itemID] = height
+    }
+
+    func markEverDisplayed(_ itemID: String) {
+        everDisplayed.insert(itemID)
+    }
+
+    func hasEverBeenDisplayed(_ itemID: String) -> Bool {
+        everDisplayed.contains(itemID)
     }
 
     func displayedHeight(for itemID: String) -> CGFloat? { displayedHeights[itemID] }
@@ -144,6 +164,7 @@ nonisolated final class TimelineHeightCache {
     func remove(itemID: String) {
         currentKeys[itemID] = nil
         displayedHeights[itemID] = nil
+        everDisplayed.remove(itemID)
         pendingItemIDs.remove(itemID)
         entries = entries.filter { $0.key.itemID != itemID }
     }

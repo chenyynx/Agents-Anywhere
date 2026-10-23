@@ -1161,7 +1161,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         self.codeProfile = profile
         self.codeRowsByGroupID = codeRowsByGroupID
         codeHeightCache = codeHeightCache.filter { codeRowsByGroupID[$0.key] != nil }
-        heightRevisionCache = heightRevisionCache.filter { groupsByID[$0.key] != nil }
+        // The cache is keyed by `TimelineListItem.itemID` ("g:<group id>");
+        // `groupsByID` is keyed by the bare group id. Strip the prefix or the
+        // filter clears the cache on every refresh (the O(text) rehash this
+        // cache exists to avoid).
+        heightRevisionCache = heightRevisionCache.filter { key, _ in
+            guard key.hasPrefix("g:") else { return false }
+            return groupsByID[String(key.dropFirst(2))] != nil
+        }
         self.tailNoticesByID = tailNoticesByID
         self.pendingByID = pendingByID
         self.rowToItem = rowToItem

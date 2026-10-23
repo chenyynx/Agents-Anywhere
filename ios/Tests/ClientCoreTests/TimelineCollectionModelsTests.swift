@@ -764,6 +764,7 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         cache.setCurrentKey(first)
         cache.set(300, for: first, tier: .measured)
         cache.noteDisplayedHeight(120, for: "g:a")
+        cache.markEverDisplayed("g:a")
         // A re-keyed row keeps the height the reader sees; the structured
         // pre-apply value is only allowed for a row never displayed before.
         let second = heightKey(revision: 2)
@@ -772,6 +773,20 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         #expect(cache.resolvedHeight(for: second, itemID: "g:a", fallback: .row) == 120)
         // A provisional is not a measurement: the cell must still self-measure.
         #expect(!cache.hasMeasuredOrPrecalcHeight(for: second))
+    }
+
+    @Test func aPrepareFallbackOnANeverDisplayedRowDoesNotBeatAProvisional() {
+        let cache = TimelineHeightCache()
+        let first = heightKey(revision: 1)
+        cache.setCurrentKey(first)
+        // `prepare` records a displayed height for every item, including a row
+        // no cell has materialized yet.
+        cache.noteDisplayedHeight(200, for: "g:new")
+        #expect(!cache.hasEverBeenDisplayed("g:new"))
+        let second = heightKey(revision: 2)
+        cache.setCurrentKey(second)
+        cache.set(126, for: second, tier: .provisional)
+        #expect(cache.resolvedHeight(for: second, itemID: "g:new", fallback: .row) == 126)
     }
 
     @Test func aNeverDisplayedRowUsesItsProvisional() {

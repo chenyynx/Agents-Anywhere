@@ -957,25 +957,28 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         controller.layout.applyHostedHeight(itemID: item.itemID, height: rekeyHeight)
         await wait(200)
 
-        report["codeHostedHeight"] = [
-            "row": entry.id,
-            "structuralEstimate": 56.0,
-            "firstHeight": Double(firstHeight),
-            "rekeyContentRevision": revisionAfter,
-            "rekeyEstimateWritten": rekeyEstimate.map(Double.init) ?? -1,
-            "rekeyHeight": Double(rekeyHeight),
-            "selfMeasuresBeforeRekey": selfMeasuresBefore,
-            "selfMeasuresAfterRekey": selfMeasuresAfterRekey,
-            "selfMeasuresStable": selfMeasuresStable,
-            "rekeyKeyMeasured": controller.layout.heights
-                .hasMeasuredOrPrecalcHeight(for: freshKey),
-            "placeholderContentHeightBefore": Double(before.contentHeight),
-            "placeholderContentHeightAfter": Double(after.contentHeight),
-            "placeholderOffsetBefore": Double(before.offset),
-            "placeholderOffsetAfter": Double(after.offset),
-            "keyHeightAfterPlaceholder": keyHeightAfterPlaceholder.map(Double.init) ?? -1,
-            "phases": phases,
-        ]
+        // Build the dictionary incrementally: one heterogeneous literal with
+        // this many mixed types exceeds the type-checker's budget.
+        var hostedReport: [String: Any] = [:]
+        hostedReport["row"] = entry.id
+        hostedReport["structuralEstimate"] = 56.0
+        hostedReport["firstHeight"] = Double(firstHeight)
+        hostedReport["rekeyContentRevision"] = revisionAfter
+        hostedReport["rekeyEstimateWritten"] = rekeyEstimate.map(Double.init) ?? -1
+        hostedReport["rekeyHeight"] = Double(rekeyHeight)
+        hostedReport["selfMeasuresBeforeRekey"] = selfMeasuresBefore
+        hostedReport["selfMeasuresAfterRekey"] = selfMeasuresAfterRekey
+        hostedReport["selfMeasuresStable"] = selfMeasuresStable
+        hostedReport["rekeyKeyMeasured"] = controller.layout.heights
+            .hasMeasuredOrPrecalcHeight(for: freshKey)
+        hostedReport["placeholderContentHeightBefore"] = Double(before.contentHeight)
+        hostedReport["placeholderContentHeightAfter"] = Double(after.contentHeight)
+        hostedReport["placeholderOffsetBefore"] = Double(before.offset)
+        hostedReport["placeholderOffsetAfter"] = Double(after.offset)
+        hostedReport["keyHeightAfterPlaceholder"] = keyHeightAfterPlaceholder
+            .map(Double.init) ?? -1
+        hostedReport["phases"] = phases
+        report["codeHostedHeight"] = hostedReport
     }
 
     /// One gesture leg: placeholder then real height under the test gesture.

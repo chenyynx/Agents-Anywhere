@@ -1040,7 +1040,7 @@ final class TimelineCollectionController: UIViewController {
                 // cell reports. Writing it under a gesture is safe here
                 // because a never-displayed row is not on screen yet.
                 let key = content.heightKey(for: item, width: width)
-                if layout.heights.displayedHeight(for: item.itemID) == nil,
+                if !layout.heights.hasEverBeenDisplayed(item.itemID),
                    let provisional = content.measuredCodeGroupHeight(for: item, width: width) {
                     layout.heights.set(provisional, for: key, tier: .provisional)
                 }
@@ -2099,7 +2099,14 @@ extension TimelineCollectionController: TimelineListLayoutStructuralHeightHost {
     /// and the report is accepted as-is.
     func layoutStructuralExactHeight(for item: TimelineListItem,
                                      width: CGFloat) -> CGFloat? {
-        content?.measuredCodeGroupHeight(for: item, width: width)
+        if let exact = content?.measuredCodeGroupHeight(for: item, width: width) {
+            return exact
+        }
+        guard let content, content.usesCellReportedHeight(for: item) else { return nil }
+        // A live group (streaming or revealing) has no settled structural
+        // value; its estimate is still a usable floor, because a one-line
+        // placeholder is far below it even when the estimate over-reserves.
+        return content.estimateKind(for: item).height
     }
 }
 
@@ -2111,6 +2118,11 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         // content exists. Defer the first fit to the next turn so the hosting
         // view has run its initial layout; the settle passes then wait for an
         // async Markdown parse.
+        if currentItems.indices.contains(indexPath.item) {
+            // From here on this row's displayed height is a height the reader
+            // actually saw; a future re-key may keep it.
+            layout.heights.markEverDisplayed(currentItems[indexPath.item].itemID)
+        }
         guard !navigationSuspended else { return }
         // Coalesce the burst of willDisplay calls a scroll produces. The
         // scroll-end callbacks start their own settle, so a fast fling does

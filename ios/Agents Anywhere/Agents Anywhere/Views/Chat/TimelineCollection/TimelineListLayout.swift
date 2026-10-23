@@ -484,7 +484,7 @@ final class TimelineListLayout: UICollectionViewLayout {
         let state = host?.layoutInteractionState() ?? TimelineLayoutInteractionState()
         let decision = TimelinePreferredAttributesDecision.pendingMeasurement(
             delta: delta,
-            cellMinY: attributes.frame.minY,
+            cellMaxY: attributes.frame.maxY,
             viewportTop: viewportTop,
             isStreaming: state.streamingItemIDs.contains(itemID),
             isAutoScrollPinning: state.isAutoScrollPinning,
@@ -760,7 +760,7 @@ final class TimelineListLayout: UICollectionViewLayout {
         // top is above the viewport moves the text the reader sees.
         let decision = TimelinePreferredAttributesDecision.pendingMeasurement(
             delta: delta,
-            cellMinY: attributes.frame.minY,
+            cellMaxY: attributes.frame.maxY,
             viewportTop: viewportTop,
             isStreaming: false,
             isAutoScrollPinning: state.isAutoScrollPinning,
@@ -857,7 +857,7 @@ final class TimelineListLayout: UICollectionViewLayout {
             return
         }
         let correction = TimelinePreferredAttributesDecision.heightChangeCorrection(
-            delta: delta, cellMinY: attributes.frame.minY, viewportBottom: viewportBottom)
+            delta: delta, cellMaxY: attributes.frame.maxY, viewportTop: viewportTop)
         applyHeightUpdates([
             HeightUpdate(itemID: itemID, key: key, height: height,
                          attributes: attributes, offsetDelta: correction,
@@ -1044,8 +1044,8 @@ final class TimelineListLayout: UICollectionViewLayout {
                     - displayedHeight(for: correction.itemID, key: deferred.key,
                                       attributes: attributes)
                 let offset = TimelinePreferredAttributesDecision.heightChangeCorrection(
-                    delta: contentSizeDelta, cellMinY: attributes.frame.minY,
-                    viewportBottom: viewportBottom)
+                    delta: contentSizeDelta, cellMaxY: attributes.frame.maxY,
+                    viewportTop: viewportTop)
                 updates.append(HeightUpdate(itemID: correction.itemID, key: deferred.key,
                     height: deferred.height, attributes: attributes,
                     offsetDelta: offset, contentSizeDelta: contentSizeDelta,
@@ -1060,8 +1060,8 @@ final class TimelineListLayout: UICollectionViewLayout {
             let contentSizeDelta = deferred.height
                 - displayedHeight(for: itemID, key: deferred.key, attributes: attributes)
             let offset = TimelinePreferredAttributesDecision.heightChangeCorrection(
-                delta: contentSizeDelta, cellMinY: attributes.frame.minY,
-                viewportBottom: viewportBottom)
+                delta: contentSizeDelta, cellMaxY: attributes.frame.maxY,
+                viewportTop: viewportTop)
             updates.append(HeightUpdate(itemID: itemID, key: deferred.key,
                 height: deferred.height, attributes: attributes,
                 offsetDelta: offset, contentSizeDelta: contentSizeDelta,

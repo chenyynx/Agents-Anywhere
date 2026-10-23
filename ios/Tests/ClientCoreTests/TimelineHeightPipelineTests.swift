@@ -8,21 +8,21 @@ import Testing
 /// only the decision rules are exercised here.
 @Suite struct TimelineHeightPipelineTests {
 
-    @Test func heightChangeCorrectionKeepsRowsBelowStable() {
-        // Partially visible (top above the viewport): the reader's text below
-        // moves, so the offset takes the whole delta.
+    @Test func heightChangeCorrectionFollowsThePlacementAnchor() {
+        // Entirely above the anchor (the row containing the viewport top):
+        // everything visible moves, so the offset takes the whole delta.
         #expect(TimelinePreferredAttributesDecision.heightChangeCorrection(
-            delta: 12, cellMinY: 100, viewportBottom: 900) == 12)
-        // A row starting at the viewport top still moves the rows below it;
-        // compensating keeps the next row anchored (the gate's release check).
+            delta: 12, cellMaxY: 100, viewportTop: 300) == 12)
+        // The anchor row itself: it grows downward, the offset stays. The
+        // device gate caught the old rule throwing the row off the top.
         #expect(TimelinePreferredAttributesDecision.heightChangeCorrection(
-            delta: 12, cellMinY: 300, viewportBottom: 900) == 12)
-        // Starting at or below the bottom: nothing displayed moves.
+            delta: 12, cellMaxY: 350, viewportTop: 300) == nil)
+        // Entirely below the viewport: nothing displayed moves.
         #expect(TimelinePreferredAttributesDecision.heightChangeCorrection(
-            delta: -12, cellMinY: 900, viewportBottom: 900) == nil)
+            delta: -12, cellMaxY: 900, viewportTop: 300) == nil)
         // A zero change has no compensation.
         #expect(TimelinePreferredAttributesDecision.heightChangeCorrection(
-            delta: 0, cellMinY: 0, viewportBottom: 900) == nil)
+            delta: 0, cellMaxY: 100, viewportTop: 300) == nil)
     }
 
     @Test func heightChangeAffectsVisibleRows() {

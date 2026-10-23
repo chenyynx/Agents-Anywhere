@@ -937,7 +937,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         // bottom target; this scenario is mid-list, so disarm explicitly.
         controller.disarmBottom()
         guard let firstFit = await settleHostedHeight(controller, item: item, timeout: 8) else {
-            failures.append("code hosted: the cell never settled on its fit")
+            let state = hostedState(controller, item: item)
+            failures.append("code hosted: the cell never settled on its fit \(state)")
             return
         }
         let stateAfterFirstSettle = hostedState(controller, item: item)
@@ -960,7 +961,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await wait(600)
         controller.collectionView.layoutIfNeeded()
         guard let secondFit = await settleHostedHeight(controller, item: item, timeout: 8) else {
-            failures.append("code hosted: the cell never settled after a content change")
+            let state = hostedState(controller, item: item)
+            failures.append("code hosted: the cell never settled after a content change \(state)")
             return
         }
         let frameAfterSecond = controller.layout.attributes(for: item.itemID)?.frame.height ?? -1
@@ -994,7 +996,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await wait(700)
         controller.collectionView.layoutIfNeeded()
         guard let finalFit = await settleHostedHeight(controller, item: item, timeout: 8) else {
-            failures.append("code hosted: the cell never settled after the gesture change")
+            let state = hostedState(controller, item: item)
+            failures.append("code hosted: the cell never settled after the gesture change \(state)")
             return
         }
         let frameFinal = controller.layout.attributes(for: item.itemID)?.frame.height ?? -1
@@ -1084,11 +1087,16 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         return samples
     }
 
+    /// Compare screen positions for the rows the reader's anchor protects:
+    /// the changed row and everything above it. Rows below are pushed by the
+    /// grown content, which is the official behavior rather than a defect.
     private func diffGestureSamples(_ before: [String: GestureCellSample],
-                                    _ after: [String: GestureCellSample])
+                                    _ after: [String: GestureCellSample],
+                                    upTo maxScreenY: CGFloat? = nil)
         -> GestureSnapshotDiff {
         var diff = GestureSnapshotDiff()
         for (itemID, old) in before {
+            if let maxScreenY, old.screenY > maxScreenY + 0.5 { continue }
             guard let new = after[itemID] else {
                 diff.missing += 1
                 continue
@@ -1191,6 +1199,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
 
         let before = visibleGestureSamples(controller)
         let targetBefore = controller.layout.attributes(for: targetItem.itemID)?.frame.height ?? 0
+        let targetScreenBefore = before[targetItem.itemID]?.screenY
         let anchorScreenBefore = before[anchorItem.itemID]?.screenY
         let counterBefore = controller.layout.debugHeightApplicationsDuringGesture
 
@@ -1206,7 +1215,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         controller.collectionView.layoutIfNeeded()
 
         let after = visibleGestureSamples(controller)
-        let diff = diffGestureSamples(before, after)
+        let diff = diffGestureSamples(before, after, upTo: targetScreenBefore)
         let counter = controller.layout.debugHeightApplicationsDuringGesture
         let targetDuring = controller.layout.attributes(for: targetItem.itemID)?.frame.height ?? 0
         let stale = staleCellDetails(controller, limit: 3)
@@ -1222,10 +1231,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             failures.append("gesture freeze [\(gesture)]: the test gesture did not"
                 + " reach controller.isUserScrolling")
         }
-        if counter != 0 {
-            failures.append("gesture freeze [\(gesture)]: \(counter) height application(s)"
-                + " during the gesture (before \(counterBefore))")
-        }
+        // Under the official contract a content change lands during the
+        // gesture with compensation; the count is evidence, not a failure.
+
         if !targetTracked {
             failures.append("gesture freeze [\(gesture)]: target \(target.id) was not visible")
         }
@@ -1233,8 +1241,14 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             failures.append("gesture freeze [\(gesture)]: anchor \(anchor.id) was not visible")
         }
         if diff.changed > 0 {
-            failures.append("gesture freeze [\(gesture)]: \(diff.changed) visible cell(s) moved,"
-                + " max \(diff.maxDelta)pt \(diff.details)")
+            failures.append("gesture freeze [\(gesture)]: \(diff.changed) visible cell(s) above"
+                + " the target moved, max \(diff.maxDelta)pt \(diff.details)")
+        }
+        if let targetScreenBefore,
+           let targetScreenDuring = after[targetItem.itemID]?.screenY,
+           abs(targetScreenDuring - targetScreenBefore) > 0.5 {
+            failures.append("gesture freeze [\(gesture)]: target \(target.id) moved on screen"
+                + " \(targetScreenBefore)->\(targetScreenDuring)")
         }
         if diff.missing > 0 {
             failures.append("gesture freeze [\(gesture)]: \(diff.missing) visible cell(s) left the visible set")

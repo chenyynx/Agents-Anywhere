@@ -64,7 +64,7 @@ nonisolated struct TimelinePreferredAttributesDecision: Equatable {
     /// Category A. `delta` is measured height minus the height the layout
     /// currently displays.
     static func pendingMeasurement(delta: CGFloat,
-                                   cellMinY: CGFloat,
+                                   cellMaxY: CGFloat,
                                    viewportTop: CGFloat,
                                    isStreaming: Bool,
                                    isAutoScrollPinning: Bool,
@@ -76,20 +76,24 @@ nonisolated struct TimelinePreferredAttributesDecision: Equatable {
         let isBrowsing = isTracking || isDecelerating
         if isBrowsing, hasCachedHeight, delta < 0 { return .deferred }
         if isBrowsing || keyboardTransition || suppressContentOffsetAdjustment { return .accept }
-        if cellMinY < viewportTop { return .accept(correction: delta) }
+        // The placement anchor is the row that contains the viewport top: a
+        // change there grows downward without moving the offset. Only a row
+        // entirely above the anchor pushes everything the reader sees.
+        if cellMaxY <= viewportTop { return .accept(correction: delta) }
         if isStreaming, isAutoScrollPinning, delta > 0 { return .accept(correction: delta) }
         return .accept
     }
 
     /// Offset compensation for a height change applied outside an update
-    /// transaction. Any row whose top starts above the viewport's bottom moves
-    /// the rows below it; compensating by the whole delta keeps those rows
-    /// where the reader saw them (the changed row's own content moves inside
-    /// its frame). A row that starts below the viewport moves nothing visible.
+    /// transaction, following the official placement anchor: the anchor is the
+    /// row that contains the viewport top. Only a row entirely above it
+    /// (`cellMaxY <= viewportTop`) pushes the visible content, so only that
+    /// change adjusts the offset. A change on the anchor or below grows inside
+    /// the layout and leaves the reader's offset alone.
     static func heightChangeCorrection(delta: CGFloat,
-                                       cellMinY: CGFloat,
-                                       viewportBottom: CGFloat) -> CGFloat? {
-        guard delta != 0, cellMinY < viewportBottom else { return nil }
+                                       cellMaxY: CGFloat,
+                                       viewportTop: CGFloat) -> CGFloat? {
+        guard delta != 0, cellMaxY <= viewportTop else { return nil }
         return delta
     }
 

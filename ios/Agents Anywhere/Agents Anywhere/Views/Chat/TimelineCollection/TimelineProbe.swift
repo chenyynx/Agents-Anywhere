@@ -583,7 +583,8 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     /// The line under a row says which hook last wrote the key it is showing.
     /// Hooks that write the cache without calling `noteHeightChange`
     /// (`measureSynchronously`'s structured measurement) have no entry; the
-    /// `.estimate` tier has exactly one such writer, so it is named explicitly.
+    /// `.provisional` tier has exactly one such writer, so it is named
+    /// explicitly.
     private func writerLabel(itemID: String, revision: String) -> String {
         if let writer = lastWriter[itemID], writer.revision == revision {
             return writer.source
@@ -591,7 +592,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         if let key = controller?.layout.heights.currentKey(for: itemID),
            controller?.layout.heights.hasMeasuredOrPrecalcHeight(for: key) == false,
            controller?.layout.heights.tieredHeight(for: key) != nil {
-            return "structuredEstimate"
+            return "structuredProvisional"
         }
         return "-"
     }

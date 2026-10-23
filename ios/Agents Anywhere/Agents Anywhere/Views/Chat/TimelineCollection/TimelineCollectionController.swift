@@ -1029,9 +1029,10 @@ final class TimelineCollectionController: UIViewController {
             // Official hosted-cell contract rows measure themselves once when
             // the cell materializes and report later changes through
             // `heightDidChange`; the controller must not mark them measured.
-            // It may still write a best-effort estimate for the frames before
-            // that materialization. The estimate tier keeps the row pending,
-            // so the cell's self-measure still owns the final height.
+            // A never-displayed row may get a structured provisional for the
+            // frames before that materialization; the provisional is not a
+            // measurement, so the cell's self-measure still owns the final
+            // height.
             if content.usesCellReportedHeight(for: item) {
                 // A structured pre-apply value is only a placeholder for a row
                 // the reader has never seen. For a displayed row it would

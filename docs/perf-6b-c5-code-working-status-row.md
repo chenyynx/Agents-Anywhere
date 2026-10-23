@@ -1,6 +1,6 @@
 # Code 页工作状态行独立化（任务单）
 
-> 状态：待实现（2026-10-23）。分支：`feat/code-profile-beta`。不合并 dev。
+> 状态：已实现（2026-10-23，`78ad114a` + `e5b6a24d`），待真机验收。分支：`feat/code-profile-beta`。不合并 dev。
 > 目标：把「三个点 + Computing…」从消息行内部拆成独立 transcript 行（官方 `CodeThinkingView` 的做法），使状态行的出现/消失不再改变消息行的签名与高度。
 > 关系：本任务与 `docs/perf-6b-c5-code-timeline-height-policy.md` 并行；本任务先落地，因为要从 Code 组签名中移除 `showsWorkingStatus`。
 
@@ -30,7 +30,7 @@
 
 ### 3.1 新 item
 - `TimelineListItem` 新增 `.workingStatus`，`itemID = "working:status"`。
-- `TimelineItemIdentity.build` 增加参数 `hasWorkingStatus: Bool`，插入位置：**最后一个 group 之后、notices 之前**（与本回合最后一条消息相邻；没有 group 时放在 olderPrompt 之后）。
+- `TimelineItemIdentity.build` 增加参数 `hasWorkingStatus: Bool`，插入位置：**groups → notices → pending → workingStatus → latestPrompt → tail**。放在 pending 之后，是因为刚发送时用户气泡在上、状态行必须在下；没有 group 时它同样位于 pending 之后。
 - 该 item 不是 group，不参与 `codeGroups`/`CodeMessageBuilder`。
 
 ### 3.2 状态行视图
@@ -43,11 +43,11 @@
 ### 3.3 Adapter
 - `refresh()`：
   - 计算 `hasWorkingStatus = model.sendingPlaceholder != nil`（与现有 `workingStatusGroupID` 的触发条件一致）；
-  - 不再计算/使用 `workingStatusGroupID` 作为消息组的高度/签名输入；保留“最后一条消息 group id”仅用于插入位置（`workingAnchorGroupID`）；
+  - 不再计算/使用 `workingStatusGroupID`；状态 item 的插入位置由 identity 的固定顺序决定（见 §3.1）；
   - `TimelineItemIdentity.build(..., hasWorkingStatus:)` 生成 item；
   - `CodeMessageRowView` 不再传 `showsWorkingStatus`（删除参数与调用点）；
   - `heightPolicy(for:)`：`.workingStatus` 返回 `.measured`（hosted cell 合约）；
-  - `estimateKind(for:)`：`.workingStatus` 返回 `.fixed(statusLineHeight)`；
+  - `estimateKind(for:)`：`.workingStatus` 返回 `.fixed(CodeWorkingStatusRow.estimatedHeight)`（20 + 8 + 10 = 38）；
   - `probeDescribe`：`.workingStatus` 输出 `working status`；消息组不再输出 `status=1`。
 - Tail：
   - `tailStatusLineVisible` 保留在 Chat/旧路径；Code 页 tail 不再画状态行（状态行已是独立 item）。若 `TimelineTailContentSignature.statusLineVisible` 仍被 Chat 使用，保持不变；仅 Code adapter 传 false。
@@ -94,4 +94,12 @@
 - 回滚：单 commit；恢复 `showsWorkingStatus` 即可回到旧行为（保留签名 hash 的旧字段注释）。
 
 ## 7. 未决
-- 官方 `CodeThinkingView` 的精确插入位置（最后一条消息内部 vs 消息之后）需以官方截图复核；本任务先按“最后一条消息之后”落地，视觉补齐阶段再对齐。
+- 官方 `CodeThinkingView` 的精确插入位置（最后一条消息内部 vs 消息之后）需以官方截图复核；本任务先按“pending 之后、latest/tail 之前”落地，视觉补齐阶段再对齐。
+
+## 8. 实装结果（2026-10-23）
+- 消息组的签名/视图/高度测量已移除 `showsWorkingStatus`；`TimelineGroupContentSignature` 不再含该字段。
+- Code adapter 的 `tailStatusLineVisible` 恒为 false；tail 不再画第二个指示器。
+- 旧 `CodeWorkingIndicator.showsTailStatusLine` 已无生产调用者，连同其单测删除。
+- 状态行 item 顺序为 groups → notices → pending → workingStatus → latestPrompt → tail；identity 单测覆盖。
+- 状态行由 hosted cell 合约测量（`usesCellReportedHeight`），固定高度 38pt 作为 estimate。
+- CI 待全绿；真机验收项见 §5。

@@ -1,6 +1,6 @@
 # Code 页时间线高度策略治根（任务单）
 
-> 状态：待实现（2026-10-23）。分支：`feat/code-profile-beta`。不合并 dev。
+> 状态：阶段 0–3 已实现（2026-10-23，`386f1eb8` / `69065485` / `cd217f8e` / `80956196`），待 CI 全绿与真机探针复测；阶段 4 未做。分支：`feat/code-profile-beta`。不合并 dev。
 > 依据：2026-10-23 15:51:36 真机探针（app 2.1.1(395)，会话 `sess_Ub_FQIoh-F3N8w`）+ 官方契约（`CANONICAL/05-layout-scroll.md`）。
 > 关系：与 `docs/perf-6b-c5-code-working-status-row.md` 并行；状态行任务先落地（它移除 `showsWorkingStatus` 这个 re-key 源）。
 
@@ -36,7 +36,7 @@
 4. 若把旧 measured 带成新键 `.measured`，`hasMeasuredOrPrecalcHeight` 会永久抑制 cell 自测；不要这样做。
 5. `prune(keeping:)` 现状正确（只清离窗 item），不要改成跨窗保留高度。
 6. 现有 gate 阈值 text=1 / bubble=2 / tool=2，不得放宽。
-7. 先确认 56↔1558 的写入者（结构化预测量测到短内容 vs cell 上报解析前占位），再决定占位 guard。
+7. 先确认 56↔1558 的写入者（结构化预测量测到短内容 vs cell 上报解析前占位），再决定占位 guard。**更新（2026-10-23）**：探针已具备 writer/tier/exact/keyRevision 字段（`386f1eb8`），但真机日志尚未回传；guard 先按“所有低于 floor 的上报一律丢弃”实现，覆盖 parked self-measure 与 live group（用 estimate 作 floor），不依赖写入者结论。
 
 ## 4. 不变行为
 1. 拖拽/惯性中可见行高度不变、可见内容不移动。
@@ -62,23 +62,25 @@
 ### 阶段 1：止血
 1. 新增 `provisional` 档：布局可用、不算 measured、不抑制自测；只写“从未显示过”的新行（结构化精确值）。
 2. 已显示过的行 rekey：保留 displayed 高度，不写新值；等 cell 上报。
-3. `prepare` 与 `displayedHeight(for:)` 用同一个 resolver；`projectedHistoryLayout` 用“变更行优先新测量”的变体。
+3. `prepare`、`displayedHeight(for:)`（补偿基线）与 `projectedHistoryLayout` 用同一个 resolver。**修正（对抗审查）**：prepend 投影若对变更行改用“新测量”，而布局本身仍显示旧高度，锚点会移动两次（target 一次、cell 上报补偿一次），因此投影必须与 prepare 同源。
 4. `layoutEstimateKind` 只读 apply 期缓存的 provisional；禁止在 prepare/滚动路径现场算 crude。
 5. 拆分 key 与 reconfigure（见 §3 修正 2）。
 6. 不保留离窗高度（prune 不动）。
 - 验证：`TimelineHeightCacheTests`（保留“新 revision 不继承旧测量”用例）；controller gate；探针无非内容变化 |delta|>50。
 - 回滚：单 commit；provisional 不改变外部契约。
 
-### 阶段 2：占位上报防护
-- 在 `applyHostedHeight` / `applySelfMeasuredHeight` **任何 cache 写入之前**校验：仅“已沉淀 Code 组 + 同 key/digest + 明显收缩（< structuralExact − max(8pt,15%)）”才拒绝；增长不拒；每键最多重试一次；超限接受并记 probe issue；流式/无精确值跳过；手势中只停泊不重试。
-- 新行结构化预测量写 provisional（不写 measured）。
-- 验证：controller gate；探针 fitMismatch=0、staleCell=0、手势中可见行变化=0。
+### 阶段 2：占位上报防护（含对抗审查修正）
+- 在三条写入路径**任何 cache 写入之前**校验：`applyHostedHeight`、`applySelfMeasuredHeight`、以及手势中被停泊的 self-measure（`shouldInvalidateLayout` 的 park 分支）。
+- 判据：`height < max(24pt, exact × 0.35)` 才拒绝；**一律丢弃，不再“第二次接受”**（否则 SwiftUI 的 20→56 两个中间值仍会漏进来）。合法矮行的 exact 也矮，floor 随之下移；结构测量若高估，行停在 provisional 上而不是被占位覆盖。
+- live group（streaming/revealing）没有 settled exact：用 `estimateKind.height` 作 floor（粗估即使高估 2.3×，35% 仍高于 20–56pt 的占位）。
+- 新行结构化预测量写 provisional（不写 measured）；已被 cell 物化过的行不再收到新预测量（`everDisplayed`）。
+- 验证：controller gate（含 at-rest 占位腿）；探针 fitMismatch=0、staleCell=0、手势中可见行变化=0。
 - 回滚：guard 可独立移除。
 
 ### 阶段 3：换窗/开屏
-- 换窗时为插入行做预算内结构化预测量（provisional），不碰旧窗口内容。
-- 一次定位意图；设完 offset 后 `layoutIfNeeded()`。
-- 给 4 个 `setContentOffset` 调用点打 source 标签，先确认是否双重补偿再改。
+- ✅ 换窗插入行由 `measureSynchronously` 写 provisional（不碰旧窗口内容）。
+- ✅ `resolveWindowReplacementBottom` 设完 offset 后 `layoutIfNeeded()`，同 runloop 同步 cell 帧。
+- ⏳ 给 4 个 `setContentOffset` 调用点打 source 标签，确认是否双重补偿（未做，留待真机探针判定）。
 - 验证：换窗后 contentH 在 apply 时即最终值；offsetJump 只剩有意定位；loadLatestReturn gate 绿。
 
 ### 阶段 4：性能
@@ -100,6 +102,8 @@
 
 ## 8. 未决
 - 官方 `estimatedRowHeight` 开关线上取值（未证）。
-- 换窗 offsetJump 是帧同步晚还是双重补偿（`layoutIfNeeded` 实验）。
-- 56↔1558 的写入者（阶段 0 日志）。
-- 加载更早状态需要顶部探针报告（本任务暂不覆盖）。
+- 换窗 offsetJump 是帧同步晚还是双重补偿（`layoutIfNeeded` 已加，需真机探针确认 staleSamples 是否消失）。
+- 56↔1558 的写入者：探针已能在真机报告 `writer/tier/exact/keyRevision`，**等待下一份真机报告**；guard 已覆盖三条路径（含 live group），不依赖该结论。
+- 加载更早状态需要**顶部**探针报告（`prompt:older` 是否在 items 里）。
+- 气泡直角（`CodeUserBubble` 的 24pt continuous 在真机截图里呈直角）与本线无关，需单独截图/视图层级定位。
+- 阶段 4（测量预算/deadline）未做；等真机复测后的帧数据再定。

@@ -43,7 +43,8 @@ nonisolated enum TimelineHeightEstimateKind: Equatable {
     }
 }
 
-/// Three-tier height cache keyed by `TimelineHeightKey`.
+/// Four-tier height cache keyed by `TimelineHeightKey` (measured, precalc,
+/// provisional, estimate).
 ///
 /// One item holds one current key plus its last displayed height. A content or
 /// typography revision replaces the key; the new key starts empty, and the

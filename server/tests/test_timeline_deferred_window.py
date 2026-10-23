@@ -1327,14 +1327,13 @@ def test_activity_only_span_falls_back_to_the_default_reader(tmp_path) -> None:
     assert all(item["type"] == "tool" for item in body["items"])
 
 
-def test_budget_trimming_never_summarizes_reasoning(
+def test_budget_trimming_keeps_a_text_preview_on_reasoning(
     tmp_path, monkeypatch
 ) -> None:
-    """Reasoning rows stay complete even when the window is over budget.
+    """Reasoning is summarised only to fit the budget, never to an empty shell.
 
-    A reasoning stub would drop its text; the Chat page hides a reasoning row
-    whose text is empty, so the row would silently disappear with no read that
-    could bring it back. The trim may drop older display rows instead.
+    The row must stay visible with its opening text; the single-item read
+    completes it when expanded.
     """
 
     client = make_client(tmp_path)
@@ -1357,7 +1356,6 @@ def test_budget_trimming_never_summarizes_reasoning(
             ),
         ],
     )
-    # Below the 256KB newest-segment allowance and below the total budget.
     monkeypatch.setenv(SNAPSHOT_TIMELINE_BYTE_BUDGET_ENV, "400000")
 
     response = client.get(
@@ -1373,10 +1371,61 @@ def test_budget_trimming_never_summarizes_reasoning(
     assert response.status_code == 200, response.text
     body = response.json()
     reasoning = [item for item in body["items"] if item["type"] == "system"]
-    assert reasoning, "reasoning rows must not be dropped or hidden"
+    assert len(reasoning) == 2, "reasoning rows must not be dropped or hidden"
+    # Every row keeps a readable text, whether it stayed complete or was
+    # summarised; the trim only summarises as many as the budget requires.
+    assert all(item["content"].get("text") for item in reasoning)
+    assert any(item["content"].get("deferred") is True for item in reasoning)
+    assert len(response.content) <= 400_000
+
+
+def test_a_long_reasoning_tail_is_bounded_and_stays_readable(tmp_path) -> None:
+    """The review's one-display-row shape: 120 x 20KB reasoning rows.
+
+    Without the text-head summary this response was ~2.4MB while claiming
+    ``hasMore=false``. It must fit the default budget, keep every thinking row
+    present, and never leave one blank: a full row carries its text, a
+    summarised row carries a text head.
+    """
+
+    client = make_client(tmp_path)
+    _, access_token, session_id, headers = create_connector_and_session(
+        client, runtime="claude"
+    )
+    long_reasoning = "r" * 20_000
+    _post_sync(
+        client,
+        access_token,
+        session_id,
+        [_message_payload(session_id, "m1", order_seq=1)]
+        + [
+            _reasoning_payload(
+                session_id,
+                f"r{index}",
+                order_seq=1 + index,
+                text=long_reasoning,
+            )
+            for index in range(1, 121)
+        ],
+    )
+
+    response = client.get(
+        f"/sessions/{session_id}/timeline",
+        headers=headers,
+        params={
+            "mode": "latest",
+            "limit": 100,
+            "excludeAgentChildren": True,
+            "deferActivity": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    reasoning = [item for item in body["items"] if item["type"] == "system"]
+    assert len(reasoning) == 120
     for item in reasoning:
-        assert item["content"].get("deferred") is not True
-        assert item["content"].get("text")
+        assert item["content"].get("text"), item["id"]
+    assert len(response.content) < 2_200_000
 
 
 @pytest.mark.anyio
@@ -1409,3 +1458,157 @@ async def test_the_window_keeps_the_anchor_when_the_span_is_wide_enough(
     assert len(items) == 800
     assert sum(1 for item in items if item.type == "message") == 100
     assert has_more is False
+
+
+def test_deferred_fallback_respects_the_byte_budget(
+    tmp_path, monkeypatch
+) -> None:
+    """A declined deferred read still honours the opt-in client's ceiling.
+
+    No display row lies inside the span, so the reader falls back to the
+    legacy latest page. That page is normally unbudgeted; a client that asked
+    for the deferred window must not receive a multi-megabyte reply instead.
+    """
+
+    client = make_client(tmp_path)
+    _, access_token, session_id, headers = create_connector_and_session(
+        client, runtime="claude"
+    )
+    _post_sync(
+        client,
+        access_token,
+        session_id,
+        [_message_payload(session_id, "m1", order_seq=1)]
+        + [
+            _tool_payload(
+                session_id,
+                f"t{index}",
+                order_seq=2 + index,
+                output="x" * 12_000,
+            )
+            for index in range(801)
+        ],
+    )
+    monkeypatch.setenv(SNAPSHOT_TIMELINE_BYTE_BUDGET_ENV, "100000")
+
+    response = client.get(
+        f"/sessions/{session_id}/timeline",
+        headers=headers,
+        params={
+            "mode": "latest",
+            "limit": 100,
+            "excludeAgentChildren": True,
+            "deferActivity": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["deferredActivity"] is False
+    assert len(body["items"]) < 100, "the fallback must be trimmed"
+    assert body["hasMore"] is True
+    assert len(response.content) < 150_000
+
+
+@pytest.mark.anyio
+async def test_active_rows_are_never_summarized(tmp_path) -> None:
+    """pending/running/waiting_approval stay complete regardless of size.
+
+    They are the live tail the reader watches; their next frame carries the
+    whole row, and waiting_approval also seats an interaction surface.
+    """
+
+    store, session = await _store_with_session()
+    try:
+        await _seed_store(
+            store,
+            session.id,
+            [
+                _message_payload(session.id, "m1", order_seq=1),
+                _tool_payload(
+                    session.id,
+                    "running",
+                    order_seq=2,
+                    status="running",
+                    output=BIG_OUTPUT,
+                ),
+                _tool_payload(
+                    session.id,
+                    "pending",
+                    order_seq=3,
+                    status="pending",
+                    output=BIG_OUTPUT,
+                ),
+                _tool_payload(
+                    session.id,
+                    "done",
+                    order_seq=4,
+                    status="done",
+                    output=BIG_OUTPUT,
+                ),
+            ],
+        )
+        items, _, applied = await store.list_timeline_deferred_window(
+            session_id=session.id, limit=1
+        )
+        assert applied is True
+        by_id = {item.id: item for item in items}
+        assert "deferred" not in by_id["running"].content
+        assert by_id["running"].content["output"] == BIG_OUTPUT
+        assert "deferred" not in by_id["pending"].content
+        assert by_id["done"].content["deferred"] is True
+    finally:
+        await store.close()
+
+
+def test_active_rows_survive_the_budget_trim(tmp_path, monkeypatch) -> None:
+    client = make_client(tmp_path)
+    _, access_token, session_id, headers = create_connector_and_session(
+        client, runtime="claude"
+    )
+    _post_sync(
+        client,
+        access_token,
+        session_id,
+        [_message_payload(session_id, "m1", order_seq=1)]
+        + [
+            _tool_payload(
+                session_id,
+                f"done{index}",
+                order_seq=1 + index,
+                status="done",
+                output="x" * 12_000,
+            )
+            for index in range(1, 41)
+        ]
+        + [
+            _tool_payload(
+                session_id,
+                "running",
+                order_seq=42,
+                status="running",
+                output="x" * 12_000,
+            )
+        ],
+    )
+    monkeypatch.setenv(SNAPSHOT_TIMELINE_BYTE_BUDGET_ENV, "1")
+
+    response = client.get(
+        f"/sessions/{session_id}/timeline",
+        headers=headers,
+        params={
+            "mode": "latest",
+            "limit": 100,
+            "excludeAgentChildren": True,
+            "deferActivity": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    by_id = {item["id"]: item for item in body["items"]}
+    assert by_id["running"]["content"].get("deferred") is not True
+    assert by_id["running"]["content"].get("output") == "x" * 12_000
+    assert any(
+        item["content"].get("deferred") is True
+        for item in body["items"]
+        if item["id"].startswith("done")
+    )

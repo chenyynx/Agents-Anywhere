@@ -101,9 +101,12 @@ from agent_server.infra.event_preparation import EventPreparationCapacityError
 from agent_server.infra.repositories.facade import Store
 from agent_server.infra.timeline_broker import TimelineBroker
 from agent_server.infra.timeline_store import (
+    ACTIVE_TIMELINE_STATUSES,
     DEFERRED_TAIL_FULL_BYTES,
+    build_reasoning_stub_content,
     build_stub_content,
     is_deferred_display_item,
+    is_deferred_reasoning_item,
 )
 from agent_server.infra.ws_tickets import ClientWsTicketManager
 from agent_server.services.catalogs import CatalogService
@@ -860,14 +863,15 @@ async def session_timeline(
     ),
 ) -> ProtocolTimelineResponse:
     deferred_applied = False
+    deferred_requested = (
+        mode in ("latest", "history")
+        and defer_activity
+        and exclude_agent_children
+    )
     try:
         await db.get_session(session_id, user_id=user_id)
         async with timeline_write_buffer.session_fence(session_id):
-            if (
-                mode in ("latest", "history")
-                and defer_activity
-                and exclude_agent_children
-            ):
+            if deferred_requested:
                 if mode == "history" and before_order_seq is None:
                     raise HTTPException(
                         status_code=422,
@@ -940,6 +944,16 @@ async def session_timeline(
                         after_seq=after_seq,
                         limit=limit,
                     )
+            if deferred_requested and not deferred_applied:
+                # The client asked for a bounded window; a declined deferred
+                # read (no display row to anchor on) must still respect the
+                # same ceiling as the deferred branch. The default readers
+                # (no flags) keep their exact pre-existing bytes.
+                items, budget_has_more = _apply_snapshot_timeline_byte_budget(
+                    session_id,
+                    items,
+                )
+                has_more = has_more or budget_has_more
             next_seq = await db.get_session_seq(session_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="session not found") from None
@@ -1107,16 +1121,21 @@ def _trim_deferred_window_items(
     1. **Newest activity segment.** The store already serves tail tool rows
        over the stub threshold as summaries. If the rows after the last
        display row still hold more than ``DEFERRED_TAIL_FULL_BYTES`` of
-       complete payload, summarise its oldest *tool* rows too
-       (already-summarised rows are skipped). Reasoning rows are never
-       summarised: their stub carries no text, and the Chat page hides a
-       reasoning row whose text is empty — a summarised reasoning row would
-       silently disappear with no way to fetch it back.
-    2. **Drop the oldest display rows.** Still over budget: drop the oldest
+       complete payload, summarise its oldest tool rows too. Active rows
+       (``pending`` / ``running`` / ``waiting_approval``) are never
+       summarised: they are the live tail. Reasoning rows are left complete
+       here; the total-budget step below summarises them only when the
+       response would otherwise exceed the budget, keeping the instant-thinking
+       path intact for normal windows.
+    2. **Remaining reasoning rows.** Still over budget: give every remaining
+       reasoning row the same text-head summary, oldest first. This is the
+       last-resort degrade that keeps a one-display-row window bounded without
+       hiding the thinking or dropping the conversation anchor.
+    3. **Drop the oldest display rows.** Still over budget: drop the oldest
        display row and every row before it, so the window starts at the next
        display row still present. ``trimmed=True`` then raises ``hasMore`` —
        the dropped range is reachable through history paging.
-    3. The newest display row is never dropped: at least one row always comes
+    4. The newest display row is never dropped: at least one row always comes
        back, even if it alone exceeds the budget.
 
     A window with no display row at all (the reader usually returns
@@ -1162,6 +1181,8 @@ def _trim_deferred_window_items(
                 item = items[index]
                 if item.type != "tool":
                     continue
+                if item.status in ACTIVE_TIMELINE_STATUSES:
+                    continue
                 if _deferred_content_is_stub(item.content):
                     continue
                 item_bytes = sizes[index]
@@ -1173,6 +1194,31 @@ def _trim_deferred_window_items(
                 tail_bytes += replacement_bytes - item_bytes
                 total_bytes += replacement_bytes - item_bytes
                 sizes[index] = replacement_bytes
+
+    if total_bytes > budget:
+        # Remaining reasoning rows (the tail included): a text-head summary
+        # keeps the row visible and lets the single-item read complete it.
+        # Without this a window with one display row and a long thinking tail
+        # could not be brought under the budget at all.
+        for index, item in enumerate(items):
+            if total_bytes <= budget:
+                break
+            if item.status in ACTIVE_TIMELINE_STATUSES:
+                continue
+            if _deferred_content_is_stub(item.content):
+                continue
+            if not is_deferred_reasoning_item(item):
+                continue
+            item_bytes = sizes[index]
+            stub = build_reasoning_stub_content(
+                item.content, payload_bytes=item_bytes
+            )
+            if stub is None:
+                continue
+            items[index] = item.model_copy(update={"content": stub})
+            replacement_bytes = _snapshot_timeline_item_bytes(items[index])
+            total_bytes += replacement_bytes - item_bytes
+            sizes[index] = replacement_bytes
 
     while total_bytes > budget:
         display_indexes = [

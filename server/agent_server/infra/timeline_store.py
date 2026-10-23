@@ -20,6 +20,13 @@ from agent_server.infra.db import timeline_items
 #: silently advertised as an active card.
 _ACTIVE_AGENT_CARD_STATUSES = frozenset({"pending", "running", "waiting_approval"})
 
+#: Statuses whose timeline row is still moving. A deferred window never
+#: summarises one: it is the live tail the reader is watching, its next frame
+#: carries the complete row anyway, and ``waiting_approval`` also seats an
+#: interaction surface. Active rows are the one deliberate exception to the
+#: byte budget.
+ACTIVE_TIMELINE_STATUSES = frozenset({"pending", "running", "waiting_approval"})
+
 #: Format version of the deferred-activity stub written to ``stub_json``
 #: (v2_48). A reader must ignore a stub whose version it does not know and
 #: fall back to the full payload.
@@ -413,6 +420,69 @@ def build_stub_content(content: Any, payload_bytes: int) -> dict[str, Any] | Non
     return stub
 
 
+#: Head of a reasoning row kept in its budget-trim summary. Long enough to
+#: read the opening thought, short enough that the stub stays far below the
+#: per-item ceiling.
+REASONING_STUB_TEXT_LIMIT = 1000
+
+
+def _reasoning_text(content: Mapping[str, Any]) -> str:
+    """The text the Chat page renders for a reasoning row."""
+
+    summaries = content.get("summaries")
+    if isinstance(summaries, list):
+        parts = []
+        for entry in summaries:
+            if isinstance(entry, Mapping):
+                value = entry.get("text")
+                if isinstance(value, str) and value:
+                    parts.append(value)
+        if parts:
+            return "\n\n".join(parts)
+    for key in ("rawText", "text", "summary"):
+        value = content.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def build_reasoning_stub_content(
+    content: Any, payload_bytes: int
+) -> dict[str, Any] | None:
+    """A thinking row's budget-trim summary: a readable text head.
+
+    The Chat page hides a reasoning row whose text is empty, so the tool-style
+    stub (which drops ``text``) cannot stand in for one. This summary keeps the
+    row visible with the opening thought and ``deferred=true``; expanding it
+    fetches the full row through the single-item read. Used only as the budget
+    trim's last resort — normal windows keep reasoning complete.
+    """
+
+    if not isinstance(content, Mapping) or not content:
+        return None
+    text = _reasoning_text(content)
+    if not text:
+        return None
+    stub: dict[str, Any] = {}
+    kind = content.get("kind")
+    if isinstance(kind, str) and kind:
+        stub["kind"] = kind
+    fmt = content.get("format")
+    if isinstance(fmt, str) and fmt:
+        stub["format"] = fmt
+    limit = REASONING_STUB_TEXT_LIMIT
+    while True:
+        preview = text[:limit]
+        if limit < len(text):
+            preview += "…"
+        stub["text"] = preview
+        stub["deferred"] = True
+        stub["deferredBytes"] = payload_bytes
+        if _stub_size(stub) <= STUB_MAX_BYTES or limit <= 100:
+            return stub
+        limit //= 2
+
+
 class SqlTimelineStore:
     def __init__(self, engine: AsyncEngine) -> None:
         self._engine = engine
@@ -711,9 +781,11 @@ class SqlTimelineStore:
            only ones that page exists to fetch). Each row's payload is chosen
            in SQL so a summarised tool row never reads its full payload:
            activity rows below the stub threshold come back complete, a larger
-           main tool
-           activity row comes from ``stub_json`` (only when it carries the
-           current ``stub_version``).
+           main tool activity row comes from ``stub_json`` (only when it
+           carries the current ``stub_version``). Active rows (``pending`` /
+           ``running`` / ``waiting_approval``) always stay complete: their
+           next frame carries the whole row, and ``waiting_approval`` also
+           seats an interaction surface.
 
         ``has_more`` reports whether any main row exists *before* the oldest
         returned row, compared on the full ``(order_seq, updated_seq, id)``
@@ -771,7 +843,9 @@ class SqlTimelineStore:
             timeline_items.c.kind.not_in(
                 sorted(_DEFERRED_DISPLAY_CONTENT_KINDS)
             ),
-            timeline_items.c.status != "waiting_approval",
+            # The newest frame of an active row is the whole row; a stale
+            # summary would also fight the live update. Keep it complete.
+            timeline_items.c.status.not_in(sorted(ACTIVE_TIMELINE_STATUSES)),
             timeline_items.c.payload_bytes.is_not(None),
             timeline_items.c.payload_bytes > stub_threshold_bytes,
             timeline_items.c.stub_json.is_not(None),

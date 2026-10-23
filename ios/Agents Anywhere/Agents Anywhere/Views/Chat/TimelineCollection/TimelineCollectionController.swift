@@ -87,6 +87,10 @@ final class TimelineCollectionController: UIViewController {
     private var readerSettledAtBottom = false
     private(set) var interactionPresented = false
     private var navigationSuspended = false
+#if DEBUG
+    /// Set by `TimelineAutoRun` only. Never reachable from the product UI.
+    private(set) var testGestureState: (tracking: Bool, decelerating: Bool)?
+#endif
     /// Commands that arrive while the drawer owns navigation. The old state
     /// machine refused the native command but kept the intent; resume replays
     /// it exactly once instead of silently dropping a pending/approval return.
@@ -2014,9 +2018,6 @@ extension TimelineCollectionController: TimelineListLayoutHost {
     }
 
 #if DEBUG
-    /// Set by `TimelineAutoRun` only. Never reachable from the product UI.
-    private(set) var testGestureState: (tracking: Bool, decelerating: Bool)?
-
     func setTestGestureState(tracking: Bool, decelerating: Bool) {
         testGestureState = (tracking: tracking, decelerating: decelerating)
         if !tracking, !decelerating {

@@ -1158,7 +1158,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                 decelerating: gesture == "decelerating",
                 target: target, anchor: anchor)
             phases.append(phase)
-            let heightBefore = (phase["targetHeightBefore"] as? Double).map(CGFloat.init) ?? 0
+            let heightBefore = (phase["targetHeightBefore"] as? Double).map { CGFloat($0) } ?? 0
             releases.append(await releaseGesture(controller, gesture: gesture,
                 target: target, anchor: anchor, heightBefore: heightBefore))
         }

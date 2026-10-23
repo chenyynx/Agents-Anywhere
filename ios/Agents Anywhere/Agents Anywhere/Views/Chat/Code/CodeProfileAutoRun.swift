@@ -521,12 +521,14 @@ final class CodeProfileAutoRunModel {
         let traits = host.traitCollection
         // `sizeThatFits` keeps the window's safe-area insets even with
         // `.ignoresSafeArea()` on the content. Measure the same parsed view
-        // off the window: the row inside the timeline has no window inset.
+        // off the window and subtract the insets captured in the window: the
+        // row inside the timeline has no status-bar/home-indicator space.
         host.view.removeFromSuperview()
         host.view.frame = CGRect(x: 0, y: 0, width: window.bounds.width, height: 200)
         host.view.layoutIfNeeded()
-        let rendered = host.sizeThatFits(in: CGSize(
+        let rendered = max(0, host.sizeThatFits(in: CGSize(
             width: window.bounds.width, height: .greatestFiniteMagnitude)).height
+            - safeTop - safeBottom)
 
         let typography = TimelineChatContentAdapter.typography(
             dynamicType: String(describing: DynamicTypeSize.large),
@@ -747,7 +749,8 @@ final class CodeProfileAutoRunModel {
         host.view.removeFromSuperview()
         host.view.frame = CGRect(x: 0, y: 0, width: hostWidth, height: 120)
         host.view.layoutIfNeeded()
-        let rendered = host.sizeThatFits(in: proposed).height
+        let rendered = max(0, host.sizeThatFits(in: proposed).height
+            - safeTop - safeBottom)
 
         let typography = TimelineChatContentAdapter.typography(
             dynamicType: String(describing: size.dynamicType),

@@ -1024,9 +1024,17 @@ final class TimelineCollectionController: UIViewController {
         for item in items {
             // Official hosted-cell contract rows measure themselves once when
             // the cell materializes and report later changes through
-            // `heightDidChange`; the controller must not pre-measure or poll
-            // them. The estimate stands until that first self-measure.
-            if content.usesCellReportedHeight(for: item) { continue }
+            // `heightDidChange`; the controller must not mark them measured.
+            // It may still write a best-effort estimate for the frames before
+            // that materialization. The estimate tier keeps the row pending,
+            // so the cell's self-measure still owns the final height.
+            if content.usesCellReportedHeight(for: item) {
+                if let estimate = content.measuredCodeGroupHeight(for: item, width: width) {
+                    let key = content.heightKey(for: item, width: width)
+                    layout.heights.set(estimate, for: key, tier: .estimate)
+                }
+                continue
+            }
             // The Code page renders every message with its own row view, so
             // the TextKit branches below never see it. Measure the group from
             // the same parts the row draws, before the snapshot applies: a

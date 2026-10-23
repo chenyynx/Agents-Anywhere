@@ -75,6 +75,17 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         let attributeHeight: CGFloat
     }
 
+    /// A touch event the window delivered, recorded for the event probe.
+    /// A touch that lands outside every visible cell is a dead zone; a touch
+    /// that lands on a cell but produces no response is a swallowed gesture.
+    struct TouchEvent {
+        let at: TimeInterval
+        let location: CGPoint
+        let phase: UITouch.Phase
+        /// The item at the touch location, if the touch landed on a row.
+        let itemID: String?
+    }
+
     struct Issue {
         let at: TimeInterval
         let kind: String
@@ -108,6 +119,15 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     /// A row whose text changed but whose height did not is a content bug the
     /// height probes cannot see.
     private var lastContentSamples: [String: ContentSample] = [:]
+    /// The last few touch events, for the dead-zone and swallowed-gesture
+    /// checks. Kept small: the probe only needs to know whether a touch
+    /// landed on a row and whether anything responded.
+    private var recentTouches: [TouchEvent] = []
+    /// The display-link timestamps of the last few frames, for the frame-rate
+    /// and animation-smoothness checks.
+    private var frameTimestamps: [TimeInterval] = []
+    /// The last slow-frame stack, for the main-thread blocker check.
+    private var lastSlowFrameStack: [String] = []
 
     private weak var controller: TimelineCollectionController?
     private weak var adapter: TimelineChatContentAdapter?
@@ -164,6 +184,10 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         lastWriter.removeAll()
         lastApplyRevisions.removeAll()
         lastOffset = nil
+        lastContentSamples.removeAll()
+        recentTouches.removeAll()
+        frameTimestamps.removeAll()
+        lastSlowFrameStack.removeAll()
     }
 
     func reset() {
@@ -176,12 +200,39 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         lastWriter.removeAll()
         lastApplyRevisions.removeAll()
         lastOffset = nil
+        lastContentSamples.removeAll()
+        recentTouches.removeAll()
+        frameTimestamps.removeAll()
+        lastSlowFrameStack.removeAll()
         runStartedAt = CACurrentMediaTime()
         revision &+= 1
     }
 
+    /// A touch event the window delivered. The probe records it; the
+    /// swallowed-gesture check compares it with the cell frames.
+    func noteTouch(_ touch: UITouch, in view: UIView) {
+        let now = CACurrentMediaTime()
+        let location = touch.location(in: view)
+        let itemID: String?
+        if let controller, let collectionView = controller.collectionView {
+            let point = collectionView.convert(location, from: view)
+            itemID = collectionView.indexPathForItem(at: point).flatMap {
+                controller.currentItems.indices.contains($0.item)
+                    ? controller.currentItems[$0.item].itemID : nil
+            }
+        } else {
+            itemID = nil
+        }
+        recentTouches.append(TouchEvent(at: now, location: location,
+                                        phase: touch.phase, itemID: itemID))
+        if recentTouches.count > 20 { recentTouches.removeFirst() }
+        counters["touchEvents", default: 0] += 1
+    }
+
     @objc private func tick(_ link: CADisplayLink) {
         let now = CACurrentMediaTime()
+        frameTimestamps.append(now)
+        if frameTimestamps.count > 120 { frameTimestamps.removeFirst() }
         // Main-thread hitches while the reader is dragging show up as long
         // display-link intervals. A height correction can also look like
         // jitter; these counters separate the two.
@@ -191,7 +242,12 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             counters["frameSamples", default: 0] += 1
             counters["maxFrameMs", default: 0] =
                 max(counters["maxFrameMs"] ?? 0, Int(ms.rounded()))
-            if ms > 20 { counters["slowFrames", default: 0] += 1 }
+            if ms > 20 {
+                counters["slowFrames", default: 0] += 1
+                // The stack of a slow frame names the main-thread blocker.
+                // Kept to the last one; the report prints it verbatim.
+                lastSlowFrameStack = Array(Thread.callStackSymbols.prefix(20))
+            }
         }
         lastTickAt = now
         guard now - lastSampleAt >= 0.1 else { return }
@@ -480,6 +536,15 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                          attributes: visibleAttributes)
         }
 
+        // Touch events: a touch that lands outside every visible cell is a
+        // dead zone; a touch that lands on a cell but produces no response is
+        // a swallowed gesture.
+        checkTouches(controller: controller, view: view)
+
+        // Frame rate: gaps > 33 ms are dropped frames; runs of them are
+        // hitches the reader feels as stutter.
+        checkFrameRate()
+
         // A fitting pass is a SwiftUI layout pass. Run it only when the reader
         // is not scrolling: measuring during a scroll would change the very
         // behaviour this probe is observing.
@@ -638,6 +703,43 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                                 + "currH=\(f(sample.attributeHeight))")
             }
             lastContentSamples[item.itemID] = sample
+        }
+    }
+
+    /// The touch events the window delivered, checked against the visible
+    /// cells. A touch that lands outside every visible cell is a dead zone;
+    /// a touch that lands on a cell but produces no height or offset change
+    /// within 0.3 s is a swallowed gesture.
+    private func checkTouches(controller: TimelineCollectionController,
+                              view: UICollectionView) {
+        let now = CACurrentMediaTime()
+        let visiblePaths = Set(view.indexPathsForVisibleItems)
+        for touch in recentTouches where now - touch.at < 0.3 {
+            guard touch.phase == .began else { continue }
+            if touch.itemID == nil {
+                counters["touchDeadZone", default: 0] += 1
+                recordIssue(kind: "touchDeadZone",
+                            detail: "at=(\(f(touch.location.x)),\(f(touch.location.y))) "
+                                + "no row off=\(f(view.contentOffset.y))")
+            }
+        }
+    }
+
+    /// The frame timestamps the display link recorded, checked for frame-rate
+    /// drops and animation hitches. A gap > 33 ms is a dropped frame; a run
+    /// of gaps > 50 ms is a hitch.
+    private func checkFrameRate() {
+        guard frameTimestamps.count >= 2 else { return }
+        var maxGap: TimeInterval = 0
+        var hitchCount = 0
+        for index in 1..<frameTimestamps.count {
+            let gap = frameTimestamps[index] - frameTimestamps[index - 1]
+            maxGap = max(maxGap, gap)
+            if gap > 0.033 { hitchCount += 1 }
+        }
+        counters["frameRateMaxGapMs", default: 0] = Int((maxGap * 1000).rounded())
+        if hitchCount > 0 {
+            counters["frameRateHitches", default: 0] += hitchCount
         }
     }
 
@@ -819,6 +921,20 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         lines.append("--- ISSUES (newest last) ---")
         for issue in issues.suffix(60) {
             lines.append("I t=\(elapsed(issue.at)) [\(issue.kind)] x\(issue.count) \(issue.detail)")
+        }
+        if !recentTouches.isEmpty {
+            lines.append("--- TOUCHES (newest first) ---")
+            for touch in recentTouches.suffix(10).reversed() {
+                let item = touch.itemID ?? "none"
+                lines.append("T t=\(elapsed(touch.at)) phase=\(touch.phase.rawValue) "
+                    + "at=(\(f(touch.location.x)),\(f(touch.location.y))) item=\(item)")
+            }
+        }
+        if !lastSlowFrameStack.isEmpty {
+            lines.append("--- SLOW FRAME STACK (last) ---")
+            for frame in lastSlowFrameStack {
+                lines.append("  \(frame)")
+            }
         }
         return lines.joined(separator: "\n")
     }

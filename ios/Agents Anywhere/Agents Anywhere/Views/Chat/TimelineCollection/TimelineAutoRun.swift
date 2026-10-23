@@ -801,6 +801,34 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                                 offset: controller.collectionView.contentOffset.y)
     }
 
+    /// Wait until the async measurement pipeline stops moving the layout.
+    /// Rows inserted by the previous phase are still on their 200 pt estimate;
+    /// scrolling to a row before those settle leaves it above the viewport
+    /// once the estimates collapse to their real heights.
+    @discardableResult
+    private func settleLayout(_ controller: TimelineCollectionController,
+                              timeout: TimeInterval = 6) async -> Bool {
+        let start = ProcessInfo.processInfo.systemUptime
+        var lastHeight = controller.layout.contentHeight
+        var lastMeasures = controller.layout.debugSelfMeasureCount
+        var stable = 0
+        while ProcessInfo.processInfo.systemUptime - start < timeout {
+            await wait(120)
+            controller.collectionView.layoutIfNeeded()
+            let height = controller.layout.contentHeight
+            let measures = controller.layout.debugSelfMeasureCount
+            if abs(height - lastHeight) <= 0.5, measures == lastMeasures {
+                stable += 1
+                if stable >= 4 { return true }
+            } else {
+                stable = 0
+                lastHeight = height
+                lastMeasures = measures
+            }
+        }
+        return false
+    }
+
     /// Why the hosted gate can or cannot see its fixture cell. `cellHeight:-1`
     /// alone does not say whether the item lost its index path, the layout
     /// dropped its attributes, or the cell is simply off screen.
@@ -879,6 +907,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         controller.reloadFromContent()
         await wait(800)
         controller.collectionView.layoutIfNeeded()
+        // The previous phase's fixture rows are still estimates; anchoring
+        // before they collapse would measure the scroll position, not the row.
+        await settleLayout(controller)
 
         let item = listItem(entry)
         guard let indexPath = controller.indexPath(for: item) else {
@@ -905,6 +936,16 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         scrollView.setContentOffset(restingOffset, animated: false)
         await wait(350)
         controller.collectionView.layoutIfNeeded()
+        // Coming back is not enough: materializing the rows below can finish
+        // measurements that move this row, so anchor again and prove it is on
+        // screen before the gesture legs read its cell.
+        await settleLayout(controller)
+        controller.collectionView.scrollToItem(at: indexPath, at: .top, animated: false)
+        await wait(250)
+        controller.collectionView.layoutIfNeeded()
+        if !(hostedState(controller, item: item)["visible"] as? Bool ?? false) {
+            failures.append("code hosted: the fixture left the viewport after re-anchoring")
+        }
 
         var phases: [[String: Any]] = []
         for gesture in ["tracking", "decelerating"] {

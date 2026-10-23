@@ -880,9 +880,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         }
 
         // Re-key: new content revision, so the height key starts empty and the
-        // cell must self-measure once. `measureSynchronously` writes the
-        // structural value (56 pt here) into the new key's `.estimate` tier
-        // before apply — the same write the device report's 56 came from.
+        // cell must self-measure once. This row has been displayed, so
+        // `measureSynchronously` must NOT write the structural value into the
+        // new key; the displayed height stays until the cell reports.
         guard let index = entries.firstIndex(where: { $0.id == entry.id }) else { return }
         let revisionBefore = contentSignature(for: item).contentRevision
         let selfMeasuresBefore = controller.layout.debugSelfMeasureCount
@@ -917,6 +917,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         if selfMeasuresStable != selfMeasuresAfterRekey {
             failures.append("code hosted: a measured key self-measured again"
                 + " (\(selfMeasuresAfterRekey)->\(selfMeasuresStable))")
+        }
+        if rekeyEstimate != nil {
+            failures.append("code hosted: a displayed row got a fresh estimate on re-key")
         }
         if !controller.layout.heights.hasMeasuredOrPrecalcHeight(for: freshKey) {
             failures.append("code hosted: the fresh key never became measured")

@@ -313,6 +313,9 @@ final class TimelineCollectionController: UIViewController {
             return
         }
         isPerformingSnapshot = true
+#if AA_TIMELINE_PROBE
+        let probeApplyStart = CACurrentMediaTime()
+#endif
         let oldItems = currentItems
         let oldIDs = Set(oldItems)
         // A window replacement drops the old dynamic rows; a prepend/append
@@ -374,6 +377,9 @@ final class TimelineCollectionController: UIViewController {
             }
         }
         measureSynchronously(toMeasure, width: columnWidth)
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteMeasureDuration(CACurrentMediaTime() - probeApplyStart)
+#endif
         // Recompute the prepend target from the heights this apply will use.
         if let projection = insertionProjection,
            let projected = projectedHistoryLayout(items: items,
@@ -399,6 +405,9 @@ final class TimelineCollectionController: UIViewController {
         currentItems = items
         dataSource.apply(snapshot, animatingDifferences: animating) { [weak self] in
             guard let self else { return }
+#if AA_TIMELINE_PROBE
+            TimelineProbeStore.shared.noteApplyDuration(CACurrentMediaTime() - probeApplyStart)
+#endif
             self.isPerformingSnapshot = false
             if resolveWindowBottom { self.resolveWindowReplacementBottom() }
             self.onApplyCompleted?()
@@ -1092,6 +1101,12 @@ final class TimelineCollectionController: UIViewController {
             for item in pending {
                 guard let self, !Task.isCancelled, self.currentItems.contains(item) else { return }
                 guard let content = self.content else { return }
+                // Parsing Markdown is main-thread work. A pending Code group
+                // measured under a drag is the scroll jank the device reported
+                // on 2026-10-23; the scroll-end callbacks start a fresh pass.
+                if self.collectionView.isTracking || self.collectionView.isDecelerating {
+                    return
+                }
                 // A Code group's height comes from its own structural
                 // measurement. A width or typography change re-keys it without
                 // an apply that would carry the new measurement; settle it
@@ -1102,6 +1117,9 @@ final class TimelineCollectionController: UIViewController {
                     self.layout.applyMeasuredHeight(
                         exact, for: item.itemID,
                         key: content.heightKey(for: item, width: width))
+                    // One row per runloop turn; the next parse must not stack
+                    // behind this one inside a single frame.
+                    await Task.yield()
                     continue
                 }
                 // Async Markdown is settled by the visible cell, not by this
@@ -2027,6 +2045,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         layout.noteDragDidEnd(willDecelerate: decelerate)
         scheduleVisibleCellSettle()
         scheduleVisibleCellFrameSync()
+        schedulePendingMeasurements()
         scheduleUserScrollSettle()
         publishViewport()
     }
@@ -2039,6 +2058,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         layout.noteDecelerationDidEnd()
         scheduleVisibleCellSettle()
         scheduleVisibleCellFrameSync()
+        schedulePendingMeasurements()
         scheduleUserScrollSettle()
         scheduleVisibleCellSettle()
         publishViewport()

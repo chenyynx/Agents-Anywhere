@@ -173,6 +173,20 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         revision &+= 1
     }
 
+    func noteMeasureDuration(_ seconds: TimeInterval) {
+        let ms = Int((max(0, seconds) * 1000).rounded())
+        counters["measureCount", default: 0] += 1
+        counters["measureMsTotal", default: 0] += ms
+        counters["measureMsMax", default: 0] = max(counters["measureMsMax"] ?? 0, ms)
+    }
+
+    func noteApplyDuration(_ seconds: TimeInterval) {
+        let ms = Int((max(0, seconds) * 1000).rounded())
+        counters["applyCount", default: 0] += 1
+        counters["applyMsTotal", default: 0] += ms
+        counters["applyMsMax", default: 0] = max(counters["applyMsMax"] ?? 0, ms)
+    }
+
     func noteHeightChange(itemID: String, item: TimelineListItem?,
                           old: CGFloat, new: CGFloat, source: String) {
         lastHeights[itemID] = new

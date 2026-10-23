@@ -174,21 +174,7 @@ final class TimelineListLayout: UICollectionViewLayout {
             let streamingHeight = streamingHeights[item.itemID]
             let height = streamingHeight
                 ?? heights.resolvedHeight(for: key, itemID: item.itemID, fallback: estimate)
-            // Official (0x101a3ff20): a width change clears `isMeasured`; a
-            // same-width content change does not. The height key carries the
-            // content revision, so a reconfigure would otherwise look like a
-            // new key and let the cell self-measure again — the probe showed
-            // the self-measure and the settle fit trading a streaming row
-            // back and forth 12 times. Keep the measured flag while the row
-            // has a displayed height at the same width; the settle pass owns
-            // the new content's height.
             let hasMeasuredHeight = heights.hasMeasuredOrPrecalcHeight(for: key)
-                || (heights.hasEverBeenDisplayed(item.itemID)
-                    && heights.displayedHeight(for: item.itemID) != nil
-                    && lastPreparedKeyRevision[item.itemID].map {
-                        heights.currentKey(for: item.itemID)?.width == key.width
-                            && $0 != key.contentRevision
-                    } == true)
             if hasMeasuredHeight {
                 heights.resolvePending(item.itemID)
             } else {

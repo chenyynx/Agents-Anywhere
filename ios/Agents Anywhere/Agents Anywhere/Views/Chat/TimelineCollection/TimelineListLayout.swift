@@ -549,6 +549,15 @@ final class TimelineListLayout: UICollectionViewLayout {
         return affected
     }
 
+    /// The rows to invalidate for a height change, bounded by the item count
+    /// the current snapshot can serve. A commit can run while a diffable
+    /// update has already changed that count; invalidating an index path that
+    /// no longer exists traps inside UIKit (`_setNeedsVisibleCellsUpdate`).
+    private func invalidatablePaths(by attributes: TimelineListLayoutAttributes) -> [IndexPath] {
+        let liveCount = host?.layoutItemCount ?? attributesByIndex.count
+        return cellUpdatesAffected(by: attributes).filter { $0.item < liveCount }
+    }
+
     /// Folds one height correction into the update's single absolute offset.
     /// Official `offsetOwedToUpdate`: repeated changes in the same transaction
     /// accumulate on the target instead of posting adjustments.
@@ -586,7 +595,7 @@ final class TimelineListLayout: UICollectionViewLayout {
         }
 #endif
         let context = UICollectionViewLayoutInvalidationContext()
-        context.invalidateItems(at: cellUpdatesAffected(by: attributes))
+        context.invalidateItems(at: invalidatablePaths(by: attributes))
         if isInsideUpdate {
             if let correction, correction != 0 {
                 if insertionOwed != nil,
@@ -773,7 +782,7 @@ final class TimelineListLayout: UICollectionViewLayout {
             suppressContentOffsetAdjustment: state.suppressContentOffsetAdjustment,
             hasCachedHeight: heights.hasMeasuredOrPrecalcHeight(for: key))
         let context = UICollectionViewLayoutInvalidationContext()
-        context.invalidateItems(at: cellUpdatesAffected(by: attributes))
+        context.invalidateItems(at: invalidatablePaths(by: attributes))
         if abs(delta) > 0.5 {
             context.contentSizeAdjustment = CGSize(width: 0, height: delta)
         }
@@ -1133,7 +1142,8 @@ final class TimelineListLayout: UICollectionViewLayout {
 #endif
         }
         guard changed else { return }
-        context.invalidateItems(at: Array(affected))
+        let liveCount = host?.layoutItemCount ?? attributesByIndex.count
+        context.invalidateItems(at: affected.filter { $0.item < liveCount })
         if isInsideUpdate {
             if abs(offset) > 0.5 {
                 if insertionOwed != nil,

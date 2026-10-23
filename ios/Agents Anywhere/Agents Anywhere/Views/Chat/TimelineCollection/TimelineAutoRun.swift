@@ -284,8 +284,10 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await foldCycles(); persist(phase: "foldCycles")
         await interleavedApplies(); persist(phase: "interleavedApplies")
         await scrollCost(); persist(phase: "scrollCost")
-        await codeHostedHeight(); persist(phase: "codeHostedHeight")
         await gestureFreeze(); persist(phase: "gestureFreeze")
+        // Runs last: it inserts a fixture row mid-list, and the earlier
+        // scenarios assume their original row set.
+        await codeHostedHeight(); persist(phase: "codeHostedHeight")
         writeReport()
     }
 
@@ -982,6 +984,12 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             .map(Double.init) ?? -1
         hostedReport["phases"] = phases
         report["codeHostedHeight"] = hostedReport
+
+        // Leave the timeline as the earlier scenarios found it.
+        entries.removeAll { $0.id == entry.id }
+        contentGeneration += 1
+        controller.reloadFromContent()
+        await wait(300)
     }
 
     /// One gesture leg: placeholder then real height under the test gesture.

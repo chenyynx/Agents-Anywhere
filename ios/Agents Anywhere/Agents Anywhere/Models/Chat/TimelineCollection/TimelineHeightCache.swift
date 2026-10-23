@@ -177,6 +177,10 @@ nonisolated final class TimelineHeightCache {
         for key in Array(entries.keys) where !itemIDs.contains(key.itemID) {
             entries[key] = nil
         }
+        // A row can be marked displayed before its first key exists; both
+        // maps are bounded by the live window.
+        everDisplayed.formIntersection(itemIDs)
+        displayedHeights = displayedHeights.filter { itemIDs.contains($0.key) }
     }
 
     /// DEBUG invariant for the layout: every cached item still carries the key

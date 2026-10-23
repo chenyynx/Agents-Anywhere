@@ -354,6 +354,12 @@ final class TimelineListLayout: UICollectionViewLayout {
             let y = owed.targetOffset(proposed: proposedContentOffset.y)
             insertionOwed = owed
             lastReturnedContentOffset = y
+#if DEBUG
+            if abs(y - proposedContentOffset.y) > 0.5 {
+                traceOffset("targetInsertion", before: proposedContentOffset.y,
+                            after: y, note: "owed insertion")
+            }
+#endif
             return CGPoint(x: proposedContentOffset.x, y: y)
         }
         // A height change applied inside the update without a prepend target:
@@ -363,6 +369,12 @@ final class TimelineListLayout: UICollectionViewLayout {
             let y = owed.offer(proposed: proposedContentOffset.y)
             heightOwedToUpdate = owed
             lastReturnedContentOffset = y
+#if DEBUG
+            if abs(y - proposedContentOffset.y) > 0.5 {
+                traceOffset("targetHeightOwed", before: proposedContentOffset.y,
+                            after: y, note: "owed height")
+            }
+#endif
             return CGPoint(x: proposedContentOffset.x, y: y)
         }
         lastReturnedContentOffset = proposedContentOffset.y
@@ -424,6 +436,10 @@ final class TimelineListLayout: UICollectionViewLayout {
     /// distinguishes "content is genuinely shorter" from "the old size won".
     private func applyOffsetFallback(_ y: CGFloat) {
         guard let collectionView else { return }
+#if DEBUG
+        traceOffset("offsetFallback", before: collectionView.contentOffset.y,
+                    after: y)
+#endif
         collectionView.layoutIfNeeded()
         let first = clampedContentOffset(y, in: collectionView)
         collectionView.setContentOffset(CGPoint(x: collectionView.contentOffset.x, y: first), animated: false)
@@ -579,6 +595,12 @@ final class TimelineListLayout: UICollectionViewLayout {
 #endif
         let context = UICollectionViewLayoutInvalidationContext()
         context.invalidateItems(at: invalidatablePaths(by: attributes))
+#if DEBUG
+        let traceBefore = collectionView.contentOffset.y
+        traceOffset("invalidate", itemID: itemID, delta: contentSizeDelta,
+                    correction: correction, before: traceBefore,
+                    note: isInsideUpdate ? "inside" : "outside")
+#endif
         if isInsideUpdate {
             if let correction, correction != 0 {
                 if insertionOwed != nil,
@@ -597,6 +619,10 @@ final class TimelineListLayout: UICollectionViewLayout {
             }
         }
         collectionView.collectionViewLayout.invalidateLayout(with: context)
+#if DEBUG
+        traceOffset("invalidateApplied", itemID: itemID,
+                    after: collectionView.contentOffset.y)
+#endif
     }
 
     // MARK: - Cell self-sizing exceptions (category B)
@@ -620,6 +646,24 @@ final class TimelineListLayout: UICollectionViewLayout {
     /// asserts an unmeasured row measures itself once, never again after the
     /// cache says measured.
     private(set) var debugSelfMeasureCount = 0
+    /// Why the offset moved during a height application. The gate reads this
+    /// instead of guessing which path took the reader's scroll.
+    private(set) var debugOffsetTrace: [[String: Any]] = []
+    func clearDebugOffsetTrace() { debugOffsetTrace.removeAll() }
+    private func traceOffset(_ kind: String, itemID: String = "",
+                             delta: CGFloat = 0, correction: CGFloat? = nil,
+                             before: CGFloat? = nil, after: CGFloat? = nil,
+                             note: String = "") {
+        if debugOffsetTrace.count >= 24 { debugOffsetTrace.removeFirst() }
+        var entry: [String: Any] = ["kind": kind]
+        if !itemID.isEmpty { entry["item"] = itemID }
+        if delta != 0 { entry["delta"] = Double(delta) }
+        if let correction { entry["correction"] = Double(correction) }
+        if let before { entry["before"] = Double(before) }
+        if let after { entry["after"] = Double(after) }
+        if !note.isEmpty { entry["note"] = note }
+        debugOffsetTrace.append(entry)
+    }
 #endif
 
     private func notePreferred(_ key: String) {

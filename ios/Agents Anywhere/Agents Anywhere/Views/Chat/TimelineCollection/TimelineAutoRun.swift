@@ -429,6 +429,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             }
             report["fold"] = ["collapsed": collapsed, "expanded": expanded,
                               "content": sample?.content ?? 0,
+                              "entryExpanded": entries.first(where: { $0.id == entry.id })?.expanded ?? false,
+                              "fitProbe": controller.debugPreferredFitProbe,
                               "diagnostics": controller.preferredDiagnostics,
                               "layoutDiagnostics": controller.layout.preferredHeightDiagnostics,
                               "prepareCount": controller.layout.prepareCount,
@@ -993,6 +995,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await wait(250)
         controller.collectionView.layoutIfNeeded()
         let anchorBefore = controller.screenY(for: anchorItem) ?? .nan
+        let fixtureScreenBefore = controller.screenY(for: item) ?? .nan
         controller.setTestGestureState(tracking: true, decelerating: false)
         entries[index].text += "\nlet more = 41"
         entries[index].revision += 1
@@ -1001,6 +1004,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await wait(400)
         controller.collectionView.layoutIfNeeded()
         let anchorDuring = controller.screenY(for: anchorItem) ?? .nan
+        let fixtureScreenDuring = controller.screenY(for: item) ?? .nan
         let heightAtRelease = controller.layout.attributes(for: item.itemID)?.frame.height ?? -1
         controller.setTestGestureState(tracking: false, decelerating: false)
         await wait(700)
@@ -1012,6 +1016,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         }
         let frameFinal = controller.layout.attributes(for: item.itemID)?.frame.height ?? -1
         let anchorAfter = controller.screenY(for: anchorItem) ?? .nan
+        let fixtureScreenAfter = controller.screenY(for: item) ?? .nan
         if abs(frameFinal - finalFit) > 0.5 {
             failures.append("code hosted: frame \(frameFinal) != fit \(finalFit) after the gesture")
         }
@@ -1019,13 +1024,15 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             failures.append("code hosted: release applied a second height"
                 + " \(heightAtRelease)->\(frameFinal)")
         }
-        if anchorBefore.isFinite, abs(anchorDuring - anchorBefore) > 0.5 {
-            failures.append("code hosted: the anchor moved during the drag"
-                + " \(anchorBefore)->\(anchorDuring)")
+        // The changed row's own top is the reader's anchor; the row below is
+        // pushed down by the growth, which is the official behavior.
+        if fixtureScreenBefore.isFinite, abs(fixtureScreenDuring - fixtureScreenBefore) > 0.5 {
+            failures.append("code hosted: the changed row moved during the drag"
+                + " \(fixtureScreenBefore)->\(fixtureScreenDuring)")
         }
-        if anchorBefore.isFinite, abs(anchorAfter - anchorBefore) > 0.5 {
-            failures.append("code hosted: the anchor moved after release"
-                + " \(anchorBefore)->\(anchorAfter)")
+        if fixtureScreenBefore.isFinite, abs(fixtureScreenAfter - fixtureScreenBefore) > 0.5 {
+            failures.append("code hosted: the changed row moved after release"
+                + " \(fixtureScreenBefore)->\(fixtureScreenAfter)")
         }
 
         var hostedReport: [String: Any] = [:]
@@ -1042,6 +1049,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         hostedReport["anchorBefore"] = anchorBefore.isFinite ? Double(anchorBefore) : -1
         hostedReport["anchorDuring"] = anchorDuring.isFinite ? Double(anchorDuring) : -1
         hostedReport["anchorAfter"] = anchorAfter.isFinite ? Double(anchorAfter) : -1
+        hostedReport["fixtureScreenBefore"] = fixtureScreenBefore.isFinite ? Double(fixtureScreenBefore) : -1
+        hostedReport["fixtureScreenDuring"] = fixtureScreenDuring.isFinite ? Double(fixtureScreenDuring) : -1
+        hostedReport["fixtureScreenAfter"] = fixtureScreenAfter.isFinite ? Double(fixtureScreenAfter) : -1
         hostedReport["stateAfterFirstSettle"] = stateAfterFirstSettle
         report["codeHostedHeight"] = hostedReport
 
@@ -1206,7 +1216,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         controller.collectionView.scrollToItem(at: indexPath, at: .top, animated: false)
         await wait(250)
         controller.collectionView.layoutIfNeeded()
+        controller.layout.clearDebugOffsetTrace()
 
+        let offsetBefore = controller.collectionView.contentOffset.y
         let before = visibleGestureSamples(controller)
         let targetBefore = controller.layout.attributes(for: targetItem.itemID)?.frame.height ?? 0
         let targetScreenBefore = before[targetItem.itemID]?.screenY
@@ -1224,6 +1236,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await wait(320)
         controller.collectionView.layoutIfNeeded()
 
+        let offsetAfter = controller.collectionView.contentOffset.y
         let after = visibleGestureSamples(controller)
         let diff = diffGestureSamples(before, after, upTo: targetScreenBefore)
         let counter = controller.layout.debugHeightApplicationsDuringGesture
@@ -1292,6 +1305,11 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                 "targetHeightBefore": Double(targetBefore),
                 "targetHeightDuring": Double(targetDuring),
                 "anchorScreenY": anchorScreenBefore.map(Double.init) ?? -1,
+                "offsetBefore": Double(offsetBefore),
+                "offsetAfter": Double(offsetAfter),
+                "targetMinYBefore": Double(before[targetItem.itemID]?.attributeMinY ?? -1),
+                "targetMinYAfter": Double(after[targetItem.itemID]?.attributeMinY ?? -1),
+                "offsetTrace": controller.layout.debugOffsetTrace,
                 "staleCells": stale.count,
                 "overlaps": overlaps]
     }

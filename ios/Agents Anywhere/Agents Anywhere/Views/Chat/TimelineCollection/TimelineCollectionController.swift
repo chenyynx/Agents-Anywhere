@@ -808,6 +808,10 @@ final class TimelineCollectionController: UIViewController {
     /// frames and apply when it changes. This is the legacy path for the
     /// exception rows, which have no `heightDidChange` channel.
     private(set) var preferredDiagnostics: [String: Int] = [:]
+#if DEBUG
+    /// The last few fitting requests of the legacy exception path, for the gate.
+    private(set) var debugPreferredFitProbe: [String] = []
+#endif
 
     private func notePreferred(_ key: String) {
         preferredDiagnostics[key, default: 0] += 1
@@ -948,10 +952,19 @@ final class TimelineCollectionController: UIViewController {
                 notePreferred("staleFit"); continue
             }
             let current = layout.attributes(for: item.itemID)?.frame.height ?? 0
-            if abs(fitting - current) > 0.5 {
+            // Compare the height this pass would apply, not the raw fit: a
+            // 16.33 pt fit rounds to the 17 pt frame, and comparing the raw
+            // value kept requesting an apply that `applyPreferredHeight`
+            // then rejected as "no delta" on every pass.
+            let target = ceil(fitting)
+            if abs(target - current) > 0.5 {
                 notePreferred("applyRequested")
                 let policy = content.heightPolicy(for: item)
-                let target = ceil(fitting)
+#if DEBUG
+                debugPreferredFitProbe.append("fit=\(fitting) target=\(target)"
+                    + " current=\(current)")
+                if debugPreferredFitProbe.count > 12 { debugPreferredFitProbe.removeFirst() }
+#endif
 #if AA_TIMELINE_PROBE
                 TimelineProbeStore.shared.noteHeightChange(
                     itemID: item.itemID, item: item, old: current, new: target,

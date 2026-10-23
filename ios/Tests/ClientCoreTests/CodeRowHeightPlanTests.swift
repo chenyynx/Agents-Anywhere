@@ -42,7 +42,7 @@ import Testing
         let row = CodeRowHeightPlan.Row(blocks: [.tools(segments: 3)])
         // The block's padding is paid once, not per segment.
         #expect(CodeRowHeightPlan.height(rows: [row], showsWorkingStatus: false,
-                                         metrics: metrics) == 8 + 3 * 36 + 10)
+                                         metrics: metrics) == CGFloat(8 + 3 * 36 + 10))
     }
 
     @Test func textBlocksMeasureTheirOwnHeight() {
@@ -67,7 +67,7 @@ import Testing
         let row = CodeRowHeightPlan.Row(blocks: [.tools(segments: 1)])
         let withStatus = CodeRowHeightPlan.height(rows: [row], showsWorkingStatus: true,
                                                   metrics: metrics)
-        #expect(withStatus == 54 + 16 + 28)
+        #expect(withStatus == CGFloat(54 + 16 + 28))
 
         // A reasoning-only owner row renders just the status line.
         let statusOnly = CodeRowHeightPlan.height(rows: [], showsWorkingStatus: true,
@@ -84,6 +84,6 @@ import Testing
     @Test func genericRowUsesTheUnscaledLineBox() {
         let row = CodeRowHeightPlan.Row(blocks: [.other])
         #expect(CodeRowHeightPlan.height(rows: [row], showsWorkingStatus: false,
-                                         metrics: metrics) == 24 + 8 + 10)
+                                         metrics: metrics) == CGFloat(24 + 8 + 10))
     }
 }

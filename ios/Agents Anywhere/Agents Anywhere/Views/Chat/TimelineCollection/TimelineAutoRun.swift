@@ -930,12 +930,22 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             failures.append("code hosted: no index path for \(entry.id)")
             return
         }
+        // A synthetic scroll never runs the drag callbacks that disarm the
+        // bottom target; a settle pass can then repin the list before the
+        // anchor is read. Disarm, scroll, settle, disarm and anchor again.
+        controller.disarmBottom()
         controller.collectionView.scrollToItem(at: indexPath, at: .top, animated: false)
         await wait(400)
         controller.collectionView.layoutIfNeeded()
-        // A synthetic scroll never runs the drag callbacks that disarm the
-        // bottom target; this scenario is mid-list, so disarm explicitly.
         controller.disarmBottom()
+        await settleLayout(controller)
+        controller.collectionView.scrollToItem(at: indexPath, at: .top, animated: false)
+        await wait(250)
+        controller.collectionView.layoutIfNeeded()
+        let anchoredState = hostedState(controller, item: item)
+        if !(anchoredState["visible"] as? Bool ?? false) {
+            failures.append("code hosted: the fixture left the viewport after anchoring \(anchoredState)")
+        }
         guard let firstFit = await settleHostedHeight(controller, item: item, timeout: 8) else {
             let state = hostedState(controller, item: item)
             failures.append("code hosted: the cell never settled on its fit \(state)")

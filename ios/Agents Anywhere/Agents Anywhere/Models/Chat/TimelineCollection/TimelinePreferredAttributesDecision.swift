@@ -131,12 +131,13 @@ nonisolated struct TimelinePreferredAttributesDecision: Equatable {
         let isBrowsing = isTracking || isDecelerating
         if isBrowsing, hasCachedHeight, delta <= 0 { return .deferred }
         if isBrowsing || keyboardTransition { return .accept }
-        // 1. Fully above the viewport: its growth pushes everything the reader
-        //    sees, so compensate.
+        // 1. Fully above the placement anchor (the row containing the
+        //    viewport top): its growth pushes everything the reader sees.
         if cellMaxY <= viewportTop { return .accept(correction: delta) }
-        // 2. Visible and not streaming: the interactive row itself is moving;
-        //    compensate the rows below it.
-        if cellMinY >= viewportTop, cellMinY < viewportBottom, !isStreaming { return .accept(correction: delta) }
+        // 2. The anchor row itself and anything below it grow inside the
+        //    layout: the reader's offset does not move. The old rule
+        //    compensated every visible row, which threw a growing row off the
+        //    top of the screen (the device gate measured 388 pt).
         // 3. Streaming while pinned to the bottom: grow and re-pin in the same
         //    frame instead of letting the bottom fall behind.
         if isStreaming, isAutoScrollPinning, delta > 0 { return .accept(correction: delta) }

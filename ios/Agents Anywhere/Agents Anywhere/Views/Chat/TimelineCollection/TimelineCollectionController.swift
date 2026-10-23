@@ -1946,11 +1946,42 @@ extension TimelineCollectionController: TimelineListLayoutHost {
         state.isTracking = phase.phase == .interacting
         state.isDecelerating = phase.phase == .decelerating
         state.userIsScrolling = phase.userIsScrolling
+#if DEBUG
+        // Simulator gates drive the drag invariants without a real finger.
+        // The override must reach every decision helper, not just the
+        // controller's own guards, so apply it here where the layout reads the
+        // interaction state.
+        if let testGestureState {
+            state.isTracking = testGestureState.tracking
+            state.isDecelerating = testGestureState.decelerating
+            state.userIsScrolling = testGestureState.tracking || testGestureState.decelerating
+        }
+#endif
         state.keyboardTransition = keyboardTransitionActive
         state.interactionPresented = interactionPresented
         state.mode = mode
         state.suppressContentOffsetAdjustment = navigationSuspended
         return state
+    }
+
+#if DEBUG
+    /// Set by `TimelineAutoRun` only. Never reachable from the product UI.
+    private(set) var testGestureState: (tracking: Bool, decelerating: Bool)?
+
+    func setTestGestureState(tracking: Bool, decelerating: Bool) {
+        testGestureState = (tracking: tracking, decelerating: decelerating)
+    }
+#endif
+
+    /// One definition for every guard that must not mutate geometry under the
+    /// reader's finger. Release builds read the real collection view.
+    var isUserScrolling: Bool {
+#if DEBUG
+        if let testGestureState {
+            return testGestureState.tracking || testGestureState.decelerating
+        }
+#endif
+        return collectionView?.isTracking == true || collectionView?.isDecelerating == true
     }
 
     func layoutDidSettlePull() { settlePulls() }

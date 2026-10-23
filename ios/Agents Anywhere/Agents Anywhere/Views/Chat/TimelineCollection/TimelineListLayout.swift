@@ -434,6 +434,12 @@ final class TimelineListLayout: UICollectionViewLayout {
                                   state: TimelineLayoutInteractionState,
                                   probeSource: String) {
         guard let collectionView else { return }
+#if DEBUG
+        if let state = host?.layoutInteractionState(),
+           state.isTracking || state.isDecelerating {
+            debugHeightApplicationsDuringGesture += 1
+        }
+#endif
 #if AA_TIMELINE_PROBE
         if !probeSource.isEmpty {
             TimelineProbeStore.shared.noteHeightChange(
@@ -472,6 +478,12 @@ final class TimelineListLayout: UICollectionViewLayout {
     private(set) var lastPreferredAppliedHeight: [String: CGFloat] = [:]
     private(set) var lastPreparedHeight: [String: CGFloat] = [:]
     private(set) var lastPreparedKeyRevision: [String: Int] = [:]
+#if DEBUG
+    /// Gate counter: a height change applied while the reader's finger is down
+    /// or the list is coasting. Must stay zero once the official contract is
+    /// in place (`TimelineAutoRun.gestureFreeze`).
+    private(set) var debugHeightApplicationsDuringGesture = 0
+#endif
 
     private func notePreferred(_ key: String) {
         preferredHeightDiagnostics[key, default: 0] += 1

@@ -251,6 +251,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// fixture). A live group is skipped: parsing the growing text on every
     /// 0.1 s flush would be quadratic, and its estimate is only visible while
     /// the reader is watching the streaming row.
+    /// Code message rows follow the official hosted-cell contract: the cell
+    /// self-measures once and reports later content changes. The Chat rows keep
+    /// the legacy controller polling path for now.
+    func usesCellReportedHeight(for item: TimelineListItem) -> Bool {
+        guard case .group(let id) = item else { return false }
+        return groupsByID[id]?.explicitID != nil
+    }
+
     func measuredCodeGroupHeight(for item: TimelineListItem, width: CGFloat) -> CGFloat? {
         guard case .group(let id) = item,
               let group = groupsByID[id], group.explicitID != nil,

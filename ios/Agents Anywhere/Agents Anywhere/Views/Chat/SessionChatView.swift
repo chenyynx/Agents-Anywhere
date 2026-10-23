@@ -179,6 +179,11 @@ struct SessionChatView: View, Equatable {
                     }
                 }
                 .overlay { if model.showsOpeningMask { openingMask } }
+#if AA_TIMELINE_PROBE
+                .overlay(alignment: .topTrailing) {
+                    TimelineProbeOverlay().padding(.top, 8)
+                }
+#endif
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     composerDockArea(maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)))
                 }

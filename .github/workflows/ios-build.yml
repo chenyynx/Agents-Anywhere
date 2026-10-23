@@ -27,6 +27,10 @@ on:
         description: "Build the app and upload an unsigned IPA artifact (feature-branch verification; never touches the ipa-dev release)"
         type: boolean
         default: false
+      probe:
+        description: "Compile the on-device timeline probe (-DAA_TIMELINE_PROBE) into the IPA"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -116,6 +120,8 @@ jobs:
           restore-keys: dd-${{ runner.os }}-
 
       - name: Build (unsigned)
+        env:
+          PROBE_FLAG: ${{ github.event.inputs.probe == 'true' && '-DAA_TIMELINE_PROBE' || '' }}
         run: |
           set -o pipefail
           cd "ios/Agents Anywhere"
@@ -130,7 +136,7 @@ jobs:
             ENABLE_DEBUG_DYLIB=NO \
             SWIFT_NUM_THREADS=2 \
             SWIFT_COMPILATION_MODE=incremental \
-            'OTHER_SWIFT_FLAGS=-Xfrontend -disable-batch-mode' \
+            "OTHER_SWIFT_FLAGS=-Xfrontend -disable-batch-mode $PROBE_FLAG" \
             -derivedDataPath build/DerivedData \
             2>&1 | tee "$RUNNER_TEMP/build.log" | tail -40
 

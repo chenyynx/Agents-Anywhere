@@ -115,6 +115,12 @@ final class SessionTimelinePresentation {
     @ObservationIgnored private var pendingWasStaged = false
 
     func flush(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        TimelineProbe.flush(rows: pending?.count ?? 0) {
+            flushMeasured(now: now)
+        }
+    }
+
+    private func flushMeasured(now: TimeInterval) {
         if let pending {
             let presented = Set(rows.map(\.id))
             let previousTail = rows.last?.value.orderSeq ?? Int.min

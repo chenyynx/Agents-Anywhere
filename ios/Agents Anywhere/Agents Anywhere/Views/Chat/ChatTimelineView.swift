@@ -106,6 +106,7 @@ struct ChatTimelineView: View {
                 @unknown default: mapped = .idle
                 }
                 let current = TimelineViewport(geometry: context.geometry)
+                TimelineProbe.setScrolling(mapped == .interacting || mapped == .decelerating)
                 let wasInteracting = scrolling.phase == .interacting
                 viewportSample.value = current
                 scrolling.geometryChanged(current)
@@ -579,6 +580,10 @@ private struct ChatTimelineContent: View, Equatable {
             && lhs.queueRoster == rhs.queueRoster
     }
     var body: some View {
+        // Probe hooks: no-ops unless a probe build enabled the store, and
+        // `let _ =` keeps them legal inside the ViewBuilder body.
+        let _ = TimelineProbe.session(model.session.id)
+        let _ = TimelineProbe.bodyEvaluated(rows: model.timeline.rows.count)
         let visibleNotices = model.session.notices.notices.filter { $0.isVisible && !$0.blocks(model.session.id) }
         let interactionTargets = Set(model.session.notices.notices
             .filter(\.isVisible).compactMap(\.timelineTargetID))

@@ -449,11 +449,12 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
                 hasCachedHeight: cached)
         }
         // Official: while the finger is on the list every height change is
-        // parked (`rowsOwedToNextUpdate` / `isFingerOnTheList`), not just the
-        // shrinking ones.
+        // parked (`rowsOwedToNextUpdate` / `isFingerOnTheList`). A first
+        // measurement is not a change — it is a new row entering — so it is
+        // not parked.
         #expect(run(delta: -20).height == .deferUntilSettled)
         #expect(run(delta: 20).height == .deferUntilSettled)
-        #expect(run(delta: -20, cached: false).height == .deferUntilSettled)
+        #expect(run(delta: -20, cached: false).height == .accept)
     }
 
     @Test func keyboardTransitionAndSuppressionNeverMoveTheOffset() {
@@ -506,11 +507,12 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
                 keyboardTransition: false, hasCachedHeight: cached)
         }
         // Official: while the finger is on the list every height change is
-        // parked (`rowsOwedToNextUpdate` / `isFingerOnTheList`), not just the
-        // shrinking ones.
+        // parked (`rowsOwedToNextUpdate` / `isFingerOnTheList`). A first
+        // measurement is not a change — it is a new row entering — so it is
+        // not parked.
         #expect(run(delta: -10).height == .deferUntilSettled)
         #expect(run(delta: 10).height == .deferUntilSettled)
-        #expect(run(delta: -10, cached: false).height == .deferUntilSettled)
+        #expect(run(delta: -10, cached: false).height == .accept)
     }
 
     @Test func autoScrollPinningDefinition() {

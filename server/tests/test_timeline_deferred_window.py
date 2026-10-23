@@ -1425,7 +1425,7 @@ def test_a_long_reasoning_tail_is_bounded_and_stays_readable(tmp_path) -> None:
     assert len(reasoning) == 120
     for item in reasoning:
         assert item["content"].get("text"), item["id"]
-    assert len(response.content) < 2_200_000
+    assert len(response.content) <= 2 * 1024 * 1024
 
 
 @pytest.mark.anyio
@@ -1565,6 +1565,10 @@ def test_active_rows_survive_the_budget_trim(tmp_path, monkeypatch) -> None:
     _, access_token, session_id, headers = create_connector_and_session(
         client, runtime="claude"
     )
+    # The running row is larger than the tail allowance. The trim walks
+    # oldest-first and stops at 256KB, so a small running row would never be
+    # reached and the guard would go untested.
+    running_output = "x" * 400_000
     _post_sync(
         client,
         access_token,
@@ -1586,7 +1590,7 @@ def test_active_rows_survive_the_budget_trim(tmp_path, monkeypatch) -> None:
                 "running",
                 order_seq=42,
                 status="running",
-                output="x" * 12_000,
+                output=running_output,
             )
         ],
     )
@@ -1606,9 +1610,59 @@ def test_active_rows_survive_the_budget_trim(tmp_path, monkeypatch) -> None:
     body = response.json()
     by_id = {item["id"]: item for item in body["items"]}
     assert by_id["running"]["content"].get("deferred") is not True
-    assert by_id["running"]["content"].get("output") == "x" * 12_000
+    assert by_id["running"]["content"].get("output") == running_output
     assert any(
         item["content"].get("deferred") is True
         for item in body["items"]
         if item["id"].startswith("done")
     )
+
+
+def test_a_single_active_row_is_the_documented_budget_exception(tmp_path) -> None:
+    """An active row stays complete even when it alone exceeds the budget.
+
+    The deliberate trade-off: it is the live tail, its next frame carries the
+    whole row, and waiting_approval also seats an interaction. The window
+    still carries the conversation anchor; only this one live row may push the
+    response past the ceiling.
+    """
+
+    client = make_client(tmp_path)
+    _, access_token, session_id, headers = create_connector_and_session(
+        client, runtime="claude"
+    )
+    running_output = "x" * 3_000_000
+    _post_sync(
+        client,
+        access_token,
+        session_id,
+        [
+            _message_payload(session_id, "m1", order_seq=1),
+            _tool_payload(
+                session_id,
+                "running",
+                order_seq=2,
+                status="running",
+                output=running_output,
+            ),
+        ],
+    )
+
+    response = client.get(
+        f"/sessions/{session_id}/timeline",
+        headers=headers,
+        params={
+            "mode": "latest",
+            "limit": 100,
+            "excludeAgentChildren": True,
+            "deferActivity": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["deferredActivity"] is True
+    by_id = {item["id"]: item for item in body["items"]}
+    assert by_id["running"]["content"].get("deferred") is not True
+    assert by_id["running"]["content"].get("output") == running_output
+    assert "m1" in by_id
+    assert len(response.content) > 2 * 1024 * 1024

@@ -1,5 +1,7 @@
 # 任务单：聊天链接内置浏览器（SFSafariViewController）
 
+> ⚠️ **已被 `docs/embedded-tailscale-browser-task-sheet.md` 取代**。pp 2026-10-23 定：AA 必须自带 Tailscale，内置浏览器必须能走 App 内代理，SFSafariViewController 方案作废。
+
 - 日期：2026-10-23
 - 级别：M（单端 iOS：1 个新视图 + 1 个路由函数 + 1 处钩子 + 单测）
 - 分支：`feat/ios-in-app-browser`（基于 `origin/dev` `9ad2abe1`；不合 dev，出包走分支）

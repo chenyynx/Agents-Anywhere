@@ -35,7 +35,24 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         let old: CGFloat
         let new: CGFloat
         let source: String
-        let estimate: CGFloat
+        /// The actual cache tier the row carries at the moment of the write.
+        /// `TimelineHeightCache` does not expose which tier answered, so this
+        /// is derived from `tieredHeight` + `hasMeasuredOrPrecalcHeight`.
+        let tier: String
+        /// The height `prepare` will adopt for the current key: tiered value,
+        /// then displayed height, then the crude estimate.
+        let resolved: CGFloat
+        let displayed: CGFloat
+        /// The adapter's structured exact height for a Code group, if it can
+        /// be computed cheaply (nil while the group is streaming or for rows
+        /// that are not Code groups).
+        let structuralExact: CGFloat?
+        /// The adapter's `estimateKind.height` (the crude fallback).
+        let crudeEstimate: CGFloat
+        let keyRevision: String
+        /// The probe hook that performed the write (`source`), paired with the
+        /// key revision it was written against.
+        let writer: String
         let tracking: Bool
         let decelerating: Bool
         let offset: CGFloat
@@ -60,6 +77,11 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         let offset: CGFloat
         let visibleCount: Int
         let estimateRows: Int
+        /// Items whose content revision (the height key's `contentRevision`)
+        /// differs from the previous apply. A static row appearing here is a
+        /// re-key source that does not come from the row's own content.
+        let changedKeyCount: Int
+        let changedKeySample: [String]
     }
 
     @Published private(set) var revision = 0
@@ -80,6 +102,13 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     /// The controller records a fit before handing it to the layout, and the
     /// layout records the applied height again. Keep one line for the pair.
     private var lastRecorded: [String: (at: TimeInterval, new: CGFloat)] = [:]
+    /// Last probe hook that wrote this item's height, scoped to the key
+    /// revision it wrote against. A hook from a retired revision must not be
+    /// reported as the writer of the current one.
+    private var lastWriter: [String: (revision: String, source: String)] = [:]
+    /// `contentRevision` per item at the previous apply, for the apply-line
+    /// re-key accounting.
+    private var lastApplyRevisions: [String: Int] = [:]
 
     private static let maxChanges = 160
     private static let maxIssues = 100
@@ -112,6 +141,8 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         adapter = nil
         lastHeights.removeAll()
         lastRecorded.removeAll()
+        lastWriter.removeAll()
+        lastApplyRevisions.removeAll()
         lastOffset = nil
     }
 
@@ -122,6 +153,8 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         applies.removeAll()
         lastHeights.removeAll()
         lastRecorded.removeAll()
+        lastWriter.removeAll()
+        lastApplyRevisions.removeAll()
         lastOffset = nil
         runStartedAt = CACurrentMediaTime()
         revision &+= 1
@@ -162,12 +195,32 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                    contentHeight: CGFloat, pendingMeasurements: Int) {
         guard let controller, let view = controller.collectionView else { return }
         counters["applies", default: 0] += 1
+        // Which items' height keys moved in this apply. The layout only shows
+        // the result; a static row re-keying here is a defect the C3 gate
+        // cannot see and the device report needs named.
+        var changedKeys: [String] = []
+        if let content = controller.content {
+            var revisions: [String: Int] = [:]
+            revisions.reserveCapacity(items.count)
+            for item in items {
+                revisions[item.itemID] = content.contentSignature(for: item).contentRevision
+            }
+            changedKeys = revisions.compactMap { itemID, revision in
+                guard let previous = lastApplyRevisions[itemID], previous != revision
+                else { return nil }
+                return itemID
+            }.sorted()
+            lastApplyRevisions = revisions
+        }
+        counters["keyChanges", default: 0] += changedKeys.count
         let record = ApplyRecord(at: CACurrentMediaTime(), itemCount: items.count,
                                  changedCount: changedCount, animating: animating,
                                  contentHeight: contentHeight,
                                  offset: view.contentOffset.y,
                                  visibleCount: view.indexPathsForVisibleItems.count,
-                                 estimateRows: pendingMeasurements)
+                                 estimateRows: pendingMeasurements,
+                                 changedKeyCount: changedKeys.count,
+                                 changedKeySample: Array(changedKeys.prefix(8)))
         applies.append(record)
         if applies.count > Self.maxApplies { applies.removeFirst(applies.count - Self.maxApplies) }
         revision &+= 1
@@ -190,6 +243,14 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     func noteHeightChange(itemID: String, item: TimelineListItem?,
                           old: CGFloat, new: CGFloat, source: String) {
         lastHeights[itemID] = new
+        // Record the writer even when the value did not move: a same-height
+        // write is still the hook that owns the tier for the current key.
+        // "layout" is the probe noticing a change between samples, not a
+        // writer; it must not replace a real hook attribution.
+        let facts = heightFacts(itemID: itemID, item: item)
+        if source != "layout" {
+            lastWriter[itemID] = (facts.keyRevision, source)
+        }
         guard abs(new - old) > 0.5 else { return }
         let now = CACurrentMediaTime()
         if let last = lastRecorded[itemID], now - last.at < 0.15,
@@ -201,7 +262,11 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         guard let controller, let view = controller.collectionView else {
             appendChange(HeightChange(at: CACurrentMediaTime(), itemID: itemID,
                                       itemDescription: describe(item), old: old, new: new,
-                                      source: source, estimate: estimate(of: item),
+                                      source: source, tier: facts.tier,
+                                      resolved: facts.resolved, displayed: facts.displayed,
+                                      structuralExact: facts.structuralExact,
+                                      crudeEstimate: facts.crudeEstimate,
+                                      keyRevision: facts.keyRevision, writer: source,
                                       tracking: false, decelerating: false, offset: 0,
                                       visible: false, repeatCount: 1))
             return
@@ -212,7 +277,11 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         let visible = attributes.map { view.indexPathsForVisibleItems.contains($0.indexPath) } ?? false
         let change = HeightChange(at: CACurrentMediaTime(), itemID: itemID,
                                   itemDescription: describe(item), old: old, new: new,
-                                  source: source, estimate: estimate(of: item),
+                                  source: source, tier: facts.tier,
+                                  resolved: facts.resolved, displayed: facts.displayed,
+                                  structuralExact: facts.structuralExact,
+                                  crudeEstimate: facts.crudeEstimate,
+                                  keyRevision: facts.keyRevision, writer: source,
                                   tracking: view.isTracking, decelerating: view.isDecelerating,
                                   offset: view.contentOffset.y, visible: visible,
                                   repeatCount: 1)
@@ -231,7 +300,12 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                 at: change.at, itemID: last.itemID,
                 itemDescription: last.itemDescription,
                 old: last.old, new: change.new, source: last.source,
-                estimate: last.estimate, tracking: change.tracking,
+                tier: last.tier, resolved: change.resolved,
+                displayed: change.displayed,
+                structuralExact: change.structuralExact,
+                crudeEstimate: change.crudeEstimate,
+                keyRevision: change.keyRevision, writer: last.writer,
+                tracking: change.tracking,
                 decelerating: change.decelerating, offset: change.offset,
                 visible: change.visible, repeatCount: last.repeatCount + 1)
         } else {
@@ -444,9 +518,85 @@ final class TimelineProbeStore: NSObject, ObservableObject {
 
     // MARK: - Lookups
 
+    /// The four height sources the probe has to keep apart. `resolved` is the
+    /// value `TimelineListLayout.prepare` will adopt for the current key:
+    /// measured/precalc tier, then the item's displayed height, then the crude
+    /// estimate. `tier` names which of those answered.
+    private struct HeightFacts {
+        let keyRevision: String
+        let tier: String
+        let resolved: CGFloat
+        let displayed: CGFloat
+        let structuralExact: CGFloat?
+        let crudeEstimate: CGFloat
+    }
+
+    private func heightFacts(itemID: String, item: TimelineListItem?) -> HeightFacts {
+        guard let controller else {
+            return HeightFacts(keyRevision: "?", tier: "?", resolved: 0, displayed: 0,
+                               structuralExact: nil, crudeEstimate: 0)
+        }
+        let heights = controller.layout.heights
+        let key = heights.currentKey(for: itemID)
+        let displayed = heights.displayedHeight(for: itemID) ?? 0
+        let crude = estimate(of: item)
+        let tier: String
+        var resolved = displayed
+        if let key {
+            if heights.tieredHeight(for: key) != nil {
+                // `.precalc` has no production writer today (only the unit
+                // tests set it), so measured-or-precalc is a real measurement
+                // in every build the probe ships in. The cache exposes no
+                // per-tier getter; see the stage-0 report.
+                tier = heights.hasMeasuredOrPrecalcHeight(for: key)
+                    ? "measured" : "estimate"
+            } else if heights.displayedHeight(for: itemID) != nil {
+                tier = "displayed"
+            } else {
+                tier = "fallback"
+            }
+            let fallback = item.map {
+                controller.content?.estimateKind(for: $0) ?? .row
+            } ?? .row
+            resolved = heights.resolvedHeight(for: key, itemID: itemID,
+                                              fallback: fallback)
+        } else {
+            tier = "?"
+        }
+        return HeightFacts(
+            keyRevision: key.map { "\($0.contentRevision)" } ?? "-",
+            tier: tier, resolved: resolved, displayed: displayed,
+            structuralExact: structuralExact(of: item, width: key?.width ?? 0),
+            crudeEstimate: crude)
+    }
+
+    /// The adapter's structured pre-apply measurement (`measuredCodeGroupHeight`).
+    /// It returns nil for non-Code rows and for a group whose text is still
+    /// streaming/revealing, so this stays off the scroll path.
+    private func structuralExact(of item: TimelineListItem?, width: CGFloat) -> CGFloat? {
+        guard let item, width > 0, let content = controller?.content else { return nil }
+        return content.measuredCodeGroupHeight(for: item, width: width)
+    }
+
     private func estimate(of item: TimelineListItem?) -> CGFloat {
         guard let item, let controller, let content = controller.content else { return 0 }
         return content.estimateKind(for: item).height
+    }
+
+    /// The line under a row says which hook last wrote the key it is showing.
+    /// Hooks that write the cache without calling `noteHeightChange`
+    /// (`measureSynchronously`'s structured measurement) have no entry; the
+    /// `.estimate` tier has exactly one such writer, so it is named explicitly.
+    private func writerLabel(itemID: String, revision: String) -> String {
+        if let writer = lastWriter[itemID], writer.revision == revision {
+            return writer.source
+        }
+        if let key = controller?.layout.heights.currentKey(for: itemID),
+           controller?.layout.heights.hasMeasuredOrPrecalcHeight(for: key) == false,
+           controller?.layout.heights.tieredHeight(for: key) != nil {
+            return "structuredEstimate"
+        }
+        return "-"
     }
 
     private func describe(_ item: TimelineListItem?) -> String {
@@ -477,7 +627,10 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         lines.append("app \(version)(\(build)) · \(device.model) · iOS \(device.systemVersion) · "
             + "\(Int(screen.width))x\(Int(screen.height))@\(Int(scale))x")
         lines.append("legend: V=visible row B=estimate breakdown C=height change "
-            + "A=apply I=issue; flags T=tracking D=decelerating; t=seconds since clear")
+            + "A=apply I=issue; flags T=tracking D=decelerating; t=seconds since clear; "
+            + "V/C: tier=measured|estimate|displayed|fallback rev=content revision "
+            + "disp=last displayed resolved=prepare value exact=structural measurement "
+            + "writer=probe hook that wrote the key; A keys=items whose key revision moved")
 
         if let controller, let view = controller.collectionView {
             let contentHeight = controller.layout.contentHeight
@@ -503,14 +656,14 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                 let cell = view.cellForItem(at: attribute.indexPath)
                 let cellY = cell.map { f($0.frame.minY) } ?? "-"
                 let cellH = cell.map { f($0.frame.height) } ?? "-"
-                let key = attribute.heightKey
-                let tier = key.map {
-                    controller.layout.heights.hasMeasuredOrPrecalcHeight(for: $0)
-                        ? "measured" : "estimate"
-                } ?? "?"
-                let revision = key.map { "\($0.contentRevision)" } ?? "?"
+                let facts = heightFacts(itemID: item.itemID, item: item)
+                let exact = facts.structuralExact.map(f) ?? "-"
+                let writer = writerLabel(itemID: item.itemID,
+                                         revision: facts.keyRevision)
                 lines.append("V \(item.itemID) y=\(f(attribute.frame.minY)) h=\(f(attribute.frame.height)) "
-                    + "cell=(\(cellY),\(cellH)) est=\(f(estimate(of: item))) tier=\(tier) rev=\(revision) "
+                    + "cell=(\(cellY),\(cellH)) est=\(f(facts.crudeEstimate)) tier=\(facts.tier) "
+                    + "rev=\(facts.keyRevision) disp=\(f(facts.displayed)) "
+                    + "resolved=\(f(facts.resolved)) exact=\(exact) writer=\(writer) "
                     + "policy=\(attribute.policy) \(describe(item))")
                 if let breakdown = adapter?.probeBreakdown(item) {
                     lines.append("  B \(breakdown)")
@@ -521,17 +674,23 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         lines.append("--- HEIGHT CHANGES (newest first) ---")
         for change in changes.suffix(90).reversed() {
             let flags = "\(change.tracking ? "T" : "-")\(change.decelerating ? "D" : "-")"
+            let exact = change.structuralExact.map(f) ?? "-"
             lines.append("C t=\(elapsed(change.at)) src=\(change.source) \(change.itemID) "
                 + "\(f(change.old))->\(f(change.new)) d=\(f(change.new - change.old)) "
-                + "est=\(f(change.estimate)) flags=\(flags) off=\(f(change.offset)) "
+                + "est=\(f(change.crudeEstimate)) tier=\(change.tier) rev=\(change.keyRevision) "
+                + "disp=\(f(change.displayed)) resolved=\(f(change.resolved)) exact=\(exact) "
+                + "writer=\(change.writer) flags=\(flags) off=\(f(change.offset)) "
                 + "vis=\(change.visible ? 1 : 0) n=\(change.repeatCount) \(change.itemDescription)")
         }
 
         lines.append("--- APPLIES (newest first) ---")
         for apply in applies.suffix(14).reversed() {
+            let keys = apply.changedKeySample.isEmpty
+                ? "-" : apply.changedKeySample.joined(separator: ",")
             lines.append("A t=\(elapsed(apply.at)) items=\(apply.itemCount) changed=\(apply.changedCount) "
                 + "anim=\(apply.animating ? 1 : 0) contentH=\(f(apply.contentHeight)) "
-                + "off=\(f(apply.offset)) visible=\(apply.visibleCount) estimates=\(apply.estimateRows)")
+                + "off=\(f(apply.offset)) visible=\(apply.visibleCount) estimates=\(apply.estimateRows) "
+                + "keys=\(apply.changedKeyCount)[\(keys)]")
         }
 
         lines.append("--- ISSUES (newest last) ---")

@@ -1077,6 +1077,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SHA_SHORT: ${{ github.sha }}
+          PROBE: ${{ inputs.probe }}
         run: |
           if [ "${GITHUB_REF}" = "refs/heads/dev" ]; then
             TAG="ipa-dev"; SLUG="dev"
@@ -1089,7 +1090,12 @@ jobs:
             TITLE="Agents Anywhere unsigned builds — ${GITHUB_REF_NAME}"
             NOTES="Built from the ${GITHUB_REF_NAME} branch. Unsigned — re-sign on-device with KSign."
           fi
-          NAME="AgentsAnywhere-${SLUG}-${SHA_SHORT:0:7}.ipa"
+          # A probe build and a normal build can share a commit; the suffix
+          # keeps the diagnostic IPA from clobbering the installable one at
+          # the same release tag.
+          PROBE_SUFFIX=""
+          if [ "${PROBE}" = "true" ]; then PROBE_SUFFIX="-probe"; fi
+          NAME="AgentsAnywhere-${SLUG}-${SHA_SHORT:0:7}${PROBE_SUFFIX}.ipa"
           cp agents-anywhere.ipa "$NAME"
           gh release create "$TAG" --title "$TITLE" --notes "$NOTES" || true
           gh release upload "$TAG" "$NAME" --clobber

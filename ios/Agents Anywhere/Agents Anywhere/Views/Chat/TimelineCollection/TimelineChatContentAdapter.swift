@@ -163,17 +163,48 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// hashing them into the height key retired measured heights for no visual
     /// reason (probe 2026-10-23). The paced streaming snapshot is part of the
     /// drawn content, so it is included here.
+    private struct CachedHeightRevision {
+        let signature: Int
+        let width: CGFloat
+        let typography: Int
+        let scale: Int
+        let streaming: String?
+        let value: Int
+    }
+    private var heightRevisionCache: [String: CachedHeightRevision] = [:]
+
     private func heightContentRevision(for item: TimelineListItem, width: CGFloat) -> Int {
         guard case .group(let id) = item, groupsByID[id]?.explicitID != nil else {
             return contentSignature(for: item).contentRevision
         }
+        // `prepare` asks for every row's key on every layout pass; hashing the
+        // whole message text there would put a per-frame O(text) cost on the
+        // scroll path. The signature (cached per item) and the paced snapshot
+        // decide whether the drawn content moved, so a settled row is a hit.
+        let signature = contentSignature(for: item).contentRevision
+        let quantized = TimelineHeightKey.quantize(width)
+        let typographyRevision = typography.revision
+        let scale = Int(((controller?.traitCollection.displayScale ?? 2) * 100).rounded())
+        let streaming = codeStreamingText(for: item)
+        if let cached = heightRevisionCache[item.itemID],
+           cached.signature == signature,
+           cached.width == quantized,
+           cached.typography == typographyRevision,
+           cached.scale == scale,
+           cached.streaming == streaming?.text {
+            return cached.value
+        }
         var hasher = TimelineStableHasher()
         hasher.combine(codeHeightDigest(rows: codeRowsByGroupID[id] ?? [], width: width))
-        if let streaming = codeStreamingText(for: item) {
+        if let streaming {
             hasher.combine(streaming.rowID)
             hasher.combine(streaming.text)
         }
-        return hasher.revision
+        let value = hasher.revision
+        heightRevisionCache[item.itemID] = CachedHeightRevision(
+            signature: signature, width: quantized, typography: typographyRevision,
+            scale: scale, streaming: streaming?.text, value: value)
+        return value
     }
 
     func estimateKind(for item: TimelineListItem) -> TimelineHeightEstimateKind {
@@ -1130,6 +1161,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         self.codeProfile = profile
         self.codeRowsByGroupID = codeRowsByGroupID
         codeHeightCache = codeHeightCache.filter { codeRowsByGroupID[$0.key] != nil }
+        heightRevisionCache = heightRevisionCache.filter { groupsByID[$0.key] != nil }
         self.tailNoticesByID = tailNoticesByID
         self.pendingByID = pendingByID
         self.rowToItem = rowToItem

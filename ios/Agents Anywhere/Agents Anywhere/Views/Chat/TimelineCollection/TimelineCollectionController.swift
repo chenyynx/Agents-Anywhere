@@ -1858,22 +1858,13 @@ final class TimelineCollectionController: UIViewController {
         var firstRowID: String?
         for (index, item) in items.enumerated() {
             let key = content.heightKey(for: item, width: columnWidth)
-            // A prepended page can merge new rows into the anchor's group, so
-            // that group's height key is new while its displayed height still
-            // describes the old content. Project with the fresh structural
-            // measurement there; rows the cache already measured keep their
-            // measured height so the target matches what the layout will show.
-            let height: CGFloat
-            if layout.heights.hasMeasuredOrPrecalcHeight(for: key) {
-                height = layout.heights.resolvedHeight(for: key, itemID: item.itemID,
-                    fallback: content.estimateKind(for: item))
-            } else if let exact = content.measuredCodeGroupHeight(for: item,
-                                                                  width: columnWidth) {
-                height = exact
-            } else {
-                height = layout.heights.resolvedHeight(for: key, itemID: item.itemID,
-                    fallback: content.estimateKind(for: item))
-            }
+            // Use the same resolver the layout's `prepare` will use. A
+            // re-keyed row keeps the height the reader sees until its cell
+            // reports the new one; the prepend target must be computed from
+            // that same value or the anchor would move twice (once by the
+            // target, once by the report's compensation).
+            let height = layout.heights.resolvedHeight(for: key, itemID: item.itemID,
+                fallback: content.estimateKind(for: item))
             if index == 0 { firstRowID = content.rowIDs(in: item).first ?? item.itemID }
             if content.rowIDs(in: item).contains(anchorRowID) {
                 return TimelineHistoryLayout(firstRowID: firstRowID ?? item.itemID,

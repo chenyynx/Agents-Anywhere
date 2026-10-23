@@ -241,7 +241,23 @@ final class TimelineCollectionController: UIViewController {
             let cell = collectionView.dequeueReusableCell(withReuseIdentifier: TimelineHostingCell.reuseIdentifier,
                                                           for: indexPath) as! TimelineHostingCell
             if let self, let content = self.content {
-                cell.configure(content.rowView(for: item), policy: content.heightPolicy(for: item))
+                // Ask the cache for the key this apply established: a new
+                // revision starts unmeasured even when the row's old attribute
+                // still carries the previous key's measured flag.
+                let isMeasured = self.layout.heights.hasMeasuredOrPrecalcHeight(
+                    for: content.heightKey(for: item, width: self.columnWidth))
+                // Only the official-contract rows report later content
+                // changes; the Chat rows keep the controller polling path.
+                if content.usesCellReportedHeight(for: item) {
+                    cell.onContentHeightChange = { [weak self] height in
+                        self?.layout.applyHostedHeight(itemID: item.itemID, height: height)
+                    }
+                } else {
+                    cell.onContentHeightChange = nil
+                }
+                cell.configure(content.rowView(for: item),
+                               policy: content.heightPolicy(for: item),
+                               isMeasured: isMeasured)
             }
             return cell
         }
@@ -325,6 +341,9 @@ final class TimelineCollectionController: UIViewController {
         let oldFirstDynamic = oldItems.first(where: Self.isDynamicItem)
         let windowReplaced = !items.isEmpty
             && (oldFirstDynamic.map { !items.contains($0) } ?? true)
+        // Parked heights belong to the window that is leaving; their rows and
+        // the parked offset must not land on the replacement's snapshot.
+        if windowReplaced { layout.discardParkedHeights() }
         let resolveWindowBottom = windowReplaced && windowReplacementReturn
             && insertionProjection == nil
         let entries: [TimelineContentEntry] = items.map { item in
@@ -370,6 +389,11 @@ final class TimelineCollectionController: UIViewController {
         for item in items {
             let key = content.heightKey(for: item, width: columnWidth)
             if layout.heights.currentKey(for: item.itemID) != key {
+                // Install the key before the snapshot applies. A hosted cell
+                // can report its new content height during the update, and
+                // that report must land on the key this apply established,
+                // not on the revision it replaced.
+                layout.heights.setCurrentKey(key)
                 reconfigure.insert(item)
             }
             if changed.contains(item) || !layout.heights.hasMeasuredOrPrecalcHeight(for: key) {
@@ -489,9 +513,9 @@ final class TimelineCollectionController: UIViewController {
         dataSource.apply(snapshot, animatingDifferences: false) { [weak self] in
             guard let self else { return }
             self.isPerformingSnapshot = false
-            // The hosting cell has no heightDidChange callback; ask the
-            // visible exception rows for their fitting height after the new
-            // content has laid out.
+            // The controlled-exception rows keep the legacy path and have no
+            // heightDidChange channel; ask the visible rows for their fitting
+            // height after the new content has laid out.
             DispatchQueue.main.async { [weak self] in
                 self?.applyPreferredHeights(for: present, beforeHeights: beforeHeights)
             }
@@ -767,8 +791,8 @@ final class TimelineCollectionController: UIViewController {
     /// layout pass. The first gate run read the old collapsed fitting height
     /// (248.7) while the content had already expanded (404.3); a single
     /// immediate read is racy. Poll the cell's content fitting for a few
-    /// frames and apply when it changes. This is the explicit replacement for
-    /// the heightDidChange callback AA's hosting rows do not have.
+    /// frames and apply when it changes. This is the legacy path for the
+    /// exception rows, which have no `heightDidChange` channel.
     private(set) var preferredDiagnostics: [String: Int] = [:]
 
     private func notePreferred(_ key: String) {
@@ -878,6 +902,11 @@ final class TimelineCollectionController: UIViewController {
         notePreferred("pass")
         for item in items {
             notePreferred("item")
+            // The official contract rows report their own height changes; the
+            // controller's polling path must not race that write.
+            guard !content.usesCellReportedHeight(for: item) else {
+                notePreferred("cellReported"); continue
+            }
             guard content.heightPolicy(for: item).acceptsPreferredHeight else {
                 notePreferred("notInteractive"); continue
             }
@@ -988,6 +1017,11 @@ final class TimelineCollectionController: UIViewController {
         // The cell only exists for items that got a real height here, so the
         // row never pairs a TextKit cell with an estimate.
         for item in items {
+            // Official hosted-cell contract rows measure themselves once when
+            // the cell materializes and report later changes through
+            // `heightDidChange`; the controller must not pre-measure or poll
+            // them. The estimate stands until that first self-measure.
+            if content.usesCellReportedHeight(for: item) { continue }
             // The Code page renders every message with its own row view, so
             // the TextKit branches below never see it. Measure the group from
             // the same parts the row draws, before the snapshot applies: a
@@ -1101,6 +1135,9 @@ final class TimelineCollectionController: UIViewController {
             for item in pending {
                 guard let self, !Task.isCancelled, self.currentItems.contains(item) else { return }
                 guard let content = self.content else { return }
+                // Hosted-contract rows are measured by their cell the first
+                // time it materializes; there is nothing to do offscreen.
+                if content.usesCellReportedHeight(for: item) { continue }
                 // Parsing Markdown is main-thread work. A pending Code group
                 // measured under a drag is the scroll jank the device reported
                 // on 2026-10-23; the scroll-end callbacks start a fresh pass.
@@ -1149,8 +1186,9 @@ final class TimelineCollectionController: UIViewController {
     /// parses in a task an offscreen hosting controller never runs, so the
     /// offscreen pass sees only stack spacing. The official transcript's
     /// `ClaudeTranscriptUI.TranscriptCellHost.heightDidChange` reports the
-    /// cell's real height; AA polls the same `systemLayoutSizeFitting` the
-    /// integration gate uses as its cell sample.
+    /// cell's real height; for the legacy (non-contract) rows AA polls the
+    /// same `systemLayoutSizeFitting` the integration gate uses as its cell
+    /// sample.
     private func measuredHeight(for item: TimelineListItem, width: CGFloat) -> CGFloat? {
         if let height = visibleCellFit(for: item) { return height }
         guard let measurer else { return nil }
@@ -1193,8 +1231,9 @@ final class TimelineCollectionController: UIViewController {
         layout.applyMeasuredHeight(height, for: item.itemID, key: key)
     }
 
-    /// Every visible row may correct its height after the cell has rendered;
-    /// this is the AA equivalent of the official cell's `heightDidChange`.
+    /// Every visible legacy row may correct its height after the cell has
+    /// rendered; this is their equivalent of the official cell's
+    /// `heightDidChange` (the hosted-contract rows report directly instead).
     /// Passes stop as soon as each visible cell's fitting height equals its
     /// frame; a pre-parse cell keeps them alive until the last pass.
     private func scheduleVisibleCellSettle() {
@@ -1233,6 +1272,10 @@ final class TimelineCollectionController: UIViewController {
             guard currentItems.indices.contains(indexPath.item),
                   let cell = collectionView.cellForItem(at: indexPath) else { continue }
             let item = currentItems[indexPath.item]
+            // Hosted-contract rows self-measure once and then report content
+            // changes through `heightDidChange`; a second fitting pass from
+            // the controller would fight the layout's own accounting.
+            if content.usesCellReportedHeight(for: item) { continue }
             // TextKit 2 rows were measured before apply with the same engine
             // the cell renders; the visible-fit loop must not second-guess it.
             if documentHeights[item.itemID] != nil { continue }
@@ -1303,6 +1346,11 @@ final class TimelineCollectionController: UIViewController {
               !collectionView.isDecelerating else { return }
         var stale: [IndexPath] = []
         for indexPath in collectionView.indexPathsForVisibleItems {
+            // Hosted-contract rows invalidate their own row and the rows below
+            // when a height lands; a frame-sync pass here would race it.
+            guard currentItems.indices.contains(indexPath.item) else { continue }
+            if let content,
+               content.usesCellReportedHeight(for: currentItems[indexPath.item]) { continue }
             guard let cell = collectionView.cellForItem(at: indexPath),
                   let attributes = layout.layoutAttributesForItem(at: indexPath) else { continue }
             if abs(cell.frame.minY - attributes.frame.minY) > 0.5
@@ -2003,6 +2051,15 @@ extension TimelineCollectionController: TimelineListLayoutHost {
             guard let self, !self.navigationSuspended, !self.currentItems.isEmpty else { return }
             self.schedulePendingMeasurements()
         }
+    }
+}
+
+extension TimelineCollectionController: TimelineListLayoutCellReportedHeightHost {
+    /// Rows that follow the official hosted-cell contract. The layout needs
+    /// this to skip them in the legacy correction paths (streaming-height
+    /// cleanup) and to run the hosted height accounting.
+    func layoutUsesCellReportedHeight(for item: TimelineListItem) -> Bool {
+        content?.usesCellReportedHeight(for: item) ?? false
     }
 }
 

@@ -1,8 +1,8 @@
 import Foundation
 
-/// Which rows may let their cell drive height. Everything else consumes the
-/// measurement layer's fixed height; only these controlled exceptions may
-/// surface a `preferredLayoutAttributesFitting` height as a correction signal.
+/// The controlled exceptions whose height the controller keeps polling after
+/// a fold/notice/tail reconfigure. Independent of the cell's one-time
+/// self-measure: that is gated by the row's measured state, not this policy.
 nonisolated enum TimelineRowHeightPolicy: Equatable {
     case measured
     /// Fold expansion, inline notice card, and other interactive row content.
@@ -79,6 +79,43 @@ nonisolated struct TimelinePreferredAttributesDecision: Equatable {
         if cellMinY < viewportTop { return .accept(correction: delta) }
         if isStreaming, isAutoScrollPinning, delta > 0 { return .accept(correction: delta) }
         return .accept
+    }
+
+    /// Category C — the official hosted-cell contract. A row reports its
+    /// content height through `heightDidChange` after it has been measured.
+    /// While the reader drags or coasts, a change the reader can see (the row
+    /// itself or any row below it) is parked; an off-screen change may apply
+    /// at once because it cannot move the visible text.
+    static func hostedHeightChange(isVisible: Bool, isUserScrolling: Bool) -> Height {
+        isUserScrolling && isVisible ? .deferUntilSettled : .accept
+    }
+
+    /// Offset compensation for a height change applied outside an update
+    /// transaction. A row whose top sits above the viewport moves the text the
+    /// reader is looking at; a row at or below the top does not.
+    static func heightChangeCorrection(delta: CGFloat,
+                                       cellMinY: CGFloat,
+                                       viewportTop: CGFloat) -> CGFloat? {
+        guard cellMinY < viewportTop, delta != 0 else { return nil }
+        return delta
+    }
+
+    /// Whether a height change on this row moves anything the reader can see.
+    /// The row itself, or any row below it; a row entirely below the viewport
+    /// moves nothing visible, and a row entirely above it only matters while
+    /// content still reaches into the viewport below.
+    static func heightChangeAffectsVisibleRows(cellMinY: CGFloat,
+                                               cellMaxY: CGFloat,
+                                               contentHeight: CGFloat,
+                                               viewportTop: CGFloat,
+                                               viewportBottom: CGFloat) -> Bool {
+        if cellMaxY <= viewportTop {
+            return contentHeight > viewportTop && viewportBottom > viewportTop
+        }
+        if cellMinY >= viewportBottom {
+            return false
+        }
+        return true
     }
 
     /// Category B. `delta` is the cell's preferred height minus the layout's

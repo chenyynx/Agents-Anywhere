@@ -482,10 +482,12 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
                 isTracking: false, isDecelerating: false,
                 keyboardTransition: false, hasCachedHeight: cached)
         }
-        // 1. Fully above.
+        // 1. Fully above the placement anchor.
         #expect(run(minY: 100, maxY: 200).correction == 30)
-        // 2. Visible, non-streaming.
-        #expect(run(minY: 700, maxY: 900).correction == 30)
+        // 2. The anchor row (and anything below) grows inside the layout: no
+        //    offset change. The previous rule compensated it and threw the
+        //    row off the top of the screen.
+        #expect(run(minY: 700, maxY: 900).correction == nil)
         // 2b. Visible but streaming, pinned, growth.
         #expect(run(minY: 700, maxY: 900, streaming: true, pinning: true).correction == 30)
         // 3. Streaming without pinning: no offset.

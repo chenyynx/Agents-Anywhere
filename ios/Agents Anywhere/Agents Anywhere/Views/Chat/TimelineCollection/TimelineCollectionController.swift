@@ -1047,17 +1047,6 @@ final class TimelineCollectionController: UIViewController {
         return max(Self.minimumPlausibleHeight, content.estimateKind(for: item).height * 0.2)
     }
 
-    /// The official `arriving` estimate: a row the reader has not seen enters
-    /// the snapshot at a cheap height. The kind-based estimate plus the
-    /// footer is the same shape the estimator provides — never a TextKit
-    /// layout — and the visible cell's own engine replaces it with the
-    /// measurement.
-    private func estimateHeight(for item: TimelineListItem,
-                                 streaming: AssistantMarkdownDocument,
-                                 footer: CGFloat, width: CGFloat) -> CGFloat {
-        content?.estimateKind(for: item).height ?? 200
-    }
-
     private func measureSynchronously(_ items: [TimelineListItem], width: CGFloat) {
         guard let content, width > 0 else { return }
 
@@ -1107,19 +1096,18 @@ final class TimelineCollectionController: UIViewController {
                     documentHeights[item.itemID] = cached
                     continue
                 }
-                // Official `rowsApplied(ids, arriving)` carries an estimate for
-                // a row the reader has not seen; the real layout runs inside
-                // the cell (TextKit) and reports through the settle pass. A
-                // streaming row still needs a `documentHeights` entry to pair
-                // with the TextKit cell, so the estimate holds the slot until
-                // the visible cell reports the measured height.
-                let estimated = estimateHeight(
-                    for: item, streaming: streaming.document, footer: 0, width: width)
-                guard let height = validatedHeight(estimated, minimum: 0) else {
+                let raw = AssistantMarkdownTextLayout.measure(
+                    streaming.document, width: width,
+                    displayScale: traitCollection.displayScale)
+                guard let height = validatedHeight(raw) else {
+                    // A correction/recovery can briefly parse to an empty
+                    // document. Drop the old height with the old document, or
+                    // the data source would pair a TextKit cell with a stale
+                    // frame that the visible-cell settle can never correct.
                     documentHeights.removeValue(forKey: item.itemID)
                     continue
                 }
-                layout.heights.set(height, for: key, tier: .estimate)
+                layout.heights.set(height, for: key, tier: .measured)
                 documentHeights[item.itemID] = height
                 continue
             }
@@ -1134,7 +1122,6 @@ final class TimelineCollectionController: UIViewController {
             // A row that just handed over from the reveal must take the
             // measured static height in this same apply; the display override
             // from the streaming cell would otherwise win the first prepare.
-            let handedOverFromReveal = layout.hasStreamingHeight(for: item.itemID)
             layout.discardStreamingHeight(for: item.itemID)
             let footerHeight = content.assistantFooter(for: item).map {
                 AssistantFooterMetrics.groupSpacing + $0.height
@@ -1145,25 +1132,11 @@ final class TimelineCollectionController: UIViewController {
                 documentHeights[item.itemID] = cached
                 continue
             }
-            // Same official contract as the streaming branch: an unseen row
-            // enters the snapshot with the estimate and the cell's own engine
-            // reports the measured height. The one exception is the reveal
-            // hand-over, where the display override would win the first
-            // prepare — that row still takes a synchronous measurement.
-            if handedOverFromReveal {
-                let raw = AssistantMarkdownTextLayout.measure(
-                    document, width: width, displayScale: traitCollection.displayScale)
-                    + footerHeight
-                guard let height = validatedHeight(raw) else { continue }
-                layout.heights.set(height, for: key, tier: .measured)
-                documentHeights[item.itemID] = height
-                continue
-            }
-            let estimated = estimateHeight(
-                for: item, streaming: document, footer: footerHeight, width: width)
-            guard let height = validatedHeight(estimated, minimum: 0) else { continue }
-            layout.heights.set(height, for: key, tier: .estimate)
-            documentHeights[item.itemID] = height
+            let raw = AssistantMarkdownTextLayout.measure(
+                document, width: width, displayScale: traitCollection.displayScale)
+                + footerHeight
+            guard let height = validatedHeight(raw) else { continue }
+            layout.heights.set(height, for: key, tier: .measured)
             documentHeights[item.itemID] = height
         }
 

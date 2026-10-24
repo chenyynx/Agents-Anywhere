@@ -51,8 +51,17 @@ nonisolated enum CodePageTheme {
     /// is built on the footnote text style.
     static let toolRowTextStyle: Font.TextStyle = .footnote
 
-    /// [E] CANONICAL/04-tool-calls.md §6.2 — CollapsedRowButton padding 6 pt.
-    static let toolRowButtonPadding: CGFloat = 6
+    /// [E] `EVIDENCE/typography-r8.md` §3.2 — `ToolCallRowButton` label
+    /// padding is 8 pt on all four sides (`EdgeInsets._all(8.0)`). The older
+    /// CANONICAL/04 §6.2 note of 6 pt describes `CollapsedRowButton`, a
+    /// different component; the Code page's collapsed tool row uses the 8 pt
+    /// button.
+    static let toolRowButtonPadding: CGFloat = 8
+
+    /// Spacing inside a status/tool row. Kept separate from the button
+    /// padding: the official evidence fixes the 8 pt padding, not the gap
+    /// between the row's glyph and its label.
+    static let toolRowSpacing: CGFloat = 6
 
     // MARK: - Diff indicator (+N / −N)
 

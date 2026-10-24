@@ -185,7 +185,7 @@ struct CodeMessageRowView: View {
     /// `codeGroups` never puts such a row into a message group today, but
     /// dropping the case would make the builder's `other` block render nothing.
     private func otherRow(_ type: String) -> some View {
-        HStack(spacing: CodePageTheme.toolRowButtonPadding) {
+        HStack(spacing: CodePageTheme.toolRowSpacing) {
             Image(systemName: "square.dashed")
                 .font(.system(size: CodePageTheme.toolRowFontSize))
                 .foregroundStyle(.secondary)
@@ -249,7 +249,7 @@ struct CodeThinkingStatusLine: View {
                                by: CodePageTheme.runningStatusVerbRotationInterval)) { context in
             let second = max(0, Int(context.date.timeIntervalSinceReferenceDate))
             let verb = CodeWorkingStatusVerbs.all[second % CodeWorkingStatusVerbs.all.count]
-            HStack(spacing: CodePageTheme.toolRowButtonPadding) {
+            HStack(spacing: CodePageTheme.toolRowSpacing) {
                 WorkingMarkView(body: .think, isRunning: true)
                 Text(verbatim: verb + "...")
                     .font(.system(size: CodePageTheme.runningStatusFontSize))

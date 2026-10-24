@@ -1638,7 +1638,7 @@ private struct TimelineCollectionTailRow: View {
                     // (CANONICAL/20-working-mark.md §1–§4).
                     CodeThinkingStatusLine()
                 } else if showsStatusLine, let text = model.sendingPlaceholder {
-                    HStack(spacing: CodePageTheme.toolRowButtonPadding) {
+                    HStack(spacing: CodePageTheme.toolRowSpacing) {
                         WorkingMarkView(body: .think, isRunning: true)
                         Text(verbatim: text)
                             .font(.system(size: CodePageTheme.runningStatusFontSize))

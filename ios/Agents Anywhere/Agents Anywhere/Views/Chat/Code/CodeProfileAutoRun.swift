@@ -419,6 +419,7 @@ final class CodeProfileAutoRunModel {
         prepareViews()
         await verifyMessageRowHeight()
         await verifyRowHeights()
+        await verifyRendererMeasure()
 
         var views: [String: Any] = [:]
 
@@ -704,6 +705,231 @@ final class CodeProfileAutoRunModel {
             "cases": cases,
         ] as [String: Any]
         persist(phase: "views.rowHeights")
+    }
+
+    // MARK: - Renderer measurement experiment (3 pt / 1900 pt)
+
+    /// Fixtures for the renderer-measurement leg. They stay independent of
+    /// `rowHeightFixtures`: that matrix owns the product thresholds, while this
+    /// leg only records whether a renderer-only measurement matches the
+    /// settled in-window render. A short body, the long CJK body and a body
+    /// with a fenced code block plus a table cover the three layout paths.
+    private static let rendererMeasureFixtures: [RowHeightFixture] = [
+        RowHeightFixture(name: "short", kind: .text,
+                         json: RendererMeasureFixtureJSON.short,
+                         widths: [361], sizes: [.regular]),
+        RowHeightFixture(name: "cjk-hard-break", kind: .text,
+                         json: RowHeightFixtureJSON.cjk,
+                         widths: [361], sizes: [.regular]),
+        RowHeightFixture(name: "code-table", kind: .text,
+                         json: RendererMeasureFixtureJSON.codeTable,
+                         widths: [361], sizes: [.regular]),
+    ]
+
+    /// One Code row measured four ways at one width and Dynamic Type.
+    ///
+    /// `rendered` is the settled in-window host the existing matrix already
+    /// trusts. `hostless` is the `TimelineHostingHeightMeasurer` shape: an
+    /// offscreen `UIHostingController` fed the production `preparedBlocks`.
+    /// `cellSuper` and `cellForced` are a fresh `TimelineHostingCell` fitting
+    /// itself without a seed; `cellForced` gives the content configuration a
+    /// layout pass first. Deltas are recorded, never asserted — the main
+    /// session decides which renderer source the product can trust.
+    private func verifyRendererMeasure() async {
+        guard let window = keyWindow else {
+            failures.append("rendererMeasure: no key window")
+            return
+        }
+        let margin = CodePageTheme.rowMarginLeading
+        var cases: [[String: Any]] = []
+        var hostlessMaxDelta: Double = 0
+        var cellSuperMaxDelta: Double = 0
+        var cellForcedMaxDelta: Double = 0
+
+        for fixture in Self.rendererMeasureFixtures {
+            guard let items = Self.decodeItems(fixture.json) else {
+                failures.append("rendererMeasure \(fixture.name): fixture JSON did not decode")
+                continue
+            }
+            let group = ChatTimelineGroup(kind: .single,
+                rows: items.map { ChatTimelineRowModel($0) },
+                explicitID: "gate-renderer-\(fixture.name)")
+            guard let width = fixture.widths.first,
+                  let size = fixture.sizes.first else {
+                failures.append("rendererMeasure \(fixture.name): fixture has no width or size")
+                continue
+            }
+            let hostWidth = width + 2 * margin
+
+            // The adapter's `preparedTextBlocks` rule: one parse per non-user
+            // `.text` block, keyed by the text the row will draw. This is the
+            // exact input the production `CodeMessageRowView` receives.
+            let builtRows = CodeMessageBuilder.rows(for: items, profile: .claudeCode)
+            var prepared: [String: [MarkdownBlockSnapshot]] = [:]
+            var textBlockCount = 0
+            for row in builtRows where row.role != .user {
+                for block in row.blocks {
+                    guard case let .text(_, text) = block else { continue }
+                    textBlockCount += 1
+                    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        continue
+                    }
+                    let key = ChatMarkdownPrepared.key(for: text)
+                    if prepared[key] != nil { continue }
+                    if let blocks = CodeMessageHeightMeasurer.preparedBlocks(for: text) {
+                        prepared[key] = blocks
+                    }
+                }
+            }
+            guard textBlockCount > 0, !prepared.isEmpty else {
+                failures.append("rendererMeasure \(fixture.name): no prepared Markdown blocks"
+                    + " (the hosted view would be empty)")
+                continue
+            }
+
+            let renderedRecord = await measureRowHeight(group: group, fixture: fixture,
+                                                        width: width, size: size,
+                                                        window: window)
+            let rendered = renderedRecord["rendered"] as? Double ?? -1
+            guard rendered > 1 else {
+                failures.append("rendererMeasure \(fixture.name): rendered \(rendered) pt,"
+                    + " the measurement harness is unavailable")
+                continue
+            }
+
+            let rowView = AnyView(CodeMessageRowView(group: group,
+                                                     profile: .claudeCode,
+                                                     cwd: "/repo",
+                                                     preparedBlocks: prepared)
+                .padding(.horizontal, margin)
+                .ignoresSafeArea())
+
+            // A: offscreen hosting controller, production prepared blocks.
+            // The async parse task is skipped because the blocks are supplied.
+            let hosting = UIHostingController(rootView: rowView)
+            hosting.view.backgroundColor = .clear
+            hosting.sizingOptions = [.intrinsicContentSize]
+            hosting.traitOverrides.preferredContentSizeCategory = size.category
+            hosting.view.bounds = CGRect(x: 0, y: 0, width: hostWidth, height: 1)
+            hosting.view.layoutIfNeeded()
+            let hostlessInset = hosting.view.safeAreaInsets
+            let hostlessRaw = hosting.sizeThatFits(in: CGSize(
+                width: hostWidth, height: .greatestFiniteMagnitude)).height
+                - hostlessInset.top - hostlessInset.bottom
+            let hostless: CGFloat = hostlessRaw.isFinite && hostlessRaw > 1
+                ? ceil(hostlessRaw) : -1
+
+            // B / C: the real cell with no seed, so `super` performs the first
+            // fit. A fresh cell per call keeps the configuration token and the
+            // (absent) seed out of the other measurement.
+            let cellSuper = measureRendererCell(rowView, hostWidth: hostWidth, forceLayout: false)
+            let cellForced = measureRendererCell(rowView, hostWidth: hostWidth, forceLayout: true)
+
+            let hostlessValue = Double(hostless)
+            let cellSuperValue = cellSuper.height.map { Double($0) } ?? -1
+            let cellForcedValue = cellForced.height.map { Double($0) } ?? -1
+            let hostlessAvailable = hostless > 1
+            let hostlessDelta = hostlessAvailable ? abs(hostlessValue - rendered) : -1
+            let cellSuperDelta = cellSuper.height != nil
+                ? abs(cellSuperValue - rendered) : -1
+            let cellForcedDelta = cellForced.height != nil
+                ? abs(cellForcedValue - rendered) : -1
+            if hostlessAvailable {
+                hostlessMaxDelta = max(hostlessMaxDelta, hostlessDelta)
+            }
+            if cellSuper.height != nil {
+                cellSuperMaxDelta = max(cellSuperMaxDelta, cellSuperDelta)
+            }
+            if cellForced.height != nil {
+                cellForcedMaxDelta = max(cellForcedMaxDelta, cellForcedDelta)
+            }
+
+            var record: [String: Any] = [:]
+            record["fixture"] = fixture.name
+            record["width"] = Double(width)
+            record["dynamicType"] = size.name
+            record["rendered"] = rendered
+            record["hostlessAvailable"] = hostlessAvailable
+            record["hostless"] = hostlessValue
+            record["hostlessDelta"] = hostlessDelta
+            record["hostlessWithin1"] = hostlessAvailable && hostlessDelta <= 1
+            record["hostlessWithin3"] = hostlessAvailable && hostlessDelta <= 3
+            record["cellSuperAvailable"] = cellSuper.height != nil
+            record["cellSuperContentInstalled"] = cellSuper.contentInstalled
+            record["cellSuper"] = cellSuperValue
+            record["cellSuperDelta"] = cellSuperDelta
+            record["cellSuperWithin1"] = cellSuper.height != nil && cellSuperDelta <= 1
+            record["cellSuperWithin3"] = cellSuper.height != nil && cellSuperDelta <= 3
+            record["cellForcedAvailable"] = cellForced.height != nil
+            record["cellForcedContentInstalled"] = cellForced.contentInstalled
+            record["cellForced"] = cellForcedValue
+            record["cellForcedDelta"] = cellForcedDelta
+            record["cellForcedWithin1"] = cellForced.height != nil && cellForcedDelta <= 1
+            record["cellForcedWithin3"] = cellForced.height != nil && cellForcedDelta <= 3
+            cases.append(record)
+
+            print("AA RENDERER MEASURE \(fixture.name)"
+                + " rendered=\(rendered)"
+                + " hostless=\(hostlessValue) d=\(hostlessDelta)"
+                + " cell=\(cellSuperValue) d=\(cellSuperDelta)"
+                + " cellForced=\(cellForcedValue) d=\(cellForcedDelta)")
+        }
+
+        var measurement: [String: Any] = [:]
+        measurement["fixtureCount"] = Self.rendererMeasureFixtures.count
+        measurement["caseCount"] = cases.count
+        measurement["threshold"] = 1.0
+        measurement["parityThreshold"] = 3.0
+        measurement["renderedSource"] = "measureRowHeight: settled in-window host"
+        measurement["hostlessSource"] = "offscreen UIHostingController, preparedBlocks, ceil"
+        measurement["cellSuperSource"] = "TimelineHostingCell, no seed, direct preferredLayoutAttributesFitting"
+        measurement["cellForcedSource"] = "TimelineHostingCell, no seed, layoutIfNeeded before the fit"
+        measurement["hostlessMaxDelta"] = hostlessMaxDelta
+        measurement["cellSuperMaxDelta"] = cellSuperMaxDelta
+        measurement["cellForcedMaxDelta"] = cellForcedMaxDelta
+        measurement["cases"] = cases
+        report["rendererMeasure"] = measurement
+        persist(phase: "views.rendererMeasure")
+    }
+
+    private struct RendererCellMeasurement {
+        /// `nil` when the fit returned no usable height (the harness failed to
+        /// install and measure the hosted content).
+        let height: CGFloat?
+        /// Whether `UIHostingConfiguration` installed a content subview. A fit
+        /// can return a probe/frame height without the real content, so this
+        /// distinguishes "no harness" from "harness measured the skeleton".
+        let contentInstalled: Bool
+    }
+
+    /// One `TimelineHostingCell` first-fit measurement. The cell is never
+    /// added to a collection view: the experiment asks whether the hosting
+    /// configuration installs its content offscreen at all.
+    private func measureRendererCell(_ row: AnyView,
+                                     hostWidth: CGFloat,
+                                     forceLayout: Bool) -> RendererCellMeasurement {
+        let cell = TimelineHostingCell(frame: CGRect(x: 0, y: 0,
+                                                     width: hostWidth, height: 200))
+        cell.configure(row, policy: .measured,
+                       isMeasured: false, reportsContentHeight: false,
+                       seededHeight: nil)
+        if forceLayout {
+            // Give `UIHostingConfiguration` the layout pass it would get once
+            // the cell is in a collection view, then fit the installed content.
+            cell.setNeedsLayout()
+            cell.contentView.setNeedsLayout()
+            cell.layoutIfNeeded()
+            cell.contentView.layoutIfNeeded()
+        }
+        let attributes = UICollectionViewLayoutAttributes(
+            forCellWith: IndexPath(item: 0, section: 0))
+        attributes.size = CGSize(width: hostWidth, height: 200)
+        let fitted = cell.preferredLayoutAttributesFitting(attributes).size.height
+        let installed = !cell.contentView.subviews.isEmpty
+        guard fitted.isFinite, fitted > 1 else {
+            return RendererCellMeasurement(height: nil, contentInstalled: installed)
+        }
+        return RendererCellMeasurement(height: fitted, contentInstalled: installed)
     }
 
     /// Hosts one `CodeMessageRowView` the way `verifyMessageRowHeight` does:
@@ -1198,6 +1424,28 @@ final class CodeProfileAutoRunModel {
           {"id":"h-bubble","sessionId":"gate-height","type":"message","status":"done","role":"user","orderSeq":1,
            "content":{"text":"请检查这个中文用户气泡的高度：第一行比较长，包含标点和 emoji 😀🚀🎯，第二行继续说明为什么气泡在两种宽度下都必须与测量值一致。"},
            "source":{"itemId":"gate-bubble"}}
+        ]
+        """#
+    }
+
+    /// Fixtures for the renderer-measurement leg. The short body isolates the
+    /// plain text layout; the code/table body exercises the fenced-code and
+    /// table leaves, where the structural measurer and the SwiftUI renderer
+    /// disagreed by 3 pt and 1900 pt on the device probe.
+    private enum RendererMeasureFixtureJSON {
+        static let short = #"""
+        [
+          {"id":"h-short","sessionId":"gate-renderer","type":"message","status":"done","role":"assistant","orderSeq":1,
+           "content":{"text":"Fixed the flaky test."},
+           "source":{"itemId":"gate-short"}}
+        ]
+        """#
+
+        static let codeTable = #"""
+        [
+          {"id":"h-code-table","sessionId":"gate-renderer","type":"message","status":"done","role":"assistant","orderSeq":1,
+           "content":{"text":"The driver now waits for the row to settle:\n\n```swift\nfunc waitUntilSettled() async {\n    await clock.advance(by: .milliseconds(120))\n}\n```\n\n| Case | Height |\n| --- | --- |\n| short | 56 |\n| long | 610 |"},
+           "source":{"itemId":"gate-code-table"}}
         ]
         """#
     }

@@ -605,9 +605,13 @@ private struct ChatTimelineContent: View, Equatable {
         let anchorGroup = historyAnchor.flatMap { anchor in groups.first { $0.rows.contains { $0.id == anchor.anchorRowID } } }
             ?? groups.first { $0.rows.first?.structure.groupKind == .single } ?? groups.last
         let anchorEdge = historyAnchor?.edge ?? (anchorGroup?.rows.first?.structure.groupKind == .single ? .top : .bottom)
-        // Keep actual row geometry available as Markdown grows and tool groups
-        // change height. Hidden tool details own their deferred work separately.
-        VStack(alignment: .leading, spacing: 20) {
+        // Only the rows near the viewport are instantiated. The eager VStack
+        // kept every group and its markdown in the render tree, which made a
+        // long session cost per-row work on every scroll frame even though no
+        // timeline state changed (2026-10-24 device probe: zero grouping,
+        // flush and body work while scrolling). Hidden tool details own their
+        // deferred work separately.
+        LazyVStack(alignment: .leading, spacing: 20) {
             if model.session.hasOlderItems || keepsOlderPrompt {
                 Group {
                     if isLoadingOlder {

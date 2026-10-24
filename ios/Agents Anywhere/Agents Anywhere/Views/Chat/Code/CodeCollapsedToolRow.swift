@@ -39,12 +39,15 @@ struct CodeCollapsedToolRow: View {
     /// still provides the official 24 pt row height.
     private let glyphSize: CGFloat = 17
 
-    /// [E] The caret is `caretRight` at `.large` as well; its artwork is
-    /// 10×18 pt (`DATA/anthropicon-map.tsv`, the largest rendition). An SF
-    /// chevron at the 24 pt slot draws 11.3×20.3 pt (measured on the device
-    /// screenshot), i.e. ~13% over the official mark, so the stand-in is drawn
-    /// at 21 pt (~9.9×17.8 pt).
-    private let caretSize: CGFloat = 21
+    /// The caret is `caretRight` in the official row, but the rendered mark is
+    /// far smaller than the `.large` icon-content extent (10×18): official
+    /// device screenshots (2026-10-25, @3x) measure the caret at **7.7×14.3
+    /// pt** in both the collapsed transcript row and the full-screen tool
+    /// list. `DATA/anthropicon-map.tsv` brackets that with the `small`/`medium`
+    /// artwork extents (8×13 / 8×15); the `IconFrame` size argument that would
+    /// explain the difference is still [U]. An SF chevron at 17 pt draws
+    /// 8.1×14.3 pt, so that is the stand-in size.
+    private let caretSize: CGFloat = 17
 
     @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
     private var lineHeight = CodePageTheme.toolRowLineHeight
@@ -89,10 +92,12 @@ struct CodeCollapsedToolRow: View {
                     CodeDiffIndicator(stat: diff)
                 }
 
-                // [E] The official caret is the `caretRight` Anthropicon at
-                // `.large` = 24 pt, secondary. The Anthropicon assets are not
-                // extracted yet (06-visuals-assets §4: pixel export blocked),
-                // so the SF chevron is a placeholder with the same 24 pt box.
+                // [E] The official caret is the `caretRight` Anthropicon,
+                // secondary, rendered at 7.7×14.3 pt (official device
+                // screenshots, see `caretSize`). The Anthropicon assets are
+                // not extracted yet (06-visuals-assets §4: pixel export
+                // blocked), so the SF chevron stands in at the same optical
+                // size.
                 Image(systemName: "chevron.right")
                     .font(.system(size: caretSize, weight: CodePageTheme.toolRowFontWeight))
                     .foregroundStyle(CodePageTheme.toolRowSecondaryColor

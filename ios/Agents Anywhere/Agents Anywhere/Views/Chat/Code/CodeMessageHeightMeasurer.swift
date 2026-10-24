@@ -38,7 +38,7 @@ enum CodeMessageHeightMeasurer {
         // stored height and the drawn row use identical scaled values.
         let resolvedTypography = typography.resolvedForCodePage(
             traits: traits ?? UITraitCollection.current)
-        CodeRowHeightPlan.height(
+        return CodeRowHeightPlan.height(
             rows: planRows(rows, width: width, typography: resolvedTypography,
                            traits: traits, measured: measured),
             metrics: metrics(traits: traits))

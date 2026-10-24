@@ -35,6 +35,11 @@ struct ChatTimelineView: View {
     /// Set while a keyboard-driven pin holds the bottom, so a transition end
     /// releases exactly what its own window pinned and nothing else.
     @State private var keyboardPinnedBottom = false
+    /// One bounded bottom correction after the keyboard/composer layout
+    /// settles. Lazy rows make the content height an estimate mid-transition,
+    /// so the pin taken there can land short or overshoot once the estimate
+    /// is replaced by measurements.
+    @State private var keyboardSettleTask: Task<Void, Never>?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.sidebarDrawerIsTransitioning) private var sidebarIsTransitioning
     @Environment(\.sidebarDrawerObscuresDetail) private var sidebarObscuresDetail
@@ -283,7 +288,7 @@ struct ChatTimelineView: View {
             // so it hides while the keyboard is up. (The SubAgent capsule no
             // longer shares this stack — it is docked above the composer.)
             TimelinePillStack(keyboard: keyboard,
-                isBottomShown: scrolling.showsBottomButton(),
+                isBottomShown: scrolling.showsBottomButton(using: viewportSample.value),
                 onBottom: {
                     latestPull.cancel(); olderPull.cancel()
                     historyPosition?.cancelRestoration()
@@ -490,6 +495,26 @@ struct ChatTimelineView: View {
             publishViewportSample(sample, keyboardTransitionActive: false)
         }
         acknowledgeInstantOpeningIfArrived()
+        correctBottomAfterKeyboard()
+    }
+    /// The pin runs inside the transition window, when the content height is
+    /// still an estimate. Once the transition closes and the lazy rows have
+    /// settled, a reader who was resting at the bottom can be left short (the
+    /// page floats after the keyboard hides) or past the true bottom (the
+    /// composer grew while the estimate was stale). One bounded re-check,
+    /// routed through the normal return path so its completion releases the
+    /// target, heals both shapes. A reader who chose a position is untouched:
+    /// their gesture cleared `readerRestsAtBottom`.
+    private func correctBottomAfterKeyboard() {
+        keyboardSettleTask?.cancel()
+        guard scrolling.readerRestsAtBottom else { return }
+        keyboardSettleTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(160))
+            guard !Task.isCancelled, !keyboard.transitionActive else { return }
+            guard let sample = viewportSample.value, sample.isMeasured,
+                  !sample.measuredAtBottom, scrolling.readerRestsAtBottom else { return }
+            scrolling.requestBottom()
+        }
     }
     private func historyDidLayOut(_ layout: TimelineHistoryLayout) {
         historyUpdates.submit(layout) { layout in

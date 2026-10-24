@@ -33,15 +33,18 @@ struct CodeCollapsedToolRow: View {
     /// The artwork inside that slot is smaller than the slot. At `.large`,
     /// `DATA/anthropicon-map.tsv` records the drawn extents per icon (prompt
     /// 20×15, eye 20×15, search 20×20, file 15×20 …), i.e. at most 20 pt.
-    /// SF Symbols fill their layout box, so drawing the stand-in at the slot's
-    /// 24 pt made it visibly heavier than the official glyph; 20 pt reproduces
-    /// the official optical size inside the same 24 pt line box.
-    private let glyphSize: CGFloat = 20
+    /// SF Symbols fill their layout box: the `terminal` stand-in at the slot's
+    /// 24 pt draws 27.6×21.8 pt (measured on the device screenshot), so 17 pt
+    /// puts it at 19.6×15.4 - the official prompt mark. The label's line box
+    /// still provides the official 24 pt row height.
+    private let glyphSize: CGFloat = 17
 
     /// [E] The caret is `caretRight` at `.large` as well; its artwork is
-    /// 10×18 (`DATA/anthropicon-map.tsv`, the largest rendition), which is the
-    /// shape an SF chevron already draws at the slot's 24 pt.
-    private let caretSize: CGFloat = 24
+    /// 10×18 pt (`DATA/anthropicon-map.tsv`, the largest rendition). An SF
+    /// chevron at the 24 pt slot draws 11.3×20.3 pt (measured on the device
+    /// screenshot), i.e. ~13% over the official mark, so the stand-in is drawn
+    /// at 21 pt (~9.9×17.8 pt).
+    private let caretSize: CGFloat = 21
 
     @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
     private var lineHeight = CodePageTheme.toolRowLineHeight

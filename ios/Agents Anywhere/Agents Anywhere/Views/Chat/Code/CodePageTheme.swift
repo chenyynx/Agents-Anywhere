@@ -222,6 +222,15 @@ nonisolated enum CodePageTheme {
             : UIColor(red: 0.075, green: 0.075, blue: 0.075, alpha: 1)
     }
 
+    /// [E] CANONICAL/06-visuals-assets.md §2.2 — inline-code text
+    /// `#184F95` light / `#6DA7EC` dark (`0.094,0.31,0.584` /
+    /// `0.427,0.655,0.925`). Links use the body text colour.
+    static let inlineCodeTextUIColor = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.427, green: 0.655, blue: 0.925, alpha: 1)
+            : UIColor(red: 0.094, green: 0.31, blue: 0.584, alpha: 1)
+    }
+
     /// [E] §2.3 — card fill `#FFFFFF` light / `#20201F` dark.
     static let codeCardFillUIColor = UIColor { traits in
         traits.userInterfaceStyle == .dark

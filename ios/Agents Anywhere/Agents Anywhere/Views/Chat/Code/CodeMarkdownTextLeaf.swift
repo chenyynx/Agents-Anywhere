@@ -56,7 +56,8 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
         if coordinator.documentKey == key { return coordinator.document }
         let parsed = AssistantMarkdownDocumentParser.make(
             text: text, resolvesFileReferences: true, typography: metrics,
-            codeStyle: CodePageTheme.codeCardStyle)
+            codeStyle: CodePageTheme.codeCardStyle)?
+            .applyingCodePageTextColors()
         coordinator.document = parsed
         coordinator.documentKey = key
         return parsed
@@ -149,6 +150,7 @@ final class CodeMarkdownTextStackView: UIView {
     }
 
     private func rebuild(width: CGFloat) {
+
         for constraint in heightConstraints { constraint.isActive = false }
         heightConstraints.removeAll()
         for view in stack.arrangedSubviews {
@@ -172,6 +174,81 @@ final class CodeMarkdownTextStackView: UIView {
                 AssistantMarkdownTextLayout.topLevelSpacing(after: index - 1, in: document),
                 after: stack.arrangedSubviews[index - 1])
         }
+    }
+}
+
+// MARK: - Official Code text colours
+
+extension AssistantMarkdownDocument {
+    /// Map the Chat ink to the official Code colours: body text
+    /// `#131313`/`#F9F9F7`, inline code `#184F95`/`#6DA7EC`. The official
+    /// theme links use the body colour, and inline code is the only blue.
+    /// Colours never change a height, so the measured and drawn documents
+    /// stay identical.
+    func applyingCodePageTextColors() -> AssistantMarkdownDocument {
+        AssistantMarkdownDocument(blocks: Self.styledBlocks(blocks),
+                                  blockGroups: blockGroups,
+                                  plainTextLength: plainTextLength)
+    }
+
+    private static func styledBlocks(
+        _ blocks: [AssistantMarkdownBlock]
+    ) -> [AssistantMarkdownBlock] {
+        blocks.map { block in
+            switch block {
+            case .text(let text):
+                return .text(AssistantTextBlock(
+                    attributed: Self.recolored(text.attributed),
+                    headingLevel: text.headingLevel))
+            case .list(let list):
+                let items = list.items.map {
+                    AssistantListBlock.Item(marker: $0.marker,
+                                            blocks: styledBlocks($0.blocks))
+                }
+                return .list(AssistantListBlock(
+                    items: items,
+                    indent: list.indent,
+                    markerGap: list.markerGap,
+                    bulletSize: list.bulletSize,
+                    bulletCenterX: list.bulletCenterX,
+                    itemSpacing: list.itemSpacing,
+                    innerSpacing: list.innerSpacing,
+                    bodySize: list.bodySize,
+                    markerColor: list.markerColor))
+            case .quote(let quote):
+                return .quote(AssistantQuoteBlock(
+                    blocks: styledBlocks(quote.blocks),
+                    inset: quote.inset,
+                    barWidth: quote.barWidth,
+                    innerSpacing: quote.innerSpacing))
+            case .table(let table):
+                return .table(AssistantTableBlock(
+                    rows: table.rows.map { $0.map(recolored) },
+                    columnWidths: table.columnWidths,
+                    rowHeights: table.rowHeights,
+                    cellPaddingHorizontal: table.cellPaddingHorizontal,
+                    cellPaddingVertical: table.cellPaddingVertical,
+                    cornerRadius: table.cornerRadius))
+            default:
+                return block
+            }
+        }
+    }
+
+    private static func recolored(_ attributed: NSAttributedString) -> NSAttributedString {
+        let output = NSMutableAttributedString(attributedString: attributed)
+        let full = NSRange(location: 0, length: output.length)
+        output.enumerateAttribute(.font, in: full) { value, range, _ in
+            let font = value as? UIFont
+            let isMono = font?.fontDescriptor.symbolicTraits
+                .contains(.traitMonoSpace) ?? false
+            output.addAttribute(
+                .foregroundColor,
+                value: isMono ? CodePageTheme.inlineCodeTextUIColor
+                              : CodePageTheme.markdownTextUIColor,
+                range: range)
+        }
+        return output
     }
 }
 #endif

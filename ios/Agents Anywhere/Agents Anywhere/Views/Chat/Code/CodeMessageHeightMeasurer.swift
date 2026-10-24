@@ -154,29 +154,13 @@ enum CodeMessageHeightMeasurer {
         let available = max(1, width
             - CodePageTheme.userBubbleLeadingGutter
             - 2 * CodePageTheme.userBubbleHorizontalPadding)
-        let font = UIFont.preferredFont(forTextStyle: .body, compatibleWith: traits)
-        let lineSpacing = UIFontMetrics(forTextStyle: .body)
-            .scaledValue(for: CodePageTheme.userBubbleLineSpacing, compatibleWith: traits)
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = lineSpacing
-        let attributed = NSAttributedString(string: text, attributes: [
-            .font: font,
-            .paragraphStyle: paragraph,
-        ])
-        // The bubble renders through Textual's `InlineText`; its line height
-        // and wrapping follow TextKit 2, not `NSString.boundingRect`. The old
-        // bounding-rect measurement over-reserved 6.7–8.3 pt on the CJK
-        // fixtures (code-profile gate 2026-10-23). The assistant body uses the
-        // same TextKit engine and matches the rendered Textual block within
-        // 0.7 pt, so the bubble uses it too.
+        // The renderer (`CodeUserBubbleText`) and this measurement share one
+        // attributed-string builder and one TextKit call, so the bubble can
+        // never correct itself after display (the Textual/TextKit split was
+        // the code-profile gate's 3.67 pt delta).
         let scale = traits?.displayScale ?? 2
-        let height = AssistantMarkdownTextLayout.height(
-            of: attributed, width: available, displayScale: scale)
-        // SwiftUI's `lineSpacing` is the gap *between* lines. The TextKit
-        // usage height includes one trailing gap after the last line; the
-        // rendered bubble does not (the gate measured 6.7–8.3 pt of
-        // over-reservation before this subtraction).
-        return ceil(max(0, height - lineSpacing))
-            + 2 * CodePageTheme.userBubbleVerticalPadding
+        let height = CodeUserBubbleTextMetrics.height(
+            text: text, width: available, displayScale: scale, traits: traits)
+        return height + 2 * CodePageTheme.userBubbleVerticalPadding
     }
 }

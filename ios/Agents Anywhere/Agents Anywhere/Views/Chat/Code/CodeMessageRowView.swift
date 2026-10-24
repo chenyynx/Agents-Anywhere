@@ -12,15 +12,26 @@ import UIKit
 // block stack in declared RBT order. Every visual value comes from
 // `CodePageTheme`; this file adds none of its own.
 
-/// The adapter's paced snapshot for the row that is currently streaming.
+/// The adapter's published snapshots for the rows that are currently live.
 ///
-/// The Code page has no per-character reveal; the publisher emits full-text
-/// snapshots (W6). `rowID` is the wire row the text belongs to, so the view
-/// substitutes the snapshot in exactly that text block instead of guessing
-/// which block is live.
+/// The Code page has no per-character reveal; each publisher emits whole-text
+/// snapshots on the official 0.1 s leading-edge throttle
+/// (CANONICAL/03-streaming.md §5.1). Snapshots are keyed by the wire row id of
+/// the block they belong to, so the view substitutes text in exactly that
+/// block instead of guessing which row is live (several blocks of one message
+/// may stream at the same time, P2-11).
 nonisolated struct CodeStreamingText: Equatable {
-    let rowID: String
-    let text: String
+    let textsByRowID: [String: String]
+
+    init(rowID: String, text: String) {
+        textsByRowID = [rowID: text]
+    }
+
+    init(textsByRowID: [String: String]) {
+        self.textsByRowID = textsByRowID
+    }
+
+    func text(for rowID: String) -> String? { textsByRowID[rowID] }
 }
 
 struct CodeMessageRowView: View {
@@ -230,8 +241,7 @@ struct CodeMessageRowView: View {
     }
 
     private func displayedText(id: String, fallback: String) -> String {
-        guard let streaming, streaming.rowID == id else { return fallback }
-        return streaming.text
+        streaming?.text(for: id) ?? fallback
     }
 }
 
@@ -242,17 +252,32 @@ struct CodeMessageRowView: View {
 /// `.connecting` verb table, rotated once a second. The mark is decorative and
 /// hidden from accessibility; the verb text carries the announcement.
 struct CodeThinkingStatusLine: View {
+    /// Mirrors `WorkingMarkView.isRunning`: false starts the mark's 0.4 s exit
+    /// while the status text stays on screen until the parent removes the row
+    /// (`EVIDENCE/round19/streaming.md:188`). The text is not part of the
+    /// official exit group, which animates only the mark layer
+    /// (`CANONICAL/20-working-mark.md:53`).
+    let isRunning: Bool
     @Environment(\.colorScheme) private var colorScheme
+
+    init(isRunning: Bool = true) {
+        self.isRunning = isRunning
+    }
 
     var body: some View {
         TimelineView(.periodic(from: .now,
                                by: CodePageTheme.runningStatusVerbRotationInterval)) { context in
             let second = max(0, Int(context.date.timeIntervalSinceReferenceDate))
             let verb = CodeWorkingStatusVerbs.all[second % CodeWorkingStatusVerbs.all.count]
-            HStack(spacing: CodePageTheme.toolRowSpacing) {
-                WorkingMarkView(body: .think, isRunning: true)
+            HStack(spacing: CodePageTheme.workingStatusSpacing) {
+                WorkingMarkView(body: .think, isRunning: isRunning)
                 Text(verbatim: verb + "...")
-                    .font(.system(size: CodePageTheme.runningStatusFontSize))
+                    // [E] 15 pt / 400; the official family is the ambient
+                    // Typography's (R19 tool-row-status.md). AA uses the
+                    // official proportional face; the text style is [U].
+                    .font(.custom(CodePageTheme.sansFontName,
+                                  size: CodePageTheme.runningStatusFontSize,
+                                  relativeTo: .footnote))
                     .foregroundStyle(CodePageTheme.runningStatusColor.resolved(for: colorScheme))
             }
             .frame(minHeight: CodePageTheme.workingMarkSize, alignment: .leading)

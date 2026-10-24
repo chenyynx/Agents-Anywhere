@@ -201,8 +201,6 @@ final class CodeProfileAutoRunModel {
         let epsilon: TimeInterval = 1e-9
         let eight = "one two three four five six seven eight "
         let burst = (1...20).map { "w\($0)" }.joined(separator: " ") + " "
-        let firstEight = (1...8).map { "w\($0)" }.joined(separator: " ") + " "
-        let firstSixteen = (1...16).map { "w\($0)" }.joined(separator: " ") + " "
         let backlog = (1...40).map { "b\($0)" }.joined(separator: " ") + " "
         let chinese = String(repeating: "你", count: 20)
 
@@ -218,7 +216,7 @@ final class CodeProfileAutoRunModel {
         check(first?.id == CodeStreamingSnapshot.streamingRowID,
               "streaming: first snapshot id \(first?.id ?? "nil")")
         let blocked = leading.receive(delta: eight, at: 0.05)
-        check(blocked == nil, "streaming: a chunk published inside the 0.1 s window")
+        check(blocked == nil, "streaming: a snapshot published inside the 0.1 s window")
         check(leading.publishPending,
               "streaming: a blocked publish did not set publishPending")
         let flushed = leading.flush(at: 0.1 + epsilon)
@@ -232,37 +230,44 @@ final class CodeProfileAutoRunModel {
             "flushed": flushed?.text ?? "",
         ] as [String: Any]
 
-        // Chunk size: a burst is split into at most eight words per publish.
-        var chunker = seededPublisher()
-        let chunkFirst = chunker.receive(delta: burst, at: 0.1)
-        check(chunkFirst?.text == "seed " + firstEight,
-              "streaming: first chunk \(chunkFirst?.text ?? "nil")")
-        let chunkSecond = chunker.flush(at: 0.2 + epsilon)
-        check(chunkSecond?.text == "seed " + firstSixteen,
-              "streaming: second chunk \(chunkSecond?.text ?? "nil")")
-        let chunkThird = chunker.flush(at: 0.3 + epsilon)
-        check(chunkThird?.text == "seed " + burst,
-              "streaming: final chunk \(chunkThird?.text ?? "nil")")
+        // Snapshot content: the whole current text, never a 4–8 word chunk.
+        // A burst that arrives inside the throttle window only marks pending;
+        // the first event after the window publishes the same full text in one
+        // snapshot (CANONICAL/03-streaming.md §5.1/§4.3). The video's 4–8 word
+        // / 50–100 ms cadence is an observation of network delta grouping, not
+        // a client-side split (§9.2).
+        var wholeText = seededPublisher()
+        let insideWindow = wholeText.receive(delta: burst, at: 0.05)
+        check(insideWindow == nil, "streaming: a burst published inside the 0.1 s window")
+        check(wholeText.publishPending,
+              "streaming: a throttled burst did not set publishPending")
+        let wholeSnapshot = wholeText.flush(at: 0.1 + epsilon)
+        check(wholeSnapshot?.text == "seed " + burst,
+              "streaming: the open window did not publish the whole text "
+                  + "\(wholeSnapshot?.text ?? "nil")")
+        let emptyTick = wholeText.flush(at: 0.2 + epsilon)
+        check(emptyTick == nil, "streaming: an empty tick published another snapshot")
         streaming["chunks"] = [
-            "first": chunkFirst?.text ?? "",
-            "second": chunkSecond?.text ?? "",
-            "third": chunkThird?.text ?? "",
+            "first": wholeSnapshot?.text ?? "",
+            "second": emptyTick?.text ?? "",
+            "third": "",
         ] as [String: Any]
 
-        // Chinese fallback: no word boundaries, so characters are counted.
+        // Unspaced text (CJK) is published whole as well: there is no word
+        // scanner left, so no character-count fallback can split it.
         var cjk = seededPublisher()
         let cjkFirst = cjk.receive(delta: chinese, at: 0.1)
-        check(cjkFirst?.text == "seed " + String(repeating: "你", count: 16),
-              "streaming: Chinese first chunk \(cjkFirst?.text ?? "nil")")
+        check(cjkFirst?.text == "seed " + chinese,
+              "streaming: Chinese text was split \(cjkFirst?.text ?? "nil")")
         let cjkRest = cjk.flush(at: 0.2 + epsilon)
-        check(cjkRest?.text == "seed " + chinese,
-              "streaming: Chinese rest \(cjkRest?.text ?? "nil")")
+        check(cjkRest == nil, "streaming: Chinese text published twice")
         streaming["chinese"] = [
             "first": cjkFirst?.text ?? "",
             "rest": cjkRest?.text ?? "",
         ] as [String: Any]
 
-        // Catch-up: the first snapshot and an oversized backlog publish whole.
+        // Catch-up: the first snapshot and the first event after a pause
+        // publish everything received so far.
         var catchUp = CodeStreamingPublisher()
         let catchUpFirst = catchUp.receive(delta: backlog, at: 0)
         check(catchUpFirst?.text == backlog,
@@ -270,11 +275,23 @@ final class CodeProfileAutoRunModel {
         var catchUpAfterSeed = seededPublisher()
         let catchUpBacklog = catchUpAfterSeed.receive(delta: backlog, at: 0.1)
         check(catchUpBacklog?.text == "seed " + backlog,
-              "streaming: an oversized backlog was paced instead of caught up")
+              "streaming: a backlog arriving after the window was not published whole")
         streaming["catchUp"] = [
             "first": catchUpFirst?.text ?? "",
             "afterSeed": catchUpBacklog?.text ?? "",
         ] as [String: Any]
+
+        // Completion is exempt from the throttle: the buffered tail must ride
+        // the final snapshot even when it arrived inside the window
+        // (CANONICAL/03-streaming.md §5.1).
+        var doneInsideWindow = seededPublisher()
+        _ = doneInsideWindow.receive(delta: "one two ", at: 0.05)
+        let completeInside = doneInsideWindow.complete(at: 0.06)
+        check(completeInside?.text == "seed one two ",
+              "streaming: completion lost the throttled tail "
+                  + "\(completeInside?.text ?? "nil")")
+        check(completeInside?.isComplete == true,
+              "streaming: completion inside the window is not marked complete")
 
         // Completion keeps the fixed row identity and flushes the rest.
         var done = seededPublisher()

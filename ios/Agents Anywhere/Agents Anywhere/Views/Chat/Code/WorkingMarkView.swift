@@ -13,8 +13,14 @@ import UIKit
 ///   single rest frame, mirroring the official `isStill` path.
 /// - Turning `isRunning` off plays the official 0.4 s exit group:
 ///   `transform.scale -> 0.01` with opacity -> 0
-///   (`CANONICAL/20-working-mark.md` §6). The parent must keep the view
-///   mounted for those 0.4 s; a child cannot remove itself.
+///   (`CANONICAL/20-working-mark.md:53`). [I] The exit animates the frame that
+///   is on screen rather than a flipbook that keeps stepping; the parent must
+///   keep the view mounted for those 0.4 s because a child cannot remove
+///   itself.
+/// - Under Reduce Motion the official still path plays one frame and builds
+///   no runs (`CANONICAL/20-working-mark.md:24`); AA therefore removes the
+///   mark at once instead of scaling/fading it ([I]: the exit group is not
+///   part of the still path).
 ///
 /// The official mark is a fixed 20 x 20 pt decorative element, so the view is
 /// `accessibilityHidden(true)`.
@@ -37,7 +43,17 @@ struct WorkingMarkView: View {
     @Environment(\.displayScale) private var displayScale
 
     /// Anchors the flipbook so the first rendered frame is opening frame 0.
+    /// Only a restart resets it: the exit must keep the same anchor, or the
+    /// flipbook would jump back to its opening frame while the exit group
+    /// plays.
     @State private var start = Date()
+
+    /// The flipbook time captured when `isRunning` turned false. The official
+    /// exit is one 0.4 s group on `transform.scale`/`opacity`
+    /// (`CANONICAL/20-working-mark.md:53`); [I] it holds the frame that is on
+    /// screen instead of stepping the flipbook on, so the mark keeps this
+    /// frame for the whole exit. `nil` while running.
+    @State private var frozenElapsed: TimeInterval?
 
     init(body: WorkingMarkBody = .think,
          isRunning: Bool = true,
@@ -57,9 +73,24 @@ struct WorkingMarkView: View {
                    height: CodePageTheme.workingMarkSize)
             .modifier(WorkingMarkExitModifier(progress: isRunning ? 0 : 1))
             .animation(exitAnimation, value: isRunning)
-            .onAppear { start = Date() }
+            .onAppear {
+                start = Date()
+                // A view mounted already stopped is invisible (progress 1);
+                // the frame it holds does not matter, but keep the state
+                // deterministic instead of reading the clock in `body`.
+                frozenElapsed = isRunning ? nil : 0
+            }
             .onChange(of: isRunning) { _, running in
-                if running { start = Date() }
+                if running {
+                    // Restart: a new opening must begin at frame 0. The exit
+                    // animation is nil in this state, so progress snaps back.
+                    start = Date()
+                    frozenElapsed = nil
+                } else {
+                    // Freeze the flipbook where it stands before the exit
+                    // group takes over.
+                    frozenElapsed = max(0, Date().timeIntervalSince(start))
+                }
             }
             .accessibilityHidden(true)
     }
@@ -67,18 +98,28 @@ struct WorkingMarkView: View {
     /// Reduce Motion draws the single rest frame directly instead of through
     /// the timeline: a periodic schedule can be a tick late, and the still
     /// pose must apply the moment the environment value changes.
+    ///
+    /// The running timeline is removed at `isRunning == false`, so the 30 fps
+    /// flipbook cannot keep stepping behind the 0.4 s exit group; the exit
+    /// draws the frame captured at the stop instead.
     @ViewBuilder
     private var markContent: some View {
         let tint = UIColor(CodePageTheme.workingMarkTint.resolved(for: scheme))
         if isStill {
-            Image(uiImage: WorkingMarkRenderer.image(
-                for: WorkingMarkRenderer.frame(body: markBody,
-                                                phase: .looping,
-                                                index: 0),
-                tint: tint,
-                scale: displayScale))
-        } else {
-            TimelineView(schedule) { timeline in
+            // Official `isStill` plays one sprite frame and builds no runs
+            // (`CANONICAL/20-working-mark.md:24`); [I] the still path has no
+            // exit group, so the mark is gone the moment the turn stops.
+            if isRunning {
+                Image(uiImage: WorkingMarkRenderer.image(
+                    for: WorkingMarkRenderer.frame(body: markBody,
+                                                   phase: .looping,
+                                                   index: 0),
+                    tint: tint,
+                    scale: displayScale))
+            }
+        } else if isRunning {
+            TimelineView(.periodic(from: start,
+                                   by: 1.0 / CodePageTheme.workingMarkFrameRate)) { timeline in
                 let elapsed = timeline.date.timeIntervalSince(start)
                 let frame = WorkingMarkRenderer.frame(body: markBody,
                                                       elapsed: elapsed,
@@ -87,24 +128,25 @@ struct WorkingMarkView: View {
                                                           tint: tint,
                                                           scale: displayScale))
             }
+        } else {
+            Image(uiImage: WorkingMarkRenderer.image(
+                body: markBody,
+                elapsed: frozenElapsed ?? max(0, Date().timeIntervalSince(start)),
+                isStill: false,
+                tint: tint,
+                scale: displayScale))
         }
     }
 
     /// Drives `WorkingMarkExitModifier.progress` linearly over the official
     /// 0.4 s; the modifier turns that one progress value into the official
     /// scale and opacity keyframes. Nil while running, so a restart snaps the
-    /// mark back before the opening flipbook takes over.
+    /// mark back before the opening flipbook takes over. Nil under Reduce
+    /// Motion too: the still path builds no runs
+    /// (`CANONICAL/20-working-mark.md:24`), [I] no exit group.
     private var exitAnimation: Animation? {
-        isRunning ? nil : .linear(duration: CodePageTheme.workingMarkExitDuration)
-    }
-
-    /// The official cadence while working. A one-hour tick once the mark has
-    /// exited keeps `TimelineView` from rendering an invisible mark at 30 fps.
-    private var schedule: PeriodicTimelineSchedule {
-        let interval = isRunning
-            ? 1.0 / CodePageTheme.workingMarkFrameRate
-            : 3600.0
-        return PeriodicTimelineSchedule(from: start, by: interval)
+        guard !isRunning, !isStill else { return nil }
+        return .linear(duration: CodePageTheme.workingMarkExitDuration)
     }
 }
 

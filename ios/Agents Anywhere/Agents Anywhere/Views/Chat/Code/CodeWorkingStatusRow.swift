@@ -21,8 +21,21 @@ struct CodeWorkingStatusRow: View {
             + CodePageTheme.rowMarginBottom
     }
 
+    /// While true the flipbook runs; false starts the official 0.4 s exit
+    /// (`EVIDENCE/round19/streaming.md:188`) while the status text stays on
+    /// screen. The caller must keep this row mounted for those 0.4 s and then
+    /// remove it: the mark cannot remove itself, and the official exit group
+    /// is 0.4 s long (`CANONICAL/20-working-mark.md:53`). Give the row the
+    /// same view identity across that transition; a re-created view starts
+    /// already exited (invisible) and never plays the 0.4 s exit.
+    let isRunning: Bool
+
+    init(isRunning: Bool = true) {
+        self.isRunning = isRunning
+    }
+
     var body: some View {
-        CodeThinkingStatusLine()
+        CodeThinkingStatusLine(isRunning: isRunning)
             .padding(.vertical, CodePageTheme.segmentVerticalPadding)
             .padding(.vertical, CodePageTheme.rowMarginTop)
             .frame(maxWidth: .infinity, alignment: .leading)

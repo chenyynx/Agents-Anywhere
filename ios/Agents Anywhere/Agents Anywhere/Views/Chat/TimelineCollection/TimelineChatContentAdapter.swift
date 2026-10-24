@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import QuartzCore
+import Observation
 
 /// Adapts one `SessionChatModel` projection to the collection timeline.
 ///
@@ -58,10 +59,26 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// The last message group of a live turn. It owns the transcript's single
     /// working status line; every other reasoning-only group is not rendered
     /// (device report 2026-10-23: two "Computing…" lines plus the tail orb).
-    /// One chunked streaming publisher per in-flight assistant text row. The
-    /// publisher is fed with the row's full text on every refresh and dropped
-    /// as soon as the row settles (the persisted block text is complete then).
+    /// One streaming publisher per in-flight assistant text row. The publisher
+    /// is fed with the row's full text on every refresh and dropped as soon as
+    /// the row settles (CANONICAL/03-streaming.md §5.1: 0.1 s leading-edge
+    /// throttle of whole snapshots, no chunk split).
     private var codeStreamingPublishers: [String: CodeStreamingPublisher] = [:]
+    /// The last published snapshot of a row that just settled. It keeps the
+    /// final text on screen until the persisted text covers it, so completion
+    /// never shortens or jumps the row (official: the `isComplete` snapshot is
+    /// published before the row is replaced, §6/§8).
+    private var codeCompletedStreamingTexts: [String: String] = [:]
+    /// Official working-mark exit: 0.4 s group animation before the row is
+    /// removed (CANONICAL/20-working-mark.md §6). The item stays in the list
+    /// with `isRunning = false` for that window.
+    private var workingStatusIsExiting = false
+    private var workingStatusExitWorkItem: DispatchWorkItem?
+    private var lastHasWorkingStatus = false
+    private static let workingStatusExitDuration: TimeInterval = 0.4
+    /// In-place exit flag for the mounted working row. See
+    /// `WorkingStatusRowHost`: a reconfigure would reset `WorkingMarkView`.
+    private let workingStatusExitState = WorkingStatusExitState()
     private var tailNoticesByID: [String: SessionNoticeModel] = [:]
     private var pendingByID: [String: V2PendingMessage] = [:]
     private var rowToItem: [String: TimelineListItem] = [:]
@@ -177,14 +194,15 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// (the cell must re-read new text), but the server also bumps them while
     /// reordering siblings and streaming without changing the drawn content;
     /// hashing them into the height key retired measured heights for no visual
-    /// reason (probe 2026-10-23). The paced streaming snapshot is part of the
-    /// drawn content, so it is included here.
+    /// reason (probe 2026-10-23). The published streaming snapshot (and a
+    /// completion snapshot the persisted text has not covered yet) is part of
+    /// the drawn content, so it is included here.
     private struct CachedHeightRevision {
         let signature: Int
         let width: CGFloat
         let typography: Int
         let scale: Int
-        let streaming: String?
+        let streaming: [String: String]?
         let value: Int
     }
     private var heightRevisionCache: [String: CachedHeightRevision] = [:]
@@ -201,25 +219,27 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let quantized = TimelineHeightKey.quantize(width)
         let typographyRevision = typography.revision
         let scale = Int(((controller?.traitCollection.displayScale ?? 2) * 100).rounded())
-        let streaming = codeStreamingText(for: item)
+        let streaming = codeStreamingTexts(for: item)
         if let cached = heightRevisionCache[item.itemID],
            cached.signature == signature,
            cached.width == quantized,
            cached.typography == typographyRevision,
            cached.scale == scale,
-           cached.streaming == streaming?.text {
+           cached.streaming == streaming?.textsByRowID {
             return cached.value
         }
         var hasher = TimelineStableHasher()
         hasher.combine(codeHeightDigest(rows: codeRowsByGroupID[id] ?? [], width: width))
         if let streaming {
-            hasher.combine(streaming.rowID)
-            hasher.combine(streaming.text)
+            for rowID in streaming.textsByRowID.keys.sorted() {
+                hasher.combine(rowID)
+                hasher.combine(streaming.textsByRowID[rowID] ?? "")
+            }
         }
         let value = hasher.revision
         heightRevisionCache[item.itemID] = CachedHeightRevision(
             signature: signature, width: quantized, typography: typographyRevision,
-            scale: scale, streaming: streaming?.text, value: value)
+            scale: scale, streaming: streaming?.textsByRowID, value: value)
         return value
     }
 
@@ -323,6 +343,15 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// The tool branch's per-segment inner estimate is UNKNOWN; one line per
     /// segment is the conservative floor (block cap 15 applies).
     func officialEstimateHeight(for item: TimelineListItem, width: CGFloat) -> CGFloat? {
+        officialEstimateHeight(for: item, width: width, drawnTexts: nil)
+    }
+
+    /// The same official estimate, fed with the text each block actually
+    /// draws. A live row draws its published snapshot (or the retained
+    /// completion snapshot), not the persisted fallback, so the first-frame
+    /// seed must measure the drawn text (P1-5).
+    private func officialEstimateHeight(for item: TimelineListItem, width: CGFloat,
+                                        drawnTexts: [String: String]?) -> CGFloat? {
         guard case .group(let id) = item, groupsByID[id]?.explicitID != nil,
               let rows = codeRowsByGroupID[id], !rows.isEmpty, width > 0 else {
             return nil
@@ -338,7 +367,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 switch block {
                 case .reasoning:
                     continue
-                case let .text(_, text):
+                case let .text(id, fallback):
+                    let text = drawnTexts?[id] ?? fallback
                     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !trimmed.isEmpty else { continue }
                     hasContent = true
@@ -397,7 +427,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         for row in rows where row.role != .user {
             for block in row.blocks {
                 guard case let .text(id, fallback) = block else { continue }
-                let text = streaming?.rowID == id ? streaming?.text ?? fallback : fallback
+                let text = streaming?.text(for: id) ?? fallback
                 guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     continue
                 }
@@ -436,7 +466,18 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         guard case .group(let id) = item,
               let group = groupsByID[id], group.explicitID != nil,
               let rows = codeRowsByGroupID[id] else { return nil }
-        guard !group.rows.contains(where: { $0.isRevealing || $0.value.isStreamingText }) else {
+        // A live Code group has no exact structural height: hosting the
+        // growing body on every publish would be quadratic. A group still
+        // drawing a retained completion snapshot is the same shape (the
+        // persisted text does not cover what the row draws yet). Both answer
+        // with the official line-count estimate, purely as the first-frame
+        // seed (P1-5). A row that only finished its TextKit reveal keeps the
+        // old contract and answers nil.
+        if group.rows.contains(where: { $0.value.isStreamingText })
+            || group.rows.contains(where: { codeCompletedStreamingTexts[$0.id] != nil }) {
+            return streamingSeedHeight(for: item, groupID: id, width: width)
+        }
+        guard !group.rows.contains(where: { $0.isRevealing }) else {
             return nil
         }
         let digest = codeHeightDigest(rows: rows, width: width)
@@ -451,6 +492,52 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             measured: true)
         codeHeightCache[id] = CachedCodeHeight(digest: digest, height: height)
         return height
+    }
+
+    /// First-frame seed for a live Code group (P1-5).
+    ///
+    /// The official estimator is `max(Σ lines × lineHeight × 0.9, 44)` over
+    /// the first 4000 characters, capped at 580 pt wide and 15 lines per block
+    /// (`EVIDENCE/est-r1/FINDINGS.md`, CANONICAL/05-layout-scroll.md §2). It is
+    /// the value the official placeholder row shows before its one geometry
+    /// report. `CodeProfileAutoRun`'s 461 probe recorded the first fit
+    /// collapsing a streaming row 44 → 18 because the cell got no seed and
+    /// fitted the pre-layout skeleton.
+    ///
+    /// This is a seed, not a measurement: for a never-displayed cell-reported
+    /// row the controller records it in the `.provisional` tier
+    /// (`measureSynchronously`) and the cell's first
+    /// `preferredLayoutAttributesFitting` returns it instead of fitting the
+    /// skeleton. If UIKit accepts that first fit, the same value becomes the
+    /// row's first stored height; either way the next geometry report replaces
+    /// it with the real cell fit (`applyMeasuredHeight`, changed-only).
+    private func streamingSeedHeight(for item: TimelineListItem,
+                                     groupID: String,
+                                     width: CGFloat) -> CGFloat? {
+        // Estimate the text the row draws right now: a live row's published
+        // snapshot, or the completion snapshot still on screen. A row with no
+        // publisher text falls back to its persisted block text.
+        var drawnTexts: [String: String] = [:]
+        for row in groupsByID[groupID]?.rows ?? [] {
+            if let publisher = codeStreamingPublishers[row.id] {
+                if !publisher.publishedText.isEmpty {
+                    drawnTexts[row.id] = publisher.publishedText
+                }
+            } else if let completed = codeCompletedStreamingTexts[row.id] {
+                drawnTexts[row.id] = completed
+            }
+        }
+        guard let estimate = officialEstimateHeight(
+            for: item, width: width,
+            drawnTexts: drawnTexts.isEmpty ? nil : drawnTexts) else {
+            // No text yet: the official `.streamingText` row does not exist
+            // before the first non-empty block (CANONICAL/03-streaming.md §8.1).
+            return nil
+        }
+        // A row that was measured before (reconnect/recovery re-streams the
+        // same message) never seeds below the height the reader last saw.
+        let previous = codeHeightCache[groupID]?.height ?? 0
+        return max(estimate, previous)
     }
 
     private struct CachedCodeHeight {
@@ -590,7 +677,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     }
 
     /// The streaming counterpart of `assistantMarkdown`. W7 hands the live
-    /// body to `CodeMessageRowView` + W6's chunked publisher instead (no
+    /// body to `CodeMessageRowView` + W6's whole-snapshot publisher instead (no
     /// character reveal, full-text snapshots), so the TextKit streaming cell
     /// is not offered either.
     func assistantStreamingDocument(for item: TimelineListItem) -> AssistantStreamingDocument? {
@@ -880,14 +967,19 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 pullReady: latestPullReady,
                 onLoad: { [weak self] in self?.onLoadLatest?() }))
         case .workingStatus:
-            return AnyView(CodeWorkingStatusRow())
+            // Official 0.4 s exit group animation: while the row is leaving,
+            // it stays mounted with `isRunning = false`
+            // (CANONICAL/20-working-mark.md §6). The flag goes through an
+            // observable box so the mounted `WorkingMarkView` is updated in
+            // place; a reconfigure would recreate it already exited.
+            return AnyView(WorkingStatusRowHost(state: workingStatusExitState))
         case .group(let id):
             guard let group = groupsByID[id] else { return AnyView(EmptyView()) }
             // A message group (declared message id) renders through the Code
             // row; a single-row group is either an interaction target or a row
             // with no message key and keeps the existing renderer.
             if group.explicitID != nil {
-                let streamingText = codeStreamingText(for: item)
+                let streamingText = codeStreamingTexts(for: item)
                 return AnyView(CodeMessageRowView(
                     group: group,
                     profile: codeProfile,
@@ -926,21 +1018,30 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
 
     // MARK: - Code streaming (W6 publisher)
 
-    /// The paced snapshot for the message's in-flight body, if it has one.
+    /// The published text per live row of this message, plus the last
+    /// completed snapshot while the persisted text has not covered it yet.
     ///
-    /// The Code page has no per-character reveal: W6 publishes full-text
-    /// snapshots on the model's 0.1 s leading-edge throttle, and the row view
-    /// renders the last snapshot. A completed publisher is dropped during the
-    /// refresh that notices the row settled, so the view falls back to the
-    /// persisted block text (which is complete at that point).
-    func codeStreamingText(for item: TimelineListItem) -> CodeStreamingText? {
+    /// The official row publishes a whole snapshot per block on the 0.1 s
+    /// leading-edge throttle (CANONICAL/03-streaming.md §5.1); a message with
+    /// several live text rows therefore has one snapshot per row. Keying by
+    /// row id is why this is a map and not "the group's last streaming row"
+    /// (P2-11); `CodeMessageRowView.displayedText` substitutes only the block
+    /// whose id matches.
+    func codeStreamingTexts(for item: TimelineListItem) -> CodeStreamingText? {
         guard case .group(let id) = item, let group = groupsByID[id] else { return nil }
-        for row in group.rows.reversed() where row.value.isStreamingText {
-            guard let publisher = codeStreamingPublishers[row.id],
-                  !publisher.publishedText.isEmpty else { continue }
-            return CodeStreamingText(rowID: row.id, text: publisher.publishedText)
+        var texts: [String: String] = [:]
+        for row in group.rows {
+            if let publisher = codeStreamingPublishers[row.id] {
+                if !publisher.publishedText.isEmpty {
+                    texts[row.id] = publisher.publishedText
+                }
+            } else if let completed = codeCompletedStreamingTexts[row.id] {
+                // Keep the completion snapshot on screen until the persisted
+                // text can replace it (`updateCodeStreaming` prunes it).
+                texts[row.id] = completed
+            }
         }
-        return nil
+        return texts.isEmpty ? nil : CodeStreamingText(textsByRowID: texts)
     }
 
     /// Feeds every in-flight assistant text row of a Code message group into
@@ -969,26 +1070,59 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         }
         for (rowID, row) in rowsByID {
             if row.value.isStreamingText {
+                // A row that streams again must not keep an old completion
+                // snapshot; the live publisher is the only source now.
+                codeCompletedStreamingTexts.removeValue(forKey: rowID)
                 if !row.rendererOwnedReveal {
                     DispatchQueue.main.async {
                         row.useRendererOwnedReveal()
                     }
                 }
                 var publisher = codeStreamingPublishers[rowID] ?? CodeStreamingPublisher()
-                _ = publisher.receive(fullText: row.text, at: now)
+                // Feed the received full text, not `row.text`: the legacy
+                // reveal batches `row.text` with the final glyph withheld, and
+                // the first flush used to publish that truncated text until
+                // the next frame (P2-10). The official assembler snapshot is
+                // the block's full text (CANONICAL/03-streaming.md §4.2).
+                _ = publisher.receive(fullText: row.value.displayText, at: now)
                 codeStreamingPublishers[rowID] = publisher
             } else if let publisher = codeStreamingPublishers[rowID] {
-                // The row stopped streaming: publish the remainder once, then
-                // drop the publisher. Keeping one per settled message would
-                // duplicate every reply's text for the whole window.
+                // The row settled: publish the completion snapshot, then keep
+                // it on screen until the persisted text covers it. The old
+                // code dropped the snapshot, so the row jumped from the last
+                // throttled text to the persisted full text (P1-2).
+                // `complete()` is exempt from the 0.1 s throttle (§5.1).
                 var completed = publisher
-                _ = completed.complete(at: now)
+                if let snapshot = completed.complete(at: now), !snapshot.text.isEmpty {
+                    codeCompletedStreamingTexts[rowID] = snapshot.text
+                }
                 codeStreamingPublishers.removeValue(forKey: rowID)
             }
         }
         // A row that left the timeline (history page swap, recovery) stops
         // being fed immediately.
         codeStreamingPublishers = codeStreamingPublishers.filter { rowsByID[$0.key] != nil }
+        resolveCompletedStreamingTexts(rowsByID: rowsByID)
+    }
+
+    /// Drops a completion snapshot once the persisted text can replace it.
+    ///
+    /// "Covered" means the persisted text is at least as long and extends the
+    /// snapshot. A non-empty divergence means the server replaced the text, so
+    /// keeping the snapshot would show stale text. While the persisted text is
+    /// empty or a strict prefix of the snapshot (it still lags the stream), the
+    /// snapshot stays on screen, so completion never shortens the row.
+    private func resolveCompletedStreamingTexts(
+        rowsByID: [String: ChatTimelineRowModel]
+    ) {
+        codeCompletedStreamingTexts = codeCompletedStreamingTexts.filter { rowID, text in
+            guard let row = rowsByID[rowID] else { return false }
+            let persisted = row.value.displayText
+            if persisted.isEmpty { return true }
+            if text.hasPrefix(persisted) { return text.count > persisted.count }
+            if persisted.hasPrefix(text) { return persisted.count < text.count }
+            return false
+        }
     }
 
     func rowIDs(in item: TimelineListItem) -> [String] {
@@ -1165,6 +1299,17 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // message, so a reasoning-only group is never kept alive by it and
         // the status line cannot re-key a message group.
         let hasWorkingStatus = model.sendingPlaceholder != nil
+        // Official working-mark exit: when the turn's status disappears the
+        // row is not deleted instantly. It stays mounted for the 0.4 s
+        // scale/opacity group animation with `isRunning = false`
+        // (CANONICAL/20-working-mark.md §6), then leaves on its own refresh.
+        if hasWorkingStatus {
+            cancelWorkingStatusExit()
+        } else if lastHasWorkingStatus, !workingStatusIsExiting {
+            beginWorkingStatusExit()
+        }
+        lastHasWorkingStatus = hasWorkingStatus
+        let showsWorkingStatus = hasWorkingStatus || workingStatusIsExiting
         var groups: [ChatTimelineGroup] = []
         groups.reserveCapacity(codeGroups.count)
         for group in codeGroups {
@@ -1200,7 +1345,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let identity = TimelineItemIdentity.build(
             hasOlderPrompt: model.session.hasOlderItems || keepsOlderPrompt,
             groupIDs: groups.map(\.id),
-            hasWorkingStatus: hasWorkingStatus,
+            hasWorkingStatus: showsWorkingStatus,
             noticeIDs: tailNotices.map(\.id),
             pendingIDs: pending.map(\.id),
             hasLatestPrompt: model.session.hasNewerItems)
@@ -1250,7 +1395,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         self.rowToItem = rowToItem
         self.inlineNoticesByRow = inlineNoticesByRow
         self.turnActions = turnActions
-        // Feed the chunked publishers from the rows' full text before any
+        // Feed the publishers from the rows' full text before any
         // signature/measurement pass reads `codeStreamingText`.
         updateCodeStreaming(groups: groups)
         // Parsed documents are keyed by row id; drop rows that left the
@@ -1338,6 +1483,76 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
 #endif
     }
 
+    // MARK: - Working status exit
+
+    /// Starts the official 0.4 s exit. The item stays in the identity, so the
+    /// diffable snapshot does not delete the cell, and the observable flag
+    /// updates the mounted row in place (no reconfigure).
+    private func beginWorkingStatusExit() {
+        workingStatusIsExiting = true
+        workingStatusExitWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.finishWorkingStatusExit()
+        }
+        workingStatusExitWorkItem = work
+        // `beginWorkingStatusExit` runs inside the SwiftUI update that reads
+        // the model. Mutating an `@Observable` a mounted view reads must wait
+        // for the next runloop turn (the same rule as
+        // `useRendererOwnedReveal`); the 0.4 s removal starts from that same
+        // turn so the animation and the removal stay aligned.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.workingStatusIsExiting else { return }
+            // The mounted row sees the false edge without a reconfigure, so
+            // `WorkingMarkView` keeps its identity and plays the 0.4 s group.
+            if self.workingStatusExitState.isRunning {
+                self.workingStatusExitState.isRunning = false
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.workingStatusExitDuration,
+                                          execute: work)
+        }
+    }
+
+    /// A new turn's status takes over while the old mark is leaving (or the
+    /// adapter is done with it): drop the pending removal and keep the row
+    /// running. The observable flip restarts the flipbook in place; nil exit
+    /// animation makes the mark snap back (no reconfigure). Also deferred for
+    /// the same mid-update rule.
+    private func cancelWorkingStatusExit() {
+        workingStatusExitWorkItem?.cancel()
+        workingStatusExitWorkItem = nil
+        workingStatusIsExiting = false
+        // Normal path: the finished exit already reset the flag. Only a turn
+        // that starts inside the 0.4 s window finds it false; flip it on the
+        // next runloop turn (the same mid-update rule).
+        guard !workingStatusExitState.isRunning else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.workingStatusIsExiting else { return }
+            if !self.workingStatusExitState.isRunning {
+                self.workingStatusExitState.isRunning = true
+            }
+        }
+    }
+
+    /// Main-thread timer callback. A new turn may have started in the window
+    /// (the SwiftUI update that shows it has not run yet); clearing the flag
+    /// and refreshing makes that refresh keep the row as running. For a real
+    /// exit the refresh drops the item from the identity and the controller
+    /// applies the deletion. Timer cleanup: a page that left the foreground
+    /// applies deferred (the controller parks the snapshot) — no view is
+    /// touched off-screen; a rebuilt list creates a new adapter, and the weak
+    /// self makes this closure a no-op.
+    private func finishWorkingStatusExit() {
+        workingStatusExitWorkItem = nil
+        guard workingStatusIsExiting else { return }
+        workingStatusIsExiting = false
+        prepareForUpdate()
+        controller?.reloadFromContent()
+        // The next turn's row starts running again. Safe after the removal
+        // apply: the mounted view is gone, and a new turn re-inserts the item
+        // with this flag already true.
+        if !workingStatusExitState.isRunning { workingStatusExitState.isRunning = true }
+    }
+
     private func item(forItemID itemID: String) -> TimelineListItem? {
         itemsByID[itemID]
     }
@@ -1353,6 +1568,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             return .latestPrompt(pullReady: latestPullReady, isLoading: isLoadingLatest,
                                  hasNewerItems: model.session.hasNewerItems)
         case .workingStatus:
+            // Stable on purpose: the official 0.4 s exit (§6) is delivered to
+            // the mounted row through the `@Observable` state box. A signature
+            // change would reconfigure the cell, rebuild its hosting
+            // configuration and reset `WorkingMarkView`, so the freshly
+            // mounted stopped mark would never play the exit.
             return .workingStatus
         case .notice(let id):
             guard let notice = tailNoticesByID[id] else {
@@ -1380,11 +1600,39 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // Code signature to what the row draws. The working status is its own
         // row now, so it is not signed here either.
         if group.explicitID != nil {
+            // The official data layer publishes whole snapshots on the 0.1 s
+            // leading-edge throttle (CANONICAL/03-streaming.md §5.1); a row is
+            // reconfigured by that publish, not by every wire frame. The
+            // server reserves a new `revision` for every stream frame
+            // (`server/agent_server/services/timeline_write_buffer.py:393-438`),
+            // so signing `revision/updatedSeq` on a live row forced a
+            // full-table apply + reconfigure per network frame (P1-2). A live
+            // row is signed by its published text instead; every row that is
+            // not streaming keeps the wire signature untouched, so non-Code
+            // and settled rows do not change their refresh semantics.
             return TimelineGroupContentSignature(
-                rows: group.rows.map {
-                    TimelineRowContentSignature(id: $0.id,
-                                                revision: $0.value.revision,
-                                                updatedSeq: $0.value.updatedSeq)
+                rows: group.rows.map { row in
+                    if row.value.isStreamingText,
+                       let publisher = codeStreamingPublishers[row.id] {
+                        return TimelineRowContentSignature(
+                            id: row.id,
+                            revision: Self.publishedTextRevision(publisher.publishedText),
+                            updatedSeq: 0)
+                    }
+                    if let completed = codeCompletedStreamingTexts[row.id] {
+                        // The settled row still draws the completion snapshot
+                        // until the persisted text covers it (P1-2), so that
+                        // snapshot is its drawn content. `-1` marks the state
+                        // as "completed snapshot" so it can never collide with
+                        // the row's wire signature.
+                        return TimelineRowContentSignature(
+                            id: row.id,
+                            revision: Self.publishedTextRevision(completed),
+                            updatedSeq: -1)
+                    }
+                    return TimelineRowContentSignature(id: row.id,
+                                                       revision: row.value.revision,
+                                                       updatedSeq: row.value.updatedSeq)
                 },
                 disclosureExpanded: false,
                 expandedRowIDs: [],
@@ -1445,6 +1693,15 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 hasNewerItems: model.session.hasNewerItems,
                 hasPendingUserMessage: !model.session.hasNewerItems
                     && (!model.timeline.pendingMessages.isEmpty || !model.session.pendingMessages.isEmpty)))
+    }
+
+    /// Signature component of a live row: it changes only when the publisher's
+    /// on-screen text changes, i.e. at most once per 0.1 s publish
+    /// (CANONICAL/03-streaming.md §5.1), not once per wire revision.
+    private static func publishedTextRevision(_ text: String) -> Int {
+        var hasher = TimelineStableHasher()
+        hasher.combine(text)
+        return hasher.revision
     }
 
     private func tailSignature() -> TimelineTailContentSignature {
@@ -1550,6 +1807,30 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             boldText: boldText,
             dynamicType: dynamicType,
             layoutDirection: layoutDirection)
+    }
+}
+
+// MARK: - Working status exit
+
+/// Mutable half of the working row's 0.4 s exit
+/// (`CANONICAL/20-working-mark.md` §6). The hosted row reads it, so the
+/// true→false edge updates the mounted `WorkingMarkView` in place: the exit
+/// group only plays when the view keeps its identity, and a cell reconfigure
+/// replaces the hosting configuration and resets its `@State` (the adapter's
+/// own tool-detail comment records the same reset; `WorkingMarkView.onAppear`
+/// mounts a stopped mark already invisible).
+@MainActor @Observable
+private final class WorkingStatusExitState {
+    var isRunning = true
+}
+
+/// The cell's root for `.workingStatus`. Keeping this view mounted and
+/// toggling the observable delivers `isRunning = false` without a reconfigure.
+private struct WorkingStatusRowHost: View {
+    let state: WorkingStatusExitState
+
+    var body: some View {
+        CodeWorkingStatusRow(isRunning: state.isRunning)
     }
 }
 

@@ -208,13 +208,23 @@ nonisolated enum WorkingMarkRenderer {
     /// scale). The caller resolves the tint; `WorkingMarkView` passes
     /// `CodePageTheme.workingMarkTint` for the current colour scheme.
     static func image(for frame: WorkingMarkFrame, tint: UIColor, scale: CGFloat) -> UIImage {
+        // The official flipbook swaps pre-rendered `contents` images every
+        // frame (`CANONICAL/20-working-mark.md` §1). AA draws the same frames
+        // with Core Graphics at 30 fps; caching them keeps the per-frame cost
+        // to a dictionary lookup instead of a render pass.
+        let dotsKey = frame.dots.map {
+            "\($0.center.x),\($0.center.y),\($0.radius),\($0.scale),\($0.opacity)"
+        }.joined(separator: ";")
+        let key = "\(frame.phase)-\(frame.index)-\(tint.hashValue)-\(scale)-\(dotsKey)" as NSString
+        if let cached = imageCache.object(forKey: key) { return cached }
+
         let format = UIGraphicsImageRendererFormat()
         format.scale = max(scale, 1)
         format.opaque = false
         let renderer = UIGraphicsImageRenderer(
             size: CGSize(width: canvasSize, height: canvasSize),
             format: format)
-        return renderer.image { context in
+        let image = renderer.image { context in
             let cg = context.cgContext
             for dot in frame.dots where dot.opacity > 0.001 && dot.scale > 0.001 {
                 let radius = dot.radius * dot.scale
@@ -226,7 +236,15 @@ nonisolated enum WorkingMarkRenderer {
                     height: radius * 2))
             }
         }
+        imageCache.setObject(image, forKey: key)
+        return image
     }
+
+    private static let imageCache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 512
+        return cache
+    }()
 
     /// Time-driven convenience wrapper around `image(for:tint:scale:)`.
     static func image(body: WorkingMarkBody,

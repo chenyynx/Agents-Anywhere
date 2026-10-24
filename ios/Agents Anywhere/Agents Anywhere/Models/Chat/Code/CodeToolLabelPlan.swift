@@ -338,6 +338,8 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
     }
 
     private static func diffStat(for item: V2TimelineItem) -> CodeDiffStat? {
+        // A failed change did not land; its attempted patch is not a diff.
+        guard CodeToolStatus(item.status) != .failed else { return nil }
         let content = item.raw["content"] ?? .object([:])
         let output = content["output"]?.objectValue
         let stat = output?["lineStat"]?.objectValue

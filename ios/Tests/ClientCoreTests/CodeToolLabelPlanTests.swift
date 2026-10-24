@@ -164,4 +164,21 @@ struct CodeToolLabelPlanTests {
         #expect(CodeToolLabelPlan.diffStat(for: [call])
             == CodeDiffStat(added: 1, removed: 1))
     }
+
+    @Test func diffBadgeSkipsFailedEdit() throws {
+        let item: V2TimelineItem = try decode([
+            "id": "e3", "sessionId": "session", "type": "tool", "status": "failed",
+            "content": [
+                "kind": "file_change", "toolName": "Edit",
+                "structuredPatch": [[
+                    "oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1,
+                    "lines": ["-old", "+new"],
+                ]],
+            ],
+            "source": ["itemId": "e3"],
+            "orderSeq": 1, "revision": 1, "updatedSeq": 1, "contentHash": "e3",
+        ])
+        let call = CodeToolCall(item: item, kind: .edit)
+        #expect(CodeToolLabelPlan.diffStat(for: [call]) == nil)
+    }
 }

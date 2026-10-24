@@ -38,27 +38,30 @@ nonisolated struct WorkingMarkDot: Equatable, Sendable {
 
 /// One flipbook frame: the state of all three dots at a single 1/30 s step.
 nonisolated struct WorkingMarkFrame: Equatable, Sendable {
+    var body: WorkingMarkBody
     var phase: WorkingMarkPhase
     /// Index inside `phase`, `0 ..< frameCount - 1`.
     var index: Int
     var dots: [WorkingMarkDot]
 }
 
-/// Rebuilds the official 20 x 20 working mark with Core Graphics.
+/// Plays the official 20 x 20 working mark.
 ///
-/// The official sprite sheets cannot be redistributed, so the flipbook is
-/// generated instead of shipped: three dots whose opacity, scale and a small
-/// vertical lift are a pure function of the frame index. Timing follows the
+/// The eight official sprite sheets (`working-mark/{think,generic,search,read,
+/// code,write,blocked}`) were extracted from the app bundle's
+/// `ClaudePackage_ClaudeTranscriptUI.bundle/Assets.car` (1.261019.51,
+/// 2026-10-25) and shipped as 3x imagesets: one 48 x 48 px tile per frame
+/// (16 pt artwork), ordered opening -> looping -> closing. Timing follows the
 /// official model (`CANONICAL/20-working-mark.md` §1):
 ///
-/// - think: opening 16 frames, looping 110 frames, closing 15 frames at 30 fps
-///   — 0.53 s / 3.67 s / 0.50 s.
+/// - each body's opening / looping / closing counts are listed in
+///   `frameCount(for:phase:)`; the sheets carry exactly those totals.
 /// - `isStill` (Reduce Motion) is a single frame, as in the official app.
 ///
-/// The geometry is [I], never [E]: the sprite art is not available, so every
-/// value below is inferred from the 2026-10-22 screenshot at
-/// `/home/ubuntu/.agents-anywhere-moonveil/attachments/sess_W6JkIc1Jh6PwbQ/file_Daj1ZqByuk14ZB0x-Photo-9F31958B.jpeg`
-/// (three warm-brown dots forming a left-to-right rising wave).
+/// The Core Graphics dot synthesis below is now a **fallback** for a missing
+/// sheet only; its geometry remains [I] (drawn from the 2026-10-22 screenshot
+/// at `/home/ubuntu/.agents-anywhere-moonveil/attachments/sess_W6JkIc1Jh6PwbQ/
+/// file_Daj1ZqByuk14ZB0x-Photo-9F31958B.jpeg`).
 nonisolated enum WorkingMarkRenderer {
 
     // MARK: - Canvas
@@ -137,16 +140,25 @@ nonisolated enum WorkingMarkRenderer {
 
     // MARK: - Frame model
 
-    /// Official frame counts. Only `.think` is generated today; every other
-    /// pose shares its timings until its own flipbook is drawn.
+    /// Official opening / looping / closing frame counts per body
+    /// (`CANONICAL/20-working-mark.md` §1.3). The shipped sprite sheets carry
+    /// exactly these totals (think 141, generic 70, search 50, read 100,
+    /// code 120, write 105, blocked 62 frames).
     static func frameCount(for body: WorkingMarkBody, phase: WorkingMarkPhase) -> Int {
+        let counts: (opening: Int, looping: Int, closing: Int)
         switch body {
-        case .think, .generic, .search, .read, .code, .write, .blocked:
-            switch phase {
-            case .opening: return CodePageTheme.workingMarkThinkOpeningFrames
-            case .looping: return CodePageTheme.workingMarkThinkLoopFrames
-            case .closing: return CodePageTheme.workingMarkThinkClosingFrames
-            }
+        case .think: counts = (16, 110, 15)
+        case .generic: counts = (16, 40, 14)
+        case .search: counts = (16, 20, 14)
+        case .read: counts = (21, 60, 19)
+        case .code: counts = (16, 90, 14)
+        case .write: counts = (31, 60, 14)
+        case .blocked: counts = (16, 30, 16)
+        }
+        switch phase {
+        case .opening: return counts.opening
+        case .looping: return counts.looping
+        case .closing: return counts.closing
         }
     }
 
@@ -161,11 +173,11 @@ nonisolated enum WorkingMarkRenderer {
         let clamped = min(max(index, 0), count - 1)
         switch phase {
         case .opening:
-            return makeOpeningFrame(index: clamped, count: count)
+            return makeOpeningFrame(body: body, index: clamped, count: count)
         case .looping:
-            return makeLoopingFrame(index: clamped, count: count)
+            return makeLoopingFrame(body: body, index: clamped, count: count)
         case .closing:
-            return makeClosingFrame(index: clamped, count: count)
+            return makeClosingFrame(body: body, index: clamped, count: count)
         }
     }
 
@@ -208,14 +220,15 @@ nonisolated enum WorkingMarkRenderer {
     /// scale). The caller resolves the tint; `WorkingMarkView` passes
     /// `CodePageTheme.workingMarkTint` for the current colour scheme.
     static func image(for frame: WorkingMarkFrame, tint: UIColor, scale: CGFloat) -> UIImage {
-        // The official flipbook swaps pre-rendered `contents` images every
-        // frame (`CANONICAL/20-working-mark.md` §1). AA draws the same frames
-        // with Core Graphics at 30 fps; caching them keeps the per-frame cost
-        // to a dictionary lookup instead of a render pass.
+        // The official flipbook is a pre-rendered sprite sheet: serve that
+        // frame when the sheet is bundled.
+        if let official = officialSheetFrame(for: frame) { return official }
+
+        // Fallback: draw the inferred dots with Core Graphics.
         let dotsKey = frame.dots.map {
             "\($0.center.x),\($0.center.y),\($0.radius),\($0.scale),\($0.opacity)"
         }.joined(separator: ";")
-        let key = "\(frame.phase)-\(frame.index)-\(tint.hashValue)-\(scale)-\(dotsKey)" as NSString
+        let key = "\(frame.body.rawValue)-\(frame.phase)-\(frame.index)-\(tint.hashValue)-\(scale)-\(dotsKey)" as NSString
         if let cached = imageCache.object(forKey: key) { return cached }
 
         let format = UIGraphicsImageRendererFormat()
@@ -240,6 +253,43 @@ nonisolated enum WorkingMarkRenderer {
         return image
     }
 
+    /// The official tile for `frame`, cropped from the bundled sprite sheet.
+    ///
+    /// Each imageset holds one vertical sheet at 3x: 48 px per tile (16 pt),
+    /// rows ordered opening -> looping -> closing. Cropping returns a 16 x 16
+    /// pt image; the view's 20 x 20 frame centres it exactly as the official
+    /// `WorkingMarkView` does.
+    private static func officialSheetFrame(for frame: WorkingMarkFrame) -> UIImage? {
+        let sheetName = "working-mark-\(frame.body.rawValue)"
+        let key = "\(sheetName)-\(frame.phase.rawValue)-\(frame.index)" as NSString
+        if let cached = sheetCache.object(forKey: key) { return cached }
+        guard let sheet = UIImage(named: sheetName)?.cgImage else { return nil }
+        let side = sheet.width
+        guard side > 0 else { return nil }
+        let opening = frameCount(for: frame.body, phase: .opening)
+        let looping = frameCount(for: frame.body, phase: .looping)
+        let row: Int
+        switch frame.phase {
+        case .opening: row = frame.index
+        case .looping: row = opening + frame.index
+        case .closing: row = opening + looping + frame.index
+        }
+        let y = row * side
+        guard y >= 0, y + side <= sheet.height,
+              let tile = sheet.cropping(to: CGRect(x: 0, y: y,
+                                                   width: side, height: side))
+        else { return nil }
+        let image = UIImage(cgImage: tile, scale: 3, orientation: .up)
+        sheetCache.setObject(image, forKey: key)
+        return image
+    }
+
+    private static let sheetCache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 256
+        return cache
+    }()
+
     private static let imageCache: NSCache<NSString, UIImage> = {
         let cache = NSCache<NSString, UIImage>()
         cache.countLimit = 512
@@ -259,7 +309,7 @@ nonisolated enum WorkingMarkRenderer {
 
     // MARK: - Frame construction
 
-    private static func makeOpeningFrame(index: Int, count: Int) -> WorkingMarkFrame {
+    private static func makeOpeningFrame(body: WorkingMarkBody, index: Int, count: Int) -> WorkingMarkFrame {
         let progress = Double(index + 1) / Double(count)
         let dots = dotCenterXs.enumerated().map { position, x in
             let local = unitRamp(progress,
@@ -272,12 +322,12 @@ nonisolated enum WorkingMarkRenderer {
                 scale: restScale * CGFloat(eased),
                 opacity: restOpacity * eased)
         }
-        return WorkingMarkFrame(phase: .opening, index: index, dots: dots)
+        return WorkingMarkFrame(body: body, phase: .opening, index: index, dots: dots)
     }
 
     /// The loop pose captured in the 2026-10-22 screenshot: the rightmost dot
     /// is at its crest, the middle one is rising, the leftmost one rests.
-    private static func makeLoopingFrame(index: Int, count: Int) -> WorkingMarkFrame {
+    private static func makeLoopingFrame(body: WorkingMarkBody, index: Int, count: Int) -> WorkingMarkFrame {
         let progress = Double(index) / Double(count)
         let dots = dotCenterXs.enumerated().map { position, x in
             var local = progress - Double(position) * loopStagger
@@ -289,10 +339,10 @@ nonisolated enum WorkingMarkRenderer {
                 scale: restScale + (1 - restScale) * CGFloat(pulse),
                 opacity: restOpacity + (1 - restOpacity) * pulse)
         }
-        return WorkingMarkFrame(phase: .looping, index: index, dots: dots)
+        return WorkingMarkFrame(body: body, phase: .looping, index: index, dots: dots)
     }
 
-    private static func makeClosingFrame(index: Int, count: Int) -> WorkingMarkFrame {
+    private static func makeClosingFrame(body: WorkingMarkBody, index: Int, count: Int) -> WorkingMarkFrame {
         let progress = Double(index + 1) / Double(count)
         let dots = dotCenterXs.enumerated().map { position, x in
             let local = unitRamp(progress,
@@ -305,7 +355,7 @@ nonisolated enum WorkingMarkRenderer {
                 scale: restScale * (1 - closingShrink * CGFloat(eased)),
                 opacity: restOpacity * (1 - eased))
         }
-        return WorkingMarkFrame(phase: .closing, index: index, dots: dots)
+        return WorkingMarkFrame(body: body, phase: .closing, index: index, dots: dots)
     }
 
     private static func unitRamp(_ value: Double, start: Double, length: Double) -> Double {

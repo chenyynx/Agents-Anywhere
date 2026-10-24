@@ -420,6 +420,7 @@ final class CodeProfileAutoRunModel {
         await verifyMessageRowHeight()
         await verifyRowHeights()
         await verifyRendererMeasure()
+        await verifyRealCollectionFirstFit()
 
         var views: [String: Any] = [:]
 
@@ -1049,6 +1050,391 @@ final class CodeProfileAutoRunModel {
         cell.removeFromSuperview()
         let height: CGFloat? = raw.isFinite && raw > 1 ? ceil(raw) : nil
         return (height, safeTop, safeBottom)
+    }
+
+    // MARK: - Real collection first fit (3 pt correction)
+
+    /// Replays the three renderer fixtures inside a real self-sizing
+    /// `UICollectionView` instead of a cell placed directly in the window.
+    ///
+    /// The 466 run showed that a cell outside a collection view measures only
+    /// its chrome (86 pt = safe area + row chrome): the client's normal
+    /// `cellForItemAt` never runs, so `UIHostingConfiguration` never installs
+    /// the hosted body. This leg asks the next question: when the collection
+    /// view itself lays the item out, does its first layout — the moment
+    /// `preferredLayoutAttributesFitting` decides the row height — already see
+    /// the body? Three variants per fixture:
+    ///
+    /// - `normal`: `cellForItemAt` only configures the cell.
+    /// - `forced`: the same, plus a cell and content-view layout pass before
+    ///   returning the cell.
+    /// - `seeded`: `configure(seededHeight:)` with the structural measurement,
+    ///   which the cell must return as the first-fit height.
+    ///
+    /// Deltas are recorded, never asserted. Only a broken harness (no cell, no
+    /// layout attributes, no settled fit) appends a failure — the main session
+    /// reads the numbers and decides whether the first fit can carry the real
+    /// body.
+    private func verifyRealCollectionFirstFit() async {
+        guard let window = keyWindow else {
+            failures.append("realCollectionFirstFit: no key window")
+            return
+        }
+        let margin = CodePageTheme.rowMarginLeading
+        let estimateHeight: CGFloat = 200
+        var cases: [[String: Any]] = []
+        var expected = 0
+
+        for fixture in Self.rendererMeasureFixtures {
+            guard let items = Self.decodeItems(fixture.json) else {
+                failures.append("realCollectionFirstFit \(fixture.name): fixture JSON did not decode")
+                continue
+            }
+            guard let width = fixture.widths.first,
+                  let size = fixture.sizes.first else {
+                failures.append("realCollectionFirstFit \(fixture.name): fixture has no width or size")
+                continue
+            }
+            let group = ChatTimelineGroup(kind: .single,
+                rows: items.map { ChatTimelineRowModel($0) },
+                explicitID: "gate-real-collection-\(fixture.name)")
+            let hostWidth = width + 2 * margin
+
+            // The adapter's `preparedTextBlocks` rule, identical to
+            // `verifyRendererMeasure`: one parse per non-user `.text` block,
+            // keyed by the text the row draws, so the cell skips its async
+            // parse task.
+            let builtRows = CodeMessageBuilder.rows(for: items, profile: .claudeCode)
+            var prepared: [String: [MarkdownBlockSnapshot]] = [:]
+            for row in builtRows where row.role != .user {
+                for block in row.blocks {
+                    guard case let .text(_, text) = block else { continue }
+                    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        continue
+                    }
+                    let key = ChatMarkdownPrepared.key(for: text)
+                    if prepared[key] != nil { continue }
+                    if let blocks = CodeMessageHeightMeasurer.preparedBlocks(for: text) {
+                        prepared[key] = blocks
+                    }
+                }
+            }
+            guard !prepared.isEmpty else {
+                failures.append("realCollectionFirstFit \(fixture.name): no prepared Markdown blocks")
+                continue
+            }
+
+            let rowView = AnyView(CodeMessageRowView(group: group,
+                                                     profile: .claudeCode,
+                                                     cwd: "/repo",
+                                                     preparedBlocks: prepared)
+                .padding(.horizontal, margin)
+                .ignoresSafeArea())
+
+            // The structural value the production provider would seed with.
+            // The cell ceils the seed, so record both the measurer output and
+            // the value actually passed in.
+            let typography = TimelineChatContentAdapter.typography(
+                dynamicType: String(describing: size.dynamicType),
+                layoutDirection: 0,
+                boldText: false)
+            let traits = UITraitCollection(traitsFrom: [
+                window.traitCollection,
+                UITraitCollection(preferredContentSizeCategory: size.category),
+            ])
+            let structural = CodeMessageHeightMeasurer.height(
+                group: group, profile: .claudeCode, width: width,
+                typography: typography, traits: traits, measured: true)
+            let seed = ceil(structural)
+
+            let normal = await measureRealCollectionVariant(
+                rowView, hostWidth: hostWidth, category: size.category,
+                window: window, forceContentLayout: false,
+                seed: nil, estimateHeight: estimateHeight)
+            let forced = await measureRealCollectionVariant(
+                rowView, hostWidth: hostWidth, category: size.category,
+                window: window, forceContentLayout: true,
+                seed: nil, estimateHeight: estimateHeight)
+            let seeded = await measureRealCollectionVariant(
+                rowView, hostWidth: hostWidth, category: size.category,
+                window: window, forceContentLayout: false,
+                seed: seed, estimateHeight: estimateHeight)
+            expected += 3
+
+            let variants: [(name: String, measurement: RealCollectionVariantMeasurement)] = [
+                ("normal", normal), ("forced", forced), ("seeded", seeded),
+            ]
+            for (name, measurement) in variants {
+                if !measurement.cellAvailable {
+                    failures.append("realCollectionFirstFit \(fixture.name) [\(name)]:"
+                        + " the collection view created no cell")
+                }
+                if measurement.firstFit == nil {
+                    failures.append("realCollectionFirstFit \(fixture.name) [\(name)]:"
+                        + " no layout attributes for the first layout")
+                }
+                if measurement.settledFit == nil {
+                    failures.append("realCollectionFirstFit \(fixture.name) [\(name)]:"
+                        + " settled fit unavailable (<= 1 pt)")
+                }
+            }
+
+            let normalRecord = realCollectionVariantRecord(normal, estimateHeight: estimateHeight,
+                                                           seed: nil)
+            let forcedRecord = realCollectionVariantRecord(forced, estimateHeight: estimateHeight,
+                                                           seed: nil)
+            let seededRecord = realCollectionVariantRecord(seeded, estimateHeight: estimateHeight,
+                                                           seed: seed)
+
+            let normalFit = Self.doubleValue(normal.firstFit)
+            let forcedFit = Self.doubleValue(forced.firstFit)
+            let seededFit = Self.doubleValue(seeded.firstFit)
+            let seedValue = Double(seed)
+            let normalSettled = Self.doubleValue(normal.settledFit)
+            let forcedSettled = Self.doubleValue(forced.settledFit)
+            let seededSettled = Self.doubleValue(seeded.settledFit)
+
+            var record: [String: Any] = [:]
+            record["fixture"] = fixture.name
+            record["width"] = Double(width)
+            record["hostWidth"] = Double(hostWidth)
+            record["dynamicType"] = size.name
+            record["estimatedItemHeight"] = Double(estimateHeight)
+            record["firstFit"] = normalFit
+            record["firstFitForced"] = forcedFit
+            record["seededFirstFit"] = seededFit
+            record["seededInput"] = Double(structural)
+            record["seededValue"] = seedValue
+            record["seededSource"] = "CodeMessageHeightMeasurer.height (ceiled by the cell)"
+            record["settledFit"] = normalSettled
+            record["settledFitForced"] = forcedSettled
+            record["settledFitSeeded"] = seededSettled
+            record["safeTop"] = Double(normal.safeTop)
+            record["safeBottom"] = Double(normal.safeBottom)
+            record["firstFitDeltaFromSettled"] = Self.deltaValue(normal.firstFit, normal.settledFit)
+            record["forcedDeltaFromSettled"] = Self.deltaValue(forced.firstFit, forced.settledFit)
+            record["seededDeltaFromSeed"] = Self.deltaValue(seeded.firstFit, seed)
+            record["seededDeltaFromSettled"] = Self.deltaValue(seeded.firstFit, seeded.settledFit)
+            var variantRecords: [String: Any] = [:]
+            variantRecords["normal"] = normalRecord
+            variantRecords["forced"] = forcedRecord
+            variantRecords["seeded"] = seededRecord
+            record["variants"] = variantRecords
+            cases.append(record)
+
+            // The CI log carries the table even when the JSON artifact is the
+            // only thing a later reader has.
+            print("AA REAL COLLECTION \(fixture.name)"
+                + " firstFit=\(normalFit) forced=\(forcedFit) seeded=\(seededFit)"
+                + " seededValue=\(seedValue) settled=\(normalSettled)"
+                + " settledForced=\(forcedSettled) settledSeeded=\(seededSettled)"
+                + " safeTop=\(Double(normal.safeTop)) safeBottom=\(Double(normal.safeBottom))")
+        }
+
+        var measurement: [String: Any] = [:]
+        measurement["fixtureCount"] = Self.rendererMeasureFixtures.count
+        measurement["caseCount"] = cases.count
+        measurement["expectedCaseCount"] = expected
+        measurement["estimatedItemHeight"] = Double(estimateHeight)
+        measurement["widths"] = [361.0]
+        measurement["layout"] = "UICollectionViewFlowLayout, estimatedItemSize (hostWidth x 200), default self-sizing invalidation"
+        measurement["firstFitSource"] = "collectionView.layoutAttributesForItem(at: [0,0]) after reloadData + layoutIfNeeded"
+        measurement["forcedSource"] = "cell.configure + cell.setNeedsLayout/layoutIfNeeded + contentView.layoutIfNeeded inside cellForItemAt"
+        measurement["seededSource"] = "cell.configure(seededHeight: ceil(CodeMessageHeightMeasurer.height))"
+        measurement["settledSource"] = "contentView.systemLayoutSizeFitting after 300 ms and two layout passes"
+        measurement["cases"] = cases
+        report["realCollectionFirstFit"] = measurement
+        persist(phase: "views.realCollectionFirstFit")
+    }
+
+    private struct RealCollectionVariantMeasurement {
+        /// The height the collection view's first layout adopted for item 0.
+        let firstFit: CGFloat?
+        /// The height the same item's attributes carry after the 300 ms
+        /// settle. Diagnostic: it separates "the flow layout never asked the
+        /// cell" (still the estimate) from "it asked late" (the real body).
+        let settledAttributesFit: CGFloat?
+        /// The production settle call: `contentView.systemLayoutSizeFitting`.
+        let settledFit: CGFloat?
+        /// `settledFit` minus the cell's safe-area insets. Recorded for the
+        /// reader; the deltas use the raw value.
+        let settledFitNet: CGFloat?
+        let safeTop: CGFloat
+        let safeBottom: CGFloat
+        /// The collection view created and returned the item's cell.
+        let cellAvailable: Bool
+        /// `UIHostingConfiguration` installed a hosted content subview.
+        let contentInstalled: Bool
+    }
+
+    /// One-item data source. A plain implementation (not diffable) keeps
+    /// `reloadData()` + `layoutIfNeeded()` deterministic: the first layout
+    /// must create the cell synchronously so the reported attributes are what
+    /// the collection view actually adopted.
+    @MainActor
+    private final class RealCollectionCellSource: NSObject, UICollectionViewDataSource {
+        var makeCell: ((UICollectionView, IndexPath) -> UICollectionViewCell)?
+
+        func collectionView(_ collectionView: UICollectionView,
+                            numberOfItemsInSection section: Int) -> Int {
+            1
+        }
+
+        func collectionView(_ collectionView: UICollectionView,
+                            cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+            guard let makeCell else { return UICollectionViewCell(frame: .zero) }
+            return makeCell(collectionView, indexPath)
+        }
+    }
+
+    /// Lays one row out in a fresh collection view and reads the height the
+    /// first layout adopted, then the exact call the production visible-cell
+    /// settle makes after the hosted content has had 300 ms to commit. A fresh
+    /// collection view per call keeps the layout, the cell and the (absent)
+    /// seed from leaking into another variant.
+    private func measureRealCollectionVariant(_ row: AnyView,
+                                              hostWidth: CGFloat,
+                                              category: UIContentSizeCategory,
+                                              window: UIWindow,
+                                              forceContentLayout: Bool,
+                                              seed: CGFloat?,
+                                              estimateHeight: CGFloat) async
+        -> RealCollectionVariantMeasurement {
+        let layout = UICollectionViewFlowLayout()
+        layout.estimatedItemSize = CGSize(width: hostWidth, height: estimateHeight)
+        layout.minimumLineSpacing = 0
+        layout.minimumInteritemSpacing = 0
+        layout.sectionInset = .zero
+
+        let collectionView = UICollectionView(
+            frame: CGRect(x: 0, y: 0, width: hostWidth, height: 800),
+            collectionViewLayout: layout)
+        collectionView.backgroundColor = .clear
+        // Fixtures are regular (.large); the override keeps the collection
+        // view's traits on the fixture even if the simulator is set
+        // differently. It does not affect when the layout asks the cell to fit.
+        collectionView.traitOverrides.preferredContentSizeCategory = category
+        collectionView.register(TimelineHostingCell.self,
+                                forCellWithReuseIdentifier: TimelineHostingCell.reuseIdentifier)
+
+        let source = RealCollectionCellSource()
+        source.makeCell = { collectionView, indexPath in
+            let cell = collectionView.dequeueReusableCell(
+                withReuseIdentifier: TimelineHostingCell.reuseIdentifier,
+                for: indexPath) as! TimelineHostingCell
+            cell.configure(row, policy: .measured,
+                           isMeasured: false, reportsContentHeight: false,
+                           seededHeight: seed)
+            if forceContentLayout {
+                cell.setNeedsLayout()
+                cell.layoutIfNeeded()
+                cell.contentView.layoutIfNeeded()
+            }
+            return cell
+        }
+        collectionView.dataSource = source
+        window.addSubview(collectionView)
+        collectionView.reloadData()
+        collectionView.layoutIfNeeded()
+
+        let indexPath = IndexPath(item: 0, section: 0)
+        let firstAttributes = collectionView.layoutAttributesForItem(at: indexPath)
+        let firstCell = collectionView.cellForItem(at: indexPath)
+
+        await wait(300)
+        collectionView.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+        let settledAttributes = collectionView.layoutAttributesForItem(at: indexPath)
+        let settledCell = collectionView.cellForItem(at: indexPath) ?? firstCell
+
+        let safeTop = settledCell?.safeAreaInsets.top ?? 0
+        let safeBottom = settledCell?.safeAreaInsets.bottom ?? 0
+        let cellAvailable = settledCell != nil
+        let installed = settledCell.map { !$0.contentView.subviews.isEmpty } ?? false
+
+        var settledRaw: CGFloat = .nan
+        if let cell = settledCell {
+            let contentWidth = cell.contentView.bounds.width
+            if contentWidth > 0 {
+                settledRaw = cell.contentView.systemLayoutSizeFitting(
+                    CGSize(width: contentWidth,
+                           height: UIView.layoutFittingCompressedSize.height),
+                    withHorizontalFittingPriority: .required,
+                    verticalFittingPriority: .fittingSizeLevel).height
+            }
+        }
+        collectionView.removeFromSuperview()
+        source.makeCell = nil
+
+        let firstFit: CGFloat?
+        if let height = firstAttributes?.size.height, height.isFinite, height > 0 {
+            firstFit = height
+        } else {
+            firstFit = nil
+        }
+        let settledAttributesFit: CGFloat?
+        if let height = settledAttributes?.size.height, height.isFinite, height > 0 {
+            settledAttributesFit = height
+        } else {
+            settledAttributesFit = nil
+        }
+        let settledFit: CGFloat? = settledRaw.isFinite && settledRaw > 1
+            ? ceil(settledRaw) : nil
+        let settledFitNet: CGFloat? = settledFit.map {
+            max(0, $0 - safeTop - safeBottom)
+        }
+        return RealCollectionVariantMeasurement(
+            firstFit: firstFit,
+            settledAttributesFit: settledAttributesFit,
+            settledFit: settledFit,
+            settledFitNet: settledFitNet,
+            safeTop: safeTop,
+            safeBottom: safeBottom,
+            cellAvailable: cellAvailable,
+            contentInstalled: installed)
+    }
+
+    private func realCollectionVariantRecord(
+        _ measurement: RealCollectionVariantMeasurement,
+        estimateHeight: CGFloat,
+        seed: CGFloat?
+    ) -> [String: Any] {
+        var record: [String: Any] = [:]
+        record["firstFit"] = Self.doubleValue(measurement.firstFit)
+        record["firstFitAvailable"] = measurement.firstFit != nil
+        record["firstFitEqualsEstimate"] = Self.withinHalfPoint(measurement.firstFit,
+                                                                estimateHeight)
+        record["settledAttributesFit"] = Self.doubleValue(measurement.settledAttributesFit)
+        record["settledFit"] = Self.doubleValue(measurement.settledFit)
+        record["settledFitAvailable"] = measurement.settledFit != nil
+        record["settledFitNet"] = Self.doubleValue(measurement.settledFitNet)
+        record["safeTop"] = Double(measurement.safeTop)
+        record["safeBottom"] = Double(measurement.safeBottom)
+        record["cellAvailable"] = measurement.cellAvailable
+        record["contentInstalled"] = measurement.contentInstalled
+        record["firstFitDeltaFromSettled"] = Self.deltaValue(measurement.firstFit,
+                                                             measurement.settledFit)
+        if let seed {
+            record["seed"] = Double(seed)
+            record["firstFitEqualsSeed"] = Self.withinHalfPoint(measurement.firstFit, seed)
+            record["firstFitDeltaFromSeed"] = Self.deltaValue(measurement.firstFit, seed)
+        }
+        return record
+    }
+
+    private static func doubleValue(_ value: CGFloat?) -> Double {
+        guard let value, value.isFinite else { return -1 }
+        return Double(value)
+    }
+
+    private static func deltaValue(_ lhs: CGFloat?, _ rhs: CGFloat?) -> Double {
+        guard let lhs, let rhs, lhs.isFinite, rhs.isFinite else { return -1 }
+        return Double(abs(lhs - rhs))
+    }
+
+    private static func withinHalfPoint(_ value: CGFloat?, _ target: CGFloat) -> Bool {
+        guard let value, value.isFinite else { return false }
+        return abs(value - target) <= 0.5
     }
 
     /// Hosts one `CodeMessageRowView` the way `verifyMessageRowHeight` does:

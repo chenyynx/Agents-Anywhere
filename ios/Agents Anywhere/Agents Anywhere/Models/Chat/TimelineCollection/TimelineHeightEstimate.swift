@@ -57,6 +57,27 @@ nonisolated enum TimelineHeightEstimate {
         return max(minimum, ceil(height * max(0, cushion)))
     }
 
+    // MARK: - Official row-height estimate
+
+    /// The official `SessionRowHeightEstimator` constants (2026-10-24
+    /// reverse engineering; `EVIDENCE/est-r1/FINDINGS.md` in the RE corpus):
+    /// width capped at 580 pt, each block capped at 15 display lines, a 0.9
+    /// factor over `lines × lineHeight`, and a 44 pt floor. The estimator only
+    /// serves rows no cell has measured yet.
+    static let officialWidthCap: CGFloat = 580
+    static let officialLineCap: CGFloat = 15
+    static let officialFactor: CGFloat = 0.9
+    static let officialMinimum: CGFloat = 44
+
+    /// `max(lines × lineHeight × 0.9, 44)` — the arithmetic half of the
+    /// official estimator. Line counting is the caller's job: the official
+    /// code measures each explicit line's width with `size(withAttributes:)`
+    /// and adds `floor(lineWidth / width) + 1`, which needs UIKit and lives in
+    /// the app target.
+    static func officialEstimate(lines: CGFloat, lineHeight: CGFloat) -> CGFloat {
+        max(ceil(lines * max(0, lineHeight) * officialFactor), officialMinimum)
+    }
+
     /// Display width in half-em units: wide glyphs occupy two Latin advances.
     static func textUnits(_ text: String) -> Int {
         var units = 0

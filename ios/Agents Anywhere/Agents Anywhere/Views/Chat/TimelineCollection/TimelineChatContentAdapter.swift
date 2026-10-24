@@ -293,6 +293,61 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     }
     private var codeEstimateCache: [Int: CGFloat] = [:]
 
+    /// The official `SessionRowHeightEstimator` (`0x10253d650`;
+    /// `ClaudeCode/SessionRowHeightEstimator.swift`; formula in
+    /// `EVIDENCE/est-r1/FINDINGS.md`):
+    ///
+    ///     width  = min(容器宽, 580)
+    ///     lines  = Σ 每个块的显示行数（每块封顶 15）
+    ///     height = max(lines × 行高 × 0.9, 44)
+    ///
+    /// Cheap by design — line widths come from `size(withAttributes:)`, never
+    /// TextKit — and only serves a Code row no cell has measured yet. The
+    /// structural `CodeRowHeightPlan` still wins whenever it has an answer.
+    /// The tool branch's per-segment inner estimate is UNKNOWN; one line per
+    /// segment is the conservative floor (block cap 15 applies).
+    func officialEstimateHeight(for item: TimelineListItem, width: CGFloat) -> CGFloat? {
+        guard case .group(let id) = item, groupsByID[id]?.explicitID != nil,
+              let rows = codeRowsByGroupID[id], !rows.isEmpty, width > 0 else {
+            return nil
+        }
+        let cappedWidth = min(width, TimelineHeightEstimate.officialWidthCap)
+        let lineCap = TimelineHeightEstimate.officialLineCap
+        let font = UIFont.systemFont(ofSize: max(1, typography.body))
+        let attributes: [NSAttributedString.Key: Any] = [.font: font]
+        var lines: CGFloat = 0
+        var hasContent = false
+        for row in rows {
+            for block in row.blocks {
+                switch block {
+                case .reasoning:
+                    continue
+                case let .text(_, text):
+                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else { continue }
+                    hasContent = true
+                    var blockLines: CGFloat = 0
+                    for line in trimmed.split(separator: "\n",
+                                               omittingEmptySubsequences: false) {
+                        let lineWidth = (String(line) as NSString)
+                            .size(withAttributes: attributes).width
+                        blockLines += floor(lineWidth / cappedWidth) + 1
+                    }
+                    lines += min(blockLines, lineCap)
+                case let .toolCalls(segments):
+                    hasContent = true
+                    lines += min(CGFloat(segments.count), lineCap)
+                case .other:
+                    hasContent = true
+                    lines += 1
+                }
+            }
+        }
+        guard hasContent else { return nil }
+        let lineHeight = max(1, typography.body + typography.lineSpacing)
+        return TimelineHeightEstimate.officialEstimate(lines: lines, lineHeight: lineHeight)
+    }
+
     /// Parsed Markdown for the Code row's first frame, keyed by the text digest
     /// plus the typography revision. The same blocks feed the row view
     /// (`CodeMessageRowView.preparedBlocks`) and the height measurer, so the

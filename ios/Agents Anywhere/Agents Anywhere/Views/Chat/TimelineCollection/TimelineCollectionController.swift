@@ -1069,9 +1069,16 @@ final class TimelineCollectionController: UIViewController {
                 // cell reports. Writing it under a gesture is safe here
                 // because a never-displayed row is not on screen yet.
                 let key = content.heightKey(for: item, width: width)
-                if !layout.heights.hasEverBeenDisplayed(item.itemID),
-                   let provisional = content.measuredCodeGroupHeight(for: item, width: width) {
-                    layout.heights.set(provisional, for: key, tier: .provisional)
+                if !layout.heights.hasEverBeenDisplayed(item.itemID) {
+                    if let provisional = content.measuredCodeGroupHeight(for: item, width: width) {
+                        layout.heights.set(provisional, for: key, tier: .provisional)
+                    } else if let estimate = content.officialEstimateHeight(for: item, width: width) {
+                        // No structural height yet (streaming/unparsed): the
+                        // official line-count estimate replaces the layout's
+                        // coarse `.row` 200 fallback for the frames before the
+                        // cell's first fit.
+                        layout.heights.set(estimate, for: key, tier: .estimate)
+                    }
                 }
                 continue
             }

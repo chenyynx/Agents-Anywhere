@@ -41,6 +41,13 @@ protocol TimelineCollectionContentProviding: AnyObject {
     /// Nil for non-Code items and for groups whose text is still streaming.
     func measuredCodeGroupHeight(for item: TimelineListItem, width: CGFloat) -> CGFloat?
 
+    /// The official `SessionRowHeightEstimator` value for a row the reader has
+    /// never seen: `max(显示行数 × 行高 × 0.9, 44)`, width capped at 580 pt and
+    /// each block's lines capped at 15 (EVIDENCE `EVIDENCE/est-r1/FINDINGS.md`).
+    /// Used only as the fallback when no structural height exists; a nil
+    /// answer keeps the layout's coarse `.row` estimate.
+    func officialEstimateHeight(for item: TimelineListItem, width: CGFloat) -> CGFloat?
+
     /// The official height contract for this row: the cell measures itself once
     /// when unmeasured and reports later content-height changes; the
     /// controller/layout must not pre-measure or poll it. Code message rows use
@@ -103,6 +110,7 @@ extension TimelineCollectionContentProviding {
     /// The C3 synthetic model keeps every row on the hosting path.
     func assistantMarkdown(for item: TimelineListItem) -> AssistantMarkdownDocument? { nil }
     func measuredCodeGroupHeight(for item: TimelineListItem, width: CGFloat) -> CGFloat? { nil }
+    func officialEstimateHeight(for item: TimelineListItem, width: CGFloat) -> CGFloat? { nil }
     func usesCellReportedHeight(for item: TimelineListItem) -> Bool { false }
     func assistantStreamingDocument(for item: TimelineListItem) -> AssistantStreamingDocument? { nil }
     func assistantStreamingReveal(for item: TimelineListItem) -> StreamingRevealState? { nil }

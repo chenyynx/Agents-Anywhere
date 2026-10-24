@@ -25,6 +25,19 @@ import Testing
             delta: 0, cellMaxY: 100, viewportTop: 300) == nil)
     }
 
+    @Test func officialEstimateMatchesTheReverseEngineeredFormula() {
+        // Official `SessionRowHeightEstimator` (0x10253deec): lines ×
+        // lineHeight × 0.9, floored at 44 pt.
+        #expect(TimelineHeightEstimate.officialEstimate(lines: 10, lineHeight: 20) == 180)
+        #expect(TimelineHeightEstimate.officialEstimate(lines: 1, lineHeight: 20) == 44)
+        #expect(TimelineHeightEstimate.officialEstimate(lines: 0, lineHeight: 20) == 44)
+        // The constants the caller applies to the line count.
+        #expect(TimelineHeightEstimate.officialWidthCap == 580)
+        #expect(TimelineHeightEstimate.officialLineCap == 15)
+        #expect(TimelineHeightEstimate.officialFactor == 0.9)
+        #expect(TimelineHeightEstimate.officialMinimum == 44)
+    }
+
     @Test func heightChangeAffectsVisibleRows() {
         // Intersecting the viewport: the row itself is visible.
         #expect(TimelinePreferredAttributesDecision.heightChangeAffectsVisibleRows(

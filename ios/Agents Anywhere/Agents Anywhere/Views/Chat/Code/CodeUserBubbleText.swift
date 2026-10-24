@@ -109,14 +109,16 @@ enum CodeUserBubbleTextMetrics {
         return max(0, lineHeight - font.lineHeight)
     }
 
-    /// TextKit's usage height minus the trailing gap SwiftUI does not draw —
-    /// the same arithmetic `CodeMessageHeightMeasurer` uses.
+    /// TextKit's used height, including the inter-line spacing. The old
+    /// "subtract one lineSpacing" made a two-line bubble 5.95 pt too short:
+    /// the view reserved two natural line boxes but the second baseline needs
+    /// the spacing, so the second line was clipped (CI 487 artifact).
     static func height(text: String, width: CGFloat, displayScale: CGFloat,
                        traits: UITraitCollection? = nil) -> CGFloat {
         let attributed = attributed(text, traits: traits)
         let raw = AssistantMarkdownTextLayout.height(
             of: attributed, width: width, displayScale: displayScale)
-        return ceil(max(0, raw - lineSpacing(traits: traits)))
+        return ceil(max(0, raw))
     }
 }
 
@@ -137,7 +139,7 @@ final class CodeUserBubbleTextView: UITextView {
         let raw = AssistantMarkdownTextLayout.height(
             of: attributedText, width: bounds.width,
             displayScale: traitCollection.displayScale)
-        let height = ceil(max(0, raw - userBubbleLineSpacing))
+        let height = ceil(max(0, raw))
         return CGSize(width: UIView.noIntrinsicMetric, height: height)
     }
 

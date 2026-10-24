@@ -126,6 +126,8 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     /// The display-link timestamps of the last few frames, for the frame-rate
     /// and animation-smoothness checks.
     private var frameTimestamps: [TimeInterval] = []
+    /// How many timestamps the frame-rate check has already judged.
+    private var lastFrameRateIndex = 0
     /// The last slow-frame stack, for the main-thread blocker check.
     private var lastSlowFrameStack: [String] = []
 
@@ -187,6 +189,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         lastContentSamples.removeAll()
         recentTouches.removeAll()
         frameTimestamps.removeAll()
+        lastFrameRateIndex = 0
         lastSlowFrameStack.removeAll()
     }
 
@@ -203,6 +206,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         lastContentSamples.removeAll()
         recentTouches.removeAll()
         frameTimestamps.removeAll()
+        lastFrameRateIndex = 0
         lastSlowFrameStack.removeAll()
         runStartedAt = CACurrentMediaTime()
         revision &+= 1
@@ -636,6 +640,14 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         for attribute in attributes {
             guard let item = attribute.item,
                   let cell = view.cellForItem(at: attribute.indexPath) else { continue }
+            // SwiftUI's `Text` is not a UILabel, so a hosting row reports no
+            // readable text at all — every height change would look like
+            // "text did not change". Compare content only where the probe can
+            // actually read it (the TextKit cell path).
+            let hosting = cell.contentView.subviews.contains {
+                String(describing: type(of: $0)).contains("HostingView")
+            }
+            if hosting { continue }
             let text = visibleText(of: cell)
                 .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             let sample = ContentSample(
@@ -694,14 +706,24 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     /// of gaps > 50 ms is a hitch.
     private func checkFrameRate() {
         guard frameTimestamps.count >= 2 else { return }
+        // Only gaps the probe has not counted yet: re-scanning the same
+        // 120-frame window on every sample counted each hitch ~ten times.
+        // Idle and launch gaps are not the reader's scroll, so they only
+        // count while the list is under the reader's hand or coasting.
+        let view = controller?.collectionView
+        let browsing = view?.isTracking == true || view?.isDecelerating == true
+        let first = max(1, min(lastFrameRateIndex, frameTimestamps.count - 1))
         var maxGap: TimeInterval = 0
         var hitchCount = 0
-        for index in 1..<frameTimestamps.count {
+        for index in first..<frameTimestamps.count {
             let gap = frameTimestamps[index] - frameTimestamps[index - 1]
             maxGap = max(maxGap, gap)
-            if gap > 0.033 { hitchCount += 1 }
+            if browsing, gap > 0.033 { hitchCount += 1 }
         }
-        counters["frameRateMaxGapMs", default: 0] = Int((maxGap * 1000).rounded())
+        lastFrameRateIndex = frameTimestamps.count
+        guard browsing else { return }
+        counters["frameRateMaxGapMs", default: 0] =
+            max(counters["frameRateMaxGapMs"] ?? 0, Int((maxGap * 1000).rounded()))
         if hitchCount > 0 {
             counters["frameRateHitches", default: 0] += hitchCount
         }

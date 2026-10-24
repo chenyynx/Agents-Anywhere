@@ -203,6 +203,7 @@ struct AssistantQuoteBlock {
     let inset: CGFloat
     let barWidth: CGFloat
     let innerSpacing: CGFloat
+    var barColor: UIColor? = nil
 }
 
 /// A footer hosted under the TextKit body at a fixed height.
@@ -279,6 +280,10 @@ struct AssistantCodeCardStyle {
     /// The running-text faces. `fonts` travels with the same style object the
     /// parser already threads, so the measurer and the renderer share them.
     var fonts: MarkdownFontStyle = .system
+    /// The quote rule's width and colour. The Chat theme draws 2.5 pt; the
+    /// official Code page draws 2 pt in the text ink at 0.15 alpha.
+    var quoteBarWidth: CGFloat = 2.5
+    var quoteBarColor: UIColor? = nil
 
     static let chat = AssistantCodeCardStyle()
 }
@@ -620,8 +625,9 @@ enum AssistantMarkdownDocumentParser {
             blocks: children,
             // `ChatBlockQuoteStyle` pads by `ChatMetrics.scaled(12)`.
             inset: 12 * scale,
-            barWidth: 2.5,
-            innerSpacing: typography.paragraphSpacing * scale))
+            barWidth: codeStyle.quoteBarWidth,
+            innerSpacing: typography.paragraphSpacing * scale,
+            barColor: codeStyle.quoteBarColor))
     }
 
     private static func codeBlock(_ content: AttributedString,

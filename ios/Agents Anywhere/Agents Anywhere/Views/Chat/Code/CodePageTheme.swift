@@ -181,12 +181,24 @@ nonisolated enum CodePageTheme {
     static let markdownBodySize: CGFloat = 17
     static let markdownLineHeight: CGFloat = 27.2
 
+    /// The bundled faces; the metrics below come from the real face, not from
+    /// the system fallback. Anthropic Sans at 17 pt has a 21.25 pt line
+    /// height (the system face is 20.29), so the official line spacing is
+    /// 27.2 − 21.25 = 5.95.
+    static var markdownBodyFont: UIFont {
+        MarkdownFontFactory.font(name: sansFontName,
+                                 size: markdownBodySize, weight: 400)
+    }
+    static var markdownMonoFont: UIFont {
+        MarkdownFontFactory.font(name: monoFontName,
+                                 size: markdownCodeBlockSize, weight: 400)
+    }
+
     /// [E] `ApplyTypography` sets line spacing to
     /// `unscaledLineHeight − the font's natural line height`
     /// (`CANONICAL/06-visuals-assets.md §1.4`), not the line height itself.
     static var markdownLineSpacing: CGFloat {
-        max(0, markdownLineHeight
-            - UIFont.systemFont(ofSize: markdownBodySize).lineHeight)
+        max(0, markdownLineHeight - markdownBodyFont.lineHeight)
     }
 
     /// [E] CANONICAL/06-visuals-assets.md §1.5 — paragraph spacing =
@@ -201,10 +213,10 @@ nonisolated enum CodePageTheme {
     /// the Code card and tool rows share this preset.
     static let markdownCodeBlockSize: CGFloat = 15
     static let markdownCodeBlockLineHeight: CGFloat = 24
+    /// JetBrains Mono at 15 pt has a 19.8 pt line height (the system mono is
+    /// 17.9), so the official 24 pt code line height gives 4.2 pt of leading.
     static var markdownCodeBlockLineSpacing: CGFloat {
-        max(0, markdownCodeBlockLineHeight
-            - UIFont.monospacedSystemFont(ofSize: markdownCodeBlockSize,
-                                          weight: .regular).lineHeight)
+        max(0, markdownCodeBlockLineHeight - markdownMonoFont.lineHeight)
     }
 
     /// [U] The official heading point sizes were not extracted: the Typography
@@ -216,7 +228,7 @@ nonisolated enum CodePageTheme {
     /// The Code page's Markdown scale: the official regular/mono presets and
     /// spacing multipliers. The reader's compact Chat scheme does not apply
     /// to the Code page.
-    static let markdownScale = ChatTypeScale(
+    static var markdownScale: ChatTypeScale { ChatTypeScale(
         body: markdownBodySize,
         lineSpacing: markdownLineSpacing,
         paragraphSpacing: markdownParagraphSpacing,
@@ -226,6 +238,7 @@ nonisolated enum CodePageTheme {
         codeBlockLineSpacingRatio: markdownCodeBlockLineSpacing / markdownCodeBlockSize,
         inlineCodePin: markdownInlineCodeSize,
         codeBlockPin: markdownCodeBlockSize)
+    }
 
     // MARK: - Code card (official Code page)
 
@@ -244,6 +257,15 @@ nonisolated enum CodePageTheme {
         traits.userInterfaceStyle == .dark
             ? UIColor(red: 0.427, green: 0.655, blue: 0.925, alpha: 1)
             : UIColor(red: 0.094, green: 0.31, blue: 0.584, alpha: 1)
+    }
+
+    /// [E] part-ac M2.1 — `blockquoteBarWidth = 2.0`; §2.2 — the bar shares
+    /// the text base RGB at 0.15 alpha.
+    static let quoteBarWidth: CGFloat = 2
+    static let quoteBarUIColor = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.882, green: 0.878, blue: 0.851, alpha: 0.15)
+            : UIColor(red: 0.118, green: 0.118, blue: 0.114, alpha: 0.15)
     }
 
     /// [E] §2.3 — card fill `#FFFFFF` light / `#20201F` dark.
@@ -283,7 +305,9 @@ nonisolated enum CodePageTheme {
                 monoName: "JetBrainsMono-Regular",
                 bodyWeight: 400,
                 boldWeight: 550,
-                headingWeight: 400))
+                headingWeight: 400),
+            quoteBarWidth: quoteBarWidth,
+            quoteBarColor: quoteBarUIColor)
     }
 
     /// [E] CANONICAL/05-layout-scroll.md §3.2 — default row bottom padding is

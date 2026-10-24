@@ -287,7 +287,7 @@ final class AssistantQuoteBlockView: UIView {
         super.init(frame: .zero)
         backgroundColor = .clear
 
-        bar.backgroundColor = ChatTextUIColors.quoteBar
+        bar.backgroundColor = quote.barColor ?? ChatTextUIColors.quoteBar
         bar.layer.cornerRadius = quote.barWidth / 2
         bar.isUserInteractionEnabled = false
         addSubview(bar)

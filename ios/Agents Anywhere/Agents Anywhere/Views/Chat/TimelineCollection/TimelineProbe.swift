@@ -879,12 +879,18 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                 let cell = view.cellForItem(at: attribute.indexPath)
                 let cellY = cell.map { f($0.frame.minY) } ?? "-"
                 let cellH = cell.map { f($0.frame.height) } ?? "-"
+                // The fit width and the height key width must agree; a cell
+                // that settles at another width re-wraps the text and the
+                // structural height diverges (device probe: 26188 vs 24288).
+                let cellW = cell.map { f($0.contentView.bounds.width) } ?? "-"
+                let keyW = attribute.heightKey.map { f($0.width) } ?? "-"
                 let facts = heightFacts(itemID: item.itemID, item: item)
                 let exact = facts.structuralExact.map(f) ?? "-"
                 let writer = writerLabel(itemID: item.itemID,
                                          revision: facts.keyRevision)
                 lines.append("V \(item.itemID) y=\(f(attribute.frame.minY)) h=\(f(attribute.frame.height)) "
-                    + "cell=(\(cellY),\(cellH)) est=\(f(facts.crudeEstimate)) tier=\(facts.tier) "
+                    + "cell=(\(cellY),\(cellH)) cw=\(cellW) kw=\(keyW) "
+                    + "est=\(f(facts.crudeEstimate)) tier=\(facts.tier) "
                     + "rev=\(facts.keyRevision) disp=\(f(facts.displayed)) "
                     + "resolved=\(f(facts.resolved)) exact=\(exact) writer=\(writer) "
                     + "policy=\(attribute.policy) \(describe(item))")

@@ -832,6 +832,24 @@ final class TimelineListLayout: UICollectionViewLayout {
             notePreferred("uikitPreferredRejected")
             return false
         }
+        // Stale-body guard: after a same-width content change the key moves,
+        // `isMeasured` clears, and UIKit may ask the cell for its fitting
+        // height before the hosting body picked up the new content. The fit
+        // then reproduces the height the row displayed for the OLD content.
+        // Accepting it writes a stale height the settle pass immediately
+        // corrects — the 542 → 78 → 541 flip the device measured. The
+        // official path never sees this because its geometry report arrives
+        // after the body updates; rejecting here (before acceptance) is the
+        // same shape as the pre-parse rejection that kept UIKit from looping.
+        // `!original.isMeasured` already means the current key has no measured
+        // height, so an equal-to-displayed fit can only be the old body.
+        if let itemID = original.item?.itemID,
+           heights.hasEverBeenDisplayed(itemID),
+           let displayed = heights.displayedHeight(for: itemID),
+           abs(ceil(preferredAttributes.frame.height) - displayed) <= 0.5 {
+            notePreferred("staleSelfMeasureRejected")
+            return false
+        }
         // The official first materialization: an unmeasured cell fits its real
         // content once. Later changes never come through this path; the
         // controller re-reads the same fit at a settled pass.

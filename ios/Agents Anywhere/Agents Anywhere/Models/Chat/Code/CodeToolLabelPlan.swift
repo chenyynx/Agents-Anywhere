@@ -316,10 +316,13 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
 
     // MARK: - Diff stat
 
-    /// The collapsed row's badge, read straight from the wire's line counts.
-    /// Parsing the whole diff here (W4's `CodeToolOutput`) would be heavy for
-    /// a one-line decorative stat; a payload without counts shows no badge
-    /// rather than guessing from the lines.
+    /// The collapsed row's badge, read from the wire's line counts.
+    ///
+    /// Claude's own `tool_use_result.structuredPatch` carries no aggregate
+    /// count, so when the wire omits `lineStat` the exact hunk lines are
+    /// counted instead (the same lines the official server counts into
+    /// `lineCounts`). Parsing the full diff model here would be heavy for a
+    /// one-line badge, so this only scans prefixes.
     static func diffStat(for calls: [CodeToolCall]) -> CodeDiffStat? {
         var added = 0
         var removed = 0
@@ -346,10 +349,41 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
             ?? stat?["removed"]?.intValue
             ?? output?["removedLineCount"]?.intValue
             ?? content["lineStat"]?["removedLineCount"]?.intValue
-        guard added != nil || removed != nil else { return nil }
-        let addedCount = max(0, added ?? 0)
-        let removedCount = max(0, removed ?? 0)
-        guard addedCount > 0 || removedCount > 0 else { return nil }
-        return CodeDiffStat(added: addedCount, removed: removedCount)
+        if added != nil || removed != nil {
+            let addedCount = max(0, added ?? 0)
+            let removedCount = max(0, removed ?? 0)
+            guard addedCount > 0 || removedCount > 0 else { return nil }
+            return CodeDiffStat(added: addedCount, removed: removedCount)
+        }
+        return countedDiffStat(in: content)
+    }
+
+    /// Exact counts from the change lines the wire already carries.
+    ///
+    /// `structuredPatch[].lines` are `' '` / `'+'` / `'-'` prefixed body
+    /// lines; `changes[].diff` is a unified-diff string whose `--- ` / `+++ `
+    /// file headers are not body lines. Both are counted by prefix only.
+    private static func countedDiffStat(in content: JSONValue) -> CodeDiffStat? {
+        var added = 0
+        var removed = 0
+        var found = false
+        for hunk in content["structuredPatch"]?.arrayValue ?? [] {
+            for line in hunk["lines"]?.arrayValue ?? [] {
+                guard let text = line.stringValue else { continue }
+                if text.hasPrefix("+") { added += 1; found = true }
+                else if text.hasPrefix("-") { removed += 1; found = true }
+            }
+        }
+        if !found {
+            for change in content["changes"]?.arrayValue ?? [] {
+                guard let diff = (change["diff"] ?? change["patch"])?.stringValue else { continue }
+                for line in diff.components(separatedBy: "\n") {
+                    if line.hasPrefix("+"), !line.hasPrefix("+++ ") { added += 1; found = true }
+                    else if line.hasPrefix("-"), !line.hasPrefix("--- ") { removed += 1; found = true }
+                }
+            }
+        }
+        guard found, added > 0 || removed > 0 else { return nil }
+        return CodeDiffStat(added: added, removed: removed)
     }
 }

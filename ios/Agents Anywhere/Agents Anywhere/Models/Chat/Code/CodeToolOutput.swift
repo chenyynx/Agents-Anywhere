@@ -6,8 +6,8 @@ import Foundation
 // enum (text / todos / diff / submittedAnswers / approvedPlan). AA's wire
 // carries no such type: a tool row's `content` holds the raw result (Claude:
 // `output` / `outputText` / `result` / `text`; Codex: `output` / `result`; file
-// changes: `patch` / `changes`) and the connector never tags which of the five
-// views it means. This parser reads the wire truth and maps it to the official
+// changes: `structuredPatch` / `patch` / `changes`) and the connector never
+// tags which of the five views it means. This parser reads the wire truth and maps it to the official
 // five cases: an explicit tag wins, then the tool kind and the payload shape,
 // and anything unrecognised falls back to `text` instead of guessing a richer
 // view.
@@ -482,6 +482,16 @@ nonisolated enum CodeToolOutput: Hashable {
         guard let value else { return nil }
 
         if let object = value.objectValue {
+            // The Claude Code CLI's own file-change payload: one entry per hunk
+            // with explicit start line numbers and `' '` / `'+'` / `'-'`
+            // prefixed lines (`ClaudeCodeApi.StructuredPatchHunk`, CSV
+            // 38311–38315; `SendUserMessageToolUseResult.structuredPatch`,
+            // CSV 38333). The connector forwards it verbatim from
+            // `tool_use_result`, so this is the most exact diff on the wire.
+            if let hunks = object["structuredPatch"]?.arrayValue, !hunks.isEmpty,
+               let parsed = structuredPatchDiff(hunks) {
+                return parsed
+            }
             if let lineValues = object["lines"]?.arrayValue, !lineValues.isEmpty,
                looksLikeDiffPayload(object, lines: lineValues) {
                 let lines = structuredLines(lineValues)
@@ -505,6 +515,19 @@ nonisolated enum CodeToolOutput: Hashable {
                             // A created file's `diff` is the whole new file,
                             // not a unified patch; every line is an addition.
                             lines.append(contentsOf: addedLines(text))
+                        } else if let text = nested.stringValue,
+                                  isDeclaredChangeDiff(text) {
+                            // AA's connector declares this field as a file
+                            // diff but emits a bare `@@` header (no line
+                            // numbers); the strict text check above rejects
+                            // it. The declaration makes the parse safe. Drop
+                            // the `---`/`+++` file headers and the bare `@@`
+                            // marker: the official single-file diff starts at
+                            // a numbered hunk header, and a bare one carries
+                            // no information.
+                            lines.append(contentsOf: TimelineDiff(text).lines.filter {
+                                $0.kind != .file && !($0.kind == .hunk && $0.text == "@@")
+                            })
                         }
                     } else if let nestedLines = change["lines"]?.arrayValue {
                         lines.append(contentsOf: structuredLines(nestedLines))
@@ -624,6 +647,81 @@ nonisolated enum CodeToolOutput: Hashable {
             guard line.hasPrefix("@@ -") else { return false }
             return line.dropFirst(4).first?.isNumber == true
         }
+    }
+
+    /// A diff string the wire explicitly declares as a file change.
+    ///
+    /// AA's connector emits `--- path` / `+++ path` / `@@` (no line numbers),
+    /// which `isUnifiedDiff` rejects because a bare `@@` can appear in prose.
+    /// Here the declaration is the evidence, so a hunk header plus at least
+    /// one added/removed body line is enough.
+    private static func isDeclaredChangeDiff(_ text: String) -> Bool {
+        let lines = text.components(separatedBy: "\n")
+        let hasHunk = lines.contains { $0.hasPrefix("@@") }
+        let hasBody = lines.contains {
+            ($0.hasPrefix("+") && !$0.hasPrefix("+++ "))
+                || ($0.hasPrefix("-") && !$0.hasPrefix("--- "))
+        }
+        return hasHunk && hasBody
+    }
+
+    /// `ClaudeCodeApi.StructuredPatchHunk` → the official `DiffOutput` lines.
+    ///
+    /// Each hunk carries `oldStart` / `oldLines` / `newStart` / `newLines`
+    /// (CSV 38311–38315) and body lines prefixed `' '` (context), `'+'` or
+    /// `'-'`. Line numbers advance exactly as the official `DiffView.Line`
+    /// fields require: context increments both, add only the new side, remove
+    /// only the old side. The `@@ -old,count +new,count @@` header mirrors the
+    /// official diff fixture inside the app binary (`0x499cf50`).
+    private static func structuredPatchDiff(_ hunks: [JSONValue]) -> CodeToolDiff? {
+        var lines: [TimelineDiff.Line] = []
+        var nextID = 0
+        for hunk in hunks {
+            guard let object = hunk.objectValue else { continue }
+            let oldStart = object["oldStart"]?.intValue
+            let newStart = object["newStart"]?.intValue
+            let oldCount = object["oldLines"]?.intValue ?? 0
+            let newCount = object["newLines"]?.intValue ?? 0
+            if let oldStart, let newStart {
+                lines.append(TimelineDiff.Line(
+                    id: nextID,
+                    kind: .hunk,
+                    text: "@@ -\(oldStart),\(oldCount) +\(newStart),\(newCount) @@",
+                    oldLine: nil, newLine: nil))
+                nextID += 1
+            }
+            var oldLine = oldStart
+            var newLine = newStart
+            for raw in object["lines"]?.arrayValue ?? [] {
+                guard let text = raw.stringValue else { continue }
+                let kind: TimelineDiff.Line.Kind
+                let content: String
+                if text.hasPrefix("+") {
+                    kind = .add; content = String(text.dropFirst())
+                } else if text.hasPrefix("-") {
+                    kind = .delete; content = String(text.dropFirst())
+                } else if text.hasPrefix("\\") {
+                    kind = .annotation; content = text
+                } else {
+                    kind = .context
+                    content = text.hasPrefix(" ") ? String(text.dropFirst()) : text
+                }
+                let numbered = kind == .add || kind == .delete || kind == .context
+                lines.append(TimelineDiff.Line(
+                    id: nextID,
+                    kind: kind,
+                    text: content,
+                    oldLine: numbered && kind != .add ? oldLine : nil,
+                    newLine: numbered && kind != .delete ? newLine : nil))
+                nextID += 1
+                if numbered {
+                    if kind != .add { oldLine = oldLine.map { $0 + 1 } }
+                    if kind != .delete { newLine = newLine.map { $0 + 1 } }
+                }
+            }
+        }
+        guard !lines.isEmpty else { return nil }
+        return makeDiff(lines: lines, from: nil)
     }
 
     /// Duplicate ids appear when several files' patches are concatenated;

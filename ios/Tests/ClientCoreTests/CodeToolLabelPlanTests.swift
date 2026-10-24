@@ -126,4 +126,42 @@ struct CodeToolLabelPlanTests {
             .init(verb: .created, unit: .files, count: 2),
         ])
     }
+
+    // MARK: Diff badge counts
+
+    @Test func diffBadgeCountsStructuredPatchLines() throws {
+        let item: V2TimelineItem = try decode([
+            "id": "e1", "sessionId": "session", "type": "tool", "status": "done",
+            "content": [
+                "kind": "file_change", "toolName": "Edit",
+                "structuredPatch": [[
+                    "oldStart": 1, "oldLines": 2, "newStart": 1, "newLines": 3,
+                    "lines": [" a", "-b", "+c", "+d"],
+                ]],
+            ],
+            "source": ["itemId": "e1"],
+            "orderSeq": 1, "revision": 1, "updatedSeq": 1, "contentHash": "e1",
+        ])
+        let call = CodeToolCall(item: item, kind: .edit)
+        #expect(CodeToolLabelPlan.diffStat(for: [call])
+            == CodeDiffStat(added: 2, removed: 1))
+    }
+
+    @Test func diffBadgeCountsBareChangeDiff() throws {
+        let item: V2TimelineItem = try decode([
+            "id": "e2", "sessionId": "session", "type": "tool", "status": "done",
+            "content": [
+                "kind": "file_change", "toolName": "Edit",
+                "changes": [[
+                    "path": "a.swift", "action": "update",
+                    "diff": "--- a.swift\n+++ a.swift\n@@\n-let a = 1\n+let a = 2\n",
+                ]],
+            ],
+            "source": ["itemId": "e2"],
+            "orderSeq": 1, "revision": 1, "updatedSeq": 1, "contentHash": "e2",
+        ])
+        let call = CodeToolCall(item: item, kind: .edit)
+        #expect(CodeToolLabelPlan.diffStat(for: [call])
+            == CodeDiffStat(added: 1, removed: 1))
+    }
 }

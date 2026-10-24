@@ -207,6 +207,93 @@ struct CodeToolOutputTests {
         #expect(diff.maxLineNumber == 2)
     }
 
+    // MARK: Claude `structuredPatch` (the CLI's own hunk payload)
+
+    @Test func structuredPatchBecomesNumberedDiff() throws {
+        let output = try makeOutput([
+            // The real wire keeps the result text next to structuredPatch;
+            // the diff must win over the text.
+            "output": "The file has been updated.",
+            "structuredPatch": [[
+                "oldStart": 10, "oldLines": 3,
+                "newStart": 10, "newLines": 4,
+                "lines": [
+                    " let a = 1",
+                    "-let b = 2",
+                    "+let b = 3",
+                    "+let c = 4",
+                    " let d = 5",
+                ],
+            ]],
+        ], kind: .edit)
+        guard case let .diff(diff) = output else {
+            Issue.record("structuredPatch must render as a diff")
+            return
+        }
+        #expect(diff.lines.count == 6)
+        #expect(diff.added == 2)
+        #expect(diff.removed == 1)
+        #expect(diff.maxLineNumber == 13)
+
+        let header = diff.lines[0]
+        #expect(header.kind == .hunk)
+        #expect(header.text == "@@ -10,3 +10,4 @@")
+        let delete = diff.lines[2]
+        #expect(delete.kind == .delete)
+        #expect(delete.text == "let b = 2")
+        #expect(delete.oldLine == 11)
+        #expect(delete.newLine == nil)
+        let add = diff.lines[3]
+        #expect(add.kind == .add)
+        #expect(add.text == "let b = 3")
+        #expect(add.oldLine == nil)
+        #expect(add.newLine == 11)
+        #expect(diff.lines[5].oldLine == 12)
+        #expect(diff.lines[5].newLine == 13)
+    }
+
+    @Test func failedEditPrefersErrorOverStructuredPatch() throws {
+        let output = try makeOutput([
+            "error": "string not found",
+            "structuredPatch": [[
+                "oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1,
+                "lines": ["-old", "+new"],
+            ]],
+        ], status: "failed", kind: .edit)
+        #expect(output == .text("string not found"))
+    }
+
+    // MARK: AA connector file-change string (bare `@@`)
+
+    @Test func declaredChangeDiffWithBareHunkBecomesDiff() throws {
+        let output = try makeOutput([
+            "output": "The file has been updated.",
+            "changes": [[
+                "path": "a.swift", "action": "update", "toolName": "Edit",
+                "diff": "--- a.swift\n+++ a.swift\n@@\n-let a = 1\n+let a = 2\n",
+            ]],
+        ], kind: .edit)
+        guard case let .diff(diff) = output else {
+            Issue.record("A declared change diff must render as a diff")
+            return
+        }
+        // File headers and the bare `@@` are dropped; the two body lines stay.
+        #expect(diff.lines.count == 2)
+        #expect(diff.lines[0].kind == .delete)
+        #expect(diff.lines[0].text == "let a = 1")
+        #expect(diff.lines[1].kind == .add)
+        #expect(diff.lines[1].text == "let a = 2")
+        #expect(diff.added == 1)
+        #expect(diff.removed == 1)
+    }
+
+    @Test func proseInOutputIsNotAChangeDiff() throws {
+        let output = try makeOutput([
+            "output": "note\n@@\n+not a diff",
+        ], kind: .edit)
+        #expect(output == .text("note\n@@\n+not a diff"))
+    }
+
     // MARK: Todos
 
     @Test func todosEmptyArrayIsCleared() throws {

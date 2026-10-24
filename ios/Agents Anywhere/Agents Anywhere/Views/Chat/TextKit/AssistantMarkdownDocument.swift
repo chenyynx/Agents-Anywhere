@@ -247,6 +247,23 @@ struct AssistantCodeBlock {
     var titleWeight: UIFont.Weight = .medium
 }
 
+/// Font faces for the Markdown document. `nil` names keep the system fonts
+/// (Chat); the Code page passes the official variable-font PostScript names.
+struct MarkdownFontStyle {
+    var bodyName: String? = nil
+    var bodyItalicName: String? = nil
+    var headingName: String? = nil
+    var headingItalicName: String? = nil
+    var monoName: String? = nil
+    var bodyWeight: CGFloat = 400
+    /// The Chat path keeps its semibold emphasis; the Code page overrides
+    /// these with the official preset weights (bold 550, heading 400).
+    var boldWeight: CGFloat = 600
+    var headingWeight: CGFloat = 600
+
+    static let system = MarkdownFontStyle()
+}
+
 /// The code card's chrome. Defaults are the Chat card; the Code page passes
 /// the official values (44 pt header, 24 pt radius, white/#20201F fill).
 struct AssistantCodeCardStyle {
@@ -259,6 +276,9 @@ struct AssistantCodeCardStyle {
     var titleFontSize: CGFloat = 12
     var titleWeight: UIFont.Weight = .medium
     var textColor: UIColor? = nil
+    /// The running-text faces. `fonts` travels with the same style object the
+    /// parser already threads, so the measurer and the renderer share them.
+    var fonts: MarkdownFontStyle = .system
 
     static let chat = AssistantCodeCardStyle()
 }
@@ -445,7 +465,8 @@ enum AssistantMarkdownDocumentParser {
                 return .math(math)
             }
             return textBlock(content, headingLevel: nil,
-                             foreground: foreground, typography: typography)
+                             foreground: foreground, typography: typography,
+                             codeStyle: codeStyle)
                 .map(AssistantMarkdownBlock.text)
         }
         switch intent.kind {
@@ -457,11 +478,13 @@ enum AssistantMarkdownDocumentParser {
                 return .math(math)
             }
             return textBlock(content, headingLevel: nil,
-                             foreground: foreground, typography: typography)
+                             foreground: foreground, typography: typography,
+                             codeStyle: codeStyle)
                 .map(AssistantMarkdownBlock.text)
         case .header(let level):
             return textBlock(content, headingLevel: level,
-                             foreground: foreground, typography: typography)
+                             foreground: foreground, typography: typography,
+                             codeStyle: codeStyle)
                 .map(AssistantMarkdownBlock.text)
         case .orderedList, .unorderedList:
             return listBlock(content, listIntent: intent,
@@ -623,7 +646,9 @@ enum AssistantMarkdownDocumentParser {
         let attributed = NSAttributedString(
             string: code,
             attributes: [
-                .font: UIFont.monospacedSystemFont(ofSize: size, weight: .regular),
+                .font: MarkdownFontFactory.font(
+                    name: codeStyle.fonts.monoName, size: size,
+                    weight: codeStyle.fonts.bodyWeight),
                 .foregroundColor: codeStyle.textColor ?? ChatTextUIColors.text,
                 .paragraphStyle: paragraph,
             ])
@@ -752,9 +777,12 @@ enum AssistantMarkdownDocumentParser {
     private static func textBlock(_ content: AttributedString,
                                   headingLevel: Int?,
                                   foreground: UIColor,
-                                  typography: TimelineTypographySnapshot) -> AssistantTextBlock? {
+                                  typography: TimelineTypographySnapshot,
+                                  codeStyle: AssistantCodeCardStyle) -> AssistantTextBlock? {
         guard !content.characters.isEmpty else { return nil }
 
+        let fonts = codeStyle.fonts
+        let isHeading = headingLevel != nil
         let bodySize = typography.body
         let headingSize = headingLevel.map { level -> CGFloat in
             guard !typography.headings.isEmpty else { return bodySize }
@@ -762,8 +790,18 @@ enum AssistantMarkdownDocumentParser {
             return typography.headings[index]
         }
         let baseSize = headingSize ?? bodySize
-        let baseWeight: UIFont.Weight = (headingLevel != nil || typography.boldText) ? .semibold : .regular
-        let baseFont = UIFont.systemFont(ofSize: baseSize, weight: baseWeight)
+        let baseWeight = isHeading
+            ? fonts.headingWeight
+            : (typography.boldText ? fonts.boldWeight : fonts.bodyWeight)
+        let baseFamily = isHeading
+            ? (fonts.headingName ?? fonts.bodyName)
+            : fonts.bodyName
+        let italicFamily = isHeading
+            ? (fonts.headingItalicName ?? fonts.headingName
+                ?? fonts.bodyItalicName ?? fonts.bodyName)
+            : (fonts.bodyItalicName ?? fonts.bodyName)
+        let baseFont = MarkdownFontFactory.font(
+            name: baseFamily, size: baseSize, weight: baseWeight)
         let lineSpacing = headingLevel == nil
             ? typography.lineSpacing / ChatMetrics.referenceBodySize * bodySize
             : 0
@@ -776,7 +814,9 @@ enum AssistantMarkdownDocumentParser {
 
         guard let output = inlineAttributedString(
             content, baseFont: baseFont, baseColor: foreground,
-            paragraph: paragraph, typography: typography) else { return nil }
+            paragraph: paragraph, typography: typography, fonts: fonts,
+            baseFamily: baseFamily, italicFamily: italicFamily,
+            baseWeight: baseWeight) else { return nil }
         trimBoundaryWhitespace(output)
         return output.length > 0
             ? AssistantTextBlock(attributed: output, headingLevel: headingLevel)
@@ -790,7 +830,11 @@ enum AssistantMarkdownDocumentParser {
                                                baseFont: UIFont,
                                                baseColor: UIColor,
                                                paragraph: NSParagraphStyle,
-                                               typography: TimelineTypographySnapshot)
+                                               typography: TimelineTypographySnapshot,
+                                               fonts: MarkdownFontStyle = .system,
+                                               baseFamily: String? = nil,
+                                               italicFamily: String? = nil,
+                                               baseWeight: CGFloat = 400)
         -> NSMutableAttributedString? {
         let inlineCodeRatio = typography.body > 0
             ? (typography.inlineCodePin.map { $0 / typography.body } ?? typography.inlineCodeRatio)
@@ -814,20 +858,45 @@ enum AssistantMarkdownDocumentParser {
             guard !text.isEmpty else { continue }
             var font = baseFont
             var color = baseColor
+            var isCode = false
+            var isBold = false
             var underline: NSUnderlineStyle?
             var strikethrough: NSUnderlineStyle?
 
             if let inline = run.inlinePresentationIntent {
                 if inline.contains(.code) {
-                    font = UIFont.monospacedSystemFont(ofSize: inlineCodeSize,
-                        weight: typography.inlineCodeBold ? .semibold : .regular)
+                    isCode = true
+                    if let mono = fonts.monoName {
+                        font = MarkdownFontFactory.font(
+                            name: mono, size: inlineCodeSize,
+                            weight: typography.inlineCodeBold
+                                ? fonts.boldWeight : fonts.bodyWeight)
+                    } else {
+                        font = UIFont.monospacedSystemFont(ofSize: inlineCodeSize,
+                            weight: typography.inlineCodeBold ? .semibold : .regular)
+                    }
                     color = ChatTextUIColors.bodyTemplate
                 }
                 if inline.contains(.stronglyEmphasized) {
-                    font = font.withWeight(.semibold)
+                    isBold = true
+                    if let family = isCode ? fonts.monoName : baseFamily {
+                        font = MarkdownFontFactory.font(
+                            name: family, size: font.pointSize,
+                            weight: fonts.boldWeight)
+                    } else {
+                        font = font.withWeight(.semibold)
+                    }
                 }
                 if inline.contains(.emphasized) {
-                    font = font.withItalic()
+                    if isCode {
+                        // No italic mono face is bundled; keep the upright mono.
+                    } else if let italicFamily {
+                        font = MarkdownFontFactory.font(
+                            name: italicFamily, size: font.pointSize,
+                            weight: isBold ? fonts.boldWeight : baseWeight)
+                    } else {
+                        font = font.withItalic()
+                    }
                 }
                 if inline.contains(.strikethrough) {
                     strikethrough = .single

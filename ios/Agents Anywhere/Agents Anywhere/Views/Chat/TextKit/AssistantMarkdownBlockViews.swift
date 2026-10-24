@@ -429,8 +429,12 @@ final class AssistantCodeBlockView: UIView {
             }
             if token.type == .keyword || token.type == .literal
                 || token.type == .boolean, let baseFont {
-                attributes[.font] = UIFont.monospacedSystemFont(
-                    ofSize: baseFont.pointSize, weight: .semibold)
+                // Keep the bundled variable mono's family when the Code page
+                // uses JetBrains Mono; Chat's system mono keeps its semibold.
+                attributes[.font] = baseFont.fontName.hasPrefix("JetBrains")
+                    ? MarkdownFontFactory.weighted(baseFont, weight: 600)
+                    : UIFont.monospacedSystemFont(
+                        ofSize: baseFont.pointSize, weight: .semibold)
             }
             result.append(NSAttributedString(
                 string: token.content, attributes: attributes))

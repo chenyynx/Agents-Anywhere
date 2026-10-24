@@ -51,6 +51,12 @@ nonisolated enum CodePageTheme {
     /// is built on the footnote text style.
     static let toolRowTextStyle: Font.TextStyle = .footnote
 
+    /// The official fonts, bundled from the official IPA's
+    /// `ClaudeFonts_ClaudeFonts.bundle` (registered by `AppFontRegistry`).
+    static let sansFontName = "AnthropicSansMobileVariable-TextRegular"
+    static let serifFontName = "AnthropicSerifMobileVariable-TextRegular"
+    static let monoFontName = "JetBrainsMono-Regular"
+
     /// [E] `EVIDENCE/typography-r8.md` §3.2 — `ToolCallRowButton` label
     /// padding is 8 pt on all four sides (`EdgeInsets._all(8.0)`). The older
     /// CANONICAL/04 §6.2 note of 6 pt describes `CollapsedRowButton`, a
@@ -268,7 +274,16 @@ nonisolated enum CodePageTheme {
             titleColor: markdownTextUIColor,
             titleFontSize: 13,
             titleWeight: .regular,
-            textColor: markdownTextUIColor)
+            textColor: markdownTextUIColor,
+            fonts: MarkdownFontStyle(
+                bodyName: "AnthropicSansMobileVariable-TextRegular",
+                bodyItalicName: "AnthropicSansMobileVariable-TextRegularItalic",
+                headingName: "AnthropicSerifMobileVariable-TextRegular",
+                headingItalicName: "AnthropicSerifMobileVariable-TextRegularItalic",
+                monoName: "JetBrainsMono-Regular",
+                bodyWeight: 400,
+                boldWeight: 550,
+                headingWeight: 400))
     }
 
     /// [E] CANONICAL/05-layout-scroll.md §3.2 — default row bottom padding is

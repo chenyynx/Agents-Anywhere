@@ -57,7 +57,10 @@ enum CodeUserBubbleTextMetrics {
     static func attributed(_ text: String,
                            traits: UITraitCollection? = nil,
                            color: UIColor? = nil) -> NSAttributedString {
-        let font = UIFont.preferredFont(forTextStyle: .body, compatibleWith: traits)
+        let size = UIFontMetrics(forTextStyle: .body)
+            .scaledValue(for: CodePageTheme.markdownBodySize, compatibleWith: traits)
+        let font = MarkdownFontFactory.font(
+            name: CodePageTheme.sansFontName, size: size, weight: 400)
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = lineSpacing(traits: traits)
         var attributes: [NSAttributedString.Key: Any] = [

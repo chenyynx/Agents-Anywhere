@@ -90,16 +90,17 @@ struct CodeCollapsedToolRow: View {
     private var labelText: Text {
         guard let target, !target.isEmpty else {
             return Text(verb)
-                .font(.system(size: fontSize, weight: CodePageTheme.toolRowFontWeight))
+                .font(.custom(CodePageTheme.sansFontName, size: fontSize,
+                              relativeTo: CodePageTheme.toolRowTextStyle))
                 .foregroundStyle(.secondary)
         }
         let verbRun = Text(verb + " ")
-            .font(.system(size: fontSize, weight: CodePageTheme.toolRowFontWeight))
+            .font(.custom(CodePageTheme.sansFontName, size: fontSize,
+                          relativeTo: CodePageTheme.toolRowTextStyle))
             .foregroundStyle(.secondary)
         let targetRun = Text(target)
-            .font(.system(size: fontSize,
-                          weight: CodePageTheme.toolRowFontWeight,
-                          design: .monospaced))
+            .font(.custom(CodePageTheme.monoFontName, size: fontSize,
+                          relativeTo: CodePageTheme.toolRowTextStyle))
             .foregroundStyle(.primary)
         return verbRun + targetRun
     }
@@ -151,7 +152,8 @@ private struct CodeDiffIndicator: View {
                      ink: CodePageTheme.diffIndicatorRemoveText)
             }
         }
-        .font(.system(size: fontSize, weight: .regular))
+        .font(.custom(CodePageTheme.monoFontName, size: fontSize,
+                      relativeTo: CodePageTheme.toolRowTextStyle))
         .lineLimit(1)
         .fixedSize()
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))

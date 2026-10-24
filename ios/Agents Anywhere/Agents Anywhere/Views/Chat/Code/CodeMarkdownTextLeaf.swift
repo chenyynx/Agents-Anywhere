@@ -225,7 +225,9 @@ extension AssistantMarkdownDocument {
                     innerSpacing: quote.innerSpacing))
             case .table(let table):
                 return .table(AssistantTableBlock(
-                    rows: table.rows.map { $0.map(recolored) },
+                    rows: table.rows.map { row in
+                        row.map { recolored($0) }
+                    },
                     columnWidths: table.columnWidths,
                     rowHeights: table.rowHeights,
                     cellPaddingHorizontal: table.cellPaddingHorizontal,
@@ -248,6 +250,7 @@ extension AssistantMarkdownDocument {
             // The official Code headings are serif (the reference crop's
             // "Changes:" heading); the body and inline code stay sans/mono.
             if serif, !isMono, let font,
+               !font.fontName.hasPrefix("AnthropicSerif"),
                let descriptor = font.fontDescriptor.withDesign(.serif) {
                 output.addAttribute(
                     .font,

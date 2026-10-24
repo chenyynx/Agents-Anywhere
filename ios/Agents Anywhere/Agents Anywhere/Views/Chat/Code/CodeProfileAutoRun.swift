@@ -503,7 +503,8 @@ final class CodeProfileAutoRunModel {
         let typography = TimelineChatContentAdapter.typography(
             dynamicType: String(describing: DynamicTypeSize.large),
             layoutDirection: 0,
-            boldText: false)
+            boldText: false,
+            scale: CodePageTheme.markdownScale)
         let host = UIHostingController(rootView:
             CodeMessageRowView(group: group, profile: .claudeCode, cwd: "/repo",
                                typography: typography)
@@ -806,7 +807,8 @@ final class CodeProfileAutoRunModel {
             let typography = TimelineChatContentAdapter.typography(
                 dynamicType: String(describing: size.dynamicType),
                 layoutDirection: 0,
-                boldText: false)
+                boldText: false,
+                scale: CodePageTheme.markdownScale)
             let rowView = AnyView(CodeMessageRowView(group: group,
                                                      profile: .claudeCode,
                                                      cwd: "/repo",
@@ -1132,7 +1134,8 @@ final class CodeProfileAutoRunModel {
             let typography = TimelineChatContentAdapter.typography(
                 dynamicType: String(describing: size.dynamicType),
                 layoutDirection: 0,
-                boldText: false)
+                boldText: false,
+                scale: CodePageTheme.markdownScale)
             let rowView = AnyView(CodeMessageRowView(group: group,
                                                      profile: .claudeCode,
                                                      cwd: "/repo",

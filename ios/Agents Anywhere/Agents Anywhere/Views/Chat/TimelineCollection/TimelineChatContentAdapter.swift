@@ -70,6 +70,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private var signaturesByItem: [TimelineListItem: TimelineContentSignature] = [:]
     private var lastEntries: [TimelineContentEntry] = []
     private var typography: TimelineTypographySnapshot
+    /// The Code page's official Markdown metrics (`CodePageTheme.markdownScale`:
+    /// 17 pt body, 27.2 line height, 15 pt mono). Code rows are measured,
+    /// keyed and drawn with this snapshot; the Chat rows keep the reader's
+    /// scheme.
+    private var codeTypography: TimelineTypographySnapshot
     private var isRefreshing = false
     /// Last width `heightKey` was asked for. `estimateKind` runs immediately
     /// after it in the layout's prepare loop, so this is the column the
@@ -117,6 +122,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         self.onFile = onFile
         self.onSubAgent = onSubAgent
         typography = Self.currentTypography()
+        codeTypography = Self.currentTypography(scale: CodePageTheme.markdownScale)
         refresh()
         needsRefresh = false
     }
@@ -148,12 +154,22 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
 
     func heightKey(for item: TimelineListItem, width: CGFloat) -> TimelineHeightKey {
         lastWidth = width
+        let scale = heightTypography(for: item)
         return TimelineHeightKey(itemID: item.itemID,
             contentRevision: heightContentRevision(for: item, width: width),
             width: width,
-            dynamicType: typography.dynamicType,
-            typographyRevision: typography.revision,
-            layoutDirection: typography.layoutDirection)
+            dynamicType: scale.dynamicType,
+            typographyRevision: scale.revision,
+            layoutDirection: scale.layoutDirection)
+    }
+
+    /// Code message rows use the official Code metrics; every other row keeps
+    /// the reader's Chat scheme.
+    private func heightTypography(for item: TimelineListItem) -> TimelineTypographySnapshot {
+        if case .group(let id) = item, groupsByID[id]?.explicitID != nil {
+            return codeTypography
+        }
+        return typography
     }
 
     /// The height key's content revision follows what the row **draws**, not
@@ -313,7 +329,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         }
         let cappedWidth = min(width, TimelineHeightEstimate.officialWidthCap)
         let lineCap = TimelineHeightEstimate.officialLineCap
-        let font = UIFont.systemFont(ofSize: max(1, typography.body))
+        let font = UIFont.systemFont(ofSize: max(1, codeTypography.body))
         let attributes: [NSAttributedString.Key: Any] = [.font: font]
         var lines: CGFloat = 0
         var hasContent = false
@@ -344,7 +360,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             }
         }
         guard hasContent else { return nil }
-        let lineHeight = max(1, typography.body + typography.lineSpacing)
+        let lineHeight = max(1, codeTypography.body + codeTypography.lineSpacing)
         return TimelineHeightEstimate.officialEstimate(lines: lines, lineHeight: lineHeight)
     }
 
@@ -430,7 +446,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let height = CodeMessageHeightMeasurer.height(
             rows: rows,
             width: width,
-            typography: typography,
+            typography: codeTypography,
             traits: controller?.traitCollection,
             measured: true)
         codeHeightCache[id] = CachedCodeHeight(digest: digest, height: height)
@@ -877,7 +893,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     profile: codeProfile,
                     cwd: model.session.metadata?.cwd,
                     streaming: streamingText,
-                    typography: typography,
+                    typography: codeTypography,
                     onToolDetail: { [weak self] request in
                         self?.onCodeToolDetail?(request)
                     }))
@@ -1003,8 +1019,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     }
 
     func applyTypography(_ snapshot: TimelineTypographySnapshot) {
-        guard snapshot != typography else { return }
+        let nextCode = Self.typography(
+            dynamicType: snapshot.dynamicType,
+            layoutDirection: snapshot.layoutDirection,
+            boldText: snapshot.boldText,
+            scale: CodePageTheme.markdownScale)
+        guard snapshot != typography || nextCode != codeTypography else { return }
         typography = snapshot
+        codeTypography = nextCode
         // Every height key changes; a new generation makes the controller
         // re-read the cache with the new scale instead of keeping fixed frames.
         generation &+= 1
@@ -1504,10 +1526,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
 
     /// The wrapper's environment wins; this is the pre-first-update fallback so
     /// the initial synchronous measurement uses the same scale as the cell.
-    static func currentTypography() -> TimelineTypographySnapshot {
+    static func currentTypography(scale: ChatTypeScale? = nil) -> TimelineTypographySnapshot {
         typography(dynamicType: UITraitCollection.current.preferredContentSizeCategory.rawValue,
                    layoutDirection: UITraitCollection.current.layoutDirection == .rightToLeft ? 1 : 0,
-                   boldText: UIAccessibility.isBoldTextEnabled)
+                   boldText: UIAccessibility.isBoldTextEnabled,
+                   scale: scale)
     }
 
     static func typography(dynamicType: String, layoutDirection: Int, boldText: Bool,

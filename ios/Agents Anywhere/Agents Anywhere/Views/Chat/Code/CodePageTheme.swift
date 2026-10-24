@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// The shared visual-token outlet for the Code page.
 ///
@@ -156,6 +157,60 @@ nonisolated enum CodePageTheme {
 
     /// [E] CANONICAL/05-layout-scroll.md §3.4 — Markdown block spacing.
     static let blockSpacing: CGFloat = 16
+
+    // MARK: - Markdown text (official Code page)
+
+    /// [E] CANONICAL/06-visuals-assets.md §1.3 — `Typography.regular`:
+    /// 17.0 pt, weight 400, unscaled line height 27.2 (`0x1009f5054`,
+    /// `0x1009f5168`).
+    static let markdownBodySize: CGFloat = 17
+    static let markdownLineHeight: CGFloat = 27.2
+
+    /// [E] `ApplyTypography` sets line spacing to
+    /// `unscaledLineHeight − the font's natural line height`
+    /// (`CANONICAL/06-visuals-assets.md §1.4`), not the line height itself.
+    static var markdownLineSpacing: CGFloat {
+        max(0, markdownLineHeight
+            - UIFont.systemFont(ofSize: markdownBodySize).lineHeight)
+    }
+
+    /// [E] CANONICAL/06-visuals-assets.md §1.5 — paragraph spacing =
+    /// `fontSize × 1.0`.
+    static var markdownParagraphSpacing: CGFloat { markdownBodySize }
+
+    /// [E] §1.3 — `monoAux` 13.0 / 20.8, the inline-code preset
+    /// (`0x1009f69e8`).
+    static let markdownInlineCodeSize: CGFloat = 13
+
+    /// [E] §1.3 — `monospaced` 15.0 / 24.0 (`0x1009f6504`, `0x1009f661c`);
+    /// the Code card and tool rows share this preset.
+    static let markdownCodeBlockSize: CGFloat = 15
+    static let markdownCodeBlockLineHeight: CGFloat = 24
+    static var markdownCodeBlockLineSpacing: CGFloat {
+        max(0, markdownCodeBlockLineHeight
+            - UIFont.monospacedSystemFont(ofSize: markdownCodeBlockSize,
+                                          weight: .regular).lineHeight)
+    }
+
+    /// [U] The official heading point sizes were not extracted: the Typography
+    /// table in `CANONICAL/06-visuals-assets.md §1.3` lists regular/bold/
+    /// italic/mono/monoAux only. These keep AA's heading proportions above the
+    /// official body until the presets are read.
+    static let markdownHeadings: [CGFloat] = [23, 21, 18]
+
+    /// The Code page's Markdown scale: the official regular/mono presets and
+    /// spacing multipliers. The reader's compact Chat scheme does not apply
+    /// to the Code page.
+    static let markdownScale = ChatTypeScale(
+        body: markdownBodySize,
+        lineSpacing: markdownLineSpacing,
+        paragraphSpacing: markdownParagraphSpacing,
+        headings: markdownHeadings,
+        inlineCodeRatio: markdownInlineCodeSize / markdownBodySize,
+        codeBlockRatio: markdownCodeBlockSize / markdownBodySize,
+        codeBlockLineSpacingRatio: markdownCodeBlockLineSpacing / markdownCodeBlockSize,
+        inlineCodePin: markdownInlineCodeSize,
+        codeBlockPin: markdownCodeBlockSize)
 
     /// [E] CANONICAL/05-layout-scroll.md §3.2 — default row bottom padding is
     /// `interMessageSpacing - (groupedMessageSpacing ?? interMessageSpacing)`.

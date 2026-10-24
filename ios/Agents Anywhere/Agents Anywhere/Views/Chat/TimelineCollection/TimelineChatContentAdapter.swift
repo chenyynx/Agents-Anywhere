@@ -1764,6 +1764,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// can hold the running block, so the walk stops there instead of
     /// scanning the whole transcript on every rebuild.
     private func liveWorkingMarkBody() -> WorkingMarkBody {
+        // An optimistic user message is newer than every presented row: the
+        // official predicate would see it as the last message of the trailing
+        // assistant run and find no tool call. Without this the mark would
+        // keep the previous turn's pose while the new turn is still waiting.
+        guard model.timeline.pendingMessages.isEmpty else { return .think }
         var tail: [CodeWorkingMarkRow] = []
         for row in model.timeline.rows.reversed() {
             let item = row.value

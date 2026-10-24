@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// The Code page's collapsed tool row: one line, never an in-place expansion.
 ///
@@ -25,18 +26,21 @@ struct CodeCollapsedToolRow: View {
     let isRunning: Bool
     let action: () -> Void
 
-    /// Icons are fixed-size glyphs, so the scaled value is used directly.
+    /// [E] R19 `tool-row-status.md` — every Anthropicon at
+    /// `Anthropicon.Size.large` is 24 pt; the glyph is fixed-size and does not
+    /// scale with Dynamic Type.
     ///
-    /// The label must NOT use this number: `.custom(_:size:relativeTo:)`
+    /// The label must NOT use a scaled size: `.custom(_:size:relativeTo:)`
     /// already applies `UIFontMetrics` for `toolRowTextStyle`, so passing an
     /// already-scaled size scales it twice. At accessibility3 that made the
     /// row render 132 pt against the measurer's 88 pt (CI 478 code-profile
     /// gate). The label passes the unscaled 15 pt base instead.
-    @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
-    private var scaledIconSize = CodePageTheme.toolRowFontSize
+    private let iconSize: CGFloat = 24
 
     @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
     private var lineHeight = CodePageTheme.toolRowLineHeight
+
+    @Environment(\.colorScheme) private var colorScheme
 
     init(verb: String,
          target: String? = nil,
@@ -57,8 +61,9 @@ struct CodeCollapsedToolRow: View {
             HStack(alignment: .center) {
                 if let icon {
                     Image(systemName: icon)
-                        .font(.system(size: scaledIconSize, weight: CodePageTheme.toolRowFontWeight))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: iconSize, weight: CodePageTheme.toolRowFontWeight))
+                        .foregroundStyle(CodePageTheme.toolRowSecondaryColor
+                            .resolved(for: colorScheme))
                         .accessibilityHidden(true)
                 }
 
@@ -75,15 +80,22 @@ struct CodeCollapsedToolRow: View {
                     CodeDiffIndicator(stat: diff)
                 }
 
+                // [E] The official caret is the `caretRight` Anthropicon at
+                // `.large` = 24 pt, secondary. The Anthropicon assets are not
+                // extracted yet (06-visuals-assets §4: pixel export blocked),
+                // so the SF chevron is a placeholder with the same 24 pt box.
                 Image(systemName: "chevron.right")
-                    .font(.system(size: scaledIconSize, weight: CodePageTheme.toolRowFontWeight))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: iconSize, weight: CodePageTheme.toolRowFontWeight))
+                    .foregroundStyle(CodePageTheme.toolRowSecondaryColor
+                        .resolved(for: colorScheme))
                     .accessibilityHidden(true)
             }
             // The official line box is 24 pt even though the 15 pt text is
             // shorter; `lineHeight` is the theme's scaled copy of that value.
+            // [E] `CollapsedRowButton`: `minHeight: 24`, `.padding(.vertical, 6)`,
+            // no horizontal padding (R19 tool-row-status.md).
             .frame(minHeight: lineHeight, alignment: .leading)
-            .padding(CodePageTheme.toolRowButtonPadding)
+            .padding(.vertical, CodePageTheme.toolRowButtonPadding)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -95,23 +107,25 @@ struct CodeCollapsedToolRow: View {
     /// primary monospaced target. Concatenating `Text` keeps truncation and
     /// line-limit behaviour on the whole label.
     private var labelText: Text {
+        let verbColor = CodePageTheme.toolRowSecondaryColor.resolved(for: colorScheme)
+        let targetColor = Color(uiColor: CodePageTheme.markdownTextUIColor)
         guard let target, !target.isEmpty else {
             return Text(verb)
                 .font(.custom(CodePageTheme.sansFontName,
                               size: CodePageTheme.toolRowFontSize,
                               relativeTo: CodePageTheme.toolRowTextStyle))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(verbColor)
         }
         let verbRun = Text(verb + " ")
             .font(.custom(CodePageTheme.sansFontName,
                           size: CodePageTheme.toolRowFontSize,
                           relativeTo: CodePageTheme.toolRowTextStyle))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(verbColor)
         let targetRun = Text(target)
             .font(.custom(CodePageTheme.monoFontName,
                           size: CodePageTheme.toolRowFontSize,
                           relativeTo: CodePageTheme.toolRowTextStyle))
-            .foregroundStyle(.primary)
+            .foregroundStyle(targetColor)
         return verbRun + targetRun
     }
 
@@ -140,8 +154,13 @@ private struct CodeDiffIndicator: View {
     @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
     private var horizontalPadding = CodePageTheme.diffIndicatorHorizontalPadding
 
+    /// [E] Each half is 18 pt tall and the glyph is 11 pt / 550 / 16
+    /// (R19 tool-row-status.md).
     @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
-    private var verticalPadding = CodePageTheme.diffIndicatorVerticalPadding
+    private var halfHeight = CodePageTheme.diffIndicatorHeight
+
+    @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
+    private var fontSize = CodePageTheme.diffIndicatorFontSize
 
     @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
     private var cornerRadius = CodePageTheme.diffIndicatorCornerRadius
@@ -159,11 +178,12 @@ private struct CodeDiffIndicator: View {
                      ink: CodePageTheme.diffIndicatorRemoveText)
             }
         }
-        // `.custom(relativeTo:)` scales this base size once; a `@ScaledMetric`
-        // size here would be scaled twice (see the row's label note).
-        .font(.custom(CodePageTheme.monoFontName,
-                      size: CodePageTheme.diffIndicatorFontSize,
-                      relativeTo: CodePageTheme.toolRowTextStyle))
+        // [E] 11 pt / weight 550. The variable face needs a CT variation
+        // weight, so the font is built once from the scaled size.
+        .font(Font(MarkdownFontFactory.font(
+            name: CodePageTheme.monoFontName,
+            size: fontSize,
+            weight: CodePageTheme.diffIndicatorFontWeight)))
         .lineLimit(1)
         .fixedSize()
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
@@ -177,7 +197,7 @@ private struct CodeDiffIndicator: View {
             .monospacedDigit()
             .foregroundStyle(ink.resolved(for: colorScheme))
             .padding(.horizontal, horizontalPadding)
-            .padding(.vertical, verticalPadding)
+            .frame(height: halfHeight)
             .background(fill.resolved(for: colorScheme))
     }
 }

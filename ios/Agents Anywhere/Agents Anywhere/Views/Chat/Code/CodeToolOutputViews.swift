@@ -498,12 +498,13 @@ private struct CodeToolCopyButton: View {
     var size: CGFloat = 44
 
     @State private var copied = false
+    @State private var copyCount = 0
 
     var body: some View {
         Button {
             UIPasteboard.general.string = text()
             copied = true
-            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            copyCount += 1
         } label: {
             Image(systemName: copied ? "checkmark" : "doc.on.doc")
                 .font(.system(size: size >= 44 ? 15 : 13, weight: .medium))
@@ -512,6 +513,10 @@ private struct CodeToolCopyButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // [E] The official copy control is an `AnimatingHapticButton` fired
+        // with `.selection` (EVIDENCE/round19/motion.md §P2-8); AA used a
+        // success notification, which is a different pattern.
+        .sensoryFeedback(.selection, trigger: copyCount)
         .accessibilityLabel(copied ? String(localized: "已复制") : label)
         .task(id: copied) {
             guard copied else { return }

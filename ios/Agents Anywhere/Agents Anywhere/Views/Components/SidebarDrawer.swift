@@ -310,10 +310,10 @@ private struct SidebarDrawerInteractive<
         .environment(\.sidebarDrawerObscuresDetail, isOpen || motion.restingProgress > 0)
         .environment(\.sidebarDrawerIsTransitioning, isAnimating || dragStartProgress != nil
             || motion.restingProgress != (isOpen ? 1 : 0))
-        .sensoryFeedback(
-            .impact(weight: .light, intensity: 1),
-            trigger: feedbackTrigger
-        )
+        // [E] The official drawer uses the parameterless `.impact`; its
+        // weight/intensity are unpublished (CANONICAL/11-motion-haptics.md
+        // §2.5), so passing light+1 is a different feedback.
+        .sensoryFeedback(.impact, trigger: feedbackTrigger)
     }
 
     private var usesOpeningEdgeGestureRegion: Bool {

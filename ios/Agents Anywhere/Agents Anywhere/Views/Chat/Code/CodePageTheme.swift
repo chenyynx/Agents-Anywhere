@@ -32,6 +32,14 @@ nonisolated enum CodePageTheme {
         }
     }
 
+    /// UIKit twin of `SchemeColor` for TextKit attribute strings.
+    static func uiColor(_ color: SchemeColor) -> UIColor {
+        UIColor { traits in
+            UIColor(color.resolved(for: traits.userInterfaceStyle == .dark
+                                   ? .dark : .light))
+        }
+    }
+
     // MARK: - Collapsed tool row
 
     /// [E] CANONICAL/04-tool-calls.md §6.2 and `DATA/tokens.json`
@@ -54,15 +62,20 @@ nonisolated enum CodePageTheme {
     /// The official fonts, bundled from the official IPA's
     /// `ClaudeFonts_ClaudeFonts.bundle` (registered by `AppFontRegistry`).
     static let sansFontName = "AnthropicSansMobileVariable-TextRegular"
-    static let serifFontName = "AnthropicSerifMobileVariable-TextRegular"
     static let monoFontName = "JetBrainsMono-Regular"
 
-    /// [E] `EVIDENCE/typography-r8.md` §3.2 — `ToolCallRowButton` label
-    /// padding is 8 pt on all four sides (`EdgeInsets._all(8.0)`). The older
-    /// CANONICAL/04 §6.2 note of 6 pt describes `CollapsedRowButton`, a
-    /// different component; the Code page's collapsed tool row uses the 8 pt
-    /// button.
-    static let toolRowButtonPadding: CGFloat = 8
+    /// [E] R19 `tool-row-status.md` — the Code page's collapsed row is the
+    /// `CollapsedRowButton`: `.padding(.vertical, 6)`, no horizontal padding.
+    /// The 8 pt all-sides value belongs to `ToolCallRowContent` (welcome /
+    /// expanded card), a different component.
+    static let toolRowButtonPadding: CGFloat = 6
+
+    /// [E] R19 `tool-row-status.md` — the verb (proportional run) is
+    /// secondary: light `(0.482, 0.475, 0.455)`, dark
+    /// `(0.592, 0.584, 0.553)`. The target (monospaced run) is the body ink.
+    static let toolRowSecondaryColor: SchemeColor = SchemeColor(
+        light: Color(.sRGB, red: 0.482, green: 0.475, blue: 0.455),
+        dark: Color(.sRGB, red: 0.592, green: 0.584, blue: 0.553))
 
     /// Spacing inside a status/tool row. Kept separate from the button
     /// padding: the official evidence fixes the 8 pt padding, not the gap
@@ -75,51 +88,37 @@ nonisolated enum CodePageTheme {
     /// official app, so views should scale it with Dynamic Type.
     static let diffIndicatorCornerRadius: CGFloat = 4.5
 
-    /// [I] `/home/ubuntu/.agents-anywhere-moonveil/attachments/sess_W6JkIc1Jh6PwbQ/file_Daj1ZqByuk14ZB0x-Photo-9F31958B.jpeg`
-    /// (2026-10-22) — glyph cap height is 22-23 px at 3x (7.3-7.7 pt); the
-    /// mono face's 0.70 cap ratio puts the type at 11 pt, the caption2 preset.
-    /// Official size is [U].
+    /// [E] R19 `tool-row-status.md` — 11 pt / weight 550 / lineHeight 16.
     static let diffIndicatorFontSize: CGFloat = 11
+    static let diffIndicatorFontWeight: CGFloat = 550
 
-    /// [I] `/home/ubuntu/.agents-anywhere-moonveil/attachments/sess_W6JkIc1Jh6PwbQ/file_Daj1ZqByuk14ZB0x-Photo-9F31958B.jpeg`
-    /// (2026-10-22) — the pill measures 75.2 px = 25.1 pt wide (50% edge on
-    /// the fill colour; +1 and -1 agree within 0.1 pt). The padding wraps the
-    /// Text line box, not the glyph ink: at 11 pt the mono advance is
-    /// 2 x 0.6 em = 13.2 pt, so (25.1 - 13.2) / 2 = 6.0 pt per side.
+    /// [E] R19 `tool-row-status.md` — horizontal padding 6 (ScaledMetric).
     static let diffIndicatorHorizontalPadding: CGFloat = 6
 
-    /// [I] `/home/ubuntu/.agents-anywhere-moonveil/attachments/sess_W6JkIc1Jh6PwbQ/file_Daj1ZqByuk14ZB0x-Photo-9F31958B.jpeg`
-    /// (2026-10-22) — the pill measures 52.8 px = 17.6 pt tall (same 50% edge;
-    /// +1 52.79 px, -1 52.71 px). The padding wraps the Text line box, not the
-    /// glyph ink: an 11 pt mono line box is 13.1 pt, so
-    /// (17.6 - 13.1) / 2 = 2.2 pt per side.
-    static let diffIndicatorVerticalPadding: CGFloat = 2.2
+    /// [E] R19 `tool-row-status.md` — each half is 18 pt tall (ScaledMetric).
+    static let diffIndicatorHeight: CGFloat = 18
 
-    /// [I] `/home/ubuntu/.agents-anywhere-moonveil/attachments/sess_W6JkIc1Jh6PwbQ/file_Daj1ZqByuk14ZB0x-Photo-9F31958B.jpeg`
-    /// (2026-10-22) — light fill `#D1E6D3`. No dark capture, so the sampled
-    /// value is reused until one lands.
-    static let diffIndicatorAddFill: SchemeColor = SchemeColor(
-        light: Color(.sRGB, red: 0.820, green: 0.902, blue: 0.827),
-        dark: Color(.sRGB, red: 0.820, green: 0.902, blue: 0.827))
-
-    /// [I] `/home/ubuntu/.agents-anywhere-moonveil/attachments/sess_W6JkIc1Jh6PwbQ/file_Daj1ZqByuk14ZB0x-Photo-9F31958B.jpeg`
-    /// (2026-10-22) — light glyph `#487F4E` (darkest ink core).
+    /// [E] R19 `tool-row-status.md` — add ink light
+    /// `(0.118, 0.620, 0.235)` / dark `(0.196, 0.843, 0.294)`; the fill is the
+    /// same colour at alpha 0.2.
     static let diffIndicatorAddText: SchemeColor = SchemeColor(
-        light: Color(.sRGB, red: 0.282, green: 0.498, blue: 0.306),
-        dark: Color(.sRGB, red: 0.282, green: 0.498, blue: 0.306))
+        light: Color(.sRGB, red: 0.118, green: 0.620, blue: 0.235),
+        dark: Color(.sRGB, red: 0.196, green: 0.843, blue: 0.294))
 
-    /// [I] `/home/ubuntu/.agents-anywhere-moonveil/attachments/sess_W6JkIc1Jh6PwbQ/file_Daj1ZqByuk14ZB0x-Photo-9F31958B.jpeg`
-    /// (2026-10-22) — light fill `#E9CED5`. No dark capture, so the sampled
-    /// value is reused until one lands.
-    static let diffIndicatorRemoveFill: SchemeColor = SchemeColor(
-        light: Color(.sRGB, red: 0.914, green: 0.808, blue: 0.835),
-        dark: Color(.sRGB, red: 0.914, green: 0.808, blue: 0.835))
+    static let diffIndicatorAddFill: SchemeColor = SchemeColor(
+        light: Color(.sRGB, red: 0.118, green: 0.620, blue: 0.235, opacity: 0.2),
+        dark: Color(.sRGB, red: 0.196, green: 0.843, blue: 0.294, opacity: 0.2))
 
-    /// [I] `/home/ubuntu/.agents-anywhere-moonveil/attachments/sess_W6JkIc1Jh6PwbQ/file_Daj1ZqByuk14ZB0x-Photo-9F31958B.jpeg`
-    /// (2026-10-22) — light glyph `#882941` (darkest ink core).
+    /// [E] R19 `tool-row-status.md` — remove ink light
+    /// `(0.804, 0.125, 0.329)` / dark `(1.000, 0.173, 0.337)`; the fill is the
+    /// same colour at alpha 0.2.
     static let diffIndicatorRemoveText: SchemeColor = SchemeColor(
-        light: Color(.sRGB, red: 0.533, green: 0.161, blue: 0.255),
-        dark: Color(.sRGB, red: 0.533, green: 0.161, blue: 0.255))
+        light: Color(.sRGB, red: 0.804, green: 0.125, blue: 0.329),
+        dark: Color(.sRGB, red: 1.000, green: 0.173, blue: 0.337))
+
+    static let diffIndicatorRemoveFill: SchemeColor = SchemeColor(
+        light: Color(.sRGB, red: 0.804, green: 0.125, blue: 0.329, opacity: 0.2),
+        dark: Color(.sRGB, red: 1.000, green: 0.173, blue: 0.337, opacity: 0.2))
 
     // MARK: - Diff lines
 
@@ -205,9 +204,14 @@ nonisolated enum CodePageTheme {
     /// `fontSize × 1.0`.
     static var markdownParagraphSpacing: CGFloat { markdownBodySize }
 
-    /// [E] §1.3 — `monoAux` 13.0 / 20.8, the inline-code preset
-    /// (`0x1009f69e8`).
-    static let markdownInlineCodeSize: CGFloat = 13
+    /// [E] R19 `typography-inline.md` §3 (correcting the old 13 pt
+    /// INFERENCE) — inline code is `Typography.monospaced`: 15.0 / 24.0 /
+    /// 400 / `.footnote` (`0x1009f6504`, `0x1009f661c`). 13 pt is the code
+    /// card *title* (monoAux), a different role.
+    static let markdownInlineCodeSize: CGFloat = 15
+    /// [E] R19 `typography-inline.md` §7 — the monospaced preset's unscaled
+    /// line height, scaled with `.footnote`.
+    static let markdownInlineCodeLineHeight: CGFloat = 24
 
     /// [E] §1.3 — `monospaced` 15.0 / 24.0 (`0x1009f6504`, `0x1009f661c`);
     /// the Code card and tool rows share this preset.
@@ -219,11 +223,23 @@ nonisolated enum CodePageTheme {
         max(0, markdownCodeBlockLineHeight - markdownMonoFont.lineHeight)
     }
 
-    /// [U] The official heading point sizes were not extracted: the Typography
-    /// table in `CANONICAL/06-visuals-assets.md §1.3` lists regular/bold/
-    /// italic/mono/monoAux only. These keep AA's heading proportions above the
-    /// official body until the presets are read.
-    static let markdownHeadings: [CGFloat] = [23, 21, 18]
+    /// [E] R19 `typography-inline.md` §1 — H1 24 / H2 20 / H3–H6 17, all
+    /// `.relative`. The heading presets are `HeadingStyles.level1/level2/
+    /// default` (`level1` `0x1009f4460`, `level2` `0x1009f4968`, default =
+    /// bold `0x1009f53a4`).
+    static let markdownHeadings: [CGFloat] = [24, 20, 17]
+    /// [E] R19 `typography-inline.md` §1.2 — unscaled line heights 31.2 /
+    /// 26.0 / 27.2, each scaled with its own text style.
+    static let markdownHeadingLineHeights: [CGFloat] = [31.2, 26, 27.2]
+    /// [E] R19 `typography-inline.md` §1.2 — heading weight 550 for every
+    /// level (`0x4081300000000000`).
+    static let markdownHeadingWeight: CGFloat = 550
+    /// [E] R19 `typography-inline.md` §1.2 — paragraph spacing multipliers:
+    /// before = 0.4 (default theme), after = 0.6 (Code theme override).
+    static let markdownHeadingTopSpacingMultiplier: CGFloat = 0.4
+    static let markdownHeadingBottomSpacingMultiplier: CGFloat = 0.6
+    /// [E] R19 `typography-inline.md` §6 — Code theme `indentSize = 24.0`.
+    static let markdownListIndent: CGFloat = 24
 
     /// The Code page's Markdown scale: the official regular/mono presets and
     /// spacing multipliers. The reader's compact Chat scheme does not apply
@@ -259,6 +275,52 @@ nonisolated enum CodePageTheme {
             : UIColor(red: 0.094, green: 0.31, blue: 0.584, alpha: 1)
     }
 
+    /// [E] R19 `typography-inline.md` §3 — inline-code chip fill: grey
+    /// 0.043 @5% light, white @7.5% dark.
+    static let inlineCodeChipFillUIColor = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 1, green: 1, blue: 1, alpha: 0.075)
+            : UIColor(red: 0.043, green: 0.043, blue: 0.043, alpha: 0.05)
+    }
+
+    /// [E] R19 `typography-inline.md` §3 — chip stroke:
+    /// `(0.118,0.118,0.114)@15%` light / `(0.882,0.878,0.851)@15%` dark.
+    static let inlineCodeChipStrokeUIColor = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.882, green: 0.878, blue: 0.851, alpha: 0.15)
+            : UIColor(red: 0.118, green: 0.118, blue: 0.114, alpha: 0.15)
+    }
+
+    /// [E] R19 `typography-inline.md` §3 — 6.4 pt radius, 4 pt horizontal
+    /// padding per side, 1/displayScale stroke.
+    static let inlineCodeChipCornerRadius: CGFloat = 6.4
+    static let inlineCodeChipHorizontalPadding: CGFloat = 4
+    /// UNKNOWN: the official vertical padding has no constant; the chip is
+    /// drawn from the font's typographic bounds (`§3`, `§10` #4). 0 is the
+    /// minimal symmetric value.
+    static let inlineCodeChipVerticalPadding: CGFloat = 0
+
+    /// [E] R19 `typography-inline.md` §5 — table header fill: pure white
+    /// light, `(0.102,0.102,0.098)` dark.
+    static let tableHeaderFillUIColor = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.102, green: 0.102, blue: 0.098, alpha: 1)
+            : UIColor(red: 1, green: 1, blue: 1, alpha: 1)
+    }
+
+    /// [E] R19 `typography-inline.md` §5 — table border and row lines:
+    /// grey 0.043 @10% light, white @10% dark; 1/displayScale wide.
+    static let tableBorderUIColor = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 1, green: 1, blue: 1, alpha: 0.10)
+            : UIColor(red: 0.043, green: 0.043, blue: 0.043, alpha: 0.10)
+    }
+
+    /// [E] R19 `typography-inline.md` §5 — 12 pt horizontal / 8 pt vertical
+    /// cell padding (`0x1042cba20` / `0x1042cba18`).
+    static let tableCellPaddingHorizontal: CGFloat = 12
+    static let tableCellPaddingVertical: CGFloat = 8
+
     /// [E] part-ac M2.1 — `blockquoteBarWidth = 2.0`; §2.2 — the bar shares
     /// the text base RGB at 0.15 alpha.
     static let quoteBarWidth: CGFloat = 2
@@ -283,6 +345,53 @@ nonisolated enum CodePageTheme {
             : UIColor(red: 0.118, green: 0.118, blue: 0.114, alpha: 0.3)
     }
 
+    /// [E] R19 `code-card-highlighting.md` — the title ink is the secondary
+    /// grey `#7B7974` light / `#97958D` dark, not the body ink.
+    static let codeCardTitleUIColor = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.592, green: 0.584, blue: 0.553, alpha: 1)
+            : UIColor(red: 0.482, green: 0.475, blue: 0.455, alpha: 1)
+    }
+
+    /// [E] R19 `code-card-highlighting.md` — the code body's default ink is
+    /// syntax-theme index 0: `#383A42` light / `#ABB2BF` dark.
+    static let codeCardTextUIColor = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.667, green: 0.698, blue: 0.749, alpha: 1)
+            : UIColor(red: 0.220, green: 0.227, blue: 0.259, alpha: 1)
+    }
+
+    /// The official highlight.js 11.11.2 theme: nine sRGB colours, one table
+    /// for the whole app (`0x104230194` light / `0x1042301b8` dark,
+    /// R19 code-card-highlighting.md).
+    static let syntaxDefault: SchemeColor = SchemeColor(
+        light: Color(.sRGB, red: 0.220, green: 0.227, blue: 0.259),
+        dark: Color(.sRGB, red: 0.667, green: 0.698, blue: 0.749))
+    static let syntaxComment: SchemeColor = SchemeColor(
+        light: Color(.sRGB, red: 0.627, green: 0.631, blue: 0.655),
+        dark: Color(.sRGB, red: 0.361, green: 0.388, blue: 0.439))
+    static let syntaxKeyword: SchemeColor = SchemeColor(
+        light: Color(.sRGB, red: 0.651, green: 0.149, blue: 0.643),
+        dark: Color(.sRGB, red: 0.776, green: 0.471, blue: 0.867))
+    static let syntaxRed: SchemeColor = SchemeColor(
+        light: Color(.sRGB, red: 0.894, green: 0.337, blue: 0.286),
+        dark: Color(.sRGB, red: 0.878, green: 0.424, blue: 0.459))
+    static let syntaxCyan: SchemeColor = SchemeColor(
+        light: Color(.sRGB, red: 0.004, green: 0.518, blue: 0.733),
+        dark: Color(.sRGB, red: 0.337, green: 0.714, blue: 0.761))
+    static let syntaxGreen: SchemeColor = SchemeColor(
+        light: Color(.sRGB, red: 0.314, green: 0.631, blue: 0.310),
+        dark: Color(.sRGB, red: 0.596, green: 0.765, blue: 0.475))
+    static let syntaxOrange: SchemeColor = SchemeColor(
+        light: Color(.sRGB, red: 0.596, green: 0.408, blue: 0.004),
+        dark: Color(.sRGB, red: 0.820, green: 0.604, blue: 0.400))
+    static let syntaxBlue: SchemeColor = SchemeColor(
+        light: Color(.sRGB, red: 0.251, green: 0.471, blue: 0.949),
+        dark: Color(.sRGB, red: 0.380, green: 0.682, blue: 0.933))
+    static let syntaxYellow: SchemeColor = SchemeColor(
+        light: Color(.sRGB, red: 0.757, green: 0.518, blue: 0.004),
+        dark: Color(.sRGB, red: 0.902, green: 0.753, blue: 0.482))
+
     /// [E] §1.3-1.6 and part-ac M4 — 44 pt header (a ScaledMetric in the
     /// official app), 24 pt continuous radius, 13 pt monoAux title at weight
     /// 400.
@@ -296,24 +405,42 @@ nonisolated enum CodePageTheme {
             cornerRadius: 24,
             fillColor: codeCardFillUIColor,
             borderColor: codeCardBorderUIColor,
-            titleColor: markdownTextUIColor,
+            titleColor: codeCardTitleUIColor,
             titleFontSize: 13,
             titleWeight: .regular,
-            textColor: markdownTextUIColor,
+            textColor: codeCardTextUIColor,
+            // [E] R19 `typography-inline.md` §1.2 / §12 — the target build's
+            // heading family is Anthropic Sans (the 2026-03 Serif screenshots
+            // predate the family switch), weight 550; headings are not the
+            // Serif face any more.
             fonts: MarkdownFontStyle(
-                bodyName: "AnthropicSansMobileVariable-TextRegular",
+                bodyName: sansFontName,
                 bodyItalicName: "AnthropicSansMobileVariable-TextRegularItalic",
-                headingName: "AnthropicSerifMobileVariable-TextRegular",
-                headingItalicName: "AnthropicSerifMobileVariable-TextRegularItalic",
-                monoName: "JetBrainsMono-Regular",
+                headingName: sansFontName,
+                headingItalicName: "AnthropicSansMobileVariable-TextRegularItalic",
+                monoName: monoFontName,
                 bodyWeight: 400,
                 boldWeight: 550,
-                headingWeight: 400),
+                headingWeight: markdownHeadingWeight),
             quoteBarWidth: quoteBarWidth,
             quoteBarColor: quoteBarUIColor,
             // [E] CANONICAL/05-layout-scroll.md §3.4 — the official Markdown
             // renderer uses one 16 pt block gap (`0x10170a9c8`).
-            markdownBlockSpacing: blockSpacing)
+            markdownBlockSpacing: blockSpacing,
+            // [E] R19 `typography-inline.md` §3 — the chip painted behind an
+            // inline-code run.
+            inlineCodeChip: AssistantInlineCodeChipStyle(
+                cornerRadius: inlineCodeChipCornerRadius,
+                horizontalPadding: inlineCodeChipHorizontalPadding,
+                verticalPadding: inlineCodeChipVerticalPadding,
+                fillColor: inlineCodeChipFillUIColor,
+                strokeColor: inlineCodeChipStrokeUIColor),
+            // [E] R19 `typography-inline.md` §5 — 12 / 8 padding, white /
+            // #1A1A19 header fill, grey 0.043 @10% / white @10% border.
+            tableCellPaddingHorizontal: tableCellPaddingHorizontal,
+            tableCellPaddingVertical: tableCellPaddingVertical,
+            tableHeaderFillColor: tableHeaderFillUIColor,
+            tableBorderColor: tableBorderUIColor)
     }
 
     /// [E] CANONICAL/05-layout-scroll.md §3.2 — default row bottom padding is
@@ -396,17 +523,15 @@ nonisolated enum CodePageTheme {
     /// 15 pt. Official size is [U].
     static let runningStatusFontSize: CGFloat = 15
 
-    /// Light: [I] `/home/ubuntu/.agents-anywhere-moonveil/attachments/sess_W6JkIc1Jh6PwbQ/file_Daj1ZqByuk14ZB0x-Photo-9F31958B.jpeg`
-    /// (2026-10-22) — the darkest ink core averages `#9D6E5D` (darkest 2% of
-    /// glyph pixels, warm brown; JPEG noise about +/-2 per channel), stored as
-    /// `#9D6E5C`.
-    /// Dark: [U] `/home/ubuntu/aa-test/claude-ios-re/REFERENCES/round2/device/code_session_dark_de_1170x2532.png`
-    /// — the status line is neutral grey there, not warm brown; its core
-    /// cluster samples to `#6D6C67` (temporary neutral-grey sample; the capture
-    /// carries a ghost overlay, so the exact official value stays [U]).
+    /// [E] R19 `tool-row-status.md` — working status text: light
+    /// `(0.322, 0.318, 0.306)`, dark `(0.765, 0.761, 0.718)`.
     static let runningStatusColor: SchemeColor = SchemeColor(
-        light: Color(.sRGB, red: 0.616, green: 0.431, blue: 0.361),
-        dark: Color(.sRGB, red: 0.427, green: 0.424, blue: 0.404))
+        light: Color(.sRGB, red: 0.322, green: 0.318, blue: 0.306),
+        dark: Color(.sRGB, red: 0.765, green: 0.761, blue: 0.718))
+
+    /// [E] R19 `tool-row-status.md` — the working row is
+    /// `HStack(spacing: 4)` with the 20×20 mark and the text.
+    static let workingStatusSpacing: CGFloat = 4
 
     /// [E] CANONICAL/20-working-mark.md §4 — the connecting verb list rotates
     /// once a second (`PeriodicTimelineSchedule(by: 1.0)`).
@@ -452,4 +577,104 @@ nonisolated enum CodePageTheme {
     /// face's natural line box: Anthropic Sans at 17 pt is 21.25 pt, so
     /// 27.2 − 21.25 = 5.95 (the system face's 20.29 would give 6.91).
     static var userBubbleLineSpacing: CGFloat { markdownLineSpacing }
+
+    // MARK: - Dynamic Type (shared by renderer and measurer)
+
+    /// Resolves the official Code-page type scale for one trait collection.
+    ///
+    /// Every preset is `.relative` in the official app
+    /// (`EVIDENCE/round19/typography-inline.md` §7): body 17 → `.body`,
+    /// mono 15 → `.footnote`, aux 13 → `.caption`, H1 24 → `.title3`,
+    /// H2 20 → `.headline`, H3+ 17 → `.body`. Line heights use the same
+    /// metrics for 27.2 / 24 / 31.2 / 26 and the paragraph leading is the
+    /// delta over the resolved face's natural line box — never the unscaled
+    /// 27.2 (CANONICAL/06-visuals-assets.md §1.4).
+    ///
+    /// The renderer (`CodeMarkdownTextLeaf`, from SwiftUI's `dynamicTypeSize`)
+    /// and the measurer (`CodeMessageHeightMeasurer`, from the cell's
+    /// `UITraitCollection`) both call this one function, so a row cannot
+    /// resize itself after the first fit.
+    /// Main-actor isolated because it builds `UIFont`/`UIFontMetrics`; every
+    /// caller (the SwiftUI leaf, the user bubble and the height measurer) is
+    /// already on the main actor.
+    @MainActor
+    static func codePageTypography(base: TimelineTypographySnapshot,
+                                   traits: UITraitCollection?) -> TimelineTypographySnapshot {
+        let bodyMetrics = UIFontMetrics(forTextStyle: .body)
+        let bodySize = bodyMetrics.scaledValue(
+            for: markdownBodySize, compatibleWith: traits)
+        let bodyLineHeight = bodyMetrics.scaledValue(
+            for: markdownLineHeight, compatibleWith: traits)
+        let bodyFont = MarkdownFontFactory.font(
+            name: sansFontName, size: bodySize, weight: 400)
+        let bodyLineSpacing = max(0, bodyLineHeight - bodyFont.lineHeight)
+
+        let title3 = UIFontMetrics(forTextStyle: .title3)
+        let headline = UIFontMetrics(forTextStyle: .headline)
+        let headingSizes = [
+            title3.scaledValue(for: markdownHeadings[0], compatibleWith: traits),
+            headline.scaledValue(for: markdownHeadings[1], compatibleWith: traits),
+            bodyMetrics.scaledValue(for: markdownHeadings[2], compatibleWith: traits),
+        ]
+        let headingLineHeights = [
+            title3.scaledValue(for: markdownHeadingLineHeights[0], compatibleWith: traits),
+            headline.scaledValue(for: markdownHeadingLineHeights[1], compatibleWith: traits),
+            bodyMetrics.scaledValue(for: markdownHeadingLineHeights[2], compatibleWith: traits),
+        ]
+
+        let monoMetrics = UIFontMetrics(forTextStyle: .footnote)
+        let monoSize = monoMetrics.scaledValue(
+            for: markdownInlineCodeSize, compatibleWith: traits)
+        let monoLineHeight = monoMetrics.scaledValue(
+            for: markdownInlineCodeLineHeight, compatibleWith: traits)
+        let monoFont = MarkdownFontFactory.font(
+            name: monoFontName, size: monoSize, weight: 400)
+        let monoLineSpacing = max(0, monoLineHeight - monoFont.lineHeight)
+
+        var resolved = base
+        resolved.body = bodySize
+        resolved.lineSpacing = bodyLineSpacing
+        // paragraphSpacingMultiplier = 1.0, resolved against the scaled size.
+        resolved.paragraphSpacing = bodySize
+        resolved.headings = headingSizes
+        resolved.inlineCodeRatio = bodySize > 0 ? monoSize / bodySize : base.inlineCodeRatio
+        resolved.codeBlockRatio = bodySize > 0 ? monoSize / bodySize : base.codeBlockRatio
+        resolved.codeBlockLineSpacingRatio = monoSize > 0
+            ? monoLineSpacing / monoSize
+            : base.codeBlockLineSpacingRatio
+        resolved.inlineCodePin = monoSize
+        resolved.codeBlockPin = monoSize
+        if let category = traits?.preferredContentSizeCategory {
+            resolved.dynamicType = category.rawValue
+        }
+        resolved.codeMarkdownRoles = CodePageMarkdownRoles(
+            headingSizes: headingSizes,
+            headingLineHeights: headingLineHeights,
+            headingTopSpacingMultiplier: markdownHeadingTopSpacingMultiplier,
+            headingBottomSpacingMultiplier: markdownHeadingBottomSpacingMultiplier,
+            bodyLineSpacing: bodyLineSpacing,
+            inlineCodeSize: monoSize,
+            inlineCodeLineSpacing: monoLineSpacing,
+            listIndent: markdownListIndent,
+            // Item pitch = paragraph-after = body size × 1.0.
+            listSpacing: bodySize)
+        return resolved
+    }
+}
+
+extension TimelineTypographySnapshot {
+    /// The Code page's resolved type scale for a UIKit trait collection (the
+    /// measurement side). Main-actor isolated with the font factory.
+    @MainActor
+    func resolvedForCodePage(traits: UITraitCollection?) -> TimelineTypographySnapshot {
+        CodePageTheme.codePageTypography(base: self, traits: traits)
+    }
+
+    /// The same scale from a `UIContentSizeCategory` (the SwiftUI render side,
+    /// which maps its `dynamicTypeSize` onto this category).
+    @MainActor
+    func resolvedForCodePage(category: UIContentSizeCategory) -> TimelineTypographySnapshot {
+        resolvedForCodePage(
+            traits: UITraitCollection(preferredContentSizeCategory: category))
+    }
 }

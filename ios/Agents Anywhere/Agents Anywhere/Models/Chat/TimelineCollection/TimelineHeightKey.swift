@@ -33,6 +33,53 @@ nonisolated struct TimelineHeightKey: Hashable {
     }
 }
 
+/// The Code page's resolved Markdown roles (Claude iOS 1.261005.20).
+///
+/// Every value here is already Dynamic-Type resolved by the shared factory
+/// (`CodePageTheme.codePageTypography`), so the parser, the renderer and the
+/// measurer all read one set of numbers. A `nil` on the snapshot keeps the
+/// Chat path byte-for-byte as it was.
+///
+/// Official evidence: `EVIDENCE/round19/typography-inline.md` §1.2, §2, §7,
+/// §8 — H1 24/31.2/550/.title3, H2 20/26/550/.headline, H3+ 17/27.2/550/.body,
+/// paragraph-after = size × 1.0, heading-before/after = size × 0.4/0.6,
+/// inline code 15/24/.footnote, list indent 24/level.
+nonisolated struct CodePageMarkdownRoles: Equatable {
+    /// H1, H2, H3+. Levels above 3 use the last entry.
+    var headingSizes: [CGFloat]
+    /// Parallel to `headingSizes`; the official heading line heights are
+    /// 31.2 / 26 / 27.2 unscaled and scale with their own text style.
+    var headingLineHeights: [CGFloat]
+    /// 0.4 (`headingTopSpacingMultiplier`, default Markdown theme).
+    var headingTopSpacingMultiplier: CGFloat
+    /// 0.6 (Code page theme override).
+    var headingBottomSpacingMultiplier: CGFloat
+    /// Space between line fragments of a body run, computed as
+    /// `scaledLineHeight − the face's natural line height` (minimum 0).
+    var bodyLineSpacing: CGFloat
+    /// Inline code (`monospaced` preset, 15 pt, `.footnote`).
+    var inlineCodeSize: CGFloat
+    /// Inline code's 24 pt line height minus the mono face's natural line
+    /// height. The chip itself never changes the paragraph's line height.
+    var inlineCodeLineSpacing: CGFloat
+    /// The Code theme's `indentSize` (24 pt per list level).
+    var listIndent: CGFloat
+    /// Item pitch = paragraph-after = body size × 1.0.
+    var listSpacing: CGFloat
+
+    func headingSize(for level: Int) -> CGFloat {
+        guard !headingSizes.isEmpty else { return 0 }
+        let index = min(max(level - 1, 0), headingSizes.count - 1)
+        return headingSizes[index]
+    }
+
+    func headingLineHeight(for level: Int) -> CGFloat {
+        guard !headingLineHeights.isEmpty else { return 0 }
+        let index = min(max(level - 1, 0), headingLineHeights.count - 1)
+        return headingLineHeights[index]
+    }
+}
+
 /// The typography inputs that reflow a row. Kept as plain values so the
 /// revision can be produced without a UIKit trait environment.
 nonisolated struct TimelineTypographySnapshot: Equatable {
@@ -51,6 +98,8 @@ nonisolated struct TimelineTypographySnapshot: Equatable {
     /// 0 for left-to-right, 1 for right-to-left. Markdown block layout caches
     /// are direction-specific.
     var layoutDirection: Int
+    /// Resolved official Code-page roles. `nil` = the Chat scheme, unchanged.
+    var codeMarkdownRoles: CodePageMarkdownRoles? = nil
 
     var revision: Int {
         var hasher = TimelineStableHasher()
@@ -67,6 +116,20 @@ nonisolated struct TimelineTypographySnapshot: Equatable {
         hasher.combine(boldText)
         hasher.combine(dynamicType)
         hasher.combine(layoutDirection)
+        if let roles = codeMarkdownRoles {
+            hasher.combine(true)
+            for size in roles.headingSizes { hasher.combine(size) }
+            for height in roles.headingLineHeights { hasher.combine(height) }
+            hasher.combine(roles.headingTopSpacingMultiplier)
+            hasher.combine(roles.headingBottomSpacingMultiplier)
+            hasher.combine(roles.bodyLineSpacing)
+            hasher.combine(roles.inlineCodeSize)
+            hasher.combine(roles.inlineCodeLineSpacing)
+            hasher.combine(roles.listIndent)
+            hasher.combine(roles.listSpacing)
+        } else {
+            hasher.combine(false)
+        }
         return hasher.revision
     }
 }

@@ -42,12 +42,25 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
         var documentKey = ""
     }
 
+    /// The adapter's snapshot is the unscaled official Code scale; this leaf
+    /// applies the reader's Dynamic Type setting with the same shared factory
+    /// `CodeMessageHeightMeasurer` uses on its `UITraitCollection`. SwiftUI's
+    /// `dynamicTypeSize` is mapped to the equivalent UIKit category — the two
+    /// sides must resolve the same category or a row would resize after the
+    /// first fit.
     private var snapshot: TimelineTypographySnapshot {
-        if let typography { return typography }
-        return TimelineChatContentAdapter.typography(
-            dynamicType: String(describing: dynamicTypeSize),
-            layoutDirection: layoutDirection == .rightToLeft ? 1 : 0,
-            boldText: legibilityWeight == .bold)
+        let base: TimelineTypographySnapshot
+        if let typography {
+            base = typography
+        } else {
+            base = TimelineChatContentAdapter.typography(
+                dynamicType: String(describing: dynamicTypeSize),
+                layoutDirection: layoutDirection == .rightToLeft ? 1 : 0,
+                boldText: legibilityWeight == .bold,
+                scale: CodePageTheme.markdownScale)
+        }
+        return base.resolvedForCodePage(
+            category: dynamicTypeSize.contentSizeCategory)
     }
 
     private func document(in coordinator: Coordinator) -> AssistantMarkdownDocument? {
@@ -185,10 +198,16 @@ extension AssistantMarkdownDocument {
     /// theme links use the body colour, and inline code is the only blue.
     /// Colours never change a height, so the measured and drawn documents
     /// stay identical.
+    ///
+    /// [E] R19 `typography-inline.md` §1.2/§12 — the target build's headings
+    /// are Anthropic Sans at weight 550, not the 2026-03 Serif face; this
+    /// pass no longer rewrites heading fonts.
     func applyingCodePageTextColors() -> AssistantMarkdownDocument {
         AssistantMarkdownDocument(blocks: Self.styledBlocks(blocks),
                                   blockGroups: blockGroups,
-                                  plainTextLength: plainTextLength)
+                                  plainTextLength: plainTextLength,
+                                  blockSpacing: blockSpacing,
+                                  codeRoles: codeRoles)
     }
 
     private static func styledBlocks(
@@ -198,9 +217,7 @@ extension AssistantMarkdownDocument {
             switch block {
             case .text(let text):
                 return .text(AssistantTextBlock(
-                    attributed: Self.recolored(
-                        text.attributed,
-                        serif: text.headingLevel != nil),
+                    attributed: Self.recolored(text.attributed),
                     headingLevel: text.headingLevel))
             case .list(let list):
                 let items = list.items.map {
@@ -216,13 +233,17 @@ extension AssistantMarkdownDocument {
                     itemSpacing: list.itemSpacing,
                     innerSpacing: list.innerSpacing,
                     bodySize: list.bodySize,
-                    markerColor: list.markerColor))
+                    // The bullet and ordered label are drawn outside the
+                    // attributed text, so they need the same body ink the
+                    // runs receive below.
+                    markerColor: CodePageTheme.markdownTextUIColor))
             case .quote(let quote):
                 return .quote(AssistantQuoteBlock(
                     blocks: styledBlocks(quote.blocks),
                     inset: quote.inset,
                     barWidth: quote.barWidth,
-                    innerSpacing: quote.innerSpacing))
+                    innerSpacing: quote.innerSpacing,
+                    barColor: quote.barColor))
             case .table(let table):
                 return .table(AssistantTableBlock(
                     rows: table.rows.map { row in
@@ -232,31 +253,22 @@ extension AssistantMarkdownDocument {
                     rowHeights: table.rowHeights,
                     cellPaddingHorizontal: table.cellPaddingHorizontal,
                     cellPaddingVertical: table.cellPaddingVertical,
-                    cornerRadius: table.cornerRadius))
+                    cornerRadius: table.cornerRadius,
+                    headerFillColor: table.headerFillColor,
+                    borderColor: table.borderColor))
             default:
                 return block
             }
         }
     }
 
-    private static func recolored(_ attributed: NSAttributedString,
-                                  serif: Bool = false) -> NSAttributedString {
+    private static func recolored(_ attributed: NSAttributedString) -> NSAttributedString {
         let output = NSMutableAttributedString(attributedString: attributed)
         let full = NSRange(location: 0, length: output.length)
         output.enumerateAttribute(.font, in: full) { value, range, _ in
             let font = value as? UIFont
             let isMono = font?.fontDescriptor.symbolicTraits
                 .contains(.traitMonoSpace) ?? false
-            // The official Code headings are serif (the reference crop's
-            // "Changes:" heading); the body and inline code stay sans/mono.
-            if serif, !isMono, let font,
-               !font.fontName.hasPrefix("AnthropicSerif"),
-               let descriptor = font.fontDescriptor.withDesign(.serif) {
-                output.addAttribute(
-                    .font,
-                    value: UIFont(descriptor: descriptor, size: font.pointSize),
-                    range: range)
-            }
             output.addAttribute(
                 .foregroundColor,
                 value: isMono ? CodePageTheme.inlineCodeTextUIColor
@@ -264,6 +276,35 @@ extension AssistantMarkdownDocument {
                 range: range)
         }
         return output
+    }
+}
+
+nonisolated extension DynamicTypeSize {
+    /// SwiftUI's size ladder → the UIKit category the measurer reads.
+    ///
+    /// `CodeMarkdownTextLeaf` scales from this category and
+    /// `CodeMessageHeightMeasurer` scales from
+    /// `UITraitCollection.preferredContentSizeCategory`; both must name the
+    /// same step of the ladder.
+    var contentSizeCategory: UIContentSizeCategory {
+        switch self {
+        case .xSmall: return .extraSmall
+        case .small: return .small
+        case .medium: return .medium
+        case .large: return .large
+        case .xLarge: return .extraLarge
+        case .xxLarge: return .extraExtraLarge
+        case .xxxLarge: return .extraExtraExtraLarge
+        case .accessibility1: return .accessibilityMedium
+        case .accessibility2: return .accessibilityLarge
+        case .accessibility3: return .accessibilityExtraLarge
+        case .accessibility4: return .accessibilityExtraExtraLarge
+        case .accessibility5: return .accessibilityExtraExtraExtraLarge
+        // SwiftUI exposes the reverse mapping (`DynamicTypeSize(_:
+        // UIContentSizeCategory)`) but not this direction; future ladder steps
+        // fall back to the standard body size.
+        @unknown default: return .large
+        }
     }
 }
 #endif

@@ -35,6 +35,7 @@ struct SessionTurnActionsRow: View {
     let copyText: String
     let timestampText: String
     @State private var copied = false
+    @State private var copyFeedback = 0
 
     /// The row's laid-out height: the action line plus its bottom gap. The
     /// TextKit measurement uses this exact number instead of fitting the
@@ -53,6 +54,7 @@ struct SessionTurnActionsRow: View {
             button(ChatIcon.copy, x: -0.67, y: 5.17, label: String(localized: "复制回复"), showsConfirmation: copied) {
                 UIPasteboard.general.string = copyText
                 copied = true
+                copyFeedback += 1
             }
             button(ChatIcon.thumbUp, x: 24.67, y: 5.17, label: String(localized: "赞")) {}
             button(ChatIcon.thumbDown, x: 50, y: 5.17, label: String(localized: "踩")) {}
@@ -75,6 +77,9 @@ struct SessionTurnActionsRow: View {
         // gaps are equal by construction rather than by a hand-matched value.
         .padding(.bottom, ChatMetrics.actionRowBottomGap)
         .disabled(copyText.isEmpty)
+        // [E] Official copy feedback is `.selection`
+        // (EVIDENCE/round19/motion.md §P2-9).
+        .sensoryFeedback(.selection, trigger: copyFeedback)
         .accessibilityIdentifier("chat.turn.actions")
         .task(id: copied) {
             guard copied else { return }

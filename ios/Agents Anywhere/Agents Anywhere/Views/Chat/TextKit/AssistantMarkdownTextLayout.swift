@@ -206,12 +206,49 @@ enum AssistantMarkdownTextLayout {
         // [E] The Code page's official Markdown renderer uses one block gap
         // (`blockSpacing = 16`, 0x10170a9c8). AA's Chat path keeps its
         // snapshot boundary and collapsed margins.
-        if let blockSpacing = document.blockSpacing { return blockSpacing }
+        if let blockSpacing = document.blockSpacing {
+            if let roles = document.codeRoles,
+               let headingGap = headingGap(
+                    after: document.blocks[index],
+                    before: document.blocks[index + 1],
+                    roles: roles) {
+                return headingGap
+            }
+            return blockSpacing
+        }
         if document.blockGroups[index] != document.blockGroups[index + 1] {
             return snapshotSpacing
         }
         return spacing(after: document.blocks[index],
                        before: document.blocks[index + 1])
+    }
+
+    /// Heading spacing for the Code page, expressed as the gap between two
+    /// top-level blocks so the renderer's stack and this measurement share one
+    /// number (a paragraph-style `paragraphSpacingBefore/After` inside a
+    /// single-block text view would be outside the stack's control).
+    ///
+    /// Evidence: `EVIDENCE/round19/typography-inline.md` §1.2 — before =
+    /// size × 0.4 (9.6 / 8.0 / 6.8), after = size × 0.6 (14.4 / 12.0 / 10.2).
+    /// TextKit's paragraph spacing applies the previous paragraph's after and
+    /// the next paragraph's before, so a heading adjacent to another heading
+    /// adds both.
+    private static func headingGap(after block: AssistantMarkdownBlock,
+                                   before next: AssistantMarkdownBlock,
+                                   roles: CodePageMarkdownRoles) -> CGFloat? {
+        let bottom = headingLevel(of: block).map {
+            roles.headingSize(for: $0) * roles.headingBottomSpacingMultiplier
+        }
+        let top = headingLevel(of: next).map {
+            roles.headingSize(for: $0) * roles.headingTopSpacingMultiplier
+        }
+        guard bottom != nil || top != nil else { return nil }
+        return (bottom ?? 0) + (top ?? 0)
+    }
+
+    private static func headingLevel(of block: AssistantMarkdownBlock) -> Int? {
+        guard case .text(let text) = block else { return nil }
+        return text.headingLevel
     }
 
     /// Sum of the block heights plus the same spacing the cell stack uses.
@@ -247,12 +284,41 @@ final class AssistantMarkdownBlockTextView: UITextView {
         isSelectable = false
         isUserInteractionEnabled = false
         backgroundColor = .clear
+        isOpaque = false
+        contentMode = .redraw
         textContainerInset = .zero
         textContainer.lineFragmentPadding = 0
         textContainer.widthTracksTextView = true
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// Paints the official inline-code chips *under* the glyphs. The chip is a
+    /// pure decoration of the attributed run
+    /// (`EVIDENCE/round19/typography-inline.md` §3): it adds no attribute that
+    /// TextKit lays out, so this drawing pass cannot change the height that
+    /// `AssistantMarkdownTextLayout.height(of:)` reports.
+    override func draw(_ rect: CGRect) {
+        // The same view class draws fenced-code bodies (no chip marker); the
+        // marker scan keeps that path from paying for a chip layout pass.
+        if let attributedText, let manager = textLayoutManager,
+           AssistantInlineCodeChipRenderer.containsChip(attributedText) {
+            AssistantInlineCodeChipRenderer.drawChips(
+                in: attributedText,
+                layoutManager: manager,
+                origin: CGPoint(x: textContainerInset.left,
+                                y: textContainerInset.top),
+                traitCollection: traitCollection)
+        }
+        super.draw(rect)
+    }
+
+    override func traitCollectionDidChange(_ previous: UITraitCollection?) {
+        super.traitCollectionDidChange(previous)
+        if traitCollection.hasDifferentColorAppearance(comparedTo: previous) {
+            setNeedsDisplay()
+        }
+    }
 
     override var intrinsicContentSize: CGSize {
         guard bounds.width > 0, let attributedText, attributedText.length > 0 else {

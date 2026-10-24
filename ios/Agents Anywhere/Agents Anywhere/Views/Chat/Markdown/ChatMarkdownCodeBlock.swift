@@ -64,11 +64,11 @@ struct ChatMarkdownCodeBlock<Code: View>: View {
                 UIPasteboard.general.string = code
                 copied = true
                 copyCount += 1
-                // Copy feedback is haptic as well as visual, matching the card
-                // this chrome comes from.
-                UINotificationFeedbackGenerator().notificationOccurred(.success)
             }
             .accessibilityIdentifier("markdown.copyCode")
+            // [E] Official copy is `.selection` via `AnimatingHapticButton`
+            // (EVIDENCE/round19/motion.md §P2-8).
+            .sensoryFeedback(.selection, trigger: copyCount)
             .task(id: copyCount) {
                 guard copyCount > 0 else { return }
                 do { try await Task.sleep(for: .seconds(2)); copied = false } catch {}

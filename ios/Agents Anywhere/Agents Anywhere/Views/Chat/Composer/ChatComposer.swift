@@ -34,6 +34,7 @@ struct ChatComposer: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var glass
+    @State private var sendFeedback = 0
     @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.default.rawValue
     private var accent: AppAccent { AppAccent.resolve(accentValue) }
 
@@ -62,7 +63,14 @@ struct ChatComposer: View {
                         NativeComposerEditor(draft: draft, controller: editor, maximumHeight: maximumEditorHeight, onCommandSend: onSend)
                     }
 
-                    Button(action: accentAction) {
+                    Button {
+                        // [E] The official send key is an `AnimatingHapticButton`
+                        // fired with `.selection` (EVIDENCE/round19/motion.md
+                        // §P2-10). Only the send/queue shapes are documented;
+                        // the stop shape stays silent.
+                        if affordance.shape != .stop { sendFeedback += 1 }
+                        accentAction()
+                    } label: {
                         AppSymbol(accentSymbol, size: accentSymbolSize)
                             .contentTransition(.symbolEffect(.replace))
                             .foregroundStyle(AppTheme.accentForeground(accent, colorScheme))
@@ -73,6 +81,7 @@ struct ChatComposer: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(isBusy || !sendEnabled)
+                    .sensoryFeedback(.selection, trigger: sendFeedback)
                     .accessibilityLabel(accentLabel)
                     .accessibilityHint(draft.isComposing ? String(localized: "请先确认输入法候选文字") : "")
                     .accessibilityIdentifier(showsQueueSend ? "chat.composer.queueSend" : "chat.composer.send")

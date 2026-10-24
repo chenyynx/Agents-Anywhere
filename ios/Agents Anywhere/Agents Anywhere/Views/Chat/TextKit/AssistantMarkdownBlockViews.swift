@@ -345,6 +345,7 @@ final class AssistantCodeBlockView: UIView {
     private let copyIcon = UIImageView()
     private let expandIcon = UIImageView()
     private var highlightTask: Task<Void, Never>?
+    private var copyResetWorkItem: DispatchWorkItem?
 
     init(codeBlock: AssistantCodeBlock, width: CGFloat, displayScale: CGFloat) {
         self.codeBlock = codeBlock
@@ -380,12 +381,25 @@ final class AssistantCodeBlockView: UIView {
         languageLabel.textColor = codeBlock.titleColor
             ?? ChatTextUIColors.codeHeaderLabel
         languageLabel.lineBreakMode = .byTruncatingTail
-        languageLabel.text = (codeBlock.language?.isEmpty == false
-            ? codeBlock.language! : "code").lowercased()
+        // [E] The title is the fence info string **as written** (no
+        // lowercasing); a fence with no language shows the localised "Code"
+        // (R19 code-card-highlighting.md).
+        languageLabel.text = codeBlock.language?.isEmpty == false
+            ? codeBlock.language
+            : String(localized: "代码")
         header.addSubview(languageLabel)
 
         configureIcon(copyIcon, symbol: "document.on.document")
         configureIcon(expandIcon, symbol: "arrow.up.left.and.arrow.down.right")
+        // The header copy control must be tappable. It used to be a decorative
+        // image (`isUserInteractionEnabled = false`) with no gesture, so the
+        // Code card had no working copy affordance.
+        copyIcon.isUserInteractionEnabled = true
+        copyIcon.addGestureRecognizer(
+            UITapGestureRecognizer(target: self, action: #selector(copyCode)))
+        copyIcon.isAccessibilityElement = true
+        copyIcon.accessibilityTraits = .button
+        copyIcon.accessibilityLabel = String(localized: "复制代码")
         header.addSubview(copyIcon)
         header.addSubview(expandIcon)
 
@@ -431,48 +445,42 @@ final class AssistantCodeBlockView: UIView {
                 at: 0, effectiveRange: nil) as? [NSAttributedString.Key: Any] else {
             return base
         }
-        let baseFont = baseAttributes[.font] as? UIFont
         let result = NSMutableAttributedString()
         for token in tokens {
             var attributes = baseAttributes
             if let color = color(for: token.type) {
                 attributes[.foregroundColor] = color
             }
-            if token.type == .keyword || token.type == .literal
-                || token.type == .boolean, let baseFont {
-                // Keep the bundled variable mono's family when the Code page
-                // uses JetBrains Mono; Chat's system mono keeps its semibold.
-                attributes[.font] = baseFont.fontName.hasPrefix("JetBrains")
-                    ? MarkdownFontFactory.weighted(baseFont, weight: 600)
-                    : UIFont.monospacedSystemFont(
-                        ofSize: baseFont.pointSize, weight: .semibold)
-            }
+            // [E] The official tokenizer adds only a foreground colour per
+            // token: no bold/italic font modifiers at all
+            // (R19 code-card-highlighting.md).
             result.append(NSAttributedString(
                 string: token.content, attributes: attributes))
         }
         return result
     }
 
+    /// The official highlight.js theme mapping (R19 code-card-highlighting.md,
+    /// switch table `0x104230070`). A token that is not listed keeps the base
+    /// `#383A42` / `#ABB2BF`.
     private static func color(
         for type: StructuredText.HighlighterTheme.TokenType
     ) -> UIColor? {
         switch type {
-        case .property, .variable:
-            return ChatTextUIColors.synKey
+        case .property, .variable, .number:
+            return CodePageTheme.uiColor(CodePageTheme.syntaxOrange)
         case .string, .char, .regex:
-            return ChatTextUIColors.synString
+            return CodePageTheme.uiColor(CodePageTheme.syntaxGreen)
         case .comment, .blockComment, .docComment:
-            return ChatTextUIColors.synComment
-        case .punctuation, .symbol:
-            return ChatTextUIColors.synPunct
-        case .keyword, .literal, .boolean:
-            return ChatTextUIColors.synKeyword
-        case .number:
-            return ChatTextUIColors.synNumber
+            return CodePageTheme.uiColor(CodePageTheme.syntaxComment)
+        case .keyword:
+            return CodePageTheme.uiColor(CodePageTheme.syntaxKeyword)
+        case .literal, .boolean:
+            return CodePageTheme.uiColor(CodePageTheme.syntaxCyan)
         case .className:
-            return ChatTextUIColors.synType
-        case .function, .functionName:
-            return ChatTextUIColors.synFunction
+            return CodePageTheme.uiColor(CodePageTheme.syntaxYellow)
+        case .punctuation, .symbol, .function, .functionName:
+            return nil
         default:
             return nil
         }
@@ -487,6 +495,36 @@ final class AssistantCodeBlockView: UIView {
         view.contentMode = .scaleAspectFit
         view.isUserInteractionEnabled = false
     }
+
+    /// Official `AnimatingHapticButton` copy control: writes the fenced code
+    /// and fires the `.selection` feedback (`EVIDENCE/round19/motion.md` §P2).
+    @objc private func copyCode() {
+        guard codeBlock.code.length > 0 else { return }
+        UIPasteboard.general.string = codeBlock.code.string
+        UISelectionFeedbackGenerator().selectionChanged()
+
+        // [E] The official control swaps `anthropicon.copy` for
+        // `anthropicon.check`; the assets are not extracted yet, so the SF
+        // glyphs stand in. The reset duration is UNKNOWN; AA keeps the 2 s
+        // confirmation its Chat card already uses ([I]).
+        copyIcon.image = iconImage(symbol: "check", fallback: "checkmark")
+        copyResetWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.copyIcon.image = self.iconImage(
+                symbol: "document.on.document", fallback: "document.on.document")
+        }
+        copyResetWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: item)
+    }
+
+    private func iconImage(symbol: String, fallback: String) -> UIImage? {
+        let asset = AppSymbolAssets.names[symbol].flatMap { UIImage(named: $0) }
+        return (asset ?? UIImage(systemName: fallback))?
+            .withRenderingMode(.alwaysTemplate)
+    }
+
+    deinit { copyResetWorkItem?.cancel() }
 
     override func layoutSubviews() {
         super.layoutSubviews()
@@ -503,16 +541,18 @@ final class AssistantCodeBlockView: UIView {
                                width: width, height: dividerHeight)
         scrollView.frame = CGRect(x: 0, y: bodyY, width: width, height: bodyHeight)
 
-        // [E] `codeCard.headerInset` 16.0 (`0x100a500d4`, the header HStack's
-        // `.padding(16)`); the button metrics themselves are still the Chat
-        // renderer's until the official header controls are closed.
-        let iconSize = UIFontMetrics(forTextStyle: .body).scaledValue(for: 15)
+        // [E] R19 code-card-highlighting.md: header horizontal padding 16,
+        // HStack spacing 16, two 24 pt Anthropicon controls (copy → expand),
+        // trailing inset 16.
+        let iconSize: CGFloat = 24
         let iconY = (codeBlock.headerHeight - iconSize) / 2
-        expandIcon.frame = CGRect(x: width - 16 - 22 - iconSize / 2,
+        let trailingInset: CGFloat = 16
+        let actionsSpacing: CGFloat = 16
+        expandIcon.frame = CGRect(x: width - trailingInset - iconSize,
                                   y: iconY, width: iconSize, height: iconSize)
-        copyIcon.frame = CGRect(x: width - 16 - 44 - 22 - iconSize / 2,
+        copyIcon.frame = CGRect(x: expandIcon.frame.minX - actionsSpacing - iconSize,
                                 y: iconY, width: iconSize, height: iconSize)
-        let labelWidth = max(0, width - 16 - 88 - 8 - 16)
+        let labelWidth = max(0, copyIcon.frame.minX - actionsSpacing - 16)
         languageLabel.frame = CGRect(x: 16, y: 0,
                                      width: labelWidth,
                                      height: codeBlock.headerHeight)
@@ -586,6 +626,198 @@ final class AssistantTableBlockView: UIView {
         return count
     }
     #endif
+}
+
+/// Draws the official inline-code chips behind their runs.
+///
+/// Evidence: `EVIDENCE/round19/typography-inline.md` §3 — radius 6.4,
+/// horizontal padding 4/side, fill grey 0.043 @5% (light) / white @7.5%
+/// (dark), stroke (0.118,0.118,0.114)@15% (light) /
+/// (0.882,0.878,0.851)@15% (dark), width 1/displayScale. The vertical extent
+/// comes from the run font's typographic bounds; the official vertical
+/// padding has no constant (§3, §10 #4), so the chip uses the minimal
+/// symmetric inset carried by the style (0 pt).
+///
+/// The chip is decoration only: none of these attributes changes the
+/// attributed string's line layout, so a chipped run keeps exactly the height
+/// `AssistantMarkdownTextLayout.height(of:)` measures.
+@MainActor
+enum AssistantInlineCodeChipRenderer {
+    static func containsChip(_ attributed: NSAttributedString) -> Bool {
+        guard attributed.length > 0 else { return false }
+        var found = false
+        attributed.enumerateAttribute(
+            .assistantInlineCodeChip,
+            in: NSRange(location: 0, length: attributed.length),
+            options: []) { value, _, stop in
+            if (value as? NSNumber)?.boolValue == true {
+                found = true
+                stop.pointee = true
+            }
+        }
+        return found
+    }
+
+    /// Text-view path: reuse the view's own TextKit 2 layout, so the chip
+    /// rectangles are the exact fragments the glyphs were drawn in.
+    static func drawChips(in attributed: NSAttributedString,
+                          layoutManager: NSTextLayoutManager,
+                          origin: CGPoint,
+                          traitCollection: UITraitCollection) {
+        guard attributed.length > 0,
+              let content = layoutManager.textContentManager else { return }
+        // The draw pass must see every fragment the text itself will draw; the
+        // view may still be waiting for a layout invalidation.
+        layoutManager.ensureLayout(for: layoutManager.documentRange)
+        let scale = traitCollection.displayScale > 0
+            ? traitCollection.displayScale : 1
+        let lineWidth = 1 / max(scale, 1)
+        for range in chipRanges(in: attributed) {
+            guard let font = attributed.attribute(
+                    .font, at: range.location, effectiveRange: nil) as? UIFont,
+                  let start = content.location(
+                    content.documentRange.location, offsetBy: range.location),
+                  let end = content.location(start, offsetBy: range.length),
+                  end.compare(start) != .orderedSame else { continue }
+            // The initializer is failable in the iOS 26 SDK; the annotation
+            // keeps the non-failable SDKs compiling too.
+            let textRange: NSTextRange? = NSTextRange(location: start, end: end)
+            guard let textRange else { continue }
+
+            let style = chipStyle(in: attributed, at: range.location,
+                                  traitCollection: traitCollection)
+            layoutManager.enumerateTextSegments(
+                in: textRange, type: .standard, options: []
+            ) { _, frame, _, _ in
+                drawChip(frame: frame.offsetBy(dx: origin.x, dy: origin.y),
+                         font: font, style: style, lineWidth: lineWidth)
+                return true
+            }
+        }
+    }
+
+    /// Table path: cells are drawn with `NSAttributedString.draw`, i.e. the
+    /// TextKit 1 line machinery, so the chip rectangles come from the same
+    /// `NSLayoutManager` line fragments. Mixing a TextKit 2 layout here could
+    /// put a chip on a different line than the text when a cell wraps.
+    static func drawChips(in attributed: NSAttributedString,
+                          width: CGFloat,
+                          origin: CGPoint,
+                          traitCollection: UITraitCollection) {
+        guard attributed.length > 0, width > 0 else { return }
+        let storage = NSTextStorage(attributedString: attributed)
+        let layoutManager = NSLayoutManager()
+        storage.addLayoutManager(layoutManager)
+        let container = NSTextContainer(
+            size: CGSize(width: width, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        layoutManager.addTextContainer(container)
+        layoutManager.ensureLayout(for: container)
+
+        let scale = traitCollection.displayScale > 0
+            ? traitCollection.displayScale : 1
+        let lineWidth = 1 / max(scale, 1)
+        for range in chipRanges(in: attributed) {
+            guard let font = attributed.attribute(
+                    .font, at: range.location, effectiveRange: nil) as? UIFont else {
+                continue
+            }
+            let style = chipStyle(in: attributed, at: range.location,
+                                  traitCollection: traitCollection)
+            let glyphRange = layoutManager.glyphRange(
+                forCharacterRange: range, actualCharacterRange: nil)
+            layoutManager.enumerateEnclosingRects(
+                forGlyphRange: glyphRange,
+                withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0),
+                in: container
+            ) { frame, _ in
+                drawChip(frame: frame.offsetBy(dx: origin.x, dy: origin.y),
+                         font: font, style: style, lineWidth: lineWidth)
+            }
+        }
+    }
+
+    private struct ChipStyle {
+        let fill: UIColor
+        let stroke: UIColor
+        let cornerRadius: CGFloat
+        let horizontalPadding: CGFloat
+        let verticalPadding: CGFloat
+    }
+
+    private static func chipStyle(in attributed: NSAttributedString,
+                                  at location: Int,
+                                  traitCollection: UITraitCollection) -> ChipStyle {
+        func number(_ key: NSAttributedString.Key, fallback: CGFloat) -> CGFloat {
+            guard let value = attributed.attribute(
+                    key, at: location, effectiveRange: nil) as? NSNumber else {
+                return fallback
+            }
+            return CGFloat(value.doubleValue)
+        }
+        let fill = (attributed.attribute(
+            .assistantInlineCodeChipFill, at: location,
+            effectiveRange: nil) as? UIColor)
+            ?? CodePageTheme.inlineCodeChipFillUIColor
+        let stroke = (attributed.attribute(
+            .assistantInlineCodeChipStroke, at: location,
+            effectiveRange: nil) as? UIColor)
+            ?? CodePageTheme.inlineCodeChipStrokeUIColor
+        return ChipStyle(
+            fill: fill.resolvedColor(with: traitCollection),
+            stroke: stroke.resolvedColor(with: traitCollection),
+            cornerRadius: number(.assistantInlineCodeChipCornerRadius,
+                                 fallback: CodePageTheme.inlineCodeChipCornerRadius),
+            horizontalPadding: number(.assistantInlineCodeChipHorizontalPadding,
+                                      fallback: CodePageTheme.inlineCodeChipHorizontalPadding),
+            verticalPadding: number(.assistantInlineCodeChipVerticalPadding,
+                                    fallback: CodePageTheme.inlineCodeChipVerticalPadding))
+    }
+
+    /// Maximal runs carrying the chip marker. Adjacent runs with different
+    /// colours/weights merge, so a bold inline-code run does not show a seam.
+    private static func chipRanges(in attributed: NSAttributedString) -> [NSRange] {
+        var ranges: [NSRange] = []
+        attributed.enumerateAttribute(
+            .assistantInlineCodeChip,
+            in: NSRange(location: 0, length: attributed.length),
+            options: []) { value, range, _ in
+            guard (value as? NSNumber)?.boolValue == true else { return }
+            if let last = ranges.last,
+               last.location + last.length == range.location {
+                ranges[ranges.count - 1].length += range.length
+            } else {
+                ranges.append(range)
+            }
+        }
+        return ranges
+    }
+
+    private static func drawChip(frame: CGRect,
+                                 font: UIFont,
+                                 style: ChipStyle,
+                                 lineWidth: CGFloat) {
+        guard frame.width > 0, frame.height > 0 else { return }
+        let glyphHeight = max(1, font.ascender - font.descender)
+        let height = min(frame.height, glyphHeight + style.verticalPadding * 2)
+        let rect = CGRect(
+            x: frame.minX - style.horizontalPadding,
+            y: frame.midY - height / 2,
+            width: frame.width + style.horizontalPadding * 2,
+            height: height)
+        guard rect.width > 0, rect.height > 0 else { return }
+        let radius = min(style.cornerRadius, rect.height / 2)
+        style.fill.setFill()
+        UIBezierPath(roundedRect: rect, cornerRadius: radius).fill()
+        let inset = lineWidth / 2
+        let strokeRect = rect.insetBy(dx: inset, dy: inset)
+        guard strokeRect.width > 0, strokeRect.height > 0 else { return }
+        style.stroke.setStroke()
+        let path = UIBezierPath(roundedRect: strokeRect,
+                                cornerRadius: max(0, radius - inset))
+        path.lineWidth = lineWidth
+        path.stroke()
+    }
 }
 
 /// Draws the header fill, row seams, cell text and the outer border in one
@@ -663,13 +895,21 @@ private final class AssistantTableSurfaceView: UIView {
 
         clipPath.addClip()
 
-        ChatTextUIColors.tableHeaderFill
-            .resolvedColor(with: traitCollection).setFill()
+        // [E] R19 `typography-inline.md` §5 — header fill white / #1A1A19,
+        // row seams and the outer border grey 0.043 @10% / white @10%, all
+        // hairlines. No zebra fill and no vertical column rules (EVIDENCE-
+        // negative in the official draw pass).
+        let headerFill = (table.headerFillColor
+            ?? ChatTextUIColors.tableHeaderFill)
+            .resolvedColor(with: traitCollection)
+        let lineColor = (table.borderColor ?? ChatTextUIColors.tableLine)
+            .resolvedColor(with: traitCollection)
+
+        headerFill.setFill()
         UIRectFill(CGRect(x: 0, y: 0, width: bounds.width,
                           height: table.rowHeights[0]))
 
-        ChatTextUIColors.tableLine
-            .resolvedColor(with: traitCollection).setFill()
+        lineColor.setFill()
         for row in 1..<table.rowHeights.count {
             // Centre the hairline on the row boundary, the official shape
             // (`rowTop[i] - lineWidth / 2`).
@@ -683,9 +923,17 @@ private final class AssistantTableSurfaceView: UIView {
                 guard string.length > 0 else { continue }
                 let cell = cellBounds(row: row, column: column)
                 guard cell.intersects(rect) else { continue }
+                let text = textRect(row: row, column: column)
                 UIGraphicsGetCurrentContext()?.saveGState()
                 UIRectClip(cell)
-                string.draw(with: textRect(row: row, column: column),
+                // Inline-code runs in a cell carry the same chip marker as the
+                // body; paint their chips behind the text before `draw`.
+                if AssistantInlineCodeChipRenderer.containsChip(string) {
+                    AssistantInlineCodeChipRenderer.drawChips(
+                        in: string, width: text.width, origin: text.origin,
+                        traitCollection: traitCollection)
+                }
+                string.draw(with: text,
                             options: [.usesLineFragmentOrigin, .usesFontLeading],
                             context: nil)
                 UIGraphicsGetCurrentContext()?.restoreGState()
@@ -696,8 +944,7 @@ private final class AssistantTableSurfaceView: UIView {
             roundedRect: bounds.insetBy(dx: line / 2, dy: line / 2),
             cornerRadius: max(0, radius - line / 2))
         border.lineWidth = line
-        ChatTextUIColors.tableLine
-            .resolvedColor(with: traitCollection).setStroke()
+        lineColor.setStroke()
         border.stroke()
     }
 

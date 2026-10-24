@@ -23,6 +23,9 @@ struct AssistantMarkdownDocument {
     /// snapshot gap. The Code document uses one uniform gap, as the official
     /// Markdown renderer does.
     var blockSpacing: CGFloat? = nil
+    /// The resolved official Code-page roles (heading line heights, inline-code
+    /// size, list indent). `nil` keeps the Chat scheme unchanged.
+    var codeRoles: CodePageMarkdownRoles? = nil
 
     /// Recursive kind census. The gate asserts the fixture really produced the
     /// structures it claims to exercise, not just a paragraph that happened to
@@ -270,11 +273,29 @@ struct MarkdownFontStyle {
     var monoName: String? = nil
     var bodyWeight: CGFloat = 400
     /// The Chat path keeps its semibold emphasis; the Code page overrides
-    /// these with the official preset weights (bold 550, heading 400).
+    /// these with the official preset weights (bold 550, heading 550 —
+    /// `EVIDENCE/round19/typography-inline.md` §1.2/§8).
     var boldWeight: CGFloat = 600
     var headingWeight: CGFloat = 600
 
     static let system = MarkdownFontStyle()
+}
+
+/// The official Code page's inline-code chip. The values travel as attributes
+/// on the attributed string, so the drawing path never looks at a global.
+///
+/// Evidence: `EVIDENCE/round19/typography-inline.md` §3 — radius 6.4,
+/// horizontal padding 4/side, light fill grey 0.043 @5% / dark white @7.5%,
+/// light stroke (0.118,0.118,0.114) @15% / dark (0.882,0.878,0.851) @15%,
+/// stroke 1/displayScale. The vertical padding has no official constant
+/// (§3, §10 UNKNOWN): the chip uses the font's typographic bounds, i.e. a
+/// symmetric 0 pt inset.
+struct AssistantInlineCodeChipStyle {
+    var cornerRadius: CGFloat
+    var horizontalPadding: CGFloat
+    var verticalPadding: CGFloat = 0
+    var fillColor: UIColor
+    var strokeColor: UIColor
 }
 
 /// The code card's chrome. Defaults are the Chat card; the Code page passes
@@ -303,6 +324,17 @@ struct AssistantCodeCardStyle {
     /// The official Code Markdown block gap (16 pt). `nil` keeps AA's Chat
     /// collapsed margins and 12 pt snapshot boundary.
     var markdownBlockSpacing: CGFloat? = nil
+    /// Official inline-code chip. `nil` keeps Chat inline code as coloured
+    /// mono text with no chip.
+    var inlineCodeChip: AssistantInlineCodeChipStyle? = nil
+    /// Official table metrics: 12 pt horizontal / 8 pt vertical padding,
+    /// header fill and border/row-line colours
+    /// (`EVIDENCE/round19/typography-inline.md` §5). `nil` keeps the Chat
+    /// table values.
+    var tableCellPaddingHorizontal: CGFloat? = nil
+    var tableCellPaddingVertical: CGFloat? = nil
+    var tableHeaderFillColor: UIColor? = nil
+    var tableBorderColor: UIColor? = nil
 
     static let chat = AssistantCodeCardStyle()
 }
@@ -317,9 +349,50 @@ struct AssistantTableBlock {
     let cellPaddingHorizontal: CGFloat
     let cellPaddingVertical: CGFloat
     let cornerRadius: CGFloat
+    /// `nil` keeps the Chat table colours. The Code page passes the official
+    /// header fill (white / #1A1A19) and border ink (grey 0.043 @10% / white
+    /// @10%) — `EVIDENCE/round19/typography-inline.md` §5.
+    var headerFillColor: UIColor? = nil
+    var borderColor: UIColor? = nil
 
     var totalWidth: CGFloat { columnWidths.reduce(0, +) }
     var totalHeight: CGFloat { rowHeights.reduce(0, +) }
+}
+
+/// Marks a run that the Code page renders as an inline-code chip. The value is
+/// `true`; the chip geometry and dynamic colours travel with it so the drawing
+/// path reads the Code document, never the Chat path.
+///
+/// Evidence: `EVIDENCE/round19/typography-inline.md` §3 (the official chip is
+/// painted behind the run; the paragraph line height is untouched).
+nonisolated extension NSAttributedString.Key {
+    static let assistantInlineCodeChip =
+        NSAttributedString.Key(rawValue: "com.agentsanywhere.markdown.inlineCodeChip")
+    static let assistantInlineCodeChipFill =
+        NSAttributedString.Key(rawValue: "com.agentsanywhere.markdown.inlineCodeChipFill")
+    static let assistantInlineCodeChipStroke =
+        NSAttributedString.Key(rawValue: "com.agentsanywhere.markdown.inlineCodeChipStroke")
+    static let assistantInlineCodeChipCornerRadius =
+        NSAttributedString.Key(rawValue: "com.agentsanywhere.markdown.inlineCodeChipCornerRadius")
+    static let assistantInlineCodeChipHorizontalPadding =
+        NSAttributedString.Key(rawValue: "com.agentsanywhere.markdown.inlineCodeChipHorizontalPadding")
+    static let assistantInlineCodeChipVerticalPadding =
+        NSAttributedString.Key(rawValue: "com.agentsanywhere.markdown.inlineCodeChipVerticalPadding")
+}
+
+/// Official superscript / subscript style. The value is the baseline
+/// coefficient: `+0.35` for superscript, `−0.15` for subscript; the run's font
+/// is rebuilt at 0.75× (`EVIDENCE/round19/typography-inline.md` §8,
+/// `0x101703f80` / `0x1043a4a90`).
+///
+/// UNKNOWN: this target's Markdown parser emits no sup/sub signal — Apple's
+/// `InlinePresentationIntent` has no such case and no other attribute carries
+/// one — so no current source produces this key. It is applied whenever a
+/// producer tags a run, which keeps the official rule in one place instead of
+/// guessing a Markdown syntax.
+nonisolated enum AssistantBaselineShiftAttribute: AttributedStringKey {
+    typealias Value = Double
+    static let name = "com.agentsanywhere.markdown.baselineShift"
 }
 
 /// Builds the document from the same parse pipeline the product's Textual
@@ -375,7 +448,8 @@ enum AssistantMarkdownDocumentParser {
         return AssistantMarkdownDocument(
             blocks: parsedBlocks, blockGroups: blockGroups,
             plainTextLength: text.count,
-            blockSpacing: codeStyle.markdownBlockSpacing)
+            blockSpacing: codeStyle.markdownBlockSpacing,
+            codeRoles: typography.codeMarkdownRoles)
     }
 
     /// The exact pipeline `ChatMarkdownView` runs for a complete document.
@@ -527,7 +601,8 @@ enum AssistantMarkdownDocumentParser {
             return .divider
         case .table(let columns):
             return tableBlock(content, tableIntent: intent, columns: columns,
-                              foreground: foreground, typography: typography)
+                              foreground: foreground, typography: typography,
+                              codeStyle: codeStyle)
         default:
             // Thematic breaks, block HTML and mixed attachment runs are still
             // hosting-only. One unsupported block makes the whole row fall
@@ -615,6 +690,26 @@ enum AssistantMarkdownDocumentParser {
         guard !items.isEmpty else { return nil }
 
         let scale = typography.body / ChatMetrics.referenceBodySize
+        if let roles = typography.codeMarkdownRoles {
+            // [E] typography-inline.md §6 — `indentSize = 24.0` per level
+            // (Code theme `0x10170a99c`), item pitch = the paragraph-after
+            // 17 pt (`fontSize × 1.0`). The recursive item tree already adds
+            // one 24 pt indent per nesting level; the bullet glyph/ordered
+            // digit itself is UNKNOWN (§10 #1/#2), so the existing AA marker
+            // geometry stays.
+            let bulletSize = ChatMetrics.bulletSize * scale
+            let bulletCenterX = ChatMetrics.bulletCenterX * scale
+            return .list(AssistantListBlock(
+                items: items,
+                indent: roles.listIndent,
+                markerGap: max(0, roles.listIndent - (bulletCenterX + bulletSize / 2)),
+                bulletSize: bulletSize,
+                bulletCenterX: bulletCenterX,
+                itemSpacing: roles.listSpacing,
+                innerSpacing: roles.listSpacing,
+                bodySize: typography.body,
+                markerColor: foreground))
+        }
         return .list(AssistantListBlock(
             items: items,
             indent: ChatMetrics.listTextIndent * scale,
@@ -646,7 +741,10 @@ enum AssistantMarkdownDocumentParser {
             // `ChatBlockQuoteStyle` pads by `ChatMetrics.scaled(12)`.
             inset: 12 * scale,
             barWidth: codeStyle.quoteBarWidth,
-            innerSpacing: typography.paragraphSpacing * scale,
+            // The Code page already resolved the paragraph-after role
+            // (body size × 1.0); Chat keeps its ratio-times-body conversion.
+            innerSpacing: typography.codeMarkdownRoles?.listSpacing
+                ?? typography.paragraphSpacing * scale,
             barColor: codeStyle.quoteBarColor))
     }
 
@@ -700,7 +798,8 @@ enum AssistantMarkdownDocumentParser {
                                    tableIntent: PresentationIntent.IntentType,
                                    columns: [PresentationIntent.TableColumn],
                                    foreground: UIColor,
-                                   typography: TimelineTypographySnapshot) -> AssistantMarkdownBlock? {
+                                   typography: TimelineTypographySnapshot,
+                                   codeStyle: AssistantCodeCardStyle) -> AssistantMarkdownBlock? {
         let rowGroups = blockGroups(in: content, parent: tableIntent)
         guard !rowGroups.isEmpty else { return nil }
 
@@ -745,14 +844,20 @@ enum AssistantMarkdownDocumentParser {
                     column: cell.column,
                     columns: columns,
                     foreground: foreground,
-                    typography: typography) else { return nil }
+                    typography: typography,
+                    codeStyle: codeStyle) else { return nil }
                 cells[cell.column] = attributed
             }
             rows.append(cells)
         }
 
-        let paddingHorizontal = ChatMetrics.tableCellPadHorizontal
-        let paddingVertical = ChatMetrics.tableCellPadVertical
+        // [E] typography-inline.md §5 — the Code page's cell padding is
+        // 12 pt horizontal / 8 pt vertical (`0x1042cba20` / `0x1042cba18`);
+        // Chat keeps its own values.
+        let paddingHorizontal = codeStyle.tableCellPaddingHorizontal
+            ?? ChatMetrics.tableCellPadHorizontal
+        let paddingVertical = codeStyle.tableCellPaddingVertical
+            ?? ChatMetrics.tableCellPadVertical
         // Column widths and row heights depend only on the cell text, not on
         // the timeline's column width: the table scrolls sideways.
         let metrics = AssistantMarkdownTextLayout.tableMetrics(
@@ -765,7 +870,9 @@ enum AssistantMarkdownDocumentParser {
             rowHeights: metrics.heights,
             cellPaddingHorizontal: paddingHorizontal,
             cellPaddingVertical: paddingVertical,
-            cornerRadius: ChatMetrics.tableRadius))
+            cornerRadius: ChatMetrics.tableRadius,
+            headerFillColor: codeStyle.tableHeaderFillColor,
+            borderColor: codeStyle.tableBorderColor))
     }
 
     private static func tableCell(_ content: AttributedString,
@@ -773,18 +880,38 @@ enum AssistantMarkdownDocumentParser {
                                   column: Int,
                                   columns: [PresentationIntent.TableColumn],
                                   foreground: UIColor,
-                                  typography: TimelineTypographySnapshot) -> NSAttributedString? {
-        let font = UIFont.systemFont(ofSize: ChatMetrics.tableCellSize,
+                                  typography: TimelineTypographySnapshot,
+                                  codeStyle: AssistantCodeCardStyle) -> NSAttributedString? {
+        let roles = typography.codeMarkdownRoles
+        let font: UIFont
+        if roles != nil {
+            // [E] typography-inline.md §5 — the cell uses the body renderer:
+            // 17 pt / 400 (resolved by the snapshot), header included. The
+            // official draw pass writes only the header background; no font
+            // override exists (INFERENCE for "not bold", §5/§10 #5).
+            font = MarkdownFontFactory.font(
+                name: codeStyle.fonts.bodyName,
+                size: typography.body,
+                weight: codeStyle.fonts.bodyWeight)
+        } else {
+            font = UIFont.systemFont(ofSize: ChatMetrics.tableCellSize,
                                      weight: isHeader ? .semibold : .regular)
+        }
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 0
+        paragraph.lineSpacing = roles.map { max(0, $0.bodyLineSpacing) } ?? 0
         paragraph.paragraphSpacing = 0
+        paragraph.firstLineHeadIndent = 0
         paragraph.alignment = tableAlignment(column: column, columns: columns)
         paragraph.baseWritingDirection = typography.layoutDirection == 1
             ? .rightToLeft : .leftToRight
         guard let attributed = inlineAttributedString(
             content, baseFont: font, baseColor: foreground,
-            paragraph: paragraph, typography: typography) else { return nil }
+            paragraph: paragraph, typography: typography,
+            fonts: codeStyle.fonts,
+            baseFamily: codeStyle.fonts.bodyName,
+            italicFamily: codeStyle.fonts.bodyItalicName,
+            baseWeight: codeStyle.fonts.bodyWeight,
+            chipStyle: codeStyle.inlineCodeChip) else { return nil }
         trimBoundaryWhitespace(attributed)
         return attributed
     }
@@ -811,8 +938,12 @@ enum AssistantMarkdownDocumentParser {
 
         let fonts = codeStyle.fonts
         let isHeading = headingLevel != nil
+        let roles = typography.codeMarkdownRoles
         let bodySize = typography.body
         let headingSize = headingLevel.map { level -> CGFloat in
+            if let roles, roles.headingSize(for: level) > 0 {
+                return roles.headingSize(for: level)
+            }
             guard !typography.headings.isEmpty else { return bodySize }
             let index = min(max(level - 1, 0), typography.headings.count - 1)
             return typography.headings[index]
@@ -830,13 +961,38 @@ enum AssistantMarkdownDocumentParser {
             : (fonts.bodyItalicName ?? fonts.bodyName)
         let baseFont = MarkdownFontFactory.font(
             name: baseFamily, size: baseSize, weight: baseWeight)
-        let lineSpacing = headingLevel == nil
-            ? typography.lineSpacing / ChatMetrics.referenceBodySize * bodySize
-            : 0
+        // [E] typography-inline.md §2/§7 — the official attributed path calls
+        // `setMinimumLineHeight(resolvedLineHeight)` (27.2 / 31.2 / 26),
+        // scaled with the role's text style. AA keeps its existing
+        // lineSpacing shape (`lineHeight − the face's real natural line
+        // height`, clamped at 0, which is the same "minimum" semantics) so
+        // every line in the block shares one line box.
+        let lineSpacing: CGFloat
+        if let roles {
+            if let headingLevel {
+                lineSpacing = max(0, roles.headingLineHeight(for: headingLevel)
+                                     - baseFont.lineHeight)
+            } else {
+                lineSpacing = max(0, roles.bodyLineSpacing)
+            }
+        } else {
+            lineSpacing = headingLevel == nil
+                ? typography.lineSpacing / ChatMetrics.referenceBodySize * bodySize
+                : 0
+        }
 
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = max(0, lineSpacing)
+        // [E] typography-inline.md §2 — paragraph-after is
+        // `fontSize × 1.0 = 17 pt` (`CodePageTheme.markdownParagraphSpacing`,
+        // unchanged). AA's block model makes one text view per paragraph, so
+        // the visible gap between paragraphs is the Code document's 16 pt
+        // block spacing; the 17 pt role is carried by
+        // `CodePageMarkdownRoles.listSpacing` for list/quote pitch and by the
+        // estimate path. It is not added again inside the block.
         paragraph.paragraphSpacing = 0
+        // [E] typography-inline.md §2 — `setFirstLineHeadIndent: 0`.
+        paragraph.firstLineHeadIndent = 0
         paragraph.baseWritingDirection = typography.layoutDirection == 1
             ? .rightToLeft : .leftToRight
 
@@ -844,16 +1000,19 @@ enum AssistantMarkdownDocumentParser {
             content, baseFont: baseFont, baseColor: foreground,
             paragraph: paragraph, typography: typography, fonts: fonts,
             baseFamily: baseFamily, italicFamily: italicFamily,
-            baseWeight: baseWeight) else { return nil }
+            baseWeight: baseWeight, chipStyle: codeStyle.inlineCodeChip)
+        else { return nil }
         trimBoundaryWhitespace(output)
         return output.length > 0
             ? AssistantTextBlock(attributed: output, headingLevel: headingLevel)
             : nil
     }
 
-    /// Shared inline conversion for running text and table cells. `baseFont`
-    /// carries the block's own size, so inline code scales from it the way
-    /// Textual's `.fontScale` does instead of always using the body size.
+    /// Shared inline conversion for running text and table cells. On the Chat
+    /// path `baseFont` carries the block's own size, so inline code scales
+    /// from it the way Textual's `.fontScale` does. On the Code page the
+    /// official `monospaced` preset is an absolute 15 pt role, so inline code
+    /// keeps its own size inside headings and table cells too.
     private static func inlineAttributedString(_ content: AttributedString,
                                                baseFont: UIFont,
                                                baseColor: UIColor,
@@ -862,12 +1021,25 @@ enum AssistantMarkdownDocumentParser {
                                                fonts: MarkdownFontStyle = .system,
                                                baseFamily: String? = nil,
                                                italicFamily: String? = nil,
-                                               baseWeight: CGFloat = 400)
+                                               baseWeight: CGFloat = 400,
+                                               chipStyle: AssistantInlineCodeChipStyle? = nil)
         -> NSMutableAttributedString? {
-        let inlineCodeRatio = typography.body > 0
-            ? (typography.inlineCodePin.map { $0 / typography.body } ?? typography.inlineCodeRatio)
-            : typography.inlineCodeRatio
-        let inlineCodeSize = baseFont.pointSize * inlineCodeRatio
+        let roles = typography.codeMarkdownRoles
+        // [E] typography-inline.md §3 — the Code page's inline code is the
+        // `monospaced` preset (15 pt, `.footnote`), an absolute pin that does
+        // not shrink or grow with the surrounding role (a heading or a table
+        // cell still shows 15 pt mono). Chat keeps its ratio-of-the-base
+        // behaviour.
+        let inlineCodeSize: CGFloat
+        if let roles {
+            inlineCodeSize = roles.inlineCodeSize
+        } else {
+            let inlineCodeRatio = typography.body > 0
+                ? (typography.inlineCodePin.map { $0 / typography.body }
+                    ?? typography.inlineCodeRatio)
+                : typography.inlineCodeRatio
+            inlineCodeSize = baseFont.pointSize * inlineCodeRatio
+        }
 
         let output = NSMutableAttributedString()
         for run in content.runs {
@@ -890,15 +1062,22 @@ enum AssistantMarkdownDocumentParser {
             var isBold = false
             var underline: NSUnderlineStyle?
             var strikethrough: NSUnderlineStyle?
+            var baselineOffset: CGFloat?
 
             if let inline = run.inlinePresentationIntent {
                 if inline.contains(.code) {
                     isCode = true
+                    // [E] typography-inline.md §3/§8 — the official inline-code
+                    // preset is weight 400. Chat keeps AA's optional bold-ink
+                    // setting; the Code page follows the official preset.
+                    let codeWeight = roles != nil
+                        ? fonts.bodyWeight
+                        : (typography.inlineCodeBold
+                            ? fonts.boldWeight : fonts.bodyWeight)
                     if let mono = fonts.monoName {
                         font = MarkdownFontFactory.font(
                             name: mono, size: inlineCodeSize,
-                            weight: typography.inlineCodeBold
-                                ? fonts.boldWeight : fonts.bodyWeight)
+                            weight: codeWeight)
                     } else {
                         font = UIFont.monospacedSystemFont(ofSize: inlineCodeSize,
                             weight: typography.inlineCodeBold ? .semibold : .regular)
@@ -919,9 +1098,16 @@ enum AssistantMarkdownDocumentParser {
                     if isCode {
                         // No italic mono face is bundled; keep the upright mono.
                     } else if let italicFamily {
+                        // [E] typography-inline.md §8 — italic 400, bold-italic
+                        // 550. On the Code page the run's own weight (not the
+                        // heading's 550) decides the italic face; Chat keeps
+                        // its existing heading-relative weight.
+                        let italicWeight = roles != nil
+                            ? (isBold ? fonts.boldWeight : fonts.bodyWeight)
+                            : (isBold ? fonts.boldWeight : baseWeight)
                         font = MarkdownFontFactory.font(
                             name: italicFamily, size: font.pointSize,
-                            weight: isBold ? fonts.boldWeight : baseWeight)
+                            weight: italicWeight)
                     } else {
                         font = font.withItalic()
                     }
@@ -932,9 +1118,26 @@ enum AssistantMarkdownDocumentParser {
             }
             if let url = run.link {
                 color = ChatTextUIColors.link
-                if ChatLink.isWeb(url) {
+                // [E] typography-inline.md §4 — the official link delegate
+                // returns `NSUnderlineStyle = 1` for every link; the Code page
+                // follows that. Chat keeps its web-only underline. A marked
+                // link chip (an app link carried by an inline-code run) is
+                // drawn by the chip instead: the official delegate returns an
+                // empty dictionary for it, so it gets no underline.
+                if roles != nil {
+                    if !isCode { underline = .single }
+                } else if ChatLink.isWeb(url) {
                     underline = .single
                 }
+            }
+            // [E] typography-inline.md §8 — superscript/subscript: 0.75× size,
+            // baseline +0.35 / −0.15 × size. UNKNOWN: no Markdown intent in
+            // this pipeline emits the attribute (see the key's declaration).
+            if let shift = run.attributes[AssistantBaselineShiftAttribute.self],
+               shift != 0 {
+                let originalSize = font.pointSize
+                font = font.withSize(originalSize * 0.75)
+                baselineOffset = originalSize * CGFloat(shift)
             }
 
             var attributes: [NSAttributedString.Key: Any] = [
@@ -947,6 +1150,23 @@ enum AssistantMarkdownDocumentParser {
             }
             if let strikethrough {
                 attributes[.strikethroughStyle] = strikethrough.rawValue
+            }
+            if let baselineOffset {
+                attributes[.baselineOffset] = baselineOffset
+            }
+            if isCode, let chipStyle {
+                // The chip is painted from these values by
+                // `AssistantMarkdownBlockTextView`; none of them participates
+                // in TextKit layout, so render and measurement stay identical.
+                attributes[.assistantInlineCodeChip] = true
+                attributes[.assistantInlineCodeChipFill] = chipStyle.fillColor
+                attributes[.assistantInlineCodeChipStroke] = chipStyle.strokeColor
+                attributes[.assistantInlineCodeChipCornerRadius] =
+                    NSNumber(value: Double(chipStyle.cornerRadius))
+                attributes[.assistantInlineCodeChipHorizontalPadding] =
+                    NSNumber(value: Double(chipStyle.horizontalPadding))
+                attributes[.assistantInlineCodeChipVerticalPadding] =
+                    NSNumber(value: Double(chipStyle.verticalPadding))
             }
             output.append(NSAttributedString(string: text, attributes: attributes))
         }
@@ -1026,6 +1246,10 @@ enum ChatTextUIColors {
 }
 
 private extension UIFont {
+    func withSize(_ size: CGFloat) -> UIFont {
+        UIFont(descriptor: fontDescriptor, size: max(1, size))
+    }
+
     func withWeight(_ weight: UIFont.Weight) -> UIFont {
         let descriptor = fontDescriptor.addingAttributes([
             .traits: [UIFontDescriptor.TraitKey.weight: weight],

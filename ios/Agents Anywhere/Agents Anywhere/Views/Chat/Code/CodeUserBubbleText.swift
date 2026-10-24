@@ -17,6 +17,13 @@ struct CodeUserBubbleText: UIViewRepresentable {
     let color: Color
 
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    /// The measurer reads the same category from the cell's trait collection.
+    private var traits: UITraitCollection {
+        UITraitCollection(
+            preferredContentSizeCategory: dynamicTypeSize.contentSizeCategory)
+    }
 
     func makeUIView(context: Context) -> CodeUserBubbleTextView {
         let view = CodeUserBubbleTextView()
@@ -33,10 +40,12 @@ struct CodeUserBubbleText: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: CodeUserBubbleTextView, context: Context) {
+        let traits = traits
         let attributed = CodeUserBubbleTextMetrics.attributed(
-            text, color: UIColor(color))
+            text, traits: traits, color: UIColor(color))
         uiView.attributedText = attributed
-        uiView.userBubbleLineSpacing = CodeUserBubbleTextMetrics.lineSpacing()
+        uiView.userBubbleLineSpacing = CodeUserBubbleTextMetrics.lineSpacing(
+            traits: traits)
         uiView.invalidateIntrinsicContentSize()
     }
 
@@ -46,7 +55,8 @@ struct CodeUserBubbleText: UIViewRepresentable {
         let width = proposal.width ?? uiView.bounds.width
         guard width > 0, width.isFinite else { return nil }
         let height = CodeUserBubbleTextMetrics.height(
-            text: text, width: width, displayScale: max(displayScale, 1))
+            text: text, width: width, displayScale: max(displayScale, 1),
+            traits: traits)
         return CGSize(width: width, height: height)
     }
 }
@@ -71,9 +81,20 @@ enum CodeUserBubbleTextMetrics {
         return NSAttributedString(string: text, attributes: attributes)
     }
 
+    /// The official shape (CANONICAL/06-visuals-assets.md §1.4): the leading
+    /// is `scaledLineHeight − the resolved face's natural line height`, not a
+    /// separately scaled 5.95. At larger Dynamic Type steps the two differ,
+    /// and the bubble's height (which subtracts this trailing gap) would
+    /// drift from the markdown body's line box.
     static func lineSpacing(traits: UITraitCollection? = nil) -> CGFloat {
-        UIFontMetrics(forTextStyle: .body)
-            .scaledValue(for: CodePageTheme.userBubbleLineSpacing, compatibleWith: traits)
+        let metrics = UIFontMetrics(forTextStyle: .body)
+        let size = metrics.scaledValue(
+            for: CodePageTheme.markdownBodySize, compatibleWith: traits)
+        let lineHeight = metrics.scaledValue(
+            for: CodePageTheme.markdownLineHeight, compatibleWith: traits)
+        let font = MarkdownFontFactory.font(
+            name: CodePageTheme.sansFontName, size: size, weight: 400)
+        return max(0, lineHeight - font.lineHeight)
     }
 
     /// TextKit's usage height minus the trailing gap SwiftUI does not draw —

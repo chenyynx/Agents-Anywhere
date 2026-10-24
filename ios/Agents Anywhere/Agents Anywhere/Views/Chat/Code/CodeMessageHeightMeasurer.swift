@@ -33,8 +33,13 @@ enum CodeMessageHeightMeasurer {
                        typography: TimelineTypographySnapshot,
                        traits: UITraitCollection?,
                        measured: Bool) -> CGFloat {
+        // The renderer (`CodeMarkdownTextLeaf`) resolves the same roles from
+        // SwiftUI's `dynamicTypeSize`; both go through the one factory, so the
+        // stored height and the drawn row use identical scaled values.
+        let resolvedTypography = typography.resolvedForCodePage(
+            traits: traits ?? UITraitCollection.current)
         CodeRowHeightPlan.height(
-            rows: planRows(rows, width: width, typography: typography,
+            rows: planRows(rows, width: width, typography: resolvedTypography,
                            traits: traits, measured: measured),
             metrics: metrics(traits: traits))
     }

@@ -36,7 +36,7 @@ struct CodeUserBubbleText: UIViewRepresentable {
         let attributed = CodeUserBubbleTextMetrics.attributed(
             text, color: UIColor(color))
         uiView.attributedText = attributed
-        uiView.userBubbleLineSpacing = CodeUserBubbleTextMetrics.lineSpacing
+        uiView.userBubbleLineSpacing = CodeUserBubbleTextMetrics.lineSpacing()
         uiView.invalidateIntrinsicContentSize()
     }
 

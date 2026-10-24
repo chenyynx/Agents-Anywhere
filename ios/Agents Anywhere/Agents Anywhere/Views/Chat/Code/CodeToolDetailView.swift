@@ -146,8 +146,8 @@ struct CodeToolDetailView: View {
     /// §6.5).
     private var summaryRow: some View {
         HStack(alignment: .center, spacing: 10) {
-            Image(systemName: Self.icon(for: call.kind))
-                .font(.system(size: CodeToolDetailMetrics.detailIconSize))
+            AnthropiconView(name: CodeToolLabels.anthropicon(for: call.kind),
+                            size: .large)
                 .foregroundStyle(call.status == .failed ? Color.red : Color.secondary)
                 .frame(width: 20)
                 .accessibilityHidden(true)
@@ -194,8 +194,8 @@ struct CodeToolDetailView: View {
     private func followingRow(_ following: CodeToolCall) -> some View {
         let label = CodeToolLabels.label(for: [following], cwd: cwd)
         return HStack(spacing: 10) {
-            Image(systemName: Self.icon(for: following.kind))
-                .font(.system(size: CodeToolDetailMetrics.detailIconSize))
+            AnthropiconView(name: CodeToolLabels.anthropicon(for: following.kind),
+                            size: .large)
                 .foregroundStyle(.secondary)
                 .frame(width: 20)
                 .accessibilityHidden(true)
@@ -265,24 +265,6 @@ struct CodeToolDetailView: View {
         return json.isEmpty ? nil : json
     }
 
-    /// SF Symbols standing in for the official Anthropicon category icons
-    /// (`CANONICAL/04-tool-calls.md` §7.2; official assets are not
-    /// distributable, task sheet §6.5).
-    private static func icon(for kind: CodeToolKind) -> String {
-        switch kind {
-        case .read: return "eye"
-        case .edit: return "pencil"
-        case .write: return "doc"
-        case .bash: return "terminal"
-        case .search: return "magnifyingglass"
-        case .todo: return "checklist"
-        case .task: return "person.2"
-        case .plan: return "list.bullet.clipboard"
-        case .question: return "questionmark.bubble"
-        case .mcp: return "wrench.and.screwdriver"
-        case .other: return "wrench"
-        }
-    }
 }
 
 /// The row's `DiffIndicator` (`CANONICAL/04-tool-calls.md` §4.2/§6.2). The
@@ -377,11 +359,6 @@ private enum CodeToolDetailMetrics {
     static let sectionLabelFontSize: CGFloat = 13
     static let followingFontSize: CGFloat = 15
 
-    /// [E] Detail rows draw the same `.large` Anthropicon as the collapsed row
-    /// (`CollapsedToolTimelineRow` = `TimelineRow(IconFrame, …)`); the artwork
-    /// inside that 24 pt slot is at most 20 pt (`DATA/anthropicon-map.tsv`),
-    /// so the SF stand-in is drawn at 19 pt inside the 20 pt icon column.
-    static let detailIconSize: CGFloat = 19
 }
 
 // MARK: - Previews

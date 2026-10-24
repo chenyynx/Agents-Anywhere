@@ -496,7 +496,7 @@ final class AssistantCodeBlockView: UIView {
     }
 
     private func configureIcon(_ view: UIImageView, symbol: String) {
-        view.image = iconImage(symbol: symbol, fallback: symbol)
+        view.image = cardIcon(symbol: symbol, fallback: symbol)
         // [E] The official header controls inherit the header's
         // `.foregroundStyle` (#7B7974 light / #97958D dark,
         // EVIDENCE/round19/code-card-highlighting.md:70), which is the same
@@ -519,14 +519,13 @@ final class AssistantCodeBlockView: UIView {
         UISelectionFeedbackGenerator().selectionChanged()
 
         // [E] The official control swaps `anthropicon.copy` for
-        // `anthropicon.check`; the assets are not extracted yet, so the SF
-        // glyphs stand in. The reset duration is UNKNOWN; AA keeps the 2 s
-        // confirmation its Chat card already uses ([I]).
-        copyIcon.image = iconImage(symbol: "check", fallback: "checkmark")
+        // `anthropicon.check`. The reset duration is UNKNOWN; AA keeps the
+        // 2 s confirmation its Chat card already uses ([I]).
+        copyIcon.image = cardIcon(symbol: "check", fallback: "checkmark")
         copyResetWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            self.copyIcon.image = self.iconImage(
+            self.copyIcon.image = self.cardIcon(
                 symbol: "document.on.document", fallback: "document.on.document")
         }
         copyResetWorkItem = item
@@ -536,8 +535,55 @@ final class AssistantCodeBlockView: UIView {
     /// The official code-card controls are two 24 pt Anthropicons whose
     /// artwork is smaller than the control: at `.large`,
     /// `DATA/anthropicon-map.tsv` records copy 19×19 and expand 18×18. The card
-    /// draws the stand-in glyph at that optical size and keeps the 24 pt frame.
+    /// draws the glyph at that optical size and keeps the 24 pt frame.
     private static let iconGlyphSize: CGFloat = 19
+
+    /// The Code card draws the official Anthropicons; the Chat card keeps its
+    /// Lucide/SF palette (only the Code card passes a `titleColor`).
+    private var usesOfficialAnthropicons: Bool { codeBlock.titleColor != nil }
+
+    private func cardIcon(symbol: String, fallback: String) -> UIImage? {
+        if usesOfficialAnthropicons, let official = Self.officialCardIcon(symbol: symbol) {
+            return official
+        }
+        return iconImage(symbol: symbol, fallback: fallback)
+    }
+
+    /// Official card-control artwork at the `.large` preset: copy 19×19,
+    /// expand 18×18, check 17×12 (`DATA/anthropicon-map.tsv`). The vector
+    /// asset is rasterised into the artwork extent so the 24 pt control stays
+    /// the official size.
+    private static func officialCardIcon(symbol: String) -> UIImage? {
+        let asset: String
+        let extent: CGSize
+        switch symbol {
+        case "document.on.document":
+            asset = "anthropicon.copy"
+            extent = CGSize(width: 19, height: 19)
+        case "arrow.up.left.and.arrow.down.right":
+            asset = "anthropicon.expand"
+            extent = CGSize(width: 18, height: 18)
+        case "check":
+            asset = "anthropicon.check"
+            extent = CGSize(width: 17, height: 12)
+        default:
+            return nil
+        }
+        guard let image = UIImage(named: asset) else { return nil }
+        let format = UIGraphicsImageRendererFormat()
+        format.opaque = false
+        let rendered = UIGraphicsImageRenderer(size: extent, format: format).image { _ in
+            let ratio = min(extent.width / max(1, image.size.width),
+                            extent.height / max(1, image.size.height))
+            let drawSize = CGSize(width: image.size.width * ratio,
+                                  height: image.size.height * ratio)
+            image.draw(in: CGRect(x: (extent.width - drawSize.width) / 2,
+                                  y: (extent.height - drawSize.height) / 2,
+                                  width: drawSize.width,
+                                  height: drawSize.height))
+        }
+        return rendered.withRenderingMode(.alwaysTemplate)
+    }
 
     private func iconImage(symbol: String, fallback: String) -> UIImage? {
         // The legacy card uses AppSymbol's Lucide assets, not SF Symbols.

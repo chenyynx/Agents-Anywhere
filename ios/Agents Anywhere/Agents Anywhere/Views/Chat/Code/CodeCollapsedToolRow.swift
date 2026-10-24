@@ -17,37 +17,21 @@ import UIKit
 struct CodeCollapsedToolRow: View {
     let verb: String
     let target: String?
-    /// An SF Symbol name for the leading icon. Defaults to none because a
-    /// completed row in the official screenshot has no leading glyph; the
-    /// caller passes one for the states that show it (running / background
-    /// task, `04-tool-calls.md` §7.3).
+    /// An official Anthropicon asset name for the leading icon (see
+    /// `AnthropiconAssets`). Defaults to none because a completed row in the
+    /// official screenshot has no leading glyph; the caller passes one for
+    /// the states that show it (running / background task,
+    /// `04-tool-calls.md` §7.3).
     let icon: String?
     let diff: CodeDiffStat?
     let isRunning: Bool
     let action: () -> Void
 
-    /// [E] R19 `tool-row-status.md:79-80` — the collapsed row's icon is an
-    /// Anthropicon at `.large`: a 24 pt slot whose glyph does not scale with
-    /// Dynamic Type.
-    ///
-    /// The artwork inside that slot is smaller than the slot. At `.large`,
-    /// `DATA/anthropicon-map.tsv` records the drawn extents per icon (prompt
-    /// 20×15, eye 20×15, search 20×20, file 15×20 …), i.e. at most 20 pt.
-    /// SF Symbols fill their layout box: the `terminal` stand-in at the slot's
-    /// 24 pt draws 27.6×21.8 pt (measured on the device screenshot), so 17 pt
-    /// puts it at 19.6×15.4 - the official prompt mark. The label's line box
-    /// still provides the official 24 pt row height.
-    private let glyphSize: CGFloat = 17
-
-    /// The caret is `caretRight` in the official row, but the rendered mark is
-    /// far smaller than the `.large` icon-content extent (10×18): official
-    /// device screenshots (2026-10-25, @3x) measure the caret at **7.7×14.3
-    /// pt** in both the collapsed transcript row and the full-screen tool
-    /// list. `DATA/anthropicon-map.tsv` brackets that with the `small`/`medium`
-    /// artwork extents (8×13 / 8×15); the `IconFrame` size argument that would
-    /// explain the difference is still [U]. An SF chevron at 17 pt draws
-    /// 8.1×14.3 pt, so that is the stand-in size.
-    private let caretSize: CGFloat = 17
+    /// Both glyphs are the official Anthropicon artwork now (shipped from the
+    /// app bundle, see `AnthropiconAssets`): the tool icon at the `.large`
+    /// preset and the caret at `.medium`. The device-measured caret
+    /// (7.7×14.3 pt) matches the medium 8×15 artwork extent, not the large
+    /// 10×18 one, which is why the caret uses the smaller preset.
 
     @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
     private var lineHeight = CodePageTheme.toolRowLineHeight
@@ -72,11 +56,9 @@ struct CodeCollapsedToolRow: View {
         Button(action: action) {
             HStack(alignment: .center) {
                 if let icon {
-                    Image(systemName: icon)
-                        .font(.system(size: glyphSize, weight: CodePageTheme.toolRowFontWeight))
+                    AnthropiconView(name: icon, size: .large)
                         .foregroundStyle(CodePageTheme.toolRowSecondaryColor
                             .resolved(for: colorScheme))
-                        .accessibilityHidden(true)
                 }
 
                 labelText
@@ -92,17 +74,11 @@ struct CodeCollapsedToolRow: View {
                     CodeDiffIndicator(stat: diff)
                 }
 
-                // [E] The official caret is the `caretRight` Anthropicon,
-                // secondary, rendered at 7.7×14.3 pt (official device
-                // screenshots, see `caretSize`). The Anthropicon assets are
-                // not extracted yet (06-visuals-assets §4: pixel export
-                // blocked), so the SF chevron stands in at the same optical
-                // size.
-                Image(systemName: "chevron.right")
-                    .font(.system(size: caretSize, weight: CodePageTheme.toolRowFontWeight))
+                // Official `caretRight`, secondary, at the medium artwork
+                // extent (8×15 pt); the device screenshots measure 7.7×14.3.
+                AnthropiconView(name: "anthropicon.caretRight", size: .medium)
                     .foregroundStyle(CodePageTheme.toolRowSecondaryColor
                         .resolved(for: colorScheme))
-                    .accessibilityHidden(true)
             }
             // The official line box is 24 pt even though the 15 pt text is
             // shorter; `lineHeight` is the theme's scaled copy of that value.

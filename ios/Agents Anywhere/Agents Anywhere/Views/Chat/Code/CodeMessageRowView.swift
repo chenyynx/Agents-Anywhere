@@ -195,7 +195,7 @@ struct CodeMessageRowView: View {
                                     // row shows its category icon
                                     // (CANONICAL/04-tool-calls.md §4.1/§7.3).
                                     icon: label.isRunning
-                                        ? CodeToolLabels.icon(for: calls.first?.kind ?? .other)
+                                        ? CodeToolLabels.anthropicon(for: calls.first?.kind ?? .other)
                                         : nil,
                                     diff: label.diff,
                                     isRunning: label.isRunning) {
@@ -208,10 +208,8 @@ struct CodeMessageRowView: View {
     /// dropping the case would make the builder's `other` block render nothing.
     private func otherRow(_ type: String) -> some View {
         HStack(spacing: CodePageTheme.toolRowSpacing) {
-            Image(systemName: "square.dashed")
-                .font(.system(size: CodePageTheme.toolRowFontSize))
+            AnthropiconView(name: "anthropicon.tool", size: .medium)
                 .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
             Text(verbatim: type)
                 .font(.system(size: CodePageTheme.toolRowFontSize))
                 .foregroundStyle(.secondary)
@@ -358,19 +356,20 @@ nonisolated enum CodeToolLabels {
                                 isRunning: plan.isRunning)
     }
 
-    static func icon(for kind: CodeToolKind) -> String {
+    /// Official `category → Anthropicon` mapping
+    /// (`CANONICAL/04-tool-calls.md` §7.2; AskUserQuestion / MCP / unknown
+    /// fall into `other → tool`).
+    static func anthropicon(for kind: CodeToolKind) -> String {
         switch kind {
-        case .read: "eye"
-        case .edit: "pencil"
-        case .write: "doc"
-        case .bash: "terminal"
-        case .search: "magnifyingglass"
-        case .todo: "checklist"
-        case .task: "person.2"
-        case .plan: "list.bullet.clipboard"
-        case .question: "questionmark.bubble"
-        case .mcp: "wrench.and.screwdriver"
-        case .other: "wrench"
+        case .read: "anthropicon.eye"
+        case .edit: "anthropicon.edit"
+        case .write: "anthropicon.file"
+        case .bash: "anthropicon.prompt"
+        case .search: "anthropicon.search"
+        case .todo: "anthropicon.checklist"
+        case .task: "anthropicon.tasks"
+        case .plan: "anthropicon.checklist"
+        case .question, .mcp, .other: "anthropicon.tool"
         }
     }
 

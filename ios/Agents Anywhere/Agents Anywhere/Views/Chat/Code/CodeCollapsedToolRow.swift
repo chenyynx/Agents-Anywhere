@@ -25,8 +25,15 @@ struct CodeCollapsedToolRow: View {
     let isRunning: Bool
     let action: () -> Void
 
+    /// Icons are fixed-size glyphs, so the scaled value is used directly.
+    ///
+    /// The label must NOT use this number: `.custom(_:size:relativeTo:)`
+    /// already applies `UIFontMetrics` for `toolRowTextStyle`, so passing an
+    /// already-scaled size scales it twice. At accessibility3 that made the
+    /// row render 132 pt against the measurer's 88 pt (CI 478 code-profile
+    /// gate). The label passes the unscaled 15 pt base instead.
     @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
-    private var fontSize = CodePageTheme.toolRowFontSize
+    private var scaledIconSize = CodePageTheme.toolRowFontSize
 
     @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
     private var lineHeight = CodePageTheme.toolRowLineHeight
@@ -50,7 +57,7 @@ struct CodeCollapsedToolRow: View {
             HStack(alignment: .center) {
                 if let icon {
                     Image(systemName: icon)
-                        .font(.system(size: fontSize, weight: CodePageTheme.toolRowFontWeight))
+                        .font(.system(size: scaledIconSize, weight: CodePageTheme.toolRowFontWeight))
                         .foregroundStyle(.secondary)
                         .accessibilityHidden(true)
                 }
@@ -69,7 +76,7 @@ struct CodeCollapsedToolRow: View {
                 }
 
                 Image(systemName: "chevron.right")
-                    .font(.system(size: fontSize, weight: CodePageTheme.toolRowFontWeight))
+                    .font(.system(size: scaledIconSize, weight: CodePageTheme.toolRowFontWeight))
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
             }
@@ -90,16 +97,19 @@ struct CodeCollapsedToolRow: View {
     private var labelText: Text {
         guard let target, !target.isEmpty else {
             return Text(verb)
-                .font(.custom(CodePageTheme.sansFontName, size: fontSize,
+                .font(.custom(CodePageTheme.sansFontName,
+                              size: CodePageTheme.toolRowFontSize,
                               relativeTo: CodePageTheme.toolRowTextStyle))
                 .foregroundStyle(.secondary)
         }
         let verbRun = Text(verb + " ")
-            .font(.custom(CodePageTheme.sansFontName, size: fontSize,
+            .font(.custom(CodePageTheme.sansFontName,
+                          size: CodePageTheme.toolRowFontSize,
                           relativeTo: CodePageTheme.toolRowTextStyle))
             .foregroundStyle(.secondary)
         let targetRun = Text(target)
-            .font(.custom(CodePageTheme.monoFontName, size: fontSize,
+            .font(.custom(CodePageTheme.monoFontName,
+                          size: CodePageTheme.toolRowFontSize,
                           relativeTo: CodePageTheme.toolRowTextStyle))
             .foregroundStyle(.primary)
         return verbRun + targetRun
@@ -128,9 +138,6 @@ private struct CodeDiffIndicator: View {
     @Environment(\.colorScheme) private var colorScheme
 
     @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
-    private var fontSize = CodePageTheme.diffIndicatorFontSize
-
-    @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
     private var horizontalPadding = CodePageTheme.diffIndicatorHorizontalPadding
 
     @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
@@ -152,7 +159,10 @@ private struct CodeDiffIndicator: View {
                      ink: CodePageTheme.diffIndicatorRemoveText)
             }
         }
-        .font(.custom(CodePageTheme.monoFontName, size: fontSize,
+        // `.custom(relativeTo:)` scales this base size once; a `@ScaledMetric`
+        // size here would be scaled twice (see the row's label note).
+        .font(.custom(CodePageTheme.monoFontName,
+                      size: CodePageTheme.diffIndicatorFontSize,
                       relativeTo: CodePageTheme.toolRowTextStyle))
         .lineLimit(1)
         .fixedSize()

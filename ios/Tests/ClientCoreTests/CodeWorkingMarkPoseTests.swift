@@ -96,7 +96,7 @@ struct CodeWorkingMarkPoseTests {
     }
 
     @Test func theLiveTurnStopsAtTheLastUserMessage() {
-        let rows = [row(tool: "Bash", active: false),
+        let rows = [row(active: false, tool: "Bash"),
                     row(.user)]
         #expect(CodeWorkingMarkPose.body(rows: rows) == .think)
     }

@@ -238,6 +238,29 @@ struct AssistantCodeBlock {
     let headerHeight: CGFloat
     let contentPadding: CGFloat
     let cornerRadius: CGFloat
+    /// Optional card chrome. `nil` keeps the Chat palette; the Code leaf
+    /// supplies the official card values.
+    var fillColor: UIColor? = nil
+    var borderColor: UIColor? = nil
+    var titleColor: UIColor? = nil
+    var titleFontSize: CGFloat = 12
+    var titleWeight: UIFont.Weight = .medium
+}
+
+/// The code card's chrome. Defaults are the Chat card; the Code page passes
+/// the official values (44 pt header, 24 pt radius, white/#20201F fill).
+struct AssistantCodeCardStyle {
+    var headerHeight: CGFloat = 36
+    var contentPadding: CGFloat = 14
+    var cornerRadius: CGFloat = ChatMetrics.codeRadius
+    var fillColor: UIColor? = nil
+    var borderColor: UIColor? = nil
+    var titleColor: UIColor? = nil
+    var titleFontSize: CGFloat = 12
+    var titleWeight: UIFont.Weight = .medium
+    var textColor: UIColor? = nil
+
+    static let chat = AssistantCodeCardStyle()
 }
 
 /// A table with precomputed column widths and row heights. Both the view and
@@ -271,11 +294,13 @@ enum AssistantMarkdownDocumentParser {
     }
 
     static func convert(snapshot: MarkdownBlockSnapshot,
-                        typography: TimelineTypographySnapshot) -> ConvertedSnapshot? {
+                        typography: TimelineTypographySnapshot,
+                        codeStyle: AssistantCodeCardStyle = .chat) -> ConvertedSnapshot? {
         guard let parsed = parseTree(from: snapshot.content,
                                      parent: nil,
                                      foreground: .label,
-                                     typography: typography) else {
+                                     typography: typography,
+                                     codeStyle: codeStyle) else {
             return nil
         }
         return ConvertedSnapshot(id: snapshot.id, digest: snapshot.digest,
@@ -284,7 +309,8 @@ enum AssistantMarkdownDocumentParser {
 
     static func make(text: String,
                      resolvesFileReferences: Bool,
-                     typography: TimelineTypographySnapshot) -> AssistantMarkdownDocument? {
+                     typography: TimelineTypographySnapshot,
+                     codeStyle: AssistantCodeCardStyle = .chat) -> AssistantMarkdownDocument? {
         guard !text.isEmpty,
               let snapshots = try? parseBlocks(text: text,
                                                resolvesFileReferences: resolvesFileReferences),
@@ -292,7 +318,8 @@ enum AssistantMarkdownDocumentParser {
         var parsedBlocks: [AssistantMarkdownBlock] = []
         var blockGroups: [Int] = []
         for snapshot in snapshots {
-            guard let converted = convert(snapshot: snapshot, typography: typography) else {
+            guard let converted = convert(snapshot: snapshot, typography: typography,
+                                          codeStyle: codeStyle) else {
                 return nil
             }
             // An empty snapshot (a stray separator) contributes nothing; it is
@@ -387,14 +414,16 @@ enum AssistantMarkdownDocumentParser {
     private static func parseTree(from content: AttributedString,
                                   parent: PresentationIntent.IntentType?,
                                   foreground: UIColor,
-                                  typography: TimelineTypographySnapshot) -> [AssistantMarkdownBlock]? {
+                                  typography: TimelineTypographySnapshot,
+                                  codeStyle: AssistantCodeCardStyle) -> [AssistantMarkdownBlock]? {
         guard !content.characters.isEmpty else { return [] }
         var blocks: [AssistantMarkdownBlock] = []
         for group in blockGroups(in: content, parent: parent) {
             guard let block = makeBlock(group.content,
                                         intent: group.intent,
                                         foreground: foreground,
-                                        typography: typography) else {
+                                        typography: typography,
+                                        codeStyle: codeStyle) else {
                 return nil
             }
             blocks.append(block)
@@ -405,7 +434,8 @@ enum AssistantMarkdownDocumentParser {
     private static func makeBlock(_ content: AttributedString,
                                   intent: PresentationIntent.IntentType?,
                                   foreground: UIColor,
-                                  typography: TimelineTypographySnapshot) -> AssistantMarkdownBlock? {
+                                  typography: TimelineTypographySnapshot,
+                                  codeStyle: AssistantCodeCardStyle) -> AssistantMarkdownBlock? {
         guard !content.characters.isEmpty else { return nil }
         guard let intent else {
             if let image = standaloneImageBlock(content) {
@@ -435,11 +465,14 @@ enum AssistantMarkdownDocumentParser {
                 .map(AssistantMarkdownBlock.text)
         case .orderedList, .unorderedList:
             return listBlock(content, listIntent: intent,
-                             foreground: foreground, typography: typography)
+                             foreground: foreground, typography: typography,
+                             codeStyle: codeStyle)
         case .blockQuote:
-            return quoteBlock(content, quoteIntent: intent, typography: typography)
+            return quoteBlock(content, quoteIntent: intent, typography: typography,
+                              codeStyle: codeStyle)
         case .codeBlock(let languageHint):
-            return codeBlock(content, language: languageHint, typography: typography)
+            return codeBlock(content, language: languageHint, typography: typography,
+                             codeStyle: codeStyle)
         case .thematicBreak:
             // Textual's default thematic break: a hairline divider with
             // 1.6em spacing on both sides (`DividerThematicBreakStyle`).
@@ -506,7 +539,8 @@ enum AssistantMarkdownDocumentParser {
     private static func listBlock(_ content: AttributedString,
                                   listIntent: PresentationIntent.IntentType,
                                   foreground: UIColor,
-                                  typography: TimelineTypographySnapshot) -> AssistantMarkdownBlock? {
+                                  typography: TimelineTypographySnapshot,
+                                  codeStyle: AssistantCodeCardStyle) -> AssistantMarkdownBlock? {
         let groups = blockGroups(in: content, parent: listIntent)
         guard !groups.isEmpty else { return nil }
         var items: [AssistantListBlock.Item] = []
@@ -517,7 +551,8 @@ enum AssistantMarkdownDocumentParser {
                   let children = parseTree(from: group.content,
                                            parent: intent,
                                            foreground: foreground,
-                                           typography: typography),
+                                           typography: typography,
+                                           codeStyle: codeStyle),
                   !children.isEmpty else {
                 return nil
             }
@@ -548,12 +583,14 @@ enum AssistantMarkdownDocumentParser {
 
     private static func quoteBlock(_ content: AttributedString,
                                    quoteIntent: PresentationIntent.IntentType,
-                                   typography: TimelineTypographySnapshot) -> AssistantMarkdownBlock? {
+                                   typography: TimelineTypographySnapshot,
+                                   codeStyle: AssistantCodeCardStyle) -> AssistantMarkdownBlock? {
         // The product draws quote text in the body-template ink, not primary.
         guard let children = parseTree(from: content,
                                        parent: quoteIntent,
                                        foreground: ChatTextUIColors.bodyTemplate,
-                                       typography: typography),
+                                       typography: typography,
+                                       codeStyle: codeStyle),
               !children.isEmpty else { return nil }
         let scale = typography.body / ChatMetrics.referenceBodySize
         return .quote(AssistantQuoteBlock(
@@ -566,7 +603,8 @@ enum AssistantMarkdownDocumentParser {
 
     private static func codeBlock(_ content: AttributedString,
                                   language: String?,
-                                  typography: TimelineTypographySnapshot) -> AssistantMarkdownBlock? {
+                                  typography: TimelineTypographySnapshot,
+                                  codeStyle: AssistantCodeCardStyle) -> AssistantMarkdownBlock? {
         for run in content.runs {
             if run.textual.attachment != nil || run.imageURL != nil { return nil }
         }
@@ -586,17 +624,23 @@ enum AssistantMarkdownDocumentParser {
             string: code,
             attributes: [
                 .font: UIFont.monospacedSystemFont(ofSize: size, weight: .regular),
-                .foregroundColor: ChatTextUIColors.text,
+                .foregroundColor: codeStyle.textColor ?? ChatTextUIColors.text,
                 .paragraphStyle: paragraph,
             ])
+        // The Chat card is the default style (36 pt header, 14 pt padding,
+        // `ChatMetrics.codeRadius`); the Code page supplies the official
+        // chrome through `AssistantCodeCardStyle`.
         return .code(AssistantCodeBlock(
             code: attributed,
             language: language,
-            // Mirrors `ChatMarkdownCodeBlock`: a 36pt header, 14pt body
-            // padding, and the product's shared code-card radius.
-            headerHeight: 36,
-            contentPadding: 14,
-            cornerRadius: ChatMetrics.codeRadius))
+            headerHeight: codeStyle.headerHeight,
+            contentPadding: codeStyle.contentPadding,
+            cornerRadius: codeStyle.cornerRadius,
+            fillColor: codeStyle.fillColor,
+            borderColor: codeStyle.borderColor,
+            titleColor: codeStyle.titleColor,
+            titleFontSize: codeStyle.titleFontSize,
+            titleWeight: codeStyle.titleWeight))
     }
 
     private static func tableBlock(_ content: AttributedString,

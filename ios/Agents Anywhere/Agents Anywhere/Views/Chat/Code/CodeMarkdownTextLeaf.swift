@@ -55,7 +55,8 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
         let key = "\(metrics.revision):\(text)"
         if coordinator.documentKey == key { return coordinator.document }
         let parsed = AssistantMarkdownDocumentParser.make(
-            text: text, resolvesFileReferences: true, typography: metrics)
+            text: text, resolvesFileReferences: true, typography: metrics,
+            codeStyle: CodePageTheme.codeCardStyle)
         coordinator.document = parsed
         coordinator.documentKey = key
         return parsed

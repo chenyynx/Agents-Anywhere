@@ -212,6 +212,47 @@ nonisolated enum CodePageTheme {
         inlineCodePin: markdownInlineCodeSize,
         codeBlockPin: markdownCodeBlockSize)
 
+    // MARK: - Code card (official Code page)
+
+    /// [E] CANONICAL/06-visuals-assets.md §2.2 — Markdown text
+    /// `#131313` / `#F9F9F7` (`0.075` / `0.976,0.976,0.969`).
+    static let markdownTextUIColor = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.976, green: 0.976, blue: 0.969, alpha: 1)
+            : UIColor(red: 0.075, green: 0.075, blue: 0.075, alpha: 1)
+    }
+
+    /// [E] §2.3 — card fill `#FFFFFF` light / `#20201F` dark.
+    static let codeCardFillUIColor = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.125, green: 0.125, blue: 0.122, alpha: 1)
+            : UIColor(red: 1, green: 1, blue: 1, alpha: 1)
+    }
+
+    /// [E] §2.3 — border/divider `0.118,0.118,0.114` / `0.882,0.878,0.851`
+    /// at 0.3 alpha.
+    static let codeCardBorderUIColor = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.882, green: 0.878, blue: 0.851, alpha: 0.3)
+            : UIColor(red: 0.118, green: 0.118, blue: 0.114, alpha: 0.3)
+    }
+
+    /// [E] §1.3-1.6 and part-ac M4 — 44 pt header (a ScaledMetric in the
+    /// official app), 24 pt continuous radius, 13 pt monoAux title at weight
+    /// 400.
+    static var codeCardStyle: AssistantCodeCardStyle {
+        AssistantCodeCardStyle(
+            headerHeight: 44,
+            contentPadding: 14,
+            cornerRadius: 24,
+            fillColor: codeCardFillUIColor,
+            borderColor: codeCardBorderUIColor,
+            titleColor: markdownTextUIColor,
+            titleFontSize: 13,
+            titleWeight: .regular,
+            textColor: markdownTextUIColor)
+    }
+
     /// [E] CANONICAL/05-layout-scroll.md §3.2 — default row bottom padding is
     /// `interMessageSpacing - (groupedMessageSpacing ?? interMessageSpacing)`.
     static let rowBottomPadding: CGFloat = 0

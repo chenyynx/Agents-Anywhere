@@ -352,7 +352,7 @@ final class AssistantCodeBlockView: UIView {
         self.textSize = AssistantMarkdownTextLayout.intrinsicSize(
             of: codeBlock.code, displayScale: displayScale)
         super.init(frame: .zero)
-        backgroundColor = ChatTextUIColors.codeCardFill
+        backgroundColor = codeBlock.fillColor ?? ChatTextUIColors.codeCardFill
         layer.cornerRadius = codeBlock.cornerRadius
         layer.cornerCurve = .continuous
         clipsToBounds = true
@@ -360,11 +360,14 @@ final class AssistantCodeBlockView: UIView {
         header.backgroundColor = .clear
         addSubview(header)
 
-        divider.backgroundColor = ChatTextUIColors.codeHeaderDivider
+        divider.backgroundColor = codeBlock.borderColor
+            ?? ChatTextUIColors.codeHeaderDivider
         addSubview(divider)
 
-        languageLabel.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .medium)
-        languageLabel.textColor = ChatTextUIColors.codeHeaderLabel
+        languageLabel.font = UIFont.monospacedSystemFont(
+            ofSize: codeBlock.titleFontSize, weight: codeBlock.titleWeight)
+        languageLabel.textColor = codeBlock.titleColor
+            ?? ChatTextUIColors.codeHeaderLabel
         languageLabel.lineBreakMode = .byTruncatingTail
         languageLabel.text = (codeBlock.language?.isEmpty == false
             ? codeBlock.language! : "code").lowercased()
@@ -510,7 +513,7 @@ final class AssistantCodeBlockView: UIView {
         scrollView.contentSize = CGSize(width: contentWidth, height: bodyHeight)
 
         layer.borderWidth = 1 / scale
-        layer.borderColor = ChatTextUIColors.codeCardBorder
+        layer.borderColor = (codeBlock.borderColor ?? ChatTextUIColors.codeCardBorder)
             .resolvedColor(with: traitCollection).cgColor
     }
 }

@@ -370,7 +370,9 @@ private struct CodeToolDiffOutputView: View {
             .padding(.leading, CodeToolCardMetrics.contentInset)
             .padding(.trailing, CodeToolCardMetrics.contentInset)
             .frame(minHeight: CodeToolCardMetrics.diffLineHeight)
-            .background(fill(line.kind))
+            // [E] CANONICAL/04-tool-calls.md §5.2 — an added/removed row is a
+            // 2 pt colour bar + gutter + text; the official row has no fill
+            // behind the whole line. AA's sampled row wash was removed.
             .overlay(alignment: .leading) {
                 if let bar = barColor(line.kind) {
                     Rectangle()
@@ -406,13 +408,6 @@ private struct CodeToolDiffOutputView: View {
         }
     }
 
-    private func fill(_ kind: TimelineDiff.Line.Kind) -> Color {
-        switch kind {
-        case .add: return CodeToolCardMetrics.diffAddRowFill.resolved(for: colorScheme)
-        case .delete: return CodeToolCardMetrics.diffRemoveRowFill.resolved(for: colorScheme)
-        default: return .clear
-        }
-    }
 }
 
 // MARK: - Submitted answers (official `AskUserQuestionSubmittedView`, [I])
@@ -649,20 +644,6 @@ private enum CodeToolCardMetrics {
         dark: Color(.sRGB, red: 180.0 / 255.0,
                     green: 38.0 / 255.0,
                     blue: 62.0 / 255.0))
-
-    /// [I] V79 — light add-row fill `#E0F1DE`. There is no dark capture, so the
-    /// dark row derives the same tint from the [E] add colour at 14 %.
-    static let diffAddRowFill = CodePageTheme.SchemeColor(
-        light: Color(.sRGB, red: 224.0 / 255.0,
-                    green: 241.0 / 255.0,
-                    blue: 222.0 / 255.0),
-        dark: CodePageTheme.diffLineAdd.dark.opacity(0.14))
-
-    /// [U] V79 gives no remove-row fill; the row derives it from the [E]
-    /// remove colour (10 % light, 14 % dark) so add/remove stay symmetric.
-    static let diffRemoveRowFill = CodePageTheme.SchemeColor(
-        light: CodePageTheme.diffLineRemove.light.opacity(0.10),
-        dark: CodePageTheme.diffLineRemove.dark.opacity(0.14))
 
     // MARK: Todos / answers / plan
 

@@ -17,6 +17,12 @@ struct AssistantMarkdownDocument {
     /// blocks inside one snapshot use Textual's collapsed margins.
     let blockGroups: [Int]
     let plainTextLength: Int
+    /// The official Markdown block gap for the Code page (16 pt,
+    /// CANONICAL/05-layout-scroll.md §3.4, `0x10170a9c8`). `nil` keeps AA's
+    /// Chat margins: the collapsed paragraph/code margins and the 12 pt
+    /// snapshot gap. The Code document uses one uniform gap, as the official
+    /// Markdown renderer does.
+    var blockSpacing: CGFloat? = nil
 
     /// Recursive kind census. The gate asserts the fixture really produced the
     /// structures it claims to exercise, not just a paragraph that happened to
@@ -294,6 +300,9 @@ struct AssistantCodeCardStyle {
     /// official Code page draws 2 pt in the text ink at 0.15 alpha.
     var quoteBarWidth: CGFloat = 2.5
     var quoteBarColor: UIColor? = nil
+    /// The official Code Markdown block gap (16 pt). `nil` keeps AA's Chat
+    /// collapsed margins and 12 pt snapshot boundary.
+    var markdownBlockSpacing: CGFloat? = nil
 
     static let chat = AssistantCodeCardStyle()
 }
@@ -365,7 +374,8 @@ enum AssistantMarkdownDocumentParser {
         }
         return AssistantMarkdownDocument(
             blocks: parsedBlocks, blockGroups: blockGroups,
-            plainTextLength: text.count)
+            plainTextLength: text.count,
+            blockSpacing: codeStyle.markdownBlockSpacing)
     }
 
     /// The exact pipeline `ChatMarkdownView` runs for a complete document.

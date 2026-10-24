@@ -310,7 +310,10 @@ nonisolated enum CodePageTheme {
                 boldWeight: 550,
                 headingWeight: 400),
             quoteBarWidth: quoteBarWidth,
-            quoteBarColor: quoteBarUIColor)
+            quoteBarColor: quoteBarUIColor,
+            // [E] CANONICAL/05-layout-scroll.md §3.4 — the official Markdown
+            // renderer uses one 16 pt block gap (`0x10170a9c8`).
+            markdownBlockSpacing: blockSpacing)
     }
 
     /// [E] CANONICAL/05-layout-scroll.md §3.2 — default row bottom padding is

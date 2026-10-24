@@ -203,6 +203,10 @@ enum AssistantMarkdownTextLayout {
         guard document.blocks.indices.contains(index + 1),
               document.blockGroups.indices.contains(index),
               document.blockGroups.indices.contains(index + 1) else { return 0 }
+        // [E] The Code page's official Markdown renderer uses one block gap
+        // (`blockSpacing = 16`, 0x10170a9c8). AA's Chat path keeps its
+        // snapshot boundary and collapsed margins.
+        if let blockSpacing = document.blockSpacing { return blockSpacing }
         if document.blockGroups[index] != document.blockGroups[index + 1] {
             return snapshotSpacing
         }

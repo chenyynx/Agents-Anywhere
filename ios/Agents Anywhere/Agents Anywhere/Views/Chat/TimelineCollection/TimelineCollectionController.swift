@@ -1408,6 +1408,21 @@ final class TimelineCollectionController: UIViewController {
             let key = content.heightKey(for: item, width: columnWidth)
             let current = layout.attributes(for: item.itemID)?.frame.height ?? 0
             guard abs(height - current) > 0.5 else {
+                // Official `rowMeasured` (0x1019e0b10) sets `isMeasured=1`
+                // unconditionally (`0x1019e0ba0 strb w9,[+0x28]`); only the
+                // `starts` prefix sum is conditional on the height changing
+                // (`0x1019e0bac fcmp` → `0x1019e1468`). A fit that confirms
+                // the stored height is therefore still a measurement, not a
+                // no-op. Without this latch a visible hosted row whose
+                // structured provisional height happens to equal its fit
+                // (461 device log: g:msg_e83b5b4b h=957, tier=provisional)
+                // would never become measured. The delta<=0.5 branch of
+                // `applyMeasuredHeight` writes the cache and
+                // `attributes.isMeasured=true` without moving the offset.
+                if hosted,
+                   !layout.heights.isMeasured(itemID: item.itemID, width: key.width) {
+                    layout.applyMeasuredHeight(height, for: item.itemID, key: key)
+                }
                 pendingCellFits[item.itemID] = nil
                 continue
             }

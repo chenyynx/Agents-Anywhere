@@ -75,21 +75,6 @@ nonisolated struct TimelineScrollState: Equatable {
         return viewport.measuredAtBottom
     }
 
-    /// The return pill's own margin: the near probe is 96 points tall.
-    static let bottomButtonMargin: CGFloat = 96
-
-    /// Geometry twin of the near probe. Lazy rows may never realize the tail
-    /// markers, or may disappear before reporting their departure, so once a
-    /// viewport is measured the pill reads geometry instead of the probe
-    /// flags — the same fallback `viewportIsAtBottom` already uses for
-    /// arrival. The caller must hand in the freshest sample: pure offset
-    /// changes are deliberately not published (rule ③ of the publication
-    /// gate), so the stored viewport's offset can be stale during a scroll.
-    func isNearBottom(using sample: TimelineViewport?) -> Bool {
-        guard let truth = sample, truth.isMeasured else { return tail.isNearBottom }
-        return truth.contentHeight - truth.visibleBottom <= Self.bottomButtonMargin
-    }
-
     var userIsScrolling: Bool { [.tracking, .interacting, .decelerating].contains(phase) }
     var returningToBottom: Bool { mode == .returning }
     var needsUserScrollSettlement: Bool {
@@ -325,9 +310,9 @@ nonisolated struct TimelineScrollState: Equatable {
     /// for good. The failed-native-target world parks exactly such an inert
     /// request; hiding on it unconditionally turned the pill into a
     /// permanently invisible affordance there.
-    func showsBottomButton(using sample: TimelineViewport? = nil) -> Bool {
-        hasOpened && !navigationIsSuspended && phase == .idle
-            && !isNearBottom(using: sample) && activeCommand == nil
+    func showsBottomButton() -> Bool {
+        hasOpened && !navigationIsSuspended && phase == .idle && tail.isMeasured
+            && !tail.isNearBottom && activeCommand == nil
             && (pendingBottomRequest == nil || pendingBottomRequest == lastRequest)
     }
 

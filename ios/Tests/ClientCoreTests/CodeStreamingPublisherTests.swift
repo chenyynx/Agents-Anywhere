@@ -244,6 +244,32 @@ struct CodeStreamingPublisherTests {
         #expect(publisher.receivedText == "one two ")
     }
 
+    @Test func aSameLengthFullTextCorrectionReplacesTheVisibleSnapshot() {
+        var publisher = makePublisher()
+        _ = publisher.receive(fullText: "one two three", at: 0)
+
+        // Same byte count, different bytes: the prefix check cannot see it,
+        // so the whole text must be compared.
+        let corrected = publisher.receive(fullText: "one two thref", at: 0.1)
+        #expect(corrected?.text == "one two thref")
+        #expect(publisher.receivedText == "one two thref")
+    }
+
+    @Test func aCorrectionBackToThePublishedTextClearsThePendingRequest() {
+        var publisher = makePublisher()
+        _ = publisher.receive(fullText: eightWords, at: 0)
+
+        #expect(publisher.receive(fullText: "one two ", at: 0.05) == nil)
+        #expect(publisher.publishPending)
+
+        // The text returns to what is already on screen, so the queued
+        // publish has nothing left to do.
+        #expect(publisher.receive(fullText: eightWords, at: 0.06) == nil)
+        #expect(!publisher.publishPending)
+        #expect(!publisher.hasPendingText)
+        #expect(publisher.publishedText == eightWords)
+    }
+
     @Test func aCorrectionRespectsThePublishThrottle() {
         var publisher = makePublisher()
         _ = publisher.receive(fullText: eightWords, at: 0)

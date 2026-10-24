@@ -62,26 +62,25 @@ nonisolated struct CodeStreamingPublisher: Equatable, Sendable {
     /// requested inside the throttle window and is waiting for the next event.
     private(set) var publishPending: Bool = false
 
-    /// Received but not yet on screen.
-    private var buffer: String = ""
+    /// The whole text received for this block, published or not.
+    ///
+    /// The wire sends the block's cumulative text on every event
+    /// (CANONICAL/03-streaming.md §4.2), so this is replaced by reference
+    /// instead of being rebuilt from `publishedText + buffer`: the old
+    /// computed property copied the whole block on every network frame and
+    /// again inside `attemptPublish` (R6 P1-1). A native `String` assignment
+    /// is a constant-time copy-on-write reference.
+    private(set) var receivedText: String = ""
     /// Monotonic high-water mark of publish instants. Never moves backwards so
     /// a rollback of the injected clock cannot trigger a publish burst.
     private var lastPublishedAt: TimeInterval?
-    /// A cumulative update that was not an append; the visible text must be
-    /// replaced. Corrections bypass the buffer but not the throttle.
-    private var correctionText: String?
 
     init(config: Config = Config()) {
         self.config = config
     }
 
-    /// Full text received so far, including text not yet published.
-    var receivedText: String {
-        correctionText ?? publishedText + buffer
-    }
-
     var hasPendingText: Bool {
-        !buffer.isEmpty || correctionText != nil
+        receivedText != publishedText
     }
 
     /// Append an incremental text delta received at `now`.
@@ -93,33 +92,23 @@ nonisolated struct CodeStreamingPublisher: Equatable, Sendable {
     mutating func receive(delta: String, at now: TimeInterval) -> CodeStreamingSnapshot? {
         guard !isComplete else { return nil }
 
-        if !delta.isEmpty {
-            if let correctionText {
-                self.correctionText = correctionText + delta
-            } else {
-                buffer += delta
-            }
-        }
+        if !delta.isEmpty { receivedText += delta }
 
         return attemptPublish(at: now)
     }
 
     /// Feed a cumulative full text (the official assembler keeps full text per
-    /// block, CANONICAL/03-streaming.md §4.2). A prefix extension is treated as
-    /// a delta; anything else is a correction that replaces the visible text.
+    /// block, CANONICAL/03-streaming.md §4.2). Anything that is not a prefix
+    /// extension replaces the received text; the publish step then sends the
+    /// whole snapshot, so an append and a correction take the same path.
     mutating func receive(fullText: String, at now: TimeInterval) -> CodeStreamingSnapshot? {
         guard !isComplete else { return nil }
 
-        let current = receivedText
-        if fullText == current { return attemptPublish(at: now) }
-        if fullText.hasPrefix(current) {
-            return receive(delta: String(fullText.dropFirst(current.count)), at: now)
-        }
+        // Compare before assigning so an unchanged event does not retain the
+        // caller's storage. Both are native strings, so `==` is a byte
+        // comparison with no allocation.
+        if fullText != receivedText { receivedText = fullText }
 
-        // The server replaced text that was already shown. The published
-        // snapshot is replaced whole; it still respects the publish throttle.
-        correctionText = fullText
-        buffer = ""
         return attemptPublish(at: now)
     }
 
@@ -146,8 +135,6 @@ nonisolated struct CodeStreamingPublisher: Equatable, Sendable {
 
         isComplete = true
         publishedText = receivedText
-        buffer = ""
-        correctionText = nil
         publishPending = false
         recordPublish(at: now)
         return snapshot()
@@ -156,14 +143,13 @@ nonisolated struct CodeStreamingPublisher: Equatable, Sendable {
     // MARK: - Publishing
 
     private mutating func attemptPublish(at now: TimeInterval) -> CodeStreamingSnapshot? {
-        // The pending text is always the whole block text: a correction
-        // replaces it, an append extends it (CANONICAL/03-streaming.md §4.2).
-        let pendingText: String
-        if let correctionText {
-            pendingText = correctionText
-        } else if !buffer.isEmpty {
-            pendingText = publishedText + buffer
-        } else {
+        // The publish payload is always the block's whole current text
+        // (CANONICAL/03-streaming.md §4.2): an append and a correction both
+        // send what `receivedText` now holds.
+        guard receivedText != publishedText else {
+            // A correction can bring the text back to what is already on
+            // screen; the queued request has nothing left to publish.
+            publishPending = false
             return nil
         }
 
@@ -172,9 +158,7 @@ nonisolated struct CodeStreamingPublisher: Equatable, Sendable {
             return nil
         }
 
-        publishedText = pendingText
-        correctionText = nil
-        buffer = ""
+        publishedText = receivedText
         publishPending = false
         recordPublish(at: now)
         return snapshot()

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import Foundation
 
 // The Code page's full-screen tool detail (`CANONICAL/04-tool-calls.md` §4.2).
@@ -296,8 +297,9 @@ private struct CodeDetailDiffIndicator: View {
     private var fontSize = CodePageTheme.diffIndicatorFontSize
     @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
     private var horizontalPadding = CodePageTheme.diffIndicatorHorizontalPadding
+    /// [E] R19 tool-row-status.md — each half is 18 pt tall.
     @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
-    private var verticalPadding = CodePageTheme.diffIndicatorVerticalPadding
+    private var halfHeight = CodePageTheme.diffIndicatorHeight
     @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
     private var cornerRadius = CodePageTheme.diffIndicatorCornerRadius
 
@@ -314,7 +316,11 @@ private struct CodeDetailDiffIndicator: View {
                      ink: CodePageTheme.diffIndicatorRemoveText)
             }
         }
-        .font(.system(size: fontSize, weight: .regular))
+        // [E] 11 pt / weight 550 in the official mono face.
+        .font(Font(MarkdownFontFactory.font(
+            name: CodePageTheme.monoFontName,
+            size: fontSize,
+            weight: CodePageTheme.diffIndicatorFontWeight)))
         .lineLimit(1)
         .fixedSize()
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
@@ -328,7 +334,7 @@ private struct CodeDetailDiffIndicator: View {
             .monospacedDigit()
             .foregroundStyle(ink.resolved(for: colorScheme))
             .padding(.horizontal, horizontalPadding)
-            .padding(.vertical, verticalPadding)
+            .frame(height: halfHeight)
             .background(fill.resolved(for: colorScheme))
     }
 }

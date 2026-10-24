@@ -1014,9 +1014,9 @@ def test_unversioned_runtime_schema_is_classified_by_actual_columns(tmp_path,
     )
 
 
-def test_current_schema_version_is_v2_47() -> None:
-    assert CURRENT_SCHEMA_REVISION == "v2_47"
-    assert CURRENT_SCHEMA_VERSION == "2.47"
+def test_current_schema_version_is_v2_48() -> None:
+    assert CURRENT_SCHEMA_REVISION == "v2_48"
+    assert CURRENT_SCHEMA_VERSION == "2.48"
 
 
 def _insert_required(connection, table: str, values: dict) -> None:
@@ -3035,3 +3035,244 @@ def test_v2_43_downgrade_then_upgrade_round_trips(fresh_database_url) -> None:
     upgrade_database(db_url=url)
     assert _native_message_id() == "msg-A"
     assert "idx_timeline_items_session_native_message" in _index_names()
+
+
+# ---------------------------------------------------------------------------
+# v2_48 deferred-activity columns (kind / payload_bytes / stub_json /
+# stub_version).
+# ---------------------------------------------------------------------------
+
+
+def _v2_48_payloads() -> dict[str, str]:
+    output = "".join(f"line {index}\n" for index in range(300))
+    return {
+        "tool_main": json.dumps(
+            {
+                "id": "tool_main",
+                "type": "tool",
+                "content": {
+                    "kind": "command",
+                    "toolName": "Bash",
+                    "command": "ls -la",
+                    "output": output,
+                },
+            }
+        ),
+        "tool_child": json.dumps(
+            {
+                "id": "tool_child",
+                "type": "tool",
+                "content": {
+                    "kind": "command",
+                    "toolName": "Bash",
+                    "command": "pwd",
+                    "parentItemId": "tool_main",
+                    "output": "child output",
+                },
+            }
+        ),
+        "message_main": json.dumps(
+            {
+                "id": "message_main",
+                "type": "message",
+                "content": {"text": "hello"},
+            }
+        ),
+        "malformed": "not json",
+    }
+
+
+def test_v2_48_adds_deferred_activity_columns(fresh_database_url) -> None:
+    """The four columns are nullable, the backfill mirrors ``kind`` and the
+    payload size for every parsed row, and only a main tool row gets a stub.
+
+    A child tool row renders inside its card and a message row has no
+    collapsed tool line, so both keep ``stub_json``/``stub_version`` NULL; a
+    payload that does not parse leaves all four NULL rather than aborting.
+
+    The child row is inserted after v2_47's backfill, so its
+    ``parent_item_id`` column is NULL even though the payload declares
+    ``content.parentItemId`` — the rolling-upgrade case. Its NULL stub pins
+    that the backfill decides parentage from the payload, exactly like the
+    runtime writer, rather than from the possibly-stale column.
+    """
+
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_47")
+    engine = create_engine(_sync_url(url))
+    try:
+        columns = {
+            column["name"] for column in inspect(engine).get_columns("timeline_items")
+        }
+        assert not {"kind", "payload_bytes", "stub_json", "stub_version"} & columns
+    finally:
+        engine.dispose()
+
+    payloads = _v2_48_payloads()
+    engine = create_engine(_sync_url(url))
+    try:
+        with engine.begin() as connection:
+            _insert_required(connection, "connectors", {"id": "c1", "revoked": 0})
+            _insert_required(connection, "sessions", {
+                "id": "s1", "connector_id": "c1", "runtime": "claude", "runtime_id": "r1",
+            })
+            for item_id, payload_json in payloads.items():
+                try:
+                    item_type = json.loads(payload_json)["type"]
+                except (KeyError, TypeError, ValueError):
+                    item_type = "tool"
+                _insert_required(connection, "timeline_items", {
+                    "session_id": "s1",
+                    "id": item_id,
+                    "type": item_type,
+                    "payload_json": payload_json,
+                })
+    finally:
+        engine.dispose()
+
+    upgrade_database(db_url=url)
+
+    engine = create_engine(_sync_url(url))
+    try:
+        columns = {
+            column["name"]: column
+            for column in inspect(engine).get_columns("timeline_items")
+        }
+        for name in ("kind", "payload_bytes", "stub_json", "stub_version"):
+            assert columns[name]["nullable"] is True
+        with engine.connect() as connection:
+            rows = {
+                row["id"]: dict(row)
+                for row in connection.execute(
+                    text(
+                        "SELECT id, kind, payload_bytes, stub_json, stub_version, "
+                        "payload_json FROM timeline_items ORDER BY id"
+                    )
+                ).mappings()
+            }
+    finally:
+        engine.dispose()
+    assert set(rows) == set(payloads)
+
+    main = rows["tool_main"]
+    assert main["kind"] == "command"
+    assert main["payload_bytes"] == len(payloads["tool_main"].encode("utf-8"))
+    assert main["stub_version"] == 1
+    stub = json.loads(main["stub_json"])
+    assert stub["id"] == "tool_main"
+    assert stub["content"]["deferred"] is True
+    assert stub["content"]["deferredBytes"] == main["payload_bytes"]
+    assert "output" not in stub["content"]
+    assert stub["content"]["outputPreview"] == json.loads(
+        payloads["tool_main"]
+    )["content"]["output"][-240:]
+    assert stub["content"]["command"] == "ls -la"
+
+    child = rows["tool_child"]
+    assert child["kind"] == "command"
+    assert child["payload_bytes"] == len(payloads["tool_child"].encode("utf-8"))
+    assert child["stub_json"] is None
+    assert child["stub_version"] is None
+
+    message = rows["message_main"]
+    assert message["kind"] is None
+    assert message["payload_bytes"] == len(
+        payloads["message_main"].encode("utf-8")
+    )
+    assert message["stub_json"] is None
+    assert message["stub_version"] is None
+
+    malformed = rows["malformed"]
+    assert malformed["kind"] is None
+    assert malformed["payload_bytes"] is None
+    assert malformed["stub_json"] is None
+    assert malformed["stub_version"] is None
+
+    # A second upgrade on an already-current database is harmless (Alembic is
+    # at head, so the migration body does not run again).
+    upgrade_database(db_url=url)
+    engine = create_engine(_sync_url(url))
+    try:
+        with engine.connect() as connection:
+            assert (
+                connection.execute(
+                    text("SELECT stub_json FROM timeline_items WHERE id = 'tool_main'")
+                ).scalar_one()
+                == main["stub_json"]
+            )
+    finally:
+        engine.dispose()
+
+    command.downgrade(_alembic_config(url), "v2_47")
+    engine = create_engine(_sync_url(url))
+    try:
+        remaining = {
+            column["name"] for column in inspect(engine).get_columns("timeline_items")
+        }
+        assert not {"kind", "payload_bytes", "stub_json", "stub_version"} & remaining
+    finally:
+        engine.dispose()
+
+
+def test_v2_48_backfill_pages_without_skipping_or_looping(
+    fresh_database_url, monkeypatch
+) -> None:
+    """The backfill pages by ``(session_id, id)`` so a tiny page size still
+    covers every row, and a payload that does not parse (which can never be
+    marked as backfilled) cannot stall the loop."""
+
+    from migrations.versions import v2_48
+
+    monkeypatch.setattr(v2_48, "_BACKFILL_BATCH", 1)
+
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_47")
+    engine = create_engine(_sync_url(url))
+    try:
+        with engine.begin() as connection:
+            _insert_required(connection, "connectors", {"id": "c1", "revoked": 0})
+            _insert_required(connection, "sessions", {
+                "id": "s1", "connector_id": "c1", "runtime": "claude", "runtime_id": "claude",
+            })
+            for index in range(4):
+                _insert_required(connection, "timeline_items", {
+                    "session_id": "s1",
+                    "id": f"m{index}",
+                    "type": "tool",
+                    "payload_json": (
+                        '{"id":"m%d","type":"tool","content":{"kind":"command","command":"ls","output":"out"}}'
+                        % index
+                    ),
+                })
+            _insert_required(connection, "timeline_items", {
+                "session_id": "s1",
+                "id": "m4",
+                "type": "tool",
+                "payload_json": "not json",
+            })
+    finally:
+        engine.dispose()
+
+    upgrade_database(db_url=url)
+
+    engine = create_engine(_sync_url(url))
+    try:
+        with engine.connect() as connection:
+            rows = {
+                row[0]: (row[1], row[2] is not None)
+                for row in connection.execute(
+                    text(
+                        "SELECT id, kind, payload_bytes FROM timeline_items "
+                        "ORDER BY id"
+                    )
+                )
+            }
+    finally:
+        engine.dispose()
+    assert rows == {
+        "m0": ("command", True),
+        "m1": ("command", True),
+        "m2": ("command", True),
+        "m3": ("command", True),
+        "m4": (None, False),
+    }

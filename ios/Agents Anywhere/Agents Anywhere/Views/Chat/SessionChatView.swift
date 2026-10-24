@@ -179,6 +179,11 @@ struct SessionChatView: View, Equatable {
                     }
                 }
                 .overlay { if model.showsOpeningMask { openingMask } }
+#if AA_TIMELINE_PROBE
+                .overlay(alignment: .topTrailing) {
+                    TimelineProbeOverlay().padding(.top, 8)
+                }
+#endif
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     composerDockArea(maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)))
                 }
@@ -289,7 +294,12 @@ struct SessionChatView: View, Equatable {
         })
         .quickLookPreview($previewURL)
         .onChange(of: previewURL) { _, url in if url == nil { cleanPreview() } }
-        .onDisappear { if previewURL == nil { cleanPreview() } }
+        .onDisappear {
+            if previewURL == nil { cleanPreview() }
+            // Prefetch is page-lifetime work: leaving the page abandons the
+            // queue and any in-flight summary read instead of running it out.
+            model.deferredItems.cancelAll()
+        }
         .onChange(of: session.failure, initial: true) { _, failure in
             toasts.update(source: "session", failure: failure, canRetry: failure?.kind != .authentication)
         }

@@ -314,6 +314,19 @@ extension V2TimelineItemContent {
 }
 
 extension V2TimelineItem {
+    /// Whether this row is the server's summary of a large tool payload
+    /// (`deferActivity` window read). The summary is a legal item whose fields
+    /// were trimmed; the full row comes from the single-item read and replaces
+    /// it in place. Read from `raw` because the trimmed content does not map
+    /// onto any carrier shape.
+    var isDeferred: Bool { raw["content"]?["deferred"] == .bool(true) }
+
+    /// The original payload's byte size, carried by a summary row so the
+    /// client can budget which rows to prefetch.
+    var deferredBytes: Int? { raw["content"]?["deferredBytes"]?.intValue }
+}
+
+extension V2TimelineItem {
     /// The per-call usage block in this item's content, wherever the
     /// connector attached it. The ring reads the newest item that has one,
     /// and every carrier kind qualifies: the connector stamps the latest API

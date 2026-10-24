@@ -177,7 +177,28 @@ struct V2SessionProjection {
         // This page now builds the window, so it also owns the window's read
         // mode (the panel's loaded gate reads it).
         data.windowExcludesAgentChildren = page.excludesAgentChildren
+        data.windowDeferredActivity = page.deferredActivity == true
         merge(newer, history: false)
+    }
+
+    /// Replaces one summary row with its complete payload, in place. Only a
+    /// row the window already holds is touched: the returned `false` means the
+    /// window moved on (paging, a newer snapshot), and inserting the row here
+    /// would bypass the window's paging boundaries. The array keeps its order
+    /// — the full row carries the same `orderSeq`, and re-sorting could move a
+    /// row the reader is looking at. Nothing else about the window changes:
+    /// paging flags, cursor and active cards stay exactly as they were.
+    @discardableResult mutating func replaceDeferredItem(_ item: V2TimelineItem) -> Bool {
+        guard item.sessionId == data.session.id,
+              let index = data.items.firstIndex(where: { $0.id == item.id }) else { return false }
+        let existing = data.items[index]
+        // The fetched row must still be the current version. The summary it
+        // replaces carries the same revision, and supersedes() accepts an
+        // equal pair, so this rejects only a fetch that really raced a newer
+        // window — never the normal deferred-to-complete replacement.
+        guard item.supersedes(existing) else { return false }
+        data.items[index] = item
+        return true
     }
 
     private mutating func replaceTimeline(_ items: [V2TimelineItem], hasMore: Bool) {

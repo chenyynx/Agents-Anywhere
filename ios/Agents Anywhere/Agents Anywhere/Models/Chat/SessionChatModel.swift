@@ -7,6 +7,10 @@ final class SessionChatModel {
     let timeline = SessionTimelinePresentation()
     let settings = ConversationSettings()
     let disclosures = TimelineDisclosureState()
+    /// On-demand reads of deferred summary rows. The repository owns the
+    /// projection change; this store owns only the per-row phase the UI
+    /// renders (idle / failed / offline) and its in-flight dedupe.
+    let deferredItems: DeferredItemStore
     var takeoverError: String?
     private(set) var takeoverUncertain = false
     private(set) var isWorking: Bool {
@@ -68,6 +72,11 @@ final class SessionChatModel {
         self.session = session; self.repository = repository; self.attachments = attachments
         self.files = files
         self.subagentStopReleaseDelay = subagentStopReleaseDelay
+        let sessionID = session.id
+        deferredItems = DeferredItemStore { [weak repository] itemID in
+            guard let repository else { throw CancellationError() }
+            try await repository.loadDeferredItem(sessionId: sessionID, itemId: itemID)
+        }
         opensFromCachedSnapshot = repository.cached(sessionId: session.id) != nil
         // Cached history can still be expensive to project. prepareOpening()
         // performs that work after the page's navigation transition settles.
@@ -255,7 +264,10 @@ final class SessionChatModel {
         // usable immediately (D3). The window is trimmed exactly like open()
         // trims it, so the later refresh cannot remove rows the reader sees.
         if session.isValid, let cached = repository.cached(sessionId: session.id) {
-            timeline.presentOpening(Array(cached.items.suffix(100)), pendingMessages: session.pendingMessages)
+            // Same window length as open()'s trim (one constant), so the rows
+            // presented here survive the network refresh untouched.
+            timeline.presentOpening(Array(cached.items.suffix(V2SessionCachePolicy.deferredWindowItems)),
+                                    pendingMessages: session.pendingMessages)
             isOpeningPrepared = true
         }
         do {

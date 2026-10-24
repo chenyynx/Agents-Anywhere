@@ -35,7 +35,9 @@ struct MarkdownBlockLayout: Layout {
         guard let content = subviews.first else { return .zero }
         let width = proposal.width.flatMap { $0.isFinite ? max(0, $0) : nil }
         let natural = cache.measurements.size(proposedWidth: width) {
-            content.sizeThatFits(.init(width: width, height: nil))
+            TimelineProbe.measureBlockLayout {
+                content.sizeThatFits(.init(width: width, height: nil))
+            }
         }
         return cache.sizing.size(proposedWidth: width, naturalSize: natural, displayScale: displayScale)
     }

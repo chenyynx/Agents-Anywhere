@@ -191,34 +191,34 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
     }
 
     /// R-a guard — the early window is trimmed exactly like `open()` trims the
-    /// projection: when the cached visit holds more than one page, the reader
-    /// sees the newest 100 rows, so a later refresh can never remove a row
-    /// that was already presented. Dropping `.suffix(100)` in
+    /// projection: when the cached visit holds more than the deferred window,
+    /// the reader sees its newest rows, so a later refresh can never remove a
+    /// row that was already presented. Dropping the `.suffix(...)` in
     /// `prepareOpening` presents the untrimmed cache and turns this red.
     @Test func cachedOpeningPresentsTheTrimmedWindowWhileTheRefreshIsBlocked() async throws {
         let http = TestHTTPTransport()
         let gate = TestGate()
         var latestStarted = false
         http.respond = { call in
-            if call.path.hasSuffix("snapshot") { return try openingSnapshotPage(rows: 130, hasMore: true) }
+            if call.path.hasSuffix("snapshot") { return try openingSnapshotPage(rows: 1010, hasMore: true) }
             if call.path.hasSuffix("timeline") {
                 if call.query.contains(where: { $0.name == "mode" && $0.value == "history" }) {
                     return try openingTimelinePage(rows: Array(1...10))
                 }
                 latestStarted = true
                 await gate.wait()
-                return try openingTimelinePage(rows: Array(121...130))
+                return try openingTimelinePage(rows: Array(1001...1010))
             }
             return try http.defaultResponse(call)
         }
-        // A window wider than one opening page, so the cached visit really
+        // A window wider than the deferred window, so the cached visit really
         // holds more rows than the early presentation is allowed to show.
-        let repo = repository(transport: http, policy: V2SessionCachePolicy(maximumTimelineItems: 120))
+        let repo = repository(transport: http, policy: V2SessionCachePolicy())
         defer { repo.reset() }
         _ = try await repo.load(sessionId: "session")
         _ = try await repo.loadOlder(sessionId: "session")
         let cached = try #require(repo.cached(sessionId: "session"))
-        #expect(cached.items.count == 120)
+        #expect(cached.items.count == 1000)
         #expect(cached.hasNewerItems)
 
         let model = chat(repo, http)
@@ -226,8 +226,9 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         defer { gate.release(); opening.cancel() }
         try await eventually { latestStarted }
         // The refresh is still blocked in the network. The cached window was
-        // presented before it, trimmed to the newest 100 rows.
-        #expect(model.timeline.rows.map(\.id) == (21...120).map { "reply-\($0)" })
+        // presented before it, trimmed to the newest
+        // `V2SessionCachePolicy.deferredWindowItems` rows.
+        #expect(model.timeline.rows.map(\.id) == (851...1000).map { "reply-\($0)" })
         gate.release()
         await opening.value
         #expect(model.isOpeningReady && model.openingError == nil)

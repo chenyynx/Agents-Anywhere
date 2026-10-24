@@ -52,8 +52,11 @@ struct SessionDetailsSheet: View {
                 if source == "remote" { export = try await service.exportTimeline(sessionId: meta.id) }
                 else {
                     let items = chat.session.timeline.map(\.value)
+                    let deferredCount = items.filter(\.isDeferred).count
                     export = SessionTimelineExport(source: "memory", session: meta, items: items, notices: chat.session.runtime.notices,
-                        nextSeq: items.map(\.updatedSeq).max() ?? 0, hasMore: chat.session.hasOlderItems || chat.session.hasNewerItems)
+                        nextSeq: items.map(\.updatedSeq).max() ?? 0, hasMore: chat.session.hasOlderItems || chat.session.hasNewerItems,
+                        incomplete: deferredCount > 0 ? true : nil,
+                        deferredItems: deferredCount > 0 ? deferredCount : nil)
                 }
                 try Task.checkCancellation()
                 guard chat.session.isValid else { return }

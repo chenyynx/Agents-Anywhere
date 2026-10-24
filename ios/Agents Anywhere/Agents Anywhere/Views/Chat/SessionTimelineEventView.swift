@@ -42,7 +42,9 @@ struct SessionTimelineGroupView: View, Equatable {
                 symbol: group.kind == .reconnect ? "wifi.slash" : agentGroup ? "person.2" : "hammer",
                 status: group.status, disclosures: chat.disclosures,
                 detailsAction: groupDetailsAction) {
-                rows
+                // The closure is evaluated only while the fold is expanded, so
+                // the prefetch starts with the reveal and dies with it.
+                rows.task { chat.deferredItems.prefetch(group.rows.map(\.value)) }
             }
         }
     }
@@ -106,15 +108,31 @@ struct SessionTimelineEventView: View {
         let value = row.entry(cwd: cwd)
         switch value.kind {
         case .reasoning:
-            if row.text.isEmpty || TimelineText.inlineSummary(row.text) != nil {
+            // A deferred reasoning row must stay a fold: the one-line marker
+            // has no expansion, so it would strand the row on its preview.
+            if row.text.isEmpty || (!row.value.isDeferred && TimelineText.inlineSummary(row.text) != nil) {
                 TimelineMarkerRow(title: value.title, symbol: value.symbol, status: row.value.status)
             } else {
-                TimelineFold(id: row.id, title: value.title, symbol: value.symbol, status: row.value.status, disclosures: disclosures,
+                // A budget-trim summary keeps a text head (never an empty
+                // shell) and completes itself from the single-item read.
+                let deferred = row.value.isDeferred
+                TimelineFold(id: row.id,
+                    title: deferred ? String(localized: "思考预览") : value.title,
+                    symbol: value.symbol, status: row.value.status, disclosures: disclosures,
                     collapsesOnBodyDoubleTap: true) {
-                    ChatMarkdownView(text: row.text, isStreaming: row.isRevealing, resolvesFileReferences: true)
-                        .id(row.layoutGeneration).padding(.leading, 24).foregroundStyle(.secondary)
-                        // Reasoning stays well below the reply text.
-                        .environment(\.chatMarkdownFont, .caption2)
+                    VStack(alignment: .leading, spacing: 0) {
+                        ChatMarkdownView(text: row.text, isStreaming: row.isRevealing, resolvesFileReferences: true)
+                            .id(row.layoutGeneration).padding(.leading, 24).foregroundStyle(.secondary)
+                            // Reasoning stays well below the reply text.
+                            .environment(\.chatMarkdownFont, .caption2)
+                        if deferred {
+                            TimelineDeferredFooter(chat: chat, id: row.id,
+                                missingText: String(localized: "完整思考未加载"))
+                        }
+                    }
+                    .task(id: row.id) {
+                        if row.value.isDeferred { chat.deferredItems.load(row.id) }
+                    }
                 }
             }
         case .compact:
@@ -128,7 +146,7 @@ struct SessionTimelineEventView: View {
                 TimelineFold(id: row.id, title: value.title, symbol: value.symbol, status: row.value.status,
                     disclosures: disclosures, detailsAction: agentCardDetailsAction,
                     stopTasks: stopTasks, stoppingTaskIDs: chat.stoppingSubagentTaskIDs, onStopTask: stopTask) {
-                    TimelineToolDetails(row: row, cwd: cwd, onFile: onFile)
+                    TimelineToolDetails(row: row, chat: chat, cwd: cwd, onFile: onFile)
                 }
             } else { TimelineMarkerRow(title: value.title, symbol: value.symbol, status: row.value.status) }
         case .artifact:
@@ -183,10 +201,12 @@ struct TimelineMarkerRow: View {
 /// Collapsing destroys parsed output, patch rows, code panels and their state.
 private struct TimelineToolDetails: View {
     let row: ChatTimelineRowModel
+    let chat: SessionChatModel
     let cwd: String?
     let onFile: (String) -> Void
     var body: some View {
         let value = row.entry(cwd: cwd)
+        let deferred = row.value.isDeferred
         let changes = value.changes
         VStack(spacing: 0) {
             if let command = value.command { TimelineCodePanel(label: String(localized: "Command"), code: command) }
@@ -194,8 +214,53 @@ private struct TimelineToolDetails: View {
                 TimelineCodePanel(label: String(localized: "Input"), code: input.formattedJSON)
             }
             ForEach(changes) { change in TimelineFileChangeView(change: change, onFile: onFile) }
-            if let output = value.output { TimelineCodePanel(label: String(localized: "Output"), code: output) }
-        }.clipShape(.rect(cornerRadius: 14))
+            // The summary's preview is already on screen; the panel says so
+            // instead of pretending to be the complete output.
+            if let output = value.output {
+                TimelineCodePanel(label: deferred ? String(localized: "输出预览") : String(localized: "Output"), code: output)
+            }
+            if deferred {
+                TimelineDeferredFooter(chat: chat, id: row.id,
+                    missingText: String(localized: "完整输出未加载"))
+            }
+        }
+        .clipShape(.rect(cornerRadius: 14))
+        // Only the full output is fetched, in the background, after the fold
+        // opens; collapsing destroys this view and cancels the task. There is
+        // deliberately no loading affordance — the preview above is the
+        // content, and a replacement silently takes its place.
+        .task(id: row.id) {
+            if row.value.isDeferred { chat.deferredItems.load(row.id) }
+        }
+    }
+}
+
+/// The only affordance a deferred row gains on failure or offline: a static
+/// status line plus a plain retry button. No spinner and no "loading" copy.
+private struct TimelineDeferredFooter: View {
+    let chat: SessionChatModel
+    let id: V2TimelineItemID
+    /// "完整输出未加载" for a tool row, "完整思考未加载" for reasoning.
+    let missingText: String
+    var body: some View {
+        let phase = chat.deferredItems.phase(id)
+        if phase == .failed || phase == .offline {
+            HStack(spacing: 8) {
+                Text(status(phase)).font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                Button(String(localized: "重试")) { chat.deferredItems.retry(id) }
+                    .buttonStyle(.plain).font(.caption.weight(.medium)).foregroundStyle(.tint)
+                    .padding(.horizontal, 8).frame(minHeight: 44)
+            }
+            .padding(.leading, 12)
+            .frame(minHeight: 44)
+            .background(.quaternary.opacity(0.3))
+        }
+    }
+    /// Uses the iOS-only capitalized `离线` entry: the shared Web `Offline`
+    /// key's English value is lowercase and would read as `offline · …`.
+    private func status(_ phase: DeferredItemStore.Phase) -> String {
+        return phase == .offline ? "\(String(localized: "离线")) · \(missingText)" : missingText
     }
 }
 

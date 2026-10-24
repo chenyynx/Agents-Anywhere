@@ -203,6 +203,11 @@ class ProtocolTimelineResponse(ProtocolWireModel):
     # (``excludeAgentChildren``) and this mode honored it. Additive: older
     # servers omit it and older clients ignore it.
     excludesAgentChildren: bool = False
+    # True only when the request asked for the activity-aware window
+    # (``deferActivity``) and this mode served it: rows may carry the writer's
+    # ``content.deferred`` summary and the client must fetch such a row by id
+    # before rendering it expanded. Additive, like ``excludesAgentChildren``.
+    deferredActivity: bool = False
     serverTime: str
 
 
@@ -226,6 +231,12 @@ class ProtocolSessionSnapshotResponse(ProtocolWireModel):
     # (``excludeAgentChildren``) and the snapshot's timeline honored it.
     # Additive: older servers omit it and older clients ignore it.
     excludesAgentChildren: bool = False
+    # True when the request asked for the activity-aware window
+    # (``deferActivity``, together with ``excludeAgentChildren``) and this
+    # snapshot served it. Deliberately top-level, not inside
+    # ``ProtocolTimelineSnapshot``: the window is a property of the whole
+    # read, and the nested object's shape stays unchanged for older clients.
+    deferredActivity: bool = False
     serverTime: str
 
 

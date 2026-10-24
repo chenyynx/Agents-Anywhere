@@ -100,6 +100,14 @@ from agent_server.infra.connector_rpc import (
 from agent_server.infra.event_preparation import EventPreparationCapacityError
 from agent_server.infra.repositories.facade import Store
 from agent_server.infra.timeline_broker import TimelineBroker
+from agent_server.infra.timeline_store import (
+    ACTIVE_TIMELINE_STATUSES,
+    DEFERRED_TAIL_FULL_BYTES,
+    build_reasoning_stub_content,
+    build_stub_content,
+    is_deferred_display_item,
+    is_deferred_reasoning_item,
+)
 from agent_server.infra.ws_tickets import ClientWsTicketManager
 from agent_server.services.catalogs import CatalogService
 from agent_server.services.connector_presence import (
@@ -841,6 +849,11 @@ async def session_timeline(
     # keeps web / android / desktop / older clients on the exact pre-existing
     # behavior.
     exclude_agent_children: bool = Query(False, alias="excludeAgentChildren"),
+    # Opt-in activity-aware window: anchor on display rows and serve large tool
+    # activity rows from their stored summary. Only honored together with
+    # ``excludeAgentChildren`` on ``latest``/``history``; every other mode (and
+    # the default false) keeps its exact pre-existing behavior.
+    defer_activity: bool = Query(False, alias="deferActivity"),
     parent_item_id: str | None = Query(None, alias="parentItemId", min_length=1),
     limit: int = Query(100, ge=1, le=500),
     user_id: str = Depends(current_user_id),
@@ -849,57 +862,98 @@ async def session_timeline(
         get_timeline_write_buffer
     ),
 ) -> ProtocolTimelineResponse:
+    deferred_applied = False
+    deferred_requested = (
+        mode in ("latest", "history")
+        and defer_activity
+        and exclude_agent_children
+    )
     try:
         await db.get_session(session_id, user_id=user_id)
         async with timeline_write_buffer.session_fence(session_id):
-            if mode == "latest":
-                items, has_more = await db.list_timeline_latest(
-                    session_id=session_id,
-                    limit=limit,
-                    main_only=exclude_agent_children,
-                )
-            elif mode == "history":
-                if before_order_seq is None:
+            if deferred_requested:
+                if mode == "history" and before_order_seq is None:
                     raise HTTPException(
                         status_code=422,
                         detail="beforeOrderSeq is required for history mode",
                     )
-                items, has_more = await db.list_timeline_before_order_seq(
-                    session_id=session_id,
-                    before_order_seq=before_order_seq,
-                    limit=limit,
-                    main_only=exclude_agent_children,
-                )
-            elif mode == "children":
-                if parent_item_id is None:
-                    raise HTTPException(
-                        status_code=422,
-                        detail="parentItemId is required for children mode",
+                items, has_more, deferred_applied = (
+                    await db.list_timeline_deferred_window(
+                        session_id=session_id,
+                        limit=limit,
+                        # The legacy latest reader ignores a cursor; keep that
+                        # contract exactly. Only history is a backward page.
+                        before_order_seq=(
+                            before_order_seq if mode == "history" else None
+                        ),
                     )
-                items, has_more = await db.list_agent_children(
-                    session_id=session_id,
-                    parent_item_id=parent_item_id,
-                    before_order_seq=before_order_seq,
-                    limit=limit,
                 )
-                # A card's child rows can be as large as any timeline row, so
-                # the same 2MB serialized-byte ceiling that guards the snapshot
-                # applies here: keep the newest rows and tell the client more
-                # remain via hasMore.
+                if deferred_applied:
+                    items, trimmed = _trim_deferred_window_items(
+                        session_id,
+                        items,
+                        budget=_snapshot_timeline_byte_budget(),
+                    )
+                    has_more = has_more or trimmed
+            if not deferred_applied:
+                if mode == "latest":
+                    items, has_more = await db.list_timeline_latest(
+                        session_id=session_id,
+                        limit=limit,
+                        main_only=exclude_agent_children,
+                    )
+                elif mode == "history":
+                    if before_order_seq is None:
+                        raise HTTPException(
+                            status_code=422,
+                            detail="beforeOrderSeq is required for history mode",
+                        )
+                    items, has_more = await db.list_timeline_before_order_seq(
+                        session_id=session_id,
+                        before_order_seq=before_order_seq,
+                        limit=limit,
+                        main_only=exclude_agent_children,
+                    )
+                elif mode == "children":
+                    if parent_item_id is None:
+                        raise HTTPException(
+                            status_code=422,
+                            detail="parentItemId is required for children mode",
+                        )
+                    items, has_more = await db.list_agent_children(
+                        session_id=session_id,
+                        parent_item_id=parent_item_id,
+                        before_order_seq=before_order_seq,
+                        limit=limit,
+                    )
+                    # A card's child rows can be as large as any timeline row, so
+                    # the same 2MB serialized-byte ceiling that guards the snapshot
+                    # applies here: keep the newest rows and tell the client more
+                    # remain via hasMore.
+                    items, budget_has_more = _apply_snapshot_timeline_byte_budget(
+                        session_id,
+                        items,
+                    )
+                    has_more = has_more or budget_has_more
+                else:
+                    # ``changes`` is the export/recovery feed: it must keep its
+                    # exact pre-existing semantics, so neither
+                    # ``excludeAgentChildren`` nor ``deferActivity`` applies.
+                    items, has_more = await db.list_timeline_since(
+                        session_id=session_id,
+                        after_seq=after_seq,
+                        limit=limit,
+                    )
+            if deferred_requested and not deferred_applied:
+                # The client asked for a bounded window; a declined deferred
+                # read (no display row to anchor on) must still respect the
+                # same ceiling as the deferred branch. The default readers
+                # (no flags) keep their exact pre-existing bytes.
                 items, budget_has_more = _apply_snapshot_timeline_byte_budget(
                     session_id,
                     items,
                 )
                 has_more = has_more or budget_has_more
-            else:
-                # ``changes`` is the export/recovery feed: it must keep its
-                # exact pre-existing semantics, so ``excludeAgentChildren``
-                # deliberately does not apply here.
-                items, has_more = await db.list_timeline_since(
-                    session_id=session_id,
-                    after_seq=after_seq,
-                    limit=limit,
-                )
             next_seq = await db.get_session_seq(session_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="session not found") from None
@@ -913,8 +967,45 @@ async def session_timeline(
         excludesAgentChildren=(
             exclude_agent_children and mode in ("latest", "history")
         ),
+        deferredActivity=deferred_applied,
         serverTime=utc_now(),
     )
+
+
+@router.get(
+    "/{session_id}/timeline/items/{item_id}",
+    response_model=TimelineItem,
+)
+async def session_timeline_item(
+    session_id: str,
+    item_id: str,
+    user_id: str = Depends(current_user_id),
+    db: Store = Depends(get_store),
+    timeline_write_buffer: TimelineWriteBuffer = Depends(
+        get_timeline_write_buffer
+    ),
+) -> TimelineItem:
+    """One timeline row with its complete payload.
+
+    The expanded view behind a deferred summary: a window may carry
+    ``content.deferred`` rows, and the client replaces one in place with this
+    read. The row is returned exactly as stored — never summarised — and the
+    session lookup is what enforces ownership (another user's session answers
+    404, the same as an unknown row).
+    """
+
+    try:
+        await db.get_session(session_id, user_id=user_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="session not found") from None
+    async with timeline_write_buffer.session_fence(session_id):
+        item = await db.read_timeline_item(
+            session_id=session_id,
+            item_id=item_id,
+        )
+    if item is None:
+        raise HTTPException(status_code=404, detail="timeline item not found")
+    return item
 
 
 # Removed migration route:
@@ -1009,6 +1100,151 @@ def _apply_snapshot_timeline_byte_budget(
     return kept, True
 
 
+def _deferred_content_is_stub(content: Any) -> bool:
+    """Whether a row already carries the writer's deferred summary."""
+
+    return isinstance(content, Mapping) and content.get("deferred") is True
+
+
+def _trim_deferred_window_items(
+    session_id: str,
+    items: list[TimelineItem],
+    *,
+    budget: int | None = None,
+) -> tuple[list[TimelineItem], bool]:
+    """Fit one deferred-activity window into the snapshot byte budget.
+
+    ``items`` arrive oldest-first. Summarising a row keeps it in the window
+    (it still renders as its collapsed line), so trimming walks two levels
+    before it gives up a row:
+
+    1. **Newest activity segment.** The store already serves tail tool rows
+       over the stub threshold as summaries. If the rows after the last
+       display row still hold more than ``DEFERRED_TAIL_FULL_BYTES`` of
+       complete payload, summarise its oldest tool rows too. Active rows
+       (``pending`` / ``running`` / ``waiting_approval``) are never
+       summarised: they are the live tail. Reasoning rows are left complete
+       here; the total-budget step below summarises them only when the
+       response would otherwise exceed the budget, keeping the instant-thinking
+       path intact for normal windows.
+    2. **Remaining reasoning rows.** Still over budget: give every remaining
+       reasoning row the same text-head summary, oldest first. This is the
+       last-resort degrade that keeps a one-display-row window bounded without
+       hiding the thinking or dropping the conversation anchor.
+    3. **Drop the oldest display rows.** Still over budget: drop the oldest
+       display row and every row before it, so the window starts at the next
+       display row still present. ``trimmed=True`` then raises ``hasMore`` —
+       the dropped range is reachable through history paging.
+    4. The newest display row is never dropped: at least one row always comes
+       back, even if it alone exceeds the budget.
+
+    A window with no display row at all (the reader usually returns
+    ``applied=False`` for that shape) falls back to the plain newest-first
+    budget, so a response can never be unbounded.
+
+    Only the deferred branch calls this; the default readers keep their exact
+    pre-existing byte semantics. Returns ``(items, trimmed)``.
+    """
+
+    if budget is None:
+        budget = _snapshot_timeline_byte_budget()
+    if not items:
+        return [], False
+
+    items = list(items)
+    if not any(is_deferred_display_item(item) for item in items):
+        logger.info(
+            "deferred window has no display row; using the plain byte budget "
+            "session_id={} items={}",
+            session_id,
+            len(items),
+        )
+        return _apply_snapshot_timeline_byte_budget(
+            session_id, items, budget=budget
+        )
+
+    sizes = [_snapshot_timeline_item_bytes(item) for item in items]
+    total_bytes = sum(sizes)
+    trimmed = False
+
+    last_display_index: int | None = None
+    for index, item in enumerate(items):
+        if is_deferred_display_item(item):
+            last_display_index = index
+    if last_display_index is not None and last_display_index + 1 < len(items):
+        tail_start = last_display_index + 1
+        tail_bytes = sum(sizes[tail_start:])
+        if tail_bytes > DEFERRED_TAIL_FULL_BYTES:
+            for index in range(tail_start, len(items)):
+                if tail_bytes <= DEFERRED_TAIL_FULL_BYTES:
+                    break
+                item = items[index]
+                if item.type != "tool":
+                    continue
+                if item.status in ACTIVE_TIMELINE_STATUSES:
+                    continue
+                if _deferred_content_is_stub(item.content):
+                    continue
+                item_bytes = sizes[index]
+                stub = build_stub_content(item.content, payload_bytes=item_bytes)
+                if stub is None:
+                    continue
+                items[index] = item.model_copy(update={"content": stub})
+                replacement_bytes = _snapshot_timeline_item_bytes(items[index])
+                tail_bytes += replacement_bytes - item_bytes
+                total_bytes += replacement_bytes - item_bytes
+                sizes[index] = replacement_bytes
+
+    if total_bytes > budget:
+        # Remaining reasoning rows (the tail included): a text-head summary
+        # keeps the row visible and lets the single-item read complete it.
+        # Without this a window with one display row and a long thinking tail
+        # could not be brought under the budget at all.
+        for index, item in enumerate(items):
+            if total_bytes <= budget:
+                break
+            if item.status in ACTIVE_TIMELINE_STATUSES:
+                continue
+            if _deferred_content_is_stub(item.content):
+                continue
+            if not is_deferred_reasoning_item(item):
+                continue
+            item_bytes = sizes[index]
+            stub = build_reasoning_stub_content(
+                item.content, payload_bytes=item_bytes
+            )
+            if stub is None:
+                continue
+            items[index] = item.model_copy(update={"content": stub})
+            replacement_bytes = _snapshot_timeline_item_bytes(items[index])
+            total_bytes += replacement_bytes - item_bytes
+            sizes[index] = replacement_bytes
+
+    while total_bytes > budget:
+        display_indexes = [
+            index
+            for index, item in enumerate(items)
+            if is_deferred_display_item(item)
+        ]
+        if len(display_indexes) < 2:
+            break
+        cut = display_indexes[1]
+        total_bytes -= sum(sizes[:cut])
+        items = items[cut:]
+        sizes = sizes[cut:]
+        trimmed = True
+    if trimmed:
+        logger.info(
+            "deferred window trimmed to the byte budget session_id={} kept={} "
+            "bytes={} budget={}",
+            session_id,
+            len(items),
+            total_bytes,
+            budget,
+        )
+    return items, trimmed
+
+
 @router.get("/{session_id}/snapshot", response_model=ProtocolSessionSnapshotResponse)
 async def session_snapshot(
     session_id: str,
@@ -1018,6 +1254,9 @@ async def session_snapshot(
     # rows in SQL before the LIMIT. Default false keeps every existing client
     # on the pre-existing snapshot bytes.
     exclude_agent_children: bool = Query(False, alias="excludeAgentChildren"),
+    # Opt-in activity-aware window (see the timeline route); only honored
+    # together with ``excludeAgentChildren``.
+    defer_activity: bool = Query(False, alias="deferActivity"),
     user_id: str = Depends(current_user_id),
     db: Store = Depends(get_store),
     manager: ConnectorRpcManager = Depends(get_rpc),
@@ -1043,6 +1282,7 @@ async def session_snapshot(
             (time.monotonic() - snapshot_started_at) * 1000,
         )
 
+    deferred_applied = False
     try:
         stage_started_at = time.monotonic()
         session = await db.get_session(session_id, user_id=user_id)
@@ -1094,11 +1334,26 @@ async def session_snapshot(
         stage_started_at = time.monotonic()
         async with timeline_write_buffer.session_fence(session_id):
             session = await db.get_session(session_id, user_id=user_id)
-            items, has_more = await db.list_timeline_latest(
-                session_id=session_id,
-                limit=limit,
-                main_only=exclude_agent_children,
-            )
+            if defer_activity and exclude_agent_children:
+                items, has_more, deferred_applied = (
+                    await db.list_timeline_deferred_window(
+                        session_id=session_id,
+                        limit=limit,
+                    )
+                )
+                if deferred_applied:
+                    items, trimmed = _trim_deferred_window_items(
+                        session_id,
+                        items,
+                        budget=_snapshot_timeline_byte_budget(),
+                    )
+                    has_more = has_more or trimmed
+            if not deferred_applied:
+                items, has_more = await db.list_timeline_latest(
+                    session_id=session_id,
+                    limit=limit,
+                    main_only=exclude_agent_children,
+                )
             # P1: in-flight Agent cards ride beside the timeline page, outside
             # its (100-item / byte-budget) window and outside the 2MB timeline
             # budget itself. Read under the same fence as `items` so the two
@@ -1125,10 +1380,17 @@ async def session_snapshot(
         session_id=session_id,
         previous_state=runtime_state,
     )
-    items, budget_has_more = _apply_snapshot_timeline_byte_budget(
-        session_id,
-        items,
-    )
+    if deferred_applied:
+        # The deferred reader already trimmed its window with the same budget
+        # (``_trim_deferred_window_items``): summarising rows first and only
+        # then dropping display rows. Re-applying the plain newest-first trim
+        # here would drop the anchored display rows the window just paid for.
+        budget_has_more = False
+    else:
+        items, budget_has_more = _apply_snapshot_timeline_byte_budget(
+            session_id,
+            items,
+        )
     return ProtocolSessionSnapshotResponse(
         session=session.model_dump(mode="json"),
         state=(
@@ -1156,6 +1418,7 @@ async def session_snapshot(
         },
         eventCursor=event_cursor(next_seq),
         excludesAgentChildren=exclude_agent_children,
+        deferredActivity=deferred_applied,
         serverTime=utc_now(),
     )
 

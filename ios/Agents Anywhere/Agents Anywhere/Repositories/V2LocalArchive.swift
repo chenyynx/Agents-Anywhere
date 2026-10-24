@@ -57,6 +57,12 @@ nonisolated struct V2SessionArchive: Codable {
     /// content and render a silent empty activity area. Optional: archives
     /// written before this field existed decode without it.
     var excludesAgentChildren: Bool? = nil
+    /// Whether the archived window was read with `deferActivity`. Restoring it
+    /// keeps a deferred window from being mistaken for a pre-feature one and
+    /// re-fetched on every open. Optional: archives written before this field
+    /// existed decode without it, which reads as `false` (the open-time repair
+    /// asks the server once and records the answer).
+    var deferredActivity: Bool? = nil
     /// The child rows the SubAgent panel fetched per card (C3 offline cache),
     /// bounded by `SubAgentActivityLimits`. Optional: archives written before
     /// this field existed decode without it.
@@ -66,6 +72,7 @@ nonisolated struct V2SessionArchive: Codable {
         session = data.session; items = data.items.map(\.raw); cursor = data.cursor
         hasOlderItems = data.hasOlderItems; hasNewerItems = data.hasNewerItems
         excludesAgentChildren = data.windowExcludesAgentChildren ? true : nil
+        deferredActivity = data.windowDeferredActivity ? true : nil
         let activity = model.subAgentActivity.archived()
         subAgentActivity = activity.isEmpty ? nil : activity
         previews = model.attachmentPreviews.archived()
@@ -117,7 +124,8 @@ nonisolated struct V2SessionArchive: Codable {
             timeline: .init(items: decoded, nextSeq: V2SessionProjection.sequence(cursor), hasMore: hasOlderItems),
             approvals: [], notices: [], effectiveCapabilities: empty, runtimeCapabilities: empty,
             catalogs: [:], eventCursor: cursor, serverTime: "",
-            excludesAgentChildren: excludesAgentChildren ?? false)
+            excludesAgentChildren: excludesAgentChildren ?? false,
+            deferredActivity: deferredActivity)
         return V2SessionProjection(archive: snapshot, hasNewerItems: hasNewerItems, maximumItems: maximumItems, now: now)
     }
 }

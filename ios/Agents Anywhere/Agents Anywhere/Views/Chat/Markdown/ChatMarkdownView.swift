@@ -168,6 +168,7 @@ private struct MarkdownBlockView: View, Equatable {
     }
 
     var body: some View {
+        let _ = TimelineProbe.blockBody()
         // Only changed blocks reach Textual's parser. The complete document was
         // parsed above, so cross-block references and nested structures survive.
         MarkdownBlockLayout(dynamicType: dynamicType, displayScale: displayScale, direction: direction) {

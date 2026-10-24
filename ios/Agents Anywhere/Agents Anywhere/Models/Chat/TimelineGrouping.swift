@@ -44,7 +44,9 @@ struct ChatTimelineGroup: Identifiable, Equatable {
 
 enum TimelineGrouping {
     static func groups(_ rows: [ChatTimelineRowModel], interactionTargets: Set<String>) -> [ChatTimelineGroup] {
-        grouped(rows, interactionTargets: interactionTargets, includeAgentRows: false)
+        TimelineProbe.grouping(rows: rows.count) {
+            grouped(rows, interactionTargets: interactionTargets, includeAgentRows: false)
+        }
     }
 
     /// C0 fallback (2026-10-23): the whole window can be rows the connector
@@ -55,7 +57,9 @@ enum TimelineGrouping {
     /// parent merge); the panel still reads `chat.timeline.rows`, so nothing is
     /// hidden from it.
     static func fallbackGroups(_ rows: [ChatTimelineRowModel], interactionTargets: Set<String>) -> [ChatTimelineGroup] {
-        grouped(rows, interactionTargets: interactionTargets, includeAgentRows: true)
+        TimelineProbe.grouping(rows: rows.count) {
+            grouped(rows, interactionTargets: interactionTargets, includeAgentRows: true)
+        }
     }
 
     /// The fallback applies only when the window holds no main-agent row: the

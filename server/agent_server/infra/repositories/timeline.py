@@ -33,6 +33,11 @@ from agent_server.infra.db import session_active_runs as active_runs_t
 from agent_server.infra.db import sessions as sessions_t
 from agent_server.infra.db import timeline_items as timeline_items_t
 from agent_server.infra.repositories.store_support import session_revision_fenced
+from agent_server.infra.timeline_store import (
+    DEFERRED_ANCHOR_SCAN_ROWS,
+    DEFERRED_STUB_THRESHOLD_BYTES,
+    DEFERRED_WINDOW_MAX_ROWS,
+)
 
 # One shared "the janitor proved nothing is due here" answer. ``changed=False``
 # is what lets the publish layer skip a session-only envelope for a sweep that
@@ -1596,6 +1601,37 @@ class TimelineRepositoryMixin:
             limit=limit,
             main_only=main_only,
         )
+
+    async def list_timeline_deferred_window(
+        self,
+        *,
+        session_id: str,
+        limit: int,
+        before_order_seq: int | None = None,
+        span_rows: int = DEFERRED_WINDOW_MAX_ROWS,
+        anchor_scan_rows: int = DEFERRED_ANCHOR_SCAN_ROWS,
+        stub_threshold_bytes: int = DEFERRED_STUB_THRESHOLD_BYTES,
+    ) -> tuple[list[TimelineItem], bool, bool]:
+        """The opt-in activity-aware timeline window (see the store reader)."""
+
+        return await self.timeline.list_deferred_window(
+            session_id,
+            limit=limit,
+            before_order_seq=before_order_seq,
+            span_rows=span_rows,
+            anchor_scan_rows=anchor_scan_rows,
+            stub_threshold_bytes=stub_threshold_bytes,
+        )
+
+    async def read_timeline_item(
+        self,
+        *,
+        session_id: str,
+        item_id: str,
+    ) -> TimelineItem | None:
+        """One stored row by stable id, always with its complete payload."""
+
+        return await self.timeline.read_one(session_id, item_id)
 
     async def list_agent_children(
         self,

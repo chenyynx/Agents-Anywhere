@@ -48,12 +48,12 @@ import Testing
         #expect(chat.headerStatus == .networkOffline)
         restored.reset(); await store.close(removing: true)
     }
-    @Test func openingLargeDiskCacheOfflineStillStartsWithOnePage() async throws {
+    @Test func openingLargeDiskCacheOfflineStillStartsWithOneWindow() async throws {
         let url = location(); defer { try? FileManager.default.removeItem(at: url) }
         let store = V2LocalStore(directory: url)
         let http = TestHTTPTransport()
         let first = repo(http, local: store)
-        let data = V2SessionData(snapshot: try snapshot(items: (1...300).map {
+        let data = V2SessionData(snapshot: try snapshot(items: (1...1000).map {
             try itemObject(id: "item-\($0)", order: $0)
         }))
         let session = first.session(id: "session")
@@ -62,7 +62,7 @@ import Testing
         let restored = repo(http, local: store)
         restored.updateConnectivity(.init(availability: .offline))
         let opening = try await restored.open(sessionId: "session")
-        #expect(opening.items.map(\.orderSeq) == Array(201...300))
+        #expect(opening.items.map(\.orderSeq) == Array(851...1000))
         #expect(opening.hasOlderItems && !opening.hasNewerItems && http.calls.isEmpty)
         #expect(restored.session(id: "session").draft == "Keep my draft")
         restored.reset(); first.reset(); await store.close(removing: true)

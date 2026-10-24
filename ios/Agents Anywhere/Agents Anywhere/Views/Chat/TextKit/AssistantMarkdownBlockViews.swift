@@ -369,7 +369,9 @@ final class AssistantCodeBlockView: UIView {
             // [E] `codeCard.title.typography` (code-title-r10 §1): 13 pt,
             // weight 400, lineHeight 20.8, `.caption` relative, JetBrains
             // Mono. The official 44 pt header centres the 20.8 pt line box.
-            let size = UIFontMetrics(forTextStyle: .caption)
+            // SwiftUI's `.caption` is UIKit's `.caption1`; `UIFont.TextStyle`
+            // has no `.caption` member.
+            let size = UIFontMetrics(forTextStyle: .caption1)
                 .scaledValue(for: codeBlock.titleFontSize)
             languageLabel.font = MarkdownFontFactory.font(
                 name: titleFontName, size: size,

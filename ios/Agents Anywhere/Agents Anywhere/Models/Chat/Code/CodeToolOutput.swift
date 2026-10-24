@@ -525,9 +525,16 @@ nonisolated enum CodeToolOutput: Hashable {
                             // marker: the official single-file diff starts at
                             // a numbered hunk header, and a bare one carries
                             // no information.
-                            lines.append(contentsOf: TimelineDiff(text).lines.filter {
+                            var parsed = TimelineDiff(text).lines.filter {
                                 $0.kind != .file && !($0.kind == .hunk && $0.text == "@@")
-                            })
+                            }
+                            // A trailing newline splits into one empty
+                            // context line; it is not a file line.
+                            while let last = parsed.last, last.kind == .context,
+                                  last.text.isEmpty, last.oldLine == nil, last.newLine == nil {
+                                parsed.removeLast()
+                            }
+                            lines.append(contentsOf: parsed)
                         }
                     } else if let nestedLines = change["lines"]?.arrayValue {
                         lines.append(contentsOf: structuredLines(nestedLines))

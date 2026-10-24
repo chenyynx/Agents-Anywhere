@@ -877,8 +877,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     profile: codeProfile,
                     cwd: model.session.metadata?.cwd,
                     streaming: streamingText,
-                    preparedBlocks: preparedTextBlocks(
-                        for: codeRowsByGroupID[id] ?? [], streaming: streamingText),
+                    typography: typography,
                     onToolDetail: { [weak self] request in
                         self?.onCodeToolDetail?(request)
                     }))

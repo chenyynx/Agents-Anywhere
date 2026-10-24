@@ -500,8 +500,13 @@ final class CodeProfileAutoRunModel {
     private func verifyMessageRowHeight() async {
         guard let group = messageGroup, let window = keyWindow else { return }
         let rowWidth = window.bounds.width - 2 * CodePageTheme.rowMarginLeading
+        let typography = TimelineChatContentAdapter.typography(
+            dynamicType: String(describing: DynamicTypeSize.large),
+            layoutDirection: 0,
+            boldText: false)
         let host = UIHostingController(rootView:
-            CodeMessageRowView(group: group, profile: .claudeCode, cwd: "/repo")
+            CodeMessageRowView(group: group, profile: .claudeCode, cwd: "/repo",
+                               typography: typography)
                 .padding(.horizontal, CodePageTheme.rowMarginLeading)
                 // `sizeThatFits` includes the hosting window's safe area; the
                 // row itself is laid out below the status bar in the timeline.
@@ -531,10 +536,6 @@ final class CodeProfileAutoRunModel {
             width: window.bounds.width, height: .greatestFiniteMagnitude)).height
             - safeTop - safeBottom)
 
-        let typography = TimelineChatContentAdapter.typography(
-            dynamicType: String(describing: DynamicTypeSize.large),
-            layoutDirection: 0,
-            boldText: false)
         let measured = CodeMessageHeightMeasurer.height(
             group: group, profile: .claudeCode,
             width: rowWidth, typography: typography, traits: traits, measured: true)
@@ -802,10 +803,14 @@ final class CodeProfileAutoRunModel {
                 continue
             }
 
+            let typography = TimelineChatContentAdapter.typography(
+                dynamicType: String(describing: size.dynamicType),
+                layoutDirection: 0,
+                boldText: false)
             let rowView = AnyView(CodeMessageRowView(group: group,
                                                      profile: .claudeCode,
                                                      cwd: "/repo",
-                                                     preparedBlocks: prepared)
+                                                     typography: typography)
                 .padding(.horizontal, margin)
                 .ignoresSafeArea())
 
@@ -1124,20 +1129,20 @@ final class CodeProfileAutoRunModel {
                 continue
             }
 
+            let typography = TimelineChatContentAdapter.typography(
+                dynamicType: String(describing: size.dynamicType),
+                layoutDirection: 0,
+                boldText: false)
             let rowView = AnyView(CodeMessageRowView(group: group,
                                                      profile: .claudeCode,
                                                      cwd: "/repo",
-                                                     preparedBlocks: prepared)
+                                                     typography: typography)
                 .padding(.horizontal, margin)
                 .ignoresSafeArea())
 
             // The structural value the production provider would seed with.
             // The cell ceils the seed, so record both the measurer output and
             // the value actually passed in.
-            let typography = TimelineChatContentAdapter.typography(
-                dynamicType: String(describing: size.dynamicType),
-                layoutDirection: 0,
-                boldText: false)
             let traits = UITraitCollection(traitsFrom: [
                 window.traitCollection,
                 UITraitCollection(preferredContentSizeCategory: size.category),
@@ -1453,8 +1458,13 @@ final class CodeProfileAutoRunModel {
                                   window: UIWindow) async -> [String: Any] {
         let margin = CodePageTheme.rowMarginLeading
         let hostWidth = width + 2 * margin
+        let typography = TimelineChatContentAdapter.typography(
+            dynamicType: String(describing: size.dynamicType),
+            layoutDirection: 0,
+            boldText: false)
         let host = UIHostingController(rootView:
-            CodeMessageRowView(group: group, profile: .claudeCode, cwd: "/repo")
+            CodeMessageRowView(group: group, profile: .claudeCode, cwd: "/repo",
+                               typography: typography)
                 .padding(.horizontal, margin)
                 .ignoresSafeArea())
         host.view.backgroundColor = .clear
@@ -1490,10 +1500,6 @@ final class CodeProfileAutoRunModel {
         let rendered = max(0, host.sizeThatFits(in: proposed).height
             - safeTop - safeBottom)
 
-        let typography = TimelineChatContentAdapter.typography(
-            dynamicType: String(describing: size.dynamicType),
-            layoutDirection: 0,
-            boldText: false)
         let measured = CodeMessageHeightMeasurer.height(
             group: group, profile: .claudeCode,
             width: width, typography: typography, traits: traits, measured: true)

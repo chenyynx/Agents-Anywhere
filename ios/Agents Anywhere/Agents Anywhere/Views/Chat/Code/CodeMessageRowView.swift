@@ -36,6 +36,10 @@ struct CodeMessageRowView: View {
     /// for `ChatMarkdownView`'s async parse (and so the measurer can lay the
     /// real view out synchronously).
     var preparedBlocks: [String: [MarkdownBlockSnapshot]]?
+    /// The adapter's typography snapshot. The text leaf measures and draws
+    /// with it; production passes it so the leaf and
+    /// `CodeMessageHeightMeasurer` use identical metrics.
+    var typography: TimelineTypographySnapshot?
     /// A collapsed tool row's tap. Navigation belongs to the page: a sheet
     /// owned by this row would sit inside a hosting cell that every streaming
     /// reconfigure rebuilds, and could dismiss an open detail.
@@ -46,12 +50,14 @@ struct CodeMessageRowView: View {
          cwd: String? = nil,
          streaming: CodeStreamingText? = nil,
          preparedBlocks: [String: [MarkdownBlockSnapshot]]? = nil,
+         typography: TimelineTypographySnapshot? = nil,
          onToolDetail: @escaping (CodeToolDetailRequest) -> Void = { _ in }) {
         self.group = group
         self.profile = profile
         self.cwd = cwd
         self.streaming = streaming
         self.preparedBlocks = preparedBlocks
+        self.typography = typography
         self.onToolDetail = onToolDetail
     }
 
@@ -135,19 +141,15 @@ struct CodeMessageRowView: View {
             EmptyView()
 
         case let .text(id, text):
-            // First packet: the existing Markdown view. The Code page has no
-            // reveal, so the text is always the settled full snapshot.
-            let displayed = displayedText(id: id, fallback: text)
-            let preparedKey = ChatMarkdownPrepared.key(for: displayed)
-            let prepared = preparedBlocks?[preparedKey]
-            ChatMarkdownView(text: displayed,
-                             isStreaming: false,
-                             resolvesFileReferences: true,
-                             initialBlocks: prepared)
-                // A seeded view keeps its first blocks across a root-view
-                // update; tie the identity to the text so a streaming
-                // snapshot reseeds instead of drawing the previous one.
-                .id(prepared == nil ? "async:\(id)" : "prepared:\(id):\(preparedKey)")
+            // The official Code page draws a text block through a
+            // `UIViewRepresentable` whose synchronous `sizeThatFits` measures
+            // the TextKit document (`EVIDENCE/UPSTREAM/part-aa-markdown-ui.md:149`).
+            // The leaf draws and measures with the same engine as
+            // `CodeMessageHeightMeasurer`, so the first fit already carries
+            // the real body and no settled row corrects itself. The Code page
+            // has no reveal; the text is always the settled full snapshot.
+            CodeMarkdownTextLeaf(text: displayedText(id: id, fallback: text),
+                                 typography: typography)
 
         case let .toolCalls(segments):
             VStack(alignment: .leading, spacing: 0) {

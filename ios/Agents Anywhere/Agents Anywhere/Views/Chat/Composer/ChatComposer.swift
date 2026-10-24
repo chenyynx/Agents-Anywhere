@@ -39,7 +39,10 @@ struct ChatComposer: View {
     private var accent: AppAccent { AppAccent.resolve(accentValue) }
 
     var body: some View {
-        GlassEffectContainer(spacing: 12) {
+        // [E] R19 chrome-composer.md §1 — the official composer is
+        // `GlassEffectContainer(spacing: nil)` + `Glass.regular.interactive`
+        // in a continuous rounded rectangle; it is not a solid/Material bar.
+        GlassEffectContainer(spacing: nil) {
             VStack(spacing: 0) {
                 if !draft.attachments.isEmpty { attachmentTray }
                 ComposerLayout(expanded: draft.isExpanded, maximumEditorHeight: maximumEditorHeight, controls: controls) {
@@ -104,7 +107,10 @@ struct ChatComposer: View {
                     }
                 }
             }
-            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: draft.isExpanded ? controls.expandedCornerRadius : controls.collapsedCornerRadius))
+            .glassEffect(.regular.interactive(), in: RoundedRectangle(
+                cornerRadius: draft.isExpanded
+                    ? controls.expandedCornerRadius : controls.collapsedCornerRadius,
+                style: .continuous))
             .glassEffectID("composer", in: glass)
         }
         .padding(.horizontal, draft.isExpanded ? ChatControlMetrics.expandedHorizontalInset : ChatControlMetrics.collapsedHorizontalInset)

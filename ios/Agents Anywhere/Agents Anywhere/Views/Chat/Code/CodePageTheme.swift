@@ -258,6 +258,19 @@ nonisolated enum CodePageTheme {
 
     // MARK: - Code card (official Code page)
 
+    /// [E] R19 `chrome-composer.md` §4 — the Code session page background is
+    /// `#F9F9F7` light / `#151515` dark (`CodeSessionContent.body
+    /// 0x102a68610`, `.background(Color, ignoresSafeAreaEdges: .all)`).
+    static let pageBackgroundColor: SchemeColor = SchemeColor(
+        light: Color(.sRGB, red: 0.976, green: 0.976, blue: 0.969),
+        dark: Color(.sRGB, red: 0.082, green: 0.082, blue: 0.082))
+
+    static let pageBackgroundUIColor = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.082, green: 0.082, blue: 0.082, alpha: 1)
+            : UIColor(red: 0.976, green: 0.976, blue: 0.969, alpha: 1)
+    }
+
     /// [E] CANONICAL/06-visuals-assets.md §2.2 — Markdown text
     /// `#131313` / `#F9F9F7` (`0.075` / `0.976,0.976,0.969`).
     static let markdownTextUIColor = UIColor { traits in

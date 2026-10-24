@@ -58,15 +58,23 @@ struct SessionChatView: View, Equatable {
     /// dock does: adding the second initializer inline pushes the enclosing
     /// `Group` past the type checker's budget.
     @ViewBuilder private func timelineView() -> some View {
-        if usesCollectionTimeline {
-            TimelineChatTimelineView(model: model,
-                onAttachment: openAttachment, onFile: openFile,
-                onSubAgent: { sheet = .subagents($0, fromCapsule: false) })
-        } else {
-            ChatTimelineView(model: model,
-                onAttachment: openAttachment, onFile: openFile,
-                onSubAgent: { sheet = .subagents($0, fromCapsule: false) })
+        Group {
+            if usesCollectionTimeline {
+                TimelineChatTimelineView(model: model,
+                    onAttachment: openAttachment, onFile: openFile,
+                    onSubAgent: { sheet = .subagents($0, fromCapsule: false) })
+            } else {
+                ChatTimelineView(model: model,
+                    onAttachment: openAttachment, onFile: openFile,
+                    onSubAgent: { sheet = .subagents($0, fromCapsule: false) })
+            }
         }
+        // [E] The official transcript is a full-screen bleed: its
+        // `contentInset = max(safeArea − scrollView.safeAreaInsets, 0)` lets
+        // rows scroll under the navigation bar and the composer
+        // (R19 chrome-composer.md §2–§3). The scroll view's automatic
+        // adjustment keeps the resting first/last row clear.
+        .ignoresSafeArea(.container, edges: .top)
     }
 
     /// The bottom dock stack, in its own method: the composer's initializer and
@@ -194,9 +202,17 @@ struct SessionChatView: View, Equatable {
                     }
                 }
                 .overlay { if model.showsOpeningMask { openingMask } }
-                .safeAreaInset(edge: .bottom, spacing: 0) {
+                // [E] The official composer is a bottom bar over a full-screen
+                // transcript, not a list footer (chrome-composer.md §2–§3).
+                // `safeAreaBar` keeps it over the content while the list
+                // scrolls beneath the glass.
+                .safeAreaBar(edge: .bottom, spacing: 0) {
                     composerDockArea(maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)))
                 }
+                // [E] chrome-composer.md §4 — Code page background
+                // `#F9F9F7` / `#151515`, edge to edge.
+                .background(Color(uiColor: CodePageTheme.pageBackgroundUIColor)
+                    .ignoresSafeArea())
                 .overlay(alignment: .topLeading) {
                     VStack(alignment: .leading, spacing: 4) {
                         // Metadata can arrive after history. Transient controls
@@ -236,10 +252,14 @@ struct SessionChatView: View, Equatable {
             subtitle: SessionHeaderSubtitle.text(metadata: session.metadata, deviceName: deviceName,
                 fallbackRuntimeName: fallbackRuntimeName),
             status: model.headerStatus, alignsTitleLeading: true, onMenu: onMenu))
-        // The collection timeline's UIScrollView owns its soft top edge
-        // effect; the navigation bar must not paint its own opaque bar over
-        // it. The SwiftUI path keeps the system default.
-        .toolbarBackground(usesCollectionTimeline ? .hidden : .automatic, for: .navigationBar)
+        // [E] chrome-composer.md §3 — the official navigation bar paints the
+        // page colour and stays visible (`toolbarBackgroundVisibility(1,
+        // .navigationBar)` + `toolbarBackground(pageColor)`); iOS 26's scroll
+        // edge supplies the blur over rows passing underneath. It is not an
+        // opaque system bar and not `.hidden`.
+        .toolbarBackground(Color(uiColor: CodePageTheme.pageBackgroundUIColor),
+                           for: .navigationBar)
+        .toolbarBackgroundVisibility(.visible, for: .navigationBar)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button { sheet = .files } label: { AppSymbol("folder") }
@@ -363,7 +383,7 @@ struct SessionChatView: View, Equatable {
 
     private var openingMask: some View {
         ZStack {
-            Color(uiColor: .systemBackground)
+            Color(uiColor: CodePageTheme.pageBackgroundUIColor)
             VStack(spacing: 12) {
                 if let error = model.openingError, !model.timeline.hasPresentedSnapshot {
                     Text(error).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)

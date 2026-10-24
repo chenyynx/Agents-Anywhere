@@ -1321,6 +1321,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // message, so a reasoning-only group is never kept alive by it and
         // the status line cannot re-key a message group.
         let hasWorkingStatus = model.sendingPlaceholder != nil
+        // The official mark's pose follows the live turn's last event
+        // (`SessionDisplay.liveTurnMark`). Keep the last pose while the row
+        // plays its exit, so the exit animates the sprite that was on screen.
+        if hasWorkingStatus { workingStatusExitState.markBody = liveWorkingMarkBody() }
         // Official working-mark exit: when the turn's status disappears the
         // row is not deleted instantly. It stays mounted for the 0.4 s
         // scale/opacity group animation with `isRunning = false`
@@ -1756,6 +1760,24 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// now, so the Code tail must not draw a second indicator.
     private var tailStatusLineVisible: Bool { false }
 
+    /// The official live-turn pose. Only the tail after the last user message
+    /// can hold the running block, so the walk stops there instead of
+    /// scanning the whole transcript on every rebuild.
+    private func liveWorkingMarkBody() -> WorkingMarkBody {
+        var tail: [CodeWorkingMarkRow] = []
+        for row in model.timeline.rows.reversed() {
+            let item = row.value
+            if item.role == .user { break }
+            tail.append(CodeWorkingMarkRow(
+                role: item.role,
+                isReasoning: item.isReasoning,
+                isActive: item.status.isActive,
+                toolName: TimelineEntryPresentation.isToolKindItem(item)
+                    ? CodeToolCall.wireName(for: item) : nil))
+        }
+        return CodeWorkingMarkPose.body(rows: Array(tail.reversed()))
+    }
+
     /// Attachments ride inside the typed content: a message carries a list, an
     /// attachment item carries one. `V2TimelineItem` itself exposes neither.
     private func attachments(of item: V2TimelineItem) -> [V2AttachmentContent] {
@@ -1859,6 +1881,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
 @MainActor @Observable
 private final class WorkingStatusExitState {
     var isRunning = true
+    /// The official live-turn pose (`SessionDisplay.liveTurnMark`). Updated in
+    /// place through the observable box so a running mark swaps its flipbook
+    /// without the row being reconfigured.
+    var markBody: WorkingMarkBody = .think
 }
 
 /// The cell's root for `.workingStatus`. Keeping this view mounted and
@@ -1867,7 +1893,7 @@ private struct WorkingStatusRowHost: View {
     let state: WorkingStatusExitState
 
     var body: some View {
-        CodeWorkingStatusRow(isRunning: state.isRunning)
+        CodeWorkingStatusRow(isRunning: state.isRunning, markBody: state.markBody)
     }
 }
 

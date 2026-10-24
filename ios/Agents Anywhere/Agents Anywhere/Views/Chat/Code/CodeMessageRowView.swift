@@ -267,10 +267,14 @@ struct CodeThinkingStatusLine: View {
     /// official exit group, which animates only the mark layer
     /// (`CANONICAL/20-working-mark.md:53`).
     let isRunning: Bool
+    /// The official live-turn pose (`SessionDisplay.liveTurnMark`), chosen by
+    /// `CodeWorkingMarkPose`.
+    let markBody: WorkingMarkBody
     @Environment(\.colorScheme) private var colorScheme
 
-    init(isRunning: Bool = true) {
+    init(isRunning: Bool = true, markBody: WorkingMarkBody = .think) {
         self.isRunning = isRunning
+        self.markBody = markBody
     }
 
     var body: some View {
@@ -279,7 +283,7 @@ struct CodeThinkingStatusLine: View {
             let second = max(0, Int(context.date.timeIntervalSinceReferenceDate))
             let verb = CodeWorkingStatusVerbs.all[second % CodeWorkingStatusVerbs.all.count]
             HStack(spacing: CodePageTheme.workingStatusSpacing) {
-                WorkingMarkView(body: .think, isRunning: isRunning)
+                WorkingMarkView(body: markBody, isRunning: isRunning)
                 Text(verbatim: verb + "...")
                     // [E] 15 pt / 400; the official family is the ambient
                     // Typography's (R19 tool-row-status.md). AA uses the

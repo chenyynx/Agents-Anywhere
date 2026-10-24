@@ -1,14 +1,15 @@
 import SwiftUI
 import UIKit
 
-/// The Code page's running mark: the official three-dot flipbook, redrawn
-/// with Core Graphics because the official sprite sheets cannot be
-/// redistributed (`docs/perf-6b-c5-code-profile-task.md` §6).
+/// The Code page's running mark: the official flipbook, played from the
+/// sprite sheets shipped in the asset catalog (extracted from the official
+/// app bundle; see `WorkingMarkRenderer`). Core Graphics dot synthesis is
+/// only the fallback for a missing sheet.
 ///
 /// The view owns no frame math; it only drives `WorkingMarkRenderer`:
 ///
-/// - `isRunning` plays opening (16 frames, 0.53 s) then loops (110 frames,
-///   3.67 s) at the official 30 fps.
+/// - `isRunning` plays the pose's opening frames, then its loop, at the
+///   official 30 fps (`think`: 16 opening / 110 looping).
 /// - `reduceMotion` (or the accessibility Reduce Motion value) freezes on the
 ///   single rest frame, mirroring the official `isStill` path.
 /// - Turning `isRunning` off plays the official 0.4 s exit group:
@@ -26,10 +27,10 @@ import UIKit
 /// `accessibilityHidden(true)`.
 struct WorkingMarkView: View {
 
-    /// Only `.think` is drawn today; every other pose falls back to it.
-    ///
-    /// The label is `body:` to mirror the official type. The value is stored
-    /// as `markBody` because `body` is already SwiftUI's view requirement.
+    /// The pose chosen by `CodeWorkingMarkPose` from the live turn's last
+    /// event (thinking / running tool / last tool). The label is `body:` to
+    /// mirror the official type; the value is stored as `markBody` because
+    /// `body` is already SwiftUI's view requirement.
     private let markBody: WorkingMarkBody
 
     /// While true the flipbook runs; false starts the 0.4 s exit.
@@ -91,6 +92,15 @@ struct WorkingMarkView: View {
                     // group takes over.
                     frozenElapsed = max(0, Date().timeIntervalSince(start))
                 }
+            }
+            .onChange(of: markBody) { _, _ in
+                // A pose swap is a new event, so it enters with its own
+                // opening frames instead of landing mid-loop. [I] The
+                // official stage machine closes the old loop and opens the
+                // new pose (`CANONICAL/20-working-mark.md` §6, body-change
+                // path); this reproduces the visible "new pose opens" half.
+                start = Date()
+                frozenElapsed = nil
             }
             .accessibilityHidden(true)
     }

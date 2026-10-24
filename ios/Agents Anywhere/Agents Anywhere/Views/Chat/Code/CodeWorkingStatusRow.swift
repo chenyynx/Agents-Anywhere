@@ -30,12 +30,18 @@ struct CodeWorkingStatusRow: View {
     /// already exited (invisible) and never plays the 0.4 s exit.
     let isRunning: Bool
 
-    init(isRunning: Bool = true) {
+    /// The official live-turn pose (`SessionDisplay.liveTurnMark`); the
+    /// adapter recomputes it as the turn's last event changes. Stored as
+    /// `markBody` because `body` is SwiftUI's view requirement.
+    let markBody: WorkingMarkBody
+
+    init(isRunning: Bool = true, markBody: WorkingMarkBody = .think) {
         self.isRunning = isRunning
+        self.markBody = markBody
     }
 
     var body: some View {
-        CodeThinkingStatusLine(isRunning: isRunning)
+        CodeThinkingStatusLine(isRunning: isRunning, markBody: markBody)
             .padding(.vertical, CodePageTheme.segmentVerticalPadding)
             .padding(.vertical, CodePageTheme.rowMarginTop)
             .frame(maxWidth: .infinity, alignment: .leading)

@@ -1,20 +1,8 @@
 import UIKit
 
-/// The working mark's body poses, mirroring the official `WorkingMarkBody`
-/// tag table (`CANONICAL/20-working-mark.md` §3).
-///
-/// Only the `think` flipbook is rebuilt here. `WorkingMarkRenderer` falls back
-/// to it for every other pose until that pose's frames are drawn as well
-/// (`docs/perf-6b-c5-code-profile-task.md` §6).
-nonisolated enum WorkingMarkBody: String, CaseIterable, Sendable {
-    case think
-    case generic
-    case search
-    case read
-    case code
-    case write
-    case blocked
-}
+// `WorkingMarkBody` (the seven official poses) lives in the model layer,
+// `Models/Chat/Code/CodeWorkingMarkPose.swift`, so the pose choice can be
+// unit-tested without UIKit. This file owns the artwork and the flipbook.
 
 /// The three segments every official body sprite carries
 /// (`CANONICAL/20-working-mark.md` §1).

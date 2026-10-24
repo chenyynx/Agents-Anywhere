@@ -359,7 +359,10 @@ private struct CodeToolDiffOutputView: View {
                 Text(verbatim: number(line.kind == .delete ? nil : line.newLine))
                     .frame(width: gutterWidth, alignment: .trailing)
                 Text(verbatim: sign(line.kind))
-                    .frame(width: 8, alignment: .leading)
+                    // One monospace advance, not a fixed 8 pt: the 15 pt `+`
+                    // is ~9.3 pt wide, so an 8 pt column let the glyph spill
+                    // over the code text.
+                    .frame(width: signWidth, alignment: .leading)
                 Text(verbatim: line.text.isEmpty ? " " : line.text)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -370,9 +373,13 @@ private struct CodeToolDiffOutputView: View {
             .padding(.leading, CodeToolCardMetrics.contentInset)
             .padding(.trailing, CodeToolCardMetrics.contentInset)
             .frame(minHeight: CodeToolCardMetrics.diffLineHeight)
-            // [E] CANONICAL/04-tool-calls.md §5.2 — an added/removed row is a
-            // 2 pt colour bar + gutter + text; the official row has no fill
-            // behind the whole line. AA's sampled row wash was removed.
+            // [E] `DiffLineView.Body` ends in `_BackgroundStyleModifier<Color>`
+            // (swift_types.csv:81326): the official added/removed row keeps the
+            // whole-row fill *and* the 2 pt bar. The official capture measures
+            // the fill at the add/remove colour × ≈0.125 over the card surface
+            // (#E0F1DE for add on white); the same fraction is applied to both
+            // kinds and to dark mode (no dark capture; [I]).
+            .background(fill(line.kind))
             .overlay(alignment: .leading) {
                 if let bar = barColor(line.kind) {
                     Rectangle()
@@ -398,6 +405,18 @@ private struct CodeToolDiffOutputView: View {
         case .delete: return "−"
         default: return " "
         }
+    }
+
+    /// One monospace advance at the scaled diff size (SF Mono ≈0.6 em).
+    private var signWidth: CGFloat {
+        max(8, diffFontSize * CodeToolCardMetrics.diffGutterDigitRatio)
+    }
+
+    /// The official whole-row fill: the add/remove colour at the measured
+    /// ≈0.125 fraction (`#E0F1DE` for add on white). `barColor` already
+    /// resolves the canonical light/dark palette.
+    private func fill(_ kind: TimelineDiff.Line.Kind) -> Color {
+        barColor(kind)?.opacity(0.125) ?? .clear
     }
 
     private func barColor(_ kind: TimelineDiff.Line.Kind) -> Color? {

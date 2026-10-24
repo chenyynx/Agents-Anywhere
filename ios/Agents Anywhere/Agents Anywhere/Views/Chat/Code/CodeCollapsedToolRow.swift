@@ -17,10 +17,12 @@ import UIKit
 struct CodeCollapsedToolRow: View {
     let verb: String
     let target: String?
-    /// An SF Symbol name for the leading icon. Defaults to none because a
-    /// completed row in the official screenshot has no leading glyph; the
-    /// caller passes one for the states that show it (running / background
-    /// task, `04-tool-calls.md` §7.3).
+    /// An SF Symbol name for the leading icon. Defaults to none: the official
+    /// ordinary row has no Anthropicon in either state — settled rows are the
+    /// label `HStack`, running rows are `ShimmerView<Text>`
+    /// (`EVIDENCE/round19/tool-row-status.md:30`,
+    /// `CANONICAL/04-tool-calls.md:121`). The slot stays for the
+    /// background-task `IconFrame` state, which is not wired yet.
     let icon: String?
     let diff: CodeDiffStat?
     let isRunning: Bool
@@ -212,7 +214,6 @@ private struct CodeDiffIndicator: View {
 #Preview("Collapsed tool row — running") {
     CodeCollapsedToolRow(verb: "Ran",
                          target: "npm test",
-                         icon: "terminal",
                          isRunning: true) {}
         .padding(.horizontal, CodePageTheme.rowMarginLeading)
 }

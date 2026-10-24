@@ -640,6 +640,12 @@ final class TimelineListLayout: UICollectionViewLayout {
     /// asserts an unmeasured row measures itself once, never again after the
     /// cache says measured.
     private(set) var debugSelfMeasureCount = 0
+    /// Accepted self-measure heights in order, with the height the layout
+    /// actually wrote (`ceil`ed). The first-fit seed gate reads this to prove
+    /// a row's first fitted value is the structured seed and never a smaller
+    /// pre-parse placeholder. Kept to the most recent 64 entries.
+    private(set) var debugSelfMeasureHeights: [(itemID: String, height: CGFloat)] = []
+    func clearDebugSelfMeasureHeights() { debugSelfMeasureHeights.removeAll() }
     /// Why the offset moved during a height application. The gate reads this
     /// instead of guessing which path took the reader's scroll.
     private(set) var debugOffsetTrace: [[String: Any]] = []
@@ -913,6 +919,12 @@ final class TimelineListLayout: UICollectionViewLayout {
         // path already ceils its fit; the self-measure path must do the same
         // or the two writers trade 52.0 ↔ 51.3 forever.
         let measured = ceil(height)
+#if DEBUG
+        debugSelfMeasureHeights.append((itemID: itemID, height: measured))
+        if debugSelfMeasureHeights.count > 64 {
+            debugSelfMeasureHeights.removeFirst(debugSelfMeasureHeights.count - 64)
+        }
+#endif
         let delta = measured - displayedHeight(for: itemID, key: key, attributes: attributes)
         lastAppliedHeight[itemID] = AppliedHeight(key: key, height: measured)
         if abs(delta) <= 0.5 {

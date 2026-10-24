@@ -25,6 +25,10 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     /// the cell-reported prefix; the extra segment keeps the two scenarios
     /// distinguishable in the report.
     static let hostedRowPrefix = "gesture-hosted-"
+    /// The async-body fixture (`firstFitSeed`): a cell-reported row whose body
+    /// renders through `ChatMarkdownView`, so its first fit can see a
+    /// pre-parse placeholder unless the structured measurement seeds it.
+    static let seedRowPrefix = "gesture-seed-"
 
     enum Kind: String, CaseIterable {
         case message, longGroup, reasoning, toolExpanded, code, table, image, notice, pending, tail, plain
@@ -38,8 +42,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         var expanded = false
         var statusLine = false
         /// The value the Code adapter's `measuredCodeGroupHeight` would return
-        /// before apply. Only the hosted-height fixture sets it; the device
-        /// report's 56 pt is the shape this gate reproduces.
+        /// before apply. The hosted-height fixture sets 56 (the device
+        /// report's shape); the first-fit seed fixture sets a value the cell
+        /// must fit first instead of its pre-parse placeholder.
         var structuralHeight: CGFloat? = nil
     }
 
@@ -168,7 +173,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     /// the device row jump (56 ↔ 1557.7 pt).
     func measuredCodeGroupHeight(for item: TimelineListItem, width: CGFloat) -> CGFloat? {
         guard width > 0, case .group(let id) = item,
-              id.hasPrefix(Self.hostedRowPrefix) else { return nil }
+              id.hasPrefix(Self.hostedRowPrefix)
+                || id.hasPrefix(Self.seedRowPrefix) else { return nil }
         return entry(for: item)?.structuralHeight
     }
 
@@ -294,9 +300,10 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await interleavedApplies(); persist(phase: "interleavedApplies")
         await scrollCost(); persist(phase: "scrollCost")
         await gestureFreeze(); persist(phase: "gestureFreeze")
-        // Runs last: it inserts a fixture row mid-list, and the earlier
-        // scenarios assume their original row set.
+        // These run last: they insert fixture rows, and the earlier scenarios
+        // assume their original row set.
         await codeHostedHeight(); persist(phase: "codeHostedHeight")
+        await firstFitSeed(); persist(phase: "firstFitSeed")
         writeReport()
     }
 
@@ -1088,6 +1095,140 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await wait(300)
     }
 
+    // MARK: - First-fit seed (structured measurement seeds the first fit)
+
+    /// The device report's pre-parse family (`598→54→598`, `1654→126→1655`):
+    /// a Code row's first materialization fitted the placeholder body and the
+    /// layout accepted that value as the first self-measure. The official
+    /// first fit measures real content, so the adapter's structural
+    /// measurement must seed that first fit instead of letting the skeleton
+    /// answer it.
+    ///
+    /// This fixture's body has no prepared blocks, so `ChatMarkdownView`
+    /// parses asynchronously; the product Code row usually pre-parses
+    /// synchronously (`TimelineChatContentAdapter` `preparedBlocks` ->
+    /// `CodeMessageRowView` -> `ChatMarkdownView(initialBlocks:)`, skipping
+    /// the async `.task`) and the seed covers the frames before its hosted
+    /// content finishes its layout pass.
+    ///
+    /// The fixture is a cell-reported row inserted above the viewport, so the
+    /// apply cannot materialize it: the first self-measure is only reachable
+    /// through the scroll into view.
+    /// Assertions: that first accepted self-measure equals
+    /// `ceil(measuredCodeGroupHeight)`; no self-measure of the row is smaller;
+    /// the row self-measures exactly once (the official first-fit lifecycle);
+    /// the settled frame equals the cell's fit and stays there.
+    private func firstFitSeed() async {
+        guard let controller else { return }
+        let structural: CGFloat = 420
+        let entry = Entry(id: "\(Self.seedRowPrefix)0", kind: .message,
+                          text: "## First-fit seed\n\n"
+                              + String(repeating: "A parsed line that only the real body has. ",
+                                       count: 80),
+                          structuralHeight: structural)
+        await settleLayout(controller)
+        // Row 2 is far above the mid-list viewport the earlier phases leave
+        // behind. The row must stay unmaterialized through the apply, or the
+        // first self-measure would not belong to the scroll into view.
+        controller.layout.clearDebugSelfMeasureHeights()
+        entries.insert(entry, at: 2)
+        contentGeneration += 1
+        controller.reloadFromContent()
+        await wait(500)
+        controller.collectionView.layoutIfNeeded()
+
+        let item = listItem(entry)
+        let displayedBeforeScroll = controller.layout.heights.hasEverBeenDisplayed(item.itemID)
+        let beforeScroll = controller.layout.debugSelfMeasureHeights
+            .filter { $0.itemID == item.itemID }
+        let frameBeforeScroll = controller.layout.attributes(for: item.itemID)?.frame.height ?? -1
+
+        guard let indexPath = controller.indexPath(for: item) else {
+            failures.append("first-fit seed: no index path for \(entry.id)")
+            return
+        }
+        controller.disarmBottom()
+        controller.collectionView.scrollToItem(at: indexPath, at: .top, animated: false)
+        await wait(400)
+        controller.collectionView.layoutIfNeeded()
+        controller.disarmBottom()
+
+        let frameAfterScroll = controller.layout.attributes(for: item.itemID)?.frame.height ?? -1
+        guard let firstFit = await settleHostedHeight(controller, item: item, timeout: 8) else {
+            failures.append("first-fit seed: the cell never settled on its fit"
+                + " \(hostedState(controller, item: item))")
+            return
+        }
+        let frameAfterSettle = controller.layout.attributes(for: item.itemID)?.frame.height ?? -1
+        // Every accepted self-measure for the row happened after the scroll
+        // (the pre-scroll check below proves none preceded it), so the first
+        // entry here is the row's first fit.
+        let measuresAfterSettle = controller.layout.debugSelfMeasureHeights
+            .filter { $0.itemID == item.itemID }
+        let firstAccepted = measuresAfterSettle.first?.height
+        let smallest = measuresAfterSettle.map(\.height).min()
+        // "Settled" also means it stays: sample a few frames after the fit so
+        // a second correction cannot hide behind the settle poll.
+        var samples: [CGFloat] = []
+        for _ in 0..<10 {
+            controller.collectionView.layoutIfNeeded()
+            samples.append(controller.layout.attributes(for: item.itemID)?.frame.height ?? 0)
+            await wait(16)
+        }
+        let stable = samples.allSatisfy { abs($0 - frameAfterSettle) <= 0.5 }
+
+        if displayedBeforeScroll {
+            failures.append("first-fit seed: \(entry.id) was displayed before the scroll")
+        }
+        if !beforeScroll.isEmpty {
+            failures.append("first-fit seed: \(beforeScroll.count) self-measure(s) before"
+                + " the row entered the viewport \(beforeScroll.map(\.height))")
+        }
+        if let firstAccepted {
+            if abs(firstAccepted - ceil(structural)) > 0.5 {
+                failures.append("first-fit seed: first accepted self-measure \(firstAccepted)"
+                    + " != structural \(ceil(structural))")
+            }
+        } else {
+            failures.append("first-fit seed: the row never self-measured")
+        }
+        if let smallest, smallest < structural - 0.5 {
+            failures.append("first-fit seed: a self-measure was below the structural"
+                + " value \(smallest) < \(structural) \(measuresAfterSettle.map(\.height))")
+        }
+        if measuresAfterSettle.count != 1 {
+            failures.append("first-fit seed: \(measuresAfterSettle.count) accepted"
+                + " self-measure(s) \(measuresAfterSettle.map(\.height))"
+                + " (official first fit happens once)")
+        }
+        if abs(frameAfterSettle - firstFit) > 0.5 {
+            failures.append("first-fit seed: frame \(frameAfterSettle) != cell fit \(firstFit)")
+        }
+        if firstFit <= structural + 1 {
+            failures.append("first-fit seed: the parsed body did not outgrow the seed"
+                + " \(structural)->\(firstFit)")
+        }
+        if !stable {
+            failures.append("first-fit seed: the settled height did not stay"
+                + " \(frameAfterSettle) \(samples)")
+        }
+
+        report["firstFitSeed"] = [
+            "row": entry.id,
+            "structuralHeight": Double(structural),
+            "displayedBeforeScroll": displayedBeforeScroll,
+            "selfMeasuresBeforeScroll": beforeScroll.count,
+            "frameBeforeScroll": Double(frameBeforeScroll),
+            "frameAfterScroll": Double(frameAfterScroll),
+            "firstAcceptedSelfMeasure": firstAccepted.map(Double.init) ?? -1,
+            "selfMeasureCount": measuresAfterSettle.count,
+            "selfMeasureHeights": measuresAfterSettle.map { Double($0.height) },
+            "frameAfterSettle": Double(frameAfterSettle),
+            "finalFit": Double(firstFit),
+            "stable": stable,
+            "visible": controller.collectionView.indexPathsForVisibleItems.contains(indexPath),
+        ]
+    }
 
     // MARK: - Gesture freeze (official cell-reported height contract)
 

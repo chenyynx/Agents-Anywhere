@@ -25,6 +25,12 @@ final class TimelineHostingCell: UICollectionViewCell {
     /// A geometry action from a previous configuration must not report its
     /// old content height into the row that now occupies this cell.
     private var configurationToken = 0
+    /// The height the provider already obtained from the real row content
+    /// (Code groups: `CodeMessageHeightMeasurer`, hosted `ChatMarkdownView`).
+    /// It seeds the cell's one self-measure for the frames before the hosted
+    /// content has completed its own layout pass; the layout writes it as the
+    /// row's first measurement.
+    private var seededHeight: CGFloat?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -40,11 +46,16 @@ final class TimelineHostingCell: UICollectionViewCell {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func configure(_ view: AnyView, policy: TimelineRowHeightPolicy,
-                   isMeasured: Bool, reportsContentHeight: Bool) {
+                   isMeasured: Bool, reportsContentHeight: Bool,
+                   seededHeight: CGFloat? = nil) {
         self.policy = policy
         self.isMeasured = isMeasured
+        // `configurationToken` and the seed share one lifetime: a later
+        // configuration must never fit with a height computed for older
+        // content, even when `prepareForReuse` was skipped.
         configurationToken &+= 1
         let token = configurationToken
+        self.seededHeight = seededHeight.map { ceil($0) }
         contentConfiguration = UIHostingConfiguration {
             // The cell may still carry the estimate when the async content
             // first parses. Without a vertical fixed size SwiftUI compresses
@@ -84,6 +95,7 @@ final class TimelineHostingCell: UICollectionViewCell {
         contentConfiguration = nil
         policy = .measured
         isMeasured = false
+        seededHeight = nil
         onContentChanged = nil
     }
 
@@ -98,8 +110,28 @@ final class TimelineHostingCell: UICollectionViewCell {
             || (layoutAttributes as? TimelineListLayoutAttributes)?.isMeasured == true
         guard !measured else { return layoutAttributes }
         // Official first materialization: the unmeasured cell fits its real
-        // content once. The layout accepts the result only while the original
-        // attributes are unmeasured.
+        // content once (`CANONICAL/05-layout-scroll.md:102`), and the layout
+        // accepts the result only while the original attributes are unmeasured.
+        //
+        // At the first fit the hosted body may not have completed its own
+        // layout pass yet. The Code row is pre-parsed synchronously before
+        // apply (`TimelineChatContentAdapter` builds `preparedBlocks`,
+        // `CodeMessageRowView` hands them to `ChatMarkdownView(initialBlocks:)`
+        // so the view skips its async `.task`), but `UIHostingConfiguration`
+        // installs and lays the content out on a later pass; when the fit runs
+        // before that, `super` measures the pre-layout skeleton (458 probe:
+        // 598 → 54 → 598). The provider's structural measurement is taken
+        // from the real row view (the `CodeMessageHeightMeasurer` equivalent
+        // of the official leaf's `sizeThatFits`/`measuredSizes`), so it stands
+        // in for the first fit: return that height without asking UIKit to fit
+        // the skeleton. Once the content has laid out, its geometry change is
+        // the correction pass (the official `rowMeasured`); it goes through
+        // the layout's settled cell-fit report, not through this one-shot path.
+        if let seed = seededHeight {
+            let copy = layoutAttributes.copy() as! UICollectionViewLayoutAttributes
+            copy.size.height = seed
+            return copy
+        }
         return super.preferredLayoutAttributesFitting(layoutAttributes)
     }
 }

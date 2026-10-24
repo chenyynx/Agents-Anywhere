@@ -263,10 +263,23 @@ final class TimelineCollectionController: UIViewController {
                 // the cell-fit report path supplies the new height.
                 let isMeasured = self.layout.heights.isMeasured(
                     itemID: item.itemID, width: self.columnWidth)
+                // An unmeasured cell-reported row seeds its one self-measure
+                // with the provider's structural height. The hosted content
+                // may not have completed its layout pass when the cell is
+                // first materialized (even a synchronously pre-parsed Code
+                // row waits for SwiftUI to install and lay out its content),
+                // so letting UIKit fit the pre-layout skeleton collapsed the
+                // row (458 probe); the seed is the real row view's
+                // measurement, and the content's later geometry change
+                // corrects it through the settled cell-fit path.
+                let reportsContentHeight = content.usesCellReportedHeight(for: item)
+                let seed = (!isMeasured && reportsContentHeight)
+                    ? content.measuredCodeGroupHeight(for: item, width: self.columnWidth)
+                    : nil
                 // A hosted row's geometry change is only a trigger: the height
                 // is read back from `systemLayoutSizeFitting` at a settled
                 // moment. The Chat rows keep the controller polling path.
-                if content.usesCellReportedHeight(for: item) {
+                if reportsContentHeight {
                     cell.onContentChanged = { [weak self] in
                         self?.noteHostedContentChanged()
                     }
@@ -276,7 +289,8 @@ final class TimelineCollectionController: UIViewController {
                 cell.configure(content.rowView(for: item),
                                policy: content.heightPolicy(for: item),
                                isMeasured: isMeasured,
-                               reportsContentHeight: content.usesCellReportedHeight(for: item))
+                               reportsContentHeight: reportsContentHeight,
+                               seededHeight: seed)
             }
             return cell
         }

@@ -50,6 +50,10 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         /// The adapter's `estimateKind.height` (the crude fallback).
         let crudeEstimate: CGFloat
         let keyRevision: String
+        /// Whether the row had ever been on screen when this change was
+        /// recorded. Separates a first materialization from a re-measure of a
+        /// row the reader has already seen.
+        let wasDisplayed: Bool
         /// The probe hook that performed the write (`source`), paired with the
         /// key revision it was written against.
         let writer: String
@@ -346,7 +350,8 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                                       resolved: facts.resolved, displayed: facts.displayed,
                                       structuralExact: facts.structuralExact,
                                       crudeEstimate: facts.crudeEstimate,
-                                      keyRevision: facts.keyRevision, writer: source,
+                                      keyRevision: facts.keyRevision,
+                                      wasDisplayed: facts.wasDisplayed, writer: source,
                                       tracking: false, decelerating: false, offset: 0,
                                       visible: false, repeatCount: 1))
             return
@@ -361,7 +366,8 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                                   resolved: facts.resolved, displayed: facts.displayed,
                                   structuralExact: facts.structuralExact,
                                   crudeEstimate: facts.crudeEstimate,
-                                  keyRevision: facts.keyRevision, writer: source,
+                                  keyRevision: facts.keyRevision,
+                                  wasDisplayed: facts.wasDisplayed, writer: source,
                                   tracking: view.isTracking, decelerating: view.isDecelerating,
                                   offset: view.contentOffset.y, visible: visible,
                                   repeatCount: 1)
@@ -384,7 +390,8 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                 displayed: change.displayed,
                 structuralExact: change.structuralExact,
                 crudeEstimate: change.crudeEstimate,
-                keyRevision: change.keyRevision, writer: last.writer,
+                keyRevision: change.keyRevision,
+                wasDisplayed: change.wasDisplayed, writer: last.writer,
                 tracking: change.tracking,
                 decelerating: change.decelerating, offset: change.offset,
                 visible: change.visible, repeatCount: last.repeatCount + 1)
@@ -742,12 +749,15 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         let displayed: CGFloat
         let structuralExact: CGFloat?
         let crudeEstimate: CGFloat
+        /// The row had been on screen at least once when these facts were read.
+        let wasDisplayed: Bool
     }
 
     private func heightFacts(itemID: String, item: TimelineListItem?) -> HeightFacts {
         guard let controller else {
             return HeightFacts(keyRevision: "?", tier: "?", resolved: 0, displayed: 0,
-                               structuralExact: nil, crudeEstimate: 0)
+                               structuralExact: nil, crudeEstimate: 0,
+                               wasDisplayed: false)
         }
         let heights = controller.layout.heights
         let key = heights.currentKey(for: itemID)
@@ -777,7 +787,8 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             keyRevision: key.map { "\($0.contentRevision)" } ?? "-",
             tier: tier, resolved: resolved, displayed: displayed,
             structuralExact: structuralExact(of: item, width: key?.width ?? 0),
-            crudeEstimate: crude)
+            crudeEstimate: crude,
+            wasDisplayed: heights.hasEverBeenDisplayed(itemID))
     }
 
     /// The adapter's structured pre-apply measurement (`measuredCodeGroupHeight`).
@@ -841,6 +852,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             + "A=apply I=issue; flags T=tracking D=decelerating; t=seconds since clear; "
             + "V/C: tier=measured|estimate|displayed|fallback rev=content revision "
             + "disp=last displayed resolved=prepare value exact=structural measurement "
+            + "wasDisplayed=row had been on screen when the change was recorded "
             + "writer=probe hook that wrote the key; A keys=items whose key revision moved")
 
         if let controller, let view = controller.collectionView {
@@ -891,7 +903,8 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                 + "est=\(f(change.crudeEstimate)) tier=\(change.tier) rev=\(change.keyRevision) "
                 + "disp=\(f(change.displayed)) resolved=\(f(change.resolved)) exact=\(exact) "
                 + "writer=\(change.writer) flags=\(flags) off=\(f(change.offset)) "
-                + "vis=\(change.visible ? 1 : 0) n=\(change.repeatCount) \(change.itemDescription)")
+                + "vis=\(change.visible ? 1 : 0) wasDisplayed=\(change.wasDisplayed ? 1 : 0) "
+                + "n=\(change.repeatCount) \(change.itemDescription)")
         }
 
         lines.append("--- APPLIES (newest first) ---")

@@ -263,19 +263,36 @@ final class TimelineCollectionController: UIViewController {
                 // the cell-fit report path supplies the new height.
                 let isMeasured = self.layout.heights.isMeasured(
                     itemID: item.itemID, width: self.columnWidth)
-                // An unmeasured cell-reported row seeds its one self-measure
-                // with the provider's structural height. The hosted content
-                // may not have completed its layout pass when the cell is
-                // first materialized (even a synchronously pre-parsed Code
-                // row waits for SwiftUI to install and lay out its content),
-                // so letting UIKit fit the pre-layout skeleton collapsed the
-                // row (458 probe); the seed is the real row view's
-                // measurement, and the content's later geometry change
-                // corrects it through the settled cell-fit path.
+                // Seed an unmeasured cell-reported row's one self-measure.
+                // Official Part V §2.5: a placeholder row's height is the last
+                // measured value (`__height`/`__headerHeight` are
+                // `LazyState<CGFloat>`), and 05-layout-scroll.md:93 gives a
+                // never-measured row only the estimate tier until the cell
+                // materializes. Code has no reveal and re-lays out as data
+                // arrives (11-motion-haptics.md:314, 10-chat-page.md:154), so
+                // the provider's structural height is the real value when it
+                // exists. Without one (streaming or pre-layout content) the row
+                // keeps the height `prepare()` already recorded for it — the
+                // estimate for a never-shown row, the displayed height
+                // otherwise. Letting UIKit fit the pre-layout body instead
+                // collapsed a streaming row 44→18 (461 probe); the content's
+                // later geometry change corrects the seed through the settled
+                // cell-fit path.
                 let reportsContentHeight = content.usesCellReportedHeight(for: item)
-                let seed = (!isMeasured && reportsContentHeight)
-                    ? content.measuredCodeGroupHeight(for: item, width: self.columnWidth)
-                    : nil
+                let seed: CGFloat?
+                if !isMeasured, reportsContentHeight {
+                    if let structural = content.measuredCodeGroupHeight(
+                        for: item, width: self.columnWidth) {
+                        seed = structural
+                    } else if let displayed = self.layout.heights.displayedHeight(
+                        for: item.itemID), displayed > 1 {
+                        seed = displayed
+                    } else {
+                        seed = nil
+                    }
+                } else {
+                    seed = nil
+                }
                 // A hosted row's geometry change is only a trigger: the height
                 // is read back from `systemLayoutSizeFitting` at a settled
                 // moment. The Chat rows keep the controller polling path.

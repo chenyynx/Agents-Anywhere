@@ -29,6 +29,12 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     /// renders through `ChatMarkdownView`, so its first fit can see a
     /// pre-parse placeholder unless the structured measurement seeds it.
     static let seedRowPrefix = "gesture-seed-"
+    /// The streaming fixture (`streamingSeed`): a cell-reported message row
+    /// with no structural height at all, the shape of an assistant reply that
+    /// is still revealing (`measuredCodeGroupHeight` answers nil). Its first
+    /// fit must be seeded from the height `prepare` recorded for it.
+    /// Deliberately not listed in `measuredCodeGroupHeight`.
+    static let streamRowPrefix = "gesture-streamseed-"
 
     enum Kind: String, CaseIterable {
         case message, longGroup, reasoning, toolExpanded, code, table, image, notice, pending, tail, plain
@@ -304,6 +310,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         // assume their original row set.
         await codeHostedHeight(); persist(phase: "codeHostedHeight")
         await firstFitSeed(); persist(phase: "firstFitSeed")
+        await streamingSeed(); persist(phase: "streamingSeed")
         writeReport()
     }
 
@@ -1292,6 +1299,238 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         firstFitReport["stable"] = stable
         firstFitReport["visible"] = rowVisible
         report["firstFitSeed"] = firstFitReport
+    }
+
+    // MARK: - Streaming seed (no structural value → displayed height)
+
+    /// Device report 461: a streaming assistant row has no structural value
+    /// while its text is still revealing, so `measuredCodeGroupHeight` answers
+    /// nil and the cell provider used to pass no seed. The first fit then
+    /// measured the pre-layout hosting body and the row collapsed 44 → 18 →
+    /// 34 → 57 inside 0.8 s. The official placeholder for such a row is the
+    /// estimate tier, and the height the layout already displays is that
+    /// estimate (Part V §2.5: the stored `__height` is the previous
+    /// measurement; Part AG: an unmeasured row is an estimate). The provider
+    /// therefore falls back to the displayed height when no structural value
+    /// exists.
+    ///
+    /// This fixture has no structural height, so `prepare` records the `.row`
+    /// estimate as its displayed height and the cell's first fit must return
+    /// exactly that seed, never the skeleton's tens of points.
+    /// Assertions: the row is inserted above the viewport and not materialized
+    /// by the apply; the prepared displayed height is the `.row` estimate; the
+    /// direct `preferredLayoutAttributesFitting` returns the seed while the
+    /// row is unmeasured; the next five frames never fall below it; after the
+    /// body parses the frame equals the cell fit and outgrows the seed; the
+    /// settled height stays.
+    private func streamingSeed() async {
+        guard let controller else { return }
+        let entry = Entry(id: "\(Self.streamRowPrefix)0", kind: .message,
+                          text: "## Streaming seed\n\n"
+                              + String(repeating: "A streamed line whose body parses after the first fit. ",
+                                       count: 60))
+        func removeFixture() {
+            entries.removeAll { $0.id == entry.id }
+            contentGeneration += 1
+            controller.reloadFromContent()
+        }
+        await settleLayout(controller)
+        controller.layout.clearDebugSelfMeasureHeights()
+        // The first-fit seed leg leaves the viewport at row 2, whose top is
+        // only a couple of hundred points into the list: a 200 pt estimate
+        // inserted at row 0 would still intersect that viewport and
+        // materialize during the apply. Anchor a mid-list row first, so the
+        // insertion stays fully above the visible band and only the scroll
+        // below can materialize it.
+        let anchorIndex = min(8, max(0, entries.count - 1))
+        let anchorItem = listItem(entries[anchorIndex])
+        if let anchorPath = controller.indexPath(for: anchorItem) {
+            controller.disarmBottom()
+            controller.collectionView.scrollToItem(at: anchorPath, at: .top, animated: false)
+            await wait(250)
+            controller.collectionView.layoutIfNeeded()
+            controller.disarmBottom()
+        }
+        let viewportTop = controller.collectionView.contentOffset.y
+            + controller.collectionView.adjustedContentInset.top
+        entries.insert(entry, at: 0)
+        contentGeneration += 1
+        controller.reloadFromContent()
+        await wait(500)
+        controller.collectionView.layoutIfNeeded()
+
+        let item = listItem(entry)
+        // The displayed height this apply's `prepare` recorded for the
+        // never-shown row; it is the `.row` estimate (200). Wait for the
+        // apply's prepare rather than racing it.
+        var preparedSeed = controller.layout.heights.displayedHeight(for: item.itemID)
+        let prepareStart = ProcessInfo.processInfo.systemUptime
+        while preparedSeed == nil,
+              ProcessInfo.processInfo.systemUptime - prepareStart < 3 {
+            await wait(50)
+            preparedSeed = controller.layout.heights.displayedHeight(for: item.itemID)
+        }
+        let seed = preparedSeed ?? -1
+        let displayedBeforeScroll = controller.layout.heights.hasEverBeenDisplayed(item.itemID)
+        let beforeScrollMeasures = controller.layout.debugSelfMeasureHeights
+            .filter { $0.itemID == item.itemID }
+        let frameBeforeScroll = controller.layout.attributes(for: item.itemID)?.frame.height ?? -1
+        let insertedFrame = controller.layout.attributes(for: item.itemID)?.frame
+        let fixtureWidth = controller.layout.attributes(for: item.itemID)?.frame.width ?? 1
+        let structural = measuredCodeGroupHeight(for: item, width: max(fixtureWidth, 1))
+
+        guard let indexPath = controller.indexPath(for: item) else {
+            failures.append("streaming seed: no index path for \(entry.id)")
+            removeFixture()
+            await wait(300)
+            return
+        }
+        controller.disarmBottom()
+        controller.collectionView.scrollToItem(at: indexPath, at: .top, animated: false)
+        // Materialize the destination cell synchronously; no await may run
+        // before the seed check below.
+        controller.collectionView.setNeedsLayout()
+        controller.collectionView.layoutIfNeeded()
+        controller.disarmBottom()
+
+        let seedCell = controller.collectionView.cellForItem(at: indexPath) as? TimelineHostingCell
+        let seedAttributes = controller.layout.layoutAttributesForItem(at: indexPath)
+            as? TimelineListLayoutAttributes
+        let attributesMeasuredBeforeFit = seedAttributes?.isMeasured
+        var directSeedFit: CGFloat = -1
+        if let seedCell, let seedAttributes {
+            directSeedFit = seedCell.preferredLayoutAttributesFitting(seedAttributes).size.height
+        }
+        let frameRightAfterScroll = controller.layout.attributes(for: item.itemID)?.frame.height ?? -1
+
+        // From the materialization on, the row never shows a height below the
+        // seed. This is the reader-visible invariant; a pre-layout fit would
+        // drop it to tens of points.
+        var frames: [CGFloat] = []
+        for _ in 0..<5 {
+            controller.collectionView.layoutIfNeeded()
+            frames.append(controller.layout.attributes(for: item.itemID)?.frame.height ?? 0)
+            await wait(16)
+        }
+        let framesHeld = frames.allSatisfy { $0 >= seed - 0.5 }
+
+        if seedCell == nil {
+            failures.append("streaming seed: no cell at \(entry.id) right after the scroll")
+        }
+        if seedAttributes == nil {
+            failures.append("streaming seed: no layout attributes for \(entry.id)"
+                + " right after the scroll")
+        }
+        if attributesMeasuredBeforeFit == true {
+            failures.append("streaming seed: row was measured before the seed check")
+        }
+        if structural != nil {
+            failures.append("streaming seed: measuredCodeGroupHeight returned \(structural!)"
+                + " for the structural-free row \(entry.id)")
+        }
+        if abs(seed - TimelineHeightEstimateKind.row.height) > 0.5 {
+            failures.append("streaming seed: prepared displayed height \(seed)"
+                + " != .row estimate \(TimelineHeightEstimateKind.row.height)")
+        }
+        if displayedBeforeScroll {
+            failures.append("streaming seed: \(entry.id) was displayed before the scroll")
+        }
+        if let insertedFrame, insertedFrame.maxY > viewportTop + 0.5 {
+            failures.append("streaming seed: fixture was not above the viewport"
+                + " (maxY \(insertedFrame.maxY), viewport top \(viewportTop))")
+        }
+        if !beforeScrollMeasures.isEmpty {
+            failures.append("streaming seed: \(beforeScrollMeasures.count) self-measure(s)"
+                + " before the row entered the viewport \(beforeScrollMeasures.map(\.height))")
+        }
+        if abs(directSeedFit - seed) > 0.5 {
+            failures.append("streaming seed: direct preferred fit \(directSeedFit)"
+                + " != displayed seed \(seed)")
+        }
+        if !framesHeld {
+            failures.append("streaming seed: frame fell below the seed \(seed) \(frames)")
+        }
+
+        guard let finalFit = await settleHostedHeight(controller, item: item, timeout: 8) else {
+            failures.append("streaming seed: the cell never settled on its fit"
+                + " \(hostedState(controller, item: item))")
+            removeFixture()
+            await wait(300)
+            return
+        }
+        let frameAfterSettle = controller.layout.attributes(for: item.itemID)?.frame.height ?? -1
+        let measuresAfterSettle = controller.layout.debugSelfMeasureHeights
+            .filter { $0.itemID == item.itemID }
+        let firstAccepted = measuresAfterSettle.first?.height
+        let smallest = measuresAfterSettle.map(\.height).min()
+        // "Settled" also means it stays: sample a few frames after the fit so
+        // a second correction cannot hide behind the settle poll.
+        var samples: [CGFloat] = []
+        for _ in 0..<10 {
+            controller.collectionView.layoutIfNeeded()
+            samples.append(controller.layout.attributes(for: item.itemID)?.frame.height ?? 0)
+            await wait(16)
+        }
+        let stable = samples.allSatisfy { abs($0 - frameAfterSettle) <= 0.5 }
+
+        if let firstAccepted, abs(firstAccepted - seed) > 0.5 {
+            failures.append("streaming seed: first accepted self-measure \(firstAccepted)"
+                + " != displayed seed \(seed)")
+        }
+        if let smallest, smallest < seed - 0.5 {
+            failures.append("streaming seed: a self-measure was below the seed"
+                + " \(smallest) < \(seed) \(measuresAfterSettle.map(\.height))")
+        }
+        if abs(frameAfterSettle - finalFit) > 0.5 {
+            failures.append("streaming seed: frame \(frameAfterSettle) != cell fit \(finalFit)")
+        }
+        if finalFit <= seed + 1 {
+            failures.append("streaming seed: the parsed body did not outgrow the seed"
+                + " \(seed)->\(finalFit)")
+        }
+        if !stable {
+            failures.append("streaming seed: the settled height did not stay"
+                + " \(frameAfterSettle) \(samples)")
+        }
+
+        // Swift 6.2 could not type-check the one big dictionary literal in
+        // reasonable time (CI 460). Assign typed locals first, then build the
+        // report incrementally.
+        let measuredFlag: Int = attributesMeasuredBeforeFit == nil
+            ? -1 : (attributesMeasuredBeforeFit! ? 1 : 0)
+        let structuralValue: Double = structural.map { Double($0) } ?? -1
+        let firstAcceptedValue: Double = firstAccepted.map { Double($0) } ?? -1
+        let selfMeasureValues: [Double] = measuresAfterSettle.map { Double($0.height) }
+        let frameValues: [Double] = frames.map { Double($0) }
+        let settleSamples: [Double] = samples.map { Double($0) }
+        let rowVisible: Bool = controller.collectionView.indexPathsForVisibleItems
+            .contains(indexPath)
+        var streamingReport: [String: Any] = [:]
+        streamingReport["row"] = entry.id
+        streamingReport["seed"] = Double(seed)
+        streamingReport["estimateHeight"] = Double(TimelineHeightEstimateKind.row.height)
+        streamingReport["structuralHeight"] = structuralValue
+        streamingReport["displayedBeforeScroll"] = displayedBeforeScroll
+        streamingReport["selfMeasuresBeforeScroll"] = beforeScrollMeasures.count
+        streamingReport["frameBeforeScroll"] = Double(frameBeforeScroll)
+        streamingReport["frameRightAfterScroll"] = Double(frameRightAfterScroll)
+        streamingReport["attributesMeasuredBeforeFit"] = measuredFlag
+        streamingReport["directFit"] = Double(directSeedFit)
+        streamingReport["frames"] = frameValues
+        streamingReport["framesHeld"] = framesHeld
+        streamingReport["frameAfterSettle"] = Double(frameAfterSettle)
+        streamingReport["finalFit"] = Double(finalFit)
+        streamingReport["selfMeasureCount"] = measuresAfterSettle.count
+        streamingReport["selfMeasureHeights"] = selfMeasureValues
+        streamingReport["firstAcceptedSelfMeasure"] = firstAcceptedValue
+        streamingReport["stable"] = stable
+        streamingReport["settleSamples"] = settleSamples
+        streamingReport["visible"] = rowVisible
+        report["streamingSeed"] = streamingReport
+
+        // Leave the timeline as the earlier scenarios found it.
+        removeFixture()
+        await wait(300)
     }
 
     // MARK: - Gesture freeze (official cell-reported height contract)

@@ -289,7 +289,10 @@ nonisolated enum CodePageTheme {
     static var codeCardStyle: AssistantCodeCardStyle {
         AssistantCodeCardStyle(
             headerHeight: 44,
-            contentPadding: 14,
+            // [E] DATA/tokens.json `codeCard.body.textContainerInset` 16.0
+            // (`0x100a501a4` → setTextContainerInset); the header HStack's
+            // `.padding(16)` is the same value (`0x100a500d4`).
+            contentPadding: 16,
             cornerRadius: 24,
             fillColor: codeCardFillUIColor,
             borderColor: codeCardBorderUIColor,

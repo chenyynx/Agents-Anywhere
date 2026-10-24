@@ -492,16 +492,17 @@ final class AssistantCodeBlockView: UIView {
                                width: width, height: dividerHeight)
         scrollView.frame = CGRect(x: 0, y: bodyY, width: width, height: bodyHeight)
 
-        // Match `ChatMarkdownCodeBlock`: two 44pt header buttons inset 14pt.
-        // AppSymbol scales its 15pt icon with the body text style.
+        // [E] `codeCard.headerInset` 16.0 (`0x100a500d4`, the header HStack's
+        // `.padding(16)`); the button metrics themselves are still the Chat
+        // renderer's until the official header controls are closed.
         let iconSize = UIFontMetrics(forTextStyle: .body).scaledValue(for: 15)
         let iconY = (codeBlock.headerHeight - iconSize) / 2
-        expandIcon.frame = CGRect(x: width - 14 - 22 - iconSize / 2,
+        expandIcon.frame = CGRect(x: width - 16 - 22 - iconSize / 2,
                                   y: iconY, width: iconSize, height: iconSize)
-        copyIcon.frame = CGRect(x: width - 14 - 44 - 22 - iconSize / 2,
+        copyIcon.frame = CGRect(x: width - 16 - 44 - 22 - iconSize / 2,
                                 y: iconY, width: iconSize, height: iconSize)
-        let labelWidth = max(0, width - 14 - 88 - 8 - 14)
-        languageLabel.frame = CGRect(x: 14, y: 0,
+        let labelWidth = max(0, width - 16 - 88 - 8 - 16)
+        languageLabel.frame = CGRect(x: 16, y: 0,
                                      width: labelWidth,
                                      height: codeBlock.headerHeight)
 

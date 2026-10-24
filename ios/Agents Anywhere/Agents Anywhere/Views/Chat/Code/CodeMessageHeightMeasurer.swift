@@ -119,9 +119,8 @@ enum CodeMessageHeightMeasurer {
         let lineHeight = UIFontMetrics(forTextStyle: .footnote)
             .scaledValue(for: CodePageTheme.toolRowLineHeight, compatibleWith: traits)
         return CodeRowHeightPlan.Metrics(
-            blockPadding: 2 * CodePageTheme.segmentVerticalPadding,
-            blockSpacing: CodePageTheme.segmentVerticalPadding,
-            rowSpacing: CodePageTheme.blockSpacing,
+            blockSpacing: CodePageTheme.blockGap,
+            rowSpacing: CodePageTheme.interMessageSpacing,
             toolLineHeight: lineHeight,
             toolButtonPadding: CodePageTheme.toolRowButtonPadding,
             otherLineHeight: CodePageTheme.toolRowLineHeight,

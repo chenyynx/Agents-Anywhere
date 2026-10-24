@@ -2,12 +2,13 @@ import Foundation
 
 /// The exact vertical arithmetic of one Code message row.
 ///
-/// `CodeMessageRowView` stacks rendered rows with `blockSpacing` between them.
-/// Each row stacks blocks with `segmentVerticalPadding` between them, and each
-/// block adds `segmentVerticalPadding` on both sides. A collapsed tool row is
-/// a 24 pt line box (scaled by Dynamic Type at render time) plus 6 pt button
-/// padding on each side; the status line is the 20 pt mark plus the same
-/// vertical padding.
+/// `CodeMessageRowView` stacks rendered rows with `interMessageSpacing`
+/// between them (10 pt, the pair of 5 pt row margins). Each row stacks its
+/// blocks with `blockGap` (8 pt, the explicit stand-in for the official
+/// `interBlockSpacing = nil`) and adds no padding around a block. A collapsed
+/// tool row is a 24 pt line box (scaled by Dynamic Type at render time) plus
+/// 6 pt button padding on each side; the status line is the 20 pt mark plus
+/// its own vertical padding.
 ///
 /// The adapter supplies the text blocks' measured heights; everything else is
 /// fixed. Keeping the sums here, rather than in the adapter, lets the estimate,
@@ -29,11 +30,9 @@ nonisolated enum CodeRowHeightPlan {
     }
 
     struct Metrics: Equatable {
-        /// Both sides of one block (`2 x segmentVerticalPadding`).
-        var blockPadding: CGFloat
-        /// Between two blocks inside one rendered row.
+        /// Between two blocks inside one rendered row (`blockGap`, 8 pt).
         var blockSpacing: CGFloat
-        /// Between two rendered rows (`blockSpacing`, 16 pt).
+        /// Between two rendered rows (`interMessageSpacing`, 10 pt).
         var rowSpacing: CGFloat
         /// The tool row's line box, already scaled by Dynamic Type.
         var toolLineHeight: CGFloat
@@ -55,7 +54,6 @@ nonisolated enum CodeRowHeightPlan {
             renderedRows += 1
             for (index, block) in row.blocks.enumerated() {
                 if index > 0 { total += metrics.blockSpacing }
-                total += metrics.blockPadding
                 switch block {
                 case .text(let height):
                     total += max(0, height)

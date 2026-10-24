@@ -166,11 +166,25 @@ nonisolated enum CodePageTheme {
     }
 
     /// [E] CANONICAL/05-layout-scroll.md §3.3 — per-segment vertical padding
-    /// (`SessionMessageStyle.segmentVerticalPadding`).
+    /// (`SessionMessageStyle.segmentVerticalPadding`). Official consumes it
+    /// only for a few tool segment kinds (writingDraft / threadSessionCard /
+    /// artifactCard / brief / workflow; EVIDENCE/round19/bubble-layout.md:89),
+    /// never around a message's text or collapsed-tool blocks.
     static let segmentVerticalPadding: CGFloat = 4
 
-    /// [E] CANONICAL/05-layout-scroll.md §3.4 — Markdown block spacing.
+    /// [E] CANONICAL/05-layout-scroll.md §3.4 — Markdown block spacing inside
+    /// one rich document (paragraphs / code blocks / tables). It is not the
+    /// gap between a message's blocks (EVIDENCE/round19/bubble-layout.md:85).
     static let blockSpacing: CGFloat = 16
+
+    /// The gap between one message's blocks. Official's `TranscriptBlockStack`
+    /// passes `style.interBlockSpacing`, which is nil, so SwiftUI picks its
+    /// default (`VStack(alignment:.leading, spacing: nil)`, `0x10295b230`;
+    /// EVIDENCE/round19/bubble-layout.md:84). The numeric default is blocked
+    /// in the ledger, and CANONICAL/05-layout-scroll.md §3.3 asks the client
+    /// for an explicit design value instead of relying on it, so this is the
+    /// 8 pt SwiftUI default stack spacing.
+    static let blockGap: CGFloat = 8
 
     // MARK: - Markdown text (official Code page)
 

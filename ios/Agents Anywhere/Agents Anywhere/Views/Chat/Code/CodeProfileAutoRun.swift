@@ -646,6 +646,13 @@ final class CodeProfileAutoRunModel {
                          json: RowHeightFixtureJSON.bubble,
                          widths: [361, 320],
                          sizes: [.regular]),
+        // Two text bodies plus a collapsed tool call in one message: the
+        // builder emits text, text, toolCalls, so the row pays two inter-block
+        // gaps and one scaled tool line box.
+        RowHeightFixture(name: "multi-block", kind: .text,
+                         json: RowHeightFixtureJSON.multiBlock,
+                         widths: [361, 320],
+                         sizes: [.regular, .accessibility]),
     ]
 
     /// Renders every fixture at every requested width and size, reports each
@@ -1955,6 +1962,25 @@ final class CodeProfileAutoRunModel {
           {"id":"h-bubble","sessionId":"gate-height","type":"message","status":"done","role":"user","orderSeq":1,
            "content":{"text":"请检查这个中文用户气泡的高度：第一行比较长，包含标点和 emoji 😀🚀🎯，第二行继续说明为什么气泡在两种宽度下都必须与测量值一致。"},
            "source":{"itemId":"gate-bubble"}}
+        ]
+        """#
+
+        /// Two text bodies and one collapsed tool call under the same native
+        /// message id: the builder stacks text, text, then `toolCalls`, so the
+        /// row pays two inter-block gaps and one Dynamic Type-scaled tool line
+        /// box. This is the fixture that keeps the inter-block gap honest
+        /// between the view and `CodeMessageHeightMeasurer`.
+        static let multiBlock = #"""
+        [
+          {"id":"h-mb-1","sessionId":"gate-height","type":"message","status":"done","role":"assistant","orderSeq":1,
+           "content":{"text":"The first paragraph of one message."},
+           "source":{"nativeMessageId":"gate-multi","blockIndex":0}},
+          {"id":"h-mb-2","sessionId":"gate-height","type":"tool","status":"done","orderSeq":2,
+           "content":{"toolName":"Read","input":{"file_path":"/repo/Sources/App.swift"}},
+           "source":{"nativeMessageId":"gate-multi","blockIndex":1}},
+          {"id":"h-mb-3","sessionId":"gate-height","type":"message","status":"done","role":"assistant","orderSeq":3,
+           "content":{"text":"The second paragraph after the tool row."},
+           "source":{"nativeMessageId":"gate-multi","blockIndex":2}}
         ]
         """#
     }

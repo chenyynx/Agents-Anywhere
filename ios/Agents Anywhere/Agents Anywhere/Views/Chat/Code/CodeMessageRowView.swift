@@ -80,7 +80,13 @@ struct CodeMessageRowView: View {
                 // height at all; the turn's working status is its own row.
                 Color.clear.frame(height: 0)
             } else {
-                VStack(alignment: .leading, spacing: CodePageTheme.blockSpacing) {
+                // Official stacks a message's blocks with `interBlockSpacing`
+                // (nil → SwiftUI default; carried here as `blockGap`). Two
+                // messages in one cell keep the pair of 5 pt row margins, so
+                // their gap is `interMessageSpacing` (10 pt), not the 16 pt
+                // Markdown-internal block spacing
+                // (EVIDENCE/round19/bubble-layout.md:84-85).
+                VStack(alignment: .leading, spacing: CodePageTheme.interMessageSpacing) {
                     ForEach(rows) { row in
                         if row.role == .user {
                             userRow(row)
@@ -101,12 +107,17 @@ struct CodeMessageRowView: View {
         }
     }
 
-    /// One message's blocks in declared order; the assistant path.
+    /// One message's blocks in declared order; the assistant path. Official
+    /// puts no padding around a text or collapsed-tool block: the text body is
+    /// a bare `RichMarkdownView` (EVIDENCE/round19/bubble-layout.md:90), the
+    /// tool row carries its own button padding, and `segmentVerticalPadding`
+    /// reaches only a few special tool segment kinds
+    /// (EVIDENCE/round19/bubble-layout.md:89). The only separator is the
+    /// inter-block gap.
     private func blockStack(_ row: RenderedRow) -> some View {
-        VStack(alignment: .leading, spacing: CodePageTheme.segmentVerticalPadding) {
+        VStack(alignment: .leading, spacing: CodePageTheme.blockGap) {
             ForEach(Array(row.blocks.enumerated()), id: \.offset) { _, block in
                 blockView(block)
-                    .padding(.vertical, CodePageTheme.segmentVerticalPadding)
             }
         }
     }
@@ -128,14 +139,14 @@ struct CodeMessageRowView: View {
                 others.append(block)
             }
         }
-        return VStack(alignment: .leading, spacing: CodePageTheme.segmentVerticalPadding) {
+        return VStack(alignment: .leading, spacing: CodePageTheme.blockGap) {
             if !texts.isEmpty {
+                // The bubble owns its 12 pt vertical padding; the cell adds
+                // none and only stacks the attachment/other blocks beside it.
                 CodeUserBubble(text: texts.joined(separator: "\n\n"))
-                    .padding(.vertical, CodePageTheme.segmentVerticalPadding)
             }
             ForEach(Array(others.enumerated()), id: \.offset) { _, block in
                 blockView(block)
-                    .padding(.vertical, CodePageTheme.segmentVerticalPadding)
             }
         }
     }

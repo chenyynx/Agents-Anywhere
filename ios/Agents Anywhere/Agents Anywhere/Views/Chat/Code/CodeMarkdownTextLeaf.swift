@@ -198,7 +198,9 @@ extension AssistantMarkdownDocument {
             switch block {
             case .text(let text):
                 return .text(AssistantTextBlock(
-                    attributed: Self.recolored(text.attributed),
+                    attributed: Self.recolored(
+                        text.attributed,
+                        serif: text.headingLevel != nil),
                     headingLevel: text.headingLevel))
             case .list(let list):
                 let items = list.items.map {
@@ -235,13 +237,23 @@ extension AssistantMarkdownDocument {
         }
     }
 
-    private static func recolored(_ attributed: NSAttributedString) -> NSAttributedString {
+    private static func recolored(_ attributed: NSAttributedString,
+                                  serif: Bool = false) -> NSAttributedString {
         let output = NSMutableAttributedString(attributedString: attributed)
         let full = NSRange(location: 0, length: output.length)
         output.enumerateAttribute(.font, in: full) { value, range, _ in
             let font = value as? UIFont
             let isMono = font?.fontDescriptor.symbolicTraits
                 .contains(.traitMonoSpace) ?? false
+            // The official Code headings are serif (the reference crop's
+            // "Changes:" heading); the body and inline code stay sans/mono.
+            if serif, !isMono, let font,
+               let descriptor = font.fontDescriptor.withDesign(.serif) {
+                output.addAttribute(
+                    .font,
+                    value: UIFont(descriptor: descriptor, size: font.pointSize),
+                    range: range)
+            }
             output.addAttribute(
                 .foregroundColor,
                 value: isMono ? CodePageTheme.inlineCodeTextUIColor

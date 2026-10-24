@@ -64,6 +64,11 @@ nonisolated enum TimelineHeightEstimate {
     /// width capped at 580 pt, each block capped at 15 display lines, a 0.9
     /// factor over `lines × lineHeight`, and a 44 pt floor. The estimator only
     /// serves rows no cell has measured yet.
+    ///
+    /// Do not raise `officialLineCap` to stop a live row from growing on its
+    /// first fit: the official placeholder caps each block the same way and
+    /// the cell's geometry report replaces the seed, so the growth is the
+    /// official behaviour (review R8 P2-3, decided 2026-10-24).
     static let officialWidthCap: CGFloat = 580
     static let officialLineCap: CGFloat = 15
     static let officialFactor: CGFloat = 0.9

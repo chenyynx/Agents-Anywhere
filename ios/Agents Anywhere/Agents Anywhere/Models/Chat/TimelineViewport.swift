@@ -43,6 +43,14 @@ nonisolated struct TimelineViewport: Equatable {
     /// carries none, so there is nothing to gate here (see
     /// `TimelineSpringFollow.shouldRearmEnd` for the model that does own
     /// `anchorPad`).
+    ///
+    /// The one-pixel tolerance is shared by Chat and the Code collection on
+    /// purpose: the official re-arm rule belongs to the shared
+    /// `SessionCollection` (05 §6–7), so a Code-only tolerance would invent a
+    /// second rule. Chat's legacy scroll path was tuned against the old 8 pt
+    /// value and has not been probed on device yet; keep one pixel until a
+    /// Chat scroll probe shows a regression (review R2 P2-4, decided
+    /// 2026-10-24).
     var measuredAtBottom: Bool {
         isMeasured && contentHeight - visibleBottom <= 1 / displayScale
     }

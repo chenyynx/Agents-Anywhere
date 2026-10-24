@@ -246,6 +246,12 @@ struct AssistantCodeBlock {
     var titleColor: UIColor? = nil
     var titleFontSize: CGFloat = 12
     var titleWeight: UIFont.Weight = .medium
+    /// `nil` keeps Chat's system monospaced title. The Code page passes the
+    /// official `JetBrainsMono-Regular` face; `titleWeightValue` is the CT
+    /// variation weight (400), because `UIFont.Weight.regular.rawValue` is 0,
+    /// not the 400 the variable-font axis expects.
+    var titleFontName: String? = nil
+    var titleWeightValue: CGFloat = 400
 }
 
 /// Font faces for the Markdown document. `nil` names keep the system fonts
@@ -276,6 +282,10 @@ struct AssistantCodeCardStyle {
     var titleColor: UIColor? = nil
     var titleFontSize: CGFloat = 12
     var titleWeight: UIFont.Weight = .medium
+    /// CT variation weight for the title when `fonts.monoName` is bundled.
+    /// Official `codeCard.title.typography.weight` is 400 (EVIDENCE,
+    /// `code-title-r10` §1).
+    var titleWeightValue: CGFloat = 400
     var textColor: UIColor? = nil
     /// The running-text faces. `fonts` travels with the same style object the
     /// parser already threads, so the measurer and the renderer share them.
@@ -671,7 +681,9 @@ enum AssistantMarkdownDocumentParser {
             borderColor: codeStyle.borderColor,
             titleColor: codeStyle.titleColor,
             titleFontSize: codeStyle.titleFontSize,
-            titleWeight: codeStyle.titleWeight))
+            titleWeight: codeStyle.titleWeight,
+            titleFontName: codeStyle.fonts.monoName,
+            titleWeightValue: codeStyle.titleWeightValue))
     }
 
     private static func tableBlock(_ content: AttributedString,

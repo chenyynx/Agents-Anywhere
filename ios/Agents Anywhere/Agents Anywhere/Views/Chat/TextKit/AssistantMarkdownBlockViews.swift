@@ -364,8 +364,19 @@ final class AssistantCodeBlockView: UIView {
             ?? ChatTextUIColors.codeHeaderDivider
         addSubview(divider)
 
-        languageLabel.font = UIFont.monospacedSystemFont(
-            ofSize: codeBlock.titleFontSize, weight: codeBlock.titleWeight)
+        if let titleFontName = codeBlock.titleFontName {
+            // [E] `codeCard.title.typography` (code-title-r10 §1): 13 pt,
+            // weight 400, lineHeight 20.8, `.caption` relative, JetBrains
+            // Mono. The official 44 pt header centres the 20.8 pt line box.
+            let size = UIFontMetrics(forTextStyle: .caption)
+                .scaledValue(for: codeBlock.titleFontSize)
+            languageLabel.font = MarkdownFontFactory.font(
+                name: titleFontName, size: size,
+                weight: codeBlock.titleWeightValue)
+        } else {
+            languageLabel.font = UIFont.monospacedSystemFont(
+                ofSize: codeBlock.titleFontSize, weight: codeBlock.titleWeight)
+        }
         languageLabel.textColor = codeBlock.titleColor
             ?? ChatTextUIColors.codeHeaderLabel
         languageLabel.lineBreakMode = .byTruncatingTail

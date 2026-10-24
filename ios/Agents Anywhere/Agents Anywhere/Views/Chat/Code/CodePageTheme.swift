@@ -419,12 +419,22 @@ nonisolated enum CodePageTheme {
         light: Color(.sRGB, red: 0.757, green: 0.518, blue: 0.004),
         dark: Color(.sRGB, red: 0.902, green: 0.753, blue: 0.482))
 
-    /// [E] §1.3-1.6 and part-ac M4 — 44 pt header (a ScaledMetric in the
-    /// official app), 24 pt continuous radius, 13 pt monoAux title at weight
-    /// 400.
-    static var codeCardStyle: AssistantCodeCardStyle {
+    /// [E] EVIDENCE/round19/code-card-highlighting.md:28 — the official header
+    /// height is a `ScaledMetric<Double>` over the default `.body` text style
+    /// (the relative style is INFERENCE in that evidence). 44 pt is only its
+    /// value at the default text size; it has to grow with Dynamic Type or the
+    /// scaled title/controls overrun the frame.
+    static func codeCardHeaderHeight(category: UIContentSizeCategory) -> CGFloat {
+        UIFontMetrics(forTextStyle: .body).scaledValue(
+            for: 44,
+            compatibleWith: UITraitCollection(preferredContentSizeCategory: category))
+    }
+
+    /// [E] §1.3-1.6 and part-ac M4 — 44 pt header at the default text size,
+    /// 24 pt continuous radius, 13 pt monoAux title at weight 400.
+    static func codeCardStyle(category: UIContentSizeCategory) -> AssistantCodeCardStyle {
         AssistantCodeCardStyle(
-            headerHeight: 44,
+            headerHeight: codeCardHeaderHeight(category: category),
             // [E] DATA/tokens.json `codeCard.body.textContainerInset` 16.0
             // (`0x100a501a4` → setTextContainerInset); the header HStack's
             // `.padding(16)` is the same value (`0x100a500d4`).

@@ -653,6 +653,13 @@ final class CodeProfileAutoRunModel {
                          json: RowHeightFixtureJSON.multiBlock,
                          widths: [361, 320],
                          sizes: [.regular, .accessibility]),
+        // A fenced code block at the default and an accessibility text size:
+        // the official header is a ScaledMetric, so the measured and rendered
+        // card must grow together instead of clipping the title.
+        RowHeightFixture(name: "code-card", kind: .text,
+                         json: RowHeightFixtureJSON.codeCard,
+                         widths: [361, 320],
+                         sizes: [.regular, .accessibility]),
     ]
 
     /// Renders every fixture at every requested width and size, reports each
@@ -1981,6 +1988,17 @@ final class CodeProfileAutoRunModel {
           {"id":"h-mb-3","sessionId":"gate-height","type":"message","status":"done","role":"assistant","orderSeq":3,
            "content":{"text":"The second paragraph after the tool row."},
            "source":{"nativeMessageId":"gate-multi","blockIndex":2}}
+        ]
+        """#
+
+        /// One fenced code block. The card's header height is a Dynamic Type
+        /// ScaledMetric, so at the accessibility size the measured document
+        /// and the drawn card must agree on the taller header.
+        static let codeCard = #"""
+        [
+          {"id":"h-card","sessionId":"gate-height","type":"message","status":"done","role":"assistant","orderSeq":1,
+           "content":{"text":"Fixed it:\n\n```swift\nfunc settle() async {\n    await clock.advance(by: .milliseconds(120))\n}\n```"},
+           "source":{"itemId":"gate-code-card"}}
         ]
         """#
     }

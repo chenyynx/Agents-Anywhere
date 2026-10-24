@@ -69,7 +69,8 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
         if coordinator.documentKey == key { return coordinator.document }
         let parsed = AssistantMarkdownDocumentParser.make(
             text: text, resolvesFileReferences: true, typography: metrics,
-            codeStyle: CodePageTheme.codeCardStyle)?
+            codeStyle: CodePageTheme.codeCardStyle(
+                category: dynamicTypeSize.contentSizeCategory))?
             .applyingCodePageTextColors()
         // A block the converter cannot represent must not erase the whole
         // reply. The TextKit path used to return nil here, which rendered a

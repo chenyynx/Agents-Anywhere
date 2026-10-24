@@ -132,7 +132,9 @@ enum CodeMessageHeightMeasurer {
                                             traits: UITraitCollection?) -> CGFloat {
         guard let document = AssistantMarkdownDocumentParser.make(
             text: text, resolvesFileReferences: true, typography: typography,
-            codeStyle: CodePageTheme.codeCardStyle)?
+            codeStyle: CodePageTheme.codeCardStyle(
+                category: (traits ?? UITraitCollection.current)
+                    .preferredContentSizeCategory))?
             .applyingCodePageTextColors() else {
             return estimatedAssistantTextHeight(text, width: width, typography: typography)
         }

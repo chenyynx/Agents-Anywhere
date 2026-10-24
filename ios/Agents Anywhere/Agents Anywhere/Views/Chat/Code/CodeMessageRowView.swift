@@ -190,20 +190,13 @@ struct CodeMessageRowView: View {
         let label = CodeToolLabels.label(for: calls, cwd: cwd)
         return CodeCollapsedToolRow(verb: label.verb,
                                     target: label.target,
-                                    // Neither state draws a category glyph: the
-                                    // official `CollapsedRowButton` body is a
-                                    // four-case enum whose ordinary rows are
-                                    // `HStack(label, diff)` when settled and
-                                    // `ShimmerView<Text>` when running; the
-                                    // `IconFrame` case belongs to the
-                                    // background-task state, and an ordinary
-                                    // tool row has no Anthropicon at all
-                                    // (EVIDENCE/round19/tool-row-status.md:30,
-                                    // CANONICAL/04-tool-calls.md:121). The
-                                    // settled-row video frames agree
-                                    // (REFERENCES/round3/video/frames/OH1_key/
-                                    // t0331.jpg).
-                                    icon: nil,
+                                    // A settled row carries no leading glyph
+                                    // in the official screenshot; a running
+                                    // row shows its category icon
+                                    // (CANONICAL/04-tool-calls.md §4.1/§7.3).
+                                    icon: label.isRunning
+                                        ? CodeToolLabels.icon(for: calls.first?.kind ?? .other)
+                                        : nil,
                                     diff: label.diff,
                                     isRunning: label.isRunning) {
             if let request = CodeToolDetailRequest(calls: calls) { onToolDetail(request) }
@@ -363,6 +356,22 @@ nonisolated enum CodeToolLabels {
                                 target: nil,
                                 diff: plan.diff,
                                 isRunning: plan.isRunning)
+    }
+
+    static func icon(for kind: CodeToolKind) -> String {
+        switch kind {
+        case .read: "eye"
+        case .edit: "pencil"
+        case .write: "doc"
+        case .bash: "terminal"
+        case .search: "magnifyingglass"
+        case .todo: "checklist"
+        case .task: "person.2"
+        case .plan: "list.bullet.clipboard"
+        case .question: "questionmark.bubble"
+        case .mcp: "wrench.and.screwdriver"
+        case .other: "wrench"
+        }
     }
 
     // MARK: - Localized text

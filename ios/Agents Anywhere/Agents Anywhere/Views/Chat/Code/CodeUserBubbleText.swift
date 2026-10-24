@@ -36,6 +36,11 @@ struct CodeUserBubbleText: UIViewRepresentable {
         view.textContainerInset = .zero
         view.textContainer.lineFragmentPadding = 0
         view.textContainer.widthTracksTextView = true
+        // The fixture in the code-profile gate rendered only the first of two
+        // lines: the text view grew, but the container kept its creation-time
+        // height and never laid out the rest. The bubble's height comes from
+        // `sizeThatFits`, so the container must follow the view.
+        view.textContainer.heightTracksTextView = true
         return view
     }
 
@@ -52,11 +57,18 @@ struct CodeUserBubbleText: UIViewRepresentable {
     func sizeThatFits(_ proposal: ProposedViewSize,
                       uiView: CodeUserBubbleTextView,
                       context: Context) -> CGSize? {
-        let width = proposal.width ?? uiView.bounds.width
-        guard width > 0, width.isFinite else { return nil }
+        let available = proposal.width ?? uiView.bounds.width
+        guard available > 0, available.isFinite else { return nil }
+        // A short bubble hugs its text (the official bubble adds 2×16 pt to
+        // the content width); returning the proposal width made every bubble
+        // span the whole column.
+        let scale = max(displayScale, 1)
+        let intrinsic = AssistantMarkdownTextLayout.intrinsicSize(
+            of: CodeUserBubbleTextMetrics.attributed(text, traits: traits),
+            displayScale: scale).width
+        let width = min(available, max(1, intrinsic))
         let height = CodeUserBubbleTextMetrics.height(
-            text: text, width: width, displayScale: max(displayScale, 1),
-            traits: traits)
+            text: text, width: width, displayScale: scale, traits: traits)
         return CGSize(width: width, height: height)
     }
 }

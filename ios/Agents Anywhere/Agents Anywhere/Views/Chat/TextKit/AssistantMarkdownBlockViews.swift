@@ -469,9 +469,9 @@ final class AssistantCodeBlockView: UIView {
         for type: StructuredText.HighlighterTheme.TokenType
     ) -> UIColor? {
         switch type {
-        case .property, .variable, .number:
+        case .variable, .number:
             return CodePageTheme.uiColor(CodePageTheme.syntaxOrange)
-        case .string, .char, .regex:
+        case .string, .regex, .attributeName, .attributeValue, .inserted:
             return CodePageTheme.uiColor(CodePageTheme.syntaxGreen)
         case .comment, .blockComment, .docComment:
             return CodePageTheme.uiColor(CodePageTheme.syntaxComment)
@@ -479,9 +479,16 @@ final class AssistantCodeBlockView: UIView {
             return CodePageTheme.uiColor(CodePageTheme.syntaxKeyword)
         case .literal, .boolean:
             return CodePageTheme.uiColor(CodePageTheme.syntaxCyan)
-        case .className:
+        case .className, .builtin:
             return CodePageTheme.uiColor(CodePageTheme.syntaxYellow)
-        case .punctuation, .symbol, .function, .functionName:
+        case .function, .functionName, .functionDefinition,
+             .symbol, .url, .selector:
+            // Official hljs scopes `title.function`/`symbol`/`link` are blue.
+            return CodePageTheme.uiColor(CodePageTheme.syntaxBlue)
+        case .tag, .deleted:
+            return CodePageTheme.uiColor(CodePageTheme.syntaxRed)
+        case .property, .char, .punctuation, .operator:
+            // Official `property`/`char`/punctuation keep the default ink.
             return nil
         default:
             return nil

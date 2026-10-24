@@ -71,9 +71,36 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
             text: text, resolvesFileReferences: true, typography: metrics,
             codeStyle: CodePageTheme.codeCardStyle)?
             .applyingCodePageTextColors()
-        coordinator.document = parsed
-        coordinator.documentKey = key
-        return parsed
+        // A block the converter cannot represent must not erase the whole
+        // reply. The TextKit path used to return nil here, which rendered a
+        // zero-height text block (the `---` bug class). Render the raw text as
+        // one plain paragraph instead and keep the rest of the row visible.
+        let document = parsed ?? Self.plainTextDocument(text, typography: metrics)
+        coordinator.document = document
+        coordinator.documentKey = key + (parsed == nil ? ":plain" : "")
+        return document
+    }
+
+    private static func plainTextDocument(
+        _ text: String, typography: TimelineTypographySnapshot
+    ) -> AssistantMarkdownDocument {
+        let font = MarkdownFontFactory.font(
+            name: CodePageTheme.sansFontName, size: typography.body, weight: 400)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = typography.lineSpacing
+        paragraph.paragraphSpacing = typography.paragraphSpacing
+        let attributed = NSAttributedString(string: text, attributes: [
+            .font: font,
+            .foregroundColor: CodePageTheme.markdownTextUIColor,
+            .paragraphStyle: paragraph,
+        ])
+        return AssistantMarkdownDocument(
+            blocks: [.text(AssistantTextBlock(
+                attributed: attributed, headingLevel: nil))],
+            blockGroups: [0],
+            plainTextLength: text.count,
+            blockSpacing: CodePageTheme.blockSpacing,
+            codeRoles: typography.codeMarkdownRoles)
     }
 
     func makeUIView(context: Context) -> CodeMarkdownTextStackView {

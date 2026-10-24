@@ -475,6 +475,9 @@ enum AssistantMarkdownDocumentParser {
         document = GitDirectiveParser.enrich(document) { directives, attributes in
             var badge = AttributedString(directives.map(\.label).joined(separator: " · "),
                                          attributes: attributes)
+            // `AnyAttachment` erases its wrapped value; carry the directives
+            // beside it so the TextKit converter can rebuild the same badge.
+            badge[GitBadgeDirectivesAttribute.self] = directives
             badge.textual.attachment = AnyAttachment(ChatGitBadgeAttachment(directives: directives))
             return badge
         }
@@ -752,9 +755,9 @@ enum AssistantMarkdownDocumentParser {
                                   language: String?,
                                   typography: TimelineTypographySnapshot,
                                   codeStyle: AssistantCodeCardStyle) -> AssistantMarkdownBlock? {
-        for run in content.runs {
-            if run.textual.attachment != nil || run.imageURL != nil { return nil }
-        }
+        // A fence's characters are the code, even if a syntax extension left
+        // an attachment marker on a run (math inside a code fence is kept as
+        // source). Never reject the whole document for it.
         var code = String(content.characters)
         // The block parser leaves the separator newline at the end; keeping it
         // would add an empty code line to the measured card.
@@ -1044,10 +1047,42 @@ enum AssistantMarkdownDocumentParser {
         let output = NSMutableAttributedString()
         for run in content.runs {
             // Textual resolves images after parsing (`run.imageURL`), while
-            // Git badges and math arrive as textual attachments. Both are M3
-            // attachment work; neither may reach the text renderer as a
-            // replacement character.
-            if run.textual.attachment != nil || run.imageURL != nil { return nil }
+            // Git badges and math arrive as textual attachments. They are
+            // inlined as TextKit attachments; rejecting the whole block here
+            // used to blank the entire reply (the `---` bug class).
+            if let attachment = run.textual.attachment {
+                if let directives = run[GitBadgeDirectivesAttribute.self] {
+                    let label = directives.map(\.label).joined(separator: " · ")
+                    let metrics = AssistantInlineAttachment.gitBadgeMetrics(
+                        label: label, baseFontSize: baseFont.pointSize)
+                    output.append(NSAttributedString(attachment: AssistantInlineAttachment(
+                        payload: .gitBadge(directives),
+                        size: metrics.size,
+                        baselineOffset: metrics.baselineOffset,
+                        accessibilityText: label)))
+                    continue
+                }
+                if let math = TextualMath.descriptor(for: attachment) {
+                    let fontSize = baseFont.pointSize
+                    let metrics = TextualMath.metrics(
+                        latex: math.latex, isBlock: math.isBlock,
+                        fontSize: fontSize)
+                    output.append(NSAttributedString(attachment: AssistantInlineAttachment(
+                        payload: .math(latex: math.latex, isBlock: math.isBlock,
+                                       fontSize: fontSize),
+                        size: metrics.size,
+                        baselineOffset: metrics.baselineOffset,
+                        accessibilityText: math.latex)))
+                    continue
+                }
+                // Unknown attachment: keep whatever characters it carries.
+            }
+            if run.imageURL != nil {
+                // A mixed text+image paragraph cannot host the block image
+                // view. Keep the surrounding text visible; a paragraph that is
+                // only an image is handled by `standaloneImageBlock`.
+                continue
+            }
             var text = String(content[run.range].characters)
             // Textual renders a soft break as a space (`Formatter` maps it to
             // `.text(" ")`); copying the literal newline would add a line that

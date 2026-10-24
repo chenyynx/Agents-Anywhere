@@ -1,5 +1,13 @@
 import Foundation
 
+/// The directives behind a Git badge, carried beside Textual's erased
+/// attachment. `AnyAttachment` does not expose its wrapped value, so the
+/// TextKit converter needs its own typed marker on the run.
+nonisolated enum GitBadgeDirectivesAttribute: AttributedStringKey {
+    typealias Value = [GitDirective]
+    static let name = "aaGitBadgeDirectives"
+}
+
 nonisolated struct GitDirective: Hashable, Sendable {
     enum Action: String, Sendable { case stage, commit, createBranch = "create-branch", push, createPR = "create-pr" }
     let action: Action

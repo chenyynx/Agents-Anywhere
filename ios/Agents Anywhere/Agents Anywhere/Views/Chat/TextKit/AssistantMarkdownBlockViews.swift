@@ -497,7 +497,14 @@ final class AssistantCodeBlockView: UIView {
 
     private func configureIcon(_ view: UIImageView, symbol: String) {
         view.image = iconImage(symbol: symbol, fallback: symbol)
-        view.tintColor = ChatTextUIColors.codeHeaderIcon
+        // [E] The official header controls inherit the header's
+        // `.foregroundStyle` (#7B7974 light / #97958D dark,
+        // EVIDENCE/round19/code-card-highlighting.md:70), which is the same
+        // ink the Code card already passes as `titleColor`. The Chat card
+        // keeps its palette because it passes no title colour. Whether the
+        // official `.borderless` control is re-tinted with the accent colour
+        // is still [U].
+        view.tintColor = codeBlock.titleColor ?? ChatTextUIColors.codeHeaderIcon
         // The 24 pt frame is the official control; the artwork inside it is
         // smaller (see `iconGlyphSize`), so it is centred rather than stretched.
         view.contentMode = .center

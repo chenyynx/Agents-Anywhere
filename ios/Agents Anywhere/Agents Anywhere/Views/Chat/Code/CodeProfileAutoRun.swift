@@ -731,10 +731,12 @@ final class CodeProfileAutoRunModel {
     /// `rendered` is the settled in-window host the existing matrix already
     /// trusts. `hostless` is the `TimelineHostingHeightMeasurer` shape: an
     /// offscreen `UIHostingController` fed the production `preparedBlocks`.
-    /// `cellSuper` and `cellForced` are a fresh `TimelineHostingCell` fitting
-    /// itself without a seed; `cellForced` gives the content configuration a
-    /// layout pass first. Deltas are recorded, never asserted — the main
-    /// session decides which renderer source the product can trust.
+    /// `cellSuper` and `cellForced` are a fresh `TimelineHostingCell` in the
+    /// key window fitting itself without a seed; `cellForced` gives the
+    /// content view a layout pass first, and `cellSettled` lets the hosted
+    /// content commit for 300 ms before the fit. Deltas are recorded, never
+    /// asserted — the main session decides which renderer source the product
+    /// can trust.
     private func verifyRendererMeasure() async {
         guard let window = keyWindow else {
             failures.append("rendererMeasure: no key window")
@@ -745,6 +747,8 @@ final class CodeProfileAutoRunModel {
         var hostlessMaxDelta: Double = 0
         var cellSuperMaxDelta: Double = 0
         var cellForcedMaxDelta: Double = 0
+        var cellSettledMaxDelta: Double = 0
+        var contentSettledMaxDelta: Double = 0
 
         for fixture in Self.rendererMeasureFixtures {
             guard let items = Self.decodeItems(fixture.json) else {
@@ -825,20 +829,39 @@ final class CodeProfileAutoRunModel {
             // the row chrome (18 pt) both offscreen and detached. A fresh cell
             // per call keeps the configuration token and the (absent) seed out
             // of the other measurement.
-            let cellSuper = measureRendererCell(rowView, hostWidth: hostWidth,
-                                                window: window, forceLayout: false)
-            let cellForced = measureRendererCell(rowView, hostWidth: hostWidth,
-                                                 window: window, forceLayout: true)
+            let cellSuper = await measureRendererCell(rowView, hostWidth: hostWidth,
+                                                      window: window, forceLayout: false)
+            let cellForced = await measureRendererCell(rowView, hostWidth: hostWidth,
+                                                       window: window, forceLayout: true)
+            // The immediate fit sees only the row chrome: SwiftUI has not
+            // committed the hosted content yet even though the cell is in the
+            // window. Give the content a runloop turn before the fit; this is
+            // the earliest moment a synchronous self-measure can see the real
+            // body.
+            let cellSettled = await measureRendererCell(rowView, hostWidth: hostWidth,
+                                                        window: window, forceLayout: false,
+                                                        settleMilliseconds: 300)
+            // The production settle reads the content view's own fitting size
+            // (`settleVisibleCellHeightsOnce`), not the cell's preferred
+            // attributes. Measure that exact call after the content commits.
+            let contentSettled = await measureRendererContentFit(rowView, hostWidth: hostWidth,
+                                                                 window: window)
 
             let hostlessValue = Double(hostless)
             let cellSuperValue = cellSuper.height.map { Double($0) } ?? -1
             let cellForcedValue = cellForced.height.map { Double($0) } ?? -1
+            let cellSettledValue = cellSettled.height.map { Double($0) } ?? -1
             let hostlessAvailable = hostless > 1
             let hostlessDelta = hostlessAvailable ? abs(hostlessValue - rendered) : -1
             let cellSuperDelta = cellSuper.height != nil
                 ? abs(cellSuperValue - rendered) : -1
             let cellForcedDelta = cellForced.height != nil
                 ? abs(cellForcedValue - rendered) : -1
+            let cellSettledDelta = cellSettled.height != nil
+                ? abs(cellSettledValue - rendered) : -1
+            let contentSettledValue = contentSettled.height.map { Double($0) } ?? -1
+            let contentSettledDelta = contentSettled.height != nil
+                ? abs(contentSettledValue - rendered) : -1
             if hostlessAvailable {
                 hostlessMaxDelta = max(hostlessMaxDelta, hostlessDelta)
             }
@@ -847,6 +870,12 @@ final class CodeProfileAutoRunModel {
             }
             if cellForced.height != nil {
                 cellForcedMaxDelta = max(cellForcedMaxDelta, cellForcedDelta)
+            }
+            if cellSettled.height != nil {
+                cellSettledMaxDelta = max(cellSettledMaxDelta, cellSettledDelta)
+            }
+            if contentSettled.height != nil {
+                contentSettledMaxDelta = max(contentSettledMaxDelta, contentSettledDelta)
             }
 
             var record: [String: Any] = [:]
@@ -875,13 +904,32 @@ final class CodeProfileAutoRunModel {
             record["cellForcedDelta"] = cellForcedDelta
             record["cellForcedWithin1"] = cellForced.height != nil && cellForcedDelta <= 1
             record["cellForcedWithin3"] = cellForced.height != nil && cellForcedDelta <= 3
+            record["cellSettledAvailable"] = cellSettled.height != nil
+            record["cellSettledContentInstalled"] = cellSettled.contentInstalled
+            record["cellSettledSafeTop"] = Double(cellSettled.safeTop)
+            record["cellSettledSafeBottom"] = Double(cellSettled.safeBottom)
+            record["cellSettled"] = cellSettledValue
+            record["cellSettledDelta"] = cellSettledDelta
+            record["cellSettledWithin1"] = cellSettled.height != nil && cellSettledDelta <= 1
+            record["cellSettledWithin3"] = cellSettled.height != nil && cellSettledDelta <= 3
+            record["contentSettledAvailable"] = contentSettled.height != nil
+            record["contentSettledSafeTop"] = Double(contentSettled.safeTop)
+            record["contentSettledSafeBottom"] = Double(contentSettled.safeBottom)
+            record["contentSettled"] = contentSettledValue
+            record["contentSettledDelta"] = contentSettledDelta
+            record["contentSettledWithin1"] = contentSettled.height != nil
+                && contentSettledDelta <= 1
+            record["contentSettledWithin3"] = contentSettled.height != nil
+                && contentSettledDelta <= 3
             cases.append(record)
 
             print("AA RENDERER MEASURE \(fixture.name)"
                 + " rendered=\(rendered)"
                 + " hostless=\(hostlessValue) d=\(hostlessDelta)"
                 + " cell=\(cellSuperValue) d=\(cellSuperDelta)"
-                + " cellForced=\(cellForcedValue) d=\(cellForcedDelta)")
+                + " cellForced=\(cellForcedValue) d=\(cellForcedDelta)"
+                + " cellSettled=\(cellSettledValue) d=\(cellSettledDelta)"
+                + " contentSettled=\(contentSettledValue) d=\(contentSettledDelta)")
         }
 
         var measurement: [String: Any] = [:]
@@ -893,9 +941,13 @@ final class CodeProfileAutoRunModel {
         measurement["hostlessSource"] = "offscreen UIHostingController, preparedBlocks, ceil"
         measurement["cellSuperSource"] = "TimelineHostingCell in the key window, no seed, direct preferredLayoutAttributesFitting"
         measurement["cellForcedSource"] = "TimelineHostingCell in the key window, no seed, contentView layout before the fit"
+        measurement["cellSettledSource"] = "TimelineHostingCell in the key window, no seed, 300 ms runloop before the fit"
+        measurement["contentSettledSource"] = "cell.contentView.systemLayoutSizeFitting after a 300 ms commit (the production settle call)"
         measurement["hostlessMaxDelta"] = hostlessMaxDelta
         measurement["cellSuperMaxDelta"] = cellSuperMaxDelta
         measurement["cellForcedMaxDelta"] = cellForcedMaxDelta
+        measurement["cellSettledMaxDelta"] = cellSettledMaxDelta
+        measurement["contentSettledMaxDelta"] = contentSettledMaxDelta
         measurement["cases"] = cases
         report["rendererMeasure"] = measurement
         persist(phase: "views.rendererMeasure")
@@ -925,7 +977,8 @@ final class CodeProfileAutoRunModel {
     private func measureRendererCell(_ row: AnyView,
                                      hostWidth: CGFloat,
                                      window: UIWindow,
-                                     forceLayout: Bool) -> RendererCellMeasurement {
+                                     forceLayout: Bool,
+                                     settleMilliseconds: Int = 0) async -> RendererCellMeasurement {
         let cell = TimelineHostingCell(frame: CGRect(x: 0, y: 0,
                                                      width: hostWidth, height: 300))
         cell.configure(row, policy: .measured,
@@ -934,6 +987,12 @@ final class CodeProfileAutoRunModel {
         window.addSubview(cell)
         cell.setNeedsLayout()
         cell.layoutIfNeeded()
+        if settleMilliseconds > 0 {
+            await wait(settleMilliseconds)
+            window.layoutIfNeeded()
+            cell.setNeedsLayout()
+            cell.layoutIfNeeded()
+        }
         if forceLayout {
             cell.contentView.setNeedsLayout()
             cell.contentView.layoutIfNeeded()
@@ -952,6 +1011,44 @@ final class CodeProfileAutoRunModel {
         }
         return RendererCellMeasurement(height: fitted, contentInstalled: installed,
                                        safeTop: safeTop, safeBottom: safeBottom)
+    }
+
+    /// The production settle call: read the cell's content view fitting size
+    /// after the hosted content has had a runloop turn to commit. The visible
+    /// cell settle (`settleVisibleCellHeightsOnce`) uses exactly this call, so
+    /// this is the renderer's own height without the preferred-attributes
+    /// wrapper.
+    private func measureRendererContentFit(_ row: AnyView,
+                                           hostWidth: CGFloat,
+                                           window: UIWindow) async
+        -> (height: CGFloat?, safeTop: CGFloat, safeBottom: CGFloat) {
+        let cell = TimelineHostingCell(frame: CGRect(x: 0, y: 0,
+                                                     width: hostWidth, height: 300))
+        cell.configure(row, policy: .measured,
+                       isMeasured: false, reportsContentHeight: false,
+                       seededHeight: nil)
+        window.addSubview(cell)
+        cell.setNeedsLayout()
+        cell.layoutIfNeeded()
+        await wait(300)
+        window.layoutIfNeeded()
+        cell.contentView.setNeedsLayout()
+        cell.contentView.layoutIfNeeded()
+        let width = cell.contentView.bounds.width
+        let raw: CGFloat
+        if width > 0 {
+            raw = cell.contentView.systemLayoutSizeFitting(
+                CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
+                withHorizontalFittingPriority: .required,
+                verticalFittingPriority: .fittingSizeLevel).height
+        } else {
+            raw = .nan
+        }
+        let safeTop = cell.safeAreaInsets.top
+        let safeBottom = cell.safeAreaInsets.bottom
+        cell.removeFromSuperview()
+        let height: CGFloat? = raw.isFinite && raw > 1 ? ceil(raw) : nil
+        return (height, safeTop, safeBottom)
     }
 
     /// Hosts one `CodeMessageRowView` the way `verifyMessageRowHeight` does:

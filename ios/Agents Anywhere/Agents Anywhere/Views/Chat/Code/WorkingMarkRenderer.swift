@@ -251,7 +251,8 @@ nonisolated enum WorkingMarkRenderer {
         let sheetName = "working-mark-\(frame.body.rawValue)"
         let key = "\(sheetName)-\(frame.phase.rawValue)-\(frame.index)" as NSString
         if let cached = sheetCache.object(forKey: key) { return cached }
-        guard let sheet = UIImage(named: sheetName)?.cgImage else { return nil }
+        guard let sheetImage = UIImage(named: sheetName),
+              let sheet = sheetImage.cgImage else { return nil }
         let side = sheet.width
         guard side > 0 else { return nil }
         let opening = frameCount(for: frame.body, phase: .opening)
@@ -267,7 +268,9 @@ nonisolated enum WorkingMarkRenderer {
               let tile = sheet.cropping(to: CGRect(x: 0, y: y,
                                                    width: side, height: side))
         else { return nil }
-        let image = UIImage(cgImage: tile, scale: 3, orientation: .up)
+        // Keep the sheet's own scale: a 2x asset store downsamples the 3x
+        // sheet, and a hard-coded 3 would shrink the mark to 10.7 pt there.
+        let image = UIImage(cgImage: tile, scale: sheetImage.scale, orientation: .up)
         sheetCache.setObject(image, forKey: key)
         return image
     }

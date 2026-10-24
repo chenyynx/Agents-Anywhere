@@ -257,11 +257,12 @@ final class TimelineCollectionController: UIViewController {
             let cell = collectionView.dequeueReusableCell(withReuseIdentifier: TimelineHostingCell.reuseIdentifier,
                                                           for: indexPath) as! TimelineHostingCell
             if let self, let content = self.content {
-                // Ask the cache for the key this apply established: a new
-                // revision starts unmeasured even when the row's old attribute
-                // still carries the previous key's measured flag.
-                let isMeasured = self.layout.heights.hasMeasuredOrPrecalcHeight(
-                    for: content.heightKey(for: item, width: self.columnWidth))
+                // Official 0x101a3ff20: `isMeasured` is item-level and only a
+                // width change clears it. A same-width content revision keeps
+                // the row measured instead of reopening its one self-measure;
+                // the cell-fit report path supplies the new height.
+                let isMeasured = self.layout.heights.isMeasured(
+                    itemID: item.itemID, width: self.columnWidth)
                 // A hosted row's geometry change is only a trigger: the height
                 // is read back from `systemLayoutSizeFitting` at a settled
                 // moment. The Chat rows keep the controller polling path.
@@ -526,6 +527,19 @@ final class TimelineCollectionController: UIViewController {
         let recordedAt = CACurrentMediaTime()
         previousInteractiveHeights = beforeHeights.mapValues {
             PreChangeHeight(height: $0, recordedAt: recordedAt)
+        }
+        // A reconfigure changes content (fold state, notice card), and the
+        // content revision is part of the height key. Install the new key
+        // before the snapshot applies: the settled fit this path reports
+        // through `applyPreferredHeight` must land on the key the layout
+        // carries, or the `staleKey` gate drops the row's only correction.
+        if let content {
+            for item in present {
+                let key = content.heightKey(for: item, width: columnWidth)
+                if layout.heights.currentKey(for: item.itemID) != key {
+                    layout.heights.setCurrentKey(key)
+                }
+            }
         }
         isPerformingSnapshot = true
         snapshot.reconfigureItems(present)
@@ -910,7 +924,12 @@ final class TimelineCollectionController: UIViewController {
         if progress >= 1 {
             link.invalidate()
             rowHeightAnimations.removeValue(forKey: ObjectIdentifier(link))
-            layout.applyMeasuredHeight(animation.to, for: animation.item.itemID, key: animation.key)
+            // The animation's final frame is already on screen. Committing it
+            // keeps the row at this height when the display override is
+            // cleared right after; parking it under the finger would collapse
+            // the row to the pre-animation height.
+            layout.applyMeasuredHeight(animation.to, for: animation.item.itemID,
+                                       key: animation.key, commit: true)
             layout.clearStreamingHeight(for: animation.item.itemID)
         } else {
             layout.applyStreamingHeight(height, for: animation.item.itemID)
@@ -987,7 +1006,9 @@ final class TimelineCollectionController: UIViewController {
                                      key: content.heightKey(for: item, width: columnWidth),
                                      from: before)
                 } else {
-                    layout.applyPreferredHeight(target, for: item.itemID)
+                    layout.applyPreferredHeight(
+                        target, for: item.itemID,
+                        key: content.heightKey(for: item, width: columnWidth))
                     // The controller owns this correction path; force the
                     // layout pass so the new value is observable in the same
                     // turn.

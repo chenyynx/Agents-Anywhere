@@ -130,6 +130,10 @@ final class TimelineListLayout: UICollectionViewLayout {
         // measured every new key before the apply. Only a later resize is a
         // pure bounds change with no apply to schedule the new keys.
         let widthChanged = lastLayoutWidth > 0 && width != lastLayoutWidth
+        // Official 0x101a3ff20: a width change re-measures every row, even
+        // when the view returns to a width used earlier. The height tiers stay
+        // as estimates; only the measured state is cleared.
+        if widthChanged { heights.forgetMeasuredWidths() }
         let column = TimelineListMetrics.column(containerWidth: width)
         let count = host.layoutItemCount
         var items: [TimelineListItem] = []
@@ -165,8 +169,16 @@ final class TimelineListLayout: UICollectionViewLayout {
             let streamingHeight = streamingHeights[item.itemID]
             let height = streamingHeight
                 ?? heights.resolvedHeight(for: key, itemID: item.itemID, fallback: estimate)
-            let hasMeasuredHeight = heights.hasMeasuredOrPrecalcHeight(for: key)
-            if hasMeasuredHeight {
+            // Official 0x101a3ff20: the row's `isMeasured` is item-level and
+            // a width change is the only thing that clears it. A same-width
+            // content revision keeps the row measured; its new height arrives
+            // from the reconfigure / cell-fit report path, not a second
+            // self-measure.
+            let hasMeasuredHeight = heights.isMeasured(itemID: item.itemID, width: key.width)
+            // Pending stays key-level: the controller still owes this key a
+            // real measurement even when the row was measured under an
+            // earlier revision.
+            if heights.hasMeasuredOrPrecalcHeight(for: key) {
                 heights.resolvePending(item.itemID)
             } else {
                 pending.insert(item)
@@ -435,9 +447,17 @@ final class TimelineListLayout: UICollectionViewLayout {
     /// A controller-driven measurement completed. The fixed height is the
     /// truth; the decision says whether the reader's content must move, and a
     /// deferred change parks the value itself until the gesture settles.
-    func applyMeasuredHeight(_ height: CGFloat, for itemID: String, key: TimelineHeightKey) {
+    /// `commit` bypasses that park for a height the reader already sees (a
+    /// row-height animation's final frame): its caller removes the display
+    /// override right after, and a parked value would make that removal fall
+    /// back to the pre-animation height.
+    func applyMeasuredHeight(_ height: CGFloat, for itemID: String, key: TimelineHeightKey,
+                             commit: Bool = false) {
         guard heights.currentKey(for: itemID) == key else { return }
-        let hadCommittedHeight = heights.hasMeasuredOrPrecalcHeight(for: key)
+        // Item-level, like the cell's `isMeasured`: a same-width re-key must
+        // keep treating this as an already-displayed row (official
+        // 0x101a3ff20).
+        let hadCommittedHeight = heights.isMeasured(itemID: itemID, width: key.width)
         guard let attributes = attributesByItemID[itemID] else {
             heights.set(height, for: key, tier: .measured)
             heights.resolvePending(itemID)
@@ -477,11 +497,18 @@ final class TimelineListLayout: UICollectionViewLayout {
             suppressContentOffsetAdjustment: state.suppressContentOffsetAdjustment,
             hasCachedHeight: hadCommittedHeight)
         if decision.height == .deferUntilSettled {
-            // Park the value itself, not just the correction: writing the
-            // measurement now would let the next `prepare` display the new
-            // height while its offset compensation is still parked.
-            deferredHeights[itemID] = DeferredHeight(key: key, height: height)
-            return
+            guard commit else {
+                // Park the value itself, not just the correction: writing the
+                // measurement now would let the next `prepare` display the new
+                // height while its offset compensation is still parked.
+                deferredHeights[itemID] = DeferredHeight(key: key, height: height)
+                return
+            }
+            // The caller already shows this height (a row-height animation's
+            // final frame). Parking it would let the following
+            // `clearStreamingHeight` fall back to the pre-animation displayed
+            // height and collapse the row under the finger; this is not an
+            // unseen correction, so it lands now.
         }
         heights.set(height, for: key, tier: .measured)
         heights.resolvePending(itemID)
@@ -653,16 +680,17 @@ final class TimelineListLayout: UICollectionViewLayout {
         preferredHeightDiagnostics[key, default: 0] += 1
     }
 
-    func applyPreferredHeight(_ height: CGFloat, for itemID: String) {
+    /// The caller passes the key it fitted the cell for, because a same-width
+    /// content change keeps the row measured but replaces the key; reading
+    /// the retired key off the attributes would reject the one report this
+    /// path has. `staleKey` still drops a report from a replaced snapshot.
+    func applyPreferredHeight(_ height: CGFloat, for itemID: String, key: TimelineHeightKey) {
         notePreferred("call")
         guard let attributes = attributesByItemID[itemID] else {
             notePreferred("noAttributes"); return
         }
         guard attributes.policy.acceptsPreferredHeight else {
             notePreferred("notInteractive"); return
-        }
-        guard let key = attributes.heightKey else {
-            notePreferred("noKey"); return
         }
         guard heights.currentKey(for: itemID) == key else {
             notePreferred("staleKey"); return
@@ -684,7 +712,7 @@ final class TimelineListLayout: UICollectionViewLayout {
             isTracking: state.isTracking,
             isDecelerating: state.isDecelerating,
             keyboardTransition: state.keyboardTransition,
-            hasCachedHeight: heights.hasMeasuredOrPrecalcHeight(for: key))
+            hasCachedHeight: heights.isMeasured(itemID: itemID, width: key.width))
         if decision.height == .deferUntilSettled {
             notePreferred("deferred")
             deferredHeights[itemID] = DeferredHeight(key: key, height: height)
@@ -784,7 +812,7 @@ final class TimelineListLayout: UICollectionViewLayout {
             itemID: itemID, item: attributes.item,
             old: attributes.frame.height, new: resolved, source: "streamEnd")
 #endif
-        if heights.hasMeasuredOrPrecalcHeight(for: key) {
+        if heights.isMeasured(itemID: itemID, width: key.width) {
             attributes.isMeasured = true
         }
         let state = host?.layoutInteractionState() ?? TimelineLayoutInteractionState()
@@ -801,7 +829,7 @@ final class TimelineListLayout: UICollectionViewLayout {
             isDecelerating: state.isDecelerating,
             keyboardTransition: state.keyboardTransition,
             suppressContentOffsetAdjustment: state.suppressContentOffsetAdjustment,
-            hasCachedHeight: heights.hasMeasuredOrPrecalcHeight(for: key))
+            hasCachedHeight: heights.isMeasured(itemID: itemID, width: key.width))
         let context = UICollectionViewLayoutInvalidationContext()
         context.invalidateItems(at: invalidatablePaths(by: attributes))
         if abs(delta) > 0.5 {

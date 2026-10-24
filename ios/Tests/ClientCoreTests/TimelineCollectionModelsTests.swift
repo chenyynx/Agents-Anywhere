@@ -868,6 +868,97 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         cache.set(170, for: key, tier: .measured)
         #expect(cache.hasMeasuredOrPrecalcHeight(for: key))
     }
+
+    // Official `0x101a3ff20`: the measured state is per item and width, not per
+    // revision key. A same-width content change retires the old key's tiers but
+    // keeps the row measured, so the cell is never offered a second first-fit.
+    @Test func aSameWidthRevisionKeepsTheMeasuredState() {
+        let cache = TimelineHeightCache()
+        let first = heightKey(revision: 1, width: 320)
+        cache.setCurrentKey(first)
+        cache.set(300, for: first, tier: .measured)
+        #expect(cache.isMeasured(itemID: "g:a", width: 320))
+        let second = heightKey(revision: 2, width: 320)
+        cache.setCurrentKey(second)
+        #expect(cache.isMeasured(itemID: "g:a", width: 320))
+        // The retired revision still loses its tiers.
+        #expect(cache.tieredHeight(for: first) == nil)
+    }
+
+    // Official `0x101a3ff20`: any width change clears `isMeasured`, including a
+    // change back to a width measured earlier. The layout calls
+    // `forgetMeasuredWidths()` when its bounds width changes
+    // (`rowsNeedMeasuringAgain`); that cache method is the executor, and it
+    // keeps only the item's last measured width, so a returning rotation
+    // reopens the first-fit.
+    @Test func aWidthChangeAndReturningToAPreviousWidthClearTheMeasuredState() {
+        let cache = TimelineHeightCache()
+        let narrow = heightKey(revision: 1, width: 320)
+        cache.setCurrentKey(narrow)
+        cache.set(300, for: narrow, tier: .measured)
+        #expect(cache.isMeasured(itemID: "g:a", width: 320))
+        let wide = heightKey(revision: 1, width: 390)
+        cache.setCurrentKey(wide)
+        cache.set(260, for: wide, tier: .measured)
+        #expect(cache.isMeasured(itemID: "g:a", width: 390))
+        #expect(!cache.isMeasured(itemID: "g:a", width: 320))
+        let backToNarrow = heightKey(revision: 1, width: 320)
+        cache.setCurrentKey(backToNarrow)
+        cache.set(300, for: backToNarrow, tier: .measured)
+        #expect(cache.isMeasured(itemID: "g:a", width: 320))
+    }
+
+    // The layout's bounds-width change (`rowsNeedMeasuringAgain`) is the driver;
+    // `forgetMeasuredWidths()` is the executor. It must clear every item, not
+    // only the ones whose key the layout happened to reinstall.
+    @Test func aBoundsWidthChangeForgetsEveryItemsMeasuredWidth() {
+        let cache = TimelineHeightCache()
+        let first = heightKey("g:a", width: 320)
+        let second = heightKey("g:b", width: 320)
+        cache.setCurrentKey(first); cache.set(300, for: first, tier: .measured)
+        cache.setCurrentKey(second); cache.set(200, for: second, tier: .measured)
+        #expect(cache.isMeasured(itemID: "g:a", width: 320))
+        #expect(cache.isMeasured(itemID: "g:b", width: 320))
+        cache.forgetMeasuredWidths()
+        #expect(!cache.isMeasured(itemID: "g:a", width: 320))
+        #expect(!cache.isMeasured(itemID: "g:b", width: 320))
+    }
+
+    @Test func removeAndPruneClearTheMeasuredState() {
+        let cache = TimelineHeightCache()
+        let removed = heightKey("g:removed", width: 320)
+        cache.setCurrentKey(removed)
+        cache.set(300, for: removed, tier: .measured)
+        #expect(cache.isMeasured(itemID: "g:removed", width: 320))
+        cache.remove(itemID: "g:removed")
+        #expect(!cache.isMeasured(itemID: "g:removed", width: 320))
+
+        let kept = heightKey("g:kept", width: 320)
+        let dropped = heightKey("g:dropped", width: 320)
+        cache.setCurrentKey(kept); cache.set(50, for: kept, tier: .measured)
+        cache.setCurrentKey(dropped); cache.set(60, for: dropped, tier: .measured)
+        #expect(cache.isMeasured(itemID: "g:dropped", width: 320))
+        cache.prune(keeping: ["g:kept"])
+        #expect(cache.isMeasured(itemID: "g:kept", width: 320))
+        #expect(!cache.isMeasured(itemID: "g:dropped", width: 320))
+
+        // A measurement written without a `currentKey` is reachable only through
+        // the `measuredWidth` map, so `prune` must clear that map itself rather
+        // than relying on `remove(itemID:)`.
+        let orphan = heightKey("g:orphan", width: 320)
+        cache.set(300, for: orphan, tier: .measured)
+        #expect(cache.isMeasured(itemID: "g:orphan", width: 320))
+        cache.prune(keeping: [])
+        #expect(!cache.isMeasured(itemID: "g:orphan", width: 320))
+    }
+
+    @Test func precalcCountsAsMeasured() {
+        let cache = TimelineHeightCache()
+        let key = heightKey(width: 320)
+        cache.setCurrentKey(key)
+        cache.set(300, for: key, tier: .precalc)
+        #expect(cache.isMeasured(itemID: "g:a", width: 320))
+    }
 }
 
 @Suite struct TimelineListMetricsTests {

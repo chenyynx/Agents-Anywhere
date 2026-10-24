@@ -62,6 +62,20 @@ nonisolated final class TimelineHeightCache {
     private var entries: [TimelineHeightKey: Entry] = [:]
     private var currentKeys: [String: TimelineHeightKey] = [:]
     private var displayedHeights: [String: CGFloat] = [:]
+    /// The width at which each item was last really measured (quantized like
+    /// `TimelineHeightKey`). Official `0x101a3ff20` (`rowsNeedMeasuringAgain`)
+    /// clears the measured flag of every row on any width change, including
+    /// going back to a width used earlier: only the current width may count as
+    /// measured, and the retired height is kept as the estimate. The layout
+    /// clears the whole map on a width change; the per-item width comparison
+    /// in `isMeasured` is the row-scoped fallback for callers that read a
+    /// width from another source. A same-width content change (expand,
+    /// tool-card update, a new streaming revision) keeps the row measured and
+    /// lets the reconfigure / cell-fit report path produce the new height. A
+    /// key-level check cannot express that: the key folds `contentRevision`
+    /// in, so every revision would look unmeasured and reopen the cell's one
+    /// self-measure.
+    private var measuredWidth: [String: CGFloat] = [:]
     /// Items a cell has actually materialized for. `prepare` records a
     /// displayed height for every item, including rows that have never been
     /// on screen; only this set may let that provisional value outrank a fresh
@@ -86,12 +100,35 @@ nonisolated final class TimelineHeightCache {
     func set(_ height: CGFloat, for key: TimelineHeightKey, tier: TimelineHeightTier) {
         var entry = entries[key] ?? Entry()
         switch tier {
-        case .measured: entry.measured = height
-        case .precalc: entry.precalc = height
+        case .measured:
+            entry.measured = height
+            measuredWidth[key.itemID] = key.width
+        case .precalc:
+            entry.precalc = height
+            measuredWidth[key.itemID] = key.width
         case .provisional: entry.provisional = height
         case .estimate: entry.estimate = height
         }
         entries[key] = entry
+    }
+
+    /// Whether this item's last real measurement was taken at this width.
+    /// Item-level, unlike `hasMeasuredOrPrecalcHeight(for:)`: official
+    /// `0x101a3ff20` clears `isMeasured` on any width change (back to an old
+    /// width too), so only the current width may count as measured; a
+    /// same-width content revision must not reopen the cell's self-measure.
+    /// `prepare` clears the whole map on a width change; this comparison is
+    /// the row-scoped fallback when a caller passes another width.
+    func isMeasured(itemID: String, width: CGFloat) -> Bool {
+        guard let measured = measuredWidth[itemID] else { return false }
+        return measured == TimelineHeightKey.quantize(width)
+    }
+
+    /// A width change re-measures every row, including a view that returns to
+    /// a width used earlier (official `0x101a3ff20`). The heights stay cached
+    /// as estimates; only the measured state is cleared.
+    func forgetMeasuredWidths() {
+        measuredWidth.removeAll()
     }
 
     /// measured > precalc > provisional > estimate for one key.
@@ -165,6 +202,7 @@ nonisolated final class TimelineHeightCache {
     func remove(itemID: String) {
         currentKeys[itemID] = nil
         displayedHeights[itemID] = nil
+        measuredWidth[itemID] = nil
         everDisplayed.remove(itemID)
         pendingItemIDs.remove(itemID)
         entries = entries.filter { $0.key.itemID != itemID }
@@ -181,6 +219,7 @@ nonisolated final class TimelineHeightCache {
         // maps are bounded by the live window.
         everDisplayed.formIntersection(itemIDs)
         displayedHeights = displayedHeights.filter { itemIDs.contains($0.key) }
+        measuredWidth = measuredWidth.filter { itemIDs.contains($0.key) }
     }
 
     /// DEBUG invariant for the layout: every cached item still carries the key

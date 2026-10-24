@@ -918,24 +918,23 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         return last
     }
 
-    /// The official cell-reported contract on a Code-shaped row. A placeholder
-    /// (pre-parse geometry) and then the real rendered height arrive while the
-    /// reader is dragging or the list is coasting; nothing visible may move,
-    /// and the newest report is the value that remains after release. The
-    /// re-key leg proves a fresh key self-measures once and then stays
-    /// measured. The at-rest placeholder leg is the stage-2 guard's contract;
-    /// on the stage-0 code it is expected to fail (the placeholder overwrites
-    /// the measured tier and compensates).
     /// The official hosted-height contract on a Code-shaped row.
     ///
     /// The height is the cell's own `systemLayoutSizeFitting` (the official
     /// first-fit call), read at settled moments. The geometry callback is a
     /// trigger only; no reported number is ever written as a height.
     ///
-    /// Assertions: the frame equals the fit after materialization; one content
-    /// change produces exactly one self-measure and one final frame; a content
-    /// change that lands while the reader drags keeps the anchor below at the
-    /// same screen position, and the release does not apply a second height.
+    /// `isMeasured` is cleared only by a width change (`0x101a3ff20`). A
+    /// same-width content change keeps the row measured and instead reconfigures
+    /// it (`0x101a3c57c`, `performWithoutAnimation`), so the hosting geometry
+    /// reports the settled fit (`0x101a4081c`, accepted only when it changed).
+    /// A self-measure therefore happens only for a row that has never been
+    /// measured at the current width.
+    ///
+    /// Assertions: the frame equals the fit after materialization; a same-width
+    /// content change adds no self-measure and lands on a taller final frame; a
+    /// content change that lands while the reader drags keeps the changed row's
+    /// own top at the same screen position, and the release does not move it.
     private func codeHostedHeight() async {
         guard let controller else { return }
         let entry = Entry(id: "\(Self.hostedRowPrefix)0", kind: .code,
@@ -988,7 +987,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         let anchorIndex = min(index + 1, entries.count - 1)
         let anchorItem = listItem(entries[anchorIndex])
 
-        // Leg 1 — content change at rest: one fresh measurement, one frame.
+        // Leg 1 — content change at rest: no self-measure; one settle-driven correction.
         entries[index].text += "\nlet extra = 40"
         entries[index].revision += 1
         contentGeneration += 1
@@ -1006,9 +1005,13 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             failures.append("code hosted: frame \(frameAfterSecond) != fit \(secondFit)"
                 + " after a content change")
         }
-        if selfMeasuresAfterSecond - selfMeasuresAfterFirst != 1 {
+        if secondFit <= firstFit + 1 {
+            failures.append("code hosted: content change did not grow the row \(firstFit)→\(secondFit)")
+        }
+        if selfMeasuresAfterSecond != selfMeasuresAfterFirst {
             failures.append("code hosted: \(selfMeasuresAfterSecond - selfMeasuresAfterFirst)"
-                + " self-measures for one content change")
+                + " self-measures for a same-width content change"
+                + " (official 0x101a3ff20 clears isMeasured only on width change)")
         }
 
         // Leg 2 — the same content change while the reader drags: the row may

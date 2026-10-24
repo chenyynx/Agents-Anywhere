@@ -820,10 +820,15 @@ final class CodeProfileAutoRunModel {
                 ? ceil(hostlessRaw) : -1
 
             // B / C: the real cell with no seed, so `super` performs the first
-            // fit. A fresh cell per call keeps the configuration token and the
-            // (absent) seed out of the other measurement.
-            let cellSuper = measureRendererCell(rowView, hostWidth: hostWidth, forceLayout: false)
-            let cellForced = measureRendererCell(rowView, hostWidth: hostWidth, forceLayout: true)
+            // fit. The cell goes into the key window: a detached cell cannot
+            // lay out its hosted content, and the first CI run measured only
+            // the row chrome (18 pt) both offscreen and detached. A fresh cell
+            // per call keeps the configuration token and the (absent) seed out
+            // of the other measurement.
+            let cellSuper = measureRendererCell(rowView, hostWidth: hostWidth,
+                                                window: window, forceLayout: false)
+            let cellForced = measureRendererCell(rowView, hostWidth: hostWidth,
+                                                 window: window, forceLayout: true)
 
             let hostlessValue = Double(hostless)
             let cellSuperValue = cellSuper.height.map { Double($0) } ?? -1
@@ -856,12 +861,16 @@ final class CodeProfileAutoRunModel {
             record["hostlessWithin3"] = hostlessAvailable && hostlessDelta <= 3
             record["cellSuperAvailable"] = cellSuper.height != nil
             record["cellSuperContentInstalled"] = cellSuper.contentInstalled
+            record["cellSuperSafeTop"] = Double(cellSuper.safeTop)
+            record["cellSuperSafeBottom"] = Double(cellSuper.safeBottom)
             record["cellSuper"] = cellSuperValue
             record["cellSuperDelta"] = cellSuperDelta
             record["cellSuperWithin1"] = cellSuper.height != nil && cellSuperDelta <= 1
             record["cellSuperWithin3"] = cellSuper.height != nil && cellSuperDelta <= 3
             record["cellForcedAvailable"] = cellForced.height != nil
             record["cellForcedContentInstalled"] = cellForced.contentInstalled
+            record["cellForcedSafeTop"] = Double(cellForced.safeTop)
+            record["cellForcedSafeBottom"] = Double(cellForced.safeBottom)
             record["cellForced"] = cellForcedValue
             record["cellForcedDelta"] = cellForcedDelta
             record["cellForcedWithin1"] = cellForced.height != nil && cellForcedDelta <= 1
@@ -882,8 +891,8 @@ final class CodeProfileAutoRunModel {
         measurement["parityThreshold"] = 3.0
         measurement["renderedSource"] = "measureRowHeight: settled in-window host"
         measurement["hostlessSource"] = "offscreen UIHostingController, preparedBlocks, ceil"
-        measurement["cellSuperSource"] = "TimelineHostingCell, no seed, direct preferredLayoutAttributesFitting"
-        measurement["cellForcedSource"] = "TimelineHostingCell, no seed, layoutIfNeeded before the fit"
+        measurement["cellSuperSource"] = "TimelineHostingCell in the key window, no seed, direct preferredLayoutAttributesFitting"
+        measurement["cellForcedSource"] = "TimelineHostingCell in the key window, no seed, contentView layout before the fit"
         measurement["hostlessMaxDelta"] = hostlessMaxDelta
         measurement["cellSuperMaxDelta"] = cellSuperMaxDelta
         measurement["cellForcedMaxDelta"] = cellForcedMaxDelta
@@ -900,36 +909,49 @@ final class CodeProfileAutoRunModel {
         /// can return a probe/frame height without the real content, so this
         /// distinguishes "no harness" from "harness measured the skeleton".
         let contentInstalled: Bool
+        /// The cell's safe-area insets at fit time. The production cell
+        /// subtracts them from its geometry report; the raw fit may include
+        /// them, so the reader needs both numbers before comparing to the
+        /// in-window render.
+        let safeTop: CGFloat
+        let safeBottom: CGFloat
     }
 
-    /// One `TimelineHostingCell` first-fit measurement. The cell is never
-    /// added to a collection view: the experiment asks whether the hosting
-    /// configuration installs its content offscreen at all.
+    /// One `TimelineHostingCell` first-fit measurement. The cell is added to
+    /// the key window so `UIHostingConfiguration` installs and lays out its
+    /// hosted content the way it would in the collection view; a detached cell
+    /// measures only the row chrome. `forceLayout` additionally gives the
+    /// content view its own layout pass before the fit.
     private func measureRendererCell(_ row: AnyView,
                                      hostWidth: CGFloat,
+                                     window: UIWindow,
                                      forceLayout: Bool) -> RendererCellMeasurement {
         let cell = TimelineHostingCell(frame: CGRect(x: 0, y: 0,
-                                                     width: hostWidth, height: 200))
+                                                     width: hostWidth, height: 300))
         cell.configure(row, policy: .measured,
                        isMeasured: false, reportsContentHeight: false,
                        seededHeight: nil)
+        window.addSubview(cell)
+        cell.setNeedsLayout()
+        cell.layoutIfNeeded()
         if forceLayout {
-            // Give `UIHostingConfiguration` the layout pass it would get once
-            // the cell is in a collection view, then fit the installed content.
-            cell.setNeedsLayout()
             cell.contentView.setNeedsLayout()
-            cell.layoutIfNeeded()
             cell.contentView.layoutIfNeeded()
         }
         let attributes = UICollectionViewLayoutAttributes(
             forCellWith: IndexPath(item: 0, section: 0))
-        attributes.size = CGSize(width: hostWidth, height: 200)
+        attributes.size = CGSize(width: hostWidth, height: 300)
         let fitted = cell.preferredLayoutAttributesFitting(attributes).size.height
         let installed = !cell.contentView.subviews.isEmpty
+        let safeTop = cell.safeAreaInsets.top
+        let safeBottom = cell.safeAreaInsets.bottom
+        cell.removeFromSuperview()
         guard fitted.isFinite, fitted > 1 else {
-            return RendererCellMeasurement(height: nil, contentInstalled: installed)
+            return RendererCellMeasurement(height: nil, contentInstalled: installed,
+                                           safeTop: safeTop, safeBottom: safeBottom)
         }
-        return RendererCellMeasurement(height: fitted, contentInstalled: installed)
+        return RendererCellMeasurement(height: fitted, contentInstalled: installed,
+                                       safeTop: safeTop, safeBottom: safeBottom)
     }
 
     /// Hosts one `CodeMessageRowView` the way `verifyMessageRowHeight` does:

@@ -1264,25 +1264,34 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                 + " \(frameAfterSettle) \(samples)")
         }
 
-        report["firstFitSeed"] = [
-            "row": entry.id,
-            "structuralHeight": Double(structural),
-            "displayedBeforeScroll": displayedBeforeScroll,
-            "selfMeasuresBeforeScroll": beforeScroll.count,
-            "frameBeforeScroll": Double(frameBeforeScroll),
-            "frameRightAfterScroll": Double(frameRightAfterScroll),
-            "attributesMeasuredBeforeFit": attributesMeasuredBeforeFit.map { $0 ? 1 : 0 } ?? -1,
-            "directSeedFit": Double(directSeedFit),
-            "seedHeld": seedHeld,
-            "frameAfterScroll": Double(frameAfterScroll),
-            "firstAcceptedSelfMeasure": firstAccepted.map(Double.init) ?? -1,
-            "selfMeasureCount": measuresAfterSettle.count,
-            "selfMeasureHeights": measuresAfterSettle.map { Double($0.height) },
-            "frameAfterSettle": Double(frameAfterSettle),
-            "finalFit": Double(firstFit),
-            "stable": stable,
-            "visible": controller.collectionView.indexPathsForVisibleItems.contains(indexPath),
-        ]
+        // Swift 6.2 could not type-check the one big dictionary literal in
+        // reasonable time (CI 460). Assign typed locals first, then build the
+        // report incrementally.
+        let measuredFlag: Int = attributesMeasuredBeforeFit == nil
+            ? -1 : (attributesMeasuredBeforeFit! ? 1 : 0)
+        let firstAcceptedValue: Double = firstAccepted.map { Double($0) } ?? -1
+        let selfMeasureValues: [Double] = measuresAfterSettle.map { Double($0.height) }
+        let rowVisible: Bool = controller.collectionView.indexPathsForVisibleItems
+            .contains(indexPath)
+        var firstFitReport: [String: Any] = [:]
+        firstFitReport["row"] = entry.id
+        firstFitReport["structuralHeight"] = Double(structural)
+        firstFitReport["displayedBeforeScroll"] = displayedBeforeScroll
+        firstFitReport["selfMeasuresBeforeScroll"] = beforeScroll.count
+        firstFitReport["frameBeforeScroll"] = Double(frameBeforeScroll)
+        firstFitReport["frameRightAfterScroll"] = Double(frameRightAfterScroll)
+        firstFitReport["attributesMeasuredBeforeFit"] = measuredFlag
+        firstFitReport["directSeedFit"] = Double(directSeedFit)
+        firstFitReport["seedHeld"] = seedHeld
+        firstFitReport["frameAfterScroll"] = Double(frameAfterScroll)
+        firstFitReport["firstAcceptedSelfMeasure"] = firstAcceptedValue
+        firstFitReport["selfMeasureCount"] = measuresAfterSettle.count
+        firstFitReport["selfMeasureHeights"] = selfMeasureValues
+        firstFitReport["frameAfterSettle"] = Double(frameAfterSettle)
+        firstFitReport["finalFit"] = Double(firstFit)
+        firstFitReport["stable"] = stable
+        firstFitReport["visible"] = rowVisible
+        report["firstFitSeed"] = firstFitReport
     }
 
     // MARK: - Gesture freeze (official cell-reported height contract)

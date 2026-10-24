@@ -267,7 +267,11 @@ import Testing
 
     @Test func stationaryBottomAndSubpixelLayoutDoNotProduceCorrectionLoops() throws {
         var state = try openedAtBottom()
-        for delta in [0.25, -0.25, 0, 1, -1, 0] {
+        // The dead band is the official one physical pixel
+        // (`1 / displayScale`; this fixture's default 2x scale makes it
+        // 0.5 pt). The old 8 pt tolerance treated a whole point as noise;
+        // ±1 pt now correctly means "not at bottom".
+        for delta in [0.25, -0.25, 0] {
             state.geometryChanged(viewport(offset: 1320, height: 2000 + delta))
             #expect(state.pendingBottomRequest == nil && !state.showsBottomButton())
         }

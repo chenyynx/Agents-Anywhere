@@ -279,6 +279,10 @@ struct CodeThinkingStatusLine: View {
                                   size: CodePageTheme.runningStatusFontSize,
                                   relativeTo: .footnote))
                     .foregroundStyle(CodePageTheme.runningStatusColor.resolved(for: colorScheme))
+                    // One line at every Dynamic Type size; a wrapped verb
+                    // would change the row height every second.
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
             .frame(minHeight: CodePageTheme.workingMarkSize, alignment: .leading)
             .accessibilityElement(children: .combine)

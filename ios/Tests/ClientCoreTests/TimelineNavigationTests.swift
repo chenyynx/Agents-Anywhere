@@ -280,6 +280,14 @@ import Testing
         #expect(state.pendingBottomRequest == nil && !state.showsBottomButton())
     }
 
+    @Test func onePhysicalPixelAwayFromBottomIsNotAtBottom() throws {
+        // Lock the official 1/displayScale band: at the fixture's 2x scale a
+        // 1 pt shortfall is two pixels, so the state must offer a way back.
+        var state = try openedAtBottom()
+        state.geometryChanged(viewport(offset: 1320, height: 2001))
+        #expect(state.pendingBottomRequest != nil || state.showsBottomButton())
+    }
+
     @Test func aFailedNativeTargetIsReconciledOnceWhileShortAndIdleNotLooped() throws {
         var state = TimelineScrollState()
         state.geometryChanged(viewport())

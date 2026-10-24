@@ -58,23 +58,23 @@ struct SessionChatView: View, Equatable {
     /// dock does: adding the second initializer inline pushes the enclosing
     /// `Group` past the type checker's budget.
     @ViewBuilder private func timelineView() -> some View {
-        Group {
-            if usesCollectionTimeline {
-                TimelineChatTimelineView(model: model,
-                    onAttachment: openAttachment, onFile: openFile,
-                    onSubAgent: { sheet = .subagents($0, fromCapsule: false) })
-            } else {
-                ChatTimelineView(model: model,
-                    onAttachment: openAttachment, onFile: openFile,
-                    onSubAgent: { sheet = .subagents($0, fromCapsule: false) })
-            }
+        if usesCollectionTimeline {
+            TimelineChatTimelineView(model: model,
+                onAttachment: openAttachment, onFile: openFile,
+                onSubAgent: { sheet = .subagents($0, fromCapsule: false) })
+                // [E] The official transcript is a full-screen bleed: its
+                // `contentInset = max(safeArea − scrollView.safeAreaInsets, 0)`
+                // lets rows scroll under the navigation bar
+                // (R19 chrome-composer.md §2–§3). The collection view's
+                // automatic adjustment keeps the resting rows clear. The
+                // legacy SwiftUI Chat timeline already owns its safe area, so
+                // it is deliberately not changed.
+                .ignoresSafeArea(.container, edges: .top)
+        } else {
+            ChatTimelineView(model: model,
+                onAttachment: openAttachment, onFile: openFile,
+                onSubAgent: { sheet = .subagents($0, fromCapsule: false) })
         }
-        // [E] The official transcript is a full-screen bleed: its
-        // `contentInset = max(safeArea − scrollView.safeAreaInsets, 0)` lets
-        // rows scroll under the navigation bar and the composer
-        // (R19 chrome-composer.md §2–§3). The scroll view's automatic
-        // adjustment keeps the resting first/last row clear.
-        .ignoresSafeArea(.container, edges: .top)
     }
 
     /// The bottom dock stack, in its own method: the composer's initializer and

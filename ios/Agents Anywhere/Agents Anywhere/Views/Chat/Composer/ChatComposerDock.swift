@@ -109,8 +109,11 @@ struct ChatComposerDock: View {
             editor.finishEditing()
             draft.isFocused = false
         }
-        // One light impact per successful enqueue, accounted by the caller.
-        .sensoryFeedback(.impact(weight: .light, intensity: 1), trigger: queueEnqueueTick)
+        // No enqueue-specific haptic: the official send key fires `.selection`
+        // once on the tap, and the haptic table has no "queued" entry
+        // (CANONICAL/11-motion-haptics.md §2.4). The previous impact() made a
+        // queue tap vibrate twice.
+        .sensoryFeedback(.selection, trigger: queueEnqueueTick) { _, _ in false }
         .alert(String(localized: "无法添加附件"), isPresented: Binding(get: { attachmentError != nil }, set: { if !$0 { attachmentError = nil } })) {
             Button(String(localized: "好"), role: .cancel) { attachmentError = nil }
         } message: { Text(attachmentError ?? "") }

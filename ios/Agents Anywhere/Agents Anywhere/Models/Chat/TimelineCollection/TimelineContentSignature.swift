@@ -64,6 +64,10 @@ nonisolated struct TimelineGroupContentSignature: Equatable {
     let attachments: [TimelineAttachmentPreviewSignature]
     let turnAction: TimelineTurnActionSignature?
     let turnSuppression: TimelineTurnSuppression
+    /// Inputs that change a Code row's rendering but not its wire rows: the
+    /// session's working directory shortens tool targets and the runtime
+    /// profile selects the tool kind/icon.
+    var contextRevision: Int = 0
 
     var contentRevision: Int {
         var hasher = TimelineStableHasher()
@@ -98,6 +102,7 @@ nonisolated struct TimelineGroupContentSignature: Equatable {
         hasher.combine(turnSuppression.isRunning)
         hasher.combine(turnSuppression.hasNewerItems)
         hasher.combine(turnSuppression.hasPendingUserMessage)
+        hasher.combine(contextRevision)
         return hasher.revision
     }
 }

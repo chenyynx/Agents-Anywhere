@@ -69,6 +69,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// never shortens or jumps the row (official: the `isComplete` snapshot is
     /// published before the row is replaced, §6/§8).
     private var codeCompletedStreamingTexts: [String: String] = [:]
+    /// When each completion snapshot was stored. The snapshot is a bridge
+    /// until the persisted row catches up; a server that permanently returns
+    /// a shorter prefix must not pin it forever (R19 review R2 P2-1).
+    private var codeCompletedStreamingAt: [String: TimeInterval] = [:]
+    private static let codeCompletedStreamingLifetime: TimeInterval = 2
     /// Official working-mark exit: 0.4 s group animation before the row is
     /// removed (CANONICAL/20-working-mark.md §6). The item stays in the list
     /// with `isRunning = false` for that window.
@@ -217,7 +222,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // decide whether the drawn content moved, so a settled row is a hit.
         let signature = contentSignature(for: item).contentRevision
         let quantized = TimelineHeightKey.quantize(width)
-        let typographyRevision = typography.revision
+        // Code rows are measured with `codeTypography`; the Chat font setting
+        // must not retire their measured heights.
+        let typographyRevision = codeTypography.revision
         let scale = Int(((controller?.traitCollection.displayScale ?? 2) * 100).rounded())
         let streaming = codeStreamingTexts(for: item)
         if let cached = heightRevisionCache[item.itemID],
@@ -567,7 +574,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             }
         }
         hasher.combine(TimelineHeightKey.quantize(width))
-        hasher.combine(typography.revision)
+        hasher.combine(codeTypography.revision)
         let scale = controller?.traitCollection.displayScale ?? 2
         hasher.combine(Int((scale * 100).rounded()))
         return hasher.revision
@@ -598,7 +605,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     func heightPolicy(for item: TimelineListItem) -> TimelineRowHeightPolicy {
         switch item {
         case .tail: return .tail
-        case .notice, .pending: return .interactive
+        // Official Code rows never animate a height change; the old
+        // `.interactive` policy eased notice/pending rows over 0.18 s.
+        case .notice, .pending: return .measured
         case .group(let id):
             guard let group = groupsByID[id] else { return .measured }
             // A Code message row is measured before apply and owned by the
@@ -1064,7 +1073,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // interaction-target row keeps the Chat renderer (and its reveal), so
         // it must not be switched to renderer-owned reveal.
         for group in groups where group.explicitID != nil {
-            for row in group.rows where rowsByID[row.id] == nil {
+            // Reasoning is drawn as the turn's single working row, not as
+            // body text; feeding it through the publisher used to reconfigure
+            // the whole Code row every 0.1 s for an invisible string.
+            for row in group.rows where !row.value.isReasoning
+                && rowsByID[row.id] == nil {
                 rowsByID[row.id] = row
             }
         }
@@ -1073,6 +1086,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 // A row that streams again must not keep an old completion
                 // snapshot; the live publisher is the only source now.
                 codeCompletedStreamingTexts.removeValue(forKey: rowID)
+                codeCompletedStreamingAt.removeValue(forKey: rowID)
                 if !row.rendererOwnedReveal {
                     DispatchQueue.main.async {
                         row.useRendererOwnedReveal()
@@ -1095,6 +1109,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 var completed = publisher
                 if let snapshot = completed.complete(at: now), !snapshot.text.isEmpty {
                     codeCompletedStreamingTexts[rowID] = snapshot.text
+                    codeCompletedStreamingAt[rowID] = now
                 }
                 codeStreamingPublishers.removeValue(forKey: rowID)
             }
@@ -1115,13 +1130,20 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private func resolveCompletedStreamingTexts(
         rowsByID: [String: ChatTimelineRowModel]
     ) {
+        let cutoff = CACurrentMediaTime() - Self.codeCompletedStreamingLifetime
+        codeCompletedStreamingAt = codeCompletedStreamingAt.filter { _, at in at > cutoff }
         codeCompletedStreamingTexts = codeCompletedStreamingTexts.filter { rowID, text in
-            guard let row = rowsByID[rowID] else { return false }
+            guard codeCompletedStreamingAt[rowID] != nil,
+                  let row = rowsByID[rowID] else { return false }
             let persisted = row.value.displayText
             if persisted.isEmpty { return true }
             if text.hasPrefix(persisted) { return text.count > persisted.count }
             if persisted.hasPrefix(text) { return persisted.count < text.count }
             return false
+        }
+        // Keep the timestamp table in step with the text table.
+        codeCompletedStreamingAt = codeCompletedStreamingAt.filter {
+            codeCompletedStreamingTexts[$0.key] != nil
         }
     }
 
@@ -1547,10 +1569,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         workingStatusIsExiting = false
         prepareForUpdate()
         controller?.reloadFromContent()
-        // The next turn's row starts running again. Safe after the removal
-        // apply: the mounted view is gone, and a new turn re-inserts the item
-        // with this flag already true.
-        if !workingStatusExitState.isRunning { workingStatusExitState.isRunning = true }
+        // Do NOT flip `isRunning` back here: the deletion apply can be parked
+        // behind an in-flight snapshot, and the still-mounted, fully faded
+        // mark would pop back to scale 1 for a frame. `cancelWorkingStatusExit`
+        // is the only reset point, when a new turn actually takes over.
     }
 
     private func item(forItemID itemID: String) -> TimelineListItem? {
@@ -1589,6 +1611,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             guard let group = groupsByID[id] else { return .group(Self.emptyGroupSignature) }
             return .group(groupSignature(group))
         }
+    }
+
+    private static func groupContextRevision(cwd: String?,
+                                             profile: CodeRuntimeProfile) -> Int {
+        var hasher = TimelineStableHasher()
+        hasher.combine(cwd ?? "")
+        hasher.combine(profile.family.rawValue)
+        hasher.combine(profile.subagentShape.rawValue)
+        hasher.combine(profile.toolRowRole.rawValue)
+        return hasher.revision
     }
 
     private func groupSignature(_ group: ChatTimelineGroup) -> TimelineGroupContentSignature {
@@ -1641,7 +1673,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 attachments: [],
                 turnAction: nil,
                 turnSuppression: TimelineTurnSuppression(
-                    isRunning: false, hasNewerItems: false, hasPendingUserMessage: false))
+                    isRunning: false, hasNewerItems: false, hasPendingUserMessage: false),
+                contextRevision: Self.groupContextRevision(
+                    cwd: model.session.metadata?.cwd, profile: codeProfile))
         }
         var rows: [TimelineRowContentSignature] = []
         rows.reserveCapacity(group.rows.count)

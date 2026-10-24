@@ -447,7 +447,9 @@ private struct SidebarDrawerInteractive<
     private func synchronizeProgress(with open: Bool) {
         let target: CGFloat = open ? 1 : 0
         guard abs(motion.progress - target) > 0.001 else { return }
-        settle(to: target, feedback: false)
+        // Official haptic trigger is the `isOpen` value itself: a button or
+        // programmatic toggle fires once, exactly like a drag that commits.
+        settle(to: target, feedback: true)
     }
 
     // Confirms the snap immediately, then commits external semantic state on completion.
@@ -457,7 +459,11 @@ private struct SidebarDrawerInteractive<
         feedback: Bool
     ) {
         let target = rawTarget.clamped(to: 0 ... 1)
-        let shouldProvideFeedback = feedback && abs(motion.progress - target) > 0.001
+        // Only a real open/closed flip haptics; a drag that springs back to
+        // the same `isOpen` does not (CANONICAL/11-motion-haptics.md §2.1).
+        let shouldProvideFeedback = feedback
+            && abs(motion.progress - target) > 0.001
+            && ((target > 0.5) != isOpen)
         let remainingProgress = target - motion.progress
         let initialVelocity: Double = if abs(remainingProgress) > 0.001 {
             Double(progressVelocity / remainingProgress).clamped(to: -8 ... 8)

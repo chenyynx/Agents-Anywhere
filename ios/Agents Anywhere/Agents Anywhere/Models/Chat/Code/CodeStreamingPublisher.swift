@@ -61,6 +61,11 @@ nonisolated struct CodeStreamingPublisher: Equatable, Sendable {
     /// Mirrors the official `publishPending` flag (+0x78): a publish was
     /// requested inside the throttle window and is waiting for the next event.
     private(set) var publishPending: Bool = false
+    /// Counts the snapshots this publisher has produced. The timeline signs a
+    /// live row with this counter instead of hashing `publishedText` again on
+    /// every refresh; a publish is the only event that changes what the row
+    /// draws (at most once per 0.1 s throttle).
+    private(set) var publishRevision: Int = 0
 
     /// The whole text received for this block, published or not.
     ///
@@ -136,6 +141,7 @@ nonisolated struct CodeStreamingPublisher: Equatable, Sendable {
         isComplete = true
         publishedText = receivedText
         publishPending = false
+        publishRevision += 1
         recordPublish(at: now)
         return snapshot()
     }
@@ -160,6 +166,7 @@ nonisolated struct CodeStreamingPublisher: Equatable, Sendable {
 
         publishedText = receivedText
         publishPending = false
+        publishRevision += 1
         recordPublish(at: now)
         return snapshot()
     }

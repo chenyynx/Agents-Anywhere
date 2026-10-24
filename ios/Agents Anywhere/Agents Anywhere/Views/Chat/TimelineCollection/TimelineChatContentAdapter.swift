@@ -1646,9 +1646,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 rows: group.rows.map { row in
                     if row.value.isStreamingText,
                        let publisher = codeStreamingPublishers[row.id] {
+                        // The publisher's own counter changes exactly when a
+                        // new snapshot is produced; hashing the full text here
+                        // repeated that O(n) work on every refresh (R6 P1-1).
                         return TimelineRowContentSignature(
                             id: row.id,
-                            revision: Self.publishedTextRevision(publisher.publishedText),
+                            revision: publisher.publishRevision,
                             updatedSeq: 0)
                     }
                     if let completed = codeCompletedStreamingTexts[row.id] {

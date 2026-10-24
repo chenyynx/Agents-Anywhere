@@ -152,6 +152,29 @@ struct CodeStreamingPublisherTests {
         #expect(publisher.publishedText == "seed ")
     }
 
+    @Test func publishRevisionAdvancesOnlyWhenASnapshotIsProduced() {
+        var publisher = makePublisher()
+        let first = publisher.receive(delta: "seed ", at: 0)
+        #expect(first != nil)
+        #expect(publisher.publishRevision == 1)
+
+        // Throttled below the window: nothing reached the row.
+        #expect(publisher.receive(delta: "one ", at: 0.05) == nil)
+        #expect(publisher.publishRevision == 1)
+
+        // The flush publishes the buffered text: one more snapshot.
+        _ = publisher.flush(at: 0.1 + timingEpsilon)
+        #expect(publisher.publishRevision == 2)
+
+        // A repeated event with no new text produces no snapshot and must not
+        // invalidate the row's signature.
+        #expect(publisher.receive(fullText: "seed one ", at: 0.3) == nil)
+        #expect(publisher.publishRevision == 2)
+
+        _ = publisher.complete(at: 0.4)
+        #expect(publisher.publishRevision == 3)
+    }
+
     // MARK: Injected parameters
 
     @Test func injectedPublishIntervalDrivesTheThrottle() {

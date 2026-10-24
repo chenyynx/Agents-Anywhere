@@ -447,8 +447,9 @@ nonisolated enum CodePageTheme {
     /// Kept as a spacing token for stacked pieces.
     static let userBubbleSpacing: CGFloat = 8
 
-    /// [E] round18 §0.7 — body copy is 17 pt at a 27.2 pt line height
-    /// (`.body`). SwiftUI line spacing is the delta over the system line
-    /// box (~20.3 pt at 17 pt).
-    static let userBubbleLineSpacing: CGFloat = 6.9
+    /// [E] round18 §0.7 + R19 `bubble-layout.md` — body copy is 17 pt at a
+    /// 27.2 pt line height (`.body`). Line spacing is the delta over the real
+    /// face's natural line box: Anthropic Sans at 17 pt is 21.25 pt, so
+    /// 27.2 − 21.25 = 5.95 (the system face's 20.29 would give 6.91).
+    static var userBubbleLineSpacing: CGFloat { markdownLineSpacing }
 }

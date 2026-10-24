@@ -1112,12 +1112,18 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     /// content finishes its layout pass.
     ///
     /// The fixture is a cell-reported row inserted above the viewport, so the
-    /// apply cannot materialize it: the first self-measure is only reachable
-    /// through the scroll into view.
-    /// Assertions: that first accepted self-measure equals
-    /// `ceil(measuredCodeGroupHeight)`; no self-measure of the row is smaller;
-    /// the row self-measures exactly once (the official first-fit lifecycle);
-    /// the settled frame equals the cell's fit and stays there.
+    /// apply cannot materialize it. CI 459 showed scrolling a never-displayed
+    /// row into view does not invoke UIKit's `preferredLayoutAttributesFitting`
+    /// at all (the observed 420→1263 came from the controller's settled
+    /// cell-fit), so the seed is checked two ways: the cell's first fit is
+    /// called directly while the row is still unmeasured, and the frame
+    /// invariants the reader can observe are asserted.
+    /// Assertions: the direct first fit returns
+    /// `ceil(measuredCodeGroupHeight)` while `isMeasured` is false; the frame
+    /// right after the scroll is that value and the next frames never fall
+    /// below it; any accepted self-measure equals it; the settled frame
+    /// equals the cell's fit and stays there, taller than the seed once the
+    /// body has parsed.
     private func firstFitSeed() async {
         guard let controller else { return }
         let structural: CGFloat = 420
@@ -1128,8 +1134,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                           structuralHeight: structural)
         await settleLayout(controller)
         // Row 2 is far above the mid-list viewport the earlier phases leave
-        // behind. The row must stay unmaterialized through the apply, or the
-        // first self-measure would not belong to the scroll into view.
+        // behind. The row must stay unmaterialized through the apply: the
+        // white-box seed check below runs on the scroll's own first
+        // materialization.
         controller.layout.clearDebugSelfMeasureHeights()
         entries.insert(entry, at: 2)
         contentGeneration += 1
@@ -1149,20 +1156,80 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         }
         controller.disarmBottom()
         controller.collectionView.scrollToItem(at: indexPath, at: .top, animated: false)
-        await wait(400)
+        // Materialize the destination cells synchronously; no await may run
+        // before the seed check below.
+        controller.collectionView.setNeedsLayout()
         controller.collectionView.layoutIfNeeded()
         controller.disarmBottom()
 
-        let frameAfterScroll = controller.layout.attributes(for: item.itemID)?.frame.height ?? -1
+        // CI 459: scrolling this never-displayed row into view did not invoke
+        // UIKit's `preferredLayoutAttributesFitting` at all; the 420→1263 the
+        // report showed came from the controller's settled cell-fit. Verify
+        // the seed white-box on this exact materialization, before any await
+        // lets a settle pass run: the row must still be unmeasured, and the
+        // cell's direct first fit must return the structural height.
+        let seedCell = controller.collectionView.cellForItem(at: indexPath) as? TimelineHostingCell
+        let seedAttributes = controller.layout.layoutAttributesForItem(at: indexPath)
+            as? TimelineListLayoutAttributes
+        let attributesMeasuredBeforeFit = seedAttributes?.isMeasured
+        var directSeedFit: CGFloat = -1
+        if let seedCell, let seedAttributes {
+            directSeedFit = seedCell.preferredLayoutAttributesFitting(seedAttributes).size.height
+        }
+        let frameRightAfterScroll = controller.layout.attributes(for: item.itemID)?.frame.height ?? -1
+
+        // The reader-visible invariant: from the materialization on, the row
+        // never shows a height below the structural value. This catches a
+        // sub-structural fit if UIKit does run a PLAF for this row later.
+        var seedHoldSamples: [CGFloat] = []
+        for _ in 0..<5 {
+            controller.collectionView.layoutIfNeeded()
+            seedHoldSamples.append(controller.layout.attributes(for: item.itemID)?.frame.height ?? 0)
+            await wait(16)
+        }
+        let seedHeld = seedHoldSamples.allSatisfy { $0 >= structural - 0.5 }
+        let frameAfterScroll = seedHoldSamples.last ?? -1
+
+        if seedCell == nil {
+            failures.append("first-fit seed: no cell at \(entry.id) right after the scroll")
+        }
+        if seedAttributes == nil {
+            failures.append("first-fit seed: no layout attributes for \(entry.id)"
+                + " right after the scroll")
+        }
+        if attributesMeasuredBeforeFit == true {
+            failures.append("first-fit seed: row was measured before the seed check")
+        }
+        if abs(directSeedFit - ceil(structural)) > 0.5 {
+            failures.append("first-fit seed: direct preferred fit \(directSeedFit)"
+                + " != structural \(ceil(structural))")
+        }
+        if abs(frameRightAfterScroll - structural) > 0.5 {
+            failures.append("first-fit seed: frame \(frameRightAfterScroll) right after"
+                + " the scroll != \(structural)")
+        }
+        if !seedHeld {
+            failures.append("first-fit seed: frame fell below the structural value"
+                + " \(seedHoldSamples)")
+        }
+        if displayedBeforeScroll {
+            failures.append("first-fit seed: \(entry.id) was displayed before the scroll")
+        }
+        if !beforeScroll.isEmpty {
+            failures.append("first-fit seed: \(beforeScroll.count) self-measure(s) before"
+                + " the row entered the viewport \(beforeScroll.map(\.height))")
+        }
+
         guard let firstFit = await settleHostedHeight(controller, item: item, timeout: 8) else {
             failures.append("first-fit seed: the cell never settled on its fit"
                 + " \(hostedState(controller, item: item))")
             return
         }
         let frameAfterSettle = controller.layout.attributes(for: item.itemID)?.frame.height ?? -1
-        // Every accepted self-measure for the row happened after the scroll
-        // (the pre-scroll check below proves none preceded it), so the first
-        // entry here is the row's first fit.
+        // A missing self-measure is allowed: CI 459 showed the scroll-in never
+        // triggers UIKit's preferred-attributes path. When one does happen it
+        // owns the first fit, so it must be the seed and never a smaller
+        // pre-parse value.
         let measuresAfterSettle = controller.layout.debugSelfMeasureHeights
             .filter { $0.itemID == item.itemID }
         let firstAccepted = measuresAfterSettle.first?.height
@@ -1177,29 +1244,13 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         }
         let stable = samples.allSatisfy { abs($0 - frameAfterSettle) <= 0.5 }
 
-        if displayedBeforeScroll {
-            failures.append("first-fit seed: \(entry.id) was displayed before the scroll")
-        }
-        if !beforeScroll.isEmpty {
-            failures.append("first-fit seed: \(beforeScroll.count) self-measure(s) before"
-                + " the row entered the viewport \(beforeScroll.map(\.height))")
-        }
-        if let firstAccepted {
-            if abs(firstAccepted - ceil(structural)) > 0.5 {
-                failures.append("first-fit seed: first accepted self-measure \(firstAccepted)"
-                    + " != structural \(ceil(structural))")
-            }
-        } else {
-            failures.append("first-fit seed: the row never self-measured")
+        if let firstAccepted, abs(firstAccepted - ceil(structural)) > 0.5 {
+            failures.append("first-fit seed: first accepted self-measure \(firstAccepted)"
+                + " != structural \(ceil(structural))")
         }
         if let smallest, smallest < structural - 0.5 {
             failures.append("first-fit seed: a self-measure was below the structural"
                 + " value \(smallest) < \(structural) \(measuresAfterSettle.map(\.height))")
-        }
-        if measuresAfterSettle.count != 1 {
-            failures.append("first-fit seed: \(measuresAfterSettle.count) accepted"
-                + " self-measure(s) \(measuresAfterSettle.map(\.height))"
-                + " (official first fit happens once)")
         }
         if abs(frameAfterSettle - firstFit) > 0.5 {
             failures.append("first-fit seed: frame \(frameAfterSettle) != cell fit \(firstFit)")
@@ -1219,6 +1270,10 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             "displayedBeforeScroll": displayedBeforeScroll,
             "selfMeasuresBeforeScroll": beforeScroll.count,
             "frameBeforeScroll": Double(frameBeforeScroll),
+            "frameRightAfterScroll": Double(frameRightAfterScroll),
+            "attributesMeasuredBeforeFit": attributesMeasuredBeforeFit.map { $0 ? 1 : 0 } ?? -1,
+            "directSeedFit": Double(directSeedFit),
+            "seedHeld": seedHeld,
             "frameAfterScroll": Double(frameAfterScroll),
             "firstAcceptedSelfMeasure": firstAccepted.map(Double.init) ?? -1,
             "selfMeasureCount": measuresAfterSettle.count,

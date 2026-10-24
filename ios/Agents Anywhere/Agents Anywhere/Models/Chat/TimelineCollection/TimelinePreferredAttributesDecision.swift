@@ -29,9 +29,15 @@ nonisolated enum TimelineRowHeightPolicy: Equatable {
 /// while the bottom is pinned. Everything else updates height without moving
 /// the offset and is corrected on the next settled frame.
 ///
-/// Browsing defer: while the reader drags or decelerates, a cached row's
-/// shrink or stable correction is parked until deceleration ends; growth is
-/// allowed so the row never clips or overlaps; an uncached row may take its
+/// Browsing: while the reader drags or decelerates, a cached row's **visible
+/// growth** is applied immediately without moving the offset. The height write
+/// has no proven finger gate and only the placement answer is withheld
+/// (`EVIDENCE/round19/streaming.md` §1.5; the `isFingerOnTheList` consumer is
+/// UNKNOWN), and deferring the growth is what clipped the streaming row. A
+/// growth entirely above the viewport would push everything the reader sees;
+/// it parks and lands with the drag-end correction, which is where the
+/// official placement is re-answered. A shrink is a correction the reader
+/// should not see move, so it is parked too. An uncached row may take its
 /// first measurement.
 nonisolated struct TimelinePreferredAttributesDecision: Equatable {
     enum Height: Equatable {
@@ -74,12 +80,23 @@ nonisolated struct TimelinePreferredAttributesDecision: Equatable {
                                    suppressContentOffsetAdjustment: Bool,
                                    hasCachedHeight: Bool) -> Self {
         let isBrowsing = isTracking || isDecelerating
-        // Official: while the finger is on the list every height change is
-        // parked (`rowsOwedToNextUpdate` / `isFingerOnTheList`). A first
-        // measurement is not a change — it is a new row entering — so it is
-        // not parked; parking it leaves the content height at the estimate
-        // and the bottom shortfall the gate measured at 728 pt.
-        if isBrowsing, hasCachedHeight { return .deferred }
+        // `EVIDENCE/round19/streaming.md` §1.5: while dragging/coasting the
+        // reducer produces no place, but the height is still written
+        // (`rowMeasured` has no proven finger branch; the `isFingerOnTheList`
+        // consumer is UNKNOWN). A growth below the viewport top therefore
+        // lands without moving the offset — deferring it clipped the
+        // streaming row (`TimelineHostingCell.clipsToBounds`) until the
+        // scroll ended. A growth entirely above the viewport would shift
+        // everything the reader sees; it parks, and the drag-end correction
+        // (`heightChangeCorrection`) keeps the anchor, which is where the
+        // official placement is re-answered. A shrink stays parked so the
+        // reader never sees the row shorten under the gesture. A first
+        // measurement is a new row entering, not a change, and is never
+        // parked; parking it left the content height at the estimate and the
+        // bottom shortfall the gate measured at 728 pt.
+        if isBrowsing, hasCachedHeight {
+            return delta > 0 && cellMaxY > viewportTop ? .accept : .deferred
+        }
         if isBrowsing || keyboardTransition || suppressContentOffsetAdjustment { return .accept }
         // The placement anchor is the row that contains the viewport top: a
         // change there grows downward without moving the offset. Only a row
@@ -134,12 +151,23 @@ nonisolated struct TimelinePreferredAttributesDecision: Equatable {
                            keyboardTransition: Bool,
                            hasCachedHeight: Bool) -> Self {
         let isBrowsing = isTracking || isDecelerating
-        // Official: while the finger is on the list every height change is
-        // parked (`rowsOwedToNextUpdate` / `isFingerOnTheList`). A first
-        // measurement is not a change — it is a new row entering — so it is
-        // not parked; parking it leaves the content height at the estimate
-        // and the bottom shortfall the gate measured at 728 pt.
-        if isBrowsing, hasCachedHeight { return .deferred }
+        // `EVIDENCE/round19/streaming.md` §1.5: while dragging/coasting the
+        // reducer produces no place, but the height is still written
+        // (`rowMeasured` has no proven finger branch; the `isFingerOnTheList`
+        // consumer is UNKNOWN). A growth below the viewport top therefore
+        // lands without moving the offset — deferring it clipped the
+        // streaming row (`TimelineHostingCell.clipsToBounds`) until the
+        // scroll ended. A growth entirely above the viewport would shift
+        // everything the reader sees; it parks, and the drag-end correction
+        // (`heightChangeCorrection`) keeps the anchor, which is where the
+        // official placement is re-answered. A shrink stays parked so the
+        // reader never sees the row shorten under the gesture. A first
+        // measurement is a new row entering, not a change, and is never
+        // parked; parking it left the content height at the estimate and the
+        // bottom shortfall the gate measured at 728 pt.
+        if isBrowsing, hasCachedHeight {
+            return delta > 0 && cellMaxY > viewportTop ? .accept : .deferred
+        }
         if isBrowsing || keyboardTransition { return .accept }
         // 1. Fully above the placement anchor (the row containing the
         //    viewport top): its growth pushes everything the reader sees.

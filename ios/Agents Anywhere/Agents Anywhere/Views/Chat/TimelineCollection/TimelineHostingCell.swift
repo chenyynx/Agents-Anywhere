@@ -7,16 +7,21 @@ import UIKit
 /// measurement yet may self-size once through
 /// `preferredLayoutAttributesFitting`; once `isMeasured` is true the cell
 /// returns the layout's proposed attributes untouched. Later content changes
-/// are reported through `onContentHeightChange`, which the layout turns into
-/// its own height application.
+/// arrive as the SwiftUI geometry value itself (`onContentHeightReport`),
+/// exactly like the official `_GeometryActionModifier` → `rowMeasured` chain;
+/// the controller accepts it only when the height changed.
 final class TimelineHostingCell: UICollectionViewCell {
     static let reuseIdentifier = "TimelineHostingCell"
 
-    /// The hosting content changed its laid-out size. This is a **trigger**,
-    /// not a measurement: the row's height is always read back from
-    /// `systemLayoutSizeFitting` at a settled moment (the official first-fit
-    /// call), because SwiftUI reports intermediate sizes while it lays out.
-    var onContentChanged: (() -> Void)?
+    /// The hosting content's laid-out height, in row coordinates, already
+    /// rounded up. This **is** the measurement: the official row wraps its
+    /// content in `_GeometryActionModifier(value: GeometryProxy.size)`
+    /// (`0x100b7d97c`, value `0x100d540ac`), the action reads `size.height`
+    /// plus the row's vertical margins (`0x1019edf08` → `0x1019ece34`) and
+    /// the surface accepts it only when it changed (`0x101a4081c`). SwiftUI
+    /// performs this action on layout changes, not on a timer, so it costs
+    /// one measurement per content change instead of a repeated fit.
+    var onContentHeightReport: ((CGFloat) -> Void)?
 
     private var policy: TimelineRowHeightPolicy = .measured
     /// Whether the height cache holds a measured/precalc height for the row's
@@ -36,9 +41,9 @@ final class TimelineHostingCell: UICollectionViewCell {
         super.init(frame: frame)
         backgroundConfiguration = .clear()
         contentView.backgroundColor = .clear
-        // Until the visible-cell settle reports the real height, a fixed row
-        // can be shorter than its SwiftUI content. Clip it instead of letting
-        // the overflow draw over the following row.
+        // Until the measurement (hosting geometry or the one first fit)
+        // arrives, a fixed row can be shorter than its SwiftUI content. Clip
+        // it instead of letting the overflow draw over the following row.
         contentView.clipsToBounds = true
         clipsToBounds = true
     }
@@ -71,12 +76,22 @@ final class TimelineHostingCell: UICollectionViewCell {
                 // height produce another report for the same value. The
                 // hosting window's safe area is not part of a row's height
                 // (the M1 parity spike saw a 64 pt status-bar inset).
+                //
+                // Official semantics (`CANONICAL/05-layout-scroll.md` §2.2):
+                // `GeometryProxy.size.height` + `rowMargins.top + bottom`,
+                // rounded up. This configuration uses `.margins(.all, 0)`
+                // and the Code row draws its official 5 pt top/bottom row
+                // margins inside its own SwiftUI body, so the proxy height is
+                // already the whole row height and the margin term is zero.
                 content.onGeometryChange(for: CGFloat.self, of: { proxy in
                     proxy.size.height - proxy.safeAreaInsets.top
                         - proxy.safeAreaInsets.bottom
-                }) { [weak self] _ in
+                }) { [weak self] height in
                     guard let self, self.configurationToken == token else { return }
-                    self.onContentChanged?()
+                    // Official `ceil` before the value reaches the surface.
+                    let measured = ceil(height)
+                    guard measured.isFinite, measured > 0 else { return }
+                    self.onContentHeightReport?(measured)
                 }
             } else {
                 // The Chat rows keep the controller's visible-cell polling;
@@ -96,7 +111,7 @@ final class TimelineHostingCell: UICollectionViewCell {
         policy = .measured
         isMeasured = false
         seededHeight = nil
-        onContentChanged = nil
+        onContentHeightReport = nil
     }
 
     override func preferredLayoutAttributesFitting(
@@ -126,7 +141,8 @@ final class TimelineHostingCell: UICollectionViewCell {
         // in for the first fit: return that height without asking UIKit to fit
         // the skeleton. Once the content has laid out, its geometry change is
         // the correction pass (the official `rowMeasured`); it goes through
-        // the layout's settled cell-fit report, not through this one-shot path.
+        // `onContentHeightReport` and the layout's changed-only gate, not
+        // through this one-shot path.
         if let seed = seededHeight {
             let copy = layoutAttributes.copy() as! UICollectionViewLayoutAttributes
             copy.size.height = seed

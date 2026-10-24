@@ -55,11 +55,39 @@ final class TimelineCollectionController: UIViewController {
     private var pendingApply: (items: [TimelineListItem], animating: Bool)?
     private var pendingMeasurementTask: Task<Void, Never>?
     private var visibleCellSettleTask: Task<Void, Never>?
-    /// The last fitting height seen for a hosted row. A height is committed
-    /// only after two settle passes return the same deterministic fit.
-    private var pendingCellFits: [String: CGFloat] = [:]
+    /// Keys whose hosting geometry has already reported a height. The official
+    /// contract has no re-measure loop: the geometry value is the measurement
+    /// (`CANONICAL/05-layout-scroll.md` §2.2). Tracked so the visible-cell
+    /// pass only fits a row whose SwiftUI content has not reported yet.
+    private var hostedGeometryKeys: [String: TimelineHeightKey] = [:]
+    /// The width at which the one-shot first-materialization fit ran for a
+    /// hosted row. Official `0x101a39244` self-measures only while
+    /// `isMeasured == false`; with the geometry report as the primary path
+    /// this fit is only the fallback for a cell whose SwiftUI content has not
+    /// completed its first layout pass. At most one per row per width, never
+    /// once per snapshot.
+    private var hostedFallbackFitWidths: [String: CGFloat] = [:]
+    /// A geometry report that arrived while a programmatic return owned the
+    /// offset. The old settle path skipped `.animating` for the same reason
+    /// (a row correction inside the animation adds a second offset change);
+    /// the animation-end pass flushes these in `settleVisibleCellHeightsOnce`.
+    private struct PendingHostedReport {
+        let key: TimelineHeightKey
+        let height: CGFloat
+    }
+    private var pendingHostedReports: [String: PendingHostedReport] = [:]
+    /// When a hosted row was first seen by a settle pass without a geometry
+    /// report. The single first-materialization fit waits for one more layout
+    /// opportunity; the cell can still be measuring its pre-layout skeleton on
+    /// the first pass (458 probe: 598 → 54 → 598) and there is no second fit
+    /// to reject that value.
+    private var hostedFallbackFirstSeenAt: [String: TimeInterval] = [:]
     private var cellFrameSyncScheduled = false
     private var visibleCellSettleGeneration = 0
+    /// A settle request that arrived while the ladder was between passes. The
+    /// running ladder wakes early instead of being cancelled and restarted
+    /// (restarting at the streaming frame rate starved every later read).
+    private var visibleCellSettleNudged = false
     private var bottomAnimationWatchdog: Task<Void, Never>?
     private var lastPublishedViewport = TimelineViewport()
 
@@ -107,6 +135,11 @@ final class TimelineCollectionController: UIViewController {
     /// machine refused the native command but kept the intent; resume replays
     /// it exactly once instead of silently dropping a pending/approval return.
     private var suspendedBottomRequest: (animated: Bool, forced: Bool)?
+    /// A bottom request that arrived with the reader's finger on the list.
+    /// Official `askedForEnd` is ignored while dragging (part-ag §1.7);
+    /// replay it when the gesture ends instead of starting a spring that
+    /// would fight the finger.
+    private var pendingGestureBottomRequest: (animated: Bool, forced: Bool)?
     private var suspendedOpeningRequest = false
     private var lastContainerHeight: CGFloat = 0
     private var lastBottomInset: CGFloat = 0
@@ -136,6 +169,19 @@ final class TimelineCollectionController: UIViewController {
     /// instant re-pin yields to the sprung follower (otherwise the pin would
     /// satisfy the target before the follower could ever see a delta).
     private var streamingRevealActive = false
+    /// Programmatic bottom return (`requestBottom(animated: true)`): the
+    /// official Mover spring, not UIKit's system scroll animation.
+    /// `Spring(0.4, bounce 0)` within one viewport, `Spring(0.36, bounce 0.15)`
+    /// beyond it, with the one-viewport pre-place
+    /// (`CANONICAL/05-layout-scroll.md` §6.4; `11-motion-haptics.md` §3.1;
+    /// `EVIDENCE/round19/motion.md` P1-2). The target is re-read every frame,
+    /// so content that grows during the return is still followed.
+    private var returnFollowLink: CADisplayLink?
+    private var returnFollowSpring = TimelineSpringFollow.Spring.ease
+    private var returnFollowStartPosition: CGFloat = 0
+    private var returnFollowStartTime: TimeInterval = 0
+    private var returnFollowLastTime: TimeInterval = 0
+    private var returnFollowLastPosition: CGFloat = 0
     #if DEBUG
     /// Number of sprung follows started; the M4 gate asserts the follower
     /// actually ran (an instant pin would leave this at zero).
@@ -197,7 +243,10 @@ final class TimelineCollectionController: UIViewController {
         collectionView.bottomEdgeEffect.isHidden = true
         collectionView.alwaysBounceVertical = true
         collectionView.showsVerticalScrollIndicator = false
-        collectionView.keyboardDismissMode = .interactive // I7
+        // [E] CANONICAL/05-layout-scroll.md §5 — the official surface uses
+        // `keyboardDismissMode = .interactiveWithAccessory` (raw 4,
+        // `0x101a3b344`), not the plain interactive mode.
+        collectionView.keyboardDismissMode = .interactiveWithAccessory
         collectionView.contentInsetAdjustmentBehavior = .automatic
         // The official surface disables UIKit's automatic self-sizing
         // invalidation; the layout owns every height. AA's controlled
@@ -260,7 +309,7 @@ final class TimelineCollectionController: UIViewController {
                 // Official 0x101a3ff20: `isMeasured` is item-level and only a
                 // width change clears it. A same-width content revision keeps
                 // the row measured instead of reopening its one self-measure;
-                // the cell-fit report path supplies the new height.
+                // the hosting geometry report supplies the new height.
                 let isMeasured = self.layout.heights.isMeasured(
                     itemID: item.itemID, width: self.columnWidth)
                 // Seed an unmeasured cell-reported row's one self-measure.
@@ -276,8 +325,8 @@ final class TimelineCollectionController: UIViewController {
                 // estimate for a never-shown row, the displayed height
                 // otherwise. Letting UIKit fit the pre-layout body instead
                 // collapsed a streaming row 44→18 (461 probe); the content's
-                // later geometry change corrects the seed through the settled
-                // cell-fit path.
+                // later geometry change supersedes the seed through the
+                // changed-only `onContentHeightReport` path.
                 let reportsContentHeight = content.usesCellReportedHeight(for: item)
                 let seed: CGFloat?
                 if !isMeasured, reportsContentHeight {
@@ -293,15 +342,23 @@ final class TimelineCollectionController: UIViewController {
                 } else {
                     seed = nil
                 }
-                // A hosted row's geometry change is only a trigger: the height
-                // is read back from `systemLayoutSizeFitting` at a settled
-                // moment. The Chat rows keep the controller polling path.
+                // A hosted row's geometry value is its measurement (official
+                // `_GeometryActionModifier` → `rowMeasured`,
+                // `CANONICAL/05-layout-scroll.md` §2.2). Capture the key and
+                // signature this configuration's content belongs to; a
+                // width/typography re-key of the same content (rotation does
+                // not reconfigure the cell) is still accepted. The Chat rows
+                // keep the controller polling path.
                 if reportsContentHeight {
-                    cell.onContentChanged = { [weak self] in
-                        self?.noteHostedContentChanged()
+                    let reportKey = content.heightKey(for: item, width: self.columnWidth)
+                    let reportSignature = content.contentSignature(for: item)
+                    cell.onContentHeightReport = { [weak self] height in
+                        self?.hostedContentHeightReported(
+                            height, for: item,
+                            reportedKey: reportKey, reportedSignature: reportSignature)
                     }
                 } else {
-                    cell.onContentChanged = nil
+                    cell.onContentHeightReport = nil
                 }
                 cell.configure(content.rowView(for: item),
                                policy: content.heightPolicy(for: item),
@@ -444,6 +501,9 @@ final class TimelineCollectionController: UIViewController {
                 // that report must land on the key this apply established,
                 // not on the revision it replaced.
                 layout.heights.setCurrentKey(key)
+                // A new revision gets its own first-layout window before the
+                // one-shot fallback fit; the cell was just reconfigured.
+                hostedFallbackFirstSeenAt[item.itemID] = nil
                 reconfigure.insert(item)
             }
             if changed.contains(item) || !layout.heights.hasMeasuredOrPrecalcHeight(for: key) {
@@ -463,7 +523,10 @@ final class TimelineCollectionController: UIViewController {
         }
         let liveIDs = Set(items.map(\.itemID))
         documentHeights = documentHeights.filter { liveIDs.contains($0.key) }
-        pendingCellFits = pendingCellFits.filter { liveIDs.contains($0.key) }
+        hostedGeometryKeys = hostedGeometryKeys.filter { liveIDs.contains($0.key) }
+        hostedFallbackFitWidths = hostedFallbackFitWidths.filter { liveIDs.contains($0.key) }
+        hostedFallbackFirstSeenAt = hostedFallbackFirstSeenAt.filter { liveIDs.contains($0.key) }
+        pendingHostedReports = pendingHostedReports.filter { liveIDs.contains($0.key) }
 
         var snapshot = NSDiffableDataSourceSnapshot<TimelineCollectionSection, TimelineListItem>()
         snapshot.appendSections([.main])
@@ -848,6 +911,157 @@ final class TimelineCollectionController: UIViewController {
         noteBottomArrival()
     }
 
+    // MARK: - Programmatic bottom return (official Mover spring)
+
+    /// Official `askedForEnd` (05 §6.4): a programmatic return is the Mover
+    /// spring — `Spring(0.4, bounce 0)` (`0x1019fa768`) inside one viewport,
+    /// `Spring(0.36, bounce 0.15)` (`0x1019fa780`) beyond it — with the
+    /// one-viewport pre-place (`11-motion-haptics.md` §3.1, part-ag §1.3/§1.5).
+    /// The target is re-read every frame, so growth during the return is
+    /// followed instead of being snapped to at the end.
+    private func startReturnFollow() {
+        guard let collectionView, !navigationSuspended else { return }
+        let scale = traitCollection.displayScale
+        let current = collectionView.contentOffset.y
+        let target = streamingFollowEndOffset()
+        guard TimelineSpringFollow.shouldMove(
+            target: target, current: current, displayScale: scale) else {
+            // Official dead band: less than one physical pixel is a no-op.
+            finishReturnFollow(at: target)
+            return
+        }
+        let visible = streamingFollowVisibleHeight()
+        // The curve is chosen from the original distance; the pre-place only
+        // moves the takeoff point (official >1 viewport: pre-place one screen,
+        // then fly).
+        let spring = TimelineSpringFollow.spring(
+            target: target, current: current, visibleHeight: visible)
+        let preplaced = TimelineSpringFollow.preplacedOffset(
+            target: target, current: current, visibleHeight: visible)
+        var start = current
+        if abs(preplaced - current) >= TimelineSpringFollow.pixel(displayScale: scale) {
+            collectionView.setContentOffset(
+                CGPoint(x: collectionView.contentOffset.x, y: preplaced),
+                animated: false)
+            start = preplaced
+        }
+        returnFollowSpring = spring
+        returnFollowStartPosition = start
+        returnFollowStartTime = ProcessInfo.processInfo.systemUptime
+        returnFollowLastTime = returnFollowStartTime
+        returnFollowLastPosition = start
+
+        let maxFPS = max(60, view.window?.screen.maximumFramesPerSecond ?? 60)
+        let link = CADisplayLink(target: self,
+                                 selector: #selector(returnFollowTick(_:)))
+        link.preferredFrameRateRange = CAFrameRateRange(
+            minimum: Float(maxFPS) / 2, maximum: Float(maxFPS), preferred: 0)
+        link.add(to: .main, forMode: .common)
+        returnFollowLink = link
+    }
+
+    @objc private func returnFollowTick(_ link: CADisplayLink) {
+        guard let collectionView else {
+            stopReturnFollow()
+            return
+        }
+        // A reader gesture, navigation suspension or another explicit write
+        // owns the page.
+        guard !navigationSuspended, phase.phase == .animating else {
+            stopReturnFollow()
+            return
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        let actual = collectionView.contentOffset.y
+        // Another writer (keyboard snap, container anchor) moved the page
+        // between frames: re-seed the spring at the real offset instead of
+        // pulling it back toward the old takeoff point.
+        if abs(actual - returnFollowLastPosition) > 1.0 {
+            returnFollowStartPosition = actual
+            returnFollowStartTime = now
+            returnFollowLastTime = now
+            returnFollowLastPosition = actual
+        }
+        let maxFPS = Double(max(60, view.window?.screen.maximumFramesPerSecond ?? 60))
+        let dt = min(max(0, now - returnFollowLastTime), 2 / maxFPS)
+        let target = streamingFollowEndOffset()
+        let visible = streamingFollowVisibleHeight()
+        // Content that pushes the bottom more than two viewports away mid
+        // flight: jump one viewport short of the target, then fly (official
+        // catch-up distance).
+        if target - returnFollowLastPosition
+            > TimelineSpringFollow.catchUpDistance(visibleHeight: visible) {
+            let preplaced = target - visible
+            collectionView.setContentOffset(
+                CGPoint(x: collectionView.contentOffset.x, y: preplaced),
+                animated: false)
+            returnFollowSpring = .fly
+            returnFollowStartPosition = preplaced
+            returnFollowStartTime = now
+            returnFollowLastTime = now
+            returnFollowLastPosition = preplaced
+            return
+        }
+        let elapsed = now - returnFollowStartTime
+        let progress = CGFloat(returnFollowSpring.progress(at: elapsed))
+        let position = returnFollowStartPosition
+            + (target - returnFollowStartPosition) * progress
+        let velocity = dt > 0
+            ? (position - returnFollowLastPosition) / CGFloat(dt) : 0
+        collectionView.setContentOffset(
+            CGPoint(x: collectionView.contentOffset.x, y: position),
+            animated: false)
+        if TimelineSpringFollow.hasArrived(
+            target: target, position: position, velocity: velocity,
+            dt: dt, displayScale: traitCollection.displayScale) {
+            finishReturnFollow(at: target)
+            return
+        }
+        returnFollowLastTime = now
+        returnFollowLastPosition = position
+    }
+
+    /// Lands the return exactly on the live target and closes the
+    /// `.animating` phase the way `scrollViewDidEndScrollingAnimation` did for
+    /// UIKit's native animation.
+    private func finishReturnFollow(at target: CGFloat) {
+        stopReturnFollow()
+        bottomAnimationWatchdog?.cancel()
+        guard let collectionView else { return }
+        collectionView.setContentOffset(
+            CGPoint(x: collectionView.contentOffset.x, y: target), animated: false)
+        if phase.phase == .animating {
+            let transition = phase.apply(.animationEnded)
+            onPhaseChanged?(transition)
+        }
+        noteBottomArrival()
+        // The native animation's completion used to schedule this from
+        // `scrollViewDidEndScrollingAnimation`; the spring replaces it, so the
+        // stale-frame check after a return must be scheduled here.
+        scheduleVisibleCellSettle()
+        scheduleVisibleCellFrameSync()
+    }
+
+    private func stopReturnFollow() {
+        returnFollowLink?.invalidate()
+        returnFollowLink = nil
+    }
+
+    /// Re-issues a bottom request that arrived with the finger down. The
+    /// deceleration-end callback keeps it until the coast is truly over; a
+    /// newer return already in flight supersedes it.
+    private func replayPendingGestureBottomRequest() {
+        guard let request = pendingGestureBottomRequest else { return }
+        // A status-bar scroll-to-top owns the offset; its own end callback
+        // re-evaluates the page, and a replayed return must not fight it.
+        guard !isScrollingToTop, !phase.userIsScrolling,
+              !collectionView.isTracking,
+              !collectionView.isDecelerating else { return }
+        pendingGestureBottomRequest = nil
+        guard returnFollowLink == nil else { return }
+        requestBottom(animated: request.animated, forced: request.forced)
+    }
+
     private func applyPreferredHeights(for items: [TimelineListItem],
                                        staleFits: [String: CGFloat] = [:],
                                        beforeHeights: [String: CGFloat] = [:]) {
@@ -1077,10 +1291,13 @@ final class TimelineCollectionController: UIViewController {
     /// so the cell's real height can arrive well after the first layout. The
     /// later passes cover a long reply on a busy main thread; a later scroll
     /// or `willDisplay` starts a fresh set if the content is still not parsed.
-    private static let visibleCellSettleDelays: [Duration] = [
-        .zero, .milliseconds(80), .milliseconds(160), .milliseconds(320),
-        .milliseconds(640), .milliseconds(1200), .milliseconds(2000),
-        .milliseconds(3000), .milliseconds(5000)
+    /// Seconds, so a settle request can wake the ladder early without
+    /// consuming the slot.
+    private static let visibleCellSettleDelays: [TimeInterval] = [
+        0, 0.08, 0.16, 0.32, 0.64, 1.2, 2, 3, 5,
+        // One extra slot: a hosted row first seen in the last regular slot
+        // still owes its one fallback fit one layout opportunity later.
+        0.08
     ]
 
     private func validatedHeight(_ height: CGFloat?, minimum: CGFloat = 0) -> CGFloat? {
@@ -1343,39 +1560,176 @@ final class TimelineCollectionController: UIViewController {
         layout.applyMeasuredHeight(height, for: item.itemID, key: key)
     }
 
-    /// A hosted row's content changed its laid-out size. Not a measurement:
-    /// let the settle passes read the deterministic fit at a settled moment.
-    /// A running settle already re-fits every pass, so it is left alone
-    /// instead of being restarted (a restart would postpone the next read).
-    private func noteHostedContentChanged() {
-        guard visibleCellSettleTask == nil else { return }
-        scheduleVisibleCellSettle()
+    /// The official `rowMeasured` path: the hosting geometry value is the
+    /// measurement, not a trigger. `_GeometryActionModifier`'s action reads
+    /// `GeometryProxy.size.height` (`0x100b7d97c` / `0x100d540ac`), adds the
+    /// row's vertical margins (`0x1019edf08` → `0x1019ece34`) and the surface
+    /// accepts it only when it differs (`0x101a4081c fcmp; cset ne`), writing
+    /// it inside `UIView.performWithoutAnimation` (`0x101a3b660`).
+    /// `CANONICAL/05-layout-scroll.md` §2.2 steps 4–5.
+    private func hostedContentHeightReported(_ height: CGFloat, for item: TimelineListItem,
+                                             reportedKey: TimelineHeightKey,
+                                             reportedSignature: TimelineContentSignature) {
+        guard let content, !navigationSuspended, columnWidth > 0,
+              height.isFinite, height > 0 else { return }
+        guard let current = layout.heights.currentKey(for: item.itemID) else { return }
+        // The cell's body belongs to the configuration that captured
+        // `reportedKey`. A different current key normally means an apply
+        // installed a new content revision and this cell still shows the
+        // retired body; its geometry must not be written under the new
+        // revision. The exception is a width/split-view/Dynamic-Type change,
+        // which re-keys every row in `prepare` (official 0x101a3ff20) without
+        // reconfiguring the cell: accept it only when the content signature
+        // proves the body did not change. (Code `contentRevision` folds the
+        // width into its digest, so it cannot be compared across a width
+        // change — `TimelineChatContentAdapter.codeHeightDigest`.)
+        let dimensionOnlyRekey = current.itemID == reportedKey.itemID
+            && (current.width != reportedKey.width
+                || current.dynamicType != reportedKey.dynamicType
+                || current.typographyRevision != reportedKey.typographyRevision
+                || current.layoutDirection != reportedKey.layoutDirection)
+        guard current == reportedKey
+            || (dimensionOnlyRekey && content.contentSignature(for: item) == reportedSignature)
+        else { return }
+        let key = current
+        // Marked even when the value is unchanged: the geometry path reported
+        // for this key, so the one-shot first-materialization fallback must
+        // not fit the same row as well.
+        hostedGeometryKeys[item.itemID] = key
+        if phase.phase == .animating, returnFollowLink != nil {
+            // The programmatic-return spring owns the offset and re-reads the
+            // live bottom every frame (`CANONICAL/05-layout-scroll.md` §6.4).
+            // The height must land now — freezing it would freeze the target —
+            // but it must not post an offset adjustment that fights the
+            // spring. Official `rowMeasured` writes the height and lets the
+            // Mover answer the placement. Cost: the official above-viewport
+            // compensation (05 §2.2 step 6) is suppressed too, so content
+            // above a growing row can shift for the duration of the return.
+            pendingHostedReports[item.itemID] = nil
+            applyHostedHeight(height, id: item.itemID, key: key,
+                              suppressOffsetAdjustment: true)
+            return
+        }
+        if phase.phase == .animating {
+            // Another native animation (status-bar scroll-to-top) owns the
+            // offset. Keep the newest report and let the animation-end settle
+            // pass apply it.
+            pendingHostedReports[item.itemID] = PendingHostedReport(key: key, height: height)
+            return
+        }
+        // A newer direct report supersedes anything parked for this row: a
+        // later flush of the older value would otherwise shrink the row back.
+        pendingHostedReports[item.itemID] = nil
+        applyHostedHeight(height, id: item.itemID, key: key)
+    }
+
+    /// Non-animated write for one geometry report. The changed-only decision
+    /// lives in `TimelineListLayout.applyMeasuredHeight`: an equal value takes
+    /// its `delta <= 0.5` branch, which latches `isMeasured` (official
+    /// `0x1019e0b10` sets it unconditionally; only the `starts` prefix sum is
+    /// conditional) without moving the offset or invalidating anything.
+    /// Dropping the equal value here left a row that entered with a structural
+    /// provisional at `tier=provisional` forever — the 461 device defect
+    /// (`g:msg_e83b5b4b`, h=957) that `14ce7862` fixed.
+    ///
+    /// The layout's baseline is the height `prepare` resolved for the row
+    /// (cache then displayed), not the raw attribute frame: an application can
+    /// have written the cache before the next `prepare` rebuilt the frame, and
+    /// comparing against the stale frame would post the same delta twice.
+    private func applyHostedHeight(_ height: CGFloat, id: String, key: TimelineHeightKey,
+                                   suppressOffsetAdjustment: Bool = false) {
+        guard layout.heights.currentKey(for: id) == key else { return }
+        UIView.performWithoutAnimation {
+            layout.applyMeasuredHeight(
+                height, for: id, key: key,
+                suppressOffsetAdjustment: suppressOffsetAdjustment,
+                probeSource: "rowMeasured")
+        }
+    }
+
+    /// Applies the reports parked while a programmatic return owned the
+    /// offset. Keys a later apply retired are dropped instead of being
+    /// written under the new revision.
+    private func applyPendingHostedReports() {
+        guard !pendingHostedReports.isEmpty else { return }
+        let reports = pendingHostedReports
+        pendingHostedReports.removeAll()
+        for (id, report) in reports {
+            applyHostedHeight(report.height, id: id, key: report.key)
+        }
     }
 
     /// Every visible legacy row may correct its height after the cell has
     /// rendered; this is their equivalent of the official cell's
-    /// `heightDidChange` (the hosted-contract rows are confirmed by fit).
-    /// Passes stop as soon as each visible cell's fitting height equals its
-    /// frame; a pre-parse cell keeps them alive until the last pass.
+    /// `heightDidChange`. The hosted-contract rows do not use this path: their
+    /// geometry report is the measurement. Passes stop as soon as each visible
+    /// cell's fitting height equals its frame; a pre-parse cell keeps them
+    /// alive until the last pass.
+    ///
+    /// An apply must not restart the ladder. At the streaming frame rate the
+    /// old unconditional restart cancelled the pass the previous apply had
+    /// scheduled, so only the zero-delay pass ever ran and the later reads
+    /// never happened (the two-pass confirmation could never be satisfied).
+    /// A running ladder re-reads every visible cell each pass, which covers
+    /// the content the apply introduced; a request that arrives between
+    /// passes only wakes it early, it does not reset the schedule.
     private func scheduleVisibleCellSettle() {
-        visibleCellSettleTask?.cancel()
+        guard visibleCellSettleTask == nil else {
+            visibleCellSettleNudged = true
+            return
+        }
+        visibleCellSettleNudged = false
         visibleCellSettleGeneration &+= 1
         let generation = visibleCellSettleGeneration
         visibleCellSettleTask = Task { @MainActor [weak self] in
             defer { self?.clearVisibleCellSettleTask(generation: generation) }
             for delay in Self.visibleCellSettleDelays {
-                if delay > .zero { try? await Task.sleep(for: delay) }
-                guard let self, !Task.isCancelled,
-                      self.visibleCellSettleGeneration == generation,
-                      !self.navigationSuspended else { return }
-                if !self.settleVisibleCellHeightsOnce() { return }
+                guard let self, !Task.isCancelled else { return }
+                // One wall-clock slot per scheduled pass. A settle request
+                // inside the slot runs an extra pass but does NOT consume the
+                // slot: at the streaming frame rate the old loop advanced one
+                // delay per apply, so the 640 ms+ passes never survived a
+                // burst.
+                let slotEnd = CACurrentMediaTime() + delay
+                while true {
+                    guard !Task.isCancelled else { return }
+                    guard await self.awaitSettleSlot(until: slotEnd) else { return }
+                    guard self.visibleCellSettleGeneration == generation,
+                          !self.navigationSuspended else { return }
+                    // This pass consumes the wake signal; a request that
+                    // arrives during the pass stays pending for the next one.
+                    self.visibleCellSettleNudged = false
+                    if !self.settleVisibleCellHeightsOnce() { return }
+                    if CACurrentMediaTime() >= slotEnd { break }
+                }
             }
+        }
+    }
+
+    /// Waits for one ladder slot. Returns `false` when the task must stop;
+    /// `true` when a pass may run — either the slot elapsed or a settle
+    /// request woke the ladder for an early pass. Sliced so a request does not
+    /// wait out a multi-second delay; the slices do no layout work.
+    private func awaitSettleSlot(until end: TimeInterval) async -> Bool {
+        let slice: TimeInterval = 0.02
+        while true {
+            if Task.isCancelled { return false }
+            if visibleCellSettleNudged || navigationSuspended { return true }
+            let remaining = end - CACurrentMediaTime()
+            if remaining <= 0 { return true }
+            try? await Task.sleep(for: .seconds(min(remaining, slice)))
         }
     }
 
     private func clearVisibleCellSettleTask(generation: Int) {
         guard visibleCellSettleGeneration == generation else { return }
         visibleCellSettleTask = nil
+        // A request that arrived just as the ladder finished could not start
+        // a new one while this task still occupied the slot. Hand it over
+        // instead of dropping the pass.
+        if visibleCellSettleNudged, !navigationSuspended {
+            scheduleVisibleCellSettle()
+        }
     }
 
     /// Returns false when every visible cell already matches its frame, so
@@ -1384,79 +1738,104 @@ final class TimelineCollectionController: UIViewController {
     private func settleVisibleCellHeightsOnce() -> Bool {
         // A programmatic return owns the offset until it lands. Applying a
         // row correction inside that animation would add a second offset
-        // change; the animation-end callback starts a fresh settle instead.
+        // change; the animation-end callback starts a fresh settle instead,
+        // which also flushes the geometry reports parked meanwhile.
         guard phase.phase != .animating else { return false }
-        // Measuring and forcing layout during a drag/deceleration is the
-        // device's scroll stutter. Keep the passes alive; a fresh settle is
-        // scheduled when the scroll ends. `isUserScrolling` also covers the
-        // gate's test gesture, which has no native tracking.
-        if isUserScrolling {
-            return true
-        }
         guard let content, !navigationSuspended, columnWidth > 0,
               !collectionView.indexPathsForVisibleItems.isEmpty else { return false }
+        applyPendingHostedReports()
+        // The official `rowMeasured` write has no proven finger gate
+        // (`0x1019e0b10`; `EVIDENCE/round19/streaming.md` §1.5): hosted growth
+        // lands during a drag/deceleration through
+        // `hostedContentHeightReported` when it cannot move content above the
+        // row; growth entirely above the viewport parks for the drag-end
+        // correction. This legacy polling pass would have to fit every visible
+        // cell to see anything else, which is the device's 2026-10-23 scroll
+        // stutter, and a shrink is parked until the gesture ends anyway. Keep
+        // the passes alive and do no fitting under the finger.
+        // `isUserScrolling` also covers the gate's test gesture, which has no
+        // native tracking.
+        let browsing = isUserScrolling
         var needsMore = false
         for indexPath in collectionView.indexPathsForVisibleItems.sorted() {
             guard currentItems.indices.contains(indexPath.item),
                   let cell = collectionView.cellForItem(at: indexPath) else { continue }
             let item = currentItems[indexPath.item]
-            let hosted = content.usesCellReportedHeight(for: item)
+            if content.usesCellReportedHeight(for: item) {
+                // The hosting geometry value is the measurement
+                // (`CANONICAL/05-layout-scroll.md` §2.2). Its changed-only
+                // write happens in `hostedContentHeightReported`; this pass
+                // keeps only the one-shot first-materialization fallback for
+                // a cell whose SwiftUI content has not completed a layout
+                // pass, so no geometry arrived yet.
+                if browsing { needsMore = true; continue }
+                // Official 0x101a39244: the cell self-measures only while
+                // `isMeasured == false`, once per width. Check the item-level
+                // flag before building the key: a Code key hashes the whole
+                // streaming text, and a measured row must not pay that on
+                // every settle pass.
+                if layout.heights.isMeasured(itemID: item.itemID, width: columnWidth) {
+                    continue
+                }
+                let key = content.heightKey(for: item, width: columnWidth)
+                if hostedGeometryKeys[item.itemID] == key { continue }
+                if hostedFallbackFitWidths[item.itemID] == key.width { continue }
+                // Wait for one more layout opportunity before the single
+                // fallback fit: the first pass after configuration can still
+                // read the pre-layout skeleton (458 probe: 598 → 54 → 598),
+                // and unlike the old two-pass confirmation there is no second
+                // fit to reject that value.
+                let now = CACurrentMediaTime()
+                if let firstSeen = hostedFallbackFirstSeenAt[item.itemID] {
+                    guard now - firstSeen >= 0.05 else {
+                        needsMore = true
+                        continue
+                    }
+                } else {
+                    hostedFallbackFirstSeenAt[item.itemID] = now
+                    needsMore = true
+                    continue
+                }
+                // No estimate floor: a genuinely short row (a collapsed tool
+                // header) is legitimate.
+                guard let height = cellFit(cell) else {
+                    needsMore = true
+                    continue
+                }
+                // The fit lays out the hosting subtree; a geometry action can
+                // have landed a fresher, content-derived value while it ran.
+                // Never overwrite that with a possibly pre-layout fit.
+                if layout.heights.isMeasured(itemID: item.itemID, width: key.width)
+                    || hostedGeometryKeys[item.itemID] == key {
+                    continue
+                }
+                hostedFallbackFitWidths[item.itemID] = key.width
+                // Even a fit equal to the current height is a measurement:
+                // `applyMeasuredHeight`'s delta<=0.5 branch latches
+                // `isMeasured` (official 0x1019e0ba0).
+                layout.applyMeasuredHeight(height, for: item.itemID, key: key,
+                                           probeSource: "cellFit")
+                needsMore = true
+                continue
+            }
             // A streaming row's visible height is the reveal override; the
             // stored measurement must not chase it frame by frame.
-            if hosted, layout.hasStreamingHeight(for: item.itemID) { continue }
-            if !hosted {
-                // TextKit 2 rows were measured before apply with the same
-                // engine the cell renders; the visible-fit loop must not
-                // second-guess it.
-                if documentHeights[item.itemID] != nil { continue }
-                // Leave a row that is mid-animation alone: re-fitting it would
-                // restart the animation from its current frame and stretch it.
-                if isAnimatingRowHeight(item.itemID) { continue }
-            }
-            // The hosted row's height is the official first-fit measurement,
-            // never the geometry value SwiftUI reported. No estimate floor:
-            // a genuinely short row (a collapsed tool header) is legitimate.
-            guard let height = cellFit(cell,
-                                       minimum: hosted ? 0 : plausibleFloor(for: item)) else {
+            if layout.hasStreamingHeight(for: item.itemID) { continue }
+            if browsing { needsMore = true; continue }
+            // TextKit 2 rows were measured before apply with the same engine
+            // the cell renders; the visible-fit loop must not second-guess it.
+            if documentHeights[item.itemID] != nil { continue }
+            // Leave a row that is mid-animation alone: re-fitting it would
+            // restart the animation from its current frame and stretch it.
+            if isAnimatingRowHeight(item.itemID) { continue }
+            guard let height = cellFit(cell, minimum: plausibleFloor(for: item)) else {
                 // Pre-parse stack spacing or a probe: wait for the async content.
                 needsMore = true
                 continue
             }
             let key = content.heightKey(for: item, width: columnWidth)
             let current = layout.attributes(for: item.itemID)?.frame.height ?? 0
-            guard abs(height - current) > 0.5 else {
-                // Official `rowMeasured` (0x1019e0b10) sets `isMeasured=1`
-                // unconditionally (`0x1019e0ba0 strb w9,[+0x28]`); only the
-                // `starts` prefix sum is conditional on the height changing
-                // (`0x1019e0bac fcmp` → `0x1019e1468`). A fit that confirms
-                // the stored height is therefore still a measurement, not a
-                // no-op. Without this latch a visible hosted row whose
-                // structured provisional height happens to equal its fit
-                // (461 device log: g:msg_e83b5b4b h=957, tier=provisional)
-                // would never become measured. The delta<=0.5 branch of
-                // `applyMeasuredHeight` writes the cache and
-                // `attributes.isMeasured=true` without moving the offset.
-                if hosted,
-                   !layout.heights.isMeasured(itemID: item.itemID, width: key.width) {
-                    layout.applyMeasuredHeight(height, for: item.itemID, key: key)
-                }
-                pendingCellFits[item.itemID] = nil
-                continue
-            }
-            if hosted {
-                // SwiftUI lays out in passes; a single read can still be an
-                // intermediate. Require the deterministic fit to agree across
-                // two settle passes — it compares the current fit only, so no
-                // value is ever carried across time.
-                if let pending = pendingCellFits[item.itemID],
-                   abs(pending - height) <= 0.5 {
-                    pendingCellFits[item.itemID] = nil
-                } else {
-                    pendingCellFits[item.itemID] = height
-                    needsMore = true
-                    continue
-                }
-            }
+            guard abs(height - current) > 0.5 else { continue }
             measurementPipeline.complete(item.itemID)
             let policy = content.heightPolicy(for: item)
             // UIKit may already have adopted the fitted height during the
@@ -1470,7 +1849,7 @@ final class TimelineCollectionController: UIViewController {
 #if AA_TIMELINE_PROBE
             TimelineProbeStore.shared.noteHeightChange(
                 itemID: item.itemID, item: item, old: current, new: height,
-                source: hosted ? "cellFit" : "visibleFit")
+                source: "visibleFit")
 #endif
             if policy == .interactive, let before, fresh,
                abs(height - before.height) >= 8 {
@@ -1542,7 +1921,11 @@ final class TimelineCollectionController: UIViewController {
             containerHeight: collectionView.bounds.height,
             topInset: collectionView.adjustedContentInset.top,
             bottomInset: collectionView.adjustedContentInset.bottom,
-            offsetY: collectionView.contentOffset.y)
+            offsetY: collectionView.contentOffset.y,
+            // Official one-physical-pixel tolerances use the screen scale
+            // (CANONICAL/05-layout-scroll.md §6–7; part-ag §1.3), not the
+            // Retina-2 fallback the geometry wrapper has to assume.
+            displayScale: traitCollection.displayScale)
     }
 
     var bottomShortfall: CGFloat {
@@ -1587,12 +1970,29 @@ final class TimelineCollectionController: UIViewController {
             return
         }
         guard collectionView != nil else { return }
+        // Official `askedForEnd` is ignored while the reader's finger is on
+        // the list (part-ag §1.7); defer it (and replay after the gesture, so
+        // AA still honors a send/pending request). This must run before any
+        // side effect: arming the bottom here would let `repinIfArmed`
+        // instant-pin the page under the finger on the next content change —
+        // the device's 388 pt mechanism.
+        if collectionView.isTracking {
+            // Merge `forced` like `suspendedBottomRequest`: a forced request
+            // queued behind a follow request must not lose its force.
+            pendingGestureBottomRequest = (
+                animated,
+                forced || (pendingGestureBottomRequest?.forced ?? false))
+            return
+        }
         // An explicit bottom command (pill, send, return) owns the offset. A
         // concurrent window replacement resolves against the new content.
         if forced { armWindowReplacementReturn() }
         stopStreamingFollow()
+        // A previous return (spring or native) must close its `.animating`
+        // phase before this request starts another one; an interrupted
+        // Reduce-Motion return would otherwise leave the phase stuck.
+        stopBottomAnimation()
         userScrollSettleTask?.cancel()
-        bottomAnimationWatchdog?.cancel()
         readerSettledAtBottom = false
         mode = .returning
         if forced {
@@ -1609,12 +2009,18 @@ final class TimelineCollectionController: UIViewController {
             containerHeight: collectionView.bounds.height,
             topInset: collectionView.adjustedContentInset.top,
             bottomInset: collectionView.adjustedContentInset.bottom)
-        if animated && !reduceMotion {
+        if animated && !reduceMotion && !UIAccessibility.isVoiceOverRunning {
+            // Official `askedForEnd` (05 §6.4) / Mover: the return is a spring,
+            // not a UIKit scroll animation. The follower re-reads the live
+            // bottom target each frame; the watchdog only covers a stalled
+            // display link. Coasting is halted by the first spring frame
+            // (official: coasting 先 halt, 再 animate).
             let transition = phase.apply(.animationBegan)
             onPhaseChanged?(transition)
-            collectionView.setContentOffset(CGPoint(x: collectionView.contentOffset.x, y: target), animated: true)
             startBottomAnimationWatchdog()
+            startReturnFollow()
         } else {
+            // Reduce Motion / VoiceOver: the official reducer places directly.
             collectionView.setContentOffset(CGPoint(x: collectionView.contentOffset.x, y: target), animated: false)
             noteBottomArrival()
         }
@@ -1705,11 +2111,12 @@ final class TimelineCollectionController: UIViewController {
         isScrollingToTop = false
     }
 
-    /// Stops UIKit's in-flight animated return. The old view released its
+    /// Stops the in-flight programmatic return. The old view released its
     /// `ScrollPosition` target on the same edges (approval appears, drawer
-    /// moves); leaving the native animation running would still pull the page.
+    /// moves); leaving the motion running would still pull the page.
     private func stopBottomAnimation() {
         bottomAnimationWatchdog?.cancel()
+        stopReturnFollow()
         guard let collectionView, phase.phase == .animating else { return }
         collectionView.setContentOffset(collectionView.contentOffset, animated: false)
         let transition = phase.apply(.watchdogExpired)
@@ -1864,31 +2271,49 @@ final class TimelineCollectionController: UIViewController {
         }
     }
 
-    private static let returnAnimationDuration: TimeInterval = 0.28
+    /// Nominal official ease duration (`Spring(0.4, bounce 0)`); the analytic
+    /// spring needs longer to fall under one physical pixel, so the watchdog
+    /// below is a stalled-display-link cap, not the expected completion.
+    private static let returnAnimationDuration: TimeInterval = 0.4
+    /// A display link that never delivers its arrival frame must not leave
+    /// the phase `.animating` (which would block every settle pass). The
+    /// margin covers the spring's sub-pixel settling time.
     private static let returnWatchdog = Duration.milliseconds(
-        Int((returnAnimationDuration + 1.0 / 60.0) * 1000))
+        Int((returnAnimationDuration + 1.1) * 1000))
 
     private func startBottomAnimationWatchdog() {
         bottomAnimationWatchdog?.cancel()
         bottomAnimationWatchdog = Task { @MainActor [weak self] in
             try? await Task.sleep(for: Self.returnWatchdog)
             guard let self, !Task.isCancelled, self.phase.phase == .animating else { return }
+            // The spring follower stalled (backgrounded, display link starved,
+            // or a target that kept moving): land on the live bottom.
+            self.stopReturnFollow()
+            if let collectionView = self.collectionView {
+                collectionView.setContentOffset(
+                    CGPoint(x: collectionView.contentOffset.x,
+                            y: self.streamingFollowEndOffset()),
+                    animated: false)
+            }
             let transition = self.phase.apply(.watchdogExpired)
             self.onPhaseChanged?(transition)
-            // A no-op animated return never calls
-            // `scrollViewDidEndScrollingAnimation` (measured 0 in the spike),
-            // so the watchdog is the only arrival signal for that shape.
+            // The display link is the normal arrival signal; a starved or
+            // interrupted one must still close the phase or the settle passes
+            // stay blocked behind `.animating`.
             self.noteBottomArrival()
-            // The settle passes skip while `.animating`; this is the only
-            // animation-end signal for the no-op shape.
             self.scheduleVisibleCellSettle()
         }
     }
 
     private func repinIfArmed() {
-        // The reveal follower owns the offset while it runs; an instant pin
-        // here would fight the spring on every content change.
-        guard streamingFollowLink == nil else { return }
+        // The reveal follower and the programmatic-return spring own the
+        // offset while they run; an instant pin here would fight them on every
+        // content change.
+        guard streamingFollowLink == nil, returnFollowLink == nil else { return }
+        // Official: dragging/coasting produces no placement (part-ag §1.7).
+        // Pinning under the finger is the device's 388 pt mechanism. The
+        // bottom target stays armed; the gesture-end path re-evaluates it.
+        guard !isUserScrolling else { return }
         // A streaming height change arrives here *after* prepare refreshed
         // `layout.contentHeight` and before any pin, so this is the one place
         // the follower can see a real target delta. Start it instead of
@@ -2091,6 +2516,7 @@ final class TimelineCollectionController: UIViewController {
             latestPull.cancel()
             pendingMeasurementTask?.cancel()
             stopBottomAnimation()
+            pendingGestureBottomRequest = nil
             userScrollSettleTask?.cancel()
             armedBottom.disarm()
             mode = .reading
@@ -2198,6 +2624,7 @@ extension TimelineCollectionController: TimelineListLayoutHost {
             // the repin then dragged the offset down with the growing row
             // (gate: target moved 388 pt off the screen).
             stopStreamingFollow()
+            stopReturnFollow()
             windowReplacementReturn = false
             bottomAnimationWatchdog?.cancel()
             userScrollSettleTask?.cancel()
@@ -2317,6 +2744,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         // The reader's finger always wins over the streaming follow and over
         // a window replacement whose return has not resolved yet.
         stopStreamingFollow()
+        stopReturnFollow()
         windowReplacementReturn = false
         bottomAnimationWatchdog?.cancel()
         userScrollSettleTask?.cancel()
@@ -2359,8 +2787,15 @@ extension TimelineCollectionController: UICollectionViewDelegate {
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         guard !navigationSuspended else { return }
-        let transition = phase.apply(.didEndDragging(willDecelerate: decelerate))
-        onPhaseChanged?(transition)
+        // Official: the drag-end event applies only while `motion == dragging`
+        // (part-ag §1.7). If a programmatic return is already animating (a
+        // product event started it under the finger is deferred, see
+        // `requestBottom`), leaving `.animating` alone is what keeps the
+        // spring alive.
+        if phase.phase == .interacting {
+            let transition = phase.apply(.didEndDragging(willDecelerate: decelerate))
+            onPhaseChanged?(transition)
+        }
         if !decelerate { readerSettledAtBottom = viewport.measuredAtBottom }
         layout.noteDragDidEnd(willDecelerate: decelerate)
         scheduleVisibleCellSettle()
@@ -2368,12 +2803,19 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         schedulePendingMeasurements()
         scheduleUserScrollSettle()
         publishViewport()
+        replayPendingGestureBottomRequest()
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
         guard !navigationSuspended else { return }
-        let transition = phase.apply(.didEndDecelerating)
-        onPhaseChanged?(transition)
+        // Official: the deceleration-end event applies only while
+        // `motion == coasting` (part-ag §1.7). A return that halted the coast
+        // is `.animating` now; this callback must not set it idle or the
+        // follower would stop mid-flight without an arrival.
+        if phase.phase == .decelerating {
+            let transition = phase.apply(.didEndDecelerating)
+            onPhaseChanged?(transition)
+        }
         readerSettledAtBottom = viewport.measuredAtBottom
         layout.noteDecelerationDidEnd()
         scheduleVisibleCellSettle()
@@ -2382,6 +2824,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         scheduleUserScrollSettle()
         scheduleVisibleCellSettle()
         publishViewport()
+        replayPendingGestureBottomRequest()
     }
 
     func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
@@ -2408,6 +2851,10 @@ extension TimelineCollectionController: UICollectionViewDelegate {
             // flag would block every later bottom arrival.
             self.isScrollingToTop = false
         }
+        // The status-bar scroll owns the offset; a pending bottom return must
+        // not keep its display link or watchdog running into this animation.
+        stopReturnFollow()
+        bottomAnimationWatchdog?.cancel()
         let transition = phase.apply(.scrollToTopBegan)
         onPhaseChanged?(transition)
         userScrollSettleTask?.cancel()

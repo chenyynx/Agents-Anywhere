@@ -79,9 +79,6 @@ final class TimelineListLayout: UICollectionViewLayout {
     /// written to `heights`, so the row returns to its measured height when
     /// the reveal finishes.
     private var streamingHeights: [String: CGFloat] = [:]
-    /// Hosted rows carry no reported height between moments: their height is
-    /// read from the cell's own fit at a settled pass, so there is nothing to
-    /// park across a gesture.
     /// Last value this layout applied for a row (self-measure or hosting
     /// report), scoped to the height key that produced it. A geometry action
     /// can fire repeatedly with the same height; ±0.5 is the same pixel and
@@ -172,7 +169,7 @@ final class TimelineListLayout: UICollectionViewLayout {
             // Official 0x101a3ff20: the row's `isMeasured` is item-level and
             // a width change is the only thing that clears it. A same-width
             // content revision keeps the row measured; its new height arrives
-            // from the reconfigure / cell-fit report path, not a second
+            // from the hosting geometry report (`rowMeasured`), not a second
             // self-measure.
             let hasMeasuredHeight = heights.isMeasured(itemID: item.itemID, width: key.width)
             // Pending stays key-level: the controller still owes this key a
@@ -444,15 +441,27 @@ final class TimelineListLayout: UICollectionViewLayout {
 
     // MARK: - Pending measurement corrections (category A)
 
-    /// A controller-driven measurement completed. The fixed height is the
-    /// truth; the decision says whether the reader's content must move, and a
-    /// deferred change parks the value itself until the gesture settles.
-    /// `commit` bypasses that park for a height the reader already sees (a
-    /// row-height animation's final frame): its caller removes the display
-    /// override right after, and a parked value would make that removal fall
-    /// back to the pre-animation height.
+    /// A measurement completed — a controller read, or the hosting geometry
+    /// report (official `rowMeasured`, `CANONICAL/05-layout-scroll.md` §2.2).
+    /// The fixed height is the truth; the decision says whether the reader's
+    /// content must move, and a deferred change parks the value itself until
+    /// the gesture settles. `commit` bypasses that park for a height the
+    /// reader already sees (a row-height animation's final frame): its caller
+    /// removes the display override right after, and a parked value would
+    /// make that removal fall back to the pre-animation height.
+    /// `suppressOffsetAdjustment` is for a height that lands while another
+    /// owner drives the offset (the programmatic-return spring re-reads the
+    /// live bottom every frame): the size change lands, the offset does not
+    /// move. Official `rowMeasured` writes the height regardless of the
+    /// scroll motion and lets the Mover answer the placement.
+    /// `probeSource` names the writer in the timeline probe. The hosting
+    /// geometry report uses `rowMeasured` so a device acceptance run can tell
+    /// it apart from the controller's own measurements (the probe coalesces
+    /// records with the same source).
     func applyMeasuredHeight(_ height: CGFloat, for itemID: String, key: TimelineHeightKey,
-                             commit: Bool = false) {
+                             commit: Bool = false,
+                             suppressOffsetAdjustment: Bool = false,
+                             probeSource: String = "measured") {
         guard heights.currentKey(for: itemID) == key else { return }
         // Item-level, like the cell's `isMeasured`: a same-width re-key must
         // keep treating this as an already-displayed row (official
@@ -476,8 +485,28 @@ final class TimelineListLayout: UICollectionViewLayout {
             collectionView?.collectionViewLayout.invalidateLayout()
             return
         }
-        let delta = height - attributes.frame.height
+        // Compare with the height the layout currently displays through the
+        // same resolver `prepare` used, not the raw attribute frame. A
+        // previous application can write the cache before the next `prepare`
+        // rebuilds the frame (two geometry reports in one runloop, a report
+        // during an update transaction); using the stale frame would count
+        // the same delta twice and post a doubled size/offset adjustment.
+        // Official 0x101a4081c also accepts only a *changed* height
+        // (`fcmp; cset ne`).
+        //
+        // `commit` is the exception: its caller (a row-height animation's
+        // final frame) has already grown the content size frame by frame, so
+        // the frame is the displayed height and the cache is still the
+        // pre-animation value. Comparing against the cache there would post
+        // the whole change a second time.
+        let baseline = commit
+            ? attributes.frame.height
+            : displayedHeight(for: itemID, key: key, attributes: attributes)
+        let delta = height - baseline
         if abs(delta) <= 0.5 {
+            // Same value: not a new measurement event for the offset, but it
+            // still latches `isMeasured` (official 0x1019e0b10 sets it
+            // unconditionally; only the `starts` prefix sum is conditional).
             heights.set(height, for: key, tier: .measured)
             heights.resolvePending(itemID)
             heights.noteDisplayedHeight(height, for: itemID)
@@ -515,8 +544,9 @@ final class TimelineListLayout: UICollectionViewLayout {
         heights.noteDisplayedHeight(height, for: itemID)
         attributes.isMeasured = true
         invalidateHeight(itemID: itemID, attributes: attributes,
-                         correction: decision.correction, contentSizeDelta: delta,
-                         state: state, probeSource: "measured")
+                         correction: suppressOffsetAdjustment ? nil : decision.correction,
+                         contentSizeDelta: delta,
+                         state: state, probeSource: probeSource)
     }
 
     /// The changed item plus the visible rows below it. A height change moves
@@ -867,8 +897,9 @@ final class TimelineListLayout: UICollectionViewLayout {
             return false
         }
         // The official first materialization: an unmeasured cell fits its real
-        // content once. Later changes never come through this path; the
-        // controller re-reads the same fit at a settled pass.
+        // content once. Later changes never come through this path; they
+        // arrive as the hosting geometry report and go through
+        // `applyMeasuredHeight`'s changed-only gate.
         notePreferred("uikitPreferredAccepted")
         return true
     }

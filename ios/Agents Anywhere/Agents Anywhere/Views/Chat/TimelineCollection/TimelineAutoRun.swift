@@ -2094,6 +2094,19 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                                "worstOverlaps": worstOverlap]
     }
 
+    /// Polls the official Mover until it rests; the spring's settling time is
+    /// distance-dependent, so a fixed wait is not a valid arrival gate.
+    private func waitForBottomSettle(_ controller: TimelineCollectionController,
+                                     timeout: Int) async {
+        var elapsed = 0
+        while elapsed < timeout {
+            let phase = String(describing: controller.phase.phase)
+            if phase == "idle", controller.bottomShortfall <= 0.5 { return }
+            await wait(50)
+            elapsed += 50
+        }
+    }
+
     private func bottom() async {
         guard let controller else { return }
         controller.collectionView.setContentOffset(CGPoint(x: 0, y: 0), animated: false)
@@ -2105,7 +2118,11 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         controller.collectionView.setContentOffset(CGPoint(x: 0, y: 0), animated: false)
         await wait(80)
         controller.requestBottom(animated: true)
-        await wait(500)
+        // The programmatic return now uses the official Mover spring
+        // (`Spring(0.4, bounce 0)` / fly `0.36, 0.15`), whose remaining travel
+        // at 500 ms can still be above the 0.5 pt gate for long distances.
+        // Wait for the phase to rest instead of assuming a fixed duration.
+        await waitForBottomSettle(controller, timeout: 1500)
         let animatedShortfall = controller.bottomShortfall
 
         // A no-op animated return never calls didEndScrollingAnimation; the

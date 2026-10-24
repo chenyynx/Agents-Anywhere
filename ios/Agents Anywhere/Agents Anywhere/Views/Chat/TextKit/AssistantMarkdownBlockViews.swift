@@ -496,12 +496,11 @@ final class AssistantCodeBlockView: UIView {
     }
 
     private func configureIcon(_ view: UIImageView, symbol: String) {
-        // The legacy card uses AppSymbol's Lucide assets, not SF Symbols.
-        let asset = AppSymbolAssets.names[symbol].flatMap { UIImage(named: $0) }
-        view.image = (asset ?? UIImage(systemName: symbol))?
-            .withRenderingMode(.alwaysTemplate)
+        view.image = iconImage(symbol: symbol, fallback: symbol)
         view.tintColor = ChatTextUIColors.codeHeaderIcon
-        view.contentMode = .scaleAspectFit
+        // The 24 pt frame is the official control; the artwork inside it is
+        // smaller (see `iconGlyphSize`), so it is centred rather than stretched.
+        view.contentMode = .center
         view.isUserInteractionEnabled = false
     }
 
@@ -527,10 +526,40 @@ final class AssistantCodeBlockView: UIView {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: item)
     }
 
+    /// The official code-card controls are two 24 pt Anthropicons whose
+    /// artwork is smaller than the control: at `.large`,
+    /// `DATA/anthropicon-map.tsv` records copy 19×19 and expand 18×18. The card
+    /// draws the stand-in glyph at that optical size and keeps the 24 pt frame.
+    private static let iconGlyphSize: CGFloat = 19
+
     private func iconImage(symbol: String, fallback: String) -> UIImage? {
-        let asset = AppSymbolAssets.names[symbol].flatMap { UIImage(named: $0) }
-        return (asset ?? UIImage(systemName: fallback))?
+        // The legacy card uses AppSymbol's Lucide assets, not SF Symbols.
+        if let asset = AppSymbolAssets.names[symbol].flatMap({ UIImage(named: $0) }) {
+            return Self.scaledTemplate(asset, side: Self.iconGlyphSize)
+        }
+        return UIImage(systemName: fallback,
+                       withConfiguration: UIImage.SymbolConfiguration(
+                           pointSize: Self.iconGlyphSize))?
             .withRenderingMode(.alwaysTemplate)
+    }
+
+    /// Rasterises a vector/template asset at the requested optical size so a
+    /// `.center` image view cannot stretch it back to the 24 pt control.
+    private static func scaledTemplate(_ image: UIImage, side: CGFloat) -> UIImage {
+        let format = UIGraphicsImageRendererFormat()
+        format.opaque = false
+        let size = CGSize(width: side, height: side)
+        let rendered = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            let ratio = min(size.width / max(1, image.size.width),
+                            size.height / max(1, image.size.height))
+            let drawSize = CGSize(width: image.size.width * ratio,
+                                  height: image.size.height * ratio)
+            image.draw(in: CGRect(x: (size.width - drawSize.width) / 2,
+                                  y: (size.height - drawSize.height) / 2,
+                                  width: drawSize.width,
+                                  height: drawSize.height))
+        }
+        return rendered.withRenderingMode(.alwaysTemplate)
     }
 
     deinit { copyResetWorkItem?.cancel() }

@@ -26,16 +26,22 @@ struct CodeCollapsedToolRow: View {
     let isRunning: Bool
     let action: () -> Void
 
-    /// [E] R19 `tool-row-status.md` — every Anthropicon at
-    /// `Anthropicon.Size.large` is 24 pt; the glyph is fixed-size and does not
-    /// scale with Dynamic Type.
+    /// [E] R19 `tool-row-status.md:79-80` — the collapsed row's icon is an
+    /// Anthropicon at `.large`: a 24 pt slot whose glyph does not scale with
+    /// Dynamic Type.
     ///
-    /// The label must NOT use a scaled size: `.custom(_:size:relativeTo:)`
-    /// already applies `UIFontMetrics` for `toolRowTextStyle`, so passing an
-    /// already-scaled size scales it twice. At accessibility3 that made the
-    /// row render 132 pt against the measurer's 88 pt (CI 478 code-profile
-    /// gate). The label passes the unscaled 15 pt base instead.
-    private let iconSize: CGFloat = 24
+    /// The artwork inside that slot is smaller than the slot. At `.large`,
+    /// `DATA/anthropicon-map.tsv` records the drawn extents per icon (prompt
+    /// 20×15, eye 20×15, search 20×20, file 15×20 …), i.e. at most 20 pt.
+    /// SF Symbols fill their layout box, so drawing the stand-in at the slot's
+    /// 24 pt made it visibly heavier than the official glyph; 20 pt reproduces
+    /// the official optical size inside the same 24 pt line box.
+    private let glyphSize: CGFloat = 20
+
+    /// [E] The caret is `caretRight` at `.large` as well; its artwork is
+    /// 10×18 (`DATA/anthropicon-map.tsv`, the largest rendition), which is the
+    /// shape an SF chevron already draws at the slot's 24 pt.
+    private let caretSize: CGFloat = 24
 
     @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
     private var lineHeight = CodePageTheme.toolRowLineHeight
@@ -61,7 +67,7 @@ struct CodeCollapsedToolRow: View {
             HStack(alignment: .center) {
                 if let icon {
                     Image(systemName: icon)
-                        .font(.system(size: iconSize, weight: CodePageTheme.toolRowFontWeight))
+                        .font(.system(size: glyphSize, weight: CodePageTheme.toolRowFontWeight))
                         .foregroundStyle(CodePageTheme.toolRowSecondaryColor
                             .resolved(for: colorScheme))
                         .accessibilityHidden(true)
@@ -85,7 +91,7 @@ struct CodeCollapsedToolRow: View {
                 // extracted yet (06-visuals-assets §4: pixel export blocked),
                 // so the SF chevron is a placeholder with the same 24 pt box.
                 Image(systemName: "chevron.right")
-                    .font(.system(size: iconSize, weight: CodePageTheme.toolRowFontWeight))
+                    .font(.system(size: caretSize, weight: CodePageTheme.toolRowFontWeight))
                     .foregroundStyle(CodePageTheme.toolRowSecondaryColor
                         .resolved(for: colorScheme))
                     .accessibilityHidden(true)

@@ -147,7 +147,7 @@ struct CodeToolDetailView: View {
     private var summaryRow: some View {
         HStack(alignment: .center, spacing: 10) {
             Image(systemName: Self.icon(for: call.kind))
-                .font(.system(size: toolRowFontSize))
+                .font(.system(size: CodeToolDetailMetrics.detailIconSize))
                 .foregroundStyle(call.status == .failed ? Color.red : Color.secondary)
                 .frame(width: 20)
                 .accessibilityHidden(true)
@@ -195,7 +195,7 @@ struct CodeToolDetailView: View {
         let label = CodeToolLabels.label(for: [following], cwd: cwd)
         return HStack(spacing: 10) {
             Image(systemName: Self.icon(for: following.kind))
-                .font(.system(size: sectionLabelFontSize))
+                .font(.system(size: CodeToolDetailMetrics.detailIconSize))
                 .foregroundStyle(.secondary)
                 .frame(width: 20)
                 .accessibilityHidden(true)
@@ -376,6 +376,12 @@ private enum CodeToolDetailMetrics {
     /// section headers use the 13 pt code-card title preset (V62).
     static let sectionLabelFontSize: CGFloat = 13
     static let followingFontSize: CGFloat = 15
+
+    /// [E] Detail rows draw the same `.large` Anthropicon as the collapsed row
+    /// (`CollapsedToolTimelineRow` = `TimelineRow(IconFrame, …)`); the artwork
+    /// inside that 24 pt slot is at most 20 pt (`DATA/anthropicon-map.tsv`),
+    /// so the SF stand-in is drawn at 19 pt inside the 20 pt icon column.
+    static let detailIconSize: CGFloat = 19
 }
 
 // MARK: - Previews

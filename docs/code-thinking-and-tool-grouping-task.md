@@ -146,8 +146,10 @@
 
 - 现状：`CodeToolDetailView.swift:232-247` 自绘 `Image(systemName: "xmark")`（13pt semibold）+ 30pt 圆底（`primary.opacity(0.08)`），非官方件。
 - 官方：`ClaudeCoreUI.DismissXButton`（`title/appearance/action`；`Appearance.plain/.floating`；`DismissXButtonStyle` + `DismissXAppearance`；`swift_types.csv:13729-13735`）。
-- 待 patch `dismiss-x-button` 反编译给出图标源/字号字重/圆底/阴影/尺寸后，按官方 `.floating`（或 sheet 场景对应的 appearance）1:1 替换。
-- 注意：官方详情是 sheet + 内部 NavigationStack（思考已证；工具详情待核），sheet 形态才需要这个关闭按钮；外观按官方 `DismissXButton`。
+- **图标不是 SF Symbol**：Anthropicon `x`（静态 `name:"x"` / `symbolName:"anthropicon.x"`，`.large`，非 bold；`Image("anthropicon.x", bundle: ClaudeIcons)`，无 `.font`）。可见 X ≈ 11.6×11.6pt、笔画 ≈ 0.94pt（约 12pt regular），不是 AA 现在的 13pt semibold。
+- **`.floating` 规格**：frame 44×44 center；前景 light `#0B0B0B` / dark `#F0EFEC`；圆底 light `#FFFFFF` / dark `#1A1A19` ×0.6（iOS 26+ 用 `Glass.regular` + `glassEffect(in: Circle())`，<26 用圆底填充）；阴影 black 8% / radius 4 / y 2；hit target 44；按压 0.6、禁用 0.5；无描边、无内 padding。`.plain` 是裸图标无底无阴影。
+- **官方详情 sheet 的实际关闭按钮**：不是 DismissXButton，而是 `ClaudeCoreUI.DismissButton`（toolbar）——iOS 26+ 直接 `Button(role: .close)`（系统圆形玻璃 X），<26 才自绘 Anthropicon x。⇒ AA 在 iOS 26+ 直接用 `Button(role: .close) { dismiss() }`；低版本按上面的 `.floating` 规格自绘（需补 `anthropicon.x` 资产）。
+- 注意：官方详情是 sheet + 内部 NavigationStack（思考已证；工具详情待核），sheet 形态才需要这个关闭按钮。
 
 ### 3.4 官方图标资产
 
@@ -214,6 +216,7 @@
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/TimelineCollection/TimelineChatTimelineView.swift`
 - `ios/Agents Anywhere/Agents Anywhere/Views/Components/AnthropiconAssets.swift`
 - `ios/Agents Anywhere/Agents Anywhere/Assets.xcassets/anthropicon.extendedThinking.imageset/`（新）
+- `ios/Agents Anywhere/Agents Anywhere/Assets.xcassets/anthropicon.x.imageset/`（新，低版本自绘关闭按钮用）
 - `ios/Agents Anywhere/Agents Anywhere/Resources/Localization/Localizable.xcstrings`
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeProfileAutoRun.swift`
 - `ios/Tests/ClientCoreTests/CodeProfileModelTests.swift`

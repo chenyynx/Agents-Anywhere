@@ -239,10 +239,11 @@ final class TimelineCollectionController: UIViewController {
         collectionView.topEdgeEffect.style = .soft
         // [E] R21 chrome-verify.md — the official Code session neither hides
         // the bottom edge effect nor draws a custom gradient on iOS 26. The
-        // system default is what fades rows passing under the composer's
+        // system effect is what fades rows passing under the composer's
         // `safeAreaBar`; hiding it removed that fade and left the composer on
-        // a flat strip. Leave the bottom effect at its system default.
-
+        // a flat strip. A bare collection view defaults to the hard style, so
+        // ask for the same soft edge the top uses.
+        collectionView.bottomEdgeEffect.style = .soft
         collectionView.alwaysBounceVertical = true
         collectionView.showsVerticalScrollIndicator = false
         // [E] CANONICAL/05-layout-scroll.md §5 — the official surface uses

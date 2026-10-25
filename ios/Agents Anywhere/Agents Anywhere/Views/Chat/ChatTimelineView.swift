@@ -74,6 +74,10 @@ struct ChatTimelineView: View {
             .scrollIndicators(.hidden)
             .scrollBounceBehavior(.always, axes: .vertical)
             .scrollEdgeEffectStyle(.soft, for: .top)
+            // [E] R21 chrome-verify.md — the official composer bar fades the
+            // rows that pass under it; the bottom edge needs the same soft
+            // style as the top, otherwise the bar reads as a hard cut.
+            .scrollEdgeEffectStyle(.soft, for: .bottom)
             // The opening positioning is owned by the instant command path: any
             // pre-armed target here would be applied by the scroll view when the
             // content arrives — outside our animation-disabled transaction — and

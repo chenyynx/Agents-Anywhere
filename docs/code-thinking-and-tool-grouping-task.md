@@ -156,6 +156,14 @@
 - 从 `ClaudeDesignSystem_ClaudeIcons.bundle/Assets.car` 提取 `anthropicon.extendedThinking` 的 A 变体 SVG（方法同 `EVIDENCE/round20/code-card-icons.md` §3.2：LZFSE `bvxn` 解包，3 个 SVG 变体；用 A）。
 - 新增 `Assets.xcassets/anthropicon.extendedThinking.imageset/`（Contents.json + SVG）与 `AnthropiconAssets.swift` 尺寸表：`14x14 / 16x16 / 19x19`（small/medium/large）。
 
+### 3.5 长 Read 输出空白（pp 2026-10-25 真机）
+
+- **现象**：打开 Read 详情（`EVIDENCE/round21/chrome-verify.md`），输入正常，输出卡片一大块空白；重开仍空（不是运行中快照）。
+- **数据已排除**：生产库 `sess_qosBVhTaWaxUeQ` 的该行 `content.output` 完整（24,753 字符、298 行、无 NUL）；`timeline?mode=history` 同样返回完整 output；不是数据丢失、不是 deferred stub。
+- **定位**：同一个 `CodeToolCodeCard` 渲染短 Input 正常；长输出卡片高度按 298 行撑开但无字形 → 长文本渲染路径问题。AA 的通用 `.text` 输出走横向 `ScrollView` + `Text.fixedSize(horizontal: true)` + `.textSelection(.enabled)`；官方 Read 走专用 `FileReadDetailView`（`CANONICAL/04` §3、`EVIDENCE/round14/tool-output.md` §4.3；Body `0x102c817e4`），分支含 `CodeBlockContent` / `RenderedMarkdownView` / `PagedDiffRows(readDiff)`。
+- **修法**：为 `kind == .read` 新增 `CodeFileReadOutputView`（纵向文本阅读器：等宽、可滚动/可复制；不再用横向 fixedSize + textSelection），先保证长文本可见；官方 `readDiff` / renderMarkdown / loadFullFile 分支后续补齐。非 Read 的 `.text` 输出暂不动。
+- **门禁**：`CodeProfileAutoRun` 增加 24K/298 行 Read output fixture（断言输出视图非空、高度有限）；真机复测同一条 Read。
+
 ---
 
 ## 4. 测试与验收
@@ -170,6 +178,7 @@
   - 工具行/思考行的文案矩阵（失败后缀、分隔符、单目标判定、diff 聚合）。
 - 思考行：`CodeProfileAutoRun` 新增 fixture——done（显示 `思考过程`）/ running（不显示）；断言 `expectedBlocks`、标签文案、行高。
 - P2 运行态：注入时钟的纯函数单测（0/14/15/29/30/44/45/59/60s 档位、闭合 `思考了 X`、zh/en 输出）；`CodeProfileAutoRun` 加一条 working 行 fixture。
+- **长 Read 输出**：`CodeProfileAutoRun` 加 24K/298 行 Read fixture，断言输出视图非空、高度有限；短输出仍走同一路径。
 - `code-profile` gate（`.github/workflows/ios-build.yml`，`code_profile: true`）新增 fixture：同一消息 3 个并行 tool → 1 span；三条串行消息 → 3 行；thinking row 文案。
 - 本地：`swift test --package-path ios`（相关用例）；CI 为权威门禁。
 
@@ -207,6 +216,8 @@
 - `ios/Agents Anywhere/Agents Anywhere/Models/Chat/Code/CodeToolLabelPlan.swift`
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeMessageRowView.swift`
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeToolDetailView.swift`（关闭按钮）
+- `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeToolOutputViews.swift`（长 Read 输出）
+- `ios/Agents Anywhere/Agents Anywhere/Models/Chat/Code/CodeToolOutput.swift`（Read 输出分类）
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeThinkingRow.swift`（新）
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeThinkingDetailView.swift`（新）
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeCollapsedToolRow.swift`

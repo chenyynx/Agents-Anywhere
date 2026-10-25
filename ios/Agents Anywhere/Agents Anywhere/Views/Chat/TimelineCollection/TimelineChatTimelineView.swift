@@ -12,6 +12,12 @@ import UIKit
 /// load actions are inert until that wiring lands.
 struct TimelineChatTimelineView: View {
     let model: SessionChatModel
+    /// Distance from the window's bottom edge to the first row the composer
+    /// must not cover — the bar's content height plus the home-indicator
+    /// inset. The collection view is a full-screen bleed, so it adds this to
+    /// its content inset itself (official
+    /// `contentInset = max(safeArea − scrollView.safeAreaInsets, 0)`).
+    let bottomBarInset: CGFloat
     @StateObject private var bridge: TimelineChatBridge
     @State private var keyboard = TimelineKeyboardMonitor()
     @Environment(\.dynamicTypeSize) private var dynamicType
@@ -30,8 +36,10 @@ struct TimelineChatTimelineView: View {
     init(model: SessionChatModel,
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void,
          onFile: @escaping (String) -> Void,
-         onSubAgent: @escaping (String) -> Void) {
+         onSubAgent: @escaping (String) -> Void,
+         bottomBarInset: CGFloat = 0) {
         self.model = model
+        self.bottomBarInset = bottomBarInset
         _bridge = StateObject(wrappedValue: TimelineChatBridge(model: model,
             onAttachment: onAttachment, onFile: onFile, onSubAgent: onSubAgent))
     }
@@ -96,6 +104,7 @@ struct TimelineChatTimelineView: View {
             content: bridge.adapter,
             measurer: bridge.adapter.measurer,
             typography: typography,
+            bottomBarInset: bottomBarInset,
             onPhaseChanged: { transition in
                 if transition.gestureBegan { bridge.readerDidTakeOver() }
             },

@@ -10,6 +10,10 @@ struct TimelineCollectionView: UIViewControllerRepresentable {
     /// passes the view's environment so a Dynamic Type or RTL change produces
     /// new height keys.
     var typography: TimelineTypographySnapshot? = nil
+    /// Distance from the window's bottom edge that scrolling content must
+    /// clear (composer bar + home indicator). Added to `contentInset` because
+    /// the collection view itself is a full-screen bleed.
+    var bottomBarInset: CGFloat = 0
     var onPhaseChanged: ((TimelinePhaseMapping.Transition) -> Void)?
     var onViewportChanged: ((TimelineViewport) -> Void)?
     var onContentHeightChanged: ((CGFloat) -> Void)?
@@ -19,6 +23,7 @@ struct TimelineCollectionView: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> TimelineCollectionController {
         let controller = TimelineCollectionController()
         if let typography { content.applyTypography(typography) }
+        controller.bottomBarInset = bottomBarInset
         controller.configure(measurer: measurer, content: content)
         controller.onPhaseChanged = onPhaseChanged
         controller.onViewportChanged = onViewportChanged
@@ -30,6 +35,7 @@ struct TimelineCollectionView: UIViewControllerRepresentable {
     func updateUIViewController(_ controller: TimelineCollectionController, context: Context) {
         content.prepareForUpdate()
         if let typography { content.applyTypography(typography) }
+        controller.bottomBarInset = bottomBarInset
         controller.configure(measurer: measurer, content: content)
         controller.onPhaseChanged = onPhaseChanged
         controller.onViewportChanged = onViewportChanged

@@ -219,6 +219,24 @@ final class TimelineCollectionController: UIViewController {
     /// C3 gate uses it to capture the first displayed height for the async
     /// Markdown probe.
     var onApplyCompleted: (() -> Void)?
+    /// Distance from the window's bottom edge that the resting content must
+    /// clear: the composer bar's content height plus the home-indicator inset.
+    /// The collection view is a full-screen bleed, so UIKit's automatic
+    /// adjustment only supplies the window inset; this adds the bar height
+    /// (official `contentInset = max(safeArea − scrollView.safeAreaInsets, 0)`).
+    var bottomBarInset: CGFloat = 0 {
+        didSet { applyBottomBarInset() }
+    }
+
+    private func applyBottomBarInset() {
+        guard isViewLoaded, collectionView != nil else { return }
+        collectionView.contentInset.bottom = max(0, bottomBarInset - view.safeAreaInsets.bottom)
+    }
+
+    override func viewSafeAreaInsetsDidChange() {
+        super.viewSafeAreaInsetsDidChange()
+        applyBottomBarInset()
+    }
 
     // MARK: - Lifecycle
 
@@ -251,6 +269,7 @@ final class TimelineCollectionController: UIViewController {
         // `0x101a3b344`), not the plain interactive mode.
         collectionView.keyboardDismissMode = .interactiveWithAccessory
         collectionView.contentInsetAdjustmentBehavior = .automatic
+        applyBottomBarInset()
         // The official surface disables UIKit's automatic self-sizing
         // invalidation; the layout owns every height. AA's controlled
         // exceptions are driven explicitly by `applyPreferredHeights` after a

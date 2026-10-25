@@ -12,6 +12,11 @@ struct SessionChatView: View, Equatable {
     let onMenu: () -> Void
     @State private var sheet: SessionSheet?
     @State private var expandedNoticeID: String?
+    /// Height of the composer bar's content (the safe-area bar's own inset).
+    /// The official transcript keeps its full-screen frame and adds the bar
+    /// height to the scroll content inset; the collection view therefore needs
+    /// this number explicitly once it stops respecting the bar's safe area.
+    @State private var composerBarHeight: CGFloat = 0
     /// Shared app-level loader for the instant image viewer: one disk cache and
     /// one in-flight table per signed-in session (owned by V2ClientServices),
     /// reused by every session view.
@@ -57,23 +62,24 @@ struct SessionChatView: View, Equatable {
     /// The timeline branch lives in its own method for the same reason the
     /// dock does: adding the second initializer inline pushes the enclosing
     /// `Group` past the type checker's budget.
-    @ViewBuilder private func timelineView() -> some View {
+    @ViewBuilder private func timelineView(bottomSafeArea: CGFloat) -> some View {
         if usesCollectionTimeline {
             TimelineChatTimelineView(model: model,
                 onAttachment: openAttachment, onFile: openFile,
-                onSubAgent: { sheet = .subagents($0, fromCapsule: false) })
+                onSubAgent: { sheet = .subagents($0, fromCapsule: false) },
+                bottomBarInset: composerBarHeight + bottomSafeArea)
                 // [E] The official transcript is a full-screen bleed: its
                 // `contentInset = max(safeArea − scrollView.safeAreaInsets, 0)`
-                // lets rows scroll under the navigation bar
-                // (R19 chrome-composer.md §2–§3). The collection view's
-                // automatic adjustment keeps the resting rows clear. The
-                // legacy SwiftUI Chat timeline already owns its safe area, so
-                // it is deliberately not changed.
-                .ignoresSafeArea(.container, edges: .top)
+                // lets rows scroll under the navigation bar and the composer
+                // (R19 chrome-composer.md §2–§3; R21 chrome-verify.md §2).
+                // The collection view adds the bar height back to its content
+                // inset, so the resting last row still clears the composer.
+                .ignoresSafeArea(.container, edges: [.top, .bottom])
         } else {
             ChatTimelineView(model: model,
                 onAttachment: openAttachment, onFile: openFile,
                 onSubAgent: { sheet = .subagents($0, fromCapsule: false) })
+                .ignoresSafeArea(.container, edges: .top)
         }
     }
 
@@ -189,7 +195,7 @@ struct SessionChatView: View, Equatable {
         GeometryReader { geometry in
             Group {
                 if hasStartedLoading {
-                    timelineView()
+                    timelineView(bottomSafeArea: geometry.safeAreaInsets.bottom)
                 } else {
                     Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -208,6 +214,9 @@ struct SessionChatView: View, Equatable {
                 // scrolls beneath the glass.
                 .safeAreaBar(edge: .bottom, spacing: 0) {
                     composerDockArea(maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)))
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                            composerBarHeight = height
+                        }
                 }
                 // [E] chrome-composer.md §4 — Code page background
                 // `#F9F9F7` / `#151515`, edge to edge.

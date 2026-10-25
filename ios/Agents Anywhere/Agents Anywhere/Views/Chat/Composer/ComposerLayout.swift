@@ -48,11 +48,15 @@ struct ComposerLayout: Layout {
     }
 
     private func editorWidth(in width: CGFloat, subviews: Subviews) -> CGFloat {
-        // Every trailing control left of send narrows the collapsed editor by
-        // one touch target; the expanded editor keeps its own inset row.
-        let extra = CGFloat(max(0, subviews.count - 3)) * controls.touchTarget
+        // Each trailing control (send, plus any ring/command slots) narrows the
+        // collapsed editor by one touch target; the expanded editor keeps its
+        // own text inset row.
+        let leading = expanded ? controls.expandedContentInset : controls.collapsedLeadingInset
+        let trailing = expanded ? controls.expandedContentInset : controls.collapsedTrailingInset
+        let trailingControls = CGFloat(max(0, subviews.count - 2)) * controls.touchTarget
         return max(1, expanded ? width - controls.textInset * 2
-            : width - (controls.touchTarget + controls.collapsedInset + controls.collapsedTextGap) * 2 - extra)
+            : width - (leading + controls.touchTarget + controls.collapsedTextGap)
+                - trailing - trailingControls)
     }
 
     private func editorHeight(width: CGFloat, subviews: Subviews) -> CGFloat {

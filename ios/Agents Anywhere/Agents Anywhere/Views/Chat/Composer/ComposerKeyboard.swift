@@ -45,9 +45,9 @@ final class ComposerKeyboardObserver {
 
     func handle(_ notification: Notification, isShow: Bool) {
         let userInfo = notification.userInfo ?? [:]
-        let duration = (userInfo[UIKeyboardAnimationDurationUserInfoKey] as? NSNumber)?.doubleValue ?? 0
+        let duration = (userInfo[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?.doubleValue ?? 0
         if isShow {
-            if let screenFrame = (userInfo[UIKeyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue {
+            if let screenFrame = (userInfo[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue {
                 let frame: CGRect
                 if let window {
                     frame = window.convert(screenFrame, from: window.screen.coordinateSpace)

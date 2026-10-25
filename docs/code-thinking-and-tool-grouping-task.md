@@ -21,10 +21,10 @@
   - 思考进行中：5 档递增文案，阈值直读 `0x102a89080`：0–14s `thinking…` / 15–29s `still thinking…` / 30–44s `thinking more…` / 45–59s `thinking some more…` / ≥60s `almost done thinking…`；
   - 闭合：`thinking_status_thought_for_duration` = `thought for %@` / `思考了 %@`（构造点 `0x102cda6dc`）；
   - 无思考时间戳：退回 20 动词工作行（R20 已实现）。
-- **tag 4 `Block.thinkingContent(String)` → `ThinkingContentRow`**（每个 thinking block 一条，持久行）[E]：固定图标 `anthropicon.extendedThinking` + `thought_process`（`Thought process` / `思考过程`）+ caret；点击 → **全屏 push 详情页**，正文是完整思考 markdown，页头同为 `思考过程`。
+- **tag 4 `Block.thinkingContent(String)` → `ThinkingContentRow`**（每个**连续 thinking run** 一条，持久行）[E]：固定图标 `anthropicon.extendedThinking` + `thought_process`（`Thought process` / `思考过程`）+ caret；点击 → **全屏 push 详情页**，正文是完整思考 markdown，页头同为 `思考过程`。**多段思考会合并**：`0x1027365f0` 从尾部跳过 toolCalls（tag2）后若找到已有 tag4，就用「旧文本 + 新文本」合并替换，否则追加——所以同一 run 里被工具调用隔开的多段 thinking 只有一条「思考过程」行；被 text 等其它块隔开才新起一条（round24 `synthetic-thinking-lifecycle.md` §6.3）。
 - **原始思考正文不在 transcript 内联**，只在详情页 [E+INFERENCE-high]。
-- `_transcriptShowsThinkingRow`：交接里的 accessor `0x10292dd9c` **是误读**（它是 `SessionModel` 的 type metadata accessor，24 个 caller 都是 metadata 消费者）；getter/setter、默认值、门控对象 **UNKNOWN**。全 App 35 个 bundle 扫描，**没有任何用户可见的“显示思考”设置** [E]。
-- **“会不会出现两套思考”已闭合：不会。** tag 3 的承载者是一个**合成 DisplayMessage，id 固定为 `"thinking"`**（`0x10272d40c` 把 8 字符小字符串 `thinking` 写进 DisplayMessage 第一字段 `id`；role=assistant；`DisplayMessage.id` 字段序见 `swift_types.csv:49347`）。固定 id 在按 id 索引的消息列表里**最多只能存在一条**，所以它是运行态合成行，不是每 turn 持久化的历史行；多个 transcript 构建函数对 `id == "thinking"` 做特判（比较函数 `0x102559b18`，4 个 caller；`0x1027a6efc` 在命中时跳过该消息）[E]。**settled transcript 的持久思考行只有 tag 4**（每条 thinking block 一条「思考过程」）。
+- `_transcriptShowsThinkingRow` **已闭合，且与思考行无关**：字段 42，ivar offset slot `0x105a90d40`，**默认 false**（init `0x102932628` @`0x1029329d8` `strb wzr`）；getter `0x102930f00`、setter `0x102930f14`（唯一调用者闭包 `0x102c4e968`，由 `SessionTranscriptPane` 挂到 `SessionMessageList.onStagedThinkingRowChange`）。**它不门控 tag 3/4**：唯一非 keypath 读点在 `SessionMessageListFooter.body`（`0x102c2bad8`），谓词 `0x102934e54` 返回 `!transcriptShowsThinkingRow`，条件性多构建一个 footer 子视图。全 App 35 个 bundle 无用户可见“显示思考”设置 [E]。⇒ AA 不依赖它，思考行默认显示。
+- **“会不会出现两套思考”已闭合：不会。** tag 3 的承载者是一个**合成 DisplayMessage，id 固定为 `"thinking"`**（`0x10272d40c` 把 8 字符小字符串 `thinking` 写进 DisplayMessage 第一字段 `id`；role=assistant；`DisplayMessage.id` 字段序见 `swift_types.csv:49347`）。固定 id 在按 id 索引的消息列表里**最多只能存在一条**，所以它是运行态合成行，不是每 turn 持久化的历史行；多个 transcript 构建函数对 `id == "thinking"` 做特判（比较函数 `0x102559b18`，4 个 caller；`0x1027a6efc` 在命中时跳过该消息）[E]。**settled transcript 的持久思考行只有 tag 4**（每个连续 thinking run 一条「思考过程」，多段合并见 §1.1）。
 - **AA 落码因此改成严格官方**：持久行 = `思考过程`（tag 4 形态）+ 点击看全文；`思考了 X` 只在运行态工作行出现（tag 3 形态，客户端计时），回合结束随合成行消失。**不需要 connector 补时长**；历史里官方本来就不显示“思考了 X” [E]。
 - 时长格式化照官方 `Duration.UnitsFormatStyle`（h/m/s、`.narrow`、最多 2 段、零值/小数隐藏、locale `autoupdatingCurrent`、最小 1 秒、闭合四舍五入）——63s → `1分钟3秒` / `1m 3s`，与 pp 截图一致 [E]；只用于运行态行。
 - 官方详情是全屏 push；AA 现有工具详情是页面级 sheet（`TimelineChatTimelineView.swift:193`）。思考详情跟随 AA 现有工具详情用同一个 sheet，避免同页双 sheet——**有意偏离，标 [I]**。
@@ -49,7 +49,8 @@
 | 实时行三态 | 闭合 → `thought for %@`；进行中 → 5 档文案；无时间戳 → 20 动词 | `0x102a88dfc`、`0x102a89080`；§2.2/§2.3 |
 | 进行中阈值 | 15 / 30 / 45 / 60 s（截断取整） | `0x102a89118–58` |
 | 5 档文案 key | `thinking_status_thinking` / `still_thinking` / `thinking_more` / `thinking_some_more` / `almost_done_thinking` | `code-page-strings.csv:516-520` |
-| 持久行视图 | `ThinkingContentRow`，Body `0x102c6ba54`；每个 thinking block 一条 | `code-thinking-row.md` §3.1 |
+| 持久行视图 | `ThinkingContentRow`，Body `0x102c6ba54`；每个连续 thinking run 一条 | `code-thinking-row.md` §3.1 |
+| **思考合并规则（本轮新增）** | `0x1027365f0`：从 blocks 尾部跳过 tag2（toolCalls），遇到 tag4 就「旧文本 + 新文本」合并替换，否则追加。⇒ 被工具调用隔开的多段 thinking 合并成一条 tag4；被 text 等其它块隔开才新建。`redactedThinking`（tag5）**不产出** tag4。合并拼接符/去重键 UNKNOWN | round24 `synthetic-thinking-lifecycle.md` §6 |
 | 持久行内容 | `extendedThinking` 图标（`.large`）+ `Thought process`/`思考过程` + caret；无正文 | `0x102c6bad4`；`anthropicon-map.tsv:140` |
 | 点击 | `presentDetail(.thinkingText(text))` → `NavigationStack` push 全屏页，markdown 正文，标题 `思考过程` | INFERENCE-high；§3.2/§3.3 |
 | 正文内联 | **没有**任何路径在 transcript 内联 raw thinking | §5 |
@@ -57,7 +58,7 @@
 | **持久/运行结论** | settled transcript 的持久思考行只有 tag 4（每 thinking block 一条）；tag 3 是运行态合成行，不是历史行 | EVIDENCE-high |
 | 时长格式化 | `Duration.UnitsFormatStyle`：allowed `{h,m,s}`、width `.narrow`、max 2 段、zero/fractional `.hide`、`Locale.autoupdatingCurrent`；`max(1, round(Δ))`。**只用于运行态行**（持久行固定 `思考过程`，不带时长） | `0x102a891bc`；§2.4 |
 | 用户开关 | 不存在（35 个 bundle 全扫） | §1.4 |
-| `_transcriptShowsThinkingRow` | 字段存在（CSV 51024）；getter/setter/默认值/门控 UNKNOWN；不在 `DisplayBlockView`/`SessionMessageStyle` 内，若门控只能在上游 | §1.2–1.5 |
+| `_transcriptShowsThinkingRow` | 字段 42；offset slot `0x105a90d40`；**默认 false**；getter `0x102930f00` / setter `0x102930f14`（唯一写者 `0x102c4e968` ← `SessionTranscriptPane` 的 `onStagedThinkingRowChange`）。**不门控 tag 3/4**，只影响 `SessionMessageListFooter.body` 的一个条件子视图（`0x102934e54` → `!flag`） | round24 `flag-transcriptShowsThinkingRow.md` |
 
 ### 1.2 思考（Chat 页，仅作文案/交互对照）
 
@@ -107,7 +108,7 @@
 
 **P1（iOS）：持久思考行 + 详情页（不依赖 connector）**
 
-1. 模型：`CodeMessageRow.Block.reasoning(id:text:)` 不变（只加 `status` 用于“done 才显示”）；`CodeMessageBuilder.messageRow` 不动文案。
+1. 模型：`CodeMessageRow.Block.reasoning(id:text:)` 加 `status`（done 才显示），并按官方合并规则把同一连续 run 的多段 reasoning 合成**一个** thinking 块（`0x1027365f0`：跳过 toolCalls 合并、text 等块断开；拼接符/去重键 UNKNOWN，待补）；`redacted_thinking` 不产出。合并由 §3.2 的 planner 在行序列层面完成。
 2. 视图：新 `CodeThinkingRow`，视觉照官方 `CollapsedRowButton`：`anthropicon.extendedThinking`（`.large`）+ **固定标签 `思考过程`** + caret，15/400/21，垂直 padding 6、minHeight 24。可复用 `CodeCollapsedToolRow` 的常量，但用独立视图（无 verb/target/diff 语义）。
 3. 详情：新 `CodeThinkingDetailView`（NavigationStack + ScrollView + `ChatMarkdownView`，标题 `思考过程`）。页面级 `.sheet(item:)` 与工具详情统一成 `CodePageDetail` enum（`TimelineChatTimelineView.swift:193-198,225,244-246`），避免同视图双 sheet。
 4. `CodeMessageRowView`：`renderRows` 不再过滤 `.reasoning`；`blockView` 的 `.reasoning` 换成 `CodeThinkingRow`；新增 `onThinkingDetail` 回调（照 `onToolDetail` 机制，`CodeMessageRowView.swift:57-72,234-250`）。
@@ -131,7 +132,7 @@
 
 1. 新共享 planner（`CodeMessageTimeline.swift`）：按 `orderSeq` 的行序列产出 unit：
    - tool 行有分组键 → 并入 open span；
-   - reasoning → 透明，不 flush；**保留它在 wire 中的位置**（span 锚定在第一个 tool 行的位置：R1, span(T1,T2), R2）；
+   - reasoning → 透明，不 flush；**同一 run 的多段 reasoning 合并成一个 thinking 块**（官方 `0x1027365f0` 跳过 toolCalls 合并；text 等块断开），合并块放在 span 之前（官方 blocks 形状 `[tag4, tag2]`）；
    - assistant/user text、marker、非 stackable、无 key 行、interaction target → flush，自己成行；
    - 不跨 user 行；当前拿不到 `turnId`（生产库 0/172,707 行），scheduled turn 无 user 行是已知风险。
 2. `TimelineGrouping.codeGroups` 复用同一 planner；span 的 `explicitID = "span:" + 第一个 tool 的 source.itemId`（tool_use id 全局唯一）；`messageHasContent` 按 unit 判断。
@@ -168,6 +169,8 @@
 
 - `CodeMessageBuilder` 单测（`ios/Tests/ClientCoreTests/CodeProfileModelTests.swift`）新增矩阵：
   - 三条 tool-only 消息 + reasoning 中间 → 1 行/1 span，call 顺序 = orderSeq；
+  - 多段 thinking 只隔工具调用 → 合并成 1 个 thinking 块/1 条「思考过程」行，文本按官方拼接；
+  - thinking 被 text 隔开 → 2 个 thinking 块/2 条行；`redacted_thinking` 不产出行；
   - text/user/marker 中间 → 2 行；无 key 行 → 断开；interaction target → standalone；
   - skip 不 flush；special flush；A-B-A 交错 → 1 span 且顺序正确；同一 unit 再规划幂等。
 - 思考行：`CodeProfileAutoRun` 新增 fixture——done（显示 `思考过程`）/ running（不显示）；断言 `expectedBlocks`、标签文案、行高。
@@ -191,7 +194,7 @@
 |---|---|---|---|
 | 1 | 官方是否跨 API 消息合并工具仍是 [I]（~60%） | P1 | 若证伪，B 降级为“不跨消息合并、只补文案”；本单先按 [I] 执行，真机对照官方 |
 | 2 | scheduled turn 无 user 行 → B 可能跨 turn 合并 | P1 | 生产频率 [U]；先接受并记录；必要时后续批准 `source.turnId` 透传（小契约改动） |
-| 3 | `_transcriptShowsThinkingRow` 默认值/门控对象 UNKNOWN | P1 | 不依赖它：AA 按 pp 要求默认显示；若后续证出官方默认隐藏，再加开关 |
+| 3 | ~~`_transcriptShowsThinkingRow`~~ **已闭合**：默认 false，只影响 footer 子视图，不门控思考行 | — | 不需要开关/适配 |
 | 4 | “tag 3 是固定 id `thinking` 的合成行”是静态证据（id 写入 + 构建器特判），未做运行时观察 | P1 | 若真机出现两条持久思考，按本行回退为“只保留 tag 4 持久行”；当前按 [EVIDENCE-high] 执行 |
 | 5 | 官方详情是全屏 push，AA 用页面级 sheet | P2 | 跟随 AA 现有工具详情交互；若后续统一成全屏，工具/思考一起改 |
 | 6 | P2 的 `turnStartedAt` 在 AA 侧的对应（working 行需在回合开始记锚点；重进/后台会丢） | P2 | 客户端在回合开始记锚点；官方同样只在运行态显示，可接受 |
@@ -200,6 +203,7 @@
 | 9 | A 方案（跨端 `toolGroupKey`） | 后续 | 需 pp 批契约；B 留 seam，不重写 UI |
 | 10 | 其它 runtime：思考行对 Codex 也会开始显示（connector 有 reasoning 投影）；DSH 无数据不受影响 | P1 | 有意通用；用 Codex fixture 验证文案/高度 |
 | 11 | 跨消息合并对 Codex/DSH 的形态未验证 | P1 | profile flag `mergesToolRowsAcrossMessages` 先只开 Claude，其它 runtime 保持现状 |
+| 12 | tag4 合并的**拼接符/去重键** UNKNOWN（闭包体 `0x1008b7508`/`0x10153dc24` 未展开） | P1 | 再派一路拆闭包；闭合前不猜分隔符，任务单不落实现细节 |
 
 ---
 

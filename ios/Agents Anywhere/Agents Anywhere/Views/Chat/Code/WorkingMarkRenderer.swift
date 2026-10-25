@@ -243,10 +243,13 @@ nonisolated enum WorkingMarkRenderer {
 
     /// The official tile for `frame`, cropped from the bundled sprite sheet.
     ///
-    /// Each imageset holds one vertical sheet at 3x: 48 px per tile (16 pt),
-    /// rows ordered opening -> looping -> closing. Cropping returns a 16 x 16
-    /// pt image; the view's 20 x 20 frame centres it exactly as the official
-    /// `WorkingMarkView` does.
+    /// Each imageset holds one vertical sheet at 3x: 48 px per tile; rows are
+    /// ordered opening -> looping -> closing. The official host is 20 x 20
+    /// (`0x101a2d590` `_FrameLayout` 20.0; `0x101a44368` sets the flipbook's
+    /// bounds to 20 x 20) and its layer uses `contentsGravity =
+    /// resizeAspect` (`0x101a429a4`), so the 48 px tile is scaled up to fill
+    /// the 20 pt box — not drawn at its intrinsic 16 pt. The returned image
+    /// therefore declares a 20 pt point size.
     private static func officialSheetFrame(for frame: WorkingMarkFrame) -> UIImage? {
         let sheetName = "working-mark-\(frame.body.rawValue)"
         let key = "\(sheetName)-\(frame.phase.rawValue)-\(frame.index)" as NSString
@@ -268,9 +271,12 @@ nonisolated enum WorkingMarkRenderer {
               let tile = sheet.cropping(to: CGRect(x: 0, y: y,
                                                    width: side, height: side))
         else { return nil }
-        // Keep the sheet's own scale: a 2x asset store downsamples the 3x
-        // sheet, and a hard-coded 3 would shrink the mark to 10.7 pt there.
-        let image = UIImage(cgImage: tile, scale: sheetImage.scale, orientation: .up)
+        // Declare the tile as 20 pt regardless of the asset store's scale:
+        // 48 px / 20 pt = 2.4 on a 3x store, 32 px / 20 pt = 1.6 on a 2x one.
+        // That reproduces the official resizeAspect fill of the 20 pt host.
+        let image = UIImage(cgImage: tile,
+                            scale: CGFloat(tile.width) / CodePageTheme.workingMarkSize,
+                            orientation: .up)
         sheetCache.setObject(image, forKey: key)
         return image
     }

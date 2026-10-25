@@ -23,6 +23,8 @@ struct ChatControlMetrics {
     let expandedContentInset: CGFloat
     let expandedBottomInset: CGFloat
     let collapsedTextGap: CGFloat
+    let collapsedLeadingInset: CGFloat
+    let collapsedTrailingInset: CGFloat
     let topMargin: CGFloat
     let collapsedBottomMargin: CGFloat
     let expandedBottomMargin: CGFloat
@@ -30,7 +32,6 @@ struct ChatControlMetrics {
     let collapsedCornerRadius: CGFloat
     let expandedCornerRadius: CGFloat
 
-    var collapsedInset: CGFloat { profile.collapsedInset }
     /// Kept for callers that still read the collapsed diameter.
     var diameter: CGFloat { collapsedHeight }
     var expandAnimation: ComposerMetricsProfile.ExpandAnimation { profile.expandAnimation }
@@ -53,6 +54,8 @@ struct ChatControlMetrics {
         self.expandedContentInset = profile.expandedContentInset
         self.expandedBottomInset = profile.expandedBottomInset
         self.collapsedTextGap = profile.collapsedTextGap
+        self.collapsedLeadingInset = profile.collapsedLeadingInset
+        self.collapsedTrailingInset = profile.collapsedTrailingInset
         self.topMargin = profile.topMargin
         self.collapsedBottomMargin = profile.collapsedBottomMargin
         self.expandedBottomMargin = profile.expandedBottomMargin

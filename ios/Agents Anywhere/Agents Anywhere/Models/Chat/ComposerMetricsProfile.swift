@@ -33,9 +33,10 @@ nonisolated struct ComposerMetricsProfile: Equatable, Sendable {
     /// Vertical gap below the expanded control row.
     let expandedBottomInset: CGFloat
     let collapsedTextGap: CGFloat
-    /// Horizontal inset of the collapsed row inside the card. The row is
-    /// vertically centered by the layout, so this is horizontal only.
-    let collapsedContentInset: CGFloat
+    /// Horizontal insets of the collapsed row inside the card. The row is
+    /// vertically centered by the layout, so these are horizontal only.
+    let collapsedLeadingInset: CGFloat
+    let collapsedTrailingInset: CGFloat
     let topMargin: CGFloat
     let collapsedBottomMargin: CGFloat
     let expandedBottomMargin: CGFloat
@@ -44,8 +45,6 @@ nonisolated struct ComposerMetricsProfile: Equatable, Sendable {
     let plusStyle: PlusStyle
     let plusSymbolSize: CGFloat
     let expandAnimation: ExpandAnimation
-
-    var collapsedInset: CGFloat { collapsedContentInset }
 
     /// Expanded card height for a measured editor height.
     func expandedHeight(editorHeight: CGFloat) -> CGFloat {
@@ -68,7 +67,8 @@ nonisolated struct ComposerMetricsProfile: Equatable, Sendable {
             expandedContentInset: 8,
             expandedBottomInset: 8,
             collapsedTextGap: 4,
-            collapsedContentInset: 2,
+            collapsedLeadingInset: 2,
+            collapsedTrailingInset: 2,
             topMargin: 8,
             collapsedBottomMargin: 10,
             expandedBottomMargin: 10,
@@ -93,8 +93,9 @@ nonisolated struct ComposerMetricsProfile: Equatable, Sendable {
         textToActions: 10,
         expandedContentInset: 3,
         expandedBottomInset: 8,
-        collapsedTextGap: 12,
-        collapsedContentInset: 2,
+        collapsedTextGap: 14,
+        collapsedLeadingInset: 0,
+        collapsedTrailingInset: 2,
         topMargin: 8,
         collapsedBottomMargin: 0,
         expandedBottomMargin: 8,

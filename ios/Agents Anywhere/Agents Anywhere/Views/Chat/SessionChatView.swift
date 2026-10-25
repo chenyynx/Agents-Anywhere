@@ -119,9 +119,6 @@ struct SessionChatView: View, Equatable {
                 .traceChatLayout("composer-dock")
         }
         .frame(maxWidth: ChatControlMetrics.maximumContentWidth).frame(maxWidth: .infinity)
-        // Code reserves the keyboard itself (official EarlyKeyboardPadding);
-        // Chat keeps the system behavior.
-        .modifier(ComposerKeyboardPadding(enabled: usesCollectionTimeline))
         // Native safe-area layout owns both the visible scroll
         // region and the dock's space; do not add a second margin.
     }
@@ -280,9 +277,6 @@ struct SessionChatView: View, Equatable {
                         }
                     }.padding(.top, 8)
                 }
-                // Official Code: the page stays put; the composer reserves
-                // the keyboard height itself.
-                .modifier(ComposerPageKeyboardIgnores(enabled: usesCollectionTimeline))
         }
         .modifier(ChatPageToolbar(title: session.metadata?.title ?? fallbackTitle ?? String(localized: "会话"),
             subtitle: SessionHeaderSubtitle.text(metadata: session.metadata, deviceName: deviceName,

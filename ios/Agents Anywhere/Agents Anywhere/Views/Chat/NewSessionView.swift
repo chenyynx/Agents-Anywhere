@@ -72,10 +72,7 @@ struct NewSessionView: View, Equatable {
                     onDraftChange: { model.scheduleDraftSave() })
                 }
                 .frame(maxWidth: ChatControlMetrics.maximumContentWidth).frame(maxWidth: .infinity)
-                .modifier(ComposerKeyboardPadding(enabled: usesCollectionTimeline))
             }
-            // Code keeps the page fixed; the dock reserves the keyboard.
-            .modifier(ComposerPageKeyboardIgnores(enabled: usesCollectionTimeline))
         }
         .modifier(ChatPageToolbar(title: "", onMenu: onMenu))
         .toolbar {

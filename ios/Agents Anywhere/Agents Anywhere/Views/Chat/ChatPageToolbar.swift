@@ -4,18 +4,21 @@ import SwiftUI
 /// detail already has the NavigationSplitView's host; nesting another stack
 /// there would duplicate navigation chrome and safe-area handling.
 struct ChatDetailNavigation: ViewModifier {
-    let insets: EdgeInsets
     @Environment(\.sidebarDrawerPresentation) private var presentation
     @Environment(\.colorScheme) private var colorScheme
 
     func body(content: Content) -> some View {
         Group {
             if presentation == .drawer {
+                // [E] The official session page is a full-screen bleed: the
+                // transcript owns the scroll view's content inset and the
+                // composer is a `safeAreaBar`, so no outer safe-area padding
+                // may shrink the page (R21 chrome-verify.md; R19
+                // chrome-composer.md §2–§3). The drawer card already spans the
+                // window; padding here would push the page inside the status
+                // bar and home-indicator strips and paint them opaque.
                 NavigationStack { content }
                     .ignoresSafeArea(.keyboard)
-                    // Preserve the drawer's stable, untransformed safe area,
-                    // including keyboard avoidance. Pages add no other inset.
-                    .padding(insets)
             } else {
                 content
             }

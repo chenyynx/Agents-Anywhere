@@ -237,10 +237,12 @@ final class TimelineCollectionController: UIViewController {
         // edge effect, which reads as a solid bar over the transparent page;
         // match the old page on both edges.
         collectionView.topEdgeEffect.style = .soft
-        // The composer is a SwiftUI safe-area inset with its own material;
-        // the old ScrollView had no bottom edge effect. A bottom effect here
-        // adds a second, opaque-looking bar.
-        collectionView.bottomEdgeEffect.isHidden = true
+        // [E] R21 chrome-verify.md — the official Code session neither hides
+        // the bottom edge effect nor draws a custom gradient on iOS 26. The
+        // system default is what fades rows passing under the composer's
+        // `safeAreaBar`; hiding it removed that fade and left the composer on
+        // a flat strip. Leave the bottom effect at its system default.
+
         collectionView.alwaysBounceVertical = true
         collectionView.showsVerticalScrollIndicator = false
         // [E] CANONICAL/05-layout-scroll.md §5 — the official surface uses

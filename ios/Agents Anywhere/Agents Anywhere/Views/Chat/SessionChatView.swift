@@ -252,14 +252,13 @@ struct SessionChatView: View, Equatable {
             subtitle: SessionHeaderSubtitle.text(metadata: session.metadata, deviceName: deviceName,
                 fallbackRuntimeName: fallbackRuntimeName),
             status: model.headerStatus, alignsTitleLeading: true, onMenu: onMenu))
-        // [E] chrome-composer.md §3 — the official navigation bar paints the
-        // page colour and stays visible (`toolbarBackgroundVisibility(1,
-        // .navigationBar)` + `toolbarBackground(pageColor)`); iOS 26's scroll
-        // edge supplies the blur over rows passing underneath. It is not an
-        // opaque system bar and not `.hidden`.
-        .toolbarBackground(Color(uiColor: CodePageTheme.pageBackgroundUIColor),
-                           for: .navigationBar)
-        .toolbarBackgroundVisibility(.visible, for: .navigationBar)
+        // [E] R21 chrome-verify.md — on iOS 26 the official session page sets
+        // only `.toolbarBackgroundVisibility(.automatic)` and never paints a
+        // `toolbarBackground` colour; the visible colour + page background is
+        // the pre-iOS-26 fallback. Automatic keeps the bar transparent so the
+        // system's soft scroll-edge effect blurs the rows underneath (the
+        // official device screenshots show body text through the bar).
+        .toolbarBackgroundVisibility(.automatic, for: .navigationBar)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button { sheet = .files } label: { AppSymbol("folder") }

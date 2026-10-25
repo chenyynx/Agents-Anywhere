@@ -688,10 +688,12 @@ private struct SidebarDrawerMainCard<Content: View>: View {
         let screenShape = SidebarDrawerCardShape.shape(isFullyClosed: isFullyClosed)
 
         content
-            // The untransformed host supplies all original insets, including
-            // the keyboard. Apply them once inside the page, never again from
-            // this moving card's intersection with the window.
-            .ignoresSafeArea()
+            // [E] Only the card's artwork may ignore the safe area; the page
+            // itself must keep the window's insets so its navigation bar,
+            // `safeAreaBar` composer and scroll content settle in the official
+            // full-screen positions (R21 chrome-verify.md). Ignoring the safe
+            // area here forced the page to re-add it with padding, which is
+            // what painted opaque status-bar/home-indicator strips.
             .frame(width: size.width, height: size.height)
             .background(drawerSystemBackground, in: screenShape)
             .clipShape(screenShape)

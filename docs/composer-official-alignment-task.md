@@ -220,6 +220,18 @@
 
 ---
 
+### 5.1 实现状态（2026-10-26）
+
+- **已实现**（分支 `feat/code-composer-official`，commit `78c7dc0f`）：
+  - Code profile：折叠 16 / 52 / 贴安全区、胶囊 26；展开 9 / 95 / 距键盘 8；`+` 灰底圆；队列 placeholder。
+  - 键盘：`willShow`/`willHide` → `max(keyboardHeight − restingInset, 0)`，`interpolatingSpring(mass: 3, stiffness: 1000, damping: 500)`；页面与 composer 都忽略系统键盘安全区。
+  - `NewSessionView` 使用同一 profile；Chat profile 保持现状（32 / 48 / +10、`.smooth(0.24)`、系统键盘）。
+  - 未改 `SidebarDrawer.swift` / `ChatPageToolbar.swift`。
+- **验证**：纯模型文件单独编译 + 断言通过；所有改动文件 `swiftc -parse` 通过。
+- **未验证**：SwiftPM 测试未跑（本机 Swift 6.0.3，包要求 6.2.0）；iOS 编译与真机未跑；按纪律未派 CI、未出包。
+- **真机风险**：① 系统键盘与自绘 padding 是否叠加（页面/`safeAreaBar`/UIKit collection 三层）；② 列表底部 inset 是否随弹簧动画同步；③ interactive dismiss 时官方只监听 show/hide，可能先留缝；④ iPad 分屏/Stage Manager 的坐标转换。
+- **2026-10-26 pp 决定**：没有官方 Code 截图，Code 基准采用官方 Chat 截图的 16/52、9/95；按此实现，后续有官方 Code 图再校准。
+
 ## 6. 文件清单
 
 ### 新增

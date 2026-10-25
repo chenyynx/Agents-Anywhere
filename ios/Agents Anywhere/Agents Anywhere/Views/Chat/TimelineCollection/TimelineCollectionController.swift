@@ -233,11 +233,6 @@ final class TimelineCollectionController: UIViewController {
         collectionView.contentInset.bottom = max(0, bottomBarInset - view.safeAreaInsets.bottom)
     }
 
-    override func viewSafeAreaInsetsDidChange() {
-        super.viewSafeAreaInsetsDidChange()
-        applyBottomBarInset()
-    }
-
     // MARK: - Lifecycle
 
     override func loadView() {
@@ -408,6 +403,10 @@ final class TimelineCollectionController: UIViewController {
 
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
+        // The composer's contribution to the content inset is measured in
+        // SwiftUI and only depends on the window's own bottom inset, which
+        // this callback refreshes (rotation, home-indicator changes).
+        applyBottomBarInset()
         // The keyboard and the composer both arrive as safe-area changes; the
         // old timeline anchored every container-size change to the bottom
         // (`.defaultScrollAnchor(.bottom, for: .sizeChanges)`). Re-evaluate

@@ -1881,7 +1881,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // wire stamp, clamped to now so clock skew cannot hold the label.
             let endedAt = observedStart != nil
                 ? Date()
-                : min(Date(), ChatTimestamp.parse(item.updatedAt) ?? Date())
+                : min(Date(), V2Timestamp.date(item.updatedAt) ?? Date())
             liveThinkingClosed = (
                 id: item.id,
                 endedAt: endedAt,
@@ -1920,8 +1920,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private static func closedThinkingSeconds(item: V2TimelineItem,
                                               observedStart: Date?,
                                               observedEnd: Date) -> Int {
-        if let created = ChatTimestamp.parse(item.createdAt),
-           let updated = ChatTimestamp.parse(item.updatedAt),
+        if let created = V2Timestamp.date(item.createdAt),
+           let updated = V2Timestamp.date(item.updatedAt),
            updated >= created {
             return CodeThinkingText.closedSeconds(updated.timeIntervalSince(created))
         }

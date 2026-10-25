@@ -1886,9 +1886,10 @@ final class CodeProfileAutoRunModel {
     ]
     """#
 
-    /// The on-screen fixture: a user bubble, a running reasoning row (the
-    /// working status line), a Markdown body and a collapsed tool span with a
-    /// diff badge plus the Workflow special card.
+    /// The on-screen fixture: a user bubble, a running reasoning item (kept
+    /// out of the message row — the live working row owns that state), a
+    /// Markdown body and a collapsed tool span with a diff badge plus the
+    /// Workflow special card.
     private static let viewFixtureJSON = #"""
     [
       {"id":"v-u1","sessionId":"gate-views","type":"message","status":"done","role":"user","orderSeq":1,

@@ -165,6 +165,93 @@ struct CodeToolLabelPlanTests {
             == CodeDiffStat(added: 1, removed: 1))
     }
 
+    // MARK: Official failure counts and target rule
+
+    /// `0x10288e3c0`: each category's `failed` is the number of distinct
+    /// keys whose status is failed, using the same key as `count`.
+    @Test func failedCallsAreCountedPerCategory() throws {
+        let calls = [
+            try makeCall("r1", name: "Read", kind: .read,
+                         input: ["file_path": "/repo/A.swift"], status: "failed"),
+            try makeCall("r2", name: "Read", kind: .read,
+                         input: ["file_path": "/repo/B.swift"]),
+            try makeCall("b1", name: "Bash", kind: .bash,
+                         input: ["command": "ls"], status: "failed"),
+            try makeCall("b2", name: "Bash", kind: .bash,
+                         input: ["command": "pwd"], status: "failed"),
+        ]
+        let plan = try #require(CodeToolLabelPlan.make(calls: calls, cwd: nil))
+        #expect(plan.phrases == [
+            .init(verb: .read, unit: .files, count: 2, failed: 1),
+            .init(verb: .ran, unit: .commands, count: 2, failed: 2),
+        ])
+    }
+
+    @Test func repeatedFailedReadOfOneFileCountsOnce() throws {
+        let calls = [
+            try makeCall("r1", name: "Read", kind: .read,
+                         input: ["file_path": "/repo/A.swift"], status: "failed"),
+            try makeCall("r2", name: "Read", kind: .read,
+                         input: ["file_path": "/repo/A.swift"], status: "failed"),
+        ]
+        let plan = try #require(CodeToolLabelPlan.make(calls: calls, cwd: nil))
+        #expect(plan.verb == .read)
+        #expect(plan.target == "/repo/A.swift")
+        #expect(plan.failed == 2)
+        #expect(plan.total == 2)
+    }
+
+    /// The official single-target predicate is target equality only
+    /// (`0x10252df70`); the first call supplies the verb.
+    @Test func differentToolsOnOneTargetKeepTheSingleTargetShape() throws {
+        let calls = [
+            try makeCall("r1", name: "Read", kind: .read,
+                         input: ["file_path": "/repo/A.swift"]),
+            try makeCall("e1", name: "Edit", kind: .edit,
+                         input: ["file_path": "/repo/A.swift"]),
+        ]
+        let plan = try #require(CodeToolLabelPlan.make(calls: calls, cwd: nil))
+        #expect(plan.verb == .read)
+        #expect(plan.target == "/repo/A.swift")
+        #expect(plan.phrases.isEmpty)
+    }
+
+    @Test func differentTargetsFallBackToTheSummary() throws {
+        let calls = [
+            try makeCall("r1", name: "Read", kind: .read,
+                         input: ["file_path": "/repo/A.swift"]),
+            try makeCall("e1", name: "Edit", kind: .edit,
+                         input: ["file_path": "/repo/B.swift"]),
+        ]
+        let plan = try #require(CodeToolLabelPlan.make(calls: calls, cwd: nil))
+        #expect(plan.verb == nil)
+        #expect(plan.phrases == [
+            .init(verb: .read, unit: .files, count: 1),
+            .init(verb: .edited, unit: .files, count: 1),
+        ])
+    }
+
+    /// `0x10288fa10`: a call that is neither a diff nor failed makes the
+    /// whole span show no badge.
+    @Test func diffBadgeIgnoresMixWithNonDiffCalls() throws {
+        let read = try makeCall("r1", name: "Read", kind: .read,
+                                input: ["file_path": "/repo/A.swift"])
+        let editItem: V2TimelineItem = try decode([
+            "id": "e1", "sessionId": "session", "type": "tool", "status": "done",
+            "content": [
+                "kind": "file_change", "toolName": "Edit",
+                "structuredPatch": [[
+                    "oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1,
+                    "lines": ["-old", "+new"],
+                ]],
+            ],
+            "source": ["itemId": "e1"],
+            "orderSeq": 2, "revision": 1, "updatedSeq": 1, "contentHash": "e1",
+        ])
+        let edit = CodeToolCall(item: editItem, kind: .edit)
+        #expect(CodeToolLabelPlan.diffStat(for: [read, edit]) == nil)
+    }
+
     @Test func diffBadgeSkipsFailedEdit() throws {
         let item: V2TimelineItem = try decode([
             "id": "e3", "sessionId": "session", "type": "tool", "status": "failed",
@@ -180,5 +267,36 @@ struct CodeToolLabelPlanTests {
         ])
         let call = CodeToolCall(item: item, kind: .edit)
         #expect(CodeToolLabelPlan.diffStat(for: [call]) == nil)
+    }
+
+    @Test func diffBadgeSumsOnlyTheSettledCalls() throws {
+        let failedItem: V2TimelineItem = try decode([
+            "id": "e4", "sessionId": "session", "type": "tool", "status": "failed",
+            "content": [
+                "kind": "file_change", "toolName": "Edit",
+                "structuredPatch": [[
+                    "oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1,
+                    "lines": ["-a", "+b"],
+                ]],
+            ],
+            "source": ["itemId": "e4"],
+            "orderSeq": 1, "revision": 1, "updatedSeq": 1, "contentHash": "e4",
+        ])
+        let doneItem: V2TimelineItem = try decode([
+            "id": "e5", "sessionId": "session", "type": "tool", "status": "done",
+            "content": [
+                "kind": "file_change", "toolName": "Edit",
+                "structuredPatch": [[
+                    "oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 3,
+                    "lines": ["-c", "+d", "+e"],
+                ]],
+            ],
+            "source": ["itemId": "e5"],
+            "orderSeq": 2, "revision": 1, "updatedSeq": 1, "contentHash": "e5",
+        ])
+        #expect(CodeToolLabelPlan.diffStat(for: [
+            CodeToolCall(item: failedItem, kind: .edit),
+            CodeToolCall(item: doneItem, kind: .edit),
+        ]) == CodeDiffStat(added: 2, removed: 1))
     }
 }

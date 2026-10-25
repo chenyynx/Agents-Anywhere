@@ -89,6 +89,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// When the current working block appeared; the official verb rotation is
     /// anchored on it (the `.server` phase timing `0x102a85174`).
     private var workingStatusPhaseStart: Date?
+    /// The live turn's thinking block: the row currently being watched, when
+    /// this client first saw it running, and the closed summary once it
+    /// settles. The official row measures the running tiers from the turn
+    /// start and shows the closed label for 2 s from the block's own end
+    /// (`0x102a88dfc`; R24 `live-thinking-timer.md`).
+    private var liveThinkingRowID: String?
+    private var liveThinkingObservedStart: Date?
+    private var liveThinkingClosed: (id: String, endedAt: Date, seconds: Int)?
     private var tailNoticesByID: [String: SessionNoticeModel] = [:]
     private var pendingByID: [String: V2PendingMessage] = [:]
     private var rowToItem: [String: TimelineListItem] = [:]
@@ -1829,7 +1837,85 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
            status == .waiting || status == .pending {
             return .connecting
         }
+        // Official precedence (R24 §6.5): `.compacting`/`.connecting` go
+        // straight to the working row; only the remaining states consult the
+        // thinking text. Nil means the turn has no thinking block to report.
+        if let thinking = liveThinkingPhase(startedAt: startedAt) { return thinking }
         return .working(startedAt: startedAt)
+    }
+
+    /// The live turn's thinking state, mirroring the official tag-3 activity
+    /// (`0x102a88dfc`): while a block runs the five tiers replace the verbs;
+    /// for 2 s after it settles the closed label replaces them; afterwards
+    /// the caller falls back to the verbs.
+    ///
+    /// The running anchor is the working block's start (the turn start), not
+    /// the thinking item's own creation time — the official branch measures
+    /// `now − turnStartedAt` (`0x102a89010`). The closed duration is the
+    /// block's own span: the wire's first/last ingest stamps when both are
+    /// present, otherwise the span this client observed.
+    private func liveThinkingPhase(startedAt: Date) -> CodeWorkingStatusPhase? {
+        guard let item = liveThinkingItem() else {
+            liveThinkingRowID = nil
+            liveThinkingObservedStart = nil
+            liveThinkingClosed = nil
+            return nil
+        }
+        if item.status.isActive {
+            if liveThinkingRowID != item.id {
+                liveThinkingRowID = item.id
+                liveThinkingObservedStart = Date()
+                liveThinkingClosed = nil
+            }
+            return .thinking(startedAt: startedAt)
+        }
+        if liveThinkingClosed?.id != item.id {
+            let endedAt = Date()
+            liveThinkingClosed = (
+                id: item.id,
+                endedAt: endedAt,
+                seconds: Self.closedThinkingSeconds(
+                    item: item,
+                    observedStart: liveThinkingObservedStart,
+                    observedEnd: endedAt
+                )
+            )
+            liveThinkingRowID = nil
+            liveThinkingObservedStart = nil
+        }
+        guard let closed = liveThinkingClosed else { return nil }
+        return .thoughtFor(seconds: closed.seconds,
+                           endedAt: closed.endedAt,
+                           fallbackStartedAt: startedAt)
+    }
+
+    /// The trailing reasoning row of the live turn, if any. The scan stops at
+    /// the last user message, the same live-turn boundary `liveWorkingMarkBody`
+    /// uses.
+    private func liveThinkingItem() -> V2TimelineItem? {
+        for row in model.timeline.rows.reversed() {
+            let item = row.value
+            if item.role == .user { break }
+            if item.isReasoning { return item }
+        }
+        return nil
+    }
+
+    /// Official closed duration (`0x102a88f5c`): `endedAt − startedAt`,
+    /// `frinta` (half away from zero), then `max(1, n)`. The wire carries the
+    /// server's first/last ingest stamps for the thinking row, which are the
+    /// closest analogue of the official block timestamps; if either is
+    /// missing, the span this client observed running stands in.
+    private static func closedThinkingSeconds(item: V2TimelineItem,
+                                              observedStart: Date?,
+                                              observedEnd: Date) -> Int {
+        if let created = ChatTimestamp.parse(item.createdAt),
+           let updated = ChatTimestamp.parse(item.updatedAt),
+           updated >= created {
+            return CodeThinkingText.closedSeconds(updated.timeIntervalSince(created))
+        }
+        guard let observedStart else { return 1 }
+        return CodeThinkingText.closedSeconds(observedEnd.timeIntervalSince(observedStart))
     }
 
     /// True while the live turn's compact row is active. The connector turns a

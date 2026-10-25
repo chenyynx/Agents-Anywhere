@@ -15,16 +15,15 @@ import UIKit
 ///
 /// Every visual constant comes from `CodePageTheme`; this file adds none.
 struct CodeCollapsedToolRow: View {
-    let verb: String
-    let target: String?
+    /// The label plan's localized text plus the failure counts. One value
+    /// keeps the verb/target runs and the per-phrase summary in sync.
+    let label: CodeToolRowLabel
     /// An official Anthropicon asset name for the leading icon (see
     /// `AnthropiconAssets`). Defaults to none because a completed row in the
     /// official screenshot has no leading glyph; the caller passes one for
     /// the states that show it (running / background task,
     /// `04-tool-calls.md` §7.3).
     let icon: String?
-    let diff: CodeDiffStat?
-    let isRunning: Bool
     let action: () -> Void
 
     /// Both glyphs are the official Anthropicon artwork now (shipped from the
@@ -37,18 +36,17 @@ struct CodeCollapsedToolRow: View {
     private var lineHeight = CodePageTheme.toolRowLineHeight
 
     @Environment(\.colorScheme) private var colorScheme
+    /// The official `failureInWords` is the accessibility "differentiate
+    /// without colour" value (`0x102ab2fb4`): when set, failures are written
+    /// out and the label keeps its normal ink.
+    @Environment(\.accessibilityDifferentiateWithoutColor)
+    private var differentiateWithoutColor
 
-    init(verb: String,
-         target: String? = nil,
+    init(label: CodeToolRowLabel,
          icon: String? = nil,
-         diff: CodeDiffStat? = nil,
-         isRunning: Bool,
          action: @escaping () -> Void) {
-        self.verb = verb
-        self.target = target
+        self.label = label
         self.icon = icon
-        self.diff = diff
-        self.isRunning = isRunning
         self.action = action
     }
 
@@ -68,9 +66,9 @@ struct CodeCollapsedToolRow: View {
                     // The official running row sweeps a shimmer across the
                     // label (`ShimmerView`, §4.1). Reuse the app's shared
                     // opacity sweep; it already honours Reduce Motion.
-                    .modifier(StatusShimmer(active: isRunning))
+                    .modifier(StatusShimmer(active: label.isRunning))
 
-                if let diff, diff.hasCounts {
+                if let diff = label.diff, diff.hasCounts {
                     CodeDiffIndicator(stat: diff)
                 }
 
@@ -93,35 +91,91 @@ struct CodeCollapsedToolRow: View {
         .accessibilityValue(diffAccessibilityValue)
     }
 
-    /// Two runs sharing one line: the secondary proportional verb, then the
-    /// primary monospaced target. Concatenating `Text` keeps truncation and
-    /// line-limit behaviour on the whole label.
+    /// The single-target shape: two runs sharing one line, the secondary
+    /// proportional verb then the primary monospaced target. Failure follows
+    /// the official switch (`0x10289036c`): red verb unless colour must not
+    /// carry meaning alone (`differentiateWithoutColor`), in which case the
+    /// written `(N failed)` suffix is appended.
     private var labelText: Text {
-        let verbColor = CodePageTheme.toolRowSecondaryColor.resolved(for: colorScheme)
+        if !label.phrases.isEmpty { return phrasesText }
+        let secondary = CodePageTheme.toolRowSecondaryColor.resolved(for: colorScheme)
+        let failedColorOnly = label.failed > 0 && !differentiateWithoutColor
+        let verbColor = failedColorOnly
+            ? CodePageTheme.toolRowFailureColor.resolved(for: colorScheme)
+            : secondary
         let targetColor = Color(uiColor: CodePageTheme.markdownTextUIColor)
-        guard let target, !target.isEmpty else {
-            return Text(verb)
-                .font(.custom(CodePageTheme.sansFontName,
-                              size: CodePageTheme.toolRowFontSize,
-                              relativeTo: CodePageTheme.toolRowTextStyle))
-                .foregroundStyle(verbColor)
+        let suffix = singleTargetSuffix
+        let sans = Font.custom(CodePageTheme.sansFontName,
+                               size: CodePageTheme.toolRowFontSize,
+                               relativeTo: CodePageTheme.toolRowTextStyle)
+        guard let target = label.target, !target.isEmpty else {
+            return Text(label.verb).font(sans).foregroundStyle(verbColor) + suffix
         }
-        let verbRun = Text(verb + " ")
-            .font(.custom(CodePageTheme.sansFontName,
-                          size: CodePageTheme.toolRowFontSize,
-                          relativeTo: CodePageTheme.toolRowTextStyle))
+        return Text(label.verb + " ")
+            .font(sans)
             .foregroundStyle(verbColor)
-        let targetRun = Text(target)
+            + Text(target)
             .font(.custom(CodePageTheme.monoFontName,
                           size: CodePageTheme.toolRowFontSize,
                           relativeTo: CodePageTheme.toolRowTextStyle))
             .foregroundStyle(targetColor)
-        return verbRun + targetRun
+            + suffix
+    }
+
+    private var singleTargetSuffix: Text {
+        guard label.failed > 0, differentiateWithoutColor else { return Text("") }
+        return Text(CodeToolLabels.failedSuffix(label.failed))
+            .font(.custom(CodePageTheme.sansFontName,
+                          size: CodePageTheme.toolRowFontSize,
+                          relativeTo: CodePageTheme.toolRowTextStyle))
+            .foregroundStyle(CodePageTheme.toolRowSecondaryColor.resolved(for: colorScheme))
+    }
+
+    /// The multi-target summary. Official rules (`0x10288ea34`): a partially
+    /// failed category carries the written suffix; a category whose entries
+    /// all failed is painted red unless colour is not a differentiator, in
+    /// which case it carries the suffix instead.
+    private var phrasesText: Text {
+        let secondary = CodePageTheme.toolRowSecondaryColor.resolved(for: colorScheme)
+        let failure = CodePageTheme.toolRowFailureColor.resolved(for: colorScheme)
+        let sans = Font.custom(CodePageTheme.sansFontName,
+                               size: CodePageTheme.toolRowFontSize,
+                               relativeTo: CodePageTheme.toolRowTextStyle)
+        var result = Text("")
+        for (index, phrase) in label.phrases.enumerated() {
+            if index > 0 {
+                result = result
+                    + Text(CodeToolLabels.phraseSeparator).font(sans)
+                    .foregroundStyle(secondary)
+            }
+            let allFailed = phrase.total > 0 && phrase.failed == phrase.total
+            let color = allFailed && !differentiateWithoutColor ? failure : secondary
+            var text = phrase.text
+            if phrase.failed > 0, !allFailed || differentiateWithoutColor {
+                text += CodeToolLabels.failedSuffix(phrase.failed)
+            }
+            result = result + Text(text).font(sans).foregroundStyle(color)
+        }
+        return result
     }
 
     private var accessibilityText: String {
-        guard let target, !target.isEmpty else { return verb }
-        return verb + " " + target
+        if !label.phrases.isEmpty {
+            return label.phrases.map { phrase in
+                var text = phrase.text
+                let allFailed = phrase.total > 0 && phrase.failed == phrase.total
+                if phrase.failed > 0, !allFailed || differentiateWithoutColor {
+                    text += CodeToolLabels.failedSuffix(phrase.failed)
+                }
+                return text
+            }.joined(separator: CodeToolLabels.phraseSeparator)
+        }
+        var text = label.verb
+        if let target = label.target, !target.isEmpty { text += " " + target }
+        if label.failed > 0, differentiateWithoutColor {
+            text += CodeToolLabels.failedSuffix(label.failed)
+        }
+        return text
     }
 
     /// "+1 −1" in symbols rather than words, so it needs no localisation.
@@ -193,24 +247,24 @@ private struct CodeDiffIndicator: View {
 }
 
 #Preview("Collapsed tool row — settled") {
-    CodeCollapsedToolRow(verb: "Read",
-                         target: "Package.swift",
-                         isRunning: false) {}
+    CodeCollapsedToolRow(label: CodeToolRowLabel(verb: "Read",
+                                                 target: "Package.swift",
+                                                 isRunning: false)) {}
         .padding(.horizontal, CodePageTheme.rowMarginLeading)
 }
 
 #Preview("Collapsed tool row — running") {
-    CodeCollapsedToolRow(verb: "Ran",
-                         target: "npm test",
-                         icon: "terminal",
-                         isRunning: true) {}
+    CodeCollapsedToolRow(label: CodeToolRowLabel(verb: "Ran",
+                                                 target: "npm test",
+                                                 isRunning: true),
+                         icon: "terminal") {}
         .padding(.horizontal, CodePageTheme.rowMarginLeading)
 }
 
 #Preview("Collapsed tool row — diff") {
-    CodeCollapsedToolRow(verb: "Edited",
-                         target: "validate-email.ts",
-                         diff: CodeDiffStat(added: 1, removed: 1),
-                         isRunning: false) {}
+    CodeCollapsedToolRow(label: CodeToolRowLabel(verb: "Edited",
+                                                 target: "validate-email.ts",
+                                                 diff: CodeDiffStat(added: 1, removed: 1),
+                                                 isRunning: false)) {}
         .padding(.horizontal, CodePageTheme.rowMarginLeading)
 }

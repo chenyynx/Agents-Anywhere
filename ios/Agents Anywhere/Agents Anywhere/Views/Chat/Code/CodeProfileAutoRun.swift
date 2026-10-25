@@ -436,6 +436,7 @@ final class CodeProfileAutoRunModel {
         prepareViews()
         await verifyMessageRowHeight()
         await verifyRowHeights()
+        await verifyReadOutputHeight()
         await verifyRendererMeasure()
         await verifyRealCollectionFirstFit()
 
@@ -660,7 +661,59 @@ final class CodeProfileAutoRunModel {
                          json: RowHeightFixtureJSON.codeCard,
                          widths: [361, 320],
                          sizes: [.regular, .accessibility]),
+        // A settled thinking row followed by the answer: the measurer's
+        // `.thinking` line box and `CodeThinkingRow` must agree at both text
+        // sizes (icon 16 / label 15 / minHeight 24 / padding 6).
+        RowHeightFixture(name: "thinking", kind: .text,
+                         json: RowHeightFixtureJSON.thinking,
+                         widths: [361, 320],
+                         sizes: [.regular, .accessibility]),
     ]
+
+    /// The 24K / ~298-line Read output that rendered as a blank card on the
+    /// device (2026-10-25). The dedicated Read reader draws every line, so a
+    /// settled height of a few hundred points means the body vanished again.
+    private func verifyReadOutputHeight() async {
+        guard let window = keyWindow else {
+            failures.append("readOutput: no key window")
+            return
+        }
+        let rowFormat = #"{"index":%d,"path":"Sources/Feature/F%04d/Generated.swift","status":"ok","message":"row %d of the long read fixture"}"#
+        let text = (1...298).map { String(format: rowFormat, $0, $0, $0) }
+            .joined(separator: "\n")
+        let hostWidth = window.bounds.width
+        let host = UIHostingController(rootView:
+            CodeToolOutputView(output: .text(text), kind: .read)
+                .padding(16)
+                .frame(width: hostWidth, alignment: .leading)
+                .ignoresSafeArea())
+        host.view.backgroundColor = .clear
+        host.view.frame = CGRect(x: 0, y: 0, width: hostWidth, height: 200)
+        window.addSubview(host.view)
+        host.view.layoutIfNeeded()
+
+        let proposed = CGSize(width: hostWidth, height: .greatestFiniteMagnitude)
+        var settled = host.sizeThatFits(in: proposed).height
+        var previous: CGFloat = -1
+        for _ in 0..<20 {
+            await wait(100)
+            host.view.layoutIfNeeded()
+            settled = host.sizeThatFits(in: proposed).height
+            if settled > 1, abs(settled - previous) <= 0.5 { break }
+            previous = settled
+        }
+        host.view.removeFromSuperview()
+
+        let finite = settled.isFinite
+        check(finite && settled > 2_000,
+              "readOutput: \(text.count) chars / 298 lines rendered \(settled) pt, expected a drawn body")
+        report["readOutput"] = [
+            "characters": text.count,
+            "lines": 298,
+            "height": Double(settled),
+            "finite": finite,
+        ] as [String: Any]
+    }
 
     /// Renders every fixture at every requested width and size, reports each
     /// measured/rendered/delta, and fails past the class threshold. The CI job
@@ -1999,6 +2052,19 @@ final class CodeProfileAutoRunModel {
           {"id":"h-card","sessionId":"gate-height","type":"message","status":"done","role":"assistant","orderSeq":1,
            "content":{"text":"Fixed it:\n\n```swift\nfunc settle() async {\n    await clock.advance(by: .milliseconds(120))\n}\n```"},
            "source":{"itemId":"gate-code-card"}}
+        ]
+        """#
+
+        /// A settled thinking block in the same message as the answer, so the
+        /// row pays the thinking line box, one inter-block gap and the text.
+        static let thinking = #"""
+        [
+          {"id":"h-th-1","sessionId":"gate-height","type":"reasoning","status":"done","orderSeq":1,
+           "content":{"kind":"reasoning","rawText":"Checked the driver and the failing assertion."},
+           "source":{"nativeMessageId":"gate-thinking","blockIndex":0}},
+          {"id":"h-th-2","sessionId":"gate-height","type":"message","status":"done","role":"assistant","orderSeq":2,
+           "content":{"text":"The race is in the driver."},
+           "source":{"nativeMessageId":"gate-thinking","blockIndex":1}}
         ]
         """#
     }

@@ -50,6 +50,16 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
         let verb: Verb
         let unit: Unit
         let count: Int
+        /// The category's failed entries: same distinct-key rule as `count`
+        /// (`0x10288e3c0` counts `status == failed` in the same dictionary).
+        let failed: Int
+
+        init(verb: Verb, unit: Unit, count: Int, failed: Int = 0) {
+            self.verb = verb
+            self.unit = unit
+            self.count = count
+            self.failed = failed
+        }
     }
 
     /// The single-call / shared-target verb. Nil for a multi-kind summary.
@@ -60,14 +70,23 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
     let phrases: [Phrase]
     let diff: CodeDiffStat?
     let isRunning: Bool
+    /// The single-target path's failed calls. The official single-call suffix
+    /// is fixed N=1 (`0x1028904a0`); a shared-target span keeps the real count.
+    let failed: Int
+    /// Calls in the single-target path; the phrase path carries its own
+    /// per-category totals instead.
+    let total: Int
 
     private init(verb: Verb?, target: String?, phrases: [Phrase],
-                 diff: CodeDiffStat?, isRunning: Bool) {
+                 diff: CodeDiffStat?, isRunning: Bool,
+                 failed: Int = 0, total: Int = 0) {
         self.verb = verb
         self.target = target
         self.phrases = phrases
         self.diff = diff
         self.isRunning = isRunning
+        self.failed = failed
+        self.total = total
     }
 
     /// One segment's calls → its label plan. Nil for an empty span (the
@@ -76,25 +95,29 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
         guard let first = calls.first else { return nil }
         let running = calls.contains { $0.status == .running }
         let diff = diffStat(for: calls)
+        let failed = calls.filter { $0.status == .failed }.count
 
         if calls.count == 1 {
             return CodeToolLabelPlan(verb: singleVerb(for: first),
                                      target: rawTarget(for: first, cwd: cwd),
-                                     phrases: [], diff: diff, isRunning: running)
+                                     phrases: [], diff: diff, isRunning: running,
+                                     failed: failed, total: calls.count)
         }
 
-        // A span of identical file operations on one file is that operation
-        // on that file. The official server summary would name the file; the
-        // client can derive the same shape from its inputs, and it avoids the
-        // false "Edited 6 files" when six edits hit one file.
-        if let shared = sharedSingleFileTarget(calls: calls, cwd: cwd) {
+        // The official single-target path is chosen by target equality alone
+        // (`0x10252df70`): every call's extracted target is the same string,
+        // whatever the tools are. The first call supplies the verb. This also
+        // avoids the false "Edited 6 files" when six edits hit one file.
+        if let shared = sharedTarget(calls: calls, cwd: cwd) {
             return CodeToolLabelPlan(verb: shared.verb, target: shared.target,
-                                     phrases: [], diff: diff, isRunning: running)
+                                     phrases: [], diff: diff, isRunning: running,
+                                     failed: failed, total: calls.count)
         }
 
         return CodeToolLabelPlan(verb: nil, target: nil,
                                  phrases: phrases(for: calls),
-                                 diff: diff, isRunning: running)
+                                 diff: diff, isRunning: running,
+                                 failed: failed, total: calls.count)
     }
 
     // MARK: - Single call
@@ -178,19 +201,20 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
         let target: String
     }
 
-    /// All calls are the same file operation and resolve to one target.
-    private static func sharedSingleFileTarget(calls: [CodeToolCall],
-                                               cwd: String?) -> FileTarget? {
-        guard let first = calls.first, let verb = fileVerb(for: first) else { return nil }
-        var target: String?
-        for call in calls {
-            guard fileVerb(for: call) == verb else { return nil }
-            guard let path = filePath(for: call) else { return nil }
-            if let target, target != path { return nil }
-            target = path
+    /// The official single-target predicate: every call resolves to the same
+    /// target string (`0x10252df70`, target equality only — the tools may
+    /// differ). The first call supplies the verb; a call without a target
+    /// breaks the predicate and the row falls back to the category summary.
+    private static func sharedTarget(calls: [CodeToolCall],
+                                     cwd: String?) -> FileTarget? {
+        guard let first = calls.first,
+              let target = rawTarget(for: first, cwd: cwd),
+              !target.isEmpty else { return nil }
+        for call in calls.dropFirst() {
+            guard let candidate = rawTarget(for: call, cwd: cwd),
+                  candidate == target else { return nil }
         }
-        return target.map { FileTarget(verb: verb,
-                                       target: TimelineText.displayPath($0, cwd: cwd)) }
+        return FileTarget(verb: singleVerb(for: first), target: target)
     }
 
     private static func fileVerb(for call: CodeToolCall) -> Verb? {
@@ -226,23 +250,30 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
     private static func phrases(for calls: [CodeToolCall]) -> [Phrase] {
         var order: [PhraseKey] = []
         var fileTargets: [FileGroupKey: Set<String>] = [:]
+        var fileFailedTargets: [FileGroupKey: Set<String>] = [:]
         var fileUntargeted: [FileGroupKey: Int] = [:]
+        var fileFailedUntargeted: [FileGroupKey: Int] = [:]
         var counters: [PhraseKey: Int] = [:]
+        var failedCounters: [PhraseKey: Int] = [:]
 
         for call in calls {
+            let failed = call.status == .failed
             if let verb = fileVerb(for: call) {
                 let key = FileGroupKey(verb: verb, notebook: isNotebookCall(call))
                 if !order.contains(.file(key)) { order.append(.file(key)) }
                 if let path = filePath(for: call) {
                     fileTargets[key, default: []].insert(path)
+                    if failed { fileFailedTargets[key, default: []].insert(path) }
                 } else {
                     fileUntargeted[key, default: 0] += 1
+                    if failed { fileFailedUntargeted[key, default: 0] += 1 }
                 }
                 continue
             }
             let key = PhraseKey.forCall(call)
             if !order.contains(key) { order.append(key) }
             counters[key, default: 0] += 1
+            if failed { failedCounters[key, default: 0] += 1 }
         }
 
         return order.compactMap { key -> Phrase? in
@@ -251,12 +282,16 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
                 let count = (fileTargets[group]?.count ?? 0)
                     + (fileUntargeted[group] ?? 0)
                 guard count > 0 else { return nil }
+                let failed = (fileFailedTargets[group]?.count ?? 0)
+                    + (fileFailedUntargeted[group] ?? 0)
                 return Phrase(verb: group.verb,
                               unit: group.notebook ? .notebooks : .files,
-                              count: count)
+                              count: count,
+                              failed: failed)
             case .other(let phraseKey):
                 let count = counters[.other(phraseKey)] ?? 1
-                return phraseKey.phrase(count: count)
+                return phraseKey.phrase(count: count,
+                                        failed: failedCounters[.other(phraseKey)] ?? 0)
             }
         }
     }
@@ -296,20 +331,20 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
         case bash, task, searched, searchedCode, foundFiles, browsedWeb, fetched
         case clearedTodos, updatedTodos, proposedPlan, asked, tools
 
-        func phrase(count: Int) -> Phrase {
+        func phrase(count: Int, failed: Int) -> Phrase {
             switch self {
-            case .bash: return Phrase(verb: .ran, unit: .commands, count: count)
-            case .task: return Phrase(verb: .ranAgent, unit: .agents, count: count)
-            case .searched: return Phrase(verb: .searched, unit: .times, count: count)
-            case .searchedCode: return Phrase(verb: .searchedCode, unit: .none, count: 1)
-            case .foundFiles: return Phrase(verb: .foundFiles, unit: .none, count: 1)
-            case .browsedWeb: return Phrase(verb: .browsedWeb, unit: .none, count: 1)
-            case .fetched: return Phrase(verb: .fetched, unit: .none, count: 1)
-            case .clearedTodos: return Phrase(verb: .clearedTodos, unit: .none, count: 1)
-            case .updatedTodos: return Phrase(verb: .updatedTodos, unit: .none, count: 1)
-            case .proposedPlan: return Phrase(verb: .proposedPlan, unit: .none, count: 1)
-            case .asked: return Phrase(verb: .asked, unit: .none, count: 1)
-            case .tools: return Phrase(verb: .used, unit: .tools, count: count)
+            case .bash: return Phrase(verb: .ran, unit: .commands, count: count, failed: failed)
+            case .task: return Phrase(verb: .ranAgent, unit: .agents, count: count, failed: failed)
+            case .searched: return Phrase(verb: .searched, unit: .times, count: count, failed: failed)
+            case .searchedCode: return Phrase(verb: .searchedCode, unit: .none, count: 1, failed: failed)
+            case .foundFiles: return Phrase(verb: .foundFiles, unit: .none, count: 1, failed: failed)
+            case .browsedWeb: return Phrase(verb: .browsedWeb, unit: .none, count: 1, failed: failed)
+            case .fetched: return Phrase(verb: .fetched, unit: .none, count: 1, failed: failed)
+            case .clearedTodos: return Phrase(verb: .clearedTodos, unit: .none, count: 1, failed: failed)
+            case .updatedTodos: return Phrase(verb: .updatedTodos, unit: .none, count: 1, failed: failed)
+            case .proposedPlan: return Phrase(verb: .proposedPlan, unit: .none, count: 1, failed: failed)
+            case .asked: return Phrase(verb: .asked, unit: .none, count: 1, failed: failed)
+            case .tools: return Phrase(verb: .used, unit: .tools, count: count, failed: failed)
             }
         }
     }
@@ -323,12 +358,20 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
     /// counted instead (the same lines the official server counts into
     /// `lineCounts`). Parsing the full diff model here would be heavy for a
     /// one-line badge, so this only scans prefixes.
+    ///
+    /// Official span aggregation (`0x10288fa10`): failed calls and
+    /// `fileWriteKind == update` calls are skipped; a call that is neither a
+    /// diff nor skippable makes the whole span show no indicator. AA's wire
+    /// carries no `fileWriteKind`, so an update write presents as an ordinary
+    /// diff call and is summed; the rest of the rule is applied as decoded.
     static func diffStat(for calls: [CodeToolCall]) -> CodeDiffStat? {
         var added = 0
         var removed = 0
         var found = false
         for call in calls {
-            guard let stat = diffStat(for: call.item) else { continue }
+            // A failed change did not land; its attempted patch is not a diff.
+            if call.status == .failed { continue }
+            guard let stat = diffStat(for: call.item) else { return nil }
             added += stat.added
             removed += stat.removed
             found = true

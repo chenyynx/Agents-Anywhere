@@ -193,17 +193,14 @@ struct CodeMessageRowView: View {
     private func toolRow(_ segment: CodeToolSegment) -> some View {
         let calls = CodeToolLabels.calls(in: segment)
         let label = CodeToolLabels.label(for: calls, cwd: cwd)
-        return CodeCollapsedToolRow(verb: label.verb,
-                                    target: label.target,
+        return CodeCollapsedToolRow(label: label,
                                     // A settled row carries no leading glyph
                                     // in the official screenshot; a running
                                     // row shows its category icon
                                     // (CANONICAL/04-tool-calls.md §4.1/§7.3).
                                     icon: label.isRunning
                                         ? CodeToolLabels.anthropicon(for: calls.first?.kind ?? .other)
-                                        : nil,
-                                    diff: label.diff,
-                                    isRunning: label.isRunning) {
+                                        : nil) {
             if let request = CodeToolDetailRequest(calls: calls) { onToolDetail(request) }
         }
     }
@@ -302,15 +299,41 @@ struct CodeThinkingStatusLine: View {
             case let .working(startedAt):
                 // The 1 s tick only lets the phase boundary land on time; the
                 // text changes at 0 / 3 / 7 / 13 … seconds, not every tick.
-                TimelineView(.periodic(from: .now,
-                                       by: CodePageTheme.runningStatusVerbRotationInterval)) { context in
-                    statusLabel(CodeWorkingStatusText.verb(
-                        elapsed: context.date.timeIntervalSince(startedAt)) + "...")
+                statusTimeline { date in
+                    CodeWorkingStatusText.verb(elapsed: date.timeIntervalSince(startedAt)) + "..."
+                }
+            case let .thinking(startedAt):
+                // Official live tiers are refreshed by the same 1 Hz
+                // `PeriodicTimelineSchedule` (`0x102a83314` in
+                // CodeThinkingView's body).
+                statusTimeline { date in
+                    CodeThinkingText.liveText(elapsed: date.timeIntervalSince(startedAt))
+                }
+            case let .thoughtFor(seconds, endedAt, fallbackStartedAt):
+                // `思考了 X` is visible for 2 s after the block ends; past
+                // that the official selector returns nil and the working row
+                // falls back to the rotating verbs (`0x102a88f20-f50`).
+                statusTimeline { date in
+                    if date < endedAt.addingTimeInterval(CodeThinkingText.closedWindow) {
+                        return CodeThinkingText.closedText(seconds: seconds)
+                    }
+                    return CodeWorkingStatusText.verb(
+                        elapsed: date.timeIntervalSince(fallbackStartedAt)) + "..."
                 }
             }
         }
         .frame(minHeight: CodePageTheme.workingMarkSize, alignment: .leading)
         .accessibilityElement(children: .combine)
+    }
+
+    /// The official thinking row re-renders on a 1 Hz timeline; every
+    /// time-derived label goes through this one tick so the phase boundary and
+    /// the 2 s closed window land on the same cadence.
+    private func statusTimeline(_ text: @escaping (Date) -> String) -> some View {
+        TimelineView(.periodic(from: .now,
+                               by: CodePageTheme.runningStatusVerbRotationInterval)) { context in
+            statusLabel(text(context.date))
+        }
     }
 
     private func statusLabel(_ text: String) -> some View {
@@ -331,12 +354,44 @@ struct CodeThinkingStatusLine: View {
 
 // MARK: - Tool row labels
 
+/// One summary phrase of a multi-target span. The failed/total pair is the
+/// official per-category dictionary count (`0x10288e3c0`), which decides
+/// between the written suffix and the colour-only failure signal.
+nonisolated struct CodeToolPhraseLabel: Hashable {
+    let text: String
+    let failed: Int
+    let total: Int
+}
+
 /// One collapsed tool row's text and decorations.
 nonisolated struct CodeToolRowLabel {
     let verb: String
     let target: String?
     let diff: CodeDiffStat?
     let isRunning: Bool
+    /// Failed calls in the single-target shape; 0 when none.
+    let failed: Int
+    /// Calls in the single-target shape.
+    let total: Int
+    /// The multi-target summary phrases in official order. Empty on the
+    /// single-target path.
+    let phrases: [CodeToolPhraseLabel]
+
+    init(verb: String,
+         target: String? = nil,
+         diff: CodeDiffStat? = nil,
+         isRunning: Bool,
+         failed: Int = 0,
+         total: Int = 0,
+         phrases: [CodeToolPhraseLabel] = []) {
+        self.verb = verb
+        self.target = target
+        self.diff = diff
+        self.isRunning = isRunning
+        self.failed = failed
+        self.total = total
+        self.phrases = phrases
+    }
 }
 
 /// Maps a segment's calls to the official collapsed-row label.
@@ -356,7 +411,7 @@ nonisolated enum CodeToolLabels {
 
     static func label(for calls: [CodeToolCall], cwd: String?) -> CodeToolRowLabel {
         guard let plan = CodeToolLabelPlan.make(calls: calls, cwd: cwd) else {
-            return CodeToolRowLabel(verb: "", target: nil, diff: nil, isRunning: false)
+            return CodeToolRowLabel(verb: "", isRunning: false)
         }
         if let verb = plan.verb {
             // The official row swaps to the present-participle while the call
@@ -366,12 +421,32 @@ nonisolated enum CodeToolLabels {
             return CodeToolRowLabel(verb: text,
                                     target: plan.target,
                                     diff: plan.diff,
-                                    isRunning: plan.isRunning)
+                                    isRunning: plan.isRunning,
+                                    failed: plan.failed,
+                                    total: plan.total)
         }
         return CodeToolRowLabel(verb: phraseText(plan.phrases),
                                 target: nil,
                                 diff: plan.diff,
-                                isRunning: plan.isRunning)
+                                isRunning: plan.isRunning,
+                                failed: plan.failed,
+                                total: plan.total,
+                                phrases: plan.phrases.enumerated().map { index, phrase in
+                                    let text = phraseText(phrase)
+                                    return CodeToolPhraseLabel(
+                                        text: index == 0 ? text : decapitalized(text),
+                                        failed: phrase.failed,
+                                        total: phrase.count)
+                                })
+    }
+
+    /// The official failed suffix (`ccr_summary_failed_count`, plural
+    /// `(%lld failed)` / `（%lld 项失败）`). The view appends it to a phrase or
+    /// to the single-target label; the English value carries the separating
+    /// space, the zh-Hans value is the full-width bracket form.
+    static func failedSuffix(_ failed: Int, locale: Locale = .autoupdatingCurrent) -> String {
+        let format = String(localized: "(%lld failed)", locale: locale)
+        return String(format: format, failed)
     }
 
     /// Official `category → Anthropicon` mapping
@@ -393,7 +468,7 @@ nonisolated enum CodeToolLabels {
 
     // MARK: - Localized text
 
-    private static let phraseSeparator = String(localized: "ccr_summary_separator")
+    static let phraseSeparator = String(localized: "ccr_summary_separator")
 
     private static func verbText(_ verb: CodeToolLabelPlan.Verb) -> String {
         switch verb {

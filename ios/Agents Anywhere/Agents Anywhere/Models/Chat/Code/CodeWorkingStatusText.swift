@@ -16,6 +16,15 @@ nonisolated enum CodeWorkingStatusPhase: Equatable, Sendable {
     /// Normal work. The verb rotates with the official phase timing, anchored
     /// at the work block's start.
     case working(startedAt: Date)
+    /// A thinking block is in progress. `startedAt` is the turn start, not the
+    /// block start: the official live tiers measure `now − turnStartedAt`
+    /// (`0x102a89010`).
+    case thinking(startedAt: Date)
+    /// The turn's last thinking block just settled. The official label is
+    /// `思考了 X` only while `now < endedAt + 2 s`; past that window the
+    /// selector returns nil and the caller falls back to the verb rotation
+    /// anchored at the turn start (`0x102a88f20-f50`).
+    case thoughtFor(seconds: Int, endedAt: Date, fallbackStartedAt: Date)
 }
 
 /// The official `.server` verb rotation.
@@ -45,5 +54,95 @@ nonisolated enum CodeWorkingStatusText {
 
     static func verb(elapsed: TimeInterval) -> String {
         verbs[index(elapsed: elapsed)]
+    }
+}
+
+/// The official thinking labels.
+///
+/// Live: five tiers read straight from `0x102a89080`'s comparisons against
+/// `max(0, trunc(now − turnStartedAt))` — 0–14, 15–29, 30–44, 45–59, ≥ 60 s.
+/// Closed: the official `thinking_status_thought_for_duration`
+/// (`thought for %@` / `思考了 %@`) fed by `Duration.UnitsFormatStyle` with
+/// the exact parameters decoded from `0x100bb7810`
+/// (R24 `live-thinking-timer.md` §4).
+nonisolated enum CodeThinkingText {
+
+    /// The closed label lives only while `now < endedAt + 2.0`
+    /// (`0x102a88f20`: `fmov d0, #2.0`; `0x102a88f4c`: `now < endedAt+2`).
+    static let closedWindow: TimeInterval = 2
+
+    /// The five tiers in official order. The raw values are the official
+    /// string keys so the catalog stays traceable to the bundle.
+    enum LiveTier: String, Equatable, Sendable {
+        case thinking = "thinking_status_thinking"
+        case stillThinking = "thinking_status_still_thinking"
+        case thinkingMore = "thinking_status_thinking_more"
+        case thinkingSomeMore = "thinking_status_thinking_some_more"
+        case almostDone = "thinking_status_almost_done_thinking"
+    }
+
+    /// `0x102a89118` (`cmp x25, 0xe`), `0x102a89128` (`0x1d`),
+    /// `0x102a89138` (`0x2c`), `0x102a89148` (`0x3b`); input is already
+    /// `max(0, trunc(Δ))`.
+    static func liveTier(elapsed: TimeInterval) -> LiveTier {
+        let seconds = Int(max(0, elapsed))
+        switch seconds {
+        case ...14: return .thinking
+        case ...29: return .stillThinking
+        case ...44: return .thinkingMore
+        case ...59: return .thinkingSomeMore
+        default: return .almostDone
+        }
+    }
+
+    static func liveText(elapsed: TimeInterval, locale: Locale = .autoupdatingCurrent) -> String {
+        switch liveTier(elapsed: elapsed) {
+        case .thinking:
+            return String(localized: "thinking_status_thinking", locale: locale)
+        case .stillThinking:
+            return String(localized: "thinking_status_still_thinking", locale: locale)
+        case .thinkingMore:
+            return String(localized: "thinking_status_thinking_more", locale: locale)
+        case .thinkingSomeMore:
+            return String(localized: "thinking_status_thinking_some_more", locale: locale)
+        case .almostDone:
+            return String(localized: "thinking_status_almost_done_thinking", locale: locale)
+        }
+    }
+
+    /// Official closed rounding: `frinta` (half away from zero) then
+    /// `max(1, n)` (`0x102a88f60`, `0x102a88f90`).
+    static func closedSeconds(_ interval: TimeInterval) -> Int {
+        let rounded = interval.rounded()
+        guard rounded.isFinite, rounded < Double(Int.max), rounded > Double(Int.min) else {
+            return 1
+        }
+        return max(1, Int(rounded))
+    }
+
+    /// `0x102a891bc`: allowed `{hours, minutes, seconds}`, width `.narrow`,
+    /// `maximumUnitCount: 2`, zero-value units `.hide`, no value length,
+    /// fractional part `.hide`, locale passed in from
+    /// `Locale.autoupdatingCurrent` at the call site (`0x102a84cf4`).
+    static func durationText(seconds: Int, locale: Locale = .autoupdatingCurrent) -> String {
+        let duration = Duration.seconds(max(1, seconds))
+        let style = Duration.UnitsFormatStyle(
+            allowedUnits: [.hours, .minutes, .seconds],
+            width: .narrow,
+            maximumUnitCount: 2,
+            zeroValueUnits: .hide,
+            valueLength: nil,
+            fractionalPart: .hide
+        )
+        .locale(locale)
+        return duration.formatted(style)
+    }
+
+    /// `0x102cda6dc`: the format string is localized and the formatted
+    /// duration is the only argument.
+    static func closedText(seconds: Int, locale: Locale = .autoupdatingCurrent) -> String {
+        let amount = durationText(seconds: seconds, locale: locale)
+        let format = String(localized: "thought for %@", locale: locale)
+        return String(format: format, amount)
     }
 }

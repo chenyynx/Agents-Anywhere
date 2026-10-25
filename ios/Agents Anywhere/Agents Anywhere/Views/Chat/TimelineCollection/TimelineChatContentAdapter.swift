@@ -1855,6 +1855,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// block's own span: the wire's first/last ingest stamps when both are
     /// present, otherwise the span this client observed.
     private func liveThinkingPhase(startedAt: Date) -> CodeWorkingStatusPhase? {
+        // An optimistic user message is newer than every presented row: the
+        // scan would otherwise read the previous turn's trailing reasoning as
+        // the live block and show its closed label at the new turn's start.
+        // Same guard as `liveWorkingMarkBody`.
+        guard model.timeline.pendingMessages.isEmpty else { return nil }
         guard let item = liveThinkingItem() else {
             liveThinkingRowID = nil
             liveThinkingObservedStart = nil
@@ -1870,13 +1875,19 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             return .thinking(startedAt: startedAt)
         }
         if liveThinkingClosed?.id != item.id {
-            let endedAt = Date()
+            let observedStart = liveThinkingObservedStart
+            // A block this client watched running ends now. A block first
+            // seen already settled (reconnect, relaunch, history) ends at its
+            // wire stamp, clamped to now so clock skew cannot hold the label.
+            let endedAt = observedStart != nil
+                ? Date()
+                : min(Date(), ChatTimestamp.parse(item.updatedAt) ?? Date())
             liveThinkingClosed = (
                 id: item.id,
                 endedAt: endedAt,
                 seconds: Self.closedThinkingSeconds(
                     item: item,
-                    observedStart: liveThinkingObservedStart,
+                    observedStart: observedStart,
                     observedEnd: endedAt
                 )
             )

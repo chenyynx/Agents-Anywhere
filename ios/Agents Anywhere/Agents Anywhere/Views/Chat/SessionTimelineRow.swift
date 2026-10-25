@@ -109,16 +109,34 @@ struct UserMessageBubble: View {
 }
 
 struct PendingMessageRow: View {
+    /// Which page's user bubble the optimistic row uses. The Code page renders
+    /// settled user messages with `CodeUserBubble`; echoing a pending row with
+    /// the Chat accent bubble made the message change colour, padding and
+    /// corner radius the moment the server acknowledged it.
+    enum BubbleStyle { case chat, code }
+
     let pending: V2PendingMessage
     let chat: SessionChatModel
     let onAttachment: (V2AttachmentContent, UIImage?) -> Void
     let onDismiss: () -> Void
+    var bubbleStyle: BubbleStyle = .chat
     @State private var confirmsDismiss = false
     var body: some View {
-        UserMessageBubble(text: pending.content,
-            attachments: chat.session.attachmentPreviews.resolve(pending.attachments.map(\.content), clientID: pending.id),
-            onAttachment: onAttachment, loadThumbnail: chat.thumbnail, isPending: pending.delivery == .sending || pending.delivery == .accepted,
-            onDeliveryIssue: deliveryIssue == nil ? nil : { confirmsDismiss = true })
+        Group {
+            // The Code page has no attachment bubble yet, so a pending message
+            // that carries files keeps the Chat bubble (which renders them)
+            // instead of hiding the files until the echo arrives.
+            if bubbleStyle == .code, pending.attachments.isEmpty {
+                CodeUserBubble(text: pending.content,
+                    isPending: pending.delivery == .sending || pending.delivery == .accepted,
+                    onDeliveryIssue: deliveryIssue == nil ? nil : { confirmsDismiss = true })
+            } else {
+                UserMessageBubble(text: pending.content,
+                    attachments: chat.session.attachmentPreviews.resolve(pending.attachments.map(\.content), clientID: pending.id),
+                    onAttachment: onAttachment, loadThumbnail: chat.thumbnail, isPending: pending.delivery == .sending || pending.delivery == .accepted,
+                    onDeliveryIssue: deliveryIssue == nil ? nil : { confirmsDismiss = true })
+            }
+        }
         .confirmationDialog(deliveryIssue ?? "", isPresented: $confirmsDismiss, titleVisibility: .visible) {
             Button(String(localized: "返回编辑")) {
                 if chat.session.isLocalCreation { chat.onEditCreation?(pending) }

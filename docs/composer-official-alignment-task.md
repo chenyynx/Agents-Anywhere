@@ -37,6 +37,10 @@
 | 既有语料 | composer 玻璃/挂载/safeAreaBar 更正 | `EVIDENCE/round19/chrome-composer.md`、`EVIDENCE/round21/chrome-verify.md`、`CANONICAL/CORRECTIONS.md #64–66` |
 
 > 截图归属：pp 真机附件；`file_rcaDbU2vZNsfPqlP-Photo-9BC9389E.png` 即 R20 的 `EVIDENCE/round20/official_bottom.png` 原图（逐像素 diff=0）。Code/Chat 归属依据：Code 组截图带 `Claude Code · Hong Kong · Linux` 会话壳 + `描述任务…` placeholder；Chat 组为 `回复 Claude` placeholder。均为 **INFERENCE-high**（EXIF 无 App 标识）。
+>
+> **更正（2026-10-25）**：`EVIDENCE/round20/aa_top.png` / `aa_bottom.png` 与附件 `file_LOCwmv9BH9ooSwLM-Photo-775E116C.jpeg` 的顶部/底部裁剪**逐像素 diff=0.0**，实为**官方**截图，不是 AA。本任务单不把它们当 AA 现状证据；当前**没有** AA Code 页截图，需 pp 补拍（收起 / 键盘弹起各一张）。
+>
+> **新增 Chat 首页实测（pp 2026-10-25 附件）**：`file_PFS5pCqr_337R3Y1-Photo-59C45F26.png`（收起）与 `file_tLWTLhJ_8o9-bteJ-Photo-B5C2BC11.png`（键盘弹起）——收起 16 / 52 / 贴安全区；弹起 9 / 95 / 距键盘约 8.7；圆钮 36。这是 **Chat 首页/新对话**，不是 Code 会话页。
 
 ---
 
@@ -283,7 +287,7 @@ EOF
 
 | # | 项 | 等级 | 说明 |
 |---|---|---|---|
-| 1 | 页面归属（32/48 vs 16/52）来自截图 + 会话壳识别，不是二进制 | I | 需真机/多截图复核；若 Code 空闲态也变 16/52，则属状态而非页面差异 |
+| 1 | 页面归属（32/48 vs 16/52）来自截图 + 会话壳识别，不是二进制 | I | 需真机/多截图复核；若 Code 空闲态也变 16/52，则属状态而非页面差异。**当前缺“当前 build Code 键盘弹起”截图**：16 / 96–98 的展开基准来自旧版官方图，需补拍后再定标 |
 | 2 | `usesEarlyKeyboard` 是否覆盖已存在会话 | U | 只有新会话开关的证据；需 View Debugger/断点 |
 | 3 | `.earlyKeyboardPadding` 挂载点 | U | 静态未定位；实现按等价行为，不追求同构挂载 |
 | 4 | Debounce 值 | U | 官方 `DebouncedTaskModifier` 值未解出 |

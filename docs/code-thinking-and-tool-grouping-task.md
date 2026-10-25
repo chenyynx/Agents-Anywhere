@@ -137,6 +137,7 @@
 3. `CodeMessageBuilder.orderedToolRows`：跨消息时按 wire `orderSeq`，**不要**全局按 `blockIndex`（每条消息从 0 开始，会交错）；单消息内保持 blockIndex 规则。
 4. `CodeMessageRowView`/`CodeMessageHeightMeasurer` 复用 builder，无需重写算法；`codeHeightDigest` 仍只哈希 segments 数（span 恒一行）。
 5. 保留 `groupKey` seam：将来 A 方案只把 `source.toolGroupKey` 插到优先级最前。
+6. **runtime 门控**：跨消息合并先只对 Claude 开启；`CodeRuntimeProfile` 加一个 `mergesToolRowsAcrossMessages`（Claude=true，Codex/DSH=false），关闭时完全保持现状。思考行不门控（有 reasoning 就渲染：Claude/Codex 生效，DSH 无数据自然不显示）。
 
 **同批文案修复（iOS PATCH）**：
 
@@ -189,6 +190,8 @@
 | 7 | P2 运行态时长在刷新/重进后不可重现（客户端计时） | P2 | 官方同样只在运行态显示；持久行固定 `思考过程`，可接受 |
 | 8 | 官方 `Block.thinking`/narration 在 AA 无对应行，断组语义有差异 | P2 | 现有数据无样本；记录，不猜 |
 | 9 | A 方案（跨端 `toolGroupKey`） | 后续 | 需 pp 批契约；B 留 seam，不重写 UI |
+| 10 | 其它 runtime：思考行对 Codex 也会开始显示（connector 有 reasoning 投影）；DSH 无数据不受影响 | P1 | 有意通用；用 Codex fixture 验证文案/高度 |
+| 11 | 跨消息合并对 Codex/DSH 的形态未验证 | P1 | profile flag `mergesToolRowsAcrossMessages` 先只开 Claude，其它 runtime 保持现状 |
 
 ---
 
@@ -200,6 +203,8 @@
 - `ios/Agents Anywhere/Agents Anywhere/Models/Chat/Code/CodeRowHeightPlan.swift`
 - `ios/Agents Anywhere/Agents Anywhere/Models/Chat/TimelineGrouping.swift`
 - `ios/Agents Anywhere/Agents Anywhere/Models/Chat/Code/CodeToolLabelPlan.swift`
+- `ios/Agents Anywhere/Agents Anywhere/Models/Chat/Code/CodeRuntimeProfile.swift`
+- `ios/Agents Anywhere/Agents Anywhere/Models/Chat/Code/CodeToolSegments.swift`
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeMessageRowView.swift`
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeThinkingRow.swift`（新）
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeThinkingDetailView.swift`（新）

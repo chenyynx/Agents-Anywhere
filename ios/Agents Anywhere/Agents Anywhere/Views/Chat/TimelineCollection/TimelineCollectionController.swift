@@ -219,18 +219,24 @@ final class TimelineCollectionController: UIViewController {
     /// C3 gate uses it to capture the first displayed height for the async
     /// Markdown probe.
     var onApplyCompleted: (() -> Void)?
-    /// Distance from the window's bottom edge that the resting content must
-    /// clear: the composer bar's content height plus the home-indicator inset.
-    /// The collection view is a full-screen bleed, so UIKit's automatic
-    /// adjustment only supplies the window inset; this adds the bar height
-    /// (official `contentInset = max(safeArea − scrollView.safeAreaInsets, 0)`).
+    /// The composer bar's own content height. The collection view is a
+    /// full-screen bleed, so UIKit's automatic adjustment still supplies the
+    /// window inset (home indicator, keyboard); only the bar height is ours to
+    /// add. Folding the keyboard into this value made the inset change on every
+    /// keyboard frame and pushed the tail out of the viewport.
     var bottomBarInset: CGFloat = 0 {
-        didSet { applyBottomBarInset() }
+        didSet {
+            guard isViewLoaded, abs(oldValue - bottomBarInset) > 0.5 else { return }
+            applyBottomBarInset()
+            // The bar grows while typing (multi-line editor) and the reader is
+            // usually resting at the bottom; keep the tail above it.
+            pinBottomForKeyboardIfNeeded()
+        }
     }
 
     private func applyBottomBarInset() {
         guard isViewLoaded, collectionView != nil else { return }
-        collectionView.contentInset.bottom = max(0, bottomBarInset - view.safeAreaInsets.bottom)
+        collectionView.contentInset.bottom = max(0, bottomBarInset)
     }
 
     // MARK: - Lifecycle
@@ -403,9 +409,9 @@ final class TimelineCollectionController: UIViewController {
 
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
-        // The composer's contribution to the content inset is measured in
-        // SwiftUI and only depends on the window's own bottom inset, which
-        // this callback refreshes (rotation, home-indicator changes).
+        // Re-apply the composer's inset after the window inset settles; the
+        // value itself is the bar height, but the automatic adjustment this
+        // sits on top of changes here.
         applyBottomBarInset()
         // The keyboard and the composer both arrive as safe-area changes; the
         // old timeline anchored every container-size change to the bottom

@@ -12,11 +12,9 @@ import UIKit
 /// load actions are inert until that wiring lands.
 struct TimelineChatTimelineView: View {
     let model: SessionChatModel
-    /// Distance from the window's bottom edge to the first row the composer
-    /// must not cover — the bar's content height plus the home-indicator
-    /// inset. The collection view is a full-screen bleed, so it adds this to
-    /// its content inset itself (official
-    /// `contentInset = max(safeArea − scrollView.safeAreaInsets, 0)`).
+    /// The composer bar's content height. The collection view is a full-screen
+    /// bleed, so it adds this to its content inset; the window inset (home
+    /// indicator, keyboard) stays UIKit's automatic adjustment.
     let bottomBarInset: CGFloat
     @StateObject private var bridge: TimelineChatBridge
     @State private var keyboard = TimelineKeyboardMonitor()

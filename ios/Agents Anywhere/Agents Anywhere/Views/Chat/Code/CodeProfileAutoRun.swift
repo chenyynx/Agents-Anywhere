@@ -472,7 +472,10 @@ final class CodeProfileAutoRunModel {
         persist(phase: "views.workingMark")
 
         // The three live working-row texts: the ≥60 s thinking tier, the
-        // closed `思考了 X`, and the rotating-verb fallback.
+        // closed `思考了 X`, and the rotating-verb fallback. The stage lays
+        // them out around the vertical centre: the blank-capture detector
+        // samples the middle band, and a top-aligned stack left that band
+        // empty (2026-10-25 run 40205262431).
         stage = .thinkingStatus
         await wait(500)
         views["thinkingStatus"] = capture("code-thinking-status.png")
@@ -2172,7 +2175,7 @@ struct CodeProfileAutoRunRootView: View {
                 phase: .working(startedAt: now))
         }
         .padding(.horizontal, CodePageTheme.rowMarginLeading)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.systemBackground))
     }
 }

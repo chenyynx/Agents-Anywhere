@@ -15,7 +15,7 @@
 
 ## 0. 给 pp 的一屏结论
 
-### 思考块：官方其实是两个东西
+### 思考块：官方有两个代码路径，但持久层只有一套
 
 - **tag 3 `Block.thinking(WorkingStatus?, activity, turnStartedAt)` → `CodeThinkingView`**（每 turn 一条，实时行）[E]：
   - 思考进行中：5 档递增文案，阈值直读 `0x102a89080`：0–14s `thinking…` / 15–29s `still thinking…` / 30–44s `thinking more…` / 45–59s `thinking some more…` / ≥60s `almost done thinking…`；
@@ -24,8 +24,9 @@
 - **tag 4 `Block.thinkingContent(String)` → `ThinkingContentRow`**（每个 thinking block 一条，持久行）[E]：固定图标 `anthropicon.extendedThinking` + `thought_process`（`Thought process` / `思考过程`）+ caret；点击 → **全屏 push 详情页**，正文是完整思考 markdown，页头同为 `思考过程`。
 - **原始思考正文不在 transcript 内联**，只在详情页 [E+INFERENCE-high]。
 - `_transcriptShowsThinkingRow`：交接里的 accessor `0x10292dd9c` **是误读**（它是 `SessionModel` 的 type metadata accessor，24 个 caller 都是 metadata 消费者）；getter/setter、默认值、门控对象 **UNKNOWN**。全 App 35 个 bundle 扫描，**没有任何用户可见的“显示思考”设置** [E]。
-- **AA 建议（有意合并，需 pp 确认）**：每条 settled thinking block 一行——有 `durationMs` 显示 `思考了 X`，没有则显示 `思考过程`；点击进详情看全文。理由：官方持久行本身只有固定 `思考过程` 文案且无时长；`思考了 X` 是 tag 3 实时行的闭合文案。合并成一行同时满足“有摘要行 + 能看全文”，不会一个思考出两行。**这是对官方的有意简化，标 [I]**。
-- **时长**：connector 在 reasoning content 补 `durationMs`（content 是自由 JSON，server/契约零改动）；格式化照官方 `Duration.UnitsFormatStyle`（h/m/s、`.narrow`、最多 2 段、零值/小数隐藏、locale `autoupdatingCurrent`、最小 1 秒、闭合四舍五入）——63s → `1分钟3秒` / `1m 3s`，与 pp 截图一致 [E]。
+- **“会不会出现两套思考”已闭合：不会。** tag 3 的承载者是一个**合成 DisplayMessage，id 固定为 `"thinking"`**（`0x10272d40c` 把 8 字符小字符串 `thinking` 写进 DisplayMessage 第一字段 `id`；role=assistant；`DisplayMessage.id` 字段序见 `swift_types.csv:49347`）。固定 id 在按 id 索引的消息列表里**最多只能存在一条**，所以它是运行态合成行，不是每 turn 持久化的历史行；多个 transcript 构建函数对 `id == "thinking"` 做特判（比较函数 `0x102559b18`，4 个 caller；`0x1027a6efc` 在命中时跳过该消息）[E]。**settled transcript 的持久思考行只有 tag 4**（每条 thinking block 一条「思考过程」）。
+- **AA 落码因此改成严格官方**：持久行 = `思考过程`（tag 4 形态）+ 点击看全文；`思考了 X` 只在运行态工作行出现（tag 3 形态，客户端计时），回合结束随合成行消失。**不需要 connector 补时长**；历史里官方本来就不显示“思考了 X” [E]。
+- 时长格式化照官方 `Duration.UnitsFormatStyle`（h/m/s、`.narrow`、最多 2 段、零值/小数隐藏、locale `autoupdatingCurrent`、最小 1 秒、闭合四舍五入）——63s → `1分钟3秒` / `1m 3s`，与 pp 截图一致 [E]；只用于运行态行。
 - 官方详情是全屏 push；AA 现有工具详情是页面级 sheet（`TimelineChatTimelineView.swift:193`）。思考详情跟随 AA 现有工具详情用同一个 sheet，避免同页双 sheet——**有意偏离，标 [I]**。
 
 ### 工具分组
@@ -52,7 +53,9 @@
 | 持久行内容 | `extendedThinking` 图标（`.large`）+ `Thought process`/`思考过程` + caret；无正文 | `0x102c6bad4`；`anthropicon-map.tsv:140` |
 | 点击 | `presentDetail(.thinkingText(text))` → `NavigationStack` push 全屏页，markdown 正文，标题 `思考过程` | INFERENCE-high；§3.2/§3.3 |
 | 正文内联 | **没有**任何路径在 transcript 内联 raw thinking | §5 |
-| 时长格式化 | `Duration.UnitsFormatStyle`：allowed `{h,m,s}`、width `.narrow`、max 2 段、zero/fractional `.hide`、`Locale.autoupdatingCurrent`；`max(1, round(Δ))` | `0x102a891bc`；§2.4 |
+| **实时行承载（本轮新增）** | tag 3 属于一个**合成 DisplayMessage**，`id` 固定为小字符串 `"thinking"`（8 字符，`0x10272d40c` 写入 `DisplayMessage.id`；role=assistant）。固定 id ⇒ 按 id 索引的消息列表里最多一条；transcript 构建器对 `id == "thinking"` 特判（比较函数 `0x102559b18`，4 个 caller；`0x1027a6efc` 命中时跳过） | 本轮新增，EVIDENCE |
+| **持久/运行结论** | settled transcript 的持久思考行只有 tag 4（每 thinking block 一条）；tag 3 是运行态合成行，不是历史行 | EVIDENCE-high |
+| 时长格式化 | `Duration.UnitsFormatStyle`：allowed `{h,m,s}`、width `.narrow`、max 2 段、zero/fractional `.hide`、`Locale.autoupdatingCurrent`；`max(1, round(Δ))`。**只用于运行态行**（持久行固定 `思考过程`，不带时长） | `0x102a891bc`；§2.4 |
 | 用户开关 | 不存在（35 个 bundle 全扫） | §1.4 |
 | `_transcriptShowsThinkingRow` | 字段存在（CSV 51024）；getter/setter/默认值/门控 UNKNOWN；不在 `DisplayBlockView`/`SessionMessageStyle` 内，若门控只能在上游 | §1.2–1.5 |
 
@@ -104,23 +107,22 @@
 
 **P1（iOS）：持久思考行 + 详情页（不依赖 connector）**
 
-1. 模型：`CodeMessageRow.Block.reasoning(id:text:status:durationMs:)`；`CodeMessageBuilder.messageRow` 带上 `status`/`durationMs`（`CodeMessageTimeline.swift:20,108-127`）。
-2. 视图：新 `CodeThinkingRow`，视觉照官方 `CollapsedRowButton`：`anthropicon.extendedThinking`（`.large`）+ 标签 + caret，15/400/21，垂直 padding 6、minHeight 24。可复用 `CodeCollapsedToolRow` 的常量，但用独立视图（无 verb/target/diff 语义）。
-3. 标签：`durationMs` 存在 → `思考了 <格式化时长>`；否则 → `思考过程`。这是**有意合并 tag3 闭合文案 + tag4 标签**（见 §0），默认显示。
-4. 详情：新 `CodeThinkingDetailView`（NavigationStack + ScrollView + `ChatMarkdownView`，标题 `思考过程`）。页面级 `.sheet(item:)` 与工具详情统一成 `CodePageDetail` enum（`TimelineChatTimelineView.swift:193-198,225,244-246`），避免同视图双 sheet。
-5. `CodeMessageRowView`：`renderRows` 不再过滤 `.reasoning`；`blockView` 的 `.reasoning` 换成 `CodeThinkingRow`；新增 `onThinkingDetail` 回调（照 `onToolDetail` 机制，`CodeMessageRowView.swift:57-72,234-250`）。
-6. 高度：`CodeMessageHeightMeasurer.planRows` 不再跳过 reasoning；`CodeRowHeightPlan.Block` 加 `.thinking`，按 `toolLineHeight + 2*toolButtonPadding` 计一行（`CodePageTheme.swift:51,71`）。
-7. 签名/性能：adapter `groupSignature` 的 reasoning 行改用 `id + status + durationMs`，不用 wire `revision`；`hasVisibleBlock` 对 reasoning 返回 true；`codeHeightDigest` 纳入标签是否有时长。
-8. 思考行只在 `status == done` 时显示；running 期间由 turn 级 working 行负责（避免流式行反复出现/消失）。
+1. 模型：`CodeMessageRow.Block.reasoning(id:text:)` 不变（只加 `status` 用于“done 才显示”）；`CodeMessageBuilder.messageRow` 不动文案。
+2. 视图：新 `CodeThinkingRow`，视觉照官方 `CollapsedRowButton`：`anthropicon.extendedThinking`（`.large`）+ **固定标签 `思考过程`** + caret，15/400/21，垂直 padding 6、minHeight 24。可复用 `CodeCollapsedToolRow` 的常量，但用独立视图（无 verb/target/diff 语义）。
+3. 详情：新 `CodeThinkingDetailView`（NavigationStack + ScrollView + `ChatMarkdownView`，标题 `思考过程`）。页面级 `.sheet(item:)` 与工具详情统一成 `CodePageDetail` enum（`TimelineChatTimelineView.swift:193-198,225,244-246`），避免同视图双 sheet。
+4. `CodeMessageRowView`：`renderRows` 不再过滤 `.reasoning`；`blockView` 的 `.reasoning` 换成 `CodeThinkingRow`；新增 `onThinkingDetail` 回调（照 `onToolDetail` 机制，`CodeMessageRowView.swift:57-72,234-250`）。
+5. 高度：`CodeMessageHeightMeasurer.planRows` 不再跳过 reasoning；`CodeRowHeightPlan.Block` 加 `.thinking`，按 `toolLineHeight + 2*toolButtonPadding` 计一行（`CodePageTheme.swift:51,71`）。
+6. 签名/性能：adapter `groupSignature` 的 reasoning 行改用 `id + status`，不用 wire `revision`；`hasVisibleBlock` 对 reasoning 返回 true；`codeHeightDigest` 纳入 thinking 行的存在性。
+7. 思考行只在 `status == done` 时显示；running 期间由 turn 级 working 行负责（避免流式行反复出现/消失）。
 
-**P2（connector + iOS）：补 `durationMs`，显示 `思考了 X`**
+**P2（iOS，官方运行态对齐，可与 P1 同批）**：工作行的思考态文案。
 
-1. `timeline/stream.py`：`partial_thinking_started: dict[int, float]`（monotonic）；`content_block_start` 按 block type 记录（即使文本为空）；`content_block_stop` / `_close_open_thinking` 算 `duration_ms`。
-2. `timeline/messages.py::reasoning_item` 增加 `duration_ms` → `metadata`（会平铺进 content）；**必须同步 `system_items_for_message`**（回合结束重投影），`lifecycle.py:3199-3206` 把 timings 传进去，否则最后一次写入抹掉。
-3. 历史导入无时长 → 缺省不写；客户端显示 `思考过程`。只做 Claude runtime；Codex/DSH 不动。
-4. iOS 格式化：`Duration.UnitsFormatStyle` 照官方参数；`max(1, round(Δ))`；中文预期 `1分钟3秒`（官方 iOS ICU 是否带空格未验证；以真机为准）。
+1. 现状：`CodeWorkingStatusRow` 用 20 动词轮换（R20）。官方 tag 3 在**有思考时间戳**时改走 5 档思考文案（`0x102a89080`，阈值 15/30/45/60s），闭合后显示 `思考了 X`（`0x102cda6dc`）。
+2. AA 实现：working 行检测“最新 reasoning item 为 running”；若是，用该 item 首次出现时刻（客户端 clock）做锚点，按 15/30/45/60s 选 `思考中…`/`仍在思考…`/`继续思考…`/`继续思考…`/`即将完成思考…`；闭合后显示 `思考了 X` 直到回合结束。没有 running reasoning 时保持现有 20 动词。
+3. 时长格式化：`Duration.UnitsFormatStyle` 照官方参数（h/m/s、narrow、最多 2 段、零/小数隐藏、locale `autoupdatingCurrent`、`max(1, round(Δ))`）；中文预期 `1分钟3秒`（iOS ICU 是否带空格以真机为准）。
+4. 这是**运行态合成行**，不持久；不要在历史行上显示时长。
 
-**P3（可选，后续）**：实时行 5 档文案（thinking…/still thinking…/…）替换现有 20 动词的思考段。需要 working 行感知“有 running reasoning block”，并把计时锚点放在该 block 首次出现；不影响 P1/P2 的交付。
+**P3（可选扩展，非官方）**：若 pp 要在历史持久行也看到 `思考了 X`，才需要 connector 在 reasoning content 补 `durationMs`（content 自由 JSON，server/契约零改动；实现点见旧稿：`stream.py` 记录 monotonic 起止、`messages.py::reasoning_item` 写入、`system_items_for_message` 重投影同步）。官方不做，默认不做。
 
 **开关**：官方无用户设置 [E]。**不新增开关**，默认显示；若 pp 日后要，按 `@AppStorage("aa.code.thinkingRow")` 两态（`full`/`compact`，不提供完全隐藏）。
 
@@ -159,16 +161,15 @@
   - 三条 tool-only 消息 + reasoning 中间 → 1 行/1 span，call 顺序 = orderSeq；
   - text/user/marker 中间 → 2 行；无 key 行 → 断开；interaction target → standalone；
   - skip 不 flush；special flush；A-B-A 交错 → 1 span 且顺序正确；同一 unit 再规划幂等。
-- 思考行：`CodeProfileAutoRun` 新增 fixture——done 带 duration / done 无 duration / running（不显示）；断言 `expectedBlocks`、标签文案、行高。
-- 时长格式化：`CodeThinkingDurationFormat` 纯函数单测，覆盖 1/3/63/125/3723/7384 秒的 zh/en 输出。
+- 思考行：`CodeProfileAutoRun` 新增 fixture——done（显示 `思考过程`）/ running（不显示）；断言 `expectedBlocks`、标签文案、行高。
+- P2 运行态：注入时钟的纯函数单测（0/14/15/29/30/44/45/59/60s 档位、闭合 `思考了 X`、zh/en 输出）；`CodeProfileAutoRun` 加一条 working 行 fixture。
 - `code-profile` gate（`.github/workflows/ios-build.yml`，`code_profile: true`）新增 fixture：`rowCount == 1`、`segments == ["span(t1,t2,t3)"]`、thinking row 文案。
-- connector：`pytest` 新增 duration 传播 / 回合结束重投影 / 历史缺省用例（`connector/tests/`）。
-- 本地：`swift test --package-path ios`（相关用例）+ `cd connector && uv run pytest -q tests/test_claude_*`；CI 为权威门禁。
+- 本地：`swift test --package-path ios`（相关用例）；CI 为权威门禁。
 
 ### 4.2 真机验收判据（pp）
 
 1. 串行 3 个工具：应逐步长成 **1 行**（不是 3 行），label 随类别更新；点击详情包含全部 calls。
-2. 思考行：思考中只有工作行；思考结束出现 `思考了 X`（有 duration）或 `思考过程`（历史/无 duration）；点击显示完整思考正文，标题 `思考过程`。
+2. 思考行：思考中工作行显示思考态文案（P2）；闭合后工作行短暂显示 `思考了 X`（运行态合成行，随回合结束消失）；持久行始终是 `思考过程`，点击显示完整思考正文，标题也是 `思考过程`。
 3. 滚动/流式：工具行合并增长时不跳位、文字不闪；底部跟随正常。
 4. 失败工具：label 带 `(N failed)` / `（N 项失败）`。
 5. 深色/大字号/中英文：思考行与工具行不破版。
@@ -182,10 +183,10 @@
 | 1 | 官方是否跨 API 消息合并工具仍是 [I]（~60%） | P1 | 若证伪，B 降级为“不跨消息合并、只补文案”；本单先按 [I] 执行，真机对照官方 |
 | 2 | scheduled turn 无 user 行 → B 可能跨 turn 合并 | P1 | 生产频率 [U]；先接受并记录；必要时后续批准 `source.turnId` 透传（小契约改动） |
 | 3 | `_transcriptShowsThinkingRow` 默认值/门控对象 UNKNOWN | P1 | 不依赖它：AA 按 pp 要求默认显示；若后续证出官方默认隐藏，再加开关 |
-| 4 | 思考行“合并 tag3 文案 + tag4 标签”是有意偏离官方两视图 | P1 | 已在 §0 标注；若 pp 要严格两行，改为“实时行思考了 X + 持久行思考过程” |
+| 4 | “tag 3 是固定 id `thinking` 的合成行”是静态证据（id 写入 + 构建器特判），未做运行时观察 | P1 | 若真机出现两条持久思考，按本行回退为“只保留 tag 4 持久行”；当前按 [EVIDENCE-high] 执行 |
 | 5 | 官方详情是全屏 push，AA 用页面级 sheet | P2 | 跟随 AA 现有工具详情交互；若后续统一成全屏，工具/思考一起改 |
-| 6 | 时长单位/空格（iOS ICU 与 Linux 可能不同） | P2 | 用官方同一 API `Duration.UnitsFormatStyle`；真机核对 zh 输出 |
-| 7 | 历史 reasoning 行无时长 | P2 | 降级 `思考过程`，不伪造 |
+| 6 | P2 运行态 5 档文案的计时锚点（`activity.blockStartedAt` vs `turnStartedAt`）RE-1 未逐字段对位 | P2 | 先用 reasoning item 首次出现（客户端 clock）；真机对照官方相位 |
+| 7 | P2 运行态时长在刷新/重进后不可重现（客户端计时） | P2 | 官方同样只在运行态显示；持久行固定 `思考过程`，可接受 |
 | 8 | 官方 `Block.thinking`/narration 在 AA 无对应行，断组语义有差异 | P2 | 现有数据无样本；记录，不猜 |
 | 9 | A 方案（跨端 `toolGroupKey`） | 后续 | 需 pp 批契约；B 留 seam，不重写 UI |
 
@@ -204,6 +205,7 @@
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeThinkingDetailView.swift`（新）
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeCollapsedToolRow.swift`
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeMessageHeightMeasurer.swift`
+- `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeWorkingStatusRow.swift`（P2）
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/TimelineCollection/TimelineChatContentAdapter.swift`
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/TimelineCollection/TimelineChatTimelineView.swift`
 - `ios/Agents Anywhere/Agents Anywhere/Views/Components/AnthropiconAssets.swift`
@@ -212,11 +214,4 @@
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeProfileAutoRun.swift`
 - `ios/Tests/ClientCoreTests/CodeProfileModelTests.swift`
 
-**connector（P2，单独 commit）**
-
-- `connector/connector/runtimes/claude/timeline/stream.py`
-- `connector/connector/runtimes/claude/timeline/messages.py`
-- `connector/connector/runtimes/claude/turns/lifecycle.py`
-- `connector/tests/`（新增用例）
-
-**不做**：server/contracts/其它端（B 方案不碰契约；P2 走 content 自由 JSON）。
+**不做**：connector/server/contracts/其它端（P1/P2 纯 iOS；思考时长只在运行态，由客户端计时）。P3（历史时长）若 pp 要，另开 connector 项。

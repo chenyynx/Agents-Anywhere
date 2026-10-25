@@ -29,7 +29,7 @@ struct CodeThinkingDetailView: View {
                     .resolved(for: colorScheme)
                     .ignoresSafeArea()
             }
-            .navigationTitle(Text(String(localized: "思考过程")))
+            .navigationTitle(Text(String(localized: "thought_process")))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 SheetCloseToolbar { dismiss() }

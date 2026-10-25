@@ -27,7 +27,7 @@ struct CodeThinkingRow: View {
                     .foregroundStyle(CodePageTheme.toolRowSecondaryColor
                         .resolved(for: colorScheme))
 
-                Text(String(localized: "思考过程"))
+                Text(String(localized: "thought_process"))
                     .font(.custom(CodePageTheme.sansFontName,
                                   size: CodePageTheme.toolRowFontSize,
                                   relativeTo: CodePageTheme.toolRowTextStyle))
@@ -47,7 +47,7 @@ struct CodeThinkingRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(String(localized: "思考过程"))
+        .accessibilityLabel(String(localized: "thought_process"))
     }
 }
 

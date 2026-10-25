@@ -18591,6 +18591,23 @@
         }
       }
     },
+    "thought_process": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thought process"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "思考过程"
+          }
+        }
+      }
+    },
     "thinking_status_thinking": {
       "extractionState": "manual",
       "localizations": {

@@ -645,8 +645,8 @@ jobs:
   code-profile:
     # C5/W8 gate: drive the Code page's model and views in a simulator. The
     # app is launched with `aa-code-profile`; it writes `code-profile.json`
-    # (checkpoint after every phase, final `completed: true`) plus three PNGs,
-    # and this job fails when the report completed with any failure.
+    # (checkpoint after every phase, final `completed: true`) plus the capture
+    # PNGs, and this job fails when the report completed with any failure.
     needs: test
     if: inputs.code_profile == true
     runs-on: macos-26
@@ -751,7 +751,7 @@ jobs:
             xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/code-profile-failure.png" || true
             exit 1
           fi
-          for name in code-message-row.png code-detail.png code-working-mark.png; do
+          for name in code-message-row.png code-detail.png code-working-mark.png code-thinking-status.png; do
             cp "$CONTAINER/Documents/$name" "$RUNNER_TEMP/$name" 2>/dev/null || true
           done
           xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/code-profile-final.png" || true
@@ -841,6 +841,7 @@ jobs:
             ${{ runner.temp }}/code-message-row.png
             ${{ runner.temp }}/code-detail.png
             ${{ runner.temp }}/code-working-mark.png
+            ${{ runner.temp }}/code-thinking-status.png
             ${{ runner.temp }}/code-profile-failure.png
             ${{ runner.temp }}/code-profile-final.png
             ${{ runner.temp }}/code-profile-build.log

@@ -727,13 +727,14 @@ final class AssistantTableBlockView: UIView {
 /// Evidence: `EVIDENCE/round19/typography-inline.md` §3 — radius 6.4,
 /// horizontal padding 4/side, fill grey 0.043 @5% (light) / white @7.5%
 /// (dark), stroke (0.118,0.118,0.114)@15% (light) /
-/// (0.882,0.878,0.851)@15% (dark), width 1/displayScale. The vertical extent
-/// comes from the run font's typographic bounds; the official vertical
-/// padding has no constant (§3, §10 #4), so the chip uses the minimal
-/// symmetric inset carried by the style (0 pt).
+/// (0.882,0.878,0.851)@15% (dark), width 1/displayScale.
 ///
-/// The chip is decoration only: none of these attributes changes the
-/// attributed string's line layout, so a chipped run keeps exactly the height
+/// R22 corrected the vertical geometry
+/// (`EVIDENCE/round22/official-inline-chip.md` §Q2): the official chip is
+/// anchored to the **baseline**, not centered on the line fragment, and is
+/// clamped to the fragment with a 1 pt correction on each side. The chip is
+/// decoration only — none of these attributes changes the attributed string's
+/// line layout, so a chipped run keeps exactly the height
 /// `AssistantMarkdownTextLayout.height(of:)` measures.
 @MainActor
 enum AssistantInlineCodeChipRenderer {
@@ -780,13 +781,22 @@ enum AssistantInlineCodeChipRenderer {
 
             let style = chipStyle(in: attributed, at: range.location,
                                   traitCollection: traitCollection)
+            // Official chip geometry is baseline-anchored, not centered on the
+            // line fragment: `top = max(fragment.minY, baseline − ascent − 1)`,
+            // `bottom = min(fragment.maxY, baseline + descent + 1)`
+            // (EVIDENCE/round22/official-inline-chip.md §Q2). Segments that
+            // share a line are merged before drawing so a wrapped run cannot
+            // paint the same 4 pt padding twice.
+            var segments: [(frame: CGRect, baseline: CGFloat)] = []
             layoutManager.enumerateTextSegments(
                 in: textRange, type: .standard, options: []
-            ) { _, frame, _, _ in
-                drawChip(frame: frame.offsetBy(dx: origin.x, dy: origin.y),
-                         font: font, style: style, lineWidth: lineWidth)
+            ) { _, frame, baseline, _ in
+                segments.append((frame, baseline))
                 return true
             }
+            drawChips(segments: segments.map {
+                ($0.frame.offsetBy(dx: origin.x, dy: origin.y), $0.baseline)
+            }, font: font, style: style, lineWidth: lineWidth)
         }
     }
 
@@ -820,12 +830,19 @@ enum AssistantInlineCodeChipRenderer {
                                   traitCollection: traitCollection)
             let glyphRange = layoutManager.glyphRange(
                 forCharacterRange: range, actualCharacterRange: nil)
-            layoutManager.enumerateEnclosingRects(
-                forGlyphRange: glyphRange,
-                withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0),
-                in: container
-            ) { frame, _ in
+            // TextKit 1 has no baseline in `enumerateEnclosingRects`; derive it
+            // from the line fragment (`location(forGlyphAt:).y` is the distance
+            // from the fragment's top to the baseline).
+            layoutManager.enumerateLineFragments(forGlyphRange: glyphRange) {
+                lineRect, _, _, lineGlyphRange, _ in
+                let intersection = NSIntersectionRange(lineGlyphRange, glyphRange)
+                guard intersection.length > 0 else { return }
+                let baseline = lineRect.minY
+                    + layoutManager.location(forGlyphAt: intersection.location).y
+                let frame = layoutManager.boundingRect(forGlyphRange: intersection,
+                                                       in: container)
                 drawChip(frame: frame.offsetBy(dx: origin.x, dy: origin.y),
+                         baseline: baseline + origin.y,
                          font: font, style: style, lineWidth: lineWidth)
             }
         }
@@ -887,18 +904,64 @@ enum AssistantInlineCodeChipRenderer {
         return ranges
     }
 
+    /// Merge the segments of one chip that share a line before drawing.
+    ///
+    /// A wrapped run can be split into several segments on the same line; if
+    /// each segment expanded by the 4 pt horizontal padding is drawn
+    /// separately, the overlap is filled twice and reads as a darker band.
+    private static func drawChips(segments: [(frame: CGRect, baseline: CGFloat)],
+                                  font: UIFont,
+                                  style: ChipStyle,
+                                  lineWidth: CGFloat) {
+        var lines: [[(frame: CGRect, baseline: CGFloat)]] = []
+        for segment in segments {
+            if let index = lines.firstIndex(where: {
+                abs($0[0].frame.minY - segment.frame.minY) < 0.5
+            }) {
+                lines[index].append(segment)
+            } else {
+                lines.append([segment])
+            }
+        }
+        for line in lines {
+            let minX = line.map({ $0.frame.minX }).min() ?? 0
+            let maxX = line.map({ $0.frame.maxX }).max() ?? 0
+            let frame = CGRect(x: minX, y: line[0].frame.minY,
+                               width: maxX - minX, height: line[0].frame.height)
+            drawChip(frame: frame, baseline: line[0].baseline,
+                     font: font, style: style, lineWidth: lineWidth)
+        }
+    }
+
     private static func drawChip(frame: CGRect,
+                                 baseline: CGFloat,
                                  font: UIFont,
                                  style: ChipStyle,
                                  lineWidth: CGFloat) {
         guard frame.width > 0, frame.height > 0 else { return }
-        let glyphHeight = max(1, font.ascender - font.descender)
-        let height = min(frame.height, glyphHeight + style.verticalPadding * 2)
-        let rect = CGRect(
-            x: frame.minX - style.horizontalPadding,
-            y: frame.midY - height / 2,
-            width: frame.width + style.horizontalPadding * 2,
-            height: height)
+        // [E] R22 official-inline-chip.md §Q2 — baseline-anchored and clamped
+        // to the line fragment, with a 1 pt correction on each side:
+        //   top    = max(fragment.minY, baseline − ascent − 1)
+        //   bottom = min(fragment.maxY, baseline + descent + 1)
+        let ascent = font.ascender
+        let descent = -font.descender
+        var top = max(frame.minY, baseline - ascent - 1)
+        var bottom = min(frame.maxY, baseline + descent + 1)
+        if bottom <= top {
+            top = baseline - ascent
+            bottom = baseline + descent
+        }
+        let height = max(1, bottom - top)
+        var x = frame.minX - style.horizontalPadding
+        var width = frame.width + style.horizontalPadding * 2
+        // The text view paints into its own bounds; a chip that starts a line
+        // would otherwise lose its rounded cap (and its 4 pt padding) at x < 0.
+        if x < 0 {
+            width += x
+            x = 0
+        }
+        guard width > 0 else { return }
+        let rect = CGRect(x: x, y: top, width: width, height: height)
         guard rect.width > 0, rect.height > 0 else { return }
         let radius = min(style.cornerRadius, rect.height / 2)
         style.fill.setFill()

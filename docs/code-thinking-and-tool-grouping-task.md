@@ -148,7 +148,14 @@
 - diff 聚合：跳过 failed 与 `fileWriteKind==update`；任一 call 不是 diff/失败/更新 → 整组不显示（round21 §2.6）。
 - `serverSummary` / `receivedMessages` **不做**：AA 无数据源，伪造违反“宁缺勿假”。
 
-### 3.3 官方图标资产
+### 3.3 关闭按钮（pp 2026-10-25 指出的顺带修复）
+
+- 现状：`CodeToolDetailView.swift:232-247` 自绘 `Image(systemName: "xmark")`（13pt semibold）+ 30pt 圆底（`primary.opacity(0.08)`），非官方件。
+- 官方：`ClaudeCoreUI.DismissXButton`（`title/appearance/action`；`Appearance.plain/.floating`；`DismissXButtonStyle` + `DismissXAppearance`；`swift_types.csv:13729-13735`）。
+- 待 patch `dismiss-x-button` 反编译给出图标源/字号字重/圆底/阴影/尺寸后，按官方 `.floating`（或 sheet 场景对应的 appearance）1:1 替换。
+- 注意：官方工具详情是 push 页（有返回箭头）；AA 用页面级 sheet 才需要这个 X，外观仍按官方 `DismissXButton`。
+
+### 3.4 官方图标资产
 
 - 从 `ClaudeDesignSystem_ClaudeIcons.bundle/Assets.car` 提取 `anthropicon.extendedThinking` 的 A 变体 SVG（方法同 `EVIDENCE/round20/code-card-icons.md` §3.2：LZFSE `bvxn` 解包，3 个 SVG 变体；用 A）。
 - 新增 `Assets.xcassets/anthropicon.extendedThinking.imageset/`（Contents.json + SVG）与 `AnthropiconAssets.swift` 尺寸表：`14x14 / 16x16 / 19x19`（small/medium/large）。
@@ -207,6 +214,7 @@
 - `ios/Agents Anywhere/Agents Anywhere/Models/Chat/Code/CodeRuntimeProfile.swift`
 - `ios/Agents Anywhere/Agents Anywhere/Models/Chat/Code/CodeToolSegments.swift`
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeMessageRowView.swift`
+- `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeToolDetailView.swift`（关闭按钮）
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeThinkingRow.swift`（新）
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeThinkingDetailView.swift`（新）
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeCollapsedToolRow.swift`

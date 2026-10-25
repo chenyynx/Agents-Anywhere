@@ -69,8 +69,11 @@ enum CodeMessageHeightMeasurer {
                 var texts: [String] = []
                 for block in row.blocks {
                     switch block {
-                    case .reasoning:
-                        continue
+                    case let .reasoning(_, text, status):
+                        guard status == .done,
+                              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        else { continue }
+                        blocks.append(.thinking)
                     case let .text(_, text):
                         if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             texts.append(text)
@@ -88,8 +91,11 @@ enum CodeMessageHeightMeasurer {
             } else {
                 for block in row.blocks {
                     switch block {
-                    case .reasoning:
-                        continue
+                    case let .reasoning(_, text, status):
+                        guard status == .done,
+                              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        else { continue }
+                        blocks.append(.thinking)
                     case let .text(_, text):
                         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                             continue

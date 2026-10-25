@@ -191,9 +191,14 @@ struct TimelineChatTimelineView: View {
             // Rows report taps through the adapter; this page-level sheet
             // survives the streaming reconfigures that rebuild every cell.
             .sheet(item: $bridge.codeDetailRequest) { request in
-                CodeToolDetailView(call: request.call,
-                                   followingCalls: request.following,
-                                   cwd: model.session.metadata?.cwd)
+                switch request {
+                case let .tool(tool):
+                    CodeToolDetailView(call: tool.call,
+                                       followingCalls: tool.following,
+                                       cwd: model.session.metadata?.cwd)
+                case let .thinking(thinking):
+                    CodeThinkingDetailView(text: thinking.text)
+                }
             }
             // Probe builds add a floating diagnostics button; other builds
             // compile the call site to `self` (TimelineProbe.swift).
@@ -222,7 +227,7 @@ final class TimelineChatBridge: ObservableObject {
     /// The Code page's tool detail sheet. Held at the page level, not in the
     /// row: a streaming reconfigure rebuilds the hosted cell's view, and a
     /// cell-local `@State` sheet could be dismissed mid-read.
-    @Published var codeDetailRequest: CodeToolDetailRequest?
+    @Published var codeDetailRequest: CodePageDetailRequest?
     private(set) var readerTookOver = false
     private var navigationSuspended = false
     private var reduceMotion = false
@@ -242,7 +247,10 @@ final class TimelineChatBridge: ObservableObject {
         self.adapter = adapter
         // The adapter owns the row views; the page owns the presentation.
         adapter.onCodeToolDetail = { [weak self] request in
-            self?.codeDetailRequest = request
+            self?.codeDetailRequest = .tool(request)
+        }
+        adapter.onCodeThinkingDetail = { [weak self] request in
+            self?.codeDetailRequest = .thinking(request)
         }
     }
 

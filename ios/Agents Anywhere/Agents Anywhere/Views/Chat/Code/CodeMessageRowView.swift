@@ -55,6 +55,8 @@ struct CodeMessageRowView: View {
     /// owned by this row would sit inside a hosting cell that every streaming
     /// reconfigure rebuilds, and could dismiss an open detail.
     var onToolDetail: (CodeToolDetailRequest) -> Void
+    /// A `思考过程` row's tap; same page-level presentation as a tool detail.
+    var onThinkingDetail: (CodeThinkingDetailRequest) -> Void
 
     init(group: ChatTimelineGroup,
          profile: CodeRuntimeProfile,
@@ -62,7 +64,8 @@ struct CodeMessageRowView: View {
          streaming: CodeStreamingText? = nil,
          preparedBlocks: [String: [MarkdownBlockSnapshot]]? = nil,
          typography: TimelineTypographySnapshot? = nil,
-         onToolDetail: @escaping (CodeToolDetailRequest) -> Void = { _ in }) {
+         onToolDetail: @escaping (CodeToolDetailRequest) -> Void = { _ in },
+         onThinkingDetail: @escaping (CodeThinkingDetailRequest) -> Void = { _ in }) {
         self.group = group
         self.profile = profile
         self.cwd = cwd
@@ -70,6 +73,7 @@ struct CodeMessageRowView: View {
         self.preparedBlocks = preparedBlocks
         self.typography = typography
         self.onToolDetail = onToolDetail
+        self.onThinkingDetail = onThinkingDetail
     }
 
     var body: some View {
@@ -156,11 +160,12 @@ struct CodeMessageRowView: View {
     @ViewBuilder
     private func blockView(_ block: CodeMessageRow.Block) -> some View {
         switch block {
-        case .reasoning:
-            // Reasoning never renders here: the official `Block.thinking` is
-            // the turn's single working status line, which is its own
-            // transcript row (`CodeWorkingStatusRow`, CANONICAL/20 §0).
-            EmptyView()
+        case let .reasoning(id, text, status):
+            if status == .done {
+                CodeThinkingRow {
+                    onThinkingDetail(CodeThinkingDetailRequest(id: id, text: text))
+                }
+            }
 
         case let .text(id, text):
             // The official Code page draws a text block through a
@@ -222,9 +227,9 @@ struct CodeMessageRowView: View {
 
     // MARK: - Row projection
 
-    /// One builder row with its reasoning blocks removed: reasoning text is
-    /// not part of the Code transcript, and the turn's single status line is
-    /// its own transcript row (`CodeWorkingStatusRow`).
+    /// One builder row ready for the stack. A settled thinking block is a
+    /// real row (`思考过程`); a running one is still the turn-level working
+    /// line's job and stays out of the transcript.
     private struct RenderedRow: Identifiable {
         let id: String
         let role: V2MessageRole
@@ -236,8 +241,9 @@ struct CodeMessageRowView: View {
             .compactMap { row in
                 let blocks = row.blocks.filter { block in
                     switch block {
-                    case .reasoning:
-                        return false
+                    case let .reasoning(_, text, status):
+                        return status == .done
+                            && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     case let .text(_, text):
                         return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     case .toolCalls, .other:
@@ -515,6 +521,13 @@ nonisolated enum CodeToolLabels {
 
 // MARK: - Sheet identity
 
+/// One thinking-block detail request. The row carries the merged text of its
+/// message's thinking run; the page owns the sheet.
+struct CodeThinkingDetailRequest: Identifiable {
+    let id: String
+    let text: String
+}
+
 /// One detail request: the tapped segment's first call plus its followers, in
 /// official order (`ToolCallDetail{call, followingCalls}`). The row reports it
 /// upward; `TimelineChatTimelineView` owns the sheet.
@@ -528,6 +541,20 @@ struct CodeToolDetailRequest: Identifiable {
         id = first.id
         call = first
         following = Array(calls.dropFirst())
+    }
+}
+
+/// The one sheet the Code page owns. A single `.sheet(item:)` serves both
+/// detail kinds; two modifiers on the same view would shadow each other.
+enum CodePageDetailRequest: Identifiable {
+    case tool(CodeToolDetailRequest)
+    case thinking(CodeThinkingDetailRequest)
+
+    var id: String {
+        switch self {
+        case let .tool(request): return "tool:\(request.id)"
+        case let .thinking(request): return "thinking:\(request.id)"
+        }
     }
 }
 

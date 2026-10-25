@@ -29,6 +29,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// sheet (a cell-local `@State` would be rebuilt by every streaming
     /// reconfigure and could dismiss an open detail).
     var onCodeToolDetail: ((CodeToolDetailRequest) -> Void)?
+    /// A settled `思考过程` row's tap; same page-level sheet as a tool detail.
+    var onCodeThinkingDetail: ((CodeThinkingDetailRequest) -> Void)?
 
     /// The representable marks the list stale once per SwiftUI update; reading
     /// the generation rebuilds the maps, and every later `item(at:)` /
@@ -563,8 +565,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             hasher.combine(row.role.rawValue)
             for block in row.blocks {
                 switch block {
-                case .reasoning:
-                    hasher.combine(0)
+                case let .reasoning(_, text, status):
+                    // The row's height is one fixed line; only "settled and
+                    // non-empty" changes whether it exists at all.
+                    hasher.combine(status == .done
+                        && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 1 : 0)
                 case let .text(_, text):
                     hasher.combine(1)
                     hasher.combine(text)
@@ -1000,6 +1005,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     typography: codeTypography,
                     onToolDetail: { [weak self] request in
                         self?.onCodeToolDetail?(request)
+                    },
+                    onThinkingDetail: { [weak self] request in
+                        self?.onCodeThinkingDetail?(request)
                     }))
             }
             return AnyView(SessionTimelineGroupView(
@@ -1362,8 +1370,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             let hasVisibleBlock = rows.contains { row in
                 row.blocks.contains { block in
                     switch block {
-                    case .reasoning:
-                        return false
+                    case let .reasoning(_, text, status):
+                        return status == .done
+                            && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     case let .text(_, text):
                         // An empty text block renders nothing; it must not
                         // keep a group (or a 44 pt estimate) alive.
@@ -1665,6 +1674,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // and settled rows do not change their refresh semantics.
             return TimelineGroupContentSignature(
                 rows: group.rows.map { row in
+                    // Reasoning streams a new wire revision per delta, but the
+                    // row is invisible until it settles. Sign it by its
+                    // rendered state so a thinking run does not reconfigure
+                    // the whole Code row every network frame.
+                    if row.value.isReasoning {
+                        return TimelineRowContentSignature(
+                            id: row.id,
+                            revision: row.value.status == .done ? 1 : 0,
+                            updatedSeq: 0)
+                    }
                     if row.value.isStreamingText,
                        let publisher = codeStreamingPublishers[row.id] {
                         // The publisher's own counter changes exactly when a

@@ -63,7 +63,7 @@ private func descriptor(_ segment: CodeToolSegment) -> String {
 private func blockDescriptors(_ row: CodeMessageRow) -> [String] {
     row.blocks.map { block in
         switch block {
-        case let .reasoning(id, _): return "reasoning:\(id)"
+        case let .reasoning(id, _, _): return "reasoning:\(id)"
         case let .text(id, _): return "text:\(id)"
         case let .other(id, _): return "other:\(id)"
         case .toolCalls: return "toolCalls"
@@ -314,7 +314,7 @@ struct CodeMessageRowTests {
         let body = try makeBody(id: "m1", order: 2, message: "msg-1", text: "answer")
         let rows = CodeMessageBuilder.rows(for: [reasoning, body], profile: .claudeCode)
         #expect(rows.count == 1)
-        guard case let .reasoning(id, text) = rows[0].blocks[0] else {
+        guard case let .reasoning(id, text, _) = rows[0].blocks[0] else {
             Issue.record("expected a reasoning block"); return
         }
         #expect(id == "r1")
@@ -329,7 +329,42 @@ struct CodeMessageRowTests {
         let bodyEarly = try makeBody(id: "m1", order: 2, message: "msg-1", text: "first")
         let rows = CodeMessageBuilder.rows(
             for: [reasoningLate, bodyLate, reasoningEarly, bodyEarly], profile: .claudeCode)
-        #expect(blockDescriptors(rows[0]) == ["reasoning:r1", "reasoning:r2", "text:m1", "text:m2"])
+        // The engine merges a message's consecutive thinking runs into one
+        // `thinkingContent` block; the server's RBT order already places the
+        // body rows after it, so the client sees one thinking block.
+        #expect(blockDescriptors(rows[0]) == ["reasoning:r1", "text:m1", "text:m2"])
+    }
+
+    @Test func consecutiveReasoningIsOneThinkingBlock() throws {
+        let first = try makeItem(id: "r1", order: 1, type: "reasoning", status: "done",
+                                 content: ["text": "first"],
+                                 source: ["itemId": "msg-1"])
+        let tool = try makeToolItem(id: "t1", order: 2, message: "msg-1", blockIndex: 0)
+        let second = try makeItem(id: "r2", order: 3, type: "reasoning", status: "done",
+                                  content: ["text": "second"],
+                                  source: ["itemId": "msg-1"])
+        let rows = CodeMessageBuilder.rows(for: [first, tool, second], profile: .claudeCode)
+        guard case let .reasoning(id, text, status) = rows[0].blocks[0] else {
+            Issue.record("expected one merged reasoning block"); return
+        }
+        #expect(id == "r1")
+        #expect(text == "first\n\nsecond")
+        #expect(status == .done)
+        #expect(blockDescriptors(rows[0]) == ["reasoning:r1", "toolCalls"])
+    }
+
+    @Test func runningReasoningKeepsTheBlockRunning() throws {
+        let running = try makeItem(id: "r1", order: 1, type: "reasoning", status: "running",
+                                   content: ["text": "still"],
+                                   source: ["itemId": "msg-1"])
+        let done = try makeItem(id: "r2", order: 2, type: "reasoning", status: "done",
+                                content: ["text": "done"],
+                                source: ["itemId": "msg-1"])
+        let rows = CodeMessageBuilder.rows(for: [running, done], profile: .claudeCode)
+        guard case let .reasoning(_, _, status) = rows[0].blocks[0] else {
+            Issue.record("expected a reasoning block"); return
+        }
+        #expect(status == .running)
     }
 
     @Test func toolsOrderByDeclaredBlockIndexEvenWhenInputIsReversed() throws {

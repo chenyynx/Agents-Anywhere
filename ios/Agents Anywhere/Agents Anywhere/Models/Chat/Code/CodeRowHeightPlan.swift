@@ -21,6 +21,9 @@ nonisolated enum CodeRowHeightPlan {
         case text(height: CGFloat)
         /// One `Block.toolCalls` with `segments` collapsed rows.
         case tools(segments: Int)
+        /// One settled `thinkingContent` row (`CodeThinkingRow`): the same
+        /// one-line `CollapsedRowButton` geometry as a tool row.
+        case thinking
         /// The generic one-line row (`otherRow`).
         case other
     }
@@ -60,6 +63,8 @@ nonisolated enum CodeRowHeightPlan {
                 case .tools(let segments):
                     total += CGFloat(max(0, segments))
                         * (metrics.toolLineHeight + 2 * metrics.toolButtonPadding)
+                case .thinking:
+                    total += metrics.toolLineHeight + 2 * metrics.toolButtonPadding
                 case .other:
                     total += metrics.otherLineHeight
                 }

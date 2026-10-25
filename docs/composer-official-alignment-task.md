@@ -14,10 +14,12 @@
 1. **Code 与 Chat 的 composer 不是同一套页面配置。** 两者共用 `ClaudeComposer.ChatInputBar`（卡片、`ScrollingTextField`、附件条、发送/停止键、玻璃、slash 补全）；但：
    - Code 外面套 `ClaudeCodeSessionFeature.SessionInputBar`（Code 工具栏、提醒、compact 形态、附件上传、diff 评论胶囊、prompt suggestion）；
    - Chat 外面套 `ClaudeChatFeature.ChatComposerTextBar` / `ChatTextComposer`（语音/听写、Chat 提醒、Chat 附件、Chat 专属焦点背景）。
-2. **尺寸不一样（E，截图实测）：**
-   - Code 折叠态：左右 **32 pt**、高 **48 pt**、卡底距安全区 **+10 pt**、胶囊圆角 24；
-   - Chat 折叠态：左右 **16 pt**、高 **52 pt**、卡底贴安全区（+0）、胶囊圆角 26；
-   - Code 展开态（旧版截图）：左右 **16 pt**、高 ~**96–98 pt**、卡底贴安全区、圆角 **24 continuous**。
+2. **尺寸（E 截图实测；注意：Code 折叠的 32/48 是 AA 现状，不是官方基准）：**
+   - AA 现状（Code 页收起）：左右 **32 pt**、高 **48 pt**、卡底距安全区 **+10 pt**、胶囊圆角 24；
+   - 官方 Chat 折叠：左右 **16 pt**、高 **52 pt**、卡底贴安全区、胶囊圆角 26；
+   - 官方 Chat 首页键盘弹起：左右 **9 pt**、高 **95 pt**、距键盘 ~8.7 pt；
+   - 官方 Code 展开（旧版截图）：左右 **16 pt**、高 ~**96–98 pt**、卡底贴安全区、圆角 **24 continuous**；
+   - **官方 Code 当前版本的收起/弹起：UNKNOWN（缺截图）**。
 3. **键盘动画机制不一样（核心）：**
    - **Code 有专属 `EarlyKeyboard` 栈**：`EarlyKeyboardField` 探针读 `UIKeyboardFrameEndUserInfoKey` → `EarlyKeyboardPadding` 用 `.safeAreaPadding(.bottom, max(held−resting,0))` + **固定 `Animation.interpolatingSpring(mass:3, stiffness:1000, damping:500)`** 驱动；只监听 `UIKeyboardWillShow` / `UIKeyboardWillHide`；`IgnoresEarlyKeyboard` 关掉系统键盘安全区，避免双重动画。
    - **Chat 没有 EarlyKeyboard 引用**（全类型表负证据）→ 走系统键盘安全区 + `safeAreaBar` 的系统动画。
@@ -38,9 +40,9 @@
 
 > 截图归属：pp 真机附件；`file_rcaDbU2vZNsfPqlP-Photo-9BC9389E.png` 即 R20 的 `EVIDENCE/round20/official_bottom.png` 原图（逐像素 diff=0）。Code/Chat 归属依据：Code 组截图带 `Claude Code · Hong Kong · Linux` 会话壳 + `描述任务…` placeholder；Chat 组为 `回复 Claude` placeholder。均为 **INFERENCE-high**（EXIF 无 App 标识）。
 >
-> **更正（2026-10-25）**：`EVIDENCE/round20/aa_top.png` / `aa_bottom.png` 与附件 `file_LOCwmv9BH9ooSwLM-Photo-775E116C.jpeg` 的顶部/底部裁剪**逐像素 diff=0.0**，实为**官方**截图，不是 AA。本任务单不把它们当 AA 现状证据；当前**没有** AA Code 页截图，需 pp 补拍（收起 / 键盘弹起各一张）。
+> **更正（2026-10-25，pp 指出）**：`file_rcaDbU2vZNsfPqlP-Photo-9BC9389E.png`（含 `EVIDENCE/round20/official_bottom.png`、`aa_top.png`、`aa_bottom.png`、`file_LOCwmv9BH9ooSwLM…`）是 **AA 现状**，不是官方。判据：placeholder 是 `描述任务...` —— AA key `询问 Agents` 的中文值（`Localizable.xcstrings`）；官方 Code 用 `描述任务或提出问题…`（`code_project_conversation_composer_hint`）。因此 §2.2 的 **32 / 48 / +10 是 AA 现状**；**官方 Code 当前版本的收起/弹起基准仍缺**。
 >
-> **新增 Chat 首页实测（pp 2026-10-25 附件）**：`file_PFS5pCqr_337R3Y1-Photo-59C45F26.png`（收起）与 `file_tLWTLhJ_8o9-bteJ-Photo-B5C2BC11.png`（键盘弹起）——收起 16 / 52 / 贴安全区；弹起 9 / 95 / 距键盘约 8.7；圆钮 36。这是 **Chat 首页/新对话**，不是 Code 会话页。
+> **官方 Chat 首页实测（pp 2026-10-25 附件）**：`file_PFS5pCqr_337R3Y1-Photo-59C45F26.png`（收起）与 `file_tLWTLhJ_8o9-bteJ-Photo-B5C2BC11.png`（键盘弹起）——收起 16 / 52 / 贴安全区；弹起 9 / 95 / 距键盘约 8.7；圆钮 36。这是 **Chat 首页/新对话**，不是 Code 会话页。
 
 ---
 
@@ -67,7 +69,7 @@
 
 ### 2.2 尺寸（E，3× 截图像素实测，四舍五入到 0.1 pt）
 
-| 项 | Code 折叠 | Chat 折叠 | Code 展开（旧版截图） |
+| 项 | AA 现状（Code 收起） | 官方 Chat 收起 | 官方 Code 展开（旧版） |
 |---|---:|---:|---:|
 | 左右外边距 | **32.0** | **16.7**（≈16） | **16.0** |
 | 卡片宽（393 pt 屏） | 329 | 359.3 | 361 |
@@ -83,10 +85,11 @@
 | 命令 `⌘` ink | 13×13 | 无（语音 morph） | — |
 
 **证据文件：**
-- Code 折叠：`file_rcaDbU2vZNsfPqlP-Photo-9BC9389E.png`，卡 bbox `x 96–1082, y 2280–2423`；黑圆 `x 957–1064, y 2298–2405`；`+` ink `x 147–188`；`⌘` ink `x 860–898`。
-- Chat 折叠：`file_deRg7JiV1gUeI1yY-Photo-5672AFF7.png`，卡 bbox `x 50–1128, y 2298–2453`；黑圆 36 pt；`回复 Claude` placeholder。
-- Code 展开（旧版）：`REFERENCES/device/code_session_light_cleared_1320x2868.jpg`（1320×2868，x 48–1271，高 98）与 `REFERENCES/round2/device/code_session_dark_de_1170x2532.png`（1170×2532，x 48–1121，高 96）。
-- **状态差异提醒：** Code 折叠截图处于“运行中”（停止方块），Chat 折叠处于“空闲”（语音圆）；尺寸差异与状态无关（多张同组截图一致），但仍按 **I** 处理页面归属。
+- **AA 现状（Code 收起）**：`file_rcaDbU2vZNsfPqlP-Photo-9BC9389E.png`（= `EVIDENCE/round20/official_bottom.png` / `aa_bottom.png` 的原图），卡 bbox `x 96–1082, y 2280–2423`；黑圆 `x 957–1064, y 2298–2405`；`+` ink `x 147–188`；`⌘` ink `x 860–898`。placeholder `描述任务...` = AA key `询问 Agents`。
+- **官方 Chat 收起**：`file_deRg7JiV1gUeI1yY-Photo-5672AFF7.png`，卡 bbox `x 50–1128, y 2298–2453`；黑圆 36 pt；`回复 Claude` placeholder；有麦克风/语音圆（AA composer 代码里没有麦克风，故判官方，I）。另 `file_PFS5pCqr…`（Chat 首页收起，16/52）与 `file_tLWTLhJ…`（键盘弹起，9/95）同属官方 Chat。
+- **官方 Code 展开（旧版/待确认）**：`REFERENCES/device/code_session_light_cleared_1320x2868.jpg`（1320×2868，x 48–1271，高 98）、`REFERENCES/round2/device/code_session_dark_de_1170x2532.png`（1170×2532，x 48–1121，高 96）、`EVIDENCE/round20/official1022_full_small.png`（横屏运行中，有麦克风 + `Fable 5.1`，判官方 I）。
+- **官方 Code 当前版本（收起 + 键盘弹起）：无截图，U。**
+- **状态差异提醒：** AA 收起截图处于“运行中”（停止方块），官方 Chat 处于“空闲”（语音圆）；页面归属按 placeholder / 麦克风两个判据交叉，仍为 **I**。
 
 ### 2.3 功能对比（E，类型层）
 
@@ -287,7 +290,7 @@ EOF
 
 | # | 项 | 等级 | 说明 |
 |---|---|---|---|
-| 1 | 页面归属（32/48 vs 16/52）来自截图 + 会话壳识别，不是二进制 | I | 需真机/多截图复核；若 Code 空闲态也变 16/52，则属状态而非页面差异。**当前缺“当前 build Code 键盘弹起”截图**：16 / 96–98 的展开基准来自旧版官方图，需补拍后再定标 |
+| 1 | 截图归属：32/48 已被 pp 更正为 **AA 现状**；官方 Code 当前基准缺失 | 高 | 需 pp 提供官方 App 的 Code 页截图（收起 + 键盘弹起）。快速判据：placeholder AA 是 `描述任务...`，官方是 `描述任务或提出问题…`；AA composer 无麦克风，官方有 |
 | 2 | `usesEarlyKeyboard` 是否覆盖已存在会话 | U | 只有新会话开关的证据；需 View Debugger/断点 |
 | 3 | `.earlyKeyboardPadding` 挂载点 | U | 静态未定位；实现按等价行为，不追求同构挂载 |
 | 4 | Debounce 值 | U | 官方 `DebouncedTaskModifier` 值未解出 |
@@ -301,6 +304,7 @@ EOF
 
 ## 10. 需要 pp 决定
 
+0. **先补官方 Code 页截图**（收起 + 键盘弹起各一张）：现有 Code 截图是 **AA 现状**，官方当前版本的视觉基准为空；没有它只能靠二进制 + 旧版图推断。
 1. **键盘结构方案 A / B / C**（推荐 A；B 风险最低但不保证官方手感）。
 2. **是否同时对齐 Chat 页**（官方 Chat 折叠是 16/52/0；AA 现在 32/48/10——即 AA 当前更像 Code 折叠）。
 3. **功能范围**：只做 UI+键盘，还是把模型胶囊/权限/语音/notice 一并补齐？建议分两批：先 UI+键盘，再功能。

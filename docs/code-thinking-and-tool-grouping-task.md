@@ -21,13 +21,13 @@
   - 思考进行中：5 档递增文案，阈值直读 `0x102a89080`：0–14s `thinking…` / 15–29s `still thinking…` / 30–44s `thinking more…` / 45–59s `thinking some more…` / ≥60s `almost done thinking…`；
   - 闭合：`thinking_status_thought_for_duration` = `thought for %@` / `思考了 %@`（构造点 `0x102cda6dc`）；
   - 无思考时间戳：退回 20 动词工作行（R20 已实现）。
-- **tag 4 `Block.thinkingContent(String)` → `ThinkingContentRow`**（每个**连续 thinking run** 一条，持久行）[E]：固定图标 `anthropicon.extendedThinking` + `thought_process`（`Thought process` / `思考过程`）+ caret；点击 → **全屏 push 详情页**，正文是完整思考 markdown，页头同为 `思考过程`。**多段思考会合并**：`0x1027365f0` 从尾部跳过 toolCalls（tag2）后若找到已有 tag4，就用「旧文本 + 新文本」合并替换，否则追加——所以同一 run 里被工具调用隔开的多段 thinking 只有一条「思考过程」行；被 text 等其它块隔开才新起一条（round24 `synthetic-thinking-lifecycle.md` §6.3）。
+- **tag 4 `Block.thinkingContent(String)` → `ThinkingContentRow`**（每个**连续 thinking run** 一条，持久行）[E]：固定图标 `anthropicon.extendedThinking`（渲染 `.medium`，基准 20pt）+ `thought_process`（`Thought process` / `思考过程`）+ caret；点击 → **sheet（中/大两档 `.presentationDetents` + 内部 NavigationStack）** 的详情页，正文是完整思考 markdown，页头同为 `思考过程`。**多段思考会合并**：`0x1027365f0` 从尾部跳过 toolCalls（tag2）后若找到已有 tag4，就用「旧文本 + 新文本」合并替换，否则追加——所以同一 run 里被工具调用隔开的多段 thinking 只有一条「思考过程」行；被 text 等其它块隔开才新起一条（round24 `synthetic-thinking-lifecycle.md` §6.3）。
 - **原始思考正文不在 transcript 内联**，只在详情页 [E+INFERENCE-high]。
 - `_transcriptShowsThinkingRow` **已闭合，且与思考行无关**：字段 42，ivar offset slot `0x105a90d40`，**默认 false**（init `0x102932628` @`0x1029329d8` `strb wzr`）；getter `0x102930f00`、setter `0x102930f14`（唯一调用者闭包 `0x102c4e968`，由 `SessionTranscriptPane` 挂到 `SessionMessageList.onStagedThinkingRowChange`）。**它不门控 tag 3/4**：唯一非 keypath 读点在 `SessionMessageListFooter.body`（`0x102c2bad8`），谓词 `0x102934e54` 返回 `!transcriptShowsThinkingRow`，条件性多构建一个 footer 子视图。全 App 35 个 bundle 无用户可见“显示思考”设置 [E]。⇒ AA 不依赖它，思考行默认显示。
 - **“会不会出现两套思考”已闭合：不会。** tag 3 的承载者是一个**合成 DisplayMessage，id 固定为 `"thinking"`**（`0x10272d40c` 把 8 字符小字符串 `thinking` 写进 DisplayMessage 第一字段 `id`；role=assistant；`DisplayMessage.id` 字段序见 `swift_types.csv:49347`）。固定 id 在按 id 索引的消息列表里**最多只能存在一条**，所以它是运行态合成行，不是每 turn 持久化的历史行；多个 transcript 构建函数对 `id == "thinking"` 做特判（比较函数 `0x102559b18`，4 个 caller；`0x1027a6efc` 在命中时跳过该消息）[E]。**settled transcript 的持久思考行只有 tag 4**（每个连续 thinking run 一条「思考过程」，多段合并见 §1.1）。
 - **AA 落码因此改成严格官方**：持久行 = `思考过程`（tag 4 形态）+ 点击看全文；`思考了 X` 只在运行态工作行出现（tag 3 形态，客户端计时），回合结束随合成行消失。**不需要 connector 补时长**；历史里官方本来就不显示“思考了 X” [E]。
 - 时长格式化照官方 `Duration.UnitsFormatStyle`（h/m/s、`.narrow`、最多 2 段、零值/小数隐藏、locale `autoupdatingCurrent`、最小 1 秒、闭合四舍五入）——63s → `1分钟3秒` / `1m 3s`，与 pp 截图一致 [E]；只用于运行态行。
-- 官方详情是全屏 push；AA 现有工具详情是页面级 sheet（`TimelineChatTimelineView.swift:193`）。思考详情跟随 AA 现有工具详情用同一个 sheet，避免同页双 sheet——**有意偏离，标 [I]**。
+- 官方详情是 **sheet（`.presentationDetents` medium/large + 内部 NavigationStack）**，不是全屏 push；AA 现有页面级 sheet（`TimelineChatTimelineView.swift:193`）正好同形态。思考/工具详情共用一个 `.sheet(item:)`，避免同页双 sheet；补 detents 即可。
 
 ### 工具分组
 
@@ -48,13 +48,13 @@
 | 实时行三态 | 闭合 → `thought for %@`；进行中 → 5 档文案；无时间戳 → 20 动词 | `0x102a88dfc`、`0x102a89080`；§2.2/§2.3 |
 | 进行中阈值 | 15 / 30 / 45 / 60 s（截断取整） | `0x102a89118–58` |
 | 5 档文案 key | `thinking_status_thinking` / `still_thinking` / `thinking_more` / `thinking_some_more` / `almost_done_thinking` | `code-page-strings.csv:516-520` |
-| 持久行视图 | `ThinkingContentRow`，Body `0x102c6ba54`；每个连续 thinking run 一条 | `code-thinking-row.md` §3.1 |
+| 持久行视图 | `ThinkingContentRow`，Body `0x102c6ba54`；每个连续 thinking run 一条。**真渲染臂 = `DisplayBlockView.body 0x102b185d0` 的 tag4 → `0x102b19c30`**（R23 的 `0x102b1bfc8` 实为 `ToolCallSegment` 分派/threadSessionCard，已更正） | round24 `thinking-row-detail-and-style.md` |
 | **思考合并规则（本轮新增）** | `0x1027365f0`：从 blocks 尾部跳过 tag2（toolCalls），遇到 tag4 就「旧文本 + 新文本」合并替换，否则追加。⇒ 被工具调用隔开的多段 thinking 合并成一条 tag4；被 text 等其它块隔开才新建。`redactedThinking`（tag5）**不产出** tag4。合并拼接符/去重键 UNKNOWN | round24 `synthetic-thinking-lifecycle.md` §6 |
-| 持久行内容 | `extendedThinking` 图标（`.large`）+ `Thought process`/`思考过程` + caret；无正文 | `0x102c6bad4`；`anthropicon-map.tsv:140` |
-| 点击 | `presentDetail(.thinkingText(text))` → `NavigationStack` push 全屏页，markdown 正文，标题 `思考过程` | INFERENCE-high；§3.2/§3.3 |
-| 正文内联 | **没有**任何路径在 transcript 内联 raw thinking | §5 |
+| 持久行内容 | `extendedThinking` 图标（**渲染 `.medium`，基准 20pt**，不是 large/24）+ `Thought process`/`思考过程` + caret；文本 15/400/21 默认 label 色；图标/caret 动态灰 light ≈ #7B7974 / dark ≈ #97958D；`IconFrame` style `.plain` / size `.regular` / isFramed=true；`CollapsedRowButton` minHeight 24 + padding 6 + contentShape(Rectangle) | round24 `thinking-row-detail-and-style.md` §4 |
+| 点击 | 逐指令坐实：`0x102b19c30` 捕获 String → `ThinkingContentRow.onTap` → `0x102b38d74` → `0x102b1f23c` → `presentDetail(.thinkingText(text))`；详情页 = **sheet（`.presentationDetents` medium/large + 内部 NavigationStack）**，正文 `RichMarkdownView` 原文，标题 `思考过程`；sheet 挂载点 UNKNOWN | round24 `thinking-row-detail-and-style.md` §2/§3 |
+| 正文内联 | **没有**任何路径在 transcript 内联 raw thinking | 同上 §5 |
 | **实时行承载（本轮新增）** | tag 3 属于一个**合成 DisplayMessage**，`id` 固定为小字符串 `"thinking"`（8 字符，`0x10272d40c` 写入 `DisplayMessage.id`；role=assistant）。固定 id ⇒ 按 id 索引的消息列表里最多一条；transcript 构建器对 `id == "thinking"` 特判（比较函数 `0x102559b18`，4 个 caller；`0x1027a6efc` 命中时跳过） | 本轮新增，EVIDENCE |
-| **持久/运行结论** | settled transcript 的持久思考行只有 tag 4（每 thinking block 一条）；tag 3 是运行态合成行，不是历史行 | EVIDENCE-high |
+| **持久/运行结论** | settled transcript 的持久思考行只有 tag 4（同一消息内每个连续 thinking run 一条；跨消息各自一条）；tag 3 是运行态合成行，不是历史行 | EVIDENCE-high |
 | 时长格式化 | `Duration.UnitsFormatStyle`：allowed `{h,m,s}`、width `.narrow`、max 2 段、zero/fractional `.hide`、`Locale.autoupdatingCurrent`；`max(1, round(Δ))`。**只用于运行态行**（持久行固定 `思考过程`，不带时长） | `0x102a891bc`；§2.4 |
 | 用户开关 | 不存在（35 个 bundle 全扫） | §1.4 |
 | `_transcriptShowsThinkingRow` | 字段 42；offset slot `0x105a90d40`；**默认 false**；getter `0x102930f00` / setter `0x102930f14`（唯一写者 `0x102c4e968` ← `SessionTranscriptPane` 的 `onStagedThinkingRowChange`）。**不门控 tag 3/4**，只影响 `SessionMessageListFooter.body` 的一个条件子视图（`0x102934e54` → `!flag`） | round24 `flag-transcriptShowsThinkingRow.md` |
@@ -107,9 +107,9 @@
 
 **P1（iOS）：持久思考行 + 详情页（不依赖 connector）**
 
-1. 模型：`CodeMessageRow.Block.reasoning(id:text:)` 加 `status`（done 才显示），并按官方合并规则把同一连续 run 的多段 reasoning 合成**一个** thinking 块（`0x1027365f0`：跳过 toolCalls 合并、text 等块断开；拼接符/去重键 UNKNOWN，待补）；`redacted_thinking` 不产出。合并由 §3.2 的 planner 在行序列层面完成。
-2. 视图：新 `CodeThinkingRow`，视觉照官方 `CollapsedRowButton`：`anthropicon.extendedThinking`（`.large`）+ **固定标签 `思考过程`** + caret，15/400/21，垂直 padding 6、minHeight 24。可复用 `CodeCollapsedToolRow` 的常量，但用独立视图（无 verb/target/diff 语义）。
-3. 详情：新 `CodeThinkingDetailView`（NavigationStack + ScrollView + `ChatMarkdownView`，标题 `思考过程`）。页面级 `.sheet(item:)` 与工具详情统一成 `CodePageDetail` enum（`TimelineChatTimelineView.swift:193-198,225,244-246`），避免同视图双 sheet。
+1. 模型：`CodeMessageRow.Block.reasoning(id:text:)` 加 `status`（done 才显示），并按官方合并规则把**同一消息组内**连续的多段 reasoning 合成**一个** thinking 块（`0x1027365f0`：跳过 toolCalls 合并、text 等块断开；跨消息不合并；拼接符/去重键 UNKNOWN，待补）；`redacted_thinking` 不产出。合并由 `CodeMessageBuilder.messageRow` 在消息组内完成。
+2. 视图：新 `CodeThinkingRow`，视觉照官方 `CollapsedRowButton`：`anthropicon.extendedThinking`（**渲染 `.medium`，基准 20pt**）+ **固定标签 `思考过程`** + caret；文本 15/400/21 默认 label 色；图标/caret 动态灰 light ≈ #7B7974 / dark ≈ #97958D；`IconFrame` style `.plain` / size `.regular` / isFramed=true；垂直 padding 6、minHeight 24。可复用 `CodeCollapsedToolRow` 的常量，但用独立视图（无 verb/target/diff 语义）。
+3. 详情：新 `CodeThinkingDetailView`（NavigationStack + ScrollView + `ChatMarkdownView`，标题 `思考过程`）。官方是 **sheet（`.presentationDetents` medium/large）+ 内部 NavigationStack**，AA 现有页面级 `.sheet(item:)` 正好同形态；把思考/工具详情统一成 `CodePageDetail` enum（`TimelineChatTimelineView.swift:193-198,225,244-246`），避免同视图双 sheet，并补 `.presentationDetents([.medium,.large])`。
 4. `CodeMessageRowView`：`renderRows` 不再过滤 `.reasoning`；`blockView` 的 `.reasoning` 换成 `CodeThinkingRow`；新增 `onThinkingDetail` 回调（照 `onToolDetail` 机制，`CodeMessageRowView.swift:57-72,234-250`）。
 5. 高度：`CodeMessageHeightMeasurer.planRows` 不再跳过 reasoning；`CodeRowHeightPlan.Block` 加 `.thinking`，按 `toolLineHeight + 2*toolButtonPadding` 计一行（`CodePageTheme.swift:51,71`）。
 6. 签名/性能：adapter `groupSignature` 的 reasoning 行改用 `id + status`，不用 wire `revision`；`hasVisibleBlock` 对 reasoning 返回 true；`codeHeightDigest` 纳入 thinking 行的存在性。
@@ -147,7 +147,7 @@
 - 现状：`CodeToolDetailView.swift:232-247` 自绘 `Image(systemName: "xmark")`（13pt semibold）+ 30pt 圆底（`primary.opacity(0.08)`），非官方件。
 - 官方：`ClaudeCoreUI.DismissXButton`（`title/appearance/action`；`Appearance.plain/.floating`；`DismissXButtonStyle` + `DismissXAppearance`；`swift_types.csv:13729-13735`）。
 - 待 patch `dismiss-x-button` 反编译给出图标源/字号字重/圆底/阴影/尺寸后，按官方 `.floating`（或 sheet 场景对应的 appearance）1:1 替换。
-- 注意：官方工具详情是 push 页（有返回箭头）；AA 用页面级 sheet 才需要这个 X，外观仍按官方 `DismissXButton`。
+- 注意：官方详情是 sheet + 内部 NavigationStack（思考已证；工具详情待核），sheet 形态才需要这个关闭按钮；外观按官方 `DismissXButton`。
 
 ### 3.4 官方图标资产
 
@@ -187,7 +187,7 @@
 |---|---|---|---|
 | 1 | ~~`_transcriptShowsThinkingRow`~~ **已闭合**：默认 false，只影响 footer 子视图，不门控思考行 | — | 不需要开关/适配 |
 | 2 | “tag 3 是固定 id `thinking` 的合成行”是静态证据（id 写入 + 构建器特判），未做运行时观察 | P1 | 若真机出现两条持久思考，按本行回退为“只保留 tag 4 持久行”；当前按 [EVIDENCE-high] 执行 |
-| 3 | 官方详情是全屏 push，AA 用页面级 sheet | P2 | 跟随 AA 现有工具详情交互；若后续统一成全屏，工具/思考一起改 |
+| 3 | ~~官方详情是全屏 push~~ **已更正**：官方是 sheet（`.presentationDetents` medium/large + 内部 NavigationStack），AA 现有页面级 sheet 同形态；sheet 挂载点 UNKNOWN | P2 | 补 `.presentationDetents([.medium,.large])`；真机对照 |
 | 4 | P2 的 `turnStartedAt` 在 AA 侧的对应（working 行需在回合开始记锚点；重进/后台会丢） | P2 | 客户端在回合开始记锚点；官方同样只在运行态显示，可接受 |
 | 5 | P2 运行态时长在刷新/重进后不可重现（客户端计时） | P2 | 官方同样只在运行态显示；持久行固定 `思考过程`，可接受 |
 | 6 | 官方 `Block.thinking`/narration 在 AA 无对应行，断组语义有差异 | P2 | 现有数据无样本；记录，不猜 |

@@ -532,10 +532,10 @@ final class AssistantCodeBlockView: UIView {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: item)
     }
 
-    /// The official code-card controls are two 24 pt Anthropicons whose
-    /// artwork is smaller than the control: at `.large`,
-    /// `DATA/anthropicon-map.tsv` records copy 19×19 and expand 18×18. The card
-    /// draws the glyph at that optical size and keeps the 24 pt frame.
+    /// Optical size for the legacy (Chat) card's Lucide/SF fallback only.
+    /// The Code card draws the official Anthropicons at their preset extents
+    /// in `officialCardIcon` (copy medium 16×16, expand large 18×18, check
+    /// medium 15×10) inside the same 24 pt control.
     private static let iconGlyphSize: CGFloat = 19
 
     /// The Code card draws the official Anthropicons; the Chat card keeps its
@@ -549,23 +549,26 @@ final class AssistantCodeBlockView: UIView {
         return iconImage(symbol: symbol, fallback: fallback)
     }
 
-    /// Official card-control artwork at the `.large` preset: copy 19×19,
-    /// expand 18×18, check 17×12 (`DATA/anthropicon-map.tsv`). The vector
-    /// asset is rasterised into the artwork extent so the 24 pt control stays
-    /// the official size.
+    /// Official card-control artwork: the actions closure `0x1017ba620` builds
+    /// copy and check with `withSize(1)` (`.medium`) and keeps expand at the
+    /// static `.large` size (`withSize` writes the size tag at `+0x10`;
+    /// small/medium/large = 0/1/2). Extents from `DATA/anthropicon-map.tsv`:
+    /// copy medium 16×16, check medium 15×10, expand large 18×18. The vector
+    /// asset is rasterised into the artwork extent so the control keeps the
+    /// official size.
     private static func officialCardIcon(symbol: String) -> UIImage? {
         let asset: String
         let extent: CGSize
         switch symbol {
         case "document.on.document":
             asset = "anthropicon.copy"
-            extent = CGSize(width: 19, height: 19)
+            extent = CGSize(width: 16, height: 16)
         case "arrow.up.left.and.arrow.down.right":
             asset = "anthropicon.expand"
             extent = CGSize(width: 18, height: 18)
         case "check":
             asset = "anthropicon.check"
-            extent = CGSize(width: 17, height: 12)
+            extent = CGSize(width: 15, height: 10)
         default:
             return nil
         }

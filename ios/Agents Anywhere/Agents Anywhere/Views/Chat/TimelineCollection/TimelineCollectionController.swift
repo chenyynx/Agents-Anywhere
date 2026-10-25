@@ -228,12 +228,9 @@ final class TimelineCollectionController: UIViewController {
         didSet {
             guard isViewLoaded, abs(oldValue - bottomBarInset) > 0.5 else { return }
             applyBottomBarInset()
-            // Changing the inset moves the bottom target; a reader resting at
-            // the tail must move with it, otherwise the newest rows land under
-            // the composer. The keyboard pin alone does not cover this (it is
-            // gated on an active keyboard transition).
+            // The bar grows while typing (multi-line editor) and the reader is
+            // usually resting at the bottom; keep the tail above it.
             pinBottomForKeyboardIfNeeded()
-            pinBottomIfResting()
         }
     }
 
@@ -2221,14 +2218,6 @@ final class TimelineCollectionController: UIViewController {
         isPinningBottom = true
         collectionView.setContentOffset(CGPoint(x: collectionView.contentOffset.x, y: target), animated: false)
         isPinningBottom = false
-    }
-
-    /// Re-target the tail after the content inset changes while no keyboard
-    /// transition is running (the composer's height, the window inset).
-    private func pinBottomIfResting() {
-        guard readerRestsAtBottom, !interactionPresented, !navigationSuspended,
-              !phase.userIsScrolling, viewport.isMeasured, collectionView != nil else { return }
-        snapToBottom()
     }
 
     private func pinBottomForKeyboardIfNeeded() {

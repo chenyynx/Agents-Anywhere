@@ -10,6 +10,8 @@
 > - 生产库快照：2026-10-25 17:00 CST（`timeline_items`，只读 SELECT）
 > **证据标记**：[E] 指令/类型/数据库直读；[I] 结构推断（写明依据）；[U] 未验证。
 > **铁律**：`dev` 不碰不合；只从 `feat/code-profile-beta` 出包；不 force push；先任务单后代码。
+>
+> **实现状态（2026-10-25，分支 `feat/code-profile-beta`）**：P1 思考行 + 详情 `fe0a086c`；关闭按钮与长 Read 输出 `98f23368`；运行态思考文案 + 工具文案四项 `277002d6`；思考态截图门禁 `d7ae6bbb`；跨回合思考防串 `e4a37829`；`thought_process` 官方文案 `37255002`；wire 时间戳解析 `489ccde1`。`code-profile` 门禁新增 settled thinking 行高矩阵与 24K/298 行 Read 高度检查。**剩余唯一缺口**：`fileWriteKind` 在 AA wire 无字段，diff 聚合无法跳过 update 写入（已在 `277002d6` 注释）。
 
 ---
 

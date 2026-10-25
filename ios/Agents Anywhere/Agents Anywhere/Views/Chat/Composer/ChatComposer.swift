@@ -69,7 +69,9 @@ struct ChatComposer: View {
                                 .foregroundStyle(.secondary)
                                 .allowsHitTesting(false)
                         }
-                        NativeComposerEditor(draft: draft, controller: editor, maximumHeight: maximumEditorHeight, onCommandSend: onSend)
+                        NativeComposerEditor(draft: draft, controller: editor,
+                            maximumHeight: maximumEditorHeight, onCommandSend: onSend,
+                            expandAnimation: expandAnimation)
                     }
 
                     Button {

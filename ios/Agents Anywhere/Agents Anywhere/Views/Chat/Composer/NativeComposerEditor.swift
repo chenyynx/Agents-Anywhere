@@ -7,6 +7,9 @@ import UIKit
 final class ComposerEditorController {
     @ObservationIgnored weak var textView: ComposerTextView?
     @ObservationIgnored weak var draft: ComposerDraft?
+    /// The profile's expand curve, set by the hosting composer. Only the
+    /// expanding transition uses it (see `ComposerFocusTransition`).
+    @ObservationIgnored var expandAnimation: Animation?
 
     func finishEditing() {
         guard let textView else { return }
@@ -57,7 +60,7 @@ final class ComposerEditorController {
             // The expansion grows the bar, and the bar's height is the page's
             // bottom inset: only an animated transaction moves the inset and
             // the list together, on the same curve the bar itself animates on.
-            withAnimation(.smooth(duration: 0.24)) { draft.isFocused = true }
+            withAnimation(expandAnimation ?? .smooth(duration: 0.24)) { draft.isFocused = true }
         } else {
             draft.isFocused = focused
         }
@@ -86,6 +89,7 @@ struct NativeComposerEditor: UIViewRepresentable {
     let controller: ComposerEditorController
     let maximumHeight: CGFloat
     let onCommandSend: () -> Void
+    var expandAnimation: Animation? = nil
     var onTextChange: ((String, Bool) -> Void)? = nil
 
     func makeUIView(context: Context) -> ComposerTextView {
@@ -109,12 +113,14 @@ struct NativeComposerEditor: UIViewRepresentable {
         view.accessibilityHint = String(localized: "回车换行，Command 加回车发送。")
         view.accessibilityIdentifier = "chat.composer.editor"
         controller.textView = view; controller.draft = draft
+        controller.expandAnimation = expandAnimation
         return view
     }
 
     func updateUIView(_ view: ComposerTextView, context: Context) {
         context.coordinator.parent = self
         controller.textView = view; controller.draft = draft
+        controller.expandAnimation = expandAnimation
         view.commandSend = onCommandSend
         // Do not replace native pre-edit text or disrupt its selection/candidate bar.
         if view.markedTextRange == nil, view.text != draft.text {

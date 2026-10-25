@@ -257,9 +257,11 @@ struct CodeMessageRowView: View {
 // MARK: - Running status line
 
 /// `••• Computing...` — the official working row
-/// (CANONICAL/20-working-mark.md §1–§4): the 20×20 flipbook mark with the
-/// `.connecting` verb table, rotated once a second. The mark is decorative and
-/// hidden from accessibility; the verb text carries the announcement.
+/// (`CANONICAL/20-working-mark.md` §1–§4): the 20×20 flipbook mark plus the
+/// status text. Normal work rotates the 20 verbs with the official phase
+/// timing (0–3 s, 3–7 s, then every 6 s — `0x102a85174`); `compacting` and
+/// `connecting` are fixed localised strings. The mark is decorative and
+/// hidden from accessibility; the text carries the announcement.
 struct CodeThinkingStatusLine: View {
     /// Mirrors `WorkingMarkView.isRunning`: false starts the mark's 0.4 s exit
     /// while the status text stays on screen until the parent removes the row
@@ -270,49 +272,55 @@ struct CodeThinkingStatusLine: View {
     /// The official live-turn pose (`SessionDisplay.liveTurnMark`), chosen by
     /// `CodeWorkingMarkPose`.
     let markBody: WorkingMarkBody
+    /// What the row is reporting; the adapter recomputes it as the turn's
+    /// events change.
+    let phase: CodeWorkingStatusPhase
     @Environment(\.colorScheme) private var colorScheme
 
-    init(isRunning: Bool = true, markBody: WorkingMarkBody = .think) {
+    init(isRunning: Bool = true,
+         markBody: WorkingMarkBody = .think,
+         phase: CodeWorkingStatusPhase = .working(startedAt: Date())) {
         self.isRunning = isRunning
         self.markBody = markBody
+        self.phase = phase
     }
 
     var body: some View {
-        TimelineView(.periodic(from: .now,
-                               by: CodePageTheme.runningStatusVerbRotationInterval)) { context in
-            let second = max(0, Int(context.date.timeIntervalSinceReferenceDate))
-            let verb = CodeWorkingStatusVerbs.all[second % CodeWorkingStatusVerbs.all.count]
-            HStack(spacing: CodePageTheme.workingStatusSpacing) {
-                WorkingMarkView(body: markBody, isRunning: isRunning)
-                Text(verbatim: verb + "...")
-                    // [E] 15 pt / 400; the official family is the ambient
-                    // Typography's (R19 tool-row-status.md). AA uses the
-                    // official proportional face; the text style is [U].
-                    .font(.custom(CodePageTheme.sansFontName,
-                                  size: CodePageTheme.runningStatusFontSize,
-                                  relativeTo: .footnote))
-                    .foregroundStyle(CodePageTheme.runningStatusColor.resolved(for: colorScheme))
-                    // One line at every Dynamic Type size; a wrapped verb
-                    // would change the row height every second.
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+        HStack(spacing: CodePageTheme.workingStatusSpacing) {
+            WorkingMarkView(body: markBody, isRunning: isRunning)
+            switch phase {
+            case .connecting:
+                statusLabel(String(localized: "正在连接"))
+            case .compacting:
+                statusLabel(String(localized: "正在压缩对话…"))
+            case let .working(startedAt):
+                // The 1 s tick only lets the phase boundary land on time; the
+                // text changes at 0 / 3 / 7 / 13 … seconds, not every tick.
+                TimelineView(.periodic(from: .now,
+                                       by: CodePageTheme.runningStatusVerbRotationInterval)) { context in
+                    statusLabel(CodeWorkingStatusText.verb(
+                        elapsed: context.date.timeIntervalSince(startedAt)) + "...")
+                }
             }
-            .frame(minHeight: CodePageTheme.workingMarkSize, alignment: .leading)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(Text(verbatim: verb + "..."))
         }
+        .frame(minHeight: CodePageTheme.workingMarkSize, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
-}
 
-/// The official `.connecting` working-status verbs: 20 entries rotated by
-/// `timeIntervalSinceReferenceDate % 20`
-/// (CANONICAL/20-working-mark.md §4; `EVIDENCE/round15/working-mark.json`).
-nonisolated enum CodeWorkingStatusVerbs {
-    static let all = ["Clauding", "Cogitating", "Computing", "Contemplating",
-                      "Cooking", "Deliberating", "Generating", "Imagining",
-                      "Musing", "Noodling", "Pondering", "Processing",
-                      "Scheming", "Synthesizing", "Thinking", "Tinkering",
-                      "Working", "Ruminating", "Percolating", "Brewing"]
+    private func statusLabel(_ text: String) -> some View {
+        Text(verbatim: text)
+            // [E] 15 pt / 400; the official family is the ambient
+            // Typography's (R19 tool-row-status.md). AA uses the official
+            // proportional face; the text style is [U].
+            .font(.custom(CodePageTheme.sansFontName,
+                          size: CodePageTheme.runningStatusFontSize,
+                          relativeTo: .footnote))
+            .foregroundStyle(CodePageTheme.runningStatusColor.resolved(for: colorScheme))
+            // One line at every Dynamic Type size; a wrapped verb would
+            // change the row height every second.
+            .lineLimit(1)
+            .truncationMode(.tail)
+    }
 }
 
 // MARK: - Tool row labels

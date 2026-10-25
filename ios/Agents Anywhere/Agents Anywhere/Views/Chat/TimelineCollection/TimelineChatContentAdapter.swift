@@ -84,6 +84,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// In-place exit flag for the mounted working row. See
     /// `WorkingStatusRowHost`: a reconfigure would reset `WorkingMarkView`.
     private let workingStatusExitState = WorkingStatusExitState()
+    /// When the current working block appeared; the official verb rotation is
+    /// anchored on it (the `.server` phase timing `0x102a85174`).
+    private var workingStatusPhaseStart: Date?
     private var tailNoticesByID: [String: SessionNoticeModel] = [:]
     private var pendingByID: [String: V2PendingMessage] = [:]
     private var rowToItem: [String: TimelineListItem] = [:]
@@ -1324,7 +1327,18 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // The official mark's pose follows the live turn's last event
         // (`SessionDisplay.liveTurnMark`). Keep the last pose while the row
         // plays its exit, so the exit animates the sprite that was on screen.
-        if hasWorkingStatus { workingStatusExitState.markBody = liveWorkingMarkBody() }
+        if hasWorkingStatus {
+            workingStatusExitState.markBody = liveWorkingMarkBody()
+            // A new working block anchors its own verb phase; the first block
+            // after launch starts now.
+            if workingStatusPhaseStart == nil || !lastHasWorkingStatus {
+                workingStatusPhaseStart = Date()
+            }
+            let phase = liveWorkingStatusPhase(startedAt: workingStatusPhaseStart ?? Date())
+            if workingStatusExitState.phase != phase {
+                workingStatusExitState.phase = phase
+            }
+        }
         // Official working-mark exit: when the turn's status disappears the
         // row is not deleted instantly. It stays mounted for the 0.4 s
         // scale/opacity group animation with `isRunning = false`
@@ -1571,6 +1585,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         workingStatusExitWorkItem = nil
         guard workingStatusIsExiting else { return }
         workingStatusIsExiting = false
+        // The next working block anchors its own verb phase.
+        workingStatusPhaseStart = nil
         prepareForUpdate()
         controller?.reloadFromContent()
         // Do NOT flip `isRunning` back here: the deletion apply can be parked
@@ -1783,6 +1799,33 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         return CodeWorkingMarkPose.body(rows: Array(tail.reversed()))
     }
 
+    /// The official working-row phase. An active compaction wins, then the
+    /// pre-agent connection window, then the rotating verbs. The official
+    /// `.server` payload is not displayed (`0x102a8507c` discards it).
+    private func liveWorkingStatusPhase(startedAt: Date) -> CodeWorkingStatusPhase {
+        if liveTurnIsCompacting() { return .compacting }
+        if model.session.awaitingReplyID != nil { return .connecting }
+        if let status = model.session.runtime.state?.status,
+           status == .waiting || status == .pending {
+            return .connecting
+        }
+        return .working(startedAt: startedAt)
+    }
+
+    /// True while the live turn's compact row is active. The connector turns a
+    /// CLI `status:"compacting"` frame into this marker
+    /// (`connector/connector/runtimes/claude/timeline/markers.py:320-323`).
+    private func liveTurnIsCompacting() -> Bool {
+        for row in model.timeline.rows.reversed() {
+            let item = row.value
+            if item.role == .user { break }
+            if TimelineEntryPresentation.isCompactItem(item) {
+                return TimelineEntryPresentation.isActiveCompactItem(item)
+            }
+        }
+        return false
+    }
+
     /// Attachments ride inside the typed content: a message carries a list, an
     /// attachment item carries one. `V2TimelineItem` itself exposes neither.
     private func attachments(of item: V2TimelineItem) -> [V2AttachmentContent] {
@@ -1890,6 +1933,9 @@ private final class WorkingStatusExitState {
     /// place through the observable box so a running mark swaps its flipbook
     /// without the row being reconfigured.
     var markBody: WorkingMarkBody = .think
+    /// The official working-status phase (connecting / compacting / verb
+    /// rotation); same in-place update rule.
+    var phase: CodeWorkingStatusPhase = .working(startedAt: Date())
 }
 
 /// The cell's root for `.workingStatus`. Keeping this view mounted and
@@ -1898,7 +1944,9 @@ private struct WorkingStatusRowHost: View {
     let state: WorkingStatusExitState
 
     var body: some View {
-        CodeWorkingStatusRow(isRunning: state.isRunning, markBody: state.markBody)
+        CodeWorkingStatusRow(isRunning: state.isRunning,
+                             markBody: state.markBody,
+                             phase: state.phase)
     }
 }
 

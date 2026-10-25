@@ -35,13 +35,20 @@ struct CodeWorkingStatusRow: View {
     /// `markBody` because `body` is SwiftUI's view requirement.
     let markBody: WorkingMarkBody
 
-    init(isRunning: Bool = true, markBody: WorkingMarkBody = .think) {
+    /// The official working-status phase (connecting / compacting / rotating
+    /// verbs); the adapter recomputes it from the turn's events.
+    let phase: CodeWorkingStatusPhase
+
+    init(isRunning: Bool = true,
+         markBody: WorkingMarkBody = .think,
+         phase: CodeWorkingStatusPhase = .working(startedAt: Date())) {
         self.isRunning = isRunning
         self.markBody = markBody
+        self.phase = phase
     }
 
     var body: some View {
-        CodeThinkingStatusLine(isRunning: isRunning, markBody: markBody)
+        CodeThinkingStatusLine(isRunning: isRunning, markBody: markBody, phase: phase)
             .padding(.vertical, CodePageTheme.segmentVerticalPadding)
             .padding(.vertical, CodePageTheme.rowMarginTop)
             .frame(maxWidth: .infinity, alignment: .leading)

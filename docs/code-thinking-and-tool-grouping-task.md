@@ -118,9 +118,10 @@
 **P2（iOS，官方运行态对齐，可与 P1 同批）**：工作行的思考态文案。
 
 1. 现状：`CodeWorkingStatusRow` 用 20 动词轮换（R20）。官方 tag 3 在**有思考时间戳**时改走 5 档思考文案（`0x102a89080`，阈值 15/30/45/60s），闭合后显示 `思考了 X`（`0x102cda6dc`）。
-2. AA 实现：working 行检测“最新 reasoning item 为 running”；若是，用该 item 首次出现时刻（客户端 clock）做锚点，按 15/30/45/60s 选 `思考中…`/`仍在思考…`/`继续思考…`/`继续思考…`/`即将完成思考…`；闭合后显示 `思考了 X` 直到回合结束。没有 running reasoning 时保持现有 20 动词。
-3. 时长格式化：`Duration.UnitsFormatStyle` 照官方参数（h/m/s、narrow、最多 2 段、零/小数隐藏、locale `autoupdatingCurrent`、`max(1, round(Δ))`）；中文预期 `1分钟3秒`（iOS ICU 是否带空格以真机为准）。
-4. 这是**运行态合成行**，不持久；不要在历史行上显示时长。
+2. 已闭合的字段对位（round24）：进行中 elapsed = **now − turnStartedAt**（截断取整、`max(x,0)` 钳零），不是 blockStartedAt；5 档 `≤14/≤29/≤44/≤59/else`。AA 用 working 行的回合开始时刻做锚点，检测到 running reasoning 时进思考态。
+3. 闭合：duration = **lastBlock.endedAt − lastBlock.startedAt**（不是 turnStartedAt→endedAt），四舍五入（half away）后 `max(1,n)`；**只有 now < endedAt + 2 秒才显示「思考了 X」**，超过 2 秒回退普通工作行（官方 `0x102a88f20-f50` 的 2 秒窗）。
+4. 时长格式化：`Duration.UnitsFormatStyle` 照官方参数（allowed `{h,m,s}`、width `.narrow`、`maximumUnitCount=2`、zero/fractional `.hide`、locale `autoupdatingCurrent`）；中文预期 `1分钟3秒`（iOS ICU 是否带空格以真机为准）。
+5. 这是**运行态合成行**，不持久；不要在历史行上显示时长。
 
 **P3（可选扩展，非官方）**：若 pp 要在历史持久行也看到 `思考了 X`，才需要 connector 在 reasoning content 补 `durationMs`（content 自由 JSON，server/契约零改动；实现点见旧稿：`stream.py` 记录 monotonic 起止、`messages.py::reasoning_item` 写入、`system_items_for_message` 重投影同步）。官方不做，默认不做。
 
@@ -186,7 +187,7 @@
 | 3 | `_transcriptShowsThinkingRow` 默认值/门控对象 UNKNOWN | P1 | 不依赖它：AA 按 pp 要求默认显示；若后续证出官方默认隐藏，再加开关 |
 | 4 | “tag 3 是固定 id `thinking` 的合成行”是静态证据（id 写入 + 构建器特判），未做运行时观察 | P1 | 若真机出现两条持久思考，按本行回退为“只保留 tag 4 持久行”；当前按 [EVIDENCE-high] 执行 |
 | 5 | 官方详情是全屏 push，AA 用页面级 sheet | P2 | 跟随 AA 现有工具详情交互；若后续统一成全屏，工具/思考一起改 |
-| 6 | P2 运行态 5 档文案的计时锚点（`activity.blockStartedAt` vs `turnStartedAt`）RE-1 未逐字段对位 | P2 | 先用 reasoning item 首次出现（客户端 clock）；真机对照官方相位 |
+| 6 | P2 的 `turnStartedAt` 在 AA 侧的对应（working 行需在回合开始记锚点；重进/后台会丢） | P2 | 客户端在回合开始记锚点；官方同样只在运行态显示，可接受 |
 | 7 | P2 运行态时长在刷新/重进后不可重现（客户端计时） | P2 | 官方同样只在运行态显示；持久行固定 `思考过程`，可接受 |
 | 8 | 官方 `Block.thinking`/narration 在 AA 无对应行，断组语义有差异 | P2 | 现有数据无样本；记录，不猜 |
 | 9 | A 方案（跨端 `toolGroupKey`） | 后续 | 需 pp 批契约；B 留 seam，不重写 UI |

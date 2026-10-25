@@ -31,11 +31,10 @@
 
 ### 工具分组
 
-- 交接里的根因**需要修正**：不是“每条 tool 行 `native_message_id` 都不同”。并行工具（同一 API 响应多个 `tool_use`）共享 id，生产库 12%–72% 的消息含 2+ 工具，最多 12 个 [E]。真正缺口是**串行工具循环**：每次工具结果触发下一次 API 往返 → 新 message id → 客户端每组只有 1 个 call → 一次一行 [E]。
-- **建议方案 B（纯 iOS，PATCH）**：按 `orderSeq` 的行序列合并连续 tool 行，reasoning 透明，text/user/marker/无 key 行断开；span id 取第一个 tool 的 `source.itemId`。估算 WQo 会话 2,297 个工具消息组 → 约 187 个 span [E]/[I]。
-- 同批补齐官方文案差距：失败后缀 `(N failed)`/`（N 项失败）`、分隔符改官方 `", "`、单目标判定（all-same-target）、diff 聚合规则 [E]。
-- **不做 A/C**：A（新增跨端 `source.toolGroupKey`）是 MINOR 契约、全端版本升级、live/history key 一致性成本高；C（服务端重打包）风险最大。B 的 planner 预留 `groupingKey` seam，将来若批准 A 只换数据源、不重写 UI [I]。
-- **仍有一处官方未闭合**：官方是否跨多条 API 消息合并工具，目前是 [I]（约 60%）。RE-1 没有闭合消息级合并写点；若后续证伪，B 降级为“只补文案，不跨消息合并”。
+- **官方 NO-MERGE（EVIDENCE，round24）：不同 API assistant 消息 = 不同 `DisplayMessage`，串行工具不会被跨消息并成一行。** 依据：assistant 行 id = SdkMessage payload `uuid`（`0x101e208f8` → 构造器 `0x10272b7c4`）；一条 `SdkAssistantMessage` 只含一条 `APIAssistantMessage`；`processedRawMessages` 按同一 uuid 去重；`apiMessageIds` 只在构造时写成单元素 Set，全镜像无 insert/union 写点；块合并 `0x102734e80` 只作用于本条消息自己的 blocks。
+- 因此：**并行工具（同一 API 消息里多个 `tool_use`）合并是官方行为，AA 现有的 `nativeMessageId` 分组已经 1:1**；串行工具官方也各自一行。**不做 B/A/C，不改工具分组。**
+- 同批只补**文案差距**：失败后缀 `(N failed)`/`（N 项失败）`、分隔符改官方 `", "`、单目标判定（all-same-target）、diff 聚合规则 [E]。
+- 思考合并只在**同一个消息组内**（同一 `nativeMessageId`）：多个 reasoning item 中间只隔工具行 → 合并成一个 thinking 块；text 断开；跨消息不合并（官方 tag4 合并发生在单条消息的 blocks 内，`0x1027365f0`）。
 
 ---
 
@@ -69,7 +68,7 @@
 
 - 同一 `Block.toolCalls` 内连续普通调用合成一个 span；**text 断组，`thinkingContent` 不断组**；`ExitPlanMode`/`AskUserQuestion` 跳过但不断组；special 段先 flush；无数量阈值；恒折叠、点击全屏 [E]。
 - 摘要：类别首次出现序、`", "` 连接、无上限；文件类按去重路径计数，其余按调用 id；失败逐类内联 `(N failed)` / `（N 项失败）`；单条是动词+目标；`serverSummary` 非空整行替换（AA 无此数据）[E]。
-- **跨 API assistant 消息是否合并**：`DisplayMessage.apiMessageIds: Set` + 块合并函数 `0x102734e80` 回扫跳过 `thinkingContent` 指向“会合并”，但消息级写点静态不可归因，仍为 [I]（约 60%）[U]。
+- **跨 API assistant 消息合并：NO-MERGE [E，round24]**。assistant 行 id = SdkMessage payload `uuid`；一条 `SdkAssistantMessage` 只含一条 `APIAssistantMessage`；`processedRawMessages` 按同一 uuid 去重；`apiMessageIds` 只在构造时写成单元素 Set（全镜像无 insert/union 写点）；块合并 `0x102734e80` 只作用于本条消息自己的 blocks。⇒ 只有同一消息内的并行 `tool_use` 会合并；串行工具各自一行。
 
 ---
 
@@ -97,8 +96,8 @@
   - 相邻 tool 行之间只有：reasoning 3,689 / assistant text 368 / user 160 / marker 4；
   - 全局时间线只有 tool 89,559 / system(reasoning) 55,427 / message 27,510 / marker 61；
   - `blockIndex` 在消息内连续 0..k-1（2,297/2,297、745/745、656/656）；
-  - 跨 turn 的相邻 tool 对之间都有 user 行（38/6/60 对），但 **scheduled turn 无 user 行**（`docs/claude-scheduled-tasks.md:24`、`turns/lifecycle.py:2754`）→ B 的残余风险。
-- 根因不是“id 全不同”：WQo 88% 的消息只有 1 个 tool（串行），QAhb 72% 的消息含 2+ tool（并行）；视觉上“一次一行”来自串行片段 [E]。
+  - 跨消息合并已证伪（round24），scheduled-turn 的跨 turn 误合并风险随之消失。
+- 生产数据的两类形态：WQo 88% 的消息只有 1 个 tool（串行，官方也各自一行）；QAhb 72% 的消息含 2+ tool（并行，同一消息内合并成一行）[E]。AA 现有 `nativeMessageId` 分组与官方一致。
 
 ---
 
@@ -128,18 +127,12 @@
 
 **开关**：官方无用户设置 [E]。**不新增开关**，默认显示；若 pp 日后要，按 `@AppStorage("aa.code.thinkingRow")` 两态（`full`/`compact`，不提供完全隐藏）。
 
-### 3.2 工具分组（方案 B，纯 iOS）
+### 3.2 工具分组（官方 NO-MERGE：不改分组，只补文案）
 
-1. 新共享 planner（`CodeMessageTimeline.swift`）：按 `orderSeq` 的行序列产出 unit：
-   - tool 行有分组键 → 并入 open span；
-   - reasoning → 透明，不 flush；**同一 run 的多段 reasoning 合并成一个 thinking 块**（官方 `0x1027365f0` 跳过 toolCalls 合并；text 等块断开），合并块放在 span 之前（官方 blocks 形状 `[tag4, tag2]`）；
-   - assistant/user text、marker、非 stackable、无 key 行、interaction target → flush，自己成行；
-   - 不跨 user 行；当前拿不到 `turnId`（生产库 0/172,707 行），scheduled turn 无 user 行是已知风险。
-2. `TimelineGrouping.codeGroups` 复用同一 planner；span 的 `explicitID = "span:" + 第一个 tool 的 source.itemId`（tool_use id 全局唯一）；`messageHasContent` 按 unit 判断。
-3. `CodeMessageBuilder.orderedToolRows`：跨消息时按 wire `orderSeq`，**不要**全局按 `blockIndex`（每条消息从 0 开始，会交错）；单消息内保持 blockIndex 规则。
-4. `CodeMessageRowView`/`CodeMessageHeightMeasurer` 复用 builder，无需重写算法；`codeHeightDigest` 仍只哈希 segments 数（span 恒一行）。
-5. 保留 `groupKey` seam：将来 A 方案只把 `source.toolGroupKey` 插到优先级最前。
-6. **runtime 门控**：跨消息合并先只对 Claude 开启；`CodeRuntimeProfile` 加一个 `mergesToolRowsAcrossMessages`（Claude=true，Codex/DSH=false），关闭时完全保持现状。思考行不门控（有 reasoning 就渲染：Claude/Codex 生效，DSH 无数据自然不显示）。
+- 工具分组逻辑**不改**：`TimelineGrouping`/`CodeMessageBuilder` 继续按 `nativeMessageId ?? itemId` 分组；同一消息内的并行 `tool_use` 已经合并成 span，串行工具各自一行——与官方 EVIDENCE 一致。
+- 不做跨消息 planner / `toolGroupKey` / 服务端重打包；scheduled-turn 风险消失。
+- **唯一与工具相关的改动**是文案差距（下面四条）。
+- **思考合并只在一个消息组内**：`CodeMessageBuilder.messageRow` 把同一 `nativeMessageId` 下、中间只隔工具行的多个 reasoning item 合并成一个 thinking 块（官方 `0x1027365f0` 跳 tag2 合并；text 断开；跨消息不合并）；`redacted_thinking` 不产出。
 
 **同批文案修复（iOS PATCH）**：
 
@@ -168,19 +161,19 @@
 ### 4.1 自动门禁
 
 - `CodeMessageBuilder` 单测（`ios/Tests/ClientCoreTests/CodeProfileModelTests.swift`）新增矩阵：
-  - 三条 tool-only 消息 + reasoning 中间 → 1 行/1 span，call 顺序 = orderSeq；
-  - 多段 thinking 只隔工具调用 → 合并成 1 个 thinking 块/1 条「思考过程」行，文本按官方拼接；
-  - thinking 被 text 隔开 → 2 个 thinking 块/2 条行；`redacted_thinking` 不产出行；
-  - text/user/marker 中间 → 2 行；无 key 行 → 断开；interaction target → standalone；
-  - skip 不 flush；special flush；A-B-A 交错 → 1 span 且顺序正确；同一 unit 再规划幂等。
+  - **三条不同消息的 tool-only 行 → 3 行**（守卫：绝不跨消息合并）；
+  - 同一消息内 3 个并行 tool → 1 行/1 span，call 顺序 = `blockIndex`；
+  - 同一消息内多段 thinking、中间只隔工具调用 → 合并成 1 个 thinking 块/1 条「思考过程」行；
+  - thinking 被 text 隔开 → 2 个 thinking 块/2 条行；跨消息的 thinking → 各自 1 个（不合并）；`redacted_thinking` 不产出行；
+  - 工具行/思考行的文案矩阵（失败后缀、分隔符、单目标判定、diff 聚合）。
 - 思考行：`CodeProfileAutoRun` 新增 fixture——done（显示 `思考过程`）/ running（不显示）；断言 `expectedBlocks`、标签文案、行高。
 - P2 运行态：注入时钟的纯函数单测（0/14/15/29/30/44/45/59/60s 档位、闭合 `思考了 X`、zh/en 输出）；`CodeProfileAutoRun` 加一条 working 行 fixture。
-- `code-profile` gate（`.github/workflows/ios-build.yml`，`code_profile: true`）新增 fixture：`rowCount == 1`、`segments == ["span(t1,t2,t3)"]`、thinking row 文案。
+- `code-profile` gate（`.github/workflows/ios-build.yml`，`code_profile: true`）新增 fixture：同一消息 3 个并行 tool → 1 span；三条串行消息 → 3 行；thinking row 文案。
 - 本地：`swift test --package-path ios`（相关用例）；CI 为权威门禁。
 
 ### 4.2 真机验收判据（pp）
 
-1. 串行 3 个工具：应逐步长成 **1 行**（不是 3 行），label 随类别更新；点击详情包含全部 calls。
+1. 工具分组：同一消息的并行 3 个工具 → **1 行**；串行 3 次工具（不同消息）→ **3 行**（与官方一致）；点击各行详情正确。
 2. 思考行：思考中工作行显示思考态文案（P2）；闭合后工作行短暂显示 `思考了 X`（运行态合成行，随回合结束消失）；持久行始终是 `思考过程`，点击显示完整思考正文，标题也是 `思考过程`。
 3. 滚动/流式：工具行合并增长时不跳位、文字不闪；底部跟随正常。
 4. 失败工具：label 带 `(N failed)` / `（N 项失败）`。
@@ -192,18 +185,14 @@
 
 | # | 风险/未决 | 级别 | 处理 |
 |---|---|---|---|
-| 1 | 官方是否跨 API 消息合并工具仍是 [I]（~60%） | P1 | 若证伪，B 降级为“不跨消息合并、只补文案”；本单先按 [I] 执行，真机对照官方 |
-| 2 | scheduled turn 无 user 行 → B 可能跨 turn 合并 | P1 | 生产频率 [U]；先接受并记录；必要时后续批准 `source.turnId` 透传（小契约改动） |
-| 3 | ~~`_transcriptShowsThinkingRow`~~ **已闭合**：默认 false，只影响 footer 子视图，不门控思考行 | — | 不需要开关/适配 |
-| 4 | “tag 3 是固定 id `thinking` 的合成行”是静态证据（id 写入 + 构建器特判），未做运行时观察 | P1 | 若真机出现两条持久思考，按本行回退为“只保留 tag 4 持久行”；当前按 [EVIDENCE-high] 执行 |
-| 5 | 官方详情是全屏 push，AA 用页面级 sheet | P2 | 跟随 AA 现有工具详情交互；若后续统一成全屏，工具/思考一起改 |
-| 6 | P2 的 `turnStartedAt` 在 AA 侧的对应（working 行需在回合开始记锚点；重进/后台会丢） | P2 | 客户端在回合开始记锚点；官方同样只在运行态显示，可接受 |
-| 7 | P2 运行态时长在刷新/重进后不可重现（客户端计时） | P2 | 官方同样只在运行态显示；持久行固定 `思考过程`，可接受 |
-| 8 | 官方 `Block.thinking`/narration 在 AA 无对应行，断组语义有差异 | P2 | 现有数据无样本；记录，不猜 |
-| 9 | A 方案（跨端 `toolGroupKey`） | 后续 | 需 pp 批契约；B 留 seam，不重写 UI |
-| 10 | 其它 runtime：思考行对 Codex 也会开始显示（connector 有 reasoning 投影）；DSH 无数据不受影响 | P1 | 有意通用；用 Codex fixture 验证文案/高度 |
-| 11 | 跨消息合并对 Codex/DSH 的形态未验证 | P1 | profile flag `mergesToolRowsAcrossMessages` 先只开 Claude，其它 runtime 保持现状 |
-| 12 | tag4 合并的**拼接符/去重键** UNKNOWN（闭包体 `0x1008b7508`/`0x10153dc24` 未展开） | P1 | 再派一路拆闭包；闭合前不猜分隔符，任务单不落实现细节 |
+| 1 | ~~`_transcriptShowsThinkingRow`~~ **已闭合**：默认 false，只影响 footer 子视图，不门控思考行 | — | 不需要开关/适配 |
+| 2 | “tag 3 是固定 id `thinking` 的合成行”是静态证据（id 写入 + 构建器特判），未做运行时观察 | P1 | 若真机出现两条持久思考，按本行回退为“只保留 tag 4 持久行”；当前按 [EVIDENCE-high] 执行 |
+| 3 | 官方详情是全屏 push，AA 用页面级 sheet | P2 | 跟随 AA 现有工具详情交互；若后续统一成全屏，工具/思考一起改 |
+| 4 | P2 的 `turnStartedAt` 在 AA 侧的对应（working 行需在回合开始记锚点；重进/后台会丢） | P2 | 客户端在回合开始记锚点；官方同样只在运行态显示，可接受 |
+| 5 | P2 运行态时长在刷新/重进后不可重现（客户端计时） | P2 | 官方同样只在运行态显示；持久行固定 `思考过程`，可接受 |
+| 6 | 官方 `Block.thinking`/narration 在 AA 无对应行，断组语义有差异 | P2 | 现有数据无样本；记录，不猜 |
+| 7 | 其它 runtime：思考行对 Codex 也会开始显示（connector 有 reasoning 投影）；DSH 无数据不受影响 | P1 | 有意通用；用 Codex fixture 验证文案/高度 |
+| 8 | tag4 合并的**拼接符/去重键** UNKNOWN（闭包体 `0x1008b7508`/`0x10153dc24` 未展开） | P1 | 再派一路拆闭包；闭合前不猜分隔符，任务单不落实现细节 |
 
 ---
 
@@ -213,10 +202,7 @@
 
 - `ios/Agents Anywhere/Agents Anywhere/Models/Chat/Code/CodeMessageTimeline.swift`
 - `ios/Agents Anywhere/Agents Anywhere/Models/Chat/Code/CodeRowHeightPlan.swift`
-- `ios/Agents Anywhere/Agents Anywhere/Models/Chat/TimelineGrouping.swift`
 - `ios/Agents Anywhere/Agents Anywhere/Models/Chat/Code/CodeToolLabelPlan.swift`
-- `ios/Agents Anywhere/Agents Anywhere/Models/Chat/Code/CodeRuntimeProfile.swift`
-- `ios/Agents Anywhere/Agents Anywhere/Models/Chat/Code/CodeToolSegments.swift`
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeMessageRowView.swift`
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeToolDetailView.swift`（关闭按钮）
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeThinkingRow.swift`（新）

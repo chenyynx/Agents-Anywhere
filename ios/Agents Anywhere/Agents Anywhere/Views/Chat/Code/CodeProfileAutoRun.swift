@@ -39,6 +39,7 @@ final class CodeProfileAutoRunModel {
         case messageRow
         case detail
         case workingMark
+        case thinkingStatus
     }
 
     private(set) var stage: Stage = .idle
@@ -469,6 +470,14 @@ final class CodeProfileAutoRunModel {
         views["workingMark"] = capture("code-working-mark.png")
         report["views"] = views
         persist(phase: "views.workingMark")
+
+        // The three live working-row texts: the ≥60 s thinking tier, the
+        // closed `思考了 X`, and the rotating-verb fallback.
+        stage = .thinkingStatus
+        await wait(500)
+        views["thinkingStatus"] = capture("code-thinking-status.png")
+        report["views"] = views
+        persist(phase: "views.thinkingStatus")
     }
 
     private func prepareViews() {
@@ -2115,6 +2124,8 @@ struct CodeProfileAutoRunRootView: View {
                 }
             case .workingMark:
                 workingMarkStage
+            case .thinkingStatus:
+                thinkingStatusStage
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -2142,6 +2153,25 @@ struct CodeProfileAutoRunRootView: View {
                 .foregroundStyle(CodePageTheme.runningStatusColor.resolved(for: .light))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
+    }
+
+    /// The three working-row texts side by side: the ≥60 s thinking tier,
+    /// the closed duration (inside its 2 s window), and the verb fallback.
+    private var thinkingStatusStage: some View {
+        let now = Date()
+        return VStack(alignment: .leading, spacing: 10) {
+            CodeThinkingStatusLine(
+                phase: .thinking(startedAt: now.addingTimeInterval(-63)))
+            CodeThinkingStatusLine(
+                phase: .thoughtFor(seconds: 63,
+                                   endedAt: now,
+                                   fallbackStartedAt: now.addingTimeInterval(-63)))
+            CodeThinkingStatusLine(
+                phase: .working(startedAt: now))
+        }
+        .padding(.horizontal, CodePageTheme.rowMarginLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(.systemBackground))
     }
 }

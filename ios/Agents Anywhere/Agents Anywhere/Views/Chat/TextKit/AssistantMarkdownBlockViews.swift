@@ -767,6 +767,11 @@ enum AssistantInlineCodeChipRenderer {
         let scale = traitCollection.displayScale > 0
             ? traitCollection.displayScale : 1
         let lineWidth = 1 / max(scale, 1)
+        // Collect every chip segment first: a code span can be split into
+        // several attribute ranges *and* several text segments, and drawing
+        // each one with its own 4 pt padding paints the overlaps twice (the
+        // darker band reported in R22 screenshot-measurements.md).
+        var pieces: [ChipPiece] = []
         for range in chipRanges(in: attributed) {
             guard let font = attributed.attribute(
                     .font, at: range.location, effectiveRange: nil) as? UIFont,
@@ -784,20 +789,17 @@ enum AssistantInlineCodeChipRenderer {
             // Official chip geometry is baseline-anchored, not centered on the
             // line fragment: `top = max(fragment.minY, baseline − ascent − 1)`,
             // `bottom = min(fragment.maxY, baseline + descent + 1)`
-            // (EVIDENCE/round22/official-inline-chip.md §Q2). Segments that
-            // share a line are merged before drawing so a wrapped run cannot
-            // paint the same 4 pt padding twice.
-            var segments: [(frame: CGRect, baseline: CGFloat)] = []
+            // (EVIDENCE/round22/official-inline-chip.md §Q2).
             layoutManager.enumerateTextSegments(
                 in: textRange, type: .standard, options: []
             ) { _, frame, baseline, _ in
-                segments.append((frame, baseline))
+                pieces.append(ChipPiece(
+                    frame: frame.offsetBy(dx: origin.x, dy: origin.y),
+                    baseline: baseline, font: font, style: style))
                 return true
             }
-            drawChips(segments: segments.map {
-                ($0.frame.offsetBy(dx: origin.x, dy: origin.y), $0.baseline)
-            }, font: font, style: style, lineWidth: lineWidth)
         }
+        drawPieces(pieces, lineWidth: lineWidth)
     }
 
     /// Table path: cells are drawn with `NSAttributedString.draw`, i.e. the
@@ -821,6 +823,7 @@ enum AssistantInlineCodeChipRenderer {
         let scale = traitCollection.displayScale > 0
             ? traitCollection.displayScale : 1
         let lineWidth = 1 / max(scale, 1)
+        var pieces: [ChipPiece] = []
         for range in chipRanges(in: attributed) {
             guard let font = attributed.attribute(
                     .font, at: range.location, effectiveRange: nil) as? UIFont else {
@@ -841,11 +844,12 @@ enum AssistantInlineCodeChipRenderer {
                     + layoutManager.location(forGlyphAt: intersection.location).y
                 let frame = layoutManager.boundingRect(forGlyphRange: intersection,
                                                        in: container)
-                drawChip(frame: frame.offsetBy(dx: origin.x, dy: origin.y),
-                         baseline: baseline + origin.y,
-                         font: font, style: style, lineWidth: lineWidth)
+                pieces.append(ChipPiece(
+                    frame: frame.offsetBy(dx: origin.x, dy: origin.y),
+                    baseline: baseline + origin.y, font: font, style: style))
             }
         }
+        drawPieces(pieces, lineWidth: lineWidth)
     }
 
     private struct ChipStyle {
@@ -904,32 +908,45 @@ enum AssistantInlineCodeChipRenderer {
         return ranges
     }
 
-    /// Merge the segments of one chip that share a line before drawing.
+    private struct ChipPiece {
+        var frame: CGRect
+        let baseline: CGFloat
+        let font: UIFont
+        let style: ChipStyle
+    }
+
+    /// Merge adjacent pieces that share a baseline before drawing.
     ///
-    /// A wrapped run can be split into several segments on the same line; if
-    /// each segment expanded by the 4 pt horizontal padding is drawn
-    /// separately, the overlap is filled twice and reads as a darker band.
-    private static func drawChips(segments: [(frame: CGRect, baseline: CGFloat)],
-                                  font: UIFont,
-                                  style: ChipStyle,
-                                  lineWidth: CGFloat) {
-        var lines: [[(frame: CGRect, baseline: CGFloat)]] = []
-        for segment in segments {
-            if let index = lines.firstIndex(where: {
-                abs($0[0].frame.minY - segment.frame.minY) < 0.5
-            }) {
-                lines[index].append(segment)
+    /// The official renderer synthesises one rounded outline per run
+    /// (EVIDENCE/round22/official-inline-chip.md §Q3). A code span can arrive
+    /// as several attribute ranges *and* several text segments; drawing each
+    /// piece with its own 4 pt padding fills the overlap twice and leaves a
+    /// visible seam inside the chip.
+    private static func drawPieces(_ pieces: [ChipPiece], lineWidth: CGFloat) {
+        let sorted = pieces.sorted { a, b in
+            if abs(a.baseline - b.baseline) < 0.5 {
+                return a.frame.minX < b.frame.minX
+            }
+            return a.baseline < b.baseline
+        }
+        var current: ChipPiece?
+        for piece in sorted {
+            if var merged = current,
+               abs(merged.baseline - piece.baseline) < 0.5,
+               piece.frame.minX - merged.frame.maxX <= 0.5 {
+                merged.frame = merged.frame.union(piece.frame)
+                current = merged
             } else {
-                lines.append([segment])
+                if let done = current {
+                    drawChip(frame: done.frame, baseline: done.baseline,
+                             font: done.font, style: done.style, lineWidth: lineWidth)
+                }
+                current = piece
             }
         }
-        for line in lines {
-            let minX = line.map({ $0.frame.minX }).min() ?? 0
-            let maxX = line.map({ $0.frame.maxX }).max() ?? 0
-            let frame = CGRect(x: minX, y: line[0].frame.minY,
-                               width: maxX - minX, height: line[0].frame.height)
-            drawChip(frame: frame, baseline: line[0].baseline,
-                     font: font, style: style, lineWidth: lineWidth)
+        if let done = current {
+            drawChip(frame: done.frame, baseline: done.baseline,
+                     font: done.font, style: done.style, lineWidth: lineWidth)
         }
     }
 

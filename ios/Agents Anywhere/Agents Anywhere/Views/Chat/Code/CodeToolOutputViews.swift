@@ -16,11 +16,22 @@ import UIKit
 
 struct CodeToolOutputView: View {
     let output: CodeToolOutput
+    var kind: CodeToolKind = .other
 
     var body: some View {
         switch output {
         case let .text(text):
-            CodeToolCodeCard(title: String(localized: "Output"), code: text)
+            // Read output is a whole file, not a code snippet. The generic
+            // horizontal code card stops drawing its glyphs on a long
+            // multi-line body (device report 2026-10-25: 24K/298-line Read
+            // rendered a blank card). The official page has a dedicated
+            // `FileReadDetailView`; this is its text branch: a vertical,
+            // wrapping monospaced reader with the same card chrome.
+            if kind == .read {
+                CodeFileReadOutputView(text: text)
+            } else {
+                CodeToolCodeCard(title: String(localized: "Output"), code: text)
+            }
         case let .todos(todos):
             CodeToolTodosOutputView(todos: todos)
         case let .diff(diff):
@@ -33,6 +44,86 @@ struct CodeToolOutputView: View {
             // The detail page hides its output section entirely for `.none`;
             // a bare switch still needs a branch.
             EmptyView()
+        }
+    }
+}
+
+// MARK: - Read output (official `FileReadDetailView` text branch)
+
+/// A whole-file Read result. The official detail page renders Read through
+/// `FileReadDetailView`/`CodeBlockContent`, not the generic horizontal code
+/// card; the body is a vertical, wrapping monospaced text so a 20K+ line
+/// document cannot fall out of the code card's fixed-size text path.
+private struct CodeFileReadOutputView: View {
+    let text: String
+
+    @State private var displayText: String
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.displayScale) private var displayScale
+    @ScaledMetric(relativeTo: .footnote) private var codeFontSize =
+        CodeToolCardMetrics.codeFontSize
+    @ScaledMetric(relativeTo: .caption) private var titleFontSize =
+        CodeToolCardMetrics.titleFontSize
+    @ScaledMetric(relativeTo: .caption) private var headerHeight =
+        CodeToolCardMetrics.headerHeight
+
+    init(text: String) {
+        self.text = text
+        _displayText = State(initialValue: String(text.prefix(CodeToolCardMetrics.previewLimit)))
+    }
+
+    private var surface: Color {
+        CodeToolCardMetrics.surface.resolved(for: colorScheme)
+    }
+
+    private var border: Color {
+        CodeToolCardMetrics.border.resolved(for: colorScheme)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text(String(localized: "Output"))
+                    .font(.system(size: titleFontSize,
+                                  weight: .regular,
+                                  design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .frame(minHeight: CodeToolCardMetrics.titleLineHeight)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                CodeToolCopyButton(text: { text },
+                                   label: String(localized: "复制代码"),
+                                   size: 44)
+            }
+            .padding(.horizontal, CodeToolCardMetrics.headerHorizontalPadding)
+            .frame(height: headerHeight)
+
+            Rectangle()
+                .fill(border)
+                .frame(height: 1 / displayScale)
+
+            Text(verbatim: displayText)
+                .font(.system(size: codeFontSize, design: .monospaced))
+                .lineSpacing(CodeToolCardMetrics.codeLineSpacing)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(CodeToolCardMetrics.contentInset)
+
+            if text.count > CodeToolCardMetrics.previewLimit {
+                Text(String(localized: "预览已截断，复制可获取完整内容"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, CodeToolCardMetrics.contentInset)
+                    .padding(.bottom, 12)
+            }
+        }
+        .background(surface)
+        .clipShape(RoundedRectangle(cornerRadius: CodeToolCardMetrics.cornerRadius,
+                                    style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: CodeToolCardMetrics.cornerRadius,
+                             style: .continuous)
+                .stroke(border, lineWidth: 1 / displayScale)
+                .allowsHitTesting(false)
         }
     }
 }

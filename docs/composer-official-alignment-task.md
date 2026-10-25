@@ -220,39 +220,35 @@
 
 ---
 
-### 5.1 实现状态（2026-10-26）
+### 5.1 实现状态（2026-10-26，真机反馈后修订）
 
-- **已实现**（分支 `feat/code-composer-official`，commit `78c7dc0f`）：
-  - Code profile：折叠 16 / 52 / 贴安全区、胶囊 26；展开 9 / 95 / 距键盘 8；`+` 灰底圆；队列 placeholder。
-  - 键盘：`willShow`/`willHide` → `max(keyboardHeight − restingInset, 0)`，`interpolatingSpring(mass: 3, stiffness: 1000, damping: 500)`；页面与 composer 都忽略系统键盘安全区。
+- **已实现**（分支 `feat/code-composer-official`，commit `78c7dc0f` / `70a96c32` / `31c2c71c`）：
+  - Code profile 尺寸：折叠 16 / 52 / 贴安全区、胶囊 26、leading 0 / trailing 2（文字起点 74）；展开 9 / 95 / 距键盘 8、圆角 24、text inset 11、content inset 3；`+` 灰底圆；队列 placeholder；展开 spring 0.22 / 0.77。
+  - **键盘：不自绘**。真机截图证明系统已经把 `safeAreaBar` 顶到键盘上方；自绘 `safeAreaPadding` 等于第二次抬升，卡片和键盘之间多出约 107 pt。已删除 observer / modifier，回到系统键盘动画。
+  - 官方 `3 / 1000 / 500` 弹簧：主时间常数约 0.5 s，键盘动画约 0.25 s，不适合整段位移；判定它属于 early-reservation 路径，暂不实现。
   - `NewSessionView` 使用同一 profile；Chat profile 保持现状（32 / 48 / +10、`.smooth(0.24)`、系统键盘）。
   - 未改 `SidebarDrawer.swift` / `ChatPageToolbar.swift`。
-- **验证**：纯模型文件单独编译 + 断言通过；所有改动文件 `swiftc -parse` 通过。
-- **未验证**：SwiftPM 测试未跑（本机 Swift 6.0.3，包要求 6.2.0）；iOS 编译与真机未跑；按纪律未派 CI、未出包。
-- **真机风险**：① 系统键盘与自绘 padding 是否叠加（页面/`safeAreaBar`/UIKit collection 三层）；② 列表底部 inset 是否随弹簧动画同步；③ interactive dismiss 时官方只监听 show/hide，可能先留缝；④ iPad 分屏/Stage Manager 的坐标转换。
+- **验证**：纯模型编译 + 断言；所有改动文件 `swiftc -parse`；CI run `40223624399` 的 test + build 绿（旧包）。
+- **未验证**：本次修订（31c2c71c）尚未重新出包/真机。
+- **待确认（按钮）**：官方展开排 = `+ / 模型胶囊 / 麦克风 / 发送`；AA 现在多了 `⌘` 和上下文圆环，缺模型胶囊/麦克风。尺寸本身 `+` 44、发送 36 与官方截图一致；“位置不对”可能指这两个多出的按钮，需 pp 确认是否移除或补齐。
 - **2026-10-26 pp 决定**：没有官方 Code 截图，Code 基准采用官方 Chat 截图的 16/52、9/95；按此实现，后续有官方 Code 图再校准。
 
 ## 6. 文件清单
 
 ### 新增
 - `ios/Agents Anywhere/Agents Anywhere/Models/Chat/ComposerMetricsProfile.swift`（纯模型）
-- `ios/Agents Anywhere/Agents Anywhere/Models/Chat/ComposerKeyboardDriver.swift`（纯逻辑 + 通知）
-- `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Composer/EarlyKeyboardPadding.swift`（ViewModifier）
 - `ios/Tests/ClientCoreTests/ComposerMetricsProfileTests.swift`
-- `ios/Tests/ClientCoreTests/ComposerKeyboardDriverTests.swift`
 
 ### 修改（composer 域）
-- `Views/Chat/Composer/ChatComposer.swift`（profile、placeholder、控件可见性、动画来源）
-- `Views/Chat/Composer/ComposerLayout.swift`（profile 驱动布局）
+- `Views/Chat/Composer/ChatComposer.swift`（profile、placeholder、`+` 灰底圆、动画来源）
+- `Views/Chat/Composer/ComposerLayout.swift`（profile 驱动布局、leading/trailing inset）
 - `Views/Chat/Composer/ChatControlMetrics.swift`（profile 化）
-- `Views/Chat/Composer/ChatComposerDock.swift`（profile 传递、placeholder 状态、Code 控件）
-- `Views/Chat/SessionChatView.swift`（Code profile 选择、early keyboard 挂载；**共享页壳，需列出**）
+- `Views/Chat/Composer/NativeComposerEditor.swift`（焦点展开使用 profile 曲线）
+- `Views/Chat/SessionChatView.swift`（Code profile 选择、队列 placeholder；**共享页壳，已列出**）
+- `Views/Chat/NewSessionView.swift`（同一 profile）
+- `Resources/Localization/Localizable.xcstrings`（只追加队列 placeholder 文案）
 
-### 共享文件（尽量少动；必须动时只追加 composer 内容并单独汇报）
-- `Views/Chat/ChatPageToolbar.swift`（方案 A/C 需调整 `.ignoresSafeArea(.keyboard)`）
-- `Views/Components/SidebarDrawer.swift`（方案 A/C 需卡片忽略键盘）
-- `Resources/Localization/Localizable.xcstrings`（只追加 composer 文案）
-- `Agents Anywhere.xcodeproj/project.pbxproj`（新增文件登记）
+> 键盘 observer / modifier（`ComposerKeyboard.swift`、`ComposerKeyboardLayout.swift`、对应测试）曾在 `78c7dc0f` 加入，`31c2c71c` 已删除；当前没有自绘键盘层，也不需要改 `SidebarDrawer.swift` / `ChatPageToolbar.swift`。新增文件由 Xcode 的同步目录组自动收录，未改 `project.pbxproj`。
 
 ### 不碰（另一条线正在改）
 `CodeMessageRowView`、`CodeMessageTimeline`、`CodeRowHeightPlan`、`CodeToolLabelPlan`、`CodeToolDetailView`、`CodeCollapsedToolRow`、`CodeMessageHeightMeasurer`、`TimelineChatContentAdapter`、`TimelineChatTimelineView`、`CodeThinking*`。

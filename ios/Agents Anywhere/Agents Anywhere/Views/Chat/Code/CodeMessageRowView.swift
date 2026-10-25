@@ -477,6 +477,8 @@ nonisolated enum CodeToolLabels {
         // No `ccr_verb_*` entry exists for Write in the official tables; the
         // summary form is "Created a file", so the single verb stays "Created".
         case .created: return String(localized: "ccr_verb_created")
+        // Official `ccr_write_updated` (updated file write).
+        case .updated: return String(localized: "ccr_write_updated")
         case .ran: return String(localized: "ccr_verb_ran")
         case .searched: return String(localized: "ccr_verb_searched")
         case .searchedWeb: return String(localized: "ccr_verb_searched_web")
@@ -503,6 +505,8 @@ nonisolated enum CodeToolLabels {
         case .read: return String(localized: "ccr_running_reading")
         case .edited: return String(localized: "ccr_running_editing")
         case .created: return String(localized: "ccr_running_creating")
+        // Official update-write running form (`ccr_running_editing`).
+        case .updated: return String(localized: "ccr_running_editing")
         case .ran: return String(localized: "ccr_running_running")
         case .searched: return String(localized: "ccr_running_searching")
         case .searchedWeb: return String(localized: "ccr_running_searching_web")

@@ -18591,6 +18591,23 @@
         }
       }
     },
+    "ccr_write_updated": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Updated"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已更新"
+          }
+        }
+      }
+    },
     "thought_process": {
       "extractionState": "manual",
       "localizations": {

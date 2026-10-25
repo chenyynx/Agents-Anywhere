@@ -426,9 +426,41 @@ final class CodeProfileAutoRunModel {
         let wrongCount = text.contains("6 file")
         check(singleShape, "toolLabels: six edits to one file lost the single-file shape (\(text))")
         check(!wrongCount, "toolLabels: six edits to one file summarized as \(text)")
+
+        // Official Write has two verbs; the kind is derived from the result
+        // text (production marker, 2026-10-25). The app-target mapping must
+        // pick Updated for an update and Created for a create.
+        let updateJSON = """
+        {"id":"label-wu","sessionId":"gate-label","type":"tool","status":"done","orderSeq":1,
+         "content":{"toolName":"Write","input":{"file_path":"/repo/Updated.swift"},
+           "text":"The file /repo/Updated.swift has been updated successfully. (file state is current in your context — no need to Read it back)"},
+         "source":{"itemId":"label-wu","nativeMessageId":"msg-label-wu","blockIndex":0}}
+        """
+        let createJSON = """
+        {"id":"label-wc","sessionId":"gate-label","type":"tool","status":"done","orderSeq":1,
+         "content":{"toolName":"Write","input":{"file_path":"/repo/Created.swift"},
+           "text":"File created successfully at: /repo/Created.swift (file state is current in your context — no need to Read it back)"},
+         "source":{"itemId":"label-wc","nativeMessageId":"msg-label-wc","blockIndex":0}}
+        """
+        let updateCall = Self.decodeItem(updateJSON).map { CodeToolCall(item: $0, kind: .write) }
+        let createCall = Self.decodeItem(createJSON).map { CodeToolCall(item: $0, kind: .write) }
+        let updatePlan = updateCall.flatMap { CodeToolLabelPlan.make(calls: [$0], cwd: nil) }
+        let updateLabel = updateCall.map { CodeToolLabels.label(for: [$0], cwd: nil) }
+        let createLabel = createCall.map { CodeToolLabels.label(for: [$0], cwd: nil) }
+        let updateVerb = updateLabel?.verb ?? "nil"
+        let createVerb = createLabel?.verb ?? "nil"
+        check(updatePlan?.verb == .updated,
+              "toolLabels: update Write plan verb \(String(describing: updatePlan?.verb)), expected updated")
+        check(updateVerb == String(localized: "ccr_write_updated"),
+              "toolLabels: update Write rendered \(updateVerb)")
+        check(createVerb == String(localized: "ccr_verb_created"),
+              "toolLabels: create Write rendered \(createVerb)")
+
         report["toolLabels"] = ["text": text,
                                 "singleShape": singleShape,
-                                "wrongCount": wrongCount]
+                                "wrongCount": wrongCount,
+                                "updateWriteVerb": updateVerb,
+                                "createWriteVerb": createVerb]
     }
 
     // MARK: - Views and screenshots

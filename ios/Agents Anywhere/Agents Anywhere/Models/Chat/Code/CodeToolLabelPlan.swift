@@ -30,12 +30,24 @@ nonisolated struct CodeDiffStat: Hashable, Sendable {
     var hasCounts: Bool { added > 0 || removed > 0 }
 }
 
+/// The official `ToolCall.fileWriteKind` (`swift_types.csv` 49470–49471):
+/// a `fileWrite` either created a file or replaced one. The official model
+/// carries it as a field; AA's wire has no such field, so it is derived from
+/// the tool's own result text.
+nonisolated enum CodeFileWriteKind: Hashable, Sendable {
+    case create
+    case update
+}
+
 nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
     /// The verb shown before the target (single call), or the first verb of a
     /// summary phrase. `used` is the official `Used %@` form.
     nonisolated enum Verb: Hashable, Sendable {
         case read, edited, created, ran, searched, searchedWeb, fetched
         case clearedTodos, updatedTodos, ranAgent, proposedPlan, asked, used
+        /// A `fileWrite` that replaced an existing file (`fileWriteKind ==
+        /// update`): `ccr_write_updated` / `ccr_running_editing`.
+        case updated
         /// Span-summary-only forms (no single-call use).
         case searchedCode, foundFiles, browsedWeb
     }
@@ -126,7 +138,10 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
         switch call.kind {
         case .read: return .read
         case .edit: return .edited
-        case .write: return .created
+        case .write:
+            // Official Write has two verbs (`0x102891924`): create and
+            // update. Only an explicit update marker overrides Created.
+            return fileWriteKind(for: call) == .update ? .updated : .created
         case .bash: return .ran
         case .search: return searchVerb(for: call)
         case .todo: return todoIsEmpty(call) ? .clearedTodos : .updatedTodos
@@ -184,6 +199,41 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
         TimelineText.first(input?["file_path"], input?["notebook_path"],
                            input?["path"], content["path"], content["file_path"])
             ?? content["changes"]?.arrayValue?.first.flatMap { TimelineText.path($0) }
+    }
+
+    // MARK: - Write kind
+
+    /// The official `fileWriteKind` for a Write call.
+    ///
+    /// AA's timeline has no such field; the Claude Code Write result text does
+    /// name both cases, verified against the production timeline
+    /// (2026-10-25: 1110 "File created successfully at:…" / 24 "The file …
+    /// has been updated successfully…"). Only these exact markers are
+    /// trusted: an unknown or missing result keeps today's Created +
+    /// diff-counted behaviour instead of guessing. Only `fileWrite` reads
+    /// this: Edit shares the "has been updated successfully" wording, so a
+    /// non-write call must never be classified here.
+    static func fileWriteKind(for call: CodeToolCall) -> CodeFileWriteKind? {
+        // Only fileWrite reads this field. Edit shares the "has been updated
+        // successfully" result text but is a different tool (and does count
+        // its diff); never classify it here.
+        guard call.kind == .write else { return nil }
+        let content = call.item.raw["content"] ?? .object([:])
+        guard let text = writeResultText(in: content) else { return nil }
+        if text.hasPrefix("File created successfully at:") { return .create }
+        if text.hasPrefix("The file "), text.contains(" has been updated successfully") {
+            return .update
+        }
+        return nil
+    }
+
+    private static func writeResultText(in content: JSONValue) -> String? {
+        for key in ["text", "outputText"] {
+            if let value = content[key]?.stringValue, !value.isEmpty { return value }
+        }
+        if let value = content["result"]?.stringValue, !value.isEmpty { return value }
+        if let value = content["output"]?.stringValue, !value.isEmpty { return value }
+        return nil
     }
 
     private static func todoIsEmpty(_ call: CodeToolCall) -> Bool {
@@ -361,9 +411,9 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
     ///
     /// Official span aggregation (`0x10288fa10`): failed calls and
     /// `fileWriteKind == update` calls are skipped; a call that is neither a
-    /// diff nor skippable makes the whole span show no indicator. AA's wire
-    /// carries no `fileWriteKind`, so an update write presents as an ordinary
-    /// diff call and is summed; the rest of the rule is applied as decoded.
+    /// diff nor skippable makes the whole span show no indicator. The write
+    /// kind comes from `fileWriteKind(for:)`; a Write with an unrecognised
+    /// result stays an ordinary call instead of being guessed as an update.
     static func diffStat(for calls: [CodeToolCall]) -> CodeDiffStat? {
         var added = 0
         var removed = 0
@@ -371,6 +421,9 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
         for call in calls {
             // A failed change did not land; its attempted patch is not a diff.
             if call.status == .failed { continue }
+            // Official `0x10288fa10`: an update write is skipped entirely;
+            // its replacement diff is not a change to count.
+            if fileWriteKind(for: call) == .update { continue }
             guard let stat = diffStat(for: call.item) else { return nil }
             added += stat.added
             removed += stat.removed

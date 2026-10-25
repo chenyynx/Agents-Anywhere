@@ -11,7 +11,7 @@
 > **证据标记**：[E] 指令/类型/数据库直读；[I] 结构推断（写明依据）；[U] 未验证。
 > **铁律**：`dev` 不碰不合；只从 `feat/code-profile-beta` 出包；不 force push；先任务单后代码。
 >
-> **实现状态（2026-10-25，分支 `feat/code-profile-beta`）**：P1 思考行 + 详情 `fe0a086c`；关闭按钮与长 Read 输出 `98f23368`；运行态思考文案 + 工具文案四项 `277002d6`；思考态截图门禁 `d7ae6bbb`；跨回合思考防串 `e4a37829`；`thought_process` 官方文案 `37255002`；wire 时间戳解析 `489ccde1`。`code-profile` 门禁新增 settled thinking 行高矩阵与 24K/298 行 Read 高度检查。**剩余唯一缺口**：`fileWriteKind` 在 AA wire 无字段，diff 聚合无法跳过 update 写入（已在 `277002d6` 注释）。
+> **实现状态（2026-10-25，分支 `feat/code-profile-beta`）**：P1 思考行 + 详情 `fe0a086c`；关闭按钮与长 Read 输出 `98f23368`；运行态思考文案 + 工具文案四项 `277002d6`；思考态截图门禁 `d7ae6bbb`；跨回合思考防串 `e4a37829`；`thought_process` 官方文案 `37255002`；wire 时间戳解析 `489ccde1`。`code-profile` 门禁新增 settled thinking 行高矩阵与 24K/298 行 Read 高度检查。`fileWriteKind` 改由 Write 结果文案推导（create/update，未知保持旧行为），同时驱动 diff 跳过与 `Updated / 已更新` 动词；运行中的 update Write 无提前信号，仍显示 Creating。
 
 ---
 
@@ -141,7 +141,8 @@
 - 失败后缀 `(N failed)` / `（N 项失败）`：`CodeToolLabelPlan.Phrase` 加 failed 字段、`CodeCollapsedToolRow` 加 failed 参数、补本地化 key；计数语义按 round21 §1.11。
 - 分隔符：`ccr_summary_separator` 的中文值从 `，` 改回官方硬编码 `", "`（`CodeMessageRowView.swift:390`；round21 §1.5）。
 - 单目标判定：从“同一文件/同一路径”放宽到官方“所有 call 的 target 相同”（`CodeToolLabelPlan.swift:90-93,182-194`）。
-- diff 聚合：跳过 failed 与 `fileWriteKind==update`；任一 call 不是 diff/失败/更新 → 整组不显示（round21 §2.6）。
+- diff 聚合：跳过 failed 与 `fileWriteKind==update`；任一 call 不是 diff/失败/更新 → 整组不显示（round21 §2.6）。AA wire 无 `fileWriteKind`，用 Write 结果文案推导：`File created successfully at:` → create、`The file … has been updated successfully` → update（生产库实测 1110/24，2026-10-25）；不匹配一律 nil，维持 Created/计入徽标。同一 kind 也用于 Write 动词 `Updated / 已更新`（`ccr_write_updated`，官方 IPA 1.261019.51 `ModuleStrings2.strings` 直读）。运行中的 update Write 无提前信号，仍显示 Creating。
+- Write 动词：create → `Created / 已创建`（沿用 `ccr_verb_created`），update → `Updated / 已更新`（`ccr_write_updated`）；kind 推导同 diff 聚合。官方运行态 update 用 `ccr_running_editing`，但 AA 只有结果文案这一个信号，运行中仍为 Creating。
 - `serverSummary` / `receivedMessages` **不做**：AA 无数据源，伪造违反“宁缺勿假”。
 
 ### 3.3 关闭按钮（pp 2026-10-25 指出的顺带修复）

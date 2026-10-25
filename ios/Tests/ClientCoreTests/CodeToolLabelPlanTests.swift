@@ -12,13 +12,16 @@ private func makeCall(_ id: String,
                       name: String,
                       kind: CodeToolKind,
                       input: [String: Any] = [:],
-                      status: String = "done") throws -> CodeToolCall {
+                      status: String = "done",
+                      text: String? = nil) throws -> CodeToolCall {
+    var content: [String: Any] = ["kind": "tool_call", "toolName": name, "input": input]
+    if let text { content["text"] = text }
     let item: V2TimelineItem = try decode([
         "id": id,
         "sessionId": "session",
         "type": "tool",
         "status": status,
-        "content": ["kind": "tool_call", "toolName": name, "input": input],
+        "content": content,
         "source": ["itemId": id, "nativeMessageId": "msg-1", "blockIndex": 1],
         "orderSeq": 1,
         "revision": 1,
@@ -125,6 +128,130 @@ struct CodeToolLabelPlanTests {
         #expect(plan.phrases == [
             .init(verb: .created, unit: .files, count: 2),
         ])
+    }
+
+    // MARK: Official Write kind (fileWriteKind)
+
+    @Test func writeCreateResultUsesTheCreatedVerb() throws {
+        let call = try makeCall("w1", name: "Write", kind: .write,
+                                input: ["file_path": "/repo/A.swift"],
+                                text: "File created successfully at: /repo/A.swift (file state is current in your context — no need to Read it back)")
+        #expect(CodeToolLabelPlan.fileWriteKind(for: call) == .create)
+        let plan = try #require(CodeToolLabelPlan.make(calls: [call], cwd: nil))
+        #expect(plan.verb == .created)
+        #expect(plan.target == "/repo/A.swift")
+    }
+
+    @Test func writeUpdateResultUsesTheUpdatedVerb() throws {
+        let call = try makeCall("w1", name: "Write", kind: .write,
+                                input: ["file_path": "/repo/A.swift"],
+                                text: "The file /repo/A.swift has been updated successfully. (file state is current in your context — no need to Read it back)")
+        #expect(CodeToolLabelPlan.fileWriteKind(for: call) == .update)
+        let plan = try #require(CodeToolLabelPlan.make(calls: [call], cwd: nil))
+        #expect(plan.verb == .updated)
+        #expect(plan.target == "/repo/A.swift")
+    }
+
+    @Test func unknownWriteResultKeepsTheCreatedVerb() throws {
+        let call = try makeCall("w1", name: "Write", kind: .write,
+                                input: ["file_path": "/repo/A.swift"],
+                                text: "No tool result was recorded in Claude history.")
+        #expect(CodeToolLabelPlan.fileWriteKind(for: call) == nil)
+        let plan = try #require(CodeToolLabelPlan.make(calls: [call], cwd: nil))
+        #expect(plan.verb == .created)
+    }
+
+    /// Claude Code's Edit shares the "has been updated successfully"
+    /// wording; it is not a fileWriteKind and its diff must keep counting.
+    @Test func editWithUpdateWordingIsNotAnUpdateWrite() throws {
+        let item: V2TimelineItem = try decode([
+            "id": "e1", "sessionId": "session", "type": "tool", "status": "done",
+            "content": [
+                "kind": "file_change", "toolName": "Edit",
+                "input": ["file_path": "/repo/A.swift"],
+                "text": "The file /repo/A.swift has been updated successfully.",
+                "structuredPatch": [[
+                    "oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1,
+                    "lines": ["-old", "+new"],
+                ]],
+            ],
+            "source": ["itemId": "e1"],
+            "orderSeq": 1, "revision": 1, "updatedSeq": 1, "contentHash": "e1",
+        ])
+        let call = CodeToolCall(item: item, kind: .edit)
+        #expect(CodeToolLabelPlan.fileWriteKind(for: call) == nil)
+        #expect(CodeToolLabelPlan.diffStat(for: [call])
+            == CodeDiffStat(added: 1, removed: 1))
+    }
+
+    /// Official `0x10288fa10` skips an update write but keeps counting the
+    /// other calls; the update write's own patch must not reach the badge.
+    @Test func diffBadgeSkipsUpdateWriteButKeepsTheEdit() throws {
+        let writeItem: V2TimelineItem = try decode([
+            "id": "w1", "sessionId": "session", "type": "tool", "status": "done",
+            "content": [
+                "kind": "file_change", "toolName": "Write",
+                "input": ["file_path": "/repo/A.swift"],
+                "text": "The file /repo/A.swift has been updated successfully. (file state is current in your context — no need to Read it back)",
+                "structuredPatch": [[
+                    "oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1,
+                    "lines": ["-old", "+new"],
+                ]],
+            ],
+            "source": ["itemId": "w1"],
+            "orderSeq": 1, "revision": 1, "updatedSeq": 1, "contentHash": "w1",
+        ])
+        let editItem: V2TimelineItem = try decode([
+            "id": "e1", "sessionId": "session", "type": "tool", "status": "done",
+            "content": [
+                "kind": "file_change", "toolName": "Edit",
+                "structuredPatch": [[
+                    "oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 3,
+                    "lines": ["-c", "+d", "+e"],
+                ]],
+            ],
+            "source": ["itemId": "e1"],
+            "orderSeq": 2, "revision": 1, "updatedSeq": 1, "contentHash": "e1",
+        ])
+        #expect(CodeToolLabelPlan.diffStat(for: [
+            CodeToolCall(item: writeItem, kind: .write),
+            CodeToolCall(item: editItem, kind: .edit),
+        ]) == CodeDiffStat(added: 2, removed: 1))
+    }
+
+    /// A create write is not skipped: its patch is a real diff and is summed
+    /// with its siblings.
+    @Test func diffBadgeCountsCreateWriteWithTheEdit() throws {
+        let writeItem: V2TimelineItem = try decode([
+            "id": "w1", "sessionId": "session", "type": "tool", "status": "done",
+            "content": [
+                "kind": "file_change", "toolName": "Write",
+                "input": ["file_path": "/repo/B.swift"],
+                "text": "File created successfully at: /repo/B.swift (file state is current in your context — no need to Read it back)",
+                "structuredPatch": [[
+                    "oldStart": 0, "oldLines": 0, "newStart": 1, "newLines": 2,
+                    "lines": ["+a", "+b"],
+                ]],
+            ],
+            "source": ["itemId": "w1"],
+            "orderSeq": 1, "revision": 1, "updatedSeq": 1, "contentHash": "w1",
+        ])
+        let editItem: V2TimelineItem = try decode([
+            "id": "e1", "sessionId": "session", "type": "tool", "status": "done",
+            "content": [
+                "kind": "file_change", "toolName": "Edit",
+                "structuredPatch": [[
+                    "oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1,
+                    "lines": ["-c", "+d"],
+                ]],
+            ],
+            "source": ["itemId": "e1"],
+            "orderSeq": 2, "revision": 1, "updatedSeq": 1, "contentHash": "e1",
+        ])
+        #expect(CodeToolLabelPlan.diffStat(for: [
+            CodeToolCall(item: writeItem, kind: .write),
+            CodeToolCall(item: editItem, kind: .edit),
+        ]) == CodeDiffStat(added: 3, removed: 1))
     }
 
     // MARK: Diff badge counts

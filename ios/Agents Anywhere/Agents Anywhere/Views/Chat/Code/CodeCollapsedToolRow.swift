@@ -180,7 +180,7 @@ struct CodeCollapsedToolRow: View {
 
     /// "+1 −1" in symbols rather than words, so it needs no localisation.
     private var diffAccessibilityValue: String {
-        guard let diff else { return "" }
+        guard let diff = label.diff else { return "" }
         var parts: [String] = []
         if diff.added > 0 { parts.append("+\(diff.added)") }
         if diff.removed > 0 { parts.append("−\(diff.removed)") }

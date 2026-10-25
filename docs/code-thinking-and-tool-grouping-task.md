@@ -49,7 +49,7 @@
 | 进行中阈值 | 15 / 30 / 45 / 60 s（截断取整） | `0x102a89118–58` |
 | 5 档文案 key | `thinking_status_thinking` / `still_thinking` / `thinking_more` / `thinking_some_more` / `almost_done_thinking` | `code-page-strings.csv:516-520` |
 | 持久行视图 | `ThinkingContentRow`，Body `0x102c6ba54`；每个连续 thinking run 一条。**真渲染臂 = `DisplayBlockView.body 0x102b185d0` 的 tag4 → `0x102b19c30`**（R23 的 `0x102b1bfc8` 实为 `ToolCallSegment` 分派/threadSessionCard，已更正） | round24 `thinking-row-detail-and-style.md` |
-| **思考合并规则（本轮新增）** | `0x1027365f0`：从 blocks 尾部跳过 tag2（toolCalls），遇到 tag4 就「旧文本 + 新文本」合并替换，否则追加。⇒ 被工具调用隔开的多段 thinking 合并成一条 tag4；被 text 等其它块隔开才新建。`redactedThinking`（tag5）**不产出** tag4。合并拼接符/去重键 UNKNOWN | round24 `synthetic-thinking-lifecycle.md` §6 |
+| **思考合并规则（本轮新增）** | `0x1027365f0`：从 blocks 尾部跳过 tag2（toolCalls），遇到 tag4 就用 **`[old, new].filter{!isEmpty}.joined(separator: "\n\n")`** 合并替换，否则追加。⇒ 被工具调用隔开的多段 thinking 合并成一条 tag4；被 text 等其它块隔开才新建。`redactedThinking`（tag5）**不产出** tag4；Set 键是 **block index**（`narrationBlockIndexes`），命中时改产 `Block.narration`（tag5）。合并函数内无去重（重复帧上游处理 UNKNOWN） | round24 `tag4-merge-text.md`、`synthetic-thinking-lifecycle.md` §6 |
 | 持久行内容 | `extendedThinking` 图标（**渲染 `.medium`，基准 20pt**，不是 large/24）+ `Thought process`/`思考过程` + caret；文本 15/400/21 默认 label 色；图标/caret 动态灰 light ≈ #7B7974 / dark ≈ #97958D；`IconFrame` style `.plain` / size `.regular` / isFramed=true；`CollapsedRowButton` minHeight 24 + padding 6 + contentShape(Rectangle) | round24 `thinking-row-detail-and-style.md` §4 |
 | 点击 | 逐指令坐实：`0x102b19c30` 捕获 String → `ThinkingContentRow.onTap` → `0x102b38d74` → `0x102b1f23c` → `presentDetail(.thinkingText(text))`；详情页 = **sheet（`.presentationDetents` medium/large + 内部 NavigationStack）**，正文 `RichMarkdownView` 原文，标题 `思考过程`；sheet 挂载点 UNKNOWN | round24 `thinking-row-detail-and-style.md` §2/§3 |
 | 正文内联 | **没有**任何路径在 transcript 内联 raw thinking | 同上 §5 |
@@ -107,7 +107,7 @@
 
 **P1（iOS）：持久思考行 + 详情页（不依赖 connector）**
 
-1. 模型：`CodeMessageRow.Block.reasoning(id:text:)` 加 `status`（done 才显示），并按官方合并规则把**同一消息组内**连续的多段 reasoning 合成**一个** thinking 块（`0x1027365f0`：跳过 toolCalls 合并、text 等块断开；跨消息不合并；拼接符/去重键 UNKNOWN，待补）；`redacted_thinking` 不产出。合并由 `CodeMessageBuilder.messageRow` 在消息组内完成。
+1. 模型：`CodeMessageRow.Block.reasoning(id:text:)` 加 `status`（done 才显示），并按官方合并规则把**同一消息组内**连续的多段 reasoning 合成**一个** thinking 块：文本用 `[old, new].filter{!isEmpty}.joined(separator: "\n\n")`（官方 `0x1027365f0`）；跳过 toolCalls 合并、text 等块断开；跨消息不合并；`redacted_thinking` 不产出。合并由 `CodeMessageBuilder.messageRow` 在消息组内完成。
 2. 视图：新 `CodeThinkingRow`，视觉照官方 `CollapsedRowButton`：`anthropicon.extendedThinking`（**渲染 `.medium`，基准 20pt**）+ **固定标签 `思考过程`** + caret；文本 15/400/21 默认 label 色；图标/caret 动态灰 light ≈ #7B7974 / dark ≈ #97958D；`IconFrame` style `.plain` / size `.regular` / isFramed=true；垂直 padding 6、minHeight 24。可复用 `CodeCollapsedToolRow` 的常量，但用独立视图（无 verb/target/diff 语义）。
 3. 详情：新 `CodeThinkingDetailView`（NavigationStack + ScrollView + `ChatMarkdownView`，标题 `思考过程`）。官方是 **sheet（`.presentationDetents` medium/large）+ 内部 NavigationStack**，AA 现有页面级 `.sheet(item:)` 正好同形态；把思考/工具详情统一成 `CodePageDetail` enum（`TimelineChatTimelineView.swift:193-198,225,244-246`），避免同视图双 sheet，并补 `.presentationDetents([.medium,.large])`。
 4. `CodeMessageRowView`：`renderRows` 不再过滤 `.reasoning`；`blockView` 的 `.reasoning` 换成 `CodeThinkingRow`；新增 `onThinkingDetail` 回调（照 `onToolDetail` 机制，`CodeMessageRowView.swift:57-72,234-250`）。
@@ -203,7 +203,7 @@
 | 5 | P2 运行态时长在刷新/重进后不可重现（客户端计时） | P2 | 官方同样只在运行态显示；持久行固定 `思考过程`，可接受 |
 | 6 | 官方 `Block.thinking`/narration 在 AA 无对应行，断组语义有差异 | P2 | 现有数据无样本；记录，不猜 |
 | 7 | 其它 runtime：思考行对 Codex 也会开始显示（connector 有 reasoning 投影）；DSH 无数据不受影响 | P1 | 有意通用；用 Codex fixture 验证文案/高度 |
-| 8 | tag4 合并的**拼接符/去重键** UNKNOWN（闭包体 `0x1008b7508`/`0x10153dc24` 未展开） | P1 | 再派一路拆闭包；闭合前不猜分隔符，任务单不落实现细节 |
+| 8 | tag4 合并的上游**重复帧去重** UNKNOWN（合并函数本身只滤空串、不查重） | P2 | 现有 connector 不重发同一 thinking 文本；真机若出现 `x\n\nx` 再追上游 |
 
 ---
 

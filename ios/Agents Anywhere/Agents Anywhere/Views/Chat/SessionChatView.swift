@@ -107,7 +107,7 @@ struct SessionChatView: View, Equatable {
                 canSelectModel: session.runtime.allows("catalog.model"),
                 canSelectPermission: session.runtime.allows("catalog.permission"),
                 isStreaming: model.isComposerStreaming, canStop: session.runtime.permitsInterruptAttempt(),
-                isBusy: model.isWorking || !model.isOpeningReady, placeholder: requiresTakeover ? String(localized: "请先接管") : String(localized: "询问 Agents"),
+                isBusy: model.isWorking || !model.isOpeningReady, placeholder: composerPlaceholder,
                 isLoadingSettings: model.isLoadingSettings,
                 settingsError: model.settingsError, sessionChat: model,
                 contextUsage: model.contextUsage,
@@ -119,6 +119,9 @@ struct SessionChatView: View, Equatable {
                 .traceChatLayout("composer-dock")
         }
         .frame(maxWidth: ChatControlMetrics.maximumContentWidth).frame(maxWidth: .infinity)
+        // Code reserves the keyboard itself (official EarlyKeyboardPadding);
+        // Chat keeps the system behavior.
+        .modifier(ComposerKeyboardPadding(enabled: usesCollectionTimeline))
         // Native safe-area layout owns both the visible scroll
         // region and the dock's space; do not add a second margin.
     }
@@ -187,7 +190,23 @@ struct SessionChatView: View, Equatable {
         imageLoader = services.attachmentImageLoader
         self.onMenu = onMenu
     }
-    private var controls: ChatControlMetrics { .init(bodyLineHeight: bodyLineHeight) }
+    /// The Code profile (collection timeline) uses the official composer
+    /// measurements; Chat keeps the current AA bar.
+    private var composerProfile: ComposerMetricsProfile {
+        usesCollectionTimeline ? .code : .chat(bodyLineHeight: bodyLineHeight)
+    }
+    private var controls: ChatControlMetrics {
+        .init(bodyLineHeight: bodyLineHeight, profile: composerProfile)
+    }
+    /// Default hint, mid-turn queue hint, or the takeover gate.
+    private var composerPlaceholder: String {
+        if requiresTakeover { return String(localized: "请先接管") }
+        if usesCollectionTimeline, model.isComposerStreaming,
+           session.composer.isFocused, !session.composer.hasContent {
+            return String(localized: "排队至本轮结束后…")
+        }
+        return String(localized: "询问 Agents")
+    }
     private var session: V2SessionModel { model.session }
     private var requiresTakeover: Bool { session.metadata?.takeover == false }
     // Sidebar motion changes the containing card, not the session. Observable
@@ -261,6 +280,9 @@ struct SessionChatView: View, Equatable {
                         }
                     }.padding(.top, 8)
                 }
+                // Official Code: the page stays put; the composer reserves
+                // the keyboard height itself.
+                .modifier(ComposerPageKeyboardIgnores(enabled: usesCollectionTimeline))
         }
         .modifier(ChatPageToolbar(title: session.metadata?.title ?? fallbackTitle ?? String(localized: "会话"),
             subtitle: SessionHeaderSubtitle.text(metadata: session.metadata, deviceName: deviceName,

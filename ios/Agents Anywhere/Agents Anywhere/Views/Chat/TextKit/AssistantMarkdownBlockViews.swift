@@ -793,9 +793,14 @@ enum AssistantInlineCodeChipRenderer {
             layoutManager.enumerateTextSegments(
                 in: textRange, type: .standard, options: []
             ) { _, frame, baseline, _ in
+                // `enumerateTextSegments` reports the baseline relative to
+                // this line fragment, not to the container: line 1 starts at 0
+                // so it looked correct, while every wrapped line's chip was
+                // painted at the top of the view (behind line 1's text). Add
+                // the fragment origin to get the absolute baseline.
                 pieces.append(ChipPiece(
                     frame: frame.offsetBy(dx: origin.x, dy: origin.y),
-                    baseline: baseline, font: font, style: style))
+                    baseline: baseline + frame.minY, font: font, style: style))
                 return true
             }
         }

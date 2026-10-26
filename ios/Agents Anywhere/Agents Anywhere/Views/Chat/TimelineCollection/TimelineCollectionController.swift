@@ -149,6 +149,9 @@ final class TimelineCollectionController: UIViewController {
     private var keyboardFollowIdleFrames = 0
     private var keyboardFollowElapsed: CFTimeInterval = 0
     private var lastKeyboardOverlap: CGFloat = 0
+    /// The home-indicator inset, captured while the keyboard is off screen; the
+    /// live keyboard height is measured on top of it.
+    private var restingSafeAreaBottom: CGFloat = 0
     /// A bar-height write that arrived while the keyboard follow was animating.
     /// Writing the inset mid-animation restores the offset and cancels the
     /// in-flight animation, which is the stutter at the start of the rise.

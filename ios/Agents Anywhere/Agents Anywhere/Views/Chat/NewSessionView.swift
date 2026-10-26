@@ -73,9 +73,6 @@ struct NewSessionView: View, Equatable {
                 }
                 .frame(maxWidth: ChatControlMetrics.maximumContentWidth).frame(maxWidth: .infinity)
             }
-            // Same official keyboard motion as the session page: the composer
-            // rises on the `EarlyKeyboardMotion` spring, not on UIKit's curve.
-            .earlyKeyboardPadding()
         }
         .modifier(ChatPageToolbar(title: "", onMenu: onMenu))
         .toolbar {

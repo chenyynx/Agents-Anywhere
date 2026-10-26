@@ -232,12 +232,6 @@
 - **未验证**：本次修订（31c2c71c）尚未重新出包/真机。
 - **待确认（按钮）**：官方展开排 = `+ / 模型胶囊 / 麦克风 / 发送`；AA 现在多了 `⌘` 和上下文圆环，缺模型胶囊/麦克风。尺寸本身 `+` 44、发送 36 与官方截图一致；“位置不对”可能指这两个多出的按钮，需 pp 确认是否移除或补齐。
 - **2026-10-26 pp 决定**：没有官方 Code 截图，Code 基准采用官方 Chat 截图的 16/52、9/95；按此实现，后续有官方 Code 图再校准。
-- **2026-10-26 更正（键盘动画，EVIDENCE）**：官方**不走系统键盘动画**。
-  - `ClaudeCoreUI.IgnoresEarlyKeyboard.body`（`0x100c9d5cc`）：`if flag { SafeAreaRegions.keyboard }` + `Edge.Set.bottom` → `content.ignoresSafeArea(.keyboard, edges: .bottom)`。也就是官方把键盘安全区从页面里摘掉。
-  - `ClaudeCoreUI.EarlyKeyboardPadding.body`（`0x100d96370`）：`.safeAreaPadding(edges: .bottom, insets: max(A − B, 0))`，A/B = `__heldHeight` / `__restingInset`（LazyState；resting = GeometryProxy.safeAreaInsets.bottom，`0x100d96868`）。
-  - 动画：`0x100d9633c` 构建 `Animation.interpolatingSpring(mass: 3.0, stiffness: 1000.0, damping: 500.0, initialVelocity: 0)`（常量 `0x10422ea00` / `0x1042ccdb0`，mass 立即数 `0x4008000000000000`）；`0x100d96a94` 读 `UIKeyboardAnimationDurationUserInfoKey`，`0x100d96c44` 仅在 duration ≠ 0 时才 `withAnimation(spring)`。
-  - 结论：官方页面抬升 = 自己给 bottom padding，曲线是这条过阻尼弹簧（ω0≈18.26、ζ≈4.56、慢极点 τ≈0.49 s），**不是** UIKit 的 ~0.25 s 键盘曲线。AA 之前用 `.safeAreaBar` 骑系统动画，所以 pp 觉得“反正和官方不一样”。
-  - 实现：`Models/Chat/EarlyKeyboardMotion.swift`（纯几何 + 动画开关）+ `Views/Chat/Composer/EarlyKeyboardPadding.swift`（observer + `safeAreaPadding` + `ignoresSafeArea(.keyboard)`），挂在 `SessionChatView` / `NewSessionView` 的 composer 容器外侧；交互式下滑时用 `keyboardWillChangeFrame` 跟随手指。
 - **2026-10-26 更正（挖官方二进制）**：`+` 的**灰圆不是 44 pt**。官方每个控件都套 `ChatInputControlButtonStyle` → `ChatInputControlChrome.body`（`0x100b8d134`）把 chrome 钉死为 **36 pt**（`.small` 为 32 pt），`ChatInputControlTriggerStyle.body`（`0x100b8e8f0`）再给 **44 pt** 的 `MinimumTapTarget` 命中区；`SessionAddContextButton` 构造该 chrome 时是 `.circle` + `.regular`（`0x100b8eaa4`：kind tag=1、size=0）。官方 Chat 截图实测：卡片 52 pt、左右内缩 **18 pt**、圆直径 **36 pt**（屏上 24–60 pt，即距卡片边 6 pt）、加号笔画 13 pt、占位文字起点 74.7 pt。AA 旧实现把灰圆画成 44 pt 且 leading inset=0，所以圆贴着卡片圆角——这就是 pp 说的“圆环成什么样了”。
 
 ## 6. 文件清单

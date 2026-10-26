@@ -116,3 +116,17 @@ nonisolated struct TimelineKeyboardEvent: Equatable {
 #endif
     }
 }
+
+/// Whether a keyboard-driven bottom anchor travels with the keyboard or snaps.
+///
+/// The composer is a `safeAreaBar`: UIKit slides it on the keyboard's own
+/// duration/curve. The transcript has to travel on that same animation —
+/// snapping it to the final offset on the first frame leaves the bar still
+/// moving while the page has already arrived, which reads as a jump instead of
+/// a follow. Interactive dismissal reports a zero duration per frame, so it
+/// tracks the finger directly.
+nonisolated enum TimelineKeyboardFollow {
+    static func animates(transitionActive: Bool, duration: TimeInterval) -> Bool {
+        transitionActive && duration > 0
+    }
+}

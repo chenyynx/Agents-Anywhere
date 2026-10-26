@@ -239,3 +239,20 @@ import Testing
         #expect(TimelineKeyboardEvent.Curve(rawValue: 99) == .unknown(99))
     }
 }
+
+/// The transcript's keyboard anchor: travel with the composer's animation,
+/// snap only when there is no transition or the frame is interactive (zero
+/// duration).
+@Suite struct TimelineKeyboardFollowTests {
+    @Test func aTransitionWithADurationTravelsWithTheKeyboard() {
+        #expect(TimelineKeyboardFollow.animates(transitionActive: true, duration: 0.25))
+    }
+
+    @Test func interactiveFramesSnapToTheFinger() {
+        #expect(!TimelineKeyboardFollow.animates(transitionActive: true, duration: 0))
+    }
+
+    @Test func outsideATransitionTheAnchorSnaps() {
+        #expect(!TimelineKeyboardFollow.animates(transitionActive: false, duration: 0.25))
+    }
+}

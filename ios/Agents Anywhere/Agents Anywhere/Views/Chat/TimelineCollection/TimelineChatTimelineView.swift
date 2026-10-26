@@ -204,7 +204,13 @@ struct TimelineChatTimelineView: View {
 
     private func keyboardTransitionBegan(_ event: TimelineKeyboardEvent) {
         keyboard.noteLayoutEvent(event)
-        bridge.controller?.beginKeyboardTransition(duration: event.duration)
+        // The transcript travels on the notification's own duration/curve so it
+        // stays glued to the composer, which UIKit slides on that same frame.
+        // Interactive dismissal reports a zero duration and tracks the finger.
+        bridge.controller?.beginKeyboardTransition(
+            duration: event.duration,
+            curve: event.curve,
+            animates: event.duration > 0)
     }
 }
 

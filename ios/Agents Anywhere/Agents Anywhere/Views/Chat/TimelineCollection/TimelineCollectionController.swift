@@ -145,6 +145,15 @@ final class TimelineCollectionController: UIViewController {
     private var lastBottomInset: CGFloat = 0
     private var keyboardVisible = false
     private var keyboardTransitionActive = false
+    /// The transition's own motion. The composer (a `safeAreaBar`) slides with
+    /// the keyboard; the transcript's bottom anchor has to travel on the same
+    /// duration/curve, otherwise it teleports to the end while the bar is still
+    /// moving — the "page does not follow" jitter.
+    private var keyboardFollowDuration: TimeInterval = 0
+    private var keyboardFollowOptions: UIView.AnimationOptions = .curveEaseInOut
+    /// `willChangeFrame` during an interactive dismissal tracks the finger;
+    /// it must not start a settled animation.
+    private var keyboardFollowAnimates = false
     private var keyboardTransitionToken = 0
     private var keyboardTransitionTask: Task<Void, Never>?
     private var userScrollSettleTask: Task<Void, Never>?
@@ -2162,10 +2171,14 @@ final class TimelineCollectionController: UIViewController {
     /// A keyboard event restarts the transition window; a superseded end must
     /// not close a newer window. Inside the window the keyboard's own pin owns
     /// the offset, so the armed target pauses its content-size repin.
-    func beginKeyboardTransition(duration: TimeInterval) {
+    func beginKeyboardTransition(duration: TimeInterval, curve: TimelineKeyboardEvent.Curve = .easeInOut,
+                                 animates: Bool = true) {
         keyboardTransitionToken &+= 1
         let token = keyboardTransitionToken
         keyboardTransitionActive = true
+        keyboardFollowDuration = max(duration, 0)
+        keyboardFollowOptions = curve.animationOptions
+        keyboardFollowAnimates = animates
         armedBottom.setKeyboardTransition(true)
         keyboardTransitionTask?.cancel()
         keyboardTransitionTask = Task { @MainActor [weak self] in
@@ -2204,8 +2217,35 @@ final class TimelineCollectionController: UIViewController {
         // finger is down; the keyboard's own pin is muted then, and this
         // anchor must not fight the gesture either.
         guard !(keyboardVisible && phase.userIsScrolling) else { return }
-        snapToBottom()
+        anchorBottom()
         noteBottomArrival()
+    }
+
+    /// Keyboard frames are animated by UIKit on the notification's own
+    /// duration/curve; the composer rides that same animation. Snapping the
+    /// transcript to its final offset on the first frame left the bar still
+    /// travelling while the page had already arrived — the follow read as a
+    /// jump. Travel with it instead.
+    private func anchorBottom() {
+        guard keyboardFollowAnimates,
+              TimelineKeyboardFollow.animates(transitionActive: keyboardTransitionActive,
+                                              duration: keyboardFollowDuration) else {
+            snapToBottom()
+            return
+        }
+        guard !isPinningBottom, let collectionView else { return }
+        let target = TimelineOffsetTarget.bottomOffset(contentHeight: layout.contentHeight,
+            containerHeight: collectionView.bounds.height,
+            topInset: collectionView.adjustedContentInset.top,
+            bottomInset: collectionView.adjustedContentInset.bottom)
+        guard abs(collectionView.contentOffset.y - target) > 0.5 else { return }
+        isPinningBottom = true
+        UIView.animate(withDuration: keyboardFollowDuration, delay: 0,
+                       options: [.beginFromCurrentState, .allowUserInteraction, keyboardFollowOptions]) {
+            collectionView.contentOffset = CGPoint(x: collectionView.contentOffset.x, y: target)
+        } completion: { [weak self] _ in
+            self?.isPinningBottom = false
+        }
     }
 
     private func snapToBottom() {
@@ -2227,7 +2267,7 @@ final class TimelineCollectionController: UIViewController {
         // the pin exists for.
         guard keyboardTransitionActive, keyboardVisible, readerRestsAtBottom,
               !interactionPresented, !navigationSuspended, viewport.isMeasured else { return }
-        snapToBottom()
+        anchorBottom()
     }
 
     private func noteBottomArrival() {
@@ -2904,5 +2944,24 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         mode = .reading
         readerRestsAtBottom = false
         publishViewport()
+    }
+}
+
+extension TimelineKeyboardEvent.Curve {
+    /// The notification's curve as a `UIView` animation option. Raw value 7 is
+    /// the private spring the keyboard animates with; the documented way to
+    /// stay in step is to animate the same change on the notification's
+    /// duration, so it maps to the standard ease-in-out.
+    var animationOptions: UIView.AnimationOptions {
+        switch self {
+        case .easeInOut, .privateSpring, .unknown:
+            return .curveEaseInOut
+        case .easeIn:
+            return .curveEaseIn
+        case .easeOut:
+            return .curveEaseOut
+        case .linear:
+            return .curveLinear
+        }
     }
 }

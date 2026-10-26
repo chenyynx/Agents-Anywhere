@@ -260,7 +260,7 @@ final class TimelineCollectionController: UIViewController {
             barInsetWriteDeferred = true
             return
         }
-        let bottom = bottomBarInset + max(restingSafeAreaBottom, keyboardOverlap)
+        let bottom = bottomBarInset + restingSafeAreaBottom + keyboardOverlap
         guard abs(collectionView.contentInset.bottom - bottom) > 0.5 else { return }
         let offset = collectionView.contentOffset
         collectionView.contentInset.bottom = bottom
@@ -2250,7 +2250,10 @@ final class TimelineCollectionController: UIViewController {
             windowHeight - endFrame.minY - restingSafeAreaBottom))
         guard abs(overlap - keyboardOverlap) > 0.5 else { return }
         keyboardOverlap = overlap
-        let newBottom = bottomBarInset + max(restingSafeAreaBottom, overlap)
+        // `overlap` is the keyboard's height *above* the resting inset, so the
+        // two add up (the old `max` dropped the home indicator's 34 pt and the
+        // last line slid under the composer).
+        let newBottom = bottomBarInset + restingSafeAreaBottom + overlap
         let target = TimelineOffsetTarget.bottomOffset(contentHeight: layout.contentHeight,
             containerHeight: collectionView.bounds.height,
             topInset: collectionView.adjustedContentInset.top,

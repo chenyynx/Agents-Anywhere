@@ -192,6 +192,13 @@ struct TimelineChatTimelineView: View {
             .timelineProbeOverlay(controller: bridge.controller,
                                   adapter: bridge.adapter,
                                   ready: bridge.controllerAttached)
+#if AA_TIMELINE_PROBE
+            // Copies the C3 inset log (proxy value, inherited animation
+            // duration, offset before/after) without a screen recording.
+            .overlay(alignment: .topTrailing) {
+                AnchorProbeLogOverlay().padding(8)
+            }
+#endif
     }
 
 }

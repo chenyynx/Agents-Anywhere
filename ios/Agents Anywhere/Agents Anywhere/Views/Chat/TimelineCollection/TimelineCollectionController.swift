@@ -333,7 +333,7 @@ final class TimelineCollectionController: UIViewController {
         collectionView.selfSizingInvalidation = .disabled
         collectionView.delegate = self
 #if AA_TIMELINE_PROBE
-        AnchorDeviceProbe.shared.attach(collectionView) { [weak self] in
+        AnchorDeviceProbe.shared.attach { [weak self] in
             guard let self else { return (false, false, "?") }
             return (self.readerRestsAtBottom, self.isPinningBottom,
                     String(describing: self.phase.phase))

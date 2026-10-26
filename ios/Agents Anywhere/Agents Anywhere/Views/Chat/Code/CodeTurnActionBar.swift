@@ -5,10 +5,16 @@ import UIKit
 /// row that follows a finished turn.
 ///
 /// Official structure (`EVIDENCE/round18/user-row-and-action-bar.md` §3):
-/// `IconButtonRow` with 20 pt glyphs, a 32 pt minimum tap width and 12 pt
-/// spacing, no background/padding, one `session-message-action-bar`
+/// `IconButtonRow` with a 20 pt glyph slot, a 32 pt minimum tap width and
+/// 12 pt spacing, no background/padding, one `session-message-action-bar`
 /// accessibility element labelled “Message actions”. Only Copy carries the
 /// `.selection` feedback.
+///
+/// The static Anthropicon declarations say `.large`, but the body overrides
+/// every icon to **medium** at render time: five `movz w0,#1` +
+/// `bl 0x100a29e2c` pairs inside `0x102b49dac` (copy/speak/thumbs/SendTo).
+/// The same static-vs-runtime pattern appears on the code-card and thinking
+/// row icons, so the artwork is 16×16 (copy) inside the 20 pt slot.
 ///
 /// Scope for this batch (pp 2026-10-26): Copy is wired; the share button
 /// (`SendToButton` in the official bar) is a **visual placeholder only**.
@@ -62,7 +68,7 @@ struct CodeTurnActionBar: View {
                              label: String,
                              action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            AnthropiconView(name: asset, size: .large)
+            AnthropiconView(name: asset, size: .medium)
                 .foregroundStyle(CodePageTheme.toolRowSecondaryColor
                     .resolved(for: colorScheme))
                 .frame(width: Self.glyphSlot, height: Self.glyphSlot)

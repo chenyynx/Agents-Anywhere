@@ -86,7 +86,7 @@
 1. **先闭环证据缺口**（sbx 只读）：Copy 拼接、图标颜色、行间距。已有地址：`0x102b49dac`（内容体）、`0x102b4a1f0`（Copy 构造）、`0x102b49914`（外壳）。官方 `isActionBarEnabled` 上游写点仍 [U]，AA 按“turn 结束后显示”实现。
 2. **复用现有 turn 模型**：`TimelineTurnActions.build` 已给出每个 turn 的结束组与 `copyText`（replies 去空白后 `"\n\n"` 连接，已有单测 `TimelineTurnActionsTests`），不新造模型。
 3. **视图** `CodeTurnActionBar`：
-   - Copy + 分享占位两个按钮，`HStack(spacing: 12)`；glyph 20 pt（官方 `.large` Anthropicon）、最小宽 32 pt；
+   - Copy + 分享占位两个按钮，`HStack(spacing: 12)`；20 pt glyph 槽内的 **`.medium`** Anthropicon（静态 `.large` 被运行时 `withSize(1)` 覆盖，`0x102b49dac` 内 5 处）、最小宽 32 pt；
    - Copy：写剪贴板 → 图标切 `check` 2 s → `.selection` 触感；
    - 分享：`anthropicon.share`，无 action；
    - 无障碍：label「消息操作」、identifier `session-message-action-bar`、`accessibilityAction` 复制/发送到（对齐官方 `children: .ignore` 形态）。

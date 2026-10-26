@@ -568,9 +568,12 @@ AA 新：SessionChatView 内层 GeometryReader → TimelineAnchorDriver
       → askedForEnd/Start、sent、内容增长：Mover（状态式弹簧）
 ```
 
-两条写路径的分叉依据（INFERENCE，见 §15.7）：若键盘也走弹簧，临界阻尼
-ω≈15.7 跟踪 2716px/s 会有约 300px 滞后，与官方实测逐帧误差 <10px 矛盾；
-所以安全区变化必须直接 place。
+两条写路径的分叉依据（INFERENCE + 探针 EVIDENCE，见 §15.7 U1）：若键盘也走
+Mover 弹簧，临界阻尼 ω≈15.7 跟踪 2716px/s 会有约 300px 滞后，与官方实测逐帧
+误差 <10px 矛盾。CI 探针进一步证明：每次键盘切换，SwiftUI 只在键盘动画事务内
+投递**一次**最终安全区值（`inheritedAnimationDuration=0.3833s`），显示链路逐帧
+恒定。所以安全区变化必须在同一事务内**直接写**（不加自己的 `UIView.animate`），
+由系统动画负责插值；Mover 只服务 `askedForEnd/Start`、`sent` 与内容增长。
 
 ### 15.2 逐块对照（官方行为 → AA 现状 → 差异 → 替换 → 判据）
 
@@ -646,6 +649,8 @@ AA 新：SessionChatView 内层 GeometryReader → TimelineAnchorDriver
 - 替换：控制器新增 `safeAreaInsets` 输入；inset 只按官方公式四边写
   （顶边一并由它供给，消除现在 top=0 的隐患）；删除 `bottomBarInset`/`restingSafeAreaBottom`/
   `keyboardOverlap` 的加和逻辑；`contentInsetAdjustmentBehavior` 改 `.never`。
+  safe area 的投递发生在系统动画事务内（探针 U1：`inheritedAnimationDuration=0.3833s`），
+  所以在这一更新里直接写 inset/offset 即继承键盘动画，**不再自起 `UIView.animate`**。
 - 判据：单测公式（home indicator / 键盘 / 旋转 / 负值 clamp）；真机 inset 与官方同值 ±1pt。
 
 **块 7 · 键盘零监听**
@@ -727,7 +732,7 @@ AA 新：SessionChatView 内层 GeometryReader → TimelineAnchorDriver
 ### 15.5 实施顺序（每步可编译、CI 绿）
 
 1. **C1 纯模型 + 单测**（不接线）。
-2. **C2 探针包**（只加诊断显示，不改行为；pp 录一次键盘起落）→ 依据 U1 结论二选一。
+2. **C2 探针** —— 已完成（CI 模拟器自动跑；U1 结论见 §15.7）。
 3. **C3 列表形态 + inset 归属**（GeometryReader / `.never` / 官方公式）——必须与
    **删除键盘链同一步**，否则双写。
 4. **C4 锚点接线**：先接 driver 与事件，禁旧写者；再按家庭删旧代码
@@ -746,10 +751,18 @@ AA 新：SessionChatView 内层 GeometryReader → TimelineAnchorDriver
 
 ### 15.7 风险与未证点
 
-- **U1（UNKNOWN，施工前必须证实）**：AA 宿主里 `GeometryProxy.safeAreaInsets` 是否
-  逐帧动画、是否包含 `safeAreaBar` 的 composer 高度。探针解决。
-  - R1 不逐帧 → 退回通知驱动，但只保留「inset+直接 place」单写者，其余不变。
-  - R2 不含 bar → `safeArea + composerBarHeight`（仍零键盘监听）。
+- **U1（已证，2026-10-26 CI 模拟器探针，run `40353074977`，真软件键盘）**：
+  - 含 bar：`outer=34`、`inner=114`、Δ=80 = bar 高度（EVIDENCE）。
+  - **不逐帧**：一次键盘起落只有 3 次投递（114 → 425 → 114），display link
+    193 帧里数值恒定（EVIDENCE）。
+  - 投递在系统动画事务内：两次投递的 `inheritedAnimationDuration=0.3833s`
+    （键盘动画时长），直接写即继承键盘动画（EVIDENCE）。
+  - 宿主 `view.safeAreaInsets` 全程 34：键盘安全区不经过 hosting VC 的 UIKit
+    安全区，读取点只能是 proxy（EVIDENCE）。
+  - R1/R2 不再需要：读取点与投递方式都按 C3 成立。
+- **R9**：`contentInset` 在 UIView 动画事务内是否插值（UIKit 可能立即生效）。
+  收起时若因此出现一帧跳，则在继承事务内只对 offset 显式动画
+  （duration = `inheritedAnimationDuration`），inset 仍直接写。真机验证点。
 - **R3**：`.never` 曾与键盘链同改导致启动卡死 → C3 单独改，探针包先验启动；
   异常则保持 `.automatic`（公式减 `sv.safeAreaInsets`，双计为 0）。
 - **R4**：`updateUIViewController` 每帧调用 → update 里只写幂等 inset/place，
@@ -759,11 +772,10 @@ AA 新：SessionChatView 内层 GeometryReader → TimelineAnchorDriver
 - **R7**：门禁/测试绑定旧 API → 保留兼容门面，最后删。
 - **R8**：回顶改由 Mover → 拖动/减速中忽略 `askedForStart`（官方 askedForEnd 同规则）。
 
-### 15.8 需要 pp 决定
+### 15.8 决定与状态
 
-1. **先出探针包**（只加一行诊断显示，不改行为）录一次键盘起落 —— U1 唯一未证点。
-2. **`contentInsetAdjustmentBehavior = .never`**（上次与键盘链同改导致启动卡死，这次单独验证）。
-3. **发送后行为按官方改为 `.row(id,.top)`**（新消息贴顶、回复向下展开，不再贴底）——
-   可见行为变化，按官方证据执行，需 pp 知情确认。
+1. 探针 —— **已完成**（U1 已证，结论见 §15.7）。
+2. **待批准**：`contentInsetAdjustmentBehavior = .never`（单独验证启动）。
+3. **待确认**：发送后行为按官方改为 `.row(id,.top)`（新消息贴顶、回复向下展开，不再贴底）。
 
 方案批准后按 §15.5 实施；批准前不改任何实现代码。

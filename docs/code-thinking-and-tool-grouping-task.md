@@ -141,7 +141,7 @@
 - 失败后缀 `(N failed)` / `（N 项失败）`：`CodeToolLabelPlan.Phrase` 加 failed 字段、`CodeCollapsedToolRow` 加 failed 参数、补本地化 key；计数语义按 round21 §1.11。
 - 分隔符：`ccr_summary_separator` 的中文值从 `，` 改回官方硬编码 `", "`（`CodeMessageRowView.swift:390`；round21 §1.5）。
 - 单目标判定：从“同一文件/同一路径”放宽到官方“所有 call 的 target 相同”（`CodeToolLabelPlan.swift:90-93,182-194`）。
-- diff 聚合：跳过 failed 与 `fileWriteKind==update`；任一 call 不是 diff/失败/更新 → 整组不显示（round21 §2.6）。AA wire 无 `fileWriteKind`，用 Write 结果文案推导：`File created successfully at:` → create、`The file … has been updated successfully` → update（生产库实测 1110/24，2026-10-25）；不匹配一律 nil，维持 Created/计入徽标。同一 kind 也用于 Write 动词 `Updated / 已更新`（`ccr_write_updated`，官方 IPA 1.261019.51 `ModuleStrings2.strings` 直读）。运行中的 update Write 无提前信号，仍显示 Creating。
+- diff 聚合：跳过 failed 与 `fileWriteKind==update`；任一 call 不是 diff/失败/更新 → 整组不显示（round21 §2.6）。AA wire 无 `fileWriteKind`，用 Write 结果文案推导：`File created successfully at:` → create、`The file … has been updated successfully` → update（生产库实测 1110 create / 148 update / 70 无结果，2026-10-25；先前的 24 是把 text 截到 80 字导致的长路径漏计）；不匹配一律 nil，维持 Created/计入徽标。同一 kind 也用于 Write 动词 `Updated / 已更新`（`ccr_write_updated`，官方 IPA 1.261019.51 `ModuleStrings2.strings` 直读）。运行中的 update Write 无提前信号，仍显示 Creating。
 - Write 动词：create → `Created / 已创建`（沿用 `ccr_verb_created`），update → `Updated / 已更新`（`ccr_write_updated`）；kind 推导同 diff 聚合。官方运行态 update 用 `ccr_running_editing`，但 AA 只有结果文案这一个信号，运行中仍为 Creating。
 - `serverSummary` / `receivedMessages` **不做**：AA 无数据源，伪造违反“宁缺勿假”。
 

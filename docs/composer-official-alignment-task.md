@@ -455,3 +455,57 @@ EOF
 1. 列表加 `.ignoresSafeArea([.container, .keyboard], edges: [.top, .bottom])` → frame 永远铺满全屏；
 2. `contentInsetAdjustmentBehavior = .never` → UIKit 不再自动塞安全区，inset 全部由我们给；
 3. `followKeyboard(endFrame:duration:curve:)` 在**同一个 `UIView.animate`（通知的 duration + 原始 curve）**里同时写 `contentInset.bottom = bar + max(resting, overlap)` 和 `contentOffset`（仅当贴底）；每次通知写一次，不逐帧写。
+
+## 13. 根因与官方对齐方案（2026-10-26，只做分析，未改代码）
+
+### 13.1 官方列表的完整形态（EVIDENCE）
+
+```
+TranscriptList.body (0x104eefbb0 类型串)
+  GeometryReader { proxy in                    ← 安全区在这里读，含键盘
+    TranscriptListBody(input.safeArea = proxy.safeAreaInsets)
+      .ignoresSafeArea(…)                      ← 列表 frame 全屏 bleed
+  }
+TranscriptList.body 0x1019fb120 → TranscriptListInput.safeArea (0x104e3bdc8)
+  → TranscriptListSurface.safeArea (0x104e3d1d8)
+  → contentInset = max(safeArea − scrollView.safeAreaInsets, 0)   (0x101a3c820)
+```
+
+- 列表**不监听键盘**（`keyboardWillShow/WillChangeFrame/UIKeyboardFrameEndUserInfoKey` 零命中）。
+- `contentInsetAdjustmentBehavior` 从未设置 = 默认 `.automatic`（语料 §12.3）。
+- 贴底由锚点 `.end` 决定（`0x1019e2700`），阅读位置由 `.reading` 决定（`0x1019e2834`）。
+- 实测（pp 的官方会话页录屏，60fps）：列表位移与键盘位移**逐帧 1:1**，误差 <10px（≈1.5pt）。
+
+### 13.2 AA 现状与偏差（EVIDENCE，代码行）
+
+| 环节 | 官方 | AA 现状 |
+|---|---|---|
+| 键盘来源 | GeometryProxy.safeAreaInsets（逐帧） | 键盘通知（`TimelineChatTimelineView.swift:172/176/180`） |
+| 列表 frame | 全屏（ignore） | 全屏（ignore）——已对齐 |
+| inset | `max(safeArea − sv.safeAreaInsets, 0)` | 手算 `bar + resting + overlap`（`TimelineCollectionController.swift:2256`） |
+| offset | 锚点 `.end`，同一更新内重算 | 自己起 `UIView.animate` 写 offset |
+| 输入框高度 | 包含在 safeArea 里 | 单独的 `bottomBarInset` 再加一次 |
+
+⇒ 根因：**AA 把“安全区→inset→贴底”这一条链拆成了三条**（通知、输入框高度、offset 动画），任何一条时序不同步就表现为“跟不上/抢先/被遮/抖”。
+
+### 13.3 对齐方案（三处，按官方形态）
+
+1. `SessionChatView`：把 `timelineView()` 放进 `GeometryReader`（位置在 `.ignoresSafeArea` 之前），把 `proxy.safeAreaInsets.bottom` 传下去；
+2. `TimelineChatTimelineView` → `TimelineCollectionController`：新增 `safeAreaBottom` 输入，`contentInset.bottom = max(safeAreaBottom − collectionView.safeAreaInsets.bottom, 0)`（官方公式原样）；
+3. 删除：三个键盘 `onReceive`、`followKeyboard`、`keyboardOverlap`/`restingSafeAreaBottom`/`followDeadline` 等状态、以及 `bottomBarInset` 的加和（输入框已经在安全区里）。
+
+贴底重算放在 `viewSafeAreaInsetsDidChange` / representable 的 `updateUIViewController` 里（同一次 SwiftUI 更新）。
+
+### 13.4 唯一的未知（必须先证实再改）
+
+**SwiftUI 在键盘动画期间是否逐帧把新的 `GeometryProxy.safeAreaInsets` 传给 representable。**
+- 官方宿主里成立（上面的逐帧实测 + 它没有别的机制可以做到）。
+- AA 的宿主（`.safeAreaBar` + ignores）是否一致，没有证据。
+
+验证方式（先做，不改行为）：一个探针构建，在 `updateUIViewController` 里把 `safeAreaBottom`、`collectionView.adjustedContentInset.bottom`、`contentOffset` 打到屏幕上一行小字（或 os_log），pp 录一次键盘弹起。**若数值逐帧变化 → 方案成立；若只跳一次最终值 → 说明 AA 宿主不逐帧，方案作废，回到通知驱动并只修抖动。**
+
+### 13.5 结论
+
+- 根因已定位到“链条被拆成三条”，不是曲线、不是时序参数。
+- 对齐官方只需要三处改动，且能删掉现有全部自造状态（净减代码）。
+- 但开工前必须先证实 §13.4 的未知；在 pp 确认前不改任何代码。

@@ -146,6 +146,10 @@ final class TimelineCollectionController: UIViewController {
     /// the home-indicator inset it is measured against.
     private var appliedKeyboardOverlap: CGFloat = 0
     private var restingSafeAreaBottom: CGFloat = 0
+    /// A bar-height write that arrived while the keyboard follow was animating.
+    /// Writing the inset mid-animation restores the offset and cancels the
+    /// in-flight animation, which is the stutter at the start of the rise.
+    private var barInsetWriteDeferred = false
     private var userScrollSettleTask: Task<Void, Never>?
     private var isPinningBottom = false
     /// Streaming height follow (M4.2): the official sprung motion toward the
@@ -249,6 +253,10 @@ final class TimelineCollectionController: UIViewController {
     /// the keyboard's animation.
     private func applyBottomBarInset() {
         guard isViewLoaded, let collectionView else { return }
+        guard !isPinningBottom else {
+            barInsetWriteDeferred = true
+            return
+        }
         let bottom = max(0, bottomBarInset)
         guard abs(collectionView.contentInset.bottom - bottom) > 0.5 else { return }
         let offset = collectionView.contentOffset
@@ -2228,7 +2236,12 @@ final class TimelineCollectionController: UIViewController {
                                  curve.animationOptions]) {
             collectionView.contentOffset = CGPoint(x: collectionView.contentOffset.x, y: target)
         } completion: { [weak self] _ in
-            self?.isPinningBottom = false
+            guard let self else { return }
+            self.isPinningBottom = false
+            guard self.barInsetWriteDeferred else { return }
+            self.barInsetWriteDeferred = false
+            self.applyBottomBarInset()
+            if self.readerRestsAtBottom { self.snapToBottom() }
         }
     }
 

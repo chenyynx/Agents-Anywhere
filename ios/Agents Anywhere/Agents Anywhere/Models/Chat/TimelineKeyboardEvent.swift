@@ -69,6 +69,9 @@ nonisolated struct TimelineKeyboardEvent: Equatable {
     let duration: TimeInterval
     let curve: Curve
     let isLocal: Bool
+    /// The keyboard's final frame in screen coordinates: the transcript derives
+    /// its inset from it at the notification, before UIKit applies anything.
+    let endFrame: CGRect?
     /// A zero (or absent) duration applies the change without an animation:
     /// there is no transition window worth withholding anything for, and the
     /// settled sample is evaluated right away.
@@ -90,6 +93,7 @@ nonisolated struct TimelineKeyboardEvent: Equatable {
     /// documented defaults (no animation, ease-in-out, local) instead of
     /// dropping the transition.
     init(source: Source, userInfo: [AnyHashable: Any]) {
+        endFrame = Self.frame(from: userInfo[Key.frameEnd])
         self.source = source
         duration = (userInfo[Key.duration] as? NSNumber)?.doubleValue ?? 0
         curve = Curve(rawValue: (userInfo[Key.curve] as? NSNumber)?.intValue ?? 0)

@@ -79,7 +79,12 @@ struct SessionChatView: View, Equatable {
                 // (R19 chrome-composer.md §2–§3; R21 chrome-verify.md §2).
                 // The collection view adds the bar height back to its content
                 // inset, so the resting last row still clears the composer.
-                .ignoresSafeArea(.container, edges: [.top, .bottom])
+                // `.keyboard` too: SwiftUI otherwise shrinks the list's frame
+                // the instant the keyboard appears, which clips the bottom rows
+                // in one frame while the composer is still travelling — the
+                // "hole" above the composer. The controller supplies the
+                // keyboard's inset itself, animated with the keyboard.
+                .ignoresSafeArea([.container, .keyboard], edges: [.top, .bottom])
         } else {
             ChatTimelineView(model: model,
                 onAttachment: openAttachment, onFile: openFile,

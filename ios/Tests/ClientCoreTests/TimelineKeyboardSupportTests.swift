@@ -239,3 +239,34 @@ import Testing
         #expect(TimelineKeyboardEvent.Curve(rawValue: 99) == .unknown(99))
     }
 }
+
+/// The transcript's keyboard follow: the bottom has to move by exactly the
+/// keyboard's overlap, counted once, starting with the notification.
+@Suite struct TimelineKeyboardFollowTests {
+    @Test func overlapIsThePartAboveTheHomeIndicator() {
+        #expect(TimelineKeyboardFollow.overlap(
+            windowHeight: 852, keyboardTop: 516, restingInset: 34) == 302)
+    }
+
+    @Test func aHiddenKeyboardHasNoOverlap() {
+        #expect(TimelineKeyboardFollow.overlap(
+            windowHeight: 852, keyboardTop: 852, restingInset: 34) == 0)
+        #expect(TimelineKeyboardFollow.overlap(
+            windowHeight: 852, keyboardTop: 900, restingInset: 34) == 0)
+    }
+
+    @Test func theTargetInsetCountsTheKeyboardOnce() {
+        #expect(TimelineKeyboardFollow.targetBottomInset(
+            currentInset: 90, appliedOverlap: 0, newOverlap: 302) == 392)
+        #expect(TimelineKeyboardFollow.targetBottomInset(
+            currentInset: 392, appliedOverlap: 302, newOverlap: 0) == 90)
+        #expect(TimelineKeyboardFollow.targetBottomInset(
+            currentInset: 392, appliedOverlap: 302, newOverlap: 336) == 426)
+    }
+
+    @Test func onlyARealDurationAnimates() {
+        #expect(TimelineKeyboardFollow.animates(duration: 0.25))
+        #expect(!TimelineKeyboardFollow.animates(duration: 0))
+    }
+}
+

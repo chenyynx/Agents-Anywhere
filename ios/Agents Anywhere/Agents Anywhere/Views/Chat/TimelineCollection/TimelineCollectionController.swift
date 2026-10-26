@@ -142,6 +142,10 @@ final class TimelineCollectionController: UIViewController {
     private var pendingGestureBottomRequest: (animated: Bool, forced: Bool)?
     private var suspendedOpeningRequest = false
     private var lastContainerHeight: CGFloat = 0
+    /// Keyboard overlap currently reflected in the scroll view's insets, and
+    /// the home-indicator inset it is measured against.
+    private var appliedKeyboardOverlap: CGFloat = 0
+    private var restingSafeAreaBottom: CGFloat = 0
     private var userScrollSettleTask: Task<Void, Never>?
     private var isPinningBottom = false
     /// Streaming height follow (M4.2): the official sprung motion toward the
@@ -2186,6 +2190,48 @@ final class TimelineCollectionController: UIViewController {
         noteBottomArrival()
     }
 
+    /// Re-resolves the bottom on the keyboard's own motion.
+    ///
+    /// The list is a full-bleed representable: the keyboard changes
+    /// `adjustedContentInset`, but the offset does not follow on its own (the
+    /// page stays still while the composer travels). The bottom is therefore
+    /// re-resolved here, starting at the notification — the same instant UIKit
+    /// begins moving the keyboard and the composer — and travelling on the
+    /// notification's duration and curve, so the page and the bar move as one.
+    func followKeyboard(endFrame: CGRect?, duration: TimeInterval,
+                        curve: TimelineKeyboardEvent.Curve) {
+        guard let collectionView, let endFrame,
+              TimelineKeyboardFollow.animates(duration: duration),
+              !interactionPresented, !navigationSuspended, !phase.userIsScrolling
+        else { return }
+        let windowHeight = collectionView.window?.bounds.height
+            ?? collectionView.bounds.height
+        if appliedKeyboardOverlap == 0 {
+            restingSafeAreaBottom = collectionView.safeAreaInsets.bottom
+        }
+        let overlap = TimelineKeyboardFollow.overlap(
+            windowHeight: windowHeight, keyboardTop: endFrame.minY,
+            restingInset: restingSafeAreaBottom)
+        guard abs(overlap - appliedKeyboardOverlap) > 0.5 else { return }
+        let targetInset = TimelineKeyboardFollow.targetBottomInset(
+            currentInset: collectionView.adjustedContentInset.bottom,
+            appliedOverlap: appliedKeyboardOverlap, newOverlap: overlap)
+        let target = TimelineOffsetTarget.bottomOffset(contentHeight: layout.contentHeight,
+            containerHeight: collectionView.bounds.height,
+            topInset: collectionView.adjustedContentInset.top,
+            bottomInset: targetInset)
+        appliedKeyboardOverlap = overlap
+        guard abs(collectionView.contentOffset.y - target) > 0.5 else { return }
+        isPinningBottom = true
+        UIView.animate(withDuration: duration, delay: 0,
+                       options: [.beginFromCurrentState, .allowUserInteraction,
+                                 curve.animationOptions]) {
+            collectionView.contentOffset = CGPoint(x: collectionView.contentOffset.x, y: target)
+        } completion: { [weak self] _ in
+            self?.isPinningBottom = false
+        }
+    }
+
     private func snapToBottom() {
         guard !isPinningBottom, let collectionView else { return }
         let target = TimelineOffsetTarget.bottomOffset(contentHeight: layout.contentHeight,
@@ -2869,5 +2915,20 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         mode = .reading
         readerRestsAtBottom = false
         publishViewport()
+    }
+}
+
+extension TimelineKeyboardEvent.Curve {
+    /// The notification's curve as a `UIView` animation option. Raw value 7 is
+    /// the private spring the keyboard animates with; the documented way to
+    /// stay in step is to animate the same change on the notification's own
+    /// duration, so it maps to the standard ease-in-out.
+    var animationOptions: UIView.AnimationOptions {
+        switch self {
+        case .easeInOut, .privateSpring, .unknown: return .curveEaseInOut
+        case .easeIn: return .curveEaseIn
+        case .easeOut: return .curveEaseOut
+        case .linear: return .curveLinear
+        }
     }
 }

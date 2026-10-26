@@ -162,6 +162,23 @@ struct TimelineChatTimelineView: View {
                 guard !Task.isCancelled else { return }
                 bridge.fallbackOpeningSettle()
             }
+            // The transcript's bottom has to be re-resolved on the keyboard's
+            // own motion: this list is a full-bleed representable, and its
+            // offset does not follow the safe-area change on its own. Only the
+            // geometry comes from the notification; there is no transition
+            // window and no per-frame pin.
+            .onReceive(NotificationCenter.default.publisher(
+                for: UIResponder.keyboardWillShowNotification)) { note in
+                keyboardFollow(note)
+            }
+            .onReceive(NotificationCenter.default.publisher(
+                for: UIResponder.keyboardWillHideNotification)) { note in
+                keyboardFollow(note)
+            }
+            .onReceive(NotificationCenter.default.publisher(
+                for: UIResponder.keyboardWillChangeFrameNotification)) { note in
+                keyboardFollow(note)
+            }
             .onDisappear { bridge.cancel() }
             // Official TurnStatusView transfer: the end of a stream is the
             // one light impact; other phase changes are selections. Streamed
@@ -186,6 +203,16 @@ struct TimelineChatTimelineView: View {
             .timelineProbeOverlay(controller: bridge.controller,
                                   adapter: bridge.adapter,
                                   ready: bridge.controllerAttached)
+    }
+
+    private func keyboardFollow(_ note: Notification) {
+        let event = TimelineKeyboardEvent(
+            source: note.name == UIResponder.keyboardWillHideNotification ? .willHide
+                : note.name == UIResponder.keyboardWillShowNotification ? .willShow
+                : .willChangeFrame,
+            userInfo: note.userInfo ?? [:])
+        bridge.controller?.followKeyboard(
+            endFrame: event.endFrame, duration: event.duration, curve: event.curve)
     }
 
 }

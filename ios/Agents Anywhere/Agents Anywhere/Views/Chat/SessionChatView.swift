@@ -12,11 +12,6 @@ struct SessionChatView: View, Equatable {
     let onMenu: () -> Void
     @State private var sheet: SessionSheet?
     @State private var expandedNoticeID: String?
-    /// Height of the composer bar's content (the safe-area bar's own inset).
-    /// The official transcript keeps its full-screen frame and adds the bar
-    /// height to the scroll content inset; the collection view therefore needs
-    /// this number explicitly once it stops respecting the bar's safe area.
-    @State private var composerBarHeight: CGFloat = 0
     /// Shared app-level loader for the instant image viewer: one disk cache and
     /// one in-flight table per signed-in session (owned by V2ClientServices),
     /// reused by every session view.
@@ -64,27 +59,21 @@ struct SessionChatView: View, Equatable {
     /// `Group` past the type checker's budget.
     @ViewBuilder private func timelineView() -> some View {
         if usesCollectionTimeline {
-            TimelineChatTimelineView(model: model,
-                onAttachment: openAttachment, onFile: openFile,
-                onSubAgent: { sheet = .subagents($0, fromCapsule: false) },
-                // Only the composer bar's own height. The window's bottom
-                // inset (home indicator, keyboard) stays UIKit's job through
-                // the collection view's automatic content-inset adjustment;
-                // folding the keyboard in here made the inset change on every
-                // keyboard frame and pushed the tail out of the viewport.
-                bottomBarInset: composerBarHeight)
-                // [E] The official transcript is a full-screen bleed: its
-                // `contentInset = max(safeArea − scrollView.safeAreaInsets, 0)`
-                // lets rows scroll under the navigation bar and the composer
-                // (R19 chrome-composer.md §2–§3; R21 chrome-verify.md §2).
-                // The collection view adds the bar height back to its content
-                // inset, so the resting last row still clears the composer.
-                // `.keyboard` too: SwiftUI otherwise shrinks the list's frame
-                // the instant the keyboard appears, which clips the bottom rows
-                // in one frame while the composer is still travelling — the
-                // "hole" above the composer. The controller supplies the
-                // keyboard's inset itself, animated with the keyboard.
-                .ignoresSafeArea([.container, .keyboard], edges: [.top, .bottom])
+            // [E] The official transcript reads its safe area from a
+            // GeometryReader inside the page chrome: the composer bar has
+            // already extended the safe area here, and the ignore below only
+            // removes it from the child's layout. The probe (run 40353074977)
+            // measured this proxy at exactly bar + home indicator + keyboard,
+            // delivered once per change inside the keyboard's animation
+            // transaction. The controller turns it into the official content
+            // inset; the list itself is a full-screen bleed.
+            GeometryReader { proxy in
+                TimelineChatTimelineView(model: model,
+                    onAttachment: openAttachment, onFile: openFile,
+                    onSubAgent: { sheet = .subagents($0, fromCapsule: false) },
+                    safeAreaInsets: proxy.safeAreaInsets)
+                    .ignoresSafeArea([.container, .keyboard], edges: [.top, .bottom])
+            }
         } else {
             ChatTimelineView(model: model,
                 onAttachment: openAttachment, onFile: openFile,
@@ -240,9 +229,6 @@ struct SessionChatView: View, Equatable {
                 // scrolls beneath the glass.
                 .safeAreaBar(edge: .bottom, spacing: 0) {
                     composerDockArea(maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)))
-                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                            composerBarHeight = height
-                        }
                 }
                 // [E] chrome-composer.md §4 — Code page background
                 // `#F9F9F7` / `#151515`, edge to edge.

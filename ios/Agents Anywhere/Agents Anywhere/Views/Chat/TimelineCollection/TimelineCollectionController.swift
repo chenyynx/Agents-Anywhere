@@ -142,17 +142,6 @@ final class TimelineCollectionController: UIViewController {
     private var pendingGestureBottomRequest: (animated: Bool, forced: Bool)?
     private var suspendedOpeningRequest = false
     private var lastContainerHeight: CGFloat = 0
-    /// Keyboard overlap currently reflected in the scroll view's insets, and
-    /// the home-indicator inset it is measured against.
-    /// Keyboard height currently folded into the list's bottom inset.
-    private var keyboardOverlap: CGFloat = 0
-    /// The running keyboard follow: when it ends and on which curve, so a
-    /// composer-height change can re-target it instead of jumping at the end.
-    private var followDeadline: CFTimeInterval = 0
-    private var followCurve: TimelineKeyboardEvent.Curve = .easeInOut
-    /// The home-indicator inset, captured while the keyboard is off screen; the
-    /// keyboard's own inset is measured on top of it.
-    private var restingSafeAreaBottom: CGFloat = 0
     private var userScrollSettleTask: Task<Void, Never>?
     private var isPinningBottom = false
     /// Streaming height follow (M4.2): the official sprung motion toward the
@@ -225,47 +214,67 @@ final class TimelineCollectionController: UIViewController {
     /// C3 gate uses it to capture the first displayed height for the async
     /// Markdown probe.
     var onApplyCompleted: (() -> Void)?
-    /// The composer bar's own content height. The collection view is a
-    /// full-screen bleed, so UIKit's automatic adjustment still supplies the
-    /// window inset (home indicator, keyboard); only the bar height is ours to
-    /// add. Folding the keyboard into this value made the inset change on every
-    /// keyboard frame and pushed the tail out of the viewport.
-    var bottomBarInset: CGFloat = 0 {
+    /// The page's SwiftUI safe area: composer bar + home indicator + keyboard.
+    /// The list is a full-bleed representable, so this is its only inset
+    /// source. The probe (run 40353074977) measured the proxy inside the
+    /// `safeAreaBar` at exactly those three parts, delivered once per change
+    /// inside the system animation transaction.
+    var safeAreaInsets: UIEdgeInsets = .zero {
         didSet {
-            guard isViewLoaded, abs(oldValue - bottomBarInset) > 0.5 else { return }
-            applyBottomBarInset()
-            // The bar grows while typing (multi-line editor) and the reader is
-            // usually resting at the bottom; keep the tail above it. This is a
-            // composer-size change, not a keyboard frame — the keyboard's own
-            // follow is UIKit's (see `applyBottomBarInset`).
-            guard readerRestsAtBottom, !phase.userIsScrolling else { return }
-            snapToBottom()
+            guard oldValue != safeAreaInsets else { return }
+            applySafeAreaInsets()
         }
     }
 
-    /// Writes the composer's own inset, keeping the reader's place across the
-    /// write.
+    /// Writes the official content inset and keeps the reader's place across
+    /// the write.
     ///
-    /// The official `TranscriptListSurface` does the same around its inset
-    /// update (`0x101a3c820`): capture `contentOffset`, set the inset under
-    /// `isSettingItsOwnInset` (`0x104e3d208`), then restore the offset
-    /// (`0x10418f9a0`). Without the restore UIKit reconciles the offset a
-    /// second time on top of whatever moved the page, and the list drifts from
-    /// the composer. The keyboard is deliberately *not* folded in here: it is
-    /// UIKit's own safe-area inset, and UIKit keeps the bottom pinned inside
-    /// the keyboard's animation.
-    private func applyBottomBarInset() {
+    /// The official `TranscriptListSurface` does the same (`0x101a3c820`):
+    /// capture `contentOffset`, set the inset under `isSettingItsOwnInset`
+    /// (`0x104e3d208`), then restore the offset (`0x10418f9a0`). It computes
+    /// `max(safeArea − scrollView.safeAreaInsets, 0)`; the subtraction keeps
+    /// the value independent of whether UIKit also contributes the view's own
+    /// safe area through automatic adjustment. AA keeps the same formula and
+    /// the same system-default adjustment, so the net inset equals the page's
+    /// proxy either way.
+    ///
+    /// The write happens inside the safe-area update's animation transaction,
+    /// so it inherits the keyboard's own animation without a
+    /// `UIView.animate` of our own and without keyboard notifications.
+    private func applySafeAreaInsets() {
         guard isViewLoaded, let collectionView else { return }
-        guard !isPinningBottom else {
-            retargetFollow()
-            return
+        let viewInsets = collectionView.safeAreaInsets
+        let target = UIEdgeInsets(top: max(safeAreaInsets.top - viewInsets.top, 0),
+                                  left: max(safeAreaInsets.left - viewInsets.left, 0),
+                                  bottom: max(safeAreaInsets.bottom - viewInsets.bottom, 0),
+                                  right: max(safeAreaInsets.right - viewInsets.right, 0))
+        let current = collectionView.contentInset
+        let changed = abs(current.top - target.top) > 0.5
+            || abs(current.left - target.left) > 0.5
+            || abs(current.bottom - target.bottom) > 0.5
+            || abs(current.right - target.right) > 0.5
+        if changed {
+            let offset = collectionView.contentOffset
+            collectionView.contentInset = target
+            if collectionView.contentOffset != offset {
+                collectionView.setContentOffset(offset, animated: false)
+            }
         }
-        let bottom = bottomBarInset + restingSafeAreaBottom + keyboardOverlap
-        guard abs(collectionView.contentInset.bottom - bottom) > 0.5 else { return }
-        let offset = collectionView.contentOffset
-        collectionView.contentInset.bottom = bottom
-        if collectionView.contentOffset != offset {
-            collectionView.setContentOffset(offset, animated: false)
+        // A reader resting at the bottom follows the new inset (the keyboard
+        // and the growing composer are the same case). A reading position is
+        // kept by the offset restore above.
+        guard changed, layout.contentHeight > 0,
+              readerRestsAtBottom, !phase.userIsScrolling,
+              !isPinningBottom else { return }
+        let bottomTarget = TimelineOffsetTarget.bottomOffset(
+            contentHeight: layout.contentHeight,
+            containerHeight: collectionView.bounds.height,
+            topInset: collectionView.adjustedContentInset.top,
+            bottomInset: collectionView.adjustedContentInset.bottom)
+        if abs(collectionView.contentOffset.y - bottomTarget) > 0.5 {
+            collectionView.setContentOffset(
+                CGPoint(x: collectionView.contentOffset.x, y: bottomTarget),
+                animated: false)
         }
     }
 
@@ -299,14 +308,12 @@ final class TimelineCollectionController: UIViewController {
         // `keyboardDismissMode = .interactiveWithAccessory` (raw 4,
         // `0x101a3b344`), not the plain interactive mode.
         collectionView.keyboardDismissMode = .interactiveWithAccessory
-        // Kept at the system default: the list ignores the container and the
-        // keyboard region, so the automatic adjustment contributes nothing and
-        // the composer/keyboard parts come from `applyBottomBarInset` and
-        // `followKeyboard`. (Switching to `.never` in the same change as the
-        // inset rewrite hung the app at launch; it is a separate variable to
-        // test.)
+        // Kept at the system default, exactly like the official surface (the
+        // evidence never finds a write to this property). The official formula
+        // subtracts the scroll view's own safe-area insets, so whether UIKit
+        // contributes them or not the net inset is the page proxy.
         collectionView.contentInsetAdjustmentBehavior = .automatic
-        applyBottomBarInset()
+        applySafeAreaInsets()
         // The official surface disables UIKit's automatic self-sizing
         // invalidation; the layout owns every height. AA's controlled
         // exceptions are driven explicitly by `applyPreferredHeights` after a
@@ -444,25 +451,9 @@ final class TimelineCollectionController: UIViewController {
 
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
-        // The resting inset is the smallest bottom inset this view ever sees
-        // (the home indicator); a keyboard only ever makes it larger, so
-        // tracking the minimum avoids depending on the keyboard guide being
-        // active in this hierarchy.
-        let bottomInset = view.safeAreaInsets.bottom
-        if bottomInset > 0, bottomInset <= 60,
-           restingSafeAreaBottom == 0 || bottomInset < restingSafeAreaBottom {
-            restingSafeAreaBottom = bottomInset
-        }
-        // Re-apply the composer's inset after the window inset settles; the
-        // value itself is the bar height, but the automatic adjustment this
-        // sits on top of changes here.
-        applyBottomBarInset()
-        // The keyboard and the composer both arrive as safe-area changes; the
-        // old timeline anchored every container-size change to the bottom
-        // (`.defaultScrollAnchor(.bottom, for: .sizeChanges)`). Re-evaluate
-        // after the inset has settled as well as on bounds changes, and run
-        // the per-frame keyboard pin here too: an inset-only change may never
-        // move `bounds.height`.
+        // The list's own safe area does not drive the inset (`.never`); the
+        // page's SwiftUI proxy does. Rotation and split view still change the
+        // bounds, which the bottom anchor follows.
         handleContainerHeightChange()
     }
 
@@ -2200,12 +2191,10 @@ final class TimelineCollectionController: UIViewController {
     /// the input bar. Content-size changes are not anchored here; those follow
     /// only while the bottom target is armed.
     ///
-    /// An *inset*-only change is deliberately not anchored: the keyboard is
-    /// UIKit's own safe area, and UIKit already keeps the bottom pinned inside
-    /// the keyboard's animation. Snapping here would land the page on the final
-    /// offset while the composer was still moving — the list jumping ahead of
-    /// the bar. The composer's own height change is anchored by
-    /// `bottomBarInset.didSet`.
+    /// Inset-only changes (keyboard, composer height) do not come through
+    /// here: `applySafeAreaInsets` writes them inside the safe-area update's
+    /// animation transaction and follows the bottom only when the reader rests
+    /// there.
     private func handleContainerHeightChange() {
         guard let collectionView else { return }
         let height = collectionView.bounds.height
@@ -2214,109 +2203,6 @@ final class TimelineCollectionController: UIViewController {
         guard heightChanged, !navigationSuspended, !phase.userIsScrolling else { return }
         snapToBottom()
         noteBottomArrival()
-    }
-
-    /// Re-resolves the bottom on the keyboard's own motion.
-    ///
-    /// The list is a full-bleed representable: the keyboard changes
-    /// `adjustedContentInset`, but the offset does not follow on its own (the
-    /// page stays still while the composer travels). The bottom is therefore
-    /// re-resolved here, starting at the notification — the same instant UIKit
-    /// begins moving the keyboard and the composer — and travelling on the
-    /// notification's duration and curve, so the page and the bar move as one.
-    /// Moves the transcript with the keyboard.
-    ///
-    /// The list ignores the keyboard region (see `timelineView`), so its frame
-    /// never changes and UIKit never touches its insets: the keyboard's part of
-    /// the inset is supplied here, together with the bottom offset, inside one
-    /// animation on the notification's own duration and curve. Writing only the
-    /// offset (the earlier attempts) left the clamp at its old place for a
-    /// frame, which clipped the bottom rows and opened a hole above the
-    /// composer.
-    func followKeyboard(endFrame: CGRect?, duration: TimeInterval,
-                        curve: TimelineKeyboardEvent.Curve) {
-        guard let collectionView, let endFrame,
-              layout.contentHeight > 0,
-              !interactionPresented, !navigationSuspended, !phase.userIsScrolling
-        else { return }
-        let windowHeight = collectionView.window?.bounds.height
-            ?? collectionView.bounds.height
-        // A real keyboard frame is non-empty and anchored to the screen bottom;
-        // the placeholder zero frames some systems send first would otherwise
-        // compute a full-screen overlap and push the list out of view.
-        guard endFrame.width > 0, endFrame.height > 0,
-              endFrame.maxY >= windowHeight - 1 else { return }
-        let overlap = max(0, min(windowHeight * 0.6,
-            windowHeight - endFrame.minY - restingSafeAreaBottom))
-        guard abs(overlap - keyboardOverlap) > 0.5 else { return }
-        keyboardOverlap = overlap
-        // `overlap` is the keyboard's height *above* the resting inset, so the
-        // two add up (the old `max` dropped the home indicator's 34 pt and the
-        // last line slid under the composer).
-        let newBottom = bottomBarInset + restingSafeAreaBottom + overlap
-        let target = TimelineOffsetTarget.bottomOffset(contentHeight: layout.contentHeight,
-            containerHeight: collectionView.bounds.height,
-            topInset: collectionView.adjustedContentInset.top,
-            bottomInset: newBottom)
-        let apply = { [weak self] in
-            guard let self else { return }
-            collectionView.contentInset.bottom = newBottom
-            if self.readerRestsAtBottom,
-               abs(collectionView.contentOffset.y - target) > 0.5 {
-                collectionView.contentOffset = CGPoint(
-                    x: collectionView.contentOffset.x, y: target)
-            }
-        }
-        guard duration > 0 else {
-            apply()
-            return
-        }
-        followCurve = curve
-        followDeadline = CACurrentMediaTime() + duration
-        isPinningBottom = true
-        UIView.animate(withDuration: duration, delay: 0,
-                       options: [.beginFromCurrentState, .allowUserInteraction,
-                                 curve.animationOptions]) {
-            apply()
-        } completion: { [weak self] _ in
-            guard let self else { return }
-            // A bar-height change mid-flight re-targets the animation, so only
-            // the last one (the one that reaches the deadline) releases it.
-            guard CACurrentMediaTime() >= self.followDeadline - 0.02 else { return }
-            self.isPinningBottom = false
-        }
-    }
-
-    /// Re-aims the in-flight follow when the composer's height changes during
-    /// the keyboard's animation (focus expands the bar). Without this the new
-    /// height only landed when the follow finished, and the page snapped by the
-    /// bar's growth — the one-frame jitter.
-    private func retargetFollow() {
-        guard let collectionView else { return }
-        let bottom = bottomBarInset + restingSafeAreaBottom + keyboardOverlap
-        let target = TimelineOffsetTarget.bottomOffset(contentHeight: layout.contentHeight,
-            containerHeight: collectionView.bounds.height,
-            topInset: collectionView.adjustedContentInset.top,
-            bottomInset: bottom)
-        let remaining = max(0, followDeadline - CACurrentMediaTime())
-        let apply = { [weak self] in
-            guard let self else { return }
-            collectionView.contentInset.bottom = bottom
-            if self.readerRestsAtBottom,
-               abs(collectionView.contentOffset.y - target) > 0.5 {
-                collectionView.contentOffset = CGPoint(
-                    x: collectionView.contentOffset.x, y: target)
-            }
-        }
-        guard remaining > 0.02 else {
-            apply()
-            return
-        }
-        UIView.animate(withDuration: remaining, delay: 0,
-                       options: [.beginFromCurrentState, .allowUserInteraction,
-                                 followCurve.animationOptions]) {
-            apply()
-        }
     }
 
     private func snapToBottom() {
@@ -3002,15 +2888,5 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         mode = .reading
         readerRestsAtBottom = false
         publishViewport()
-    }
-}
-
-extension TimelineKeyboardEvent.Curve {
-    /// The notification's curve as a `UIView` animation option.
-    /// `UIView.AnimationOptions` keeps the curve in its high bits and UIKit's
-    /// keyboard reports its private spring as raw 7, so shifting the payload
-    /// value gives the inset/offset animation the keyboard's own curve.
-    var animationOptions: UIView.AnimationOptions {
-        UIView.AnimationOptions(rawValue: UInt(rawValue) << 16)
     }
 }

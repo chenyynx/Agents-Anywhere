@@ -12,10 +12,11 @@ import UIKit
 /// load actions are inert until that wiring lands.
 struct TimelineChatTimelineView: View {
     let model: SessionChatModel
-    /// The composer bar's content height. The collection view is a full-screen
-    /// bleed, so it adds this to its content inset; the window inset (home
-    /// indicator, keyboard) stays UIKit's automatic adjustment.
-    let bottomBarInset: CGFloat
+    /// The page's SwiftUI safe area, read inside the composer `safeAreaBar`
+    /// and outside the list's ignore: bar + home indicator + keyboard. This is
+    /// the single inset source (official formula); no keyboard notifications
+    /// are involved.
+    let safeAreaInsets: EdgeInsets
     @StateObject private var bridge: TimelineChatBridge
     @Environment(\.dynamicTypeSize) private var dynamicType
     @Environment(\.layoutDirection) private var layoutDirection
@@ -34,9 +35,9 @@ struct TimelineChatTimelineView: View {
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void,
          onFile: @escaping (String) -> Void,
          onSubAgent: @escaping (String) -> Void,
-         bottomBarInset: CGFloat = 0) {
+         safeAreaInsets: EdgeInsets = EdgeInsets()) {
         self.model = model
-        self.bottomBarInset = bottomBarInset
+        self.safeAreaInsets = safeAreaInsets
         _bridge = StateObject(wrappedValue: TimelineChatBridge(model: model,
             onAttachment: onAttachment, onFile: onFile, onSubAgent: onSubAgent))
     }
@@ -101,7 +102,7 @@ struct TimelineChatTimelineView: View {
             content: bridge.adapter,
             measurer: bridge.adapter.measurer,
             typography: typography,
-            bottomBarInset: bottomBarInset,
+            safeAreaInsets: safeAreaInsets,
             onPhaseChanged: { transition in
                 if transition.gestureBegan { bridge.readerDidTakeOver() }
             },
@@ -162,23 +163,6 @@ struct TimelineChatTimelineView: View {
                 guard !Task.isCancelled else { return }
                 bridge.fallbackOpeningSettle()
             }
-            // The transcript's bottom has to be re-resolved on the keyboard's
-            // own motion: this list is a full-bleed representable, and its
-            // offset does not follow the safe-area change on its own. Only the
-            // geometry comes from the notification; there is no transition
-            // window and no per-frame pin.
-            .onReceive(NotificationCenter.default.publisher(
-                for: UIResponder.keyboardWillShowNotification)) { note in
-                keyboardFollow(note)
-            }
-            .onReceive(NotificationCenter.default.publisher(
-                for: UIResponder.keyboardWillHideNotification)) { note in
-                keyboardFollow(note)
-            }
-            .onReceive(NotificationCenter.default.publisher(
-                for: UIResponder.keyboardWillChangeFrameNotification)) { note in
-                keyboardFollow(note)
-            }
             .onDisappear { bridge.cancel() }
             // Official TurnStatusView transfer: the end of a stream is the
             // one light impact; other phase changes are selections. Streamed
@@ -208,16 +192,6 @@ struct TimelineChatTimelineView: View {
             .timelineProbeOverlay(controller: bridge.controller,
                                   adapter: bridge.adapter,
                                   ready: bridge.controllerAttached)
-    }
-
-    private func keyboardFollow(_ note: Notification) {
-        let event = TimelineKeyboardEvent(
-            source: note.name == UIResponder.keyboardWillHideNotification ? .willHide
-                : note.name == UIResponder.keyboardWillShowNotification ? .willShow
-                : .willChangeFrame,
-            userInfo: note.userInfo ?? [:])
-        bridge.controller?.followKeyboard(
-            endFrame: event.endFrame, duration: event.duration, curve: event.curve)
     }
 
 }

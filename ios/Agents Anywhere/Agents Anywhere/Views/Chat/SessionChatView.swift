@@ -239,6 +239,11 @@ struct SessionChatView: View, Equatable {
                             composerBarHeight = height
                         }
                 }
+                // [E] The official page ignores the keyboard safe area and
+                // lifts itself with one spring instead — see
+                // `EarlyKeyboardMotion` for the binary evidence. Riding the
+                // system curve is what made the rise/fall feel different.
+                .earlyKeyboardPadding()
                 // [E] chrome-composer.md §4 — Code page background
                 // `#F9F9F7` / `#151515`, edge to edge.
                 .background(Color(uiColor: CodePageTheme.pageBackgroundUIColor)

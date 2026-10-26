@@ -194,9 +194,11 @@ struct TimelineChatTimelineView: View {
                                   ready: bridge.controllerAttached)
 #if AA_TIMELINE_PROBE
             // Copies the C3 inset log (proxy value, inherited animation
-            // duration, offset before/after) without a screen recording.
-            .overlay(alignment: .topTrailing) {
-                AnchorProbeLogOverlay().padding(8)
+            // duration, offset before/after) without a screen recording. The
+            // list ignores the safe area, so the pill sits on the leading
+            // edge at mid-height — inside the reachable area on every device.
+            .overlay(alignment: .leading) {
+                AnchorProbeLogOverlay().padding(.leading, 8)
             }
 #endif
     }

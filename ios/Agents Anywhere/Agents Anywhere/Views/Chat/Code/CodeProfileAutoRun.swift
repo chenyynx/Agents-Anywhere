@@ -39,6 +39,7 @@ final class CodeProfileAutoRunModel {
         case messageRow
         case detail
         case workingMark
+        case thinkingStatus
     }
 
     private(set) var stage: Stage = .idle
@@ -169,7 +170,7 @@ final class CodeProfileAutoRunModel {
     private static func blockDescriptors(_ blocks: [CodeMessageRow.Block]) -> [String] {
         blocks.map { block in
             switch block {
-            case let .reasoning(id, _): return "reasoning:\(id)"
+            case let .reasoning(id, _, _): return "reasoning:\(id)"
             case let .text(id, _): return "text:\(id)"
             case .toolCalls: return "toolCalls"
             case let .other(id, _): return "other:\(id)"
@@ -425,9 +426,41 @@ final class CodeProfileAutoRunModel {
         let wrongCount = text.contains("6 file")
         check(singleShape, "toolLabels: six edits to one file lost the single-file shape (\(text))")
         check(!wrongCount, "toolLabels: six edits to one file summarized as \(text)")
+
+        // Official Write has two verbs; the kind is derived from the result
+        // text (production marker, 2026-10-25). The app-target mapping must
+        // pick Updated for an update and Created for a create.
+        let updateJSON = """
+        {"id":"label-wu","sessionId":"gate-label","type":"tool","status":"done","orderSeq":1,
+         "content":{"toolName":"Write","input":{"file_path":"/repo/Updated.swift"},
+           "text":"The file /repo/Updated.swift has been updated successfully. (file state is current in your context — no need to Read it back)"},
+         "source":{"itemId":"label-wu","nativeMessageId":"msg-label-wu","blockIndex":0}}
+        """
+        let createJSON = """
+        {"id":"label-wc","sessionId":"gate-label","type":"tool","status":"done","orderSeq":1,
+         "content":{"toolName":"Write","input":{"file_path":"/repo/Created.swift"},
+           "text":"File created successfully at: /repo/Created.swift (file state is current in your context — no need to Read it back)"},
+         "source":{"itemId":"label-wc","nativeMessageId":"msg-label-wc","blockIndex":0}}
+        """
+        let updateCall = Self.decodeItem(updateJSON).map { CodeToolCall(item: $0, kind: .write) }
+        let createCall = Self.decodeItem(createJSON).map { CodeToolCall(item: $0, kind: .write) }
+        let updatePlan = updateCall.flatMap { CodeToolLabelPlan.make(calls: [$0], cwd: nil) }
+        let updateLabel = updateCall.map { CodeToolLabels.label(for: [$0], cwd: nil) }
+        let createLabel = createCall.map { CodeToolLabels.label(for: [$0], cwd: nil) }
+        let updateVerb = updateLabel?.verb ?? "nil"
+        let createVerb = createLabel?.verb ?? "nil"
+        check(updatePlan?.verb == .updated,
+              "toolLabels: update Write plan verb \(String(describing: updatePlan?.verb)), expected updated")
+        check(updateVerb == String(localized: "ccr_write_updated"),
+              "toolLabels: update Write rendered \(updateVerb)")
+        check(createVerb == String(localized: "ccr_verb_created"),
+              "toolLabels: create Write rendered \(createVerb)")
+
         report["toolLabels"] = ["text": text,
                                 "singleShape": singleShape,
-                                "wrongCount": wrongCount]
+                                "wrongCount": wrongCount,
+                                "updateWriteVerb": updateVerb,
+                                "createWriteVerb": createVerb]
     }
 
     // MARK: - Views and screenshots
@@ -436,6 +469,7 @@ final class CodeProfileAutoRunModel {
         prepareViews()
         await verifyMessageRowHeight()
         await verifyRowHeights()
+        await verifyReadOutputHeight()
         await verifyRendererMeasure()
         await verifyRealCollectionFirstFit()
 
@@ -468,6 +502,17 @@ final class CodeProfileAutoRunModel {
         views["workingMark"] = capture("code-working-mark.png")
         report["views"] = views
         persist(phase: "views.workingMark")
+
+        // The three live working-row texts: the ≥60 s thinking tier, the
+        // closed `思考了 X`, and the rotating-verb fallback. The stage lays
+        // them out around the vertical centre: the blank-capture detector
+        // samples the middle band, and a top-aligned stack left that band
+        // empty (2026-10-25 run 40205262431).
+        stage = .thinkingStatus
+        await wait(500)
+        views["thinkingStatus"] = capture("code-thinking-status.png")
+        report["views"] = views
+        persist(phase: "views.thinkingStatus")
     }
 
     private func prepareViews() {
@@ -660,7 +705,59 @@ final class CodeProfileAutoRunModel {
                          json: RowHeightFixtureJSON.codeCard,
                          widths: [361, 320],
                          sizes: [.regular, .accessibility]),
+        // A settled thinking row followed by the answer: the measurer's
+        // `.thinking` line box and `CodeThinkingRow` must agree at both text
+        // sizes (icon 16 / label 15 / minHeight 24 / padding 6).
+        RowHeightFixture(name: "thinking", kind: .text,
+                         json: RowHeightFixtureJSON.thinking,
+                         widths: [361, 320],
+                         sizes: [.regular, .accessibility]),
     ]
+
+    /// The 24K / ~298-line Read output that rendered as a blank card on the
+    /// device (2026-10-25). The dedicated Read reader draws every line, so a
+    /// settled height of a few hundred points means the body vanished again.
+    private func verifyReadOutputHeight() async {
+        guard let window = keyWindow else {
+            failures.append("readOutput: no key window")
+            return
+        }
+        let rowFormat = #"{"index":%d,"path":"Sources/Feature/F%04d/Generated.swift","status":"ok","message":"row %d of the long read fixture"}"#
+        let text = (1...298).map { String(format: rowFormat, $0, $0, $0) }
+            .joined(separator: "\n")
+        let hostWidth = window.bounds.width
+        let host = UIHostingController(rootView:
+            CodeToolOutputView(output: .text(text), kind: .read)
+                .padding(16)
+                .frame(width: hostWidth, alignment: .leading)
+                .ignoresSafeArea())
+        host.view.backgroundColor = .clear
+        host.view.frame = CGRect(x: 0, y: 0, width: hostWidth, height: 200)
+        window.addSubview(host.view)
+        host.view.layoutIfNeeded()
+
+        let proposed = CGSize(width: hostWidth, height: .greatestFiniteMagnitude)
+        var settled = host.sizeThatFits(in: proposed).height
+        var previous: CGFloat = -1
+        for _ in 0..<20 {
+            await wait(100)
+            host.view.layoutIfNeeded()
+            settled = host.sizeThatFits(in: proposed).height
+            if settled > 1, abs(settled - previous) <= 0.5 { break }
+            previous = settled
+        }
+        host.view.removeFromSuperview()
+
+        let finite = settled.isFinite
+        check(finite && settled > 2_000,
+              "readOutput: \(text.count) chars / 298 lines rendered \(settled) pt, expected a drawn body")
+        report["readOutput"] = [
+            "characters": text.count,
+            "lines": 298,
+            "height": Double(settled),
+            "finite": finite,
+        ] as [String: Any]
+    }
 
     /// Renders every fixture at every requested width and size, reports each
     /// measured/rendered/delta, and fails past the class threshold. The CI job
@@ -1824,9 +1921,10 @@ final class CodeProfileAutoRunModel {
     ]
     """#
 
-    /// The on-screen fixture: a user bubble, a running reasoning row (the
-    /// working status line), a Markdown body and a collapsed tool span with a
-    /// diff badge plus the Workflow special card.
+    /// The on-screen fixture: a user bubble, a running reasoning item (kept
+    /// out of the message row — the live working row owns that state), a
+    /// Markdown body and a collapsed tool span with a diff badge plus the
+    /// Workflow special card.
     private static let viewFixtureJSON = #"""
     [
       {"id":"v-u1","sessionId":"gate-views","type":"message","status":"done","role":"user","orderSeq":1,
@@ -2001,6 +2099,19 @@ final class CodeProfileAutoRunModel {
            "source":{"itemId":"gate-code-card"}}
         ]
         """#
+
+        /// A settled thinking block in the same message as the answer, so the
+        /// row pays the thinking line box, one inter-block gap and the text.
+        static let thinking = #"""
+        [
+          {"id":"h-th-1","sessionId":"gate-height","type":"reasoning","status":"done","orderSeq":1,
+           "content":{"kind":"reasoning","rawText":"Checked the driver and the failing assertion."},
+           "source":{"nativeMessageId":"gate-thinking","blockIndex":0}},
+          {"id":"h-th-2","sessionId":"gate-height","type":"message","status":"done","role":"assistant","orderSeq":2,
+           "content":{"text":"The race is in the driver."},
+           "source":{"nativeMessageId":"gate-thinking","blockIndex":1}}
+        ]
+        """#
     }
 
     /// Fixtures for the renderer-measurement leg. The short body isolates the
@@ -2049,6 +2160,8 @@ struct CodeProfileAutoRunRootView: View {
                 }
             case .workingMark:
                 workingMarkStage
+            case .thinkingStatus:
+                thinkingStatusStage
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -2075,6 +2188,25 @@ struct CodeProfileAutoRunRootView: View {
                 .font(.system(size: CodePageTheme.runningStatusFontSize))
                 .foregroundStyle(CodePageTheme.runningStatusColor.resolved(for: .light))
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
+    }
+
+    /// The three working-row texts side by side: the ≥60 s thinking tier,
+    /// the closed duration (inside its 2 s window), and the verb fallback.
+    private var thinkingStatusStage: some View {
+        let now = Date()
+        return VStack(alignment: .leading, spacing: 10) {
+            CodeThinkingStatusLine(
+                phase: .thinking(startedAt: now.addingTimeInterval(-63)))
+            CodeThinkingStatusLine(
+                phase: .thoughtFor(seconds: 63,
+                                   endedAt: now,
+                                   fallbackStartedAt: now.addingTimeInterval(-63)))
+            CodeThinkingStatusLine(
+                phase: .working(startedAt: now))
+        }
+        .padding(.horizontal, CodePageTheme.rowMarginLeading)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.systemBackground))
     }

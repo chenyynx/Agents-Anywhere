@@ -64,6 +64,20 @@ import Testing
         #expect(CodeRowHeightPlan.height(rows: [empty], metrics: metrics) == 10)
     }
 
+    @Test func actionBarAddsARowSpacingAndItsGlyphLine() {
+        let row = CodeRowHeightPlan.Row(blocks: [.tools(segments: 1)])
+        // 46 row + 10 row spacing + 20 glyph line.
+        #expect(CodeRowHeightPlan.height(rows: [row], metrics: metrics,
+                                         hasActionBar: true) == 76)
+    }
+
+    @Test func actionBarRendersEvenWhenTheLastMessageHasNoBlocks() {
+        let empty = CodeRowHeightPlan.Row(blocks: [])
+        // No row spacing (nothing above), 20 glyph line + 10 margins.
+        #expect(CodeRowHeightPlan.height(rows: [empty], metrics: metrics,
+                                         hasActionBar: true) == 30)
+    }
+
     @Test func genericRowUsesTheUnscaledLineBox() {
         let row = CodeRowHeightPlan.Row(blocks: [.other])
         #expect(CodeRowHeightPlan.height(rows: [row], metrics: metrics) == CGFloat(24 + 10))

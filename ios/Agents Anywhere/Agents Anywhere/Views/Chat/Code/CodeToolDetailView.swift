@@ -79,9 +79,7 @@ struct CodeToolDetailView: View {
                                for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    closeButton
-                }
+                SheetCloseToolbar { dismiss() }
             }
         }
     }
@@ -125,7 +123,7 @@ struct CodeToolDetailView: View {
     /// "Output" header.
     @ViewBuilder private var outputSection: some View {
         if !output.isEmpty {
-            CodeToolOutputView(output: output)
+            CodeToolOutputView(output: output, kind: call.kind)
         }
     }
 
@@ -229,27 +227,6 @@ struct CodeToolDetailView: View {
             .foregroundStyle(.primary)
     }
 
-    private var closeButton: some View {
-        Button {
-            dismiss()
-        } label: {
-            ZStack {
-                Circle()
-                    .fill(Color.primary.opacity(0.08))
-                    .frame(width: CodeToolDetailMetrics.closeButtonDiameter,
-                           height: CodeToolDetailMetrics.closeButtonDiameter)
-                Image(systemName: "xmark")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.primary)
-            }
-            .frame(width: CodeToolDetailMetrics.closeButtonHitSize,
-                   height: CodeToolDetailMetrics.closeButtonHitSize)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(String(localized: "关闭"))
-    }
-
     // MARK: - Wire reads
 
     /// The input area reads the call's raw input; `arguments` is Codex's alias.
@@ -339,13 +316,6 @@ private enum CodeToolDetailMetrics {
         dark: Color(.sRGB, red: 21.0 / 255.0,
                     green: 21.0 / 255.0,
                     blue: 21.0 / 255.0))
-
-    /// [I] V76 — the close control measures about 35 pt across in the Diff
-    /// sheet; 30 pt inside a 44 pt hit target keeps the touch area standard.
-    static let closeButtonDiameter: CGFloat = 30
-
-    /// [U] Not sampled: the standard 44 pt iOS hit target around the circle.
-    static let closeButtonHitSize: CGFloat = 44
 
     /// [E] V51 — the page keeps the timeline's 16 pt horizontal row margin.
     static let contentInset: CGFloat = CodePageTheme.rowMarginLeading

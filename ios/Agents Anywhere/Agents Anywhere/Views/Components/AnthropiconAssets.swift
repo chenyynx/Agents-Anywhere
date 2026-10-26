@@ -37,6 +37,7 @@ nonisolated enum AnthropiconAssets {
         "anthropicon.tasks": [size(14, 14), size(15, 16), size(18, 19)],
         "anthropicon.tool": [size(15, 13), size(17, 15), size(20, 18)],
         "anthropicon.caretRight": [size(8, 13), size(8, 15), size(10, 18)],
+        "anthropicon.extendedThinking": [size(14, 14), size(16, 16), size(19, 19)],
         "anthropicon.copy": [size(14, 14), size(16, 16), size(19, 19)],
         "anthropicon.expand": [size(13, 13), size(15, 15), size(18, 18)],
         "anthropicon.check": [size(13, 9), size(15, 10), size(17, 12)],
@@ -48,6 +49,7 @@ nonisolated enum AnthropiconAssets {
         "anthropicon.agentsSimple": [size(15, 12), size(17, 13), size(20, 15)],
         "anthropicon.codeBlock": [size(15, 12), size(17, 13), size(20, 16)],
         "anthropicon.commandLinePrompt": [size(11, 10), size(12, 11), size(14, 13)],
+        "anthropicon.share": [size(13, 14), size(15, 16), size(18, 19)],
     ]
 
     private static func size(_ width: CGFloat, _ height: CGFloat) -> CGSize {

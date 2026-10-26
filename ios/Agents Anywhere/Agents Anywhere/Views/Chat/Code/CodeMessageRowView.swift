@@ -51,10 +51,15 @@ struct CodeMessageRowView: View {
     /// with it; production passes it so the leaf and
     /// `CodeMessageHeightMeasurer` use identical metrics.
     var typography: TimelineTypographySnapshot?
+    /// The turn's copy text when this message group ends a finished turn.
+    /// Non-nil draws the official turn action bar after the message.
+    var turnActionCopyText: String?
     /// A collapsed tool row's tap. Navigation belongs to the page: a sheet
     /// owned by this row would sit inside a hosting cell that every streaming
     /// reconfigure rebuilds, and could dismiss an open detail.
     var onToolDetail: (CodeToolDetailRequest) -> Void
+    /// A `思考过程` row's tap; same page-level presentation as a tool detail.
+    var onThinkingDetail: (CodeThinkingDetailRequest) -> Void
 
     init(group: ChatTimelineGroup,
          profile: CodeRuntimeProfile,
@@ -62,14 +67,18 @@ struct CodeMessageRowView: View {
          streaming: CodeStreamingText? = nil,
          preparedBlocks: [String: [MarkdownBlockSnapshot]]? = nil,
          typography: TimelineTypographySnapshot? = nil,
-         onToolDetail: @escaping (CodeToolDetailRequest) -> Void = { _ in }) {
+         turnActionCopyText: String? = nil,
+         onToolDetail: @escaping (CodeToolDetailRequest) -> Void = { _ in },
+         onThinkingDetail: @escaping (CodeThinkingDetailRequest) -> Void = { _ in }) {
         self.group = group
         self.profile = profile
         self.cwd = cwd
         self.streaming = streaming
         self.preparedBlocks = preparedBlocks
         self.typography = typography
+        self.turnActionCopyText = turnActionCopyText
         self.onToolDetail = onToolDetail
+        self.onThinkingDetail = onThinkingDetail
     }
 
     var body: some View {
@@ -78,7 +87,15 @@ struct CodeMessageRowView: View {
             if rows.isEmpty {
                 // A message whose only blocks are reasoning contributes no
                 // height at all; the turn's working status is its own row.
-                Color.clear.frame(height: 0)
+                // The turn action bar is still the turn's final row, so it
+                // renders even when the last message drew no blocks.
+                if let turnActionCopyText {
+                    CodeTurnActionBar(copyText: turnActionCopyText)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, CodePageTheme.rowMarginTop)
+                } else {
+                    Color.clear.frame(height: 0)
+                }
             } else {
                 // Official stacks a message's blocks with `interBlockSpacing`
                 // (nil → SwiftUI default; carried here as `blockGap`). Two
@@ -93,6 +110,9 @@ struct CodeMessageRowView: View {
                         } else {
                             blockStack(row)
                         }
+                    }
+                    if let turnActionCopyText {
+                        CodeTurnActionBar(copyText: turnActionCopyText)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -156,11 +176,12 @@ struct CodeMessageRowView: View {
     @ViewBuilder
     private func blockView(_ block: CodeMessageRow.Block) -> some View {
         switch block {
-        case .reasoning:
-            // Reasoning never renders here: the official `Block.thinking` is
-            // the turn's single working status line, which is its own
-            // transcript row (`CodeWorkingStatusRow`, CANONICAL/20 §0).
-            EmptyView()
+        case let .reasoning(id, text, status):
+            if status == .done {
+                CodeThinkingRow {
+                    onThinkingDetail(CodeThinkingDetailRequest(id: id, text: text))
+                }
+            }
 
         case let .text(id, text):
             // The official Code page draws a text block through a
@@ -188,17 +209,14 @@ struct CodeMessageRowView: View {
     private func toolRow(_ segment: CodeToolSegment) -> some View {
         let calls = CodeToolLabels.calls(in: segment)
         let label = CodeToolLabels.label(for: calls, cwd: cwd)
-        return CodeCollapsedToolRow(verb: label.verb,
-                                    target: label.target,
+        return CodeCollapsedToolRow(label: label,
                                     // A settled row carries no leading glyph
                                     // in the official screenshot; a running
                                     // row shows its category icon
                                     // (CANONICAL/04-tool-calls.md §4.1/§7.3).
                                     icon: label.isRunning
                                         ? CodeToolLabels.anthropicon(for: calls.first?.kind ?? .other)
-                                        : nil,
-                                    diff: label.diff,
-                                    isRunning: label.isRunning) {
+                                        : nil) {
             if let request = CodeToolDetailRequest(calls: calls) { onToolDetail(request) }
         }
     }
@@ -222,9 +240,9 @@ struct CodeMessageRowView: View {
 
     // MARK: - Row projection
 
-    /// One builder row with its reasoning blocks removed: reasoning text is
-    /// not part of the Code transcript, and the turn's single status line is
-    /// its own transcript row (`CodeWorkingStatusRow`).
+    /// One builder row ready for the stack. A settled thinking block is a
+    /// real row (`思考过程`); a running one is still the turn-level working
+    /// line's job and stays out of the transcript.
     private struct RenderedRow: Identifiable {
         let id: String
         let role: V2MessageRole
@@ -236,8 +254,9 @@ struct CodeMessageRowView: View {
             .compactMap { row in
                 let blocks = row.blocks.filter { block in
                     switch block {
-                    case .reasoning:
-                        return false
+                    case let .reasoning(_, text, status):
+                        return status == .done
+                            && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     case let .text(_, text):
                         return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     case .toolCalls, .other:
@@ -296,15 +315,41 @@ struct CodeThinkingStatusLine: View {
             case let .working(startedAt):
                 // The 1 s tick only lets the phase boundary land on time; the
                 // text changes at 0 / 3 / 7 / 13 … seconds, not every tick.
-                TimelineView(.periodic(from: .now,
-                                       by: CodePageTheme.runningStatusVerbRotationInterval)) { context in
-                    statusLabel(CodeWorkingStatusText.verb(
-                        elapsed: context.date.timeIntervalSince(startedAt)) + "...")
+                statusTimeline { date in
+                    CodeWorkingStatusText.verb(elapsed: date.timeIntervalSince(startedAt)) + "..."
+                }
+            case let .thinking(startedAt):
+                // Official live tiers are refreshed by the same 1 Hz
+                // `PeriodicTimelineSchedule` (`0x102a83314` in
+                // CodeThinkingView's body).
+                statusTimeline { date in
+                    CodeThinkingText.liveText(elapsed: date.timeIntervalSince(startedAt))
+                }
+            case let .thoughtFor(seconds, endedAt, fallbackStartedAt):
+                // `思考了 X` is visible for 2 s after the block ends; past
+                // that the official selector returns nil and the working row
+                // falls back to the rotating verbs (`0x102a88f20-f50`).
+                statusTimeline { date in
+                    if date < endedAt.addingTimeInterval(CodeThinkingText.closedWindow) {
+                        return CodeThinkingText.closedText(seconds: seconds)
+                    }
+                    return CodeWorkingStatusText.verb(
+                        elapsed: date.timeIntervalSince(fallbackStartedAt)) + "..."
                 }
             }
         }
         .frame(minHeight: CodePageTheme.workingMarkSize, alignment: .leading)
         .accessibilityElement(children: .combine)
+    }
+
+    /// The official thinking row re-renders on a 1 Hz timeline; every
+    /// time-derived label goes through this one tick so the phase boundary and
+    /// the 2 s closed window land on the same cadence.
+    private func statusTimeline(_ text: @escaping (Date) -> String) -> some View {
+        TimelineView(.periodic(from: .now,
+                               by: CodePageTheme.runningStatusVerbRotationInterval)) { context in
+            statusLabel(text(context.date))
+        }
     }
 
     private func statusLabel(_ text: String) -> some View {
@@ -325,12 +370,44 @@ struct CodeThinkingStatusLine: View {
 
 // MARK: - Tool row labels
 
+/// One summary phrase of a multi-target span. The failed/total pair is the
+/// official per-category dictionary count (`0x10288e3c0`), which decides
+/// between the written suffix and the colour-only failure signal.
+nonisolated struct CodeToolPhraseLabel: Hashable {
+    let text: String
+    let failed: Int
+    let total: Int
+}
+
 /// One collapsed tool row's text and decorations.
 nonisolated struct CodeToolRowLabel {
     let verb: String
     let target: String?
     let diff: CodeDiffStat?
     let isRunning: Bool
+    /// Failed calls in the single-target shape; 0 when none.
+    let failed: Int
+    /// Calls in the single-target shape.
+    let total: Int
+    /// The multi-target summary phrases in official order. Empty on the
+    /// single-target path.
+    let phrases: [CodeToolPhraseLabel]
+
+    init(verb: String,
+         target: String? = nil,
+         diff: CodeDiffStat? = nil,
+         isRunning: Bool,
+         failed: Int = 0,
+         total: Int = 0,
+         phrases: [CodeToolPhraseLabel] = []) {
+        self.verb = verb
+        self.target = target
+        self.diff = diff
+        self.isRunning = isRunning
+        self.failed = failed
+        self.total = total
+        self.phrases = phrases
+    }
 }
 
 /// Maps a segment's calls to the official collapsed-row label.
@@ -350,7 +427,7 @@ nonisolated enum CodeToolLabels {
 
     static func label(for calls: [CodeToolCall], cwd: String?) -> CodeToolRowLabel {
         guard let plan = CodeToolLabelPlan.make(calls: calls, cwd: cwd) else {
-            return CodeToolRowLabel(verb: "", target: nil, diff: nil, isRunning: false)
+            return CodeToolRowLabel(verb: "", isRunning: false)
         }
         if let verb = plan.verb {
             // The official row swaps to the present-participle while the call
@@ -360,12 +437,32 @@ nonisolated enum CodeToolLabels {
             return CodeToolRowLabel(verb: text,
                                     target: plan.target,
                                     diff: plan.diff,
-                                    isRunning: plan.isRunning)
+                                    isRunning: plan.isRunning,
+                                    failed: plan.failed,
+                                    total: plan.total)
         }
         return CodeToolRowLabel(verb: phraseText(plan.phrases),
                                 target: nil,
                                 diff: plan.diff,
-                                isRunning: plan.isRunning)
+                                isRunning: plan.isRunning,
+                                failed: plan.failed,
+                                total: plan.total,
+                                phrases: plan.phrases.enumerated().map { index, phrase in
+                                    let text = phraseText(phrase)
+                                    return CodeToolPhraseLabel(
+                                        text: index == 0 ? text : decapitalized(text),
+                                        failed: phrase.failed,
+                                        total: phrase.count)
+                                })
+    }
+
+    /// The official failed suffix (`ccr_summary_failed_count`, plural
+    /// `(%lld failed)` / `（%lld 项失败）`). The view appends it to a phrase or
+    /// to the single-target label; the English value carries the separating
+    /// space, the zh-Hans value is the full-width bracket form.
+    static func failedSuffix(_ failed: Int, locale: Locale = .autoupdatingCurrent) -> String {
+        let format = String(localized: "(%lld failed)", locale: locale)
+        return String(format: format, failed)
     }
 
     /// Official `category → Anthropicon` mapping
@@ -387,7 +484,7 @@ nonisolated enum CodeToolLabels {
 
     // MARK: - Localized text
 
-    private static let phraseSeparator = String(localized: "ccr_summary_separator")
+    static let phraseSeparator = String(localized: "ccr_summary_separator")
 
     private static func verbText(_ verb: CodeToolLabelPlan.Verb) -> String {
         switch verb {
@@ -396,6 +493,8 @@ nonisolated enum CodeToolLabels {
         // No `ccr_verb_*` entry exists for Write in the official tables; the
         // summary form is "Created a file", so the single verb stays "Created".
         case .created: return String(localized: "ccr_verb_created")
+        // Official `ccr_write_updated` (updated file write).
+        case .updated: return String(localized: "ccr_write_updated")
         case .ran: return String(localized: "ccr_verb_ran")
         case .searched: return String(localized: "ccr_verb_searched")
         case .searchedWeb: return String(localized: "ccr_verb_searched_web")
@@ -422,6 +521,8 @@ nonisolated enum CodeToolLabels {
         case .read: return String(localized: "ccr_running_reading")
         case .edited: return String(localized: "ccr_running_editing")
         case .created: return String(localized: "ccr_running_creating")
+        // Official update-write running form (`ccr_running_editing`).
+        case .updated: return String(localized: "ccr_running_editing")
         case .ran: return String(localized: "ccr_running_running")
         case .searched: return String(localized: "ccr_running_searching")
         case .searchedWeb: return String(localized: "ccr_running_searching_web")
@@ -515,6 +616,13 @@ nonisolated enum CodeToolLabels {
 
 // MARK: - Sheet identity
 
+/// One thinking-block detail request. The row carries the merged text of its
+/// message's thinking run; the page owns the sheet.
+struct CodeThinkingDetailRequest: Identifiable {
+    let id: String
+    let text: String
+}
+
 /// One detail request: the tapped segment's first call plus its followers, in
 /// official order (`ToolCallDetail{call, followingCalls}`). The row reports it
 /// upward; `TimelineChatTimelineView` owns the sheet.
@@ -528,6 +636,20 @@ struct CodeToolDetailRequest: Identifiable {
         id = first.id
         call = first
         following = Array(calls.dropFirst())
+    }
+}
+
+/// The one sheet the Code page owns. A single `.sheet(item:)` serves both
+/// detail kinds; two modifiers on the same view would shadow each other.
+enum CodePageDetailRequest: Identifiable {
+    case tool(CodeToolDetailRequest)
+    case thinking(CodeThinkingDetailRequest)
+
+    var id: String {
+        switch self {
+        case let .tool(request): return "tool:\(request.id)"
+        case let .thinking(request): return "thinking:\(request.id)"
+        }
     }
 }
 

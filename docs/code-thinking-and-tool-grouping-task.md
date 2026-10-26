@@ -10,6 +10,8 @@
 > - 生产库快照：2026-10-25 17:00 CST（`timeline_items`，只读 SELECT）
 > **证据标记**：[E] 指令/类型/数据库直读；[I] 结构推断（写明依据）；[U] 未验证。
 > **铁律**：`dev` 不碰不合；只从 `feat/code-profile-beta` 出包；不 force push；先任务单后代码。
+>
+> **实现状态（2026-10-25，分支 `feat/code-profile-beta`）**：P1 思考行 + 详情 `fe0a086c`；关闭按钮与长 Read 输出 `98f23368`；运行态思考文案 + 工具文案四项 `277002d6`；思考态截图门禁 `d7ae6bbb`；跨回合思考防串 `e4a37829`；`thought_process` 官方文案 `37255002`；wire 时间戳解析 `489ccde1`。`code-profile` 门禁新增 settled thinking 行高矩阵与 24K/298 行 Read 高度检查。`fileWriteKind` 改由 Write 结果文案推导（create/update，未知保持旧行为），同时驱动 diff 跳过与 `Updated / 已更新` 动词；运行中的 update Write 无提前信号，仍显示 Creating。
 
 ---
 
@@ -49,7 +51,7 @@
 | 进行中阈值 | 15 / 30 / 45 / 60 s（截断取整） | `0x102a89118–58` |
 | 5 档文案 key | `thinking_status_thinking` / `still_thinking` / `thinking_more` / `thinking_some_more` / `almost_done_thinking` | `code-page-strings.csv:516-520` |
 | 持久行视图 | `ThinkingContentRow`，Body `0x102c6ba54`；每个连续 thinking run 一条。**真渲染臂 = `DisplayBlockView.body 0x102b185d0` 的 tag4 → `0x102b19c30`**（R23 的 `0x102b1bfc8` 实为 `ToolCallSegment` 分派/threadSessionCard，已更正） | round24 `thinking-row-detail-and-style.md` |
-| **思考合并规则（本轮新增）** | `0x1027365f0`：从 blocks 尾部跳过 tag2（toolCalls），遇到 tag4 就「旧文本 + 新文本」合并替换，否则追加。⇒ 被工具调用隔开的多段 thinking 合并成一条 tag4；被 text 等其它块隔开才新建。`redactedThinking`（tag5）**不产出** tag4。合并拼接符/去重键 UNKNOWN | round24 `synthetic-thinking-lifecycle.md` §6 |
+| **思考合并规则（本轮新增）** | `0x1027365f0`：从 blocks 尾部跳过 tag2（toolCalls），遇到 tag4 就用 **`[old, new].filter{!isEmpty}.joined(separator: "\n\n")`** 合并替换，否则追加。⇒ 被工具调用隔开的多段 thinking 合并成一条 tag4；被 text 等其它块隔开才新建。`redactedThinking`（tag5）**不产出** tag4；Set 键是 **block index**（`narrationBlockIndexes`），命中时改产 `Block.narration`（tag5）。合并函数内无去重（重复帧上游处理 UNKNOWN） | round24 `tag4-merge-text.md`、`synthetic-thinking-lifecycle.md` §6 |
 | 持久行内容 | `extendedThinking` 图标（**渲染 `.medium`，基准 20pt**，不是 large/24）+ `Thought process`/`思考过程` + caret；文本 15/400/21 默认 label 色；图标/caret 动态灰 light ≈ #7B7974 / dark ≈ #97958D；`IconFrame` style `.plain` / size `.regular` / isFramed=true；`CollapsedRowButton` minHeight 24 + padding 6 + contentShape(Rectangle) | round24 `thinking-row-detail-and-style.md` §4 |
 | 点击 | 逐指令坐实：`0x102b19c30` 捕获 String → `ThinkingContentRow.onTap` → `0x102b38d74` → `0x102b1f23c` → `presentDetail(.thinkingText(text))`；详情页 = **sheet（`.presentationDetents` medium/large + 内部 NavigationStack）**，正文 `RichMarkdownView` 原文，标题 `思考过程`；sheet 挂载点 UNKNOWN | round24 `thinking-row-detail-and-style.md` §2/§3 |
 | 正文内联 | **没有**任何路径在 transcript 内联 raw thinking | 同上 §5 |
@@ -107,7 +109,7 @@
 
 **P1（iOS）：持久思考行 + 详情页（不依赖 connector）**
 
-1. 模型：`CodeMessageRow.Block.reasoning(id:text:)` 加 `status`（done 才显示），并按官方合并规则把**同一消息组内**连续的多段 reasoning 合成**一个** thinking 块（`0x1027365f0`：跳过 toolCalls 合并、text 等块断开；跨消息不合并；拼接符/去重键 UNKNOWN，待补）；`redacted_thinking` 不产出。合并由 `CodeMessageBuilder.messageRow` 在消息组内完成。
+1. 模型：`CodeMessageRow.Block.reasoning(id:text:)` 加 `status`（done 才显示），并按官方合并规则把**同一消息组内**连续的多段 reasoning 合成**一个** thinking 块：文本用 `[old, new].filter{!isEmpty}.joined(separator: "\n\n")`（官方 `0x1027365f0`）；跳过 toolCalls 合并、text 等块断开；跨消息不合并；`redacted_thinking` 不产出。合并由 `CodeMessageBuilder.messageRow` 在消息组内完成。
 2. 视图：新 `CodeThinkingRow`，视觉照官方 `CollapsedRowButton`：`anthropicon.extendedThinking`（**渲染 `.medium`，基准 20pt**）+ **固定标签 `思考过程`** + caret；文本 15/400/21 默认 label 色；图标/caret 动态灰 light ≈ #7B7974 / dark ≈ #97958D；`IconFrame` style `.plain` / size `.regular` / isFramed=true；垂直 padding 6、minHeight 24。可复用 `CodeCollapsedToolRow` 的常量，但用独立视图（无 verb/target/diff 语义）。
 3. 详情：新 `CodeThinkingDetailView`（NavigationStack + ScrollView + `ChatMarkdownView`，标题 `思考过程`）。官方是 **sheet（`.presentationDetents` medium/large）+ 内部 NavigationStack**，AA 现有页面级 `.sheet(item:)` 正好同形态；把思考/工具详情统一成 `CodePageDetail` enum（`TimelineChatTimelineView.swift:193-198,225,244-246`），避免同视图双 sheet，并补 `.presentationDetents([.medium,.large])`。
 4. `CodeMessageRowView`：`renderRows` 不再过滤 `.reasoning`；`blockView` 的 `.reasoning` 换成 `CodeThinkingRow`；新增 `onThinkingDetail` 回调（照 `onToolDetail` 机制，`CodeMessageRowView.swift:57-72,234-250`）。
@@ -139,22 +141,30 @@
 - 失败后缀 `(N failed)` / `（N 项失败）`：`CodeToolLabelPlan.Phrase` 加 failed 字段、`CodeCollapsedToolRow` 加 failed 参数、补本地化 key；计数语义按 round21 §1.11。
 - 分隔符：`ccr_summary_separator` 的中文值从 `，` 改回官方硬编码 `", "`（`CodeMessageRowView.swift:390`；round21 §1.5）。
 - 单目标判定：从“同一文件/同一路径”放宽到官方“所有 call 的 target 相同”（`CodeToolLabelPlan.swift:90-93,182-194`）。
-- diff 聚合：跳过 failed 与 `fileWriteKind==update`；任一 call 不是 diff/失败/更新 → 整组不显示（round21 §2.6）。
+- diff 聚合：跳过 failed 与 `fileWriteKind==update`；任一 call 不是 diff/失败/更新 → 整组不显示（round21 §2.6）。AA wire 无 `fileWriteKind`，用 Write 结果文案推导：`File created successfully at:` → create、`The file … has been updated successfully` → update（生产库实测 1110 create / 148 update / 70 无结果，2026-10-25；先前的 24 是把 text 截到 80 字导致的长路径漏计）；不匹配一律 nil，维持 Created/计入徽标。同一 kind 也用于 Write 动词 `Updated / 已更新`（`ccr_write_updated`，官方 IPA 1.261019.51 `ModuleStrings2.strings` 直读）。运行中的 update Write 无提前信号，仍显示 Creating。
+- Write 动词：create → `Created / 已创建`（沿用 `ccr_verb_created`），update → `Updated / 已更新`（`ccr_write_updated`）；kind 推导同 diff 聚合。官方运行态 update 用 `ccr_running_editing`，但 AA 只有结果文案这一个信号，运行中仍为 Creating。
 - `serverSummary` / `receivedMessages` **不做**：AA 无数据源，伪造违反“宁缺勿假”。
 
 ### 3.3 关闭按钮（pp 2026-10-25 指出的顺带修复）
 
-- 现状：`CodeToolDetailView.swift:232-247` 自绘 `Image(systemName: "xmark")`（13pt semibold）+ 30pt 圆底（`primary.opacity(0.08)`），非官方件。
-- 官方：`ClaudeCoreUI.DismissXButton`（`title/appearance/action`；`Appearance.plain/.floating`；`DismissXButtonStyle` + `DismissXAppearance`；`swift_types.csv:13729-13735`）。
-- **图标不是 SF Symbol**：Anthropicon `x`（静态 `name:"x"` / `symbolName:"anthropicon.x"`，`.large`，非 bold；`Image("anthropicon.x", bundle: ClaudeIcons)`，无 `.font`）。可见 X ≈ 11.6×11.6pt、笔画 ≈ 0.94pt（约 12pt regular），不是 AA 现在的 13pt semibold。
-- **`.floating` 规格**：frame 44×44 center；前景 light `#0B0B0B` / dark `#F0EFEC`；圆底 light `#FFFFFF` / dark `#1A1A19` ×0.6（iOS 26+ 用 `Glass.regular` + `glassEffect(in: Circle())`，<26 用圆底填充）；阴影 black 8% / radius 4 / y 2；hit target 44；按压 0.6、禁用 0.5；无描边、无内 padding。`.plain` 是裸图标无底无阴影。
-- **官方详情 sheet 的实际关闭按钮**：不是 DismissXButton，而是 `ClaudeCoreUI.DismissButton`（toolbar）——iOS 26+ 直接 `Button(role: .close)`（系统圆形玻璃 X），<26 才自绘 Anthropicon x。⇒ AA 在 iOS 26+ 直接用 `Button(role: .close) { dismiss() }`；低版本按上面的 `.floating` 规格自绘（需补 `anthropicon.x` 资产）。
-- 注意：官方详情是 sheet + 内部 NavigationStack（思考已证；工具详情待核），sheet 形态才需要这个关闭按钮。
+- 现状：`CodeToolDetailView.swift` 自绘 `Image(systemName: "xmark")`（13pt semibold）+ 30pt 圆底（`primary.opacity(0.08)`），非官方件。
+- 官方详情 sheet 的关闭按钮是 `ClaudeCoreUI.DismissButton`（toolbar）——iOS 26+ 直接用**系统 `Button(role: .close)`**（圆形玻璃 X），不是 `DismissXButton.floating` 自绘件。
+- AA 部署目标已是 **iOS 26.2**，仓库已有 `SheetCloseToolbar` / `SheetCloseButton`（`Views/Components/SheetCloseButton.swift`，`Button(role: .close)`）。⇒ 工具/思考详情统一改用 `SheetCloseToolbar { dismiss() }`，删掉自绘按钮与 30pt 圆底常量；不需要 `anthropicon.x` 资产。
+- 注意：官方详情是 sheet + 内部 NavigationStack（思考已证；工具详情同形态），sheet 形态才需要这个关闭按钮。
 
 ### 3.4 官方图标资产
 
-- 从 `ClaudeDesignSystem_ClaudeIcons.bundle/Assets.car` 提取 `anthropicon.extendedThinking` 的 A 变体 SVG（方法同 `EVIDENCE/round20/code-card-icons.md` §3.2：LZFSE `bvxn` 解包，3 个 SVG 变体；用 A）。
-- 新增 `Assets.xcassets/anthropicon.extendedThinking.imageset/`（Contents.json + SVG）与 `AnthropiconAssets.swift` 尺寸表：`14x14 / 16x16 / 19x19`（small/medium/large）。
+- 已提取：`/home/ubuntu/aa-test/probe-round24/official-svg/extendedThinking.A.svg`（2020 B，md5 `286ae7ac45f6f0112d1b4c710ec61b4f`，viewBox `0 0 12.0797 12.0797`，ink-tight；A 变体与 AA 现有 21 个资产同风格）。来源 build 1.261005.20；与 1.261019.51 的同名 A SVG md5 完全相同。
+- 已加入 `Assets.xcassets/anthropicon.extendedThinking.imageset/`（Contents.json + SVG，vector/template）与 `AnthropiconAssets.swift` 尺寸表：`14x14 / 16x16 / 19x19`（small/medium/large）；官方渲染 `.medium` → 16×16 artwork。
+- 不再需要 `anthropicon.x`（关闭按钮走系统 close role）。
+
+### 3.5 长 Read 输出空白（pp 2026-10-25 真机）
+
+- **现象**：打开 Read 详情（`EVIDENCE/round21/chrome-verify.md`），输入正常，输出卡片一大块空白；重开仍空（不是运行中快照）。
+- **数据已排除**：生产库 `sess_qosBVhTaWaxUeQ` 的该行 `content.output` 完整（24,753 字符、298 行、无 NUL）；`timeline?mode=history` 同样返回完整 output；不是数据丢失、不是 deferred stub。
+- **定位**：同一个 `CodeToolCodeCard` 渲染短 Input 正常；长输出卡片高度按 298 行撑开但无字形 → 长文本渲染路径问题。AA 的通用 `.text` 输出走横向 `ScrollView` + `Text.fixedSize(horizontal: true)` + `.textSelection(.enabled)`；官方 Read 走专用 `FileReadDetailView`（`CANONICAL/04` §3、`EVIDENCE/round14/tool-output.md` §4.3；Body `0x102c817e4`），分支含 `CodeBlockContent` / `RenderedMarkdownView` / `PagedDiffRows(readDiff)`。
+- **修法**：为 `kind == .read` 新增 `CodeFileReadOutputView`（纵向文本阅读器：等宽、可滚动/可复制；不再用横向 fixedSize + textSelection），先保证长文本可见；官方 `readDiff` / renderMarkdown / loadFullFile 分支后续补齐。非 Read 的 `.text` 输出暂不动。
+- **门禁**：`CodeProfileAutoRun` 增加 24K/298 行 Read output fixture（断言输出视图非空、高度有限）；真机复测同一条 Read。
 
 ---
 
@@ -170,6 +180,7 @@
   - 工具行/思考行的文案矩阵（失败后缀、分隔符、单目标判定、diff 聚合）。
 - 思考行：`CodeProfileAutoRun` 新增 fixture——done（显示 `思考过程`）/ running（不显示）；断言 `expectedBlocks`、标签文案、行高。
 - P2 运行态：注入时钟的纯函数单测（0/14/15/29/30/44/45/59/60s 档位、闭合 `思考了 X`、zh/en 输出）；`CodeProfileAutoRun` 加一条 working 行 fixture。
+- **长 Read 输出**：`CodeProfileAutoRun` 加 24K/298 行 Read fixture，断言输出视图非空、高度有限；短输出仍走同一路径。
 - `code-profile` gate（`.github/workflows/ios-build.yml`，`code_profile: true`）新增 fixture：同一消息 3 个并行 tool → 1 span；三条串行消息 → 3 行；thinking row 文案。
 - 本地：`swift test --package-path ios`（相关用例）；CI 为权威门禁。
 
@@ -194,7 +205,7 @@
 | 5 | P2 运行态时长在刷新/重进后不可重现（客户端计时） | P2 | 官方同样只在运行态显示；持久行固定 `思考过程`，可接受 |
 | 6 | 官方 `Block.thinking`/narration 在 AA 无对应行，断组语义有差异 | P2 | 现有数据无样本；记录，不猜 |
 | 7 | 其它 runtime：思考行对 Codex 也会开始显示（connector 有 reasoning 投影）；DSH 无数据不受影响 | P1 | 有意通用；用 Codex fixture 验证文案/高度 |
-| 8 | tag4 合并的**拼接符/去重键** UNKNOWN（闭包体 `0x1008b7508`/`0x10153dc24` 未展开） | P1 | 再派一路拆闭包；闭合前不猜分隔符，任务单不落实现细节 |
+| 8 | tag4 合并的上游**重复帧去重** UNKNOWN（合并函数本身只滤空串、不查重） | P2 | 现有 connector 不重发同一 thinking 文本；真机若出现 `x\n\nx` 再追上游 |
 
 ---
 
@@ -207,6 +218,8 @@
 - `ios/Agents Anywhere/Agents Anywhere/Models/Chat/Code/CodeToolLabelPlan.swift`
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeMessageRowView.swift`
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeToolDetailView.swift`（关闭按钮）
+- `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeToolOutputViews.swift`（长 Read 输出）
+- `ios/Agents Anywhere/Agents Anywhere/Models/Chat/Code/CodeToolOutput.swift`（Read 输出分类）
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeThinkingRow.swift`（新）
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeThinkingDetailView.swift`（新）
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeCollapsedToolRow.swift`
@@ -216,7 +229,6 @@
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/TimelineCollection/TimelineChatTimelineView.swift`
 - `ios/Agents Anywhere/Agents Anywhere/Views/Components/AnthropiconAssets.swift`
 - `ios/Agents Anywhere/Agents Anywhere/Assets.xcassets/anthropicon.extendedThinking.imageset/`（新）
-- `ios/Agents Anywhere/Agents Anywhere/Assets.xcassets/anthropicon.x.imageset/`（新，低版本自绘关闭按钮用）
 - `ios/Agents Anywhere/Agents Anywhere/Resources/Localization/Localizable.xcstrings`
 - `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeProfileAutoRun.swift`
 - `ios/Tests/ClientCoreTests/CodeProfileModelTests.swift`

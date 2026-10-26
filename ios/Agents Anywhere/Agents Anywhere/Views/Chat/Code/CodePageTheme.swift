@@ -77,6 +77,11 @@ nonisolated enum CodePageTheme {
         light: Color(.sRGB, red: 0.482, green: 0.475, blue: 0.455),
         dark: Color(.sRGB, red: 0.592, green: 0.584, blue: 0.553))
 
+    /// The collapsed row's failure ink. The official constant
+    /// (`0x1009d78b8`) has not been decoded ([U]); this reuses the Code
+    /// page's decoded remove-line red ([E]) as the closest official token.
+    static let toolRowFailureColor: SchemeColor = diffIndicatorRemoveText
+
     /// Spacing inside a status/tool row. Kept separate from the button
     /// padding: the official evidence fixes the 8 pt padding, not the gap
     /// between the row's glyph and its label.

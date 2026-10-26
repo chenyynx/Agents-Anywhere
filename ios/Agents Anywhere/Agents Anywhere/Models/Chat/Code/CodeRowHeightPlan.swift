@@ -21,6 +21,9 @@ nonisolated enum CodeRowHeightPlan {
         case text(height: CGFloat)
         /// One `Block.toolCalls` with `segments` collapsed rows.
         case tools(segments: Int)
+        /// One settled `thinkingContent` row (`CodeThinkingRow`): the same
+        /// one-line `CollapsedRowButton` geometry as a tool row.
+        case thinking
         /// The generic one-line row (`otherRow`).
         case other
     }
@@ -44,10 +47,16 @@ nonisolated enum CodeRowHeightPlan {
         var rowMargins: CGFloat
     }
 
+    /// The turn action bar's one-line height: the official 20 pt glyph slot.
+    /// The bar is an extra child of the row's `VStack`, so it adds one
+    /// `rowSpacing` gap when at least one row rendered.
+    static let actionBarHeight: CGFloat = 20
+
     /// Empty rows contribute nothing, exactly as `CodeMessageRowView` drops
     /// them before its stack. The status line is a sibling of the rows, so it
     /// adds `rowSpacing` only when at least one row rendered.
-    static func height(rows: [Row], metrics: Metrics) -> CGFloat {
+    static func height(rows: [Row], metrics: Metrics,
+                       hasActionBar: Bool = false) -> CGFloat {
         var total: CGFloat = 0
         var renderedRows = 0
         for row in rows where !row.blocks.isEmpty {
@@ -60,6 +69,8 @@ nonisolated enum CodeRowHeightPlan {
                 case .tools(let segments):
                     total += CGFloat(max(0, segments))
                         * (metrics.toolLineHeight + 2 * metrics.toolButtonPadding)
+                case .thinking:
+                    total += metrics.toolLineHeight + 2 * metrics.toolButtonPadding
                 case .other:
                     total += metrics.otherLineHeight
                 }
@@ -67,6 +78,10 @@ nonisolated enum CodeRowHeightPlan {
         }
         if renderedRows > 1 {
             total += CGFloat(renderedRows - 1) * metrics.rowSpacing
+        }
+        if hasActionBar {
+            if renderedRows > 0 { total += metrics.rowSpacing }
+            total += actionBarHeight
         }
         total += metrics.rowMargins
         return ceil(max(0, total))

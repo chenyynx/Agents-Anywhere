@@ -68,6 +68,10 @@ nonisolated struct TimelineGroupContentSignature: Equatable {
     /// session's working directory shortens tool targets and the runtime
     /// profile selects the tool kind/icon.
     var contextRevision: Int = 0
+    /// The Code row draws the turn action bar inside itself when this group
+    /// ends a finished turn. A turn settling flips it from false to true
+    /// without changing the rows, so the signature must carry it.
+    var hasActionBar: Bool = false
 
     var contentRevision: Int {
         var hasher = TimelineStableHasher()
@@ -103,6 +107,7 @@ nonisolated struct TimelineGroupContentSignature: Equatable {
         hasher.combine(turnSuppression.hasNewerItems)
         hasher.combine(turnSuppression.hasPendingUserMessage)
         hasher.combine(contextRevision)
+        hasher.combine(hasActionBar)
         return hasher.revision
     }
 }

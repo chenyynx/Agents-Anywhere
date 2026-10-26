@@ -10713,6 +10713,23 @@
         }
       }
     },
+    "发送到": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send to"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发送到"
+          }
+        }
+      }
+    },
     "发送消息": {
       "comment": "Shared with Web: dashboard.session.send. Sync with ios/scripts/web_copy.py.",
       "extractionState": "manual",
@@ -17622,6 +17639,23 @@
         }
       }
     },
+    "消息操作": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Message actions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "消息操作"
+          }
+        }
+      }
+    },
     "复制": {
       "extractionState": "manual",
       "localizations": {
@@ -18280,7 +18314,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "，"
+            "value": ", "
           }
         }
       }
@@ -18591,6 +18625,23 @@
         }
       }
     },
+    "ccr_write_updated": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Updated"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已更新"
+          }
+        }
+      }
+    },
     "排队至本轮结束后…": {
       "comment": "Code composer placeholder while a turn is running and the field is focused; mirrors the official mid_turn_queue_placeholder.",
       "extractionState": "manual",
@@ -18605,6 +18656,142 @@
           "stringUnit": {
             "state": "translated",
             "value": "排队至本轮结束后…"
+          }
+        }
+      }
+    },
+    "thought_process": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thought process"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "思考过程"
+          }
+        }
+      }
+    },
+    "thinking_status_thinking": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "thinking…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "思考中…"
+          }
+        }
+      }
+    },
+    "thinking_status_still_thinking": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "still thinking…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仍在思考…"
+          }
+        }
+      }
+    },
+    "thinking_status_thinking_more": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "thinking more…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "继续思考…"
+          }
+        }
+      }
+    },
+    "thinking_status_thinking_some_more": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "thinking some more…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "继续思考…"
+          }
+        }
+      }
+    },
+    "thinking_status_almost_done_thinking": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "almost done thinking…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "即将完成思考…"
+          }
+        }
+      }
+    },
+    "thought for %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "thought for %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "思考了 %@"
+          }
+        }
+      }
+    },
+    "(%lld failed)": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": " (%lld failed)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "（%lld 项失败）"
           }
         }
       }

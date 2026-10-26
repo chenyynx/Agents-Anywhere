@@ -16,8 +16,10 @@ import Foundation
 
 nonisolated struct CodeMessageRow: Identifiable, Hashable {
     nonisolated enum Block: Hashable {
-        /// `Block.thinking` in the official model; renders the working mark.
-        case reasoning(id: String, text: String)
+        /// The official `Block.thinkingContent`, rendered as the collapsed
+        /// `思考过程` row. `status` gates the row: a running thinking block is
+        /// the turn-level working line's job, not a transcript row.
+        case reasoning(id: String, text: String, status: V2TimelineItemStatus)
         /// `Block.text`.
         case text(id: String, text: String)
         /// `Block.toolCalls`, already segmented.
@@ -116,9 +118,25 @@ nonisolated enum CodeMessageBuilder {
         let segments = CodeToolSegmenter.segments(calls, policy: profile.segmentPolicy)
 
         var blocks: [CodeMessageRow.Block] = []
-        blocks.append(contentsOf: reasoning.map {
-            .reasoning(id: $0.id, text: $0.displayText)
-        })
+        // One message group is one official `DisplayMessage`. Inside it the
+        // engine merges consecutive thinking runs into one `thinkingContent`
+        // block, skipping tool calls and joining the texts with a blank line
+        // (`0x1027365f0`; round24 `tag4-merge-text.md`). AA persists one
+        // reasoning row per streamed block, so the same merge happens here.
+        // Text between two runs would break the run in the official engine;
+        // the server's RBT order already places body rows after all reasoning
+        // rows, so this client cannot see that interleaving and merges the
+        // group's reasoning rows in wire order instead.
+        let reasoningText = reasoning
+            .map(\.displayText)
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .joined(separator: "\n\n")
+        if !reasoningText.isEmpty, let first = reasoning.first {
+            let settled = reasoning.allSatisfy { $0.status == .done }
+            blocks.append(.reasoning(id: first.id,
+                                     text: reasoningText,
+                                     status: settled ? .done : .running))
+        }
         blocks.append(contentsOf: bodies.map {
             .text(id: $0.id, text: $0.displayText)
         })

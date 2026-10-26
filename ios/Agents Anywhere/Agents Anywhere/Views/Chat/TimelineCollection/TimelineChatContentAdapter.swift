@@ -29,6 +29,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// sheet (a cell-local `@State` would be rebuilt by every streaming
     /// reconfigure and could dismiss an open detail).
     var onCodeToolDetail: ((CodeToolDetailRequest) -> Void)?
+    /// A settled `思考过程` row's tap; same page-level sheet as a tool detail.
+    var onCodeThinkingDetail: ((CodeThinkingDetailRequest) -> Void)?
 
     /// The representable marks the list stale once per SwiftUI update; reading
     /// the generation rebuilds the maps, and every later `item(at:)` /
@@ -87,6 +89,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// When the current working block appeared; the official verb rotation is
     /// anchored on it (the `.server` phase timing `0x102a85174`).
     private var workingStatusPhaseStart: Date?
+    /// The live turn's thinking block: the row currently being watched, when
+    /// this client first saw it running, and the closed summary once it
+    /// settles. The official row measures the running tiers from the turn
+    /// start and shows the closed label for 2 s from the block's own end
+    /// (`0x102a88dfc`; R24 `live-thinking-timer.md`).
+    private var liveThinkingRowID: String?
+    private var liveThinkingObservedStart: Date?
+    private var liveThinkingClosed: (id: String, endedAt: Date, seconds: Int)?
     private var tailNoticesByID: [String: SessionNoticeModel] = [:]
     private var pendingByID: [String: V2PendingMessage] = [:]
     private var rowToItem: [String: TimelineListItem] = [:]
@@ -239,7 +249,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             return cached.value
         }
         var hasher = TimelineStableHasher()
-        hasher.combine(codeHeightDigest(rows: codeRowsByGroupID[id] ?? [], width: width))
+        hasher.combine(codeHeightDigest(rows: codeRowsByGroupID[id] ?? [],
+                                        width: width,
+                                        hasActionBar: actionBarCopyText(for: id) != nil))
         if let streaming {
             for rowID in streaming.textsByRowID.keys.sorted() {
                 hasher.combine(rowID)
@@ -490,7 +502,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         guard !group.rows.contains(where: { $0.isRevealing }) else {
             return nil
         }
-        let digest = codeHeightDigest(rows: rows, width: width)
+        let hasActionBar = actionBarCopyText(for: id) != nil
+        let digest = codeHeightDigest(rows: rows, width: width,
+                                      hasActionBar: hasActionBar)
         if let cached = codeHeightCache[id], cached.digest == digest {
             return cached.height
         }
@@ -499,7 +513,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             width: width,
             typography: codeTypography,
             traits: controller?.traitCollection,
-            measured: true)
+            measured: true,
+            hasActionBar: hasActionBar)
         codeHeightCache[id] = CachedCodeHeight(digest: digest, height: height)
         return height
     }
@@ -557,14 +572,18 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private var codeHeightCache: [String: CachedCodeHeight] = [:]
 
     private func codeHeightDigest(rows: [CodeMessageRow],
-                                  width: CGFloat) -> Int {
+                                  width: CGFloat,
+                                  hasActionBar: Bool = false) -> Int {
         var hasher = TimelineStableHasher()
         for row in rows {
             hasher.combine(row.role.rawValue)
             for block in row.blocks {
                 switch block {
-                case .reasoning:
-                    hasher.combine(0)
+                case let .reasoning(_, text, status):
+                    // The row's height is one fixed line; only "settled and
+                    // non-empty" changes whether it exists at all.
+                    hasher.combine(status == .done
+                        && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 1 : 0)
                 case let .text(_, text):
                     hasher.combine(1)
                     hasher.combine(text)
@@ -580,6 +599,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         hasher.combine(codeTypography.revision)
         let scale = controller?.traitCollection.displayScale ?? 2
         hasher.combine(Int((scale * 100).rounded()))
+        hasher.combine(hasActionBar)
         return hasher.revision
     }
 
@@ -866,6 +886,21 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         }
     }
 
+    /// The Code page's turn action bar is a separate transcript row; the Chat
+    /// collection timeline keeps the Chat reference row (`SessionTurnActionsRow`).
+    /// A generic runtime is a plain chat session, not a Code page.
+    private var usesCodeActionBar: Bool { codeProfile.family != .generic }
+
+    /// The turn action bar is drawn inside the Code row (hosted cells do not
+    /// receive the assistant footer). Only the group that ends a finished
+    /// turn has an action; an empty copy text draws no bar.
+    private func actionBarCopyText(for groupID: String) -> String? {
+        guard usesCodeActionBar,
+              let text = turnActions[groupID]?.copyText,
+              !text.isEmpty else { return nil }
+        return text
+    }
+
     private struct FooterReviewKey: Equatable {
         struct Item: Equatable {
             let id: String
@@ -998,8 +1033,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     cwd: model.session.metadata?.cwd,
                     streaming: streamingText,
                     typography: codeTypography,
+                    turnActionCopyText: actionBarCopyText(for: id),
                     onToolDetail: { [weak self] request in
                         self?.onCodeToolDetail?(request)
+                    },
+                    onThinkingDetail: { [weak self] request in
+                        self?.onCodeThinkingDetail?(request)
                     }))
             }
             return AnyView(SessionTimelineGroupView(
@@ -1362,8 +1401,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             let hasVisibleBlock = rows.contains { row in
                 row.blocks.contains { block in
                     switch block {
-                    case .reasoning:
-                        return false
+                    case let .reasoning(_, text, status):
+                        return status == .done
+                            && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     case let .text(_, text):
                         // An empty text block renders nothing; it must not
                         // keep a group (or a 44 pt estimate) alive.
@@ -1665,6 +1705,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // and settled rows do not change their refresh semantics.
             return TimelineGroupContentSignature(
                 rows: group.rows.map { row in
+                    // Reasoning streams a new wire revision per delta, but the
+                    // row is invisible until it settles. Sign it by its
+                    // rendered state so a thinking run does not reconfigure
+                    // the whole Code row every network frame.
+                    if row.value.isReasoning {
+                        return TimelineRowContentSignature(
+                            id: row.id,
+                            revision: row.value.status == .done ? 1 : 0,
+                            updatedSeq: 0)
+                    }
                     if row.value.isStreamingText,
                        let publisher = codeStreamingPublishers[row.id] {
                         // The publisher's own counter changes exactly when a
@@ -1699,7 +1749,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 turnSuppression: TimelineTurnSuppression(
                     isRunning: false, hasNewerItems: false, hasPendingUserMessage: false),
                 contextRevision: Self.groupContextRevision(
-                    cwd: model.session.metadata?.cwd, profile: codeProfile))
+                    cwd: model.session.metadata?.cwd, profile: codeProfile),
+                hasActionBar: actionBarCopyText(for: group.id) != nil)
         }
         var rows: [TimelineRowContentSignature] = []
         rows.reserveCapacity(group.rows.count)
@@ -1810,7 +1861,96 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
            status == .waiting || status == .pending {
             return .connecting
         }
+        // Official precedence (R24 §6.5): `.compacting`/`.connecting` go
+        // straight to the working row; only the remaining states consult the
+        // thinking text. Nil means the turn has no thinking block to report.
+        if let thinking = liveThinkingPhase(startedAt: startedAt) { return thinking }
         return .working(startedAt: startedAt)
+    }
+
+    /// The live turn's thinking state, mirroring the official tag-3 activity
+    /// (`0x102a88dfc`): while a block runs the five tiers replace the verbs;
+    /// for 2 s after it settles the closed label replaces them; afterwards
+    /// the caller falls back to the verbs.
+    ///
+    /// The running anchor is the working block's start (the turn start), not
+    /// the thinking item's own creation time — the official branch measures
+    /// `now − turnStartedAt` (`0x102a89010`). The closed duration is the
+    /// block's own span: the wire's first/last ingest stamps when both are
+    /// present, otherwise the span this client observed.
+    private func liveThinkingPhase(startedAt: Date) -> CodeWorkingStatusPhase? {
+        // An optimistic user message is newer than every presented row: the
+        // scan would otherwise read the previous turn's trailing reasoning as
+        // the live block and show its closed label at the new turn's start.
+        // Same guard as `liveWorkingMarkBody`.
+        guard model.timeline.pendingMessages.isEmpty else { return nil }
+        guard let item = liveThinkingItem() else {
+            liveThinkingRowID = nil
+            liveThinkingObservedStart = nil
+            liveThinkingClosed = nil
+            return nil
+        }
+        if item.status.isActive {
+            if liveThinkingRowID != item.id {
+                liveThinkingRowID = item.id
+                liveThinkingObservedStart = Date()
+                liveThinkingClosed = nil
+            }
+            return .thinking(startedAt: startedAt)
+        }
+        if liveThinkingClosed?.id != item.id {
+            let observedStart = liveThinkingObservedStart
+            // A block this client watched running ends now. A block first
+            // seen already settled (reconnect, relaunch, history) ends at its
+            // wire stamp, clamped to now so clock skew cannot hold the label.
+            let endedAt = observedStart != nil
+                ? Date()
+                : min(Date(), V2Timestamp.date(item.updatedAt) ?? Date())
+            liveThinkingClosed = (
+                id: item.id,
+                endedAt: endedAt,
+                seconds: Self.closedThinkingSeconds(
+                    item: item,
+                    observedStart: observedStart,
+                    observedEnd: endedAt
+                )
+            )
+            liveThinkingRowID = nil
+            liveThinkingObservedStart = nil
+        }
+        guard let closed = liveThinkingClosed else { return nil }
+        return .thoughtFor(seconds: closed.seconds,
+                           endedAt: closed.endedAt,
+                           fallbackStartedAt: startedAt)
+    }
+
+    /// The trailing reasoning row of the live turn, if any. The scan stops at
+    /// the last user message, the same live-turn boundary `liveWorkingMarkBody`
+    /// uses.
+    private func liveThinkingItem() -> V2TimelineItem? {
+        for row in model.timeline.rows.reversed() {
+            let item = row.value
+            if item.role == .user { break }
+            if item.isReasoning { return item }
+        }
+        return nil
+    }
+
+    /// Official closed duration (`0x102a88f5c`): `endedAt − startedAt`,
+    /// `frinta` (half away from zero), then `max(1, n)`. The wire carries the
+    /// server's first/last ingest stamps for the thinking row, which are the
+    /// closest analogue of the official block timestamps; if either is
+    /// missing, the span this client observed running stands in.
+    private static func closedThinkingSeconds(item: V2TimelineItem,
+                                              observedStart: Date?,
+                                              observedEnd: Date) -> Int {
+        if let created = V2Timestamp.date(item.createdAt),
+           let updated = V2Timestamp.date(item.updatedAt),
+           updated >= created {
+            return CodeThinkingText.closedSeconds(updated.timeIntervalSince(created))
+        }
+        guard let observedStart else { return 1 }
+        return CodeThinkingText.closedSeconds(observedEnd.timeIntervalSince(observedStart))
     }
 
     /// True while the live turn's compact row is active. The connector turns a

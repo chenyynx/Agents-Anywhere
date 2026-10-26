@@ -225,15 +225,34 @@ final class TimelineCollectionController: UIViewController {
             guard isViewLoaded, abs(oldValue - bottomBarInset) > 0.5 else { return }
             applyBottomBarInset()
             // The bar grows while typing (multi-line editor) and the reader is
-            // usually resting at the bottom; keep the tail above it.
+            // usually resting at the bottom; keep the tail above it. This is a
+            // composer-size change, not a keyboard frame — the keyboard's own
+            // follow is UIKit's (see `applyBottomBarInset`).
             guard readerRestsAtBottom, !phase.userIsScrolling else { return }
             snapToBottom()
         }
     }
 
+    /// Writes the composer's own inset, keeping the reader's place across the
+    /// write.
+    ///
+    /// The official `TranscriptListSurface` does the same around its inset
+    /// update (`0x101a3c820`): capture `contentOffset`, set the inset under
+    /// `isSettingItsOwnInset` (`0x104e3d208`), then restore the offset
+    /// (`0x10418f9a0`). Without the restore UIKit reconciles the offset a
+    /// second time on top of whatever moved the page, and the list drifts from
+    /// the composer. The keyboard is deliberately *not* folded in here: it is
+    /// UIKit's own safe-area inset, and UIKit keeps the bottom pinned inside
+    /// the keyboard's animation.
     private func applyBottomBarInset() {
-        guard isViewLoaded, collectionView != nil else { return }
-        collectionView.contentInset.bottom = max(0, bottomBarInset)
+        guard isViewLoaded, let collectionView else { return }
+        let bottom = max(0, bottomBarInset)
+        guard abs(collectionView.contentInset.bottom - bottom) > 0.5 else { return }
+        let offset = collectionView.contentOffset
+        collectionView.contentInset.bottom = bottom
+        if collectionView.contentOffset != offset {
+            collectionView.setContentOffset(offset, animated: false)
+        }
     }
 
     // MARK: - Lifecycle

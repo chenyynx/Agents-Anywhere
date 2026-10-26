@@ -2234,6 +2234,7 @@ final class TimelineCollectionController: UIViewController {
     func followKeyboard(endFrame: CGRect?, duration: TimeInterval,
                         curve: TimelineKeyboardEvent.Curve) {
         guard let collectionView, let endFrame,
+              layout.contentHeight > 0,
               !interactionPresented, !navigationSuspended, !phase.userIsScrolling
         else { return }
         let windowHeight = collectionView.window?.bounds.height

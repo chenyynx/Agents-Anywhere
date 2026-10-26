@@ -69,11 +69,6 @@ nonisolated struct TimelineKeyboardEvent: Equatable {
     let duration: TimeInterval
     let curve: Curve
     let isLocal: Bool
-    /// The keyboard's final frame in screen coordinates. The transcript's
-    /// bottom follow predicts the new inset from it at the notification,
-    /// before UIKit has applied the safe-area change.
-    let endFrame: CGRect?
-
     /// A zero (or absent) duration applies the change without an animation:
     /// there is no transition window worth withholding anything for, and the
     /// settled sample is evaluated right away.
@@ -95,7 +90,6 @@ nonisolated struct TimelineKeyboardEvent: Equatable {
     /// documented defaults (no animation, ease-in-out, local) instead of
     /// dropping the transition.
     init(source: Source, userInfo: [AnyHashable: Any]) {
-        endFrame = Self.frame(from: userInfo[Key.frameEnd])
         self.source = source
         duration = (userInfo[Key.duration] as? NSNumber)?.doubleValue ?? 0
         curve = Curve(rawValue: (userInfo[Key.curve] as? NSNumber)?.intValue ?? 0)
@@ -133,35 +127,5 @@ nonisolated struct TimelineKeyboardEvent: Equatable {
 #else
         return value.rectValue
 #endif
-    }
-}
-
-/// The transcript's bottom follow during a keyboard transition.
-///
-/// The official list has no keyboard listeners; it learns the keyboard from
-/// the safe area and re-resolves its `.end` anchor. AA's collection view is a
-/// full-bleed representable whose `adjustedContentInset` changes without the
-/// offset following (measured: the page stays still while the composer
-/// travels), so the bottom has to be re-resolved explicitly — and on the
-/// keyboard's own motion, or it reads as a jump.
-nonisolated enum TimelineKeyboardFollow {
-    /// How much of the window the keyboard covers above its resting inset.
-    static func overlap(windowHeight: CGFloat, keyboardTop: CGFloat,
-                        restingInset: CGFloat) -> CGFloat {
-        max(0, windowHeight - keyboardTop - restingInset)
-    }
-
-    /// The scroll view's bottom inset once `newOverlap` replaces `appliedOverlap`.
-    /// Subtracting the applied part keeps a growing keyboard from being counted
-    /// twice.
-    static func targetBottomInset(currentInset: CGFloat, appliedOverlap: CGFloat,
-                                  newOverlap: CGFloat) -> CGFloat {
-        currentInset - appliedOverlap + newOverlap
-    }
-
-    /// A zero duration is an interactive frame: UIKit is moving the keyboard
-    /// with the finger, and the safe-area callback tracks it directly.
-    static func animates(duration: TimeInterval) -> Bool {
-        duration > 0
     }
 }

@@ -319,3 +319,88 @@ EOF
 3. **功能范围**：只做 UI+键盘，还是把模型胶囊/权限/语音/notice 一并补齐？建议分两批：先 UI+键盘，再功能。
 4. **Code 新会话页**（`NewSessionView`）是否同一套 composer 一起对齐。
 5. 是否允许改 `SidebarDrawer.swift` / `ChatPageToolbar.swift`（共享壳层）。
+
+---
+
+## 12. 列表跟随键盘：官方路径 vs AA 现状（方案，2026-10-26，待 pp 批准）
+
+### 12.1 现象
+
+键盘弹起/收回时，AA 的消息列表（消息正文滚动区）跟不上输入框；官方是列表与输入框完全同步起落。
+
+### 12.2 官方机制（EVIDENCE）
+
+| # | 事实 | 证据 |
+|---|---|---|
+| 1 | 官方列表**没有任何键盘监听** | `keyboardWillChangeFrame:` / `keyboardWillShow` / `UIKeyboardFrameEndUserInfoKey` 在二进制零命中（`CANONICAL/05-layout-scroll.md:250`，负证据） |
+| 2 | 安全区从 SwiftUI 传入列表 | `TranscriptList.body 0x1019fb120` 调 `GeometryProxy.safeAreaInsets`；`TranscriptListInput.safeArea`（字段 `0x104e3bdc8`）→ `TranscriptListSurface.safeArea`（字段 `0x104e3d1d8`）（`CANONICAL/05-layout-scroll.md:251`） |
+| 3 | inset 公式 = `max(safeArea − scrollView.safeAreaInsets, 0)` | 设置点 `0x101a3c820`：`fsub` + `fcsel …, ge`（取 max 0），top/bottom 各一次（`CANONICAL/05-layout-scroll.md:455`） |
+| 4 | 设 inset 时防回环 + 存/还原 offset | 同函数：`isSettingItsOwnInset`（字段 `0x104e3d208`）置 1 → `setContentInset`（`0x10418f920`）→ 置 0；之前用 `0x104155560` 取 `contentOffset`，之后按 `[obj+0x51] == 1` 用 `0x10418f9a0` 还原 |
+| 5 | `contentInsetAdjustmentBehavior` 从未被设置 | 语料 §12.3：UIKit 默认 `.automatic`；键盘属于 UIKit 自己的安全区 |
+| 6 | composer 挂载就是 `.safeAreaBar` | `SafeAreaContentModifier.body 0x100d75de0` → `.safeAreaBar(edge:.bottom,…)` `0x100d7620c`（语料 §12.1） |
+
+**推论（INFERENCE，高置信）**：官方的“列表跟着输入框”不是它自己写的动画——键盘高度进的是 UIKit 自己的安全区，`adjustedContentInset` 在键盘动画里同步变化，UIScrollView 自动保持贴底；官方只额外补 composer 那一截（显式 `contentInset`），并在设置前后存/还原 `contentOffset` 防止二次位移。
+
+**UNKNOWN**：SwiftUI 是否把键盘高度并入该页的 `GeometryProxy.safeAreaInsets`（语料 `05-layout-scroll.md:254` 标 INFERENCE，需真机打印）。这不影响方案：即使并入，公式里 `− scrollView.safeAreaInsets` 也会把键盘这一项抵消，键盘仍由 UIKit 负责。
+
+### 12.3 AA 现状（EVIDENCE，代码行）
+
+| 位置 | 现状 |
+|---|---|
+| `ios/Agents Anywhere/Agents Anywhere/Views/Chat/SessionChatView.swift:236` | composer 用 `.safeAreaBar(edge:.bottom)`（与官方一致） |
+| `…/SessionChatView.swift:75` | `bottomBarInset: composerBarHeight` 手工把 bar 高度传给列表 |
+| `…/TimelineCollection/TimelineCollectionController.swift:236,248` | `bottomBarInset` setter → `contentInset.bottom = max(0, bottomBarInset)` |
+| `…/TimelineCollectionController.swift:281` | `contentInsetAdjustmentBehavior = .automatic`（与官方默认一致） |
+| `…/TimelineCollection/TimelineChatTimelineView.swift:166,171,176` | **自己监听** `keyboardWillShow/Hide/ChangeFrame` → `beginKeyboardTransition` |
+| `…/TimelineCollectionController.swift:2171` | 键盘过渡窗口 `keyboardTransitionActive` + 定时结束 |
+| `…/TimelineCollectionController.swift:2203→2270` | `handleContainerHeightChange()` → `snapToBottom()`（`animated:false`，layout 回调里直接设到终点） |
+| `…/TimelineCollectionController.swift:2282` | `pinBottomForKeyboardIfNeeded()` → 同一 snap |
+
+**结论**：AA 在官方已有的系统机制之上，又自造了一套“键盘通知 + 每帧 snap + 过渡窗口”。二者同时改 `contentOffset` → 列表与输入框不同步（pp 看到的“跟随慢/跟不上”）。
+
+### 12.4 方案（按官方，分四步）
+
+**Step 1 · 拆掉自造链路（对应 §12.2 #1）**
+- `TimelineChatTimelineView.swift`：删除 166–178 三个 `onReceive`、`keyboardTransitionBegan`，以及 `border`/`keyboard` 里仅为它服务的状态。
+- `TimelineCollectionController.swift`：删除 `beginKeyboardTransition` / `endKeyboardTransition` / `keyboardTransitionTask` / `keyboardTransitionToken` / `pinBottomForKeyboardIfNeeded` / `keyboardVisible` 的键盘用途（`setKeyboardVisible` 若无其它消费方一并删）。
+- `snapToBottom()` 保留，但只用于**非键盘**场景（内容增长、开屏落底、程序化回底）。
+
+**Step 2 · inset 设置按官方加保护（对应 §12.2 #4）**
+- `applyBottomBarInset()`：仅当 `bottomBarInset` 真的变化时写 `contentInset`；写之前存 `contentOffset`，写完还原，避免 UIKit 因显式 inset 二次重定位。
+
+**Step 3 · 兜底：若系统不再贴底**
+- 把 bar 高度按官方公式并入 SwiftUI 侧安全区：`contentInset.bottom = max(safeArea.bottom − collectionView.safeAreaInsets.bottom, 0)`（`safeArea` 从 `SessionChatView` 外层 `GeometryReader` 取，经 representable 传入），而不是现在的“只加 bar 高度”。
+- 只在 Step 1 真机验证发现“完全不跟”时启用，不预先实现。
+
+**Step 4 · 验证**
+- CI：`test` / `build` / `code-profile` 三绿。
+- 真机判据见 §12.6。
+
+### 12.5 改动面
+
+- `ios/Agents Anywhere/Agents Anywhere/Views/Chat/TimelineCollection/TimelineChatTimelineView.swift`
+- `ios/Agents Anywhere/Agents Anywhere/Views/Chat/TimelineCollection/TimelineCollectionController.swift`
+- （Step 3 才涉及）`ios/Agents Anywhere/Agents Anywhere/Views/Chat/SessionChatView.swift`
+- 不碰 composer 尺寸、不碰 `TimelineListLayout`、不碰流式跟随（`streamingFollowSpring`）。
+
+### 12.6 验收判据（真机）
+
+1. 点输入框：列表与输入框**同一帧**开始、同一帧结束，没有“先到/后到”。
+2. 收起键盘：同上反向。
+3. 交互式下滑收起：列表跟手，不跳。
+4. 不在底部（正在读历史）时弹键盘：列表位置不变（官方 `.reading` 语义）。
+5. 流式输出 + 键盘同时：不互相打架。
+
+### 12.7 风险与回退
+
+| 风险 | 处置 |
+|---|---|
+| 去掉自造 pin 后，UIKit 在这套 `UIViewControllerRepresentable` + `.ignoresSafeArea(.container)` 组合下不保持贴底 → 列表完全不跟 | 单 commit，`git revert` 即回到现状；随后按 Step 3 用官方公式接管 |
+| 交互式下滑变差 | 官方同样不监听，属系统行为；若真机变差，按 Step 3 再评估 |
+| `contentOffset` 存/还原引入抖动 | Step 2 单独一个 commit，便于单独回退 |
+
+### 12.8 不做
+
+- 不再调动画曲线/时长（官方没有可调参数，全是系统动画）。
+- 不改 composer 尺寸/位置（已对齐）。
+- 不引入新的键盘监听。

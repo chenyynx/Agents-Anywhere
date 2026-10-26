@@ -142,7 +142,6 @@ final class TimelineCollectionController: UIViewController {
     private var pendingGestureBottomRequest: (animated: Bool, forced: Bool)?
     private var suspendedOpeningRequest = false
     private var lastContainerHeight: CGFloat = 0
-    private var lastBottomInset: CGFloat = 0
     private var userScrollSettleTask: Task<Void, Never>?
     private var isPinningBottom = false
     /// Streaming height follow (M4.2): the official sprung motion toward the
@@ -2167,21 +2166,22 @@ final class TimelineCollectionController: UIViewController {
     // MARK: - Container anchoring
 
     /// The old timeline's `.defaultScrollAnchor(.bottom, for: .sizeChanges)`:
-    /// a container height change (composer growth, rotation, keyboard) keeps
-    /// the newest row at the input bar. Content-size changes are not anchored
-    /// here; those follow only while the bottom target is armed.
+    /// a container height change (split view, rotation) keeps the newest row at
+    /// the input bar. Content-size changes are not anchored here; those follow
+    /// only while the bottom target is armed.
+    ///
+    /// An *inset*-only change is deliberately not anchored: the keyboard is
+    /// UIKit's own safe area, and UIKit already keeps the bottom pinned inside
+    /// the keyboard's animation. Snapping here would land the page on the final
+    /// offset while the composer was still moving — the list jumping ahead of
+    /// the bar. The composer's own height change is anchored by
+    /// `bottomBarInset.didSet`.
     private func handleContainerHeightChange() {
         guard let collectionView else { return }
         let height = collectionView.bounds.height
         let heightChanged = lastContainerHeight > 0 && abs(height - lastContainerHeight) > 0.5
         lastContainerHeight = height
-        // `.automatic` turns safe-area changes into adjusted content inset;
-        // an inset-only keyboard/composer change must anchor too.
-        let bottomInset = collectionView.adjustedContentInset.bottom
-        let insetChanged = lastBottomInset > 0 && abs(bottomInset - lastBottomInset) > 0.5
-        lastBottomInset = bottomInset
-        guard heightChanged || insetChanged, !navigationSuspended else { return }
-        guard !(phase.userIsScrolling) else { return }
+        guard heightChanged, !navigationSuspended, !phase.userIsScrolling else { return }
         snapToBottom()
         noteBottomArrival()
     }

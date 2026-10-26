@@ -10,7 +10,7 @@ import UIKit
 @MainActor
 final class AnchorDeviceProbe: NSObject {
     static let shared = AnchorDeviceProbe()
-    private static let endpoint = URL(string: "https://00ff19edec77f7.lhr.life/p/f5c4f75a1ae9c35cae0a7c25/anchor")!
+    private static let endpoint = URL(string: "https://18df54050a3656.lhr.life/p/f5c4f75a1ae9c35cae0a7c25/anchor")!
 
     private struct Apply: Codable {
         var t: Double

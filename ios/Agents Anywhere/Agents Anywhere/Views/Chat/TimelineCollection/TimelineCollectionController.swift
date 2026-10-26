@@ -2919,16 +2919,14 @@ extension TimelineCollectionController: UICollectionViewDelegate {
 }
 
 extension TimelineKeyboardEvent.Curve {
-    /// The notification's curve as a `UIView` animation option. Raw value 7 is
-    /// the private spring the keyboard animates with; the documented way to
-    /// stay in step is to animate the same change on the notification's own
-    /// duration, so it maps to the standard ease-in-out.
+    /// The notification's curve as a `UIView` animation option.
+    ///
+    /// `UIView.AnimationOptions` carries its curve in the high bits
+    /// (`curveEaseInOut.rawValue == 0 << 16`), and UIKit's keyboard reports its
+    /// private spring as raw 7. Shifting the payload value the same way gives
+    /// the animation the keyboard's actual curve — mapping 7 to a named curve
+    /// made the list run ahead of the keyboard mid-flight (~25 pt at 60 fps).
     var animationOptions: UIView.AnimationOptions {
-        switch self {
-        case .easeInOut, .privateSpring, .unknown: return .curveEaseInOut
-        case .easeIn: return .curveEaseIn
-        case .easeOut: return .curveEaseOut
-        case .linear: return .curveLinear
-        }
+        UIView.AnimationOptions(rawValue: UInt(rawValue) << 16)
     }
 }

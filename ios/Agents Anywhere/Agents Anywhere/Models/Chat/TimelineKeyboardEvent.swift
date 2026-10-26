@@ -38,6 +38,20 @@ nonisolated struct TimelineKeyboardEvent: Equatable {
         case privateSpring
         case unknown(Int)
 
+        /// The raw payload value, which UIKit also accepts as the high half of
+        /// `UIView.AnimationOptions` — that is how an animation gets the
+        /// keyboard's own spring (7) instead of a named curve.
+        var rawValue: Int {
+            switch self {
+            case .easeInOut: return 0
+            case .easeIn: return 1
+            case .easeOut: return 2
+            case .linear: return 3
+            case .privateSpring: return 7
+            case .unknown(let value): return value
+            }
+        }
+
         init(rawValue: Int) {
             switch rawValue {
             case 0: self = .easeInOut

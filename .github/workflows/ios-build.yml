@@ -1106,7 +1106,10 @@ jobs:
           # the same release tag.
           PROBE_SUFFIX=""
           if [ "${PROBE}" = "true" ]; then PROBE_SUFFIX="-probe"; fi
-          NAME="AgentsAnywhere-${SLUG}-${SHA_SHORT:0:7}${PROBE_SUFFIX}.ipa"
+          # The bundle build number (CFBundleVersion, set from the run number
+          # above) leads the file name so a device build can be identified
+          # from the IPA name alone; the commit hash stays for provenance.
+          NAME="AgentsAnywhere-${SLUG}-b${GITHUB_RUN_NUMBER}-${SHA_SHORT:0:7}${PROBE_SUFFIX}.ipa"
           cp agents-anywhere.ipa "$NAME"
           gh release create "$TAG" --title "$TITLE" --notes "$NOTES" || true
           gh release upload "$TAG" "$NAME" --clobber

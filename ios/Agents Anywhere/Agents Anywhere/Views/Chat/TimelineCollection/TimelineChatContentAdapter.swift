@@ -871,12 +871,26 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private struct FooterPlan {
         let hasReview: Bool
         let hasReplies: Bool
+        /// The Chat reference row and the Code action bar have different
+        /// heights; the plan carries the one this session's profile uses so
+        /// every consumer (support check, host height) agrees.
+        let actionRowHeight: CGFloat
 
         var height: CGFloat {
             AssistantFooterMetrics.contentHeight(
                 hasReview: hasReview, hasReplies: hasReplies,
-                actionRowHeight: SessionTurnActionsRow.rowHeight)
+                actionRowHeight: actionRowHeight)
         }
+    }
+
+    /// The Code page's turn action bar is a separate transcript row; the Chat
+    /// collection timeline keeps the Chat reference row (`SessionTurnActionsRow`).
+    /// A generic runtime is a plain chat session, not a Code page.
+    private var usesCodeActionBar: Bool { codeProfile.family != .generic }
+
+    private var actionRowHeight: CGFloat {
+        usesCodeActionBar ? CodeTurnActionBar.rowHeight
+                          : SessionTurnActionsRow.rowHeight
     }
 
     private struct FooterReviewKey: Equatable {
@@ -925,14 +939,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             ? false : !footerReview(action, groupID: groupID).files.isEmpty
         let hasReplies = !action.replies.isEmpty
         guard hasReview || hasReplies else {
-            return FooterPlan(hasReview: false, hasReplies: false)
+            return FooterPlan(hasReview: false, hasReplies: false,
+                              actionRowHeight: actionRowHeight)
         }
         if hasReview,
            UIFont.preferredFont(forTextStyle: .footnote).lineHeight
             > AssistantFooterMetrics.reviewRowHeight {
             return nil
         }
-        return FooterPlan(hasReview: hasReview, hasReplies: hasReplies)
+        return FooterPlan(hasReview: hasReview, hasReplies: hasReplies,
+                          actionRowHeight: actionRowHeight)
     }
 
     private func footerIsSupported(_ action: TimelineTurnAction?,
@@ -958,8 +974,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 .equatable()
             }
             if plan.hasReplies {
-                SessionTurnActionsRow(copyText: action.copyText,
-                                      timestampText: action.timestampText)
+                if usesCodeActionBar {
+                    CodeTurnActionBar(copyText: action.copyText)
+                } else {
+                    SessionTurnActionsRow(copyText: action.copyText,
+                                          timestampText: action.timestampText)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

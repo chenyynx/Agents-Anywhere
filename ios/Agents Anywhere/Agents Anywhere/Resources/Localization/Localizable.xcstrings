@@ -10713,6 +10713,23 @@
         }
       }
     },
+    "发送到": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send to"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发送到"
+          }
+        }
+      }
+    },
     "发送消息": {
       "comment": "Shared with Web: dashboard.session.send. Sync with ios/scripts/web_copy.py.",
       "extractionState": "manual",
@@ -17618,6 +17635,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "消息发送失败，%lld 条未发出"
+          }
+        }
+      }
+    },
+    "消息操作": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Message actions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "消息操作"
           }
         }
       }

@@ -12,9 +12,9 @@
 - **官方 turn action bar 是独立 transcript 行**（`Content.turnActionBar` = tag 3，负载 `ClaudeCode.TurnActionBar`），不是消息尾部内嵌；挂在 turn 的 anchor 消息上 [E]。
 - **4 个纯图标按钮，顺序 Copy / Speak / 赞 / 踩**（可选第 5 个 SendTo）；图标 20×20、最小点击宽 32、HStack 间距 12；**仅 Copy 有 `.selection` 触感**；无 padding / 无背景 / 无圆角，行 `frame(maxWidth:.infinity, alignment:.leading)` [E]。
 - **官方有独立行 + 环境开关**：`Inputs.isActionBarEnabled`（+0x68）== 1 且 anchor 非空才建行；`+0x69` 作为 `canSubmitTurnFeedback` 传入 [E]。**置真时机 [U]**（推断：只在可操作的已完成 turn 上）。
-- **AA 现在完全没有 action bar**（全仓 grep 0）。已有的只有代码块内的 copy 按钮（含 `anthropicon.copy` → `check` 2 s 切换与 `.selection` 触感）。
-- **P1 建议只做「行 + Copy」**；Speak 依赖 TTS（官方行为 [I]、AA 无 TTS）、赞/踩依赖 feedback 通道（AA 无服务端接口）——这两类先不要伪造。
-- 需要 pp 拍板：① P1 是否只做 Copy；② feedback 暂缓/本地/服务端；③ 只在本轮结束后显示。
+- **AA 现在完全没有 Code action bar**（全仓 grep 0）。已有的只有代码块内的 copy 按钮（含 `anthropicon.copy` → `check` 2 s 切换与 `.selection` 触感）和 Chat 参考行的 `SessionTurnActionsRow`（copy/赞/踩/重生成 + 时间，非官方 Code 形态）。
+- **P1 范围（pp 2026-10-26 拍板）：Copy 接功能 + 分享按钮占位不接功能**；不画 Speak / 赞 / 踩，不做 feedback，不伪造 TTS/服务端。
+- 显示时机：只在 turn 结束后（`TimelineTurnActions.build(suppressLatest: model.isRunning)` 已有此语义）。
 
 ---
 
@@ -83,22 +83,19 @@
 
 ## 4. 实施方案（P1，建议）
 
-1. **先闭环 4 个证据缺口**（sbx 只读）：Copy 拼接、图标颜色、行间距、`isActionBarEnabled` 上游。已有地址：`0x102b49dac`（内容体）、`0x102b4a1f0`（Copy 构造）、`0x102b49914`（外壳）、`0x10253f794`（创建门）。
-2. **纯模型** `CodeTurnActionBarState`（放 `Models/Chat/Code/`）：
-   - 由「已结束、有正文的 assistant 消息组」派生：`anchorId`、`copyText`、`canSpeak`、`canFeedback`；
-   - 纯函数可测：空正文不产、流式中不产、子代理行不产、多段正文的拼接顺序。
+1. **先闭环证据缺口**（sbx 只读）：Copy 拼接、图标颜色、行间距。已有地址：`0x102b49dac`（内容体）、`0x102b4a1f0`（Copy 构造）、`0x102b49914`（外壳）。官方 `isActionBarEnabled` 上游写点仍 [U]，AA 按“turn 结束后显示”实现。
+2. **复用现有 turn 模型**：`TimelineTurnActions.build` 已给出每个 turn 的结束组与 `copyText`（replies 去空白后 `"\n\n"` 连接，已有单测 `TimelineTurnActionsTests`），不新造模型。
 3. **视图** `CodeTurnActionBar`：
-   - 4 按钮按官方顺序（P1 可只显示 Copy，其余按能力门隐藏——**这是唯一需要 pp 拍板的产品取舍**）；
-   - `HStack(spacing: 12)`、`TapTargetButtonStyle(glyphSize: 20, minimumTapWidth: 32)` 等价实现；
-   - Copy：写剪贴板 → 图标切 `check` 2 s（沿用现有模式）→ `UISelectionFeedbackGenerator`；
-   - 无障碍：label「消息操作」、identifier `session-message-action-bar`、按钮各自 label（官方 key）。
-4. **行接入**：`TimelineChatContentAdapter` 新增行 case `turnActionBar(anchor:)`，插在对应消息组之后；补 `CodeRowHeightPlan`、`codeHeightDigest`、`groupSignature`（bar 状态变化才重排）；`CodeProfileAutoRun` fixture。
-5. **本地化**：直接使用官方 key/中文值（`code-page-strings.csv`），不新造 key。
+   - Copy + 分享占位两个按钮，`HStack(spacing: 12)`；glyph 20 pt（官方 `.large` Anthropicon）、最小宽 32 pt；
+   - Copy：写剪贴板 → 图标切 `check` 2 s → `.selection` 触感；
+   - 分享：`anthropicon.share`，无 action；
+   - 无障碍：label「消息操作」、identifier `session-message-action-bar`、`accessibilityAction` 复制/发送到（对齐官方 `children: .ignore` 形态）。
+4. **行接入**：复用 `TimelineChatContentAdapter.assistantFooter(for:)`（turn 结束组之后的既有 footer 位置）；Code runtime（`codeProfile.family != .generic`）用 `CodeTurnActionBar`，普通 Chat 保持 `SessionTurnActionsRow`；`FooterPlan` 按 profile 取对应 `actionRowHeight`。
+5. **本地化**：新增「发送到」`Send to`、「消息操作」`Message actions`；「复制」已有。
 6. **测试**：
-   - 模型单测：显示门、拼接、状态切换；
-   - `CodeProfileAutoRun`：bar 可见/顺序/高度/copy 状态，大字号与暗色；
-   - 真机：copy 触感、按钮点击区域、横幅是否与消息/工具行间距一致、流式中不出现。
-7. **不做**：SendTo、TTS、feedback 落库（P1）；如 pp 要，另开 P2/P3。
+   - `TimelineTurnActionsTests` 已有 copyText 拼接用例；新增 bar 高度常量的直测；
+   - 真机：copy 触感、点击区域、与消息/工具行间距、流式中不出现、普通 Chat 会话不变成 Code bar。
+7. **不做**：Speak、赞/踩、feedback、真实分享（P1）；如 pp 要，另开 P2/P3。
 
 ---
 
@@ -111,11 +108,12 @@
 
 ---
 
-## 6. 需要 pp 决定
+## 6. pp 决定（2026-10-26）
 
-1. **P1 按钮范围**：只做 Copy（推荐，零伪造）／Copy+Speak（需先定 TTS 方案）／四个全做（需服务端 feedback）。
-2. **feedback**：暂不显示（推荐）／本地临时态／新增服务端存储与接口（跨端 L，另开单）。
-3. **显示时机**：只在 turn 结束后（推荐）／跟随官方未定的门做真机对照后再说。
+1. **P1 按钮范围 = Copy + 分享占位**：Copy 接功能；分享（官方 `SendToButton`）只画图标、点击无反应；Speak / 赞 / 踩不画。
+2. **feedback**：不做（不显示赞/踩）。
+3. **显示时机**：只在 turn 结束后。
+4. 分享图标暂用官方 `anthropicon.share`（从官方 1.261019.51 `Assets.car` 提取；它与 `SendToButton` 的实际图标对应关系 [U]，先按最接近的官方分享字形占位）。
 
 ---
 

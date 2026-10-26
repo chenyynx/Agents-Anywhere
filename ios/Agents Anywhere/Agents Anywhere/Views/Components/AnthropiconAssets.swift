@@ -49,6 +49,7 @@ nonisolated enum AnthropiconAssets {
         "anthropicon.agentsSimple": [size(15, 12), size(17, 13), size(20, 15)],
         "anthropicon.codeBlock": [size(15, 12), size(17, 13), size(20, 16)],
         "anthropicon.commandLinePrompt": [size(11, 10), size(12, 11), size(14, 13)],
+        "anthropicon.share": [size(13, 14), size(15, 16), size(18, 19)],
     ]
 
     private static func size(_ width: CGFloat, _ height: CGFloat) -> CGSize {

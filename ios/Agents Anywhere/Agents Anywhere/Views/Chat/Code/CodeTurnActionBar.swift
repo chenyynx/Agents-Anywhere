@@ -17,7 +17,7 @@ struct CodeTurnActionBar: View {
 
     /// The row's laid-out height: the 20 pt glyph slot. The tap targets are
     /// 32 pt wide (official `minimumTapWidth`) and do not add vertical space.
-    static let rowHeight: CGFloat = 20
+    static let rowHeight = CodeRowHeightPlan.actionBarHeight
 
     @State private var copied = false
     @State private var copyFeedback = 0

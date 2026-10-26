@@ -249,7 +249,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             return cached.value
         }
         var hasher = TimelineStableHasher()
-        hasher.combine(codeHeightDigest(rows: codeRowsByGroupID[id] ?? [], width: width))
+        hasher.combine(codeHeightDigest(rows: codeRowsByGroupID[id] ?? [],
+                                        width: width,
+                                        hasActionBar: actionBarCopyText(for: id) != nil))
         if let streaming {
             for rowID in streaming.textsByRowID.keys.sorted() {
                 hasher.combine(rowID)
@@ -500,7 +502,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         guard !group.rows.contains(where: { $0.isRevealing }) else {
             return nil
         }
-        let digest = codeHeightDigest(rows: rows, width: width)
+        let hasActionBar = actionBarCopyText(for: id) != nil
+        let digest = codeHeightDigest(rows: rows, width: width,
+                                      hasActionBar: hasActionBar)
         if let cached = codeHeightCache[id], cached.digest == digest {
             return cached.height
         }
@@ -509,7 +513,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             width: width,
             typography: codeTypography,
             traits: controller?.traitCollection,
-            measured: true)
+            measured: true,
+            hasActionBar: hasActionBar)
         codeHeightCache[id] = CachedCodeHeight(digest: digest, height: height)
         return height
     }
@@ -567,7 +572,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private var codeHeightCache: [String: CachedCodeHeight] = [:]
 
     private func codeHeightDigest(rows: [CodeMessageRow],
-                                  width: CGFloat) -> Int {
+                                  width: CGFloat,
+                                  hasActionBar: Bool = false) -> Int {
         var hasher = TimelineStableHasher()
         for row in rows {
             hasher.combine(row.role.rawValue)
@@ -593,6 +599,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         hasher.combine(codeTypography.revision)
         let scale = controller?.traitCollection.displayScale ?? 2
         hasher.combine(Int((scale * 100).rounded()))
+        hasher.combine(hasActionBar)
         return hasher.revision
     }
 
@@ -871,15 +878,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private struct FooterPlan {
         let hasReview: Bool
         let hasReplies: Bool
-        /// The Chat reference row and the Code action bar have different
-        /// heights; the plan carries the one this session's profile uses so
-        /// every consumer (support check, host height) agrees.
-        let actionRowHeight: CGFloat
 
         var height: CGFloat {
             AssistantFooterMetrics.contentHeight(
                 hasReview: hasReview, hasReplies: hasReplies,
-                actionRowHeight: actionRowHeight)
+                actionRowHeight: SessionTurnActionsRow.rowHeight)
         }
     }
 
@@ -888,9 +891,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// A generic runtime is a plain chat session, not a Code page.
     private var usesCodeActionBar: Bool { codeProfile.family != .generic }
 
-    private var actionRowHeight: CGFloat {
-        usesCodeActionBar ? CodeTurnActionBar.rowHeight
-                          : SessionTurnActionsRow.rowHeight
+    /// The turn action bar is drawn inside the Code row (hosted cells do not
+    /// receive the assistant footer). Only the group that ends a finished
+    /// turn has an action; an empty copy text draws no bar.
+    private func actionBarCopyText(for groupID: String) -> String? {
+        guard usesCodeActionBar,
+              let text = turnActions[groupID]?.copyText,
+              !text.isEmpty else { return nil }
+        return text
     }
 
     private struct FooterReviewKey: Equatable {
@@ -939,16 +947,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             ? false : !footerReview(action, groupID: groupID).files.isEmpty
         let hasReplies = !action.replies.isEmpty
         guard hasReview || hasReplies else {
-            return FooterPlan(hasReview: false, hasReplies: false,
-                              actionRowHeight: actionRowHeight)
+            return FooterPlan(hasReview: false, hasReplies: false)
         }
         if hasReview,
            UIFont.preferredFont(forTextStyle: .footnote).lineHeight
             > AssistantFooterMetrics.reviewRowHeight {
             return nil
         }
-        return FooterPlan(hasReview: hasReview, hasReplies: hasReplies,
-                          actionRowHeight: actionRowHeight)
+        return FooterPlan(hasReview: hasReview, hasReplies: hasReplies)
     }
 
     private func footerIsSupported(_ action: TimelineTurnAction?,
@@ -974,12 +980,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 .equatable()
             }
             if plan.hasReplies {
-                if usesCodeActionBar {
-                    CodeTurnActionBar(copyText: action.copyText)
-                } else {
-                    SessionTurnActionsRow(copyText: action.copyText,
-                                          timestampText: action.timestampText)
-                }
+                SessionTurnActionsRow(copyText: action.copyText,
+                                      timestampText: action.timestampText)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1031,6 +1033,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     cwd: model.session.metadata?.cwd,
                     streaming: streamingText,
                     typography: codeTypography,
+                    turnActionCopyText: actionBarCopyText(for: id),
                     onToolDetail: { [weak self] request in
                         self?.onCodeToolDetail?(request)
                     },
@@ -1746,7 +1749,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 turnSuppression: TimelineTurnSuppression(
                     isRunning: false, hasNewerItems: false, hasPendingUserMessage: false),
                 contextRevision: Self.groupContextRevision(
-                    cwd: model.session.metadata?.cwd, profile: codeProfile))
+                    cwd: model.session.metadata?.cwd, profile: codeProfile),
+                hasActionBar: actionBarCopyText(for: group.id) != nil)
         }
         var rows: [TimelineRowContentSignature] = []
         rows.reserveCapacity(group.rows.count)

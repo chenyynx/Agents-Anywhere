@@ -21,18 +21,20 @@ enum CodeMessageHeightMeasurer {
                        width: CGFloat,
                        typography: TimelineTypographySnapshot,
                        traits: UITraitCollection?,
-                       measured: Bool) -> CGFloat {
+                       measured: Bool,
+                       hasActionBar: Bool = false) -> CGFloat {
         let rows = CodeMessageBuilder.rows(for: group.rows.map(\.value), profile: profile)
         return height(rows: rows,
                       width: width, typography: typography, traits: traits,
-                      measured: measured)
+                      measured: measured, hasActionBar: hasActionBar)
     }
 
     static func height(rows: [CodeMessageRow],
                        width: CGFloat,
                        typography: TimelineTypographySnapshot,
                        traits: UITraitCollection?,
-                       measured: Bool) -> CGFloat {
+                       measured: Bool,
+                       hasActionBar: Bool = false) -> CGFloat {
         // The renderer (`CodeMarkdownTextLeaf`) resolves the same roles from
         // SwiftUI's `dynamicTypeSize`; both go through the one factory, so the
         // stored height and the drawn row use identical scaled values.
@@ -41,7 +43,8 @@ enum CodeMessageHeightMeasurer {
         return CodeRowHeightPlan.height(
             rows: planRows(rows, width: width, typography: resolvedTypography,
                            traits: traits, measured: measured),
-            metrics: metrics(traits: traits))
+            metrics: metrics(traits: traits),
+            hasActionBar: hasActionBar)
     }
 
     /// The blocks `ChatMarkdownView` parses for `text`, produced synchronously

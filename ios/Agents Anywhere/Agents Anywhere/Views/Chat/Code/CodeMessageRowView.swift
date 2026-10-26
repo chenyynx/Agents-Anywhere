@@ -51,6 +51,9 @@ struct CodeMessageRowView: View {
     /// with it; production passes it so the leaf and
     /// `CodeMessageHeightMeasurer` use identical metrics.
     var typography: TimelineTypographySnapshot?
+    /// The turn's copy text when this message group ends a finished turn.
+    /// Non-nil draws the official turn action bar after the message.
+    var turnActionCopyText: String?
     /// A collapsed tool row's tap. Navigation belongs to the page: a sheet
     /// owned by this row would sit inside a hosting cell that every streaming
     /// reconfigure rebuilds, and could dismiss an open detail.
@@ -64,6 +67,7 @@ struct CodeMessageRowView: View {
          streaming: CodeStreamingText? = nil,
          preparedBlocks: [String: [MarkdownBlockSnapshot]]? = nil,
          typography: TimelineTypographySnapshot? = nil,
+         turnActionCopyText: String? = nil,
          onToolDetail: @escaping (CodeToolDetailRequest) -> Void = { _ in },
          onThinkingDetail: @escaping (CodeThinkingDetailRequest) -> Void = { _ in }) {
         self.group = group
@@ -72,6 +76,7 @@ struct CodeMessageRowView: View {
         self.streaming = streaming
         self.preparedBlocks = preparedBlocks
         self.typography = typography
+        self.turnActionCopyText = turnActionCopyText
         self.onToolDetail = onToolDetail
         self.onThinkingDetail = onThinkingDetail
     }
@@ -82,7 +87,15 @@ struct CodeMessageRowView: View {
             if rows.isEmpty {
                 // A message whose only blocks are reasoning contributes no
                 // height at all; the turn's working status is its own row.
-                Color.clear.frame(height: 0)
+                // The turn action bar is still the turn's final row, so it
+                // renders even when the last message drew no blocks.
+                if let turnActionCopyText {
+                    CodeTurnActionBar(copyText: turnActionCopyText)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, CodePageTheme.rowMarginTop)
+                } else {
+                    Color.clear.frame(height: 0)
+                }
             } else {
                 // Official stacks a message's blocks with `interBlockSpacing`
                 // (nil → SwiftUI default; carried here as `blockGap`). Two
@@ -97,6 +110,9 @@ struct CodeMessageRowView: View {
                         } else {
                             blockStack(row)
                         }
+                    }
+                    if let turnActionCopyText {
+                        CodeTurnActionBar(copyText: turnActionCopyText)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

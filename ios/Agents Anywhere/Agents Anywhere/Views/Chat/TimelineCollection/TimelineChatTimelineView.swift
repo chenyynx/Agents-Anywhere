@@ -169,15 +169,15 @@ struct TimelineChatTimelineView: View {
             // window and no per-frame pin.
             .onReceive(NotificationCenter.default.publisher(
                 for: UIResponder.keyboardWillShowNotification)) { note in
-                keyboardWillMove()
+                keyboardFollow(note)
             }
             .onReceive(NotificationCenter.default.publisher(
                 for: UIResponder.keyboardWillHideNotification)) { note in
-                keyboardWillMove()
+                keyboardFollow(note)
             }
             .onReceive(NotificationCenter.default.publisher(
                 for: UIResponder.keyboardWillChangeFrameNotification)) { note in
-                keyboardWillMove()
+                keyboardFollow(note)
             }
             .onDisappear { bridge.cancel() }
             // Official TurnStatusView transfer: the end of a stream is the
@@ -205,11 +205,14 @@ struct TimelineChatTimelineView: View {
                                   ready: bridge.controllerAttached)
     }
 
-    /// Any keyboard event starts the per-frame follow; the controller reads
-    /// the keyboard's live position from `keyboardLayoutGuide` and stops on
-    /// its own once the guide settles.
-    private func keyboardWillMove() {
-        bridge.controller?.keyboardWillMove()
+    private func keyboardFollow(_ note: Notification) {
+        let event = TimelineKeyboardEvent(
+            source: note.name == UIResponder.keyboardWillHideNotification ? .willHide
+                : note.name == UIResponder.keyboardWillShowNotification ? .willShow
+                : .willChangeFrame,
+            userInfo: note.userInfo ?? [:])
+        bridge.controller?.followKeyboard(
+            endFrame: event.endFrame, duration: event.duration, curve: event.curve)
     }
 
 }

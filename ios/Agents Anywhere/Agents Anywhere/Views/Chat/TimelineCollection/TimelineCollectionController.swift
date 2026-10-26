@@ -144,13 +144,10 @@ final class TimelineCollectionController: UIViewController {
     private var lastContainerHeight: CGFloat = 0
     /// Keyboard overlap currently reflected in the scroll view's insets, and
     /// the home-indicator inset it is measured against.
-    private var keyboardFollowLink: CADisplayLink?
-    private var keyboardFollowActive = false
-    private var keyboardFollowIdleFrames = 0
-    private var keyboardFollowElapsed: CFTimeInterval = 0
-    private var lastKeyboardOverlap: CGFloat = 0
+    /// Keyboard height currently folded into the list's bottom inset.
+    private var keyboardOverlap: CGFloat = 0
     /// The home-indicator inset, captured while the keyboard is off screen; the
-    /// live keyboard height is measured on top of it.
+    /// keyboard's own inset is measured on top of it.
     private var restingSafeAreaBottom: CGFloat = 0
     /// A bar-height write that arrived while the keyboard follow was animating.
     /// Writing the inset mid-animation restores the offset and cancels the
@@ -259,11 +256,11 @@ final class TimelineCollectionController: UIViewController {
     /// the keyboard's animation.
     private func applyBottomBarInset() {
         guard isViewLoaded, let collectionView else { return }
-        guard !isPinningBottom, !keyboardFollowActive else {
+        guard !isPinningBottom else {
             barInsetWriteDeferred = true
             return
         }
-        let bottom = max(0, bottomBarInset)
+        let bottom = bottomBarInset + max(restingSafeAreaBottom, keyboardOverlap)
         guard abs(collectionView.contentInset.bottom - bottom) > 0.5 else { return }
         let offset = collectionView.contentOffset
         collectionView.contentInset.bottom = bottom
@@ -302,6 +299,12 @@ final class TimelineCollectionController: UIViewController {
         // `keyboardDismissMode = .interactiveWithAccessory` (raw 4,
         // `0x101a3b344`), not the plain interactive mode.
         collectionView.keyboardDismissMode = .interactiveWithAccessory
+        // Kept at the system default: the list ignores the container and the
+        // keyboard region, so the automatic adjustment contributes nothing and
+        // the composer/keyboard parts come from `applyBottomBarInset` and
+        // `followKeyboard`. (Switching to `.never` in the same change as the
+        // inset rewrite hung the app at launch; it is a separate variable to
+        // test.)
         collectionView.contentInsetAdjustmentBehavior = .automatic
         applyBottomBarInset()
         // The official surface disables UIKit's automatic self-sizing
@@ -441,8 +444,14 @@ final class TimelineCollectionController: UIViewController {
 
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
-        if view.keyboardLayoutGuide.layoutFrame.minY >= view.bounds.maxY - 0.5 {
-            restingSafeAreaBottom = view.safeAreaInsets.bottom
+        // The resting inset is the smallest bottom inset this view ever sees
+        // (the home indicator); a keyboard only ever makes it larger, so
+        // tracking the minimum avoids depending on the keyboard guide being
+        // active in this hierarchy.
+        let bottomInset = view.safeAreaInsets.bottom
+        if bottomInset > 0, bottomInset <= 60,
+           restingSafeAreaBottom == 0 || bottomInset < restingSafeAreaBottom {
+            restingSafeAreaBottom = bottomInset
         }
         // Re-apply the composer's inset after the window inset settles; the
         // value itself is the bar height, but the automatic adjustment this
@@ -2215,73 +2224,63 @@ final class TimelineCollectionController: UIViewController {
     /// re-resolved here, starting at the notification — the same instant UIKit
     /// begins moving the keyboard and the composer — and travelling on the
     /// notification's duration and curve, so the page and the bar move as one.
-    /// Keeps the transcript glued to the keyboard while it moves.
+    /// Moves the transcript with the keyboard.
     ///
-    /// The keyboard's own position is read from `UIView.keyboardLayoutGuide`
-    /// every display frame: the guide is updated *during* the keyboard's
-    /// animation, so the list is placed from the keyboard's current position
-    /// instead of from a predicted curve. A predicted animation was cancelled
-    /// by the first layout pass (measured: the list moved 76 px on the
-    /// `willShow` frame, then froze for five frames), and a UIView animation
-    /// can always be cancelled that way; a per-frame read cannot.
-    func keyboardWillMove() {
-        guard !keyboardFollowActive else { return }
-        guard readerRestsAtBottom, !interactionPresented, !navigationSuspended,
-              !phase.userIsScrolling else { return }
-        keyboardFollowActive = true
-        keyboardFollowIdleFrames = 0
-        keyboardFollowElapsed = 0
-        let link = CADisplayLink(target: self, selector: #selector(keyboardFollowTick(_:)))
-        link.add(to: .main, forMode: .common)
-        keyboardFollowLink = link
-    }
-
-    @objc private func keyboardFollowTick(_ link: CADisplayLink) {
-        guard let collectionView else { return stopKeyboardFollow() }
-        // A real drag owns the offset: stop following rather than fighting the
-        // finger (interactive dismissal scrolls the list while the keyboard
-        // leaves).
-        if phase.userIsScrolling { return stopKeyboardFollow() }
-        keyboardFollowElapsed += link.duration
-        let guideTop = view.keyboardLayoutGuide.layoutFrame.minY
-        let liveKeyboard = max(0, view.bounds.maxY - guideTop)
-        // The inset the list needs right now: the composer's own bar plus the
-        // keyboard's live height. Synthesised from the guide so the target does
-        // not depend on when UIKit applies its safe area.
-        let targetInset = bottomBarInset + max(restingSafeAreaBottom, liveKeyboard)
+    /// The list ignores the keyboard region (see `timelineView`), so its frame
+    /// never changes and UIKit never touches its insets: the keyboard's part of
+    /// the inset is supplied here, together with the bottom offset, inside one
+    /// animation on the notification's own duration and curve. Writing only the
+    /// offset (the earlier attempts) left the clamp at its old place for a
+    /// frame, which clipped the bottom rows and opened a hole above the
+    /// composer.
+    func followKeyboard(endFrame: CGRect?, duration: TimeInterval,
+                        curve: TimelineKeyboardEvent.Curve) {
+        guard let collectionView, let endFrame,
+              layout.contentHeight > 0,
+              !interactionPresented, !navigationSuspended, !phase.userIsScrolling
+        else { return }
+        let windowHeight = collectionView.window?.bounds.height
+            ?? collectionView.bounds.height
+        // A real keyboard frame is non-empty and anchored to the screen bottom;
+        // the placeholder zero frames some systems send first would otherwise
+        // compute a full-screen overlap and push the list out of view.
+        guard endFrame.width > 0, endFrame.height > 0,
+              endFrame.maxY >= windowHeight - 1 else { return }
+        let overlap = max(0, min(windowHeight * 0.6,
+            windowHeight - endFrame.minY - restingSafeAreaBottom))
+        guard abs(overlap - keyboardOverlap) > 0.5 else { return }
+        keyboardOverlap = overlap
+        let newBottom = bottomBarInset + max(restingSafeAreaBottom, overlap)
         let target = TimelineOffsetTarget.bottomOffset(contentHeight: layout.contentHeight,
             containerHeight: collectionView.bounds.height,
             topInset: collectionView.adjustedContentInset.top,
-            bottomInset: targetInset)
-        if abs(collectionView.contentOffset.y - target) > 0.5 {
-            isPinningBottom = true
-            collectionView.setContentOffset(
-                CGPoint(x: collectionView.contentOffset.x, y: target), animated: false)
-            isPinningBottom = false
+            bottomInset: newBottom)
+        let apply = { [weak self] in
+            guard let self else { return }
+            collectionView.contentInset.bottom = newBottom
+            if self.readerRestsAtBottom,
+               abs(collectionView.contentOffset.y - target) > 0.5 {
+                collectionView.contentOffset = CGPoint(
+                    x: collectionView.contentOffset.x, y: target)
+            }
         }
-        let overlap = max(0, liveKeyboard - restingSafeAreaBottom)
-        if abs(overlap - lastKeyboardOverlap) > 0.5 {
-            lastKeyboardOverlap = overlap
-            keyboardFollowIdleFrames = 0
-        } else {
-            keyboardFollowIdleFrames += 1
+        guard duration > 0 else {
+            apply()
+            return
         }
-        // Stop once the guide has settled (or the keyboard is gone), with a
-        // hard ceiling so a stuck guide can never hold the link forever.
-        if keyboardFollowIdleFrames > 6 || keyboardFollowElapsed > 2.0 {
-            stopKeyboardFollow()
+        isPinningBottom = true
+        UIView.animate(withDuration: duration, delay: 0,
+                       options: [.beginFromCurrentState, .allowUserInteraction,
+                                 curve.animationOptions]) {
+            apply()
+        } completion: { [weak self] _ in
+            guard let self else { return }
+            self.isPinningBottom = false
+            guard self.barInsetWriteDeferred else { return }
+            self.barInsetWriteDeferred = false
+            self.applyBottomBarInset()
+            if self.readerRestsAtBottom { self.snapToBottom() }
         }
-    }
-
-    private func stopKeyboardFollow() {
-        keyboardFollowLink?.invalidate()
-        keyboardFollowLink = nil
-        keyboardFollowActive = false
-        lastKeyboardOverlap = 0
-        guard barInsetWriteDeferred else { return }
-        barInsetWriteDeferred = false
-        applyBottomBarInset()
-        if readerRestsAtBottom { snapToBottom() }
     }
 
     private func snapToBottom() {
@@ -2967,5 +2966,15 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         mode = .reading
         readerRestsAtBottom = false
         publishViewport()
+    }
+}
+
+extension TimelineKeyboardEvent.Curve {
+    /// The notification's curve as a `UIView` animation option.
+    /// `UIView.AnimationOptions` keeps the curve in its high bits and UIKit's
+    /// keyboard reports its private spring as raw 7, so shifting the payload
+    /// value gives the inset/offset animation the keyboard's own curve.
+    var animationOptions: UIView.AnimationOptions {
+        UIView.AnimationOptions(rawValue: UInt(rawValue) << 16)
     }
 }

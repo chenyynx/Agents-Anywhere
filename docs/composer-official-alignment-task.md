@@ -442,3 +442,16 @@ EOF
 - 中段位移/键盘位移恒为 0.90（f71 417/457、f74 686/757、settle 909/1005），曲线形状本身没问题。
 
 **结论**：问题在"起手"，不在曲线。改用 `UIView.keyboardLayoutGuide`（键盘动画期间逐帧更新）+ `CADisplayLink` 每帧贴底：不再预测、无法被取消、拖动时主动停表。
+
+### 12.12 真正的根因：列表 frame 被瞬间缩小（2026-10-26，含网页 Claude 的分析）
+
+网页 Claude 对 8b16b096 的逐帧结论（截图核对）：键盘一开始动，列表底部的行（`python3` / `git add` / `nohup` / `Thinking…`）**整块消失**，列表与输入框之间出现 150–250pt 空白（正常 ~40pt），随后每帧多露出一行、约 5 帧补齐——即"卡一下"。消失位置固定在键盘弹起后输入框的高度，说明**列表被裁到终态尺寸**，不是内容在动。
+
+代码层对应：
+- `SessionChatView.timelineView()` 只写了 `.ignoresSafeArea(.container, edges: [.top, .bottom])`，**没有 `.keyboard`** → SwiftUI 在键盘出现的第一帧就把列表 frame 缩小（frame 变化不跟键盘动画）。
+- `followKeyboard()` 只动 `contentOffset`，三套机制（composer 的 SwiftUI 动画 / 列表 frame 瞬时变 / 列表 offset 动画）各走各的 → 空洞 + 收起时领先。
+
+修法（本版）：
+1. 列表加 `.ignoresSafeArea([.container, .keyboard], edges: [.top, .bottom])` → frame 永远铺满全屏；
+2. `contentInsetAdjustmentBehavior = .never` → UIKit 不再自动塞安全区，inset 全部由我们给；
+3. `followKeyboard(endFrame:duration:curve:)` 在**同一个 `UIView.animate`（通知的 duration + 原始 curve）**里同时写 `contentInset.bottom = bar + max(resting, overlap)` 和 `contentOffset`（仅当贴底）；每次通知写一次，不逐帧写。

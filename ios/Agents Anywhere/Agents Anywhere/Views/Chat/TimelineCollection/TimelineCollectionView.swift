@@ -25,9 +25,9 @@ struct TimelineCollectionView: UIViewControllerRepresentable {
         let controller = TimelineCollectionController()
         if let typography { content.applyTypography(typography) }
         controller.safeAreaInsets = UIEdgeInsets(top: safeAreaInsets.top,
-                                                 left: safeAreaInsets.left,
+                                                 left: safeAreaInsets.leading,
                                                  bottom: safeAreaInsets.bottom,
-                                                 right: safeAreaInsets.right)
+                                                 right: safeAreaInsets.trailing)
         controller.configure(measurer: measurer, content: content)
         controller.onPhaseChanged = onPhaseChanged
         controller.onViewportChanged = onViewportChanged
@@ -40,9 +40,9 @@ struct TimelineCollectionView: UIViewControllerRepresentable {
         content.prepareForUpdate()
         if let typography { content.applyTypography(typography) }
         controller.safeAreaInsets = UIEdgeInsets(top: safeAreaInsets.top,
-                                                 left: safeAreaInsets.left,
+                                                 left: safeAreaInsets.leading,
                                                  bottom: safeAreaInsets.bottom,
-                                                 right: safeAreaInsets.right)
+                                                 right: safeAreaInsets.trailing)
         controller.configure(measurer: measurer, content: content)
         controller.onPhaseChanged = onPhaseChanged
         controller.onViewportChanged = onViewportChanged

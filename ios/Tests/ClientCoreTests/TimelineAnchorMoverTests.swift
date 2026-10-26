@@ -11,7 +11,7 @@ import Testing
     private let scale: CGFloat = 3
 
     @Test func aStoppedMoverDoesNotMove() {
-        let mover = TimelineAnchorMover(position: 42)
+        var mover = TimelineAnchorMover(position: 42)
         let step = mover.step(target: 500, dt: 1.0 / 60, displayScale: scale)
         #expect(step.position == 42)
         #expect(!step.arrived)

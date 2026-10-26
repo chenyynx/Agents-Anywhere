@@ -2,9 +2,9 @@ import Combine
 import SwiftUI
 import UIKit
 
-/// The C4 product timeline: the SwiftUI page's chrome (opening gate, keyboard
-/// window, pending/queue/approval events, navigation suspension) around the
-/// collection container.
+/// The C4 product timeline: the SwiftUI page's chrome (opening gate,
+/// pending/queue/approval events, navigation suspension) around the collection
+/// container.
 ///
 /// The old `ChatTimelineView` stays intact and selectable; this view is only
 /// built when `aa.timeline.collectionView` is on. I10–I13/I14/I15/I20 and the
@@ -17,7 +17,6 @@ struct TimelineChatTimelineView: View {
     /// indicator, keyboard) stays UIKit's automatic adjustment.
     let bottomBarInset: CGFloat
     @StateObject private var bridge: TimelineChatBridge
-    @State private var keyboard = TimelineKeyboardMonitor()
     @Environment(\.dynamicTypeSize) private var dynamicType
     @Environment(\.layoutDirection) private var layoutDirection
     @Environment(\.legibilityWeight) private var legibilityWeight
@@ -163,19 +162,6 @@ struct TimelineChatTimelineView: View {
                 guard !Task.isCancelled else { return }
                 bridge.fallbackOpeningSettle()
             }
-            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { note in
-                keyboard.setVisible(true)
-                bridge.controller?.setKeyboardVisible(true)
-                keyboardTransitionBegan(TimelineKeyboardEvent(source: .willShow, userInfo: note.userInfo ?? [:]))
-            }
-            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { note in
-                keyboard.setVisible(false)
-                bridge.controller?.setKeyboardVisible(false)
-                keyboardTransitionBegan(TimelineKeyboardEvent(source: .willHide, userInfo: note.userInfo ?? [:]))
-            }
-            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
-                keyboardTransitionBegan(TimelineKeyboardEvent(source: .willChangeFrame, userInfo: note.userInfo ?? [:]))
-            }
             .onDisappear { bridge.cancel() }
             // Official TurnStatusView transfer: the end of a stream is the
             // one light impact; other phase changes are selections. Streamed
@@ -202,16 +188,6 @@ struct TimelineChatTimelineView: View {
                                   ready: bridge.controllerAttached)
     }
 
-    private func keyboardTransitionBegan(_ event: TimelineKeyboardEvent) {
-        keyboard.noteLayoutEvent(event)
-        // The transcript travels on the notification's own duration/curve so it
-        // stays glued to the composer, which UIKit slides on that same frame.
-        // Interactive dismissal reports a zero duration and tracks the finger.
-        bridge.controller?.beginKeyboardTransition(
-            duration: event.duration,
-            curve: event.curve,
-            animates: event.duration > 0)
-    }
 }
 
 /// Owns the adapter and the controller handshake. A struct cannot capture

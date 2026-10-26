@@ -41,6 +41,9 @@ struct AgentsAnywhereApp: App {
                 } else if ProcessInfo.processInfo.arguments.contains(CodeProfileAutoRunModel.launchArgument) {
                     // C5/W8 Code-profile gate; never reachable from the product UI.
                     CodeProfileAutoRunRootView()
+                } else if ProcessInfo.processInfo.arguments.contains(AnchorHostProbeModel.launchArgument) {
+                    // Safe-area delivery probe; never reachable from the product UI.
+                    AnchorHostProbeRootView()
                 } else {
                     RootView()
                 }

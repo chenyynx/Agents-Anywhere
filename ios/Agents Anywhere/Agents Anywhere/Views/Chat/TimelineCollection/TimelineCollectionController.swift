@@ -146,13 +146,13 @@ final class TimelineCollectionController: UIViewController {
     /// the home-indicator inset it is measured against.
     /// Keyboard height currently folded into the list's bottom inset.
     private var keyboardOverlap: CGFloat = 0
+    /// The running keyboard follow: when it ends and on which curve, so a
+    /// composer-height change can re-target it instead of jumping at the end.
+    private var followDeadline: CFTimeInterval = 0
+    private var followCurve: TimelineKeyboardEvent.Curve = .easeInOut
     /// The home-indicator inset, captured while the keyboard is off screen; the
     /// keyboard's own inset is measured on top of it.
     private var restingSafeAreaBottom: CGFloat = 0
-    /// A bar-height write that arrived while the keyboard follow was animating.
-    /// Writing the inset mid-animation restores the offset and cancels the
-    /// in-flight animation, which is the stutter at the start of the rise.
-    private var barInsetWriteDeferred = false
     private var userScrollSettleTask: Task<Void, Never>?
     private var isPinningBottom = false
     /// Streaming height follow (M4.2): the official sprung motion toward the
@@ -257,7 +257,7 @@ final class TimelineCollectionController: UIViewController {
     private func applyBottomBarInset() {
         guard isViewLoaded, let collectionView else { return }
         guard !isPinningBottom else {
-            barInsetWriteDeferred = true
+            retargetFollow()
             return
         }
         let bottom = bottomBarInset + restingSafeAreaBottom + keyboardOverlap
@@ -2271,6 +2271,8 @@ final class TimelineCollectionController: UIViewController {
             apply()
             return
         }
+        followCurve = curve
+        followDeadline = CACurrentMediaTime() + duration
         isPinningBottom = true
         UIView.animate(withDuration: duration, delay: 0,
                        options: [.beginFromCurrentState, .allowUserInteraction,
@@ -2278,11 +2280,42 @@ final class TimelineCollectionController: UIViewController {
             apply()
         } completion: { [weak self] _ in
             guard let self else { return }
+            // A bar-height change mid-flight re-targets the animation, so only
+            // the last one (the one that reaches the deadline) releases it.
+            guard CACurrentMediaTime() >= self.followDeadline - 0.02 else { return }
             self.isPinningBottom = false
-            guard self.barInsetWriteDeferred else { return }
-            self.barInsetWriteDeferred = false
-            self.applyBottomBarInset()
-            if self.readerRestsAtBottom { self.snapToBottom() }
+        }
+    }
+
+    /// Re-aims the in-flight follow when the composer's height changes during
+    /// the keyboard's animation (focus expands the bar). Without this the new
+    /// height only landed when the follow finished, and the page snapped by the
+    /// bar's growth — the one-frame jitter.
+    private func retargetFollow() {
+        guard let collectionView else { return }
+        let bottom = bottomBarInset + restingSafeAreaBottom + keyboardOverlap
+        let target = TimelineOffsetTarget.bottomOffset(contentHeight: layout.contentHeight,
+            containerHeight: collectionView.bounds.height,
+            topInset: collectionView.adjustedContentInset.top,
+            bottomInset: bottom)
+        let remaining = max(0, followDeadline - CACurrentMediaTime())
+        let apply = { [weak self] in
+            guard let self else { return }
+            collectionView.contentInset.bottom = bottom
+            if self.readerRestsAtBottom,
+               abs(collectionView.contentOffset.y - target) > 0.5 {
+                collectionView.contentOffset = CGPoint(
+                    x: collectionView.contentOffset.x, y: target)
+            }
+        }
+        guard remaining > 0.02 else {
+            apply()
+            return
+        }
+        UIView.animate(withDuration: remaining, delay: 0,
+                       options: [.beginFromCurrentState, .allowUserInteraction,
+                                 followCurve.animationOptions]) {
+            apply()
         }
     }
 

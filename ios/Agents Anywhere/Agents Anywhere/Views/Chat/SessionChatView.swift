@@ -79,7 +79,7 @@ struct SessionChatView: View, Equatable {
                 // (R19 chrome-composer.md §2–§3; R21 chrome-verify.md §2).
                 // The collection view adds the bar height back to its content
                 // inset, so the resting last row still clears the composer.
-                .ignoresSafeArea(.container, edges: [.top, .bottom])
+                .ignoresSafeArea([.container, .keyboard], edges: [.top, .bottom])
         } else {
             ChatTimelineView(model: model,
                 onAttachment: openAttachment, onFile: openFile,

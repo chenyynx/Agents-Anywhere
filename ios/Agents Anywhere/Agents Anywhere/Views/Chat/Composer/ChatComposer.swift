@@ -98,7 +98,9 @@ struct ChatComposer: View {
                     .accessibilityIdentifier(showsQueueSend ? "chat.composer.queueSend" : "chat.composer.send")
 
                     if contextUsage.isVisible, draft.isFocused {
-                        ContextRingButton(state: contextUsage, touchTarget: controls.touchTarget)
+                        ContextRingButton(state: contextUsage,
+                            touchTarget: controls.touchTarget,
+                            ringDiameter: controls.contextRingDiameter)
                     }
 
                     if showsCommands {

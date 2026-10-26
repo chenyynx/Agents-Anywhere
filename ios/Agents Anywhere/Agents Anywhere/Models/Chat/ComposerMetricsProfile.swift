@@ -26,6 +26,8 @@ nonisolated struct ComposerMetricsProfile: Equatable, Sendable {
     let collapsedHeight: CGFloat
     let touchTarget: CGFloat
     let sendDiameter: CGFloat
+    /// Visible context-ring diameter inside its touch slot.
+    let contextRingDiameter: CGFloat
     let textInset: CGFloat
     let textToActions: CGFloat
     /// Horizontal inset of the expanded control row inside the card.
@@ -62,6 +64,7 @@ nonisolated struct ComposerMetricsProfile: Equatable, Sendable {
             collapsedHeight: height,
             touchTarget: touch,
             sendDiameter: touch - 8,
+            contextRingDiameter: 18,
             textInset: 16,
             textToActions: 10,
             expandedContentInset: 8,
@@ -89,6 +92,7 @@ nonisolated struct ComposerMetricsProfile: Equatable, Sendable {
         collapsedHeight: 52,
         touchTarget: 44,
         sendDiameter: 36,
+        contextRingDiameter: 16,
         textInset: 11,
         textToActions: 10,
         expandedContentInset: 3,

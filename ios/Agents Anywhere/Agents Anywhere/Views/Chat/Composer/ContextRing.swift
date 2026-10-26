@@ -70,6 +70,9 @@ struct ContextUnknownRing: View {
 struct ContextRingButton: View {
     let state: ContextRingState
     var touchTarget: CGFloat = 44
+    /// Visible ring diameter inside the touch slot; profiles may shrink it to
+    /// sit beside the command glyph (Code uses 16, Chat keeps 18).
+    var ringDiameter: CGFloat = ChatControlMetrics.contextRingDiameter
     @State private var showsDetails = false
 
     /// The complete usage, or nil in the unknown / hidden states.
@@ -102,9 +105,9 @@ struct ContextRingButton: View {
 
     @ViewBuilder private var ring: some View {
         if case .ready(let usage) = state {
-            ContextRing(fraction: usage.fraction)
+            ContextRing(fraction: usage.fraction, size: ringDiameter)
         } else {
-            ContextUnknownRing()
+            ContextUnknownRing(size: ringDiameter)
         }
     }
 

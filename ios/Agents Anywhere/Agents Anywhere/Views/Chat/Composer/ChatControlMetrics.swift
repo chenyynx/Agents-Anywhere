@@ -18,6 +18,7 @@ struct ChatControlMetrics {
     let profile: ComposerMetricsProfile
     let touchTarget: CGFloat
     let sendDiameter: CGFloat
+    let contextRingDiameter: CGFloat
     let textInset: CGFloat
     let textToActions: CGFloat
     let expandedContentInset: CGFloat
@@ -49,6 +50,7 @@ struct ChatControlMetrics {
         self.profile = profile
         self.touchTarget = profile.touchTarget
         self.sendDiameter = profile.sendDiameter
+        self.contextRingDiameter = profile.contextRingDiameter
         self.textInset = profile.textInset
         self.textToActions = profile.textToActions
         self.expandedContentInset = profile.expandedContentInset

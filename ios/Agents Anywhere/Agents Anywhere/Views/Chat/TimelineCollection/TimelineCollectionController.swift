@@ -2238,7 +2238,14 @@ final class TimelineCollectionController: UIViewController {
         else { return }
         let windowHeight = collectionView.window?.bounds.height
             ?? collectionView.bounds.height
-        let overlap = max(0, windowHeight - endFrame.minY - restingSafeAreaBottom)
+        // A real keyboard frame is anchored to the bottom of the screen. The
+        // zero/placeholder frames some systems send first would otherwise
+        // compute a full-screen overlap and push the list out of view (the
+        // blank page seen on launch).
+        guard endFrame.width > 0, endFrame.height > 0,
+              endFrame.maxY >= windowHeight - 1 else { return }
+        let overlap = max(0, min(windowHeight * 0.6,
+            windowHeight - endFrame.minY - restingSafeAreaBottom))
         guard abs(overlap - keyboardOverlap) > 0.5 else { return }
         keyboardOverlap = overlap
         let newBottom = bottomBarInset + max(restingSafeAreaBottom, overlap)

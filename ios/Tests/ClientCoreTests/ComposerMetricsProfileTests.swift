@@ -2,27 +2,31 @@ import Foundation
 import Testing
 @testable import ClientCore
 
-/// Pins the two composer geometry profiles. The Code values come from pp's
-/// official screenshots (2026-10-26): collapsed 16 / 52, expanded 9 / 95.
+/// Pins the two composer geometry profiles. The Code values come from the
+/// official binary (`ChatInputControlChrome` / `ChatInputControlTriggerStyle`):
+/// collapsed 18 / 52, expanded 9 / 95, 36 pt chrome inside a 44 pt hit slot.
 @Suite struct ComposerMetricsProfileTests {
-    @Test func codeProfileMatchesTheOfficialScreenshots() {
+    @Test func codeProfileMatchesTheOfficialComposer() {
         let profile = ComposerMetricsProfile.code
-        #expect(profile.collapsedHorizontalInset == 16)
+        #expect(profile.collapsedHorizontalInset == 18)
         #expect(profile.expandedHorizontalInset == 9)
         #expect(profile.collapsedHeight == 52)
         #expect(profile.touchTarget == 44)
         #expect(profile.sendDiameter == 36)
         #expect(profile.contextRingDiameter == 16)
-        #expect(profile.collapsedLeadingInset == 0)
+        #expect(profile.collapsedLeadingInset == 2)
         #expect(profile.collapsedTrailingInset == 2)
-        #expect(profile.collapsedTextGap == 14)
+        // 18 + 2 + 44 + 11 = the official 75 pt text origin.
+        #expect(profile.collapsedTextGap == 11)
         #expect(profile.collapsedCornerRadius == 26)
         #expect(profile.expandedCornerRadius == 24)
         #expect(profile.collapsedBottomMargin == 0)
         #expect(profile.expandedBottomMargin == 8)
         #expect(profile.expandedContentInset == 3)
         #expect(profile.plusStyle == .circle)
-        #expect(profile.plusSymbolSize == 20)
+        #expect(profile.plusCircleDiameter < profile.touchTarget)
+        #expect(profile.plusCircleDiameter == 36)
+        #expect(profile.plusSymbolSize == 23)
         // 11 + 22 + 10 + 44 + 8 = 95 pt, the measured expanded height.
         #expect(profile.expandedHeight(editorHeight: 22) == 95)
         #expect(profile.expandAnimation == .spring(response: 0.22, dampingFraction: 0.77))

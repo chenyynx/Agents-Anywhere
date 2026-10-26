@@ -1,8 +1,8 @@
 import Foundation
 
 /// The composer's geometry tokens. `chat` keeps the current AA Chat bar;
-/// `code` follows the measurements taken from pp's official screenshots
-/// (2026-10-26): collapsed 16 pt side inset / 52 pt tall, expanded 9 pt / 95 pt.
+/// `code` follows the official composer: collapsed 18 pt side inset / 52 pt
+/// tall, expanded 9 pt / 95 pt, controls 36 pt of chrome in a 44 pt hit slot.
 ///
 /// The profile is pure data so the insets, heights and radii can be pinned by
 /// `ClientCoreTests` without a simulator.
@@ -16,8 +16,7 @@ nonisolated struct ComposerMetricsProfile: Equatable, Sendable {
     /// The leading attachment button's chrome.
     enum PlusStyle: Equatable, Sendable {
         case bare
-        /// A 44 pt gray circle behind the glyph, as captured in the official
-        /// Chat screenshots.
+        /// A gray circle behind the glyph, drawn inside the touch slot.
         case circle
     }
 
@@ -45,6 +44,9 @@ nonisolated struct ComposerMetricsProfile: Equatable, Sendable {
     let collapsedCornerRadius: CGFloat
     let expandedCornerRadius: CGFloat
     let plusStyle: PlusStyle
+    /// Visible diameter of the attachment circle, centered in `touchTarget`.
+    /// The official control is 36 pt of chrome inside a 44 pt hit area.
+    let plusCircleDiameter: CGFloat
     let plusSymbolSize: CGFloat
     let expandAnimation: ExpandAnimation
 
@@ -78,16 +80,24 @@ nonisolated struct ComposerMetricsProfile: Equatable, Sendable {
             collapsedCornerRadius: height / 2,
             expandedCornerRadius: height / 2 + 2,
             plusStyle: .bare,
+            plusCircleDiameter: touch,
             plusSymbolSize: 24,
             expandAnimation: .smooth(duration: 0.24)
         )
     }
 
-    /// Code follows the official composer captured in pp's screenshots:
-    /// 16 / 52 collapsed, 9 / 95 expanded, 24 pt expanded corner radius and
-    /// the official 0.22 / 0.77 expand spring.
+    /// Code follows the official composer: 18 / 52 collapsed, 9 / 95 expanded,
+    /// 24 pt expanded corner radius and the official 0.22 / 0.77 spring.
+    ///
+    /// The control row comes from the official binary, not from a screenshot
+    /// guess: `ChatInputControlButtonStyle` wraps every control in
+    /// `ChatInputControlChrome`, whose body pins the chrome to 36 pt
+    /// (`0x100b8d134`: 32 pt for `.small`, 36 pt for `.regular`), and
+    /// `ChatInputControlTriggerStyle` gives it a 44 pt `MinimumTapTarget`
+    /// (`0x100b8e8f0`). `SessionAddContextButton` builds that chrome with
+    /// `.circle` + `.regular` (`0x100b8eaa4`: kind tag 1, size 0).
     static let code = Self(
-        collapsedHorizontalInset: 16,
+        collapsedHorizontalInset: 18,
         expandedHorizontalInset: 9,
         collapsedHeight: 52,
         touchTarget: 44,
@@ -97,8 +107,8 @@ nonisolated struct ComposerMetricsProfile: Equatable, Sendable {
         textToActions: 10,
         expandedContentInset: 3,
         expandedBottomInset: 8,
-        collapsedTextGap: 14,
-        collapsedLeadingInset: 0,
+        collapsedTextGap: 11,
+        collapsedLeadingInset: 2,
         collapsedTrailingInset: 2,
         topMargin: 8,
         collapsedBottomMargin: 0,
@@ -106,7 +116,8 @@ nonisolated struct ComposerMetricsProfile: Equatable, Sendable {
         collapsedCornerRadius: 26,
         expandedCornerRadius: 24,
         plusStyle: .circle,
-        plusSymbolSize: 20,
+        plusCircleDiameter: 36,
+        plusSymbolSize: 23,
         expandAnimation: .spring(response: 0.22, dampingFraction: 0.77)
     )
 }

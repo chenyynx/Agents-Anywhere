@@ -51,8 +51,14 @@ struct ChatComposer: View {
                             .frame(width: controls.touchTarget, height: controls.touchTarget)
                             .background {
                                 if controls.profile.plusStyle == .circle {
-                                    // ~#F0F0EE on the official light card.
-                                    Circle().fill(Color.primary.opacity(0.05))
+                                    // The official chrome is 36 pt of circle
+                                    // inside the 44 pt hit slot; drawing the
+                                    // fill at the slot size ran into the card's
+                                    // rounded corner.
+                                    Circle()
+                                        .fill(Color.primary.opacity(0.05))
+                                        .frame(width: controls.profile.plusCircleDiameter,
+                                               height: controls.profile.plusCircleDiameter)
                                 }
                             }
                             .contentShape(Circle())

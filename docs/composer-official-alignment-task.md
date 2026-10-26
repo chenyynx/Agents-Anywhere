@@ -549,3 +549,221 @@ TranscriptList.body 0x1019fb120 → TranscriptListInput.safeArea (0x104e3bdc8)
 产出 §15 结构方案（官方行为/AA 现状/差异/替换方案/验证判据），pp 确认前不改代码。
 分支 feat/code-composer-official，工作副本 /home/ubuntu/aa-ring-work-composer。
 ```
+
+## 15. 结构方案：单写者锚点模型（2026-10-26，待 pp 批准，未改代码）
+
+**结论**：把 AA 列表的滚动层换成官方同构的一条链——
+`GeometryProxy.safeAreaInsets → contentInset 公式 → placement 三态 → 目标每帧现算 → 两条写路径`。
+现有五个 `contentOffset` 写者与键盘通知链整体删除，`contentOffset` 只剩锚点层一个写者。
+前置一个**只读探针包**解决唯一未证点（§15.7 U1）。**批准前不写实现代码。**
+
+### 15.1 目标链
+
+```
+官方：GeometryReader(proxy.safeAreaInsets) → Surface: inset=max(safeArea−sv.safeAreaInsets,0)
+      → reducer(placement 三态 + motion 五态) → target(每帧现算) → Mover / 直接 place
+AA 新：SessionChatView 内层 GeometryReader → TimelineAnchorDriver
+      → TimelineAnchorReducer（纯）→ TimelineAnchorTargetResolver（纯）
+      → 安全区/容器变化：直接 place（halt Mover，同一事务写 inset+offset）
+      → askedForEnd/Start、sent、内容增长：Mover（状态式弹簧）
+```
+
+两条写路径的分叉依据（INFERENCE，见 §15.7）：若键盘也走弹簧，临界阻尼
+ω≈15.7 跟踪 2716px/s 会有约 300px 滞后，与官方实测逐帧误差 <10px 矛盾；
+所以安全区变化必须直接 place。
+
+### 15.2 逐块对照（官方行为 → AA 现状 → 差异 → 替换 → 判据）
+
+**块 1 · placement 三态**
+- 官方：`.row(id,.top)` 目标 `starts[idx]−topInset`；`.reading(row,off)` 目标
+  `starts[idx]+off−topInset`（前插前缀和自动补偿，`0x1019e2834`）；`.end` 目标
+  maxOffset（`0x1019e2700`）。
+- AA 现状：无 placement 概念；贴底靠 `armedBottom`（`Models/Chat/TimelineCollection/TimelineArmedBottomTarget.swift:20`）+
+  `readerRestsAtBottom`（`Views/Chat/TimelineCollection/TimelineCollectionController.swift:113`）；
+  阅读位置靠 `visibleAnchorRowID()`（同文件 `:2508`）+ `adapter.pendingHistoryRequest`
+  （`Views/Chat/TimelineCollection/TimelineChatTimelineView.swift:294-302`）。
+- 差异：阅读位置只有「行」没有「行内偏移」，前插补偿靠一次性绝对锚，不是模型。
+- 替换：新增 `Models/Chat/TimelineCollection/TimelineAnchorPlacement.swift`（三态 +
+  `target(geometry:)`）；行身份用 `itemID`；`starts` 取
+  `TimelineListLayout.attributes(for:)`（`Views/Chat/TimelineCollection/TimelineListLayout.swift:285`）；
+  拖动开始/停止时由视口顶反推 `.reading(itemID, offsetIntoRow)`。
+- 判据：单测——前插 N 行后 `.reading` 目标平移 N 行高度；`.end` 前插后仍贴底；
+  `.row` 目标随 starts 变化。
+
+**块 2 · motion 五态**
+- 官方：resting / easing / flying / dragging / coasting。
+- AA 现状：三套重叠语义——`TimelinePhaseMapping`（`Models/Chat/TimelineCollection/TimelinePhaseMapping.swift:17`，
+  idle/interacting/decelerating/animating）、`TimelineScrollState.Mode`（reading/following/returning）、
+  `armedBottom`（source/target 布尔）。
+- 差异：`animating` 同时表示回底弹簧、系统回顶、UIKit 动画，无法区分 easing/flying。
+- 替换：motion 进 reducer State；`TimelinePhaseMapping` 保留但仅作**派生视图**
+  （dragging↔interacting、coasting↔decelerating、easing/flying↔animating），供现有 guard 读。
+- 判据：motion 转移表单测；现有 phase 发布行为不变。
+
+**块 3 · reducer + 事件**
+- 官方：`0x1019ddd30`，19 事件（跳表 `0x1043c1570`），已命名 9 个（§6.4）。
+- AA 现状：事件散落在 `UICollectionViewDelegate`（`Views/Chat/TimelineCollection/TimelineCollectionController.swift:2868-3005`）
+  与产品回调里，直接改 offset 或改 phase。
+- 差异：没有单一状态机，事件与副作用混在一起。
+- 替换：新增 `TimelineAnchorReducer.swift`（State/Event/pure reduce）。事件集 =
+  官方已命名 9 个 + AA 映射 5 个（`contentChanged` / `safeAreaChanged` /
+  `windowReplaced` / `interactionPresentedChanged` / `navigationSuspendedChanged`）。
+  控制器 delegate 只发事件；offset 只在 driver 的 `apply()` 写。
+- 判据：事件序列表单测（拖动中 askedForEnd 忽略；已飞向 end 忽略；arrived 只从
+  easing/flying 回 resting；sending 记 `heldTheEnd`，sent 改 `.row`）。
+
+**块 4 · 贴底判定**
+- 官方：`viewport[4] <= maxOffset − offset`（`0x1019e27bc`）→ 重新武装 `.end`，否则记 `.reading`。
+- AA 现状：`viewport.measuredAtBottom` + `readerSettledAtBottom` 双布尔（`:118`、`:2390-2392`）。
+- 差异：判定散在 settle 任务（`:2383`）与 `noteBottomArrival`（`:2334`），另有 64ms 窗口。
+- 替换：`isAtEnd(offset,…) = offset >= maxOffset − 1/displayScale`，由 reducer 在
+  `readerLifted`/`coastingEnded`/`scrolledWithoutAHand` 时调用；删 64ms settle 任务。
+- 判据：边界单测（正好贴底 / 差 1px / 内容短于视口 / 内容长一屏）。
+
+**块 5 · 内容变高 / 流式并入锚点**
+- 官方：目标每帧现算，`.end` 随内容增长自动变大；Mover 每帧读最新目标
+  （`0x1019f417c`）；>2 屏先 pre-place 一屏（`0x1019deecc`）；ease/fly 弹簧
+  0.4/0、0.36/0.15。
+- AA 现状：三条互斥机制——`armedBottom` 即贴（`:2436`）、`streamingFollowLink`
+  解析弹簧（`:771-927`）、`returnFollowLink`（`:185`）。
+- 差异：每个写者各自判目标、各自起动画，互相靠 nil 让路（`:2440`）。
+- 替换：`contentChanged` → 若 `.end` 启动/继续 Mover（≤1 屏 ease，>1 屏 fly，
+  >2 屏 pre-place）；`.reading` 不写。Mover 改**状态式弹簧积分**
+  `v += (ω²(target−x) − 2ζω·v)·dt; x += v·dt`，阈值 1/displayScale；驱动用
+  `UIUpdateLink`（phase `.beforeCATransactionCommit`、continuous、fps
+  [max/2, max]；deployment target 26.2 可用）。复用
+  `Models/Chat/TimelineCollection/TimelineSpringFollow.swift:11` 的常量与
+  `shouldMove`/`preplacedOffset`。
+- 判据：流式增长 500pt 跟随到底且无二次跳；距底 3 屏时先瞬移一屏再飞。
+
+**块 6 · safe area → inset**
+- 官方：`contentInset = max(safeArea − scrollView.safeAreaInsets, 0)`
+  （`0x101a3c820`），写时 `isSettingItsOwnInset`（`0x104e3d208`），写前后存/还 offset
+  （`0x104155560` / `0x10418f9a0`）。
+- AA 现状：手算 `bar + resting + keyboard`（`Views/Chat/TimelineCollection/TimelineCollectionController.swift:263`、
+  `:2256`、`:2296`）；`bottomBarInset` didSet 另触发 `snapToBottom()`（`:233-244`）。
+- 差异：输入框高度与键盘各加一次，来源三条。
+- 替换：控制器新增 `safeAreaInsets` 输入；inset 只按官方公式四边写
+  （顶边一并由它供给，消除现在 top=0 的隐患）；删除 `bottomBarInset`/`restingSafeAreaBottom`/
+  `keyboardOverlap` 的加和逻辑；`contentInsetAdjustmentBehavior` 改 `.never`。
+- 判据：单测公式（home indicator / 键盘 / 旋转 / 负值 clamp）；真机 inset 与官方同值 ±1pt。
+
+**块 7 · 键盘零监听**
+- 官方：列表层零键盘通知（负面 EVIDENCE，`05-layout-scroll.md:250`）。
+- AA 现状：三 `onReceive`（`Views/Chat/TimelineCollection/TimelineChatTimelineView.swift:170-181`）→
+  `followKeyboard`（控制器 `:2236`）+ `retargetFollow`（`:2294`）。
+- 差异：键盘被当成独立事件源，与安全区并行的第二个真值。
+- 替换：整链删除；键盘只通过 `proxy.safeAreaInsets` 进入（块 6）。
+- 判据：全仓 `keyboardWillShow|WillChangeFrame|UIKeyboardFrameEndUserInfoKey` 在
+  timeline 域零命中；键盘起落逐帧 1:1。
+
+**块 8 · 开屏落底**
+- 官方：`opensAtTop=false` → 初始 `.end`；`viewportChanged` → `hasLanded=1`
+  （`0x1019ddf70`）后首置（`0x1019df5f8`），首置直接 place。
+- AA 现状：`beginOpeningBottom`（`:2108`）/`settleOpeningBottom`（`:2128`）/
+  `snapToBottom`（`:2322`）+ bridge 四件套（`TimelineChatTimelineView.swift:332-372`）
+  + 窗口替换 `reassertOpening`（`:378`）/`resolveWindowReplacementBottom`（控制器 `:935`）。
+- 差异：开屏是独立命令，不是 placement 的初始态。
+- 替换：reducer State 加 `hasLanded`；首个有效布局 → `viewportChanged` →
+  直接 place 当前 placement（初始 `.end`）。窗口替换 = 未接管 → `askedForEnd(animated:false)`；
+  已接管 → 不动。遮罩释放仍由 `onBottomArrived`/400ms 兜底。
+- 判据：开屏无滚动动画落底；替换窗口后未接管者到底、接管者不跳。
+
+**块 9 · 回顶拦截**
+- 官方：`scrollViewShouldScrollToTop` → `askedForStart(animated:true)` → **返回 NO**
+  （`0x101a3cb14` / `0x101a3d838`）。
+- AA 现状：返回 true（`:2965-2993`），`isScrollingToTop` + 600ms watchdog +
+  `.scrollToTopBegan/.scrollToTopEnded`。
+- 差异：系统动画写 offset = 第六个写者。
+- 替换：返回 false，发 `askedForStart`（placement=.reading(首行,0)，Mover 驱动）；
+  删 `isScrollingToTop`/watchdog/token 与两个 phase 事件。
+- 判据：状态栏点按一次弹簧到顶，无系统动画叠加。
+
+**块 10 · 发送后新行**
+- 官方：`sending` 记 `anchor=onItsWay(heldTheEnd: placement==.end)`；`sent(RowID)`
+  → placement `.row(id,.top)`（`0x1019eb720` / `0x1019de554`）。
+- AA 现状：无发送事件；靠 `TimelineChatTimelineView.swift:125/137` 监听 pending/
+  response 变化 → `requestBottom(animated:true, forced:false)`（贴底）。
+- 差异：行为不同——官方是新行贴顶，回复向下展开；AA 是始终贴底。
+- 替换：adapter 发送路径发 `sending`/`sent(itemID)`；pending→confirmed 换 ID 时
+  由 adapter 提供映射迁移锚点，找不到退化 `askedForEnd`。**这是可见行为变化，按官方执行**（§15.8-3）。
+- 判据：发送后新行贴视口顶；回复流入不抢滚动；键盘弹起仍 1:1。
+
+**块 11 · 列表形态**
+- 官方：`GeometryReader → TranscriptListBody → _SafeAreaRegionsIgnoringLayout`（类型串
+  `0x104eefbb0`），代理安全区在 ignores 之外读。
+- AA 现状：`SessionChatView.swift:221` 的 GeometryReader 在 `.safeAreaBar`（`:241`）**外面**，
+  读不到 composer bar；列表 `:87` 已 ignores container+keyboard；控制器
+  `contentInsetAdjustmentBehavior = .automatic`（`:308`）。
+- 差异：安全区读取点位置不对，bar 高度靠单独参数补。
+- 替换：`timelineView()`（`:65-87`）内加 GeometryReader（在 safeAreaBar 修改过的安全区内、
+  ignores 之外），`safeAreaInsets` 下传；`TimelineCollectionView.swift:16/26/38` 的
+  `bottomBarInset` 参数删除。
+- 判据：探针显示 proxy 含 bar+home+keyboard（U1）；旋转/分屏数值正确。
+
+### 15.3 新增文件
+
+| 文件 | 职责 |
+|---|---|
+| `Models/Chat/TimelineCollection/TimelineAnchorPlacement.swift` | 三态 + 目标解析（纯） |
+| `Models/Chat/TimelineCollection/TimelineAnchorReducer.swift` | State/Event/pure reduce（纯） |
+| `Models/Chat/TimelineCollection/TimelineAnchorMover.swift` | 状态式弹簧积分 + arrived（纯） |
+| `Views/Chat/TimelineCollection/TimelineAnchorDriver.swift` | 唯一写者：inset/offset、UIUpdateLink、事件入口 |
+
+### 15.4 删除清单（净减代码）
+
+- 控制器：`armedBottom` 全族、`streamingFollowLink` 全族（`:158-177`、`:765-927`）、
+  `returnFollowLink` 全族（`:178-190`、`:1099-1135` 部分）、`bottomAnimationWatchdog`
+  （`:2402-2434`）、`readerRestsAtBottom`/`readerSettledAtBottom`/`mode`/`isScrollingToTop`
+  与相关 settle（`:2334-2400`、`:2178-2182`）、键盘链（`:145-155`、`:2219-2320`）、
+  `applyBottomBarInset` 的加和版（改为官方公式）、`handleContainerHeightChange` 的 snap。
+- 视图层：`TimelineChatTimelineView.swift:170-181`、`:208-216`、`:18/:37/:104` 的
+  `bottomBarInset`；`TimelineCollectionView.swift:16/:26/:38`。
+- 模型层：`TimelineArmedBottomTarget`（整个文件）；`TimelinePhaseMapping` 保留但只派生。
+- 布局层：`TimelineListLayout.swift:413-433` 的 `applyOffsetFallback` 直接
+  `setContentOffset` 改为发 `readingReplaced` 事件（`contentOffsetAdjustment`
+  的 `:642/:876/:1147` 保留——那是 UIKit 布局失效机制，不是独立写者）。
+
+### 15.5 实施顺序（每步可编译、CI 绿）
+
+1. **C1 纯模型 + 单测**（不接线）。
+2. **C2 探针包**（只加诊断显示，不改行为；pp 录一次键盘起落）→ 依据 U1 结论二选一。
+3. **C3 列表形态 + inset 归属**（GeometryReader / `.never` / 官方公式）——必须与
+   **删除键盘链同一步**，否则双写。
+4. **C4 锚点接线**：先接 driver 与事件，禁旧写者；再按家庭删旧代码
+   （armedBottom → streaming → return → opening/scrollTop → layout fallback），
+   每个家庭一个 commit。
+5. **C5 门禁/TimelineAutoRun 适配 + 全量回归**。
+
+### 15.6 验证判据（真机，60fps 录屏 + 逐帧脚本）
+
+- 键盘起落：列表位移/键盘位移每帧 1.00±0.02，无首帧跳跃、无结束 snap。
+- 发送：新行贴顶、回复增长不抢滚动。
+- 回顶：一次弹簧到顶。
+- 前插/加载更早：阅读位置零位移；开屏：无动画落底。
+- 抽屉、审批卡、Reduce Motion、旋转/分屏：零回归。
+- 自动化：Models 单测（placement/reducer/mover/公式）全绿；CI `ios-build.yml` 绿。
+
+### 15.7 风险与未证点
+
+- **U1（UNKNOWN，施工前必须证实）**：AA 宿主里 `GeometryProxy.safeAreaInsets` 是否
+  逐帧动画、是否包含 `safeAreaBar` 的 composer 高度。探针解决。
+  - R1 不逐帧 → 退回通知驱动，但只保留「inset+直接 place」单写者，其余不变。
+  - R2 不含 bar → `safeArea + composerBarHeight`（仍零键盘监听）。
+- **R3**：`.never` 曾与键盘链同改导致启动卡死 → C3 单独改，探针包先验启动；
+  异常则保持 `.automatic`（公式减 `sv.safeAreaInsets`，双计为 0）。
+- **R4**：`updateUIViewController` 每帧调用 → update 里只写幂等 inset/place，
+  快照由 `contentGeneration` 守护；探针记录每帧耗时。
+- **R5**：安全区与 Mover 同帧竞争 → `safeAreaChanged` 先 halt 再直接 place。
+- **R6**：pending→confirmed 换 ID → 锚点迁移映射，失败退化 `askedForEnd`。
+- **R7**：门禁/测试绑定旧 API → 保留兼容门面，最后删。
+- **R8**：回顶改由 Mover → 拖动/减速中忽略 `askedForStart`（官方 askedForEnd 同规则）。
+
+### 15.8 需要 pp 决定
+
+1. **先出探针包**（只加一行诊断显示，不改行为）录一次键盘起落 —— U1 唯一未证点。
+2. **`contentInsetAdjustmentBehavior = .never`**（上次与键盘链同改导致启动卡死，这次单独验证）。
+3. **发送后行为按官方改为 `.row(id,.top)`**（新消息贴顶、回复向下展开，不再贴底）——
+   可见行为变化，按官方证据执行，需 pp 知情确认。
+
+方案批准后按 §15.5 实施；批准前不改任何实现代码。

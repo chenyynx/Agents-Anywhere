@@ -2959,3 +2959,14 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         publishViewport()
     }
 }
+
+extension TimelineKeyboardEvent.Curve {
+    /// The notification's curve as a `UIView` animation option.
+    /// `UIView.AnimationOptions` keeps the curve in its high bits and UIKit's
+    /// keyboard reports its private spring as raw 7, so shifting the payload
+    /// value gives the inset/offset animation the keyboard's own curve.
+    var animationOptions: UIView.AnimationOptions {
+        UIView.AnimationOptions(rawValue: UInt(rawValue) << 16)
+    }
+}
+

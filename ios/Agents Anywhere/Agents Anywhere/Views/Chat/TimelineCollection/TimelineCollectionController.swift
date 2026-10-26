@@ -253,6 +253,18 @@ final class TimelineCollectionController: UIViewController {
             || abs(current.left - target.left) > 0.5
             || abs(current.bottom - target.bottom) > 0.5
             || abs(current.right - target.right) > 0.5
+        let offsetBefore = collectionView.contentOffset
+#if AA_TIMELINE_PROBE
+        defer {
+            if changed {
+                AnchorDeviceProbe.shared.recordApply(
+                    proxyBottom: safeAreaInsets.bottom,
+                    inherited: UIView.inheritedAnimationDuration,
+                    insetBefore: current, insetAfter: collectionView.contentInset,
+                    offsetBefore: offsetBefore, offsetAfter: collectionView.contentOffset)
+            }
+        }
+#endif
         if changed {
             let offset = collectionView.contentOffset
             collectionView.contentInset = target
@@ -320,6 +332,13 @@ final class TimelineCollectionController: UIViewController {
         // reconfigure, so automatic invalidation would only add layout passes.
         collectionView.selfSizingInvalidation = .disabled
         collectionView.delegate = self
+#if AA_TIMELINE_PROBE
+        AnchorDeviceProbe.shared.attach(collectionView) { [weak self] in
+            guard let self else { return (false, false, "?") }
+            return (self.readerRestsAtBottom, self.isPinningBottom,
+                    String(describing: self.phase.phase))
+        }
+#endif
         collectionView.register(TimelineHostingCell.self,
                                 forCellWithReuseIdentifier: TimelineHostingCell.reuseIdentifier)
         collectionView.register(AssistantMarkdownCell.self,

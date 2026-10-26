@@ -404,3 +404,13 @@ EOF
 - 不再调动画曲线/时长（官方没有可调参数，全是系统动画）。
 - 不改 composer 尺寸/位置（已对齐）。
 - 不引入新的键盘监听。
+
+### 12.9 实施记录（2026-10-26）
+
+| 步骤 | commit | 内容 |
+|---|---|---|
+| Step 1 | `d9e0dbd2` | 删除列表侧键盘监听链路：`TimelineChatTimelineView` 三个 `onReceive`、`keyboardTransitionBegan`、`TimelineKeyboardMonitor` 状态；`TimelineCollectionController` 的 `setKeyboardVisible` / `beginKeyboardTransition` / `endKeyboardTransition` / 过渡窗口 / `pinBottomForKeyboardIfNeeded` / 通知路径的 `anchorBottom`；连带删除 `TimelineKeyboardFollow` 与其测试。`snapToBottom()` 保留给非键盘场景。 |
+| Step 2 | `360b4525` | `applyBottomBarInset()` 按官方 `0x101a3c820` 加保护：只写变化的 inset，写前后存/还 `contentOffset`（对齐 `0x104155560` / `0x10418f9a0`）。`bottomBarInset.didSet` 的贴底改由 `snapToBottom()` 承担（composer 增高，不是键盘）。 |
+| Step 2b | `bfc28a1b` | `handleContainerHeightChange()` 不再对 **inset-only** 变化贴底：键盘就是这种 inset，UIKit 在键盘动画开始时已把值设成最终值并同步移动 offset，我们再 snap 等于第一帧就跳到终点。只保留容器高度变化（分屏/旋转）的贴底。 |
+
+**未做**：Step 3（把 bar 高度并入 SwiftUI 安全区、按官方公式接管）—— 只有真机验证发现“完全不跟”时才启用。

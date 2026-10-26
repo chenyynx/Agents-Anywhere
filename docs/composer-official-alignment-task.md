@@ -509,3 +509,43 @@ TranscriptList.body 0x1019fb120 → TranscriptListInput.safeArea (0x104e3bdc8)
 - 根因已定位到“链条被拆成三条”，不是曲线、不是时序参数。
 - 对齐官方只需要三处改动，且能删掉现有全部自造状态（净减代码）。
 - 但开工前必须先证实 §13.4 的未知；在 pp 确认前不改任何代码。
+
+## 14. 决定：走结构路（2026-10-26，pp 定）
+
+**决定**：不再在现有五个写者上打补丁，改为按官方结构重做列表的滚动锚定层——“要弄就弄干净，底子好了后面改其他的才是根本”。
+
+**纪律**：pp 压缩会话后，用 `sequential-thinking` 一块一块对照官方制定方案；**方案经 pp 确认前不写任何修复代码**。
+
+### 14.1 需要逐块对照的官方部件（EVIDENCE 索引）
+
+| # | 官方部件 | 证据 |
+|---|---|---|
+| 1 | 锚点 placement 三态 `.row(id,.top)` / `.reading(row,offset)` / `.end` | `05-layout-scroll.md §6.2`；`.reading` `0x1019e2834`、`.end` `0x1019e2700` |
+| 2 | motion 五态 `resting/easing/flying/dragging/coasting` | §6.3 |
+| 3 | reducer + 19 Event 事件跳表 | reducer `0x1019ddd30`、跳表 `0x1043c1570` / `0x1043c157c`，§6.4 |
+| 4 | 贴底判定 `viewport[4] <= maxOffset − offset` | `0x1019e27bc` |
+| 5 | 内容变高（流式）并入锚点（catch-up / `isFollowingCatchUp`） | §6.1 `0x45`、§6.4 |
+| 6 | safe area → contentInset 公式 + 存/还 offset | `0x101a3c820`、`0x104e3d208`、`0x10418f9a0` |
+| 7 | 键盘：零监听，只走安全区 | `05-layout-scroll.md:250` |
+| 8 | 开屏落底 `viewportChanged → hasLanded` | `0x1019ee110`、`0x1019ddf70` |
+| 9 | 回顶拦截 `scrollViewShouldScrollToTop → NO` | `0x101a3cb14`、`0x101a3d838` |
+| 10 | 发送后新行 `.row(id,.top)` | `0x1019eb720`、`0x1019de554` |
+| 11 | 列表形态：GeometryReader + ignores + representable | 类型串 `0x104eefbb0`、`TranscriptList.body 0x1019fb120` |
+
+### 14.2 AA 需要被替换的五个写者（现状）
+
+`armedBottom`（内容变高贴底）/ `streamingFollowLink`（流式跟随）/ `returnFollowLink` + `requestBottom`（回底动画）/ `readerRestsAtBottom` + `isScrollingToTop` + `bottomAnimationWatchdog`（开屏落底与阅读位置）/ 键盘通知链（本次新增）。
+
+### 14.3 下一步（压缩后执行）
+
+用 `sequential-thinking` 按 §14.1 的 1→11 顺序逐块产出：**官方行为 → AA 现状 → 差异 → 替换方案（文件:行号）→ 验证判据**，汇总成 §15 结构方案；pp 确认后再实施。
+
+### 14.4 压缩后的恢复提示词
+
+```
+读 /home/ubuntu/aa-ring-work-composer/docs/composer-official-alignment-task.md 的 §13、§14。
+任务：按 §14.1 的 11 个部件，用 sequential-thinking 逐块对照官方（证据在
+/home/ubuntu/aa-test/claude-ios-re/CANONICAL/05-layout-scroll.md §6 与 sbx 反编译），
+产出 §15 结构方案（官方行为/AA 现状/差异/替换方案/验证判据），pp 确认前不改代码。
+分支 feat/code-composer-official，工作副本 /home/ubuntu/aa-ring-work-composer。
+```

@@ -239,8 +239,12 @@ final class TimelineCollectionController: UIViewController {
     /// proxy either way.
     ///
     /// The write happens inside the safe-area update's animation transaction,
-    /// so it inherits the keyboard's own animation without a
-    /// `UIView.animate` of our own and without keyboard notifications.
+    /// so a keyboard change inherits the keyboard's own animation with no
+    /// `UIView.animate` of our own and no keyboard notifications. A composer
+    /// focus/height change is layout-only and arrives with **no** ambient
+    /// animation (device log: `inherited 0.000`), so it gets an explicit
+    /// 0.24 s spring — the composer's own expansion timing. Without that the
+    /// 49 pt bar delta crossed instantly, which is the empty-composer jump.
     private func applySafeAreaInsets() {
         guard isViewLoaded, let collectionView else { return }
         let viewInsets = collectionView.safeAreaInsets
@@ -253,40 +257,66 @@ final class TimelineCollectionController: UIViewController {
             || abs(current.left - target.left) > 0.5
             || abs(current.bottom - target.bottom) > 0.5
             || abs(current.right - target.right) > 0.5
+        guard changed else { return }
         let offsetBefore = collectionView.contentOffset
 #if AA_TIMELINE_PROBE
         defer {
-            if changed {
-                AnchorDeviceProbe.shared.recordApply(
-                    proxyBottom: safeAreaInsets.bottom,
-                    inherited: UIView.inheritedAnimationDuration,
-                    insetBefore: current, insetAfter: collectionView.contentInset,
-                    offsetBefore: offsetBefore, offsetAfter: collectionView.contentOffset)
-            }
+            AnchorDeviceProbe.shared.recordApply(
+                proxyBottom: safeAreaInsets.bottom,
+                inherited: UIView.inheritedAnimationDuration,
+                insetBefore: current, insetAfter: collectionView.contentInset,
+                offsetBefore: offsetBefore, offsetAfter: collectionView.contentOffset)
         }
 #endif
-        if changed {
+        // A reader resting at the bottom follows the new inset; a reading
+        // position keeps the offset-restore path below.
+        let following = layout.contentHeight > 0
+            && readerRestsAtBottom && !phase.userIsScrolling && !isPinningBottom
+        guard following else {
             let offset = collectionView.contentOffset
             collectionView.contentInset = target
             if collectionView.contentOffset != offset {
                 collectionView.setContentOffset(offset, animated: false)
             }
+            return
         }
-        // A reader resting at the bottom follows the new inset (the keyboard
-        // and the growing composer are the same case). A reading position is
-        // kept by the offset restore above.
-        guard changed, layout.contentHeight > 0,
-              readerRestsAtBottom, !phase.userIsScrolling,
-              !isPinningBottom else { return }
+        // Resolve against the inset this write installs, not the scroll view's
+        // possibly-stale adjusted value.
         let bottomTarget = TimelineOffsetTarget.bottomOffset(
             contentHeight: layout.contentHeight,
             containerHeight: collectionView.bounds.height,
-            topInset: collectionView.adjustedContentInset.top,
-            bottomInset: collectionView.adjustedContentInset.bottom)
-        if abs(collectionView.contentOffset.y - bottomTarget) > 0.5 {
-            collectionView.setContentOffset(
-                CGPoint(x: collectionView.contentOffset.x, y: bottomTarget),
-                animated: false)
+            topInset: target.top + viewInsets.top,
+            bottomInset: target.bottom + viewInsets.bottom)
+        let needsMove = abs(collectionView.contentOffset.y - bottomTarget) > 0.5
+        let shrinking = target.bottom < current.bottom - 0.5
+        let ambient = UIView.inheritedAnimationDuration > 0.01
+        let apply = {
+            if shrinking && needsMove {
+                // Writing the inset first would clamp the offset against the
+                // old, larger maximum before the follow lands. Move to the new
+                // bottom first.
+                collectionView.setContentOffset(
+                    CGPoint(x: collectionView.contentOffset.x, y: bottomTarget),
+                    animated: false)
+                collectionView.contentInset = target
+            } else {
+                collectionView.contentInset = target
+                if needsMove {
+                    collectionView.setContentOffset(
+                        CGPoint(x: collectionView.contentOffset.x, y: bottomTarget),
+                        animated: false)
+                }
+            }
+        }
+        if ambient {
+            apply()
+        } else {
+            UIView.animate(withDuration: 0.24, delay: 0,
+                           usingSpringWithDamping: 1,
+                           initialSpringVelocity: 0,
+                           options: [.beginFromCurrentState, .allowUserInteraction]) {
+                apply()
+            }
         }
     }
 

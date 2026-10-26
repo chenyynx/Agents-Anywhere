@@ -1,4 +1,5 @@
 #if DEBUG
+import Combine
 import SwiftUI
 import UIKit
 
@@ -53,6 +54,11 @@ final class AnchorHostProbeModel: NSObject, ObservableObject {
         var markers: [Marker] = []
         var notes: [String] = []
     }
+
+    /// `@StateObject` requires the conformance; the view never observes a
+    /// change (the probe writes its report to disk), so the publisher stays
+    /// silent.
+    let objectWillChange = ObservableObjectPublisher()
 
     private(set) var report = Report()
     var textField: UITextField?

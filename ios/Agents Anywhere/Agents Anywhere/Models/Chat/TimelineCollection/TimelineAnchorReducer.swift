@@ -167,7 +167,8 @@ nonisolated enum TimelineAnchorReducer {
 
         case .askedForStart(let id):
             // Official status-bar tap: placement becomes the first row at the
-            // viewport top.
+            // viewport top. A finger on the list owns it; the tap is ignored.
+            guard next.motion != .dragging else { break }
             next.placement = .reading(id: id, offsetIntoRow: 0)
             next.isFollowingCatchUp = false
             action = .move

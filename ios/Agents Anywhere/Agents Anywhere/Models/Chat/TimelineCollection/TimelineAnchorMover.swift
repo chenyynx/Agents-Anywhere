@@ -49,6 +49,15 @@ nonisolated struct TimelineAnchorMover: Equatable {
         velocity = 0
     }
 
+    /// An external writer (a UIKit layout correction) moved the scroll view.
+    /// Continue the same spring from the live position instead of writing the
+    /// stale integrated one back.
+    mutating func reseed(at position: CGFloat) {
+        guard isRunning else { return }
+        self.position = position
+        velocity = 0
+    }
+
     /// One display frame. `dt` is clamped to a 30 fps step so a stalled link
     /// cannot overshoot; the target is whatever the placement resolves to at
     /// this instant.

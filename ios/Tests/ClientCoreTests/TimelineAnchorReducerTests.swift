@@ -119,6 +119,13 @@ import Testing
         #expect(!result.state.isFollowingCatchUp)
     }
 
+    @Test func askedForStartIsIgnoredWhileDragging() {
+        let result = reduce(landed(.reading(id: "u2", offsetIntoRow: 10), motion: .dragging),
+                            .askedForStart(id: "u0"))
+        #expect(result.state.placement == .reading(id: "u2", offsetIntoRow: 10))
+        #expect(result.action == .none)
+    }
+
     @Test func arrivalOnlyEndsAMoverMotion() {
         let mover = reduce(landed(.end, motion: .flying), .arrived)
         #expect(mover.state.motion == .resting)

@@ -151,6 +151,8 @@ final class TimelineAnchorDriver {
         let needsMove = abs(view.contentOffset.y - destination) > 0.5
         let shrinking = target.bottom < current.bottom - 0.5
         let ambient = UIView.inheritedAnimationDuration > 0.01
+        let reduceMotion = UIAccessibility.isReduceMotionEnabled
+            || UIAccessibility.isVoiceOverRunning
         let apply = { [weak self, weak view] in
             guard let self, let view else { return }
             self.isApplying = true
@@ -167,7 +169,7 @@ final class TimelineAnchorDriver {
             }
             self.isApplying = false
         }
-        if ambient {
+        if ambient || reduceMotion {
             apply()
         } else {
             UIView.animate(withDuration: 0.24, delay: 0,
@@ -189,6 +191,18 @@ final class TimelineAnchorDriver {
     /// following page re-resolves; a reading page keeps its offset.
     func containerChanged() {
         if state.placement == .end { placeDirect() }
+    }
+
+    /// `disarmBottom` semantics: pin the live viewport as the reading anchor
+    /// and stop any motion (a history request must not fight a follow).
+    func adoptReadingPlacement() {
+        stopMover()
+        if state.motion == .easing || state.motion == .flying {
+            state.motion = .resting
+        }
+        guard let view = scrollView,
+              let anchor = inputs.readingAnchor(view.contentOffset.y) else { return }
+        state.placement = .reading(id: anchor.id, offsetIntoRow: anchor.offsetIntoRow)
     }
 
     func contentChanged() {
@@ -225,6 +239,12 @@ final class TimelineAnchorDriver {
     func scrolledWithoutAHand() {
         guard state.hasLanded else { return }
         guard !isApplying, state.motion != .dragging, state.motion != .coasting else { return }
+        if mover.isRunning {
+            // A UIKit layout correction moved the page under the Mover. Adopt
+            // the live position; the next tick continues from there.
+            mover.reseed(at: scrollView?.contentOffset.y ?? mover.position)
+            return
+        }
         guard let anchor = currentAnchor() else { return }
         perform(.scrolledWithoutAHand(atEnd: isAtEnd(),
                                       id: anchor.id, offsetIntoRow: anchor.offsetIntoRow))
@@ -395,6 +415,11 @@ final class TimelineAnchorDriver {
         let now = CACurrentMediaTime()
         let dt = now - lastTick
         lastTick = now
+        if abs(view.contentOffset.y - mover.position) > 1 {
+            // A layout pass moved the page between ticks; continue from the
+            // live offset instead of overwriting it with the stale integral.
+            mover.reseed(at: view.contentOffset.y)
+        }
         let target = state.placement.target(in: geometry()) ?? view.contentOffset.y
         let step = mover.step(target: target, dt: dt,
                               displayScale: view.traitCollection.displayScale)

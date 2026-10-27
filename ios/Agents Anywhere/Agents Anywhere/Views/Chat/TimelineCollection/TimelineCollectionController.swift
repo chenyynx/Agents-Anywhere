@@ -358,18 +358,17 @@ final class TimelineCollectionController: UIViewController {
             apply(items: pending.items, animating: pending.animating)
         }
         handleContainerHeightChange()
-        if !didStartAnchorDriver, layout.contentHeight > 0, !currentItems.isEmpty {
-            didStartAnchorDriver = true
-            anchorDriver?.viewportChanged()
-        }
+        startAnchorDriverIfNeeded()
         scheduleVisibleCellFrameSync()
     }
 
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
-        // The list's own safe area does not drive the inset (`.never`); the
-        // page's SwiftUI proxy does. Rotation and split view still change the
-        // bounds, which the bottom anchor follows.
+        // The formula subtracts the scroll view's own safe area. It is zero
+        // before the view joins the window and becomes the home indicator
+        // afterwards, so the inset must be re-derived here or the page keeps
+        // an extra 34 pt below the composer. `applyInsets` is idempotent.
+        anchorDriver?.updateSafeAreaInsets(safeAreaInsets)
         handleContainerHeightChange()
     }
 
@@ -1609,6 +1608,13 @@ final class TimelineCollectionController: UIViewController {
             return
         }
         if forced { armWindowReplacementReturn() }
+        // A programmatic write interrupts UIKit's deceleration without a
+        // guaranteed didEndDecelerating; close the user-scroll phase here so
+        // the settle passes and guards do not stay blocked.
+        if phase.phase == .decelerating {
+            let transition = phase.apply(.didEndDecelerating)
+            onPhaseChanged?(transition)
+        }
         anchorDriver?.requestEnd(animated: animated
             && !reduceMotion && !UIAccessibility.isVoiceOverRunning)
         scheduleVisibleCellSettle()
@@ -1665,7 +1671,9 @@ final class TimelineCollectionController: UIViewController {
         return true
     }
 
-    func disarmBottom() {}
+    func disarmBottom() {
+        anchorDriver?.adoptReadingPlacement()
+    }
 
     func readerDidRestAtBottom(_ rests: Bool, interactionPresented: Bool) {
         _ = rests; _ = interactionPresented
@@ -2033,8 +2041,22 @@ extension TimelineCollectionController: TimelineListLayoutHost {
 
     func layoutDidChangeContentHeight(_ height: CGFloat) {
         publishViewport()
-        anchorDriver?.contentChanged()
+        if !didStartAnchorDriver {
+            startAnchorDriverIfNeeded()
+        } else {
+            anchorDriver?.contentChanged()
+        }
         onContentHeightChanged?(height)
+    }
+
+    /// The first layout with content flips `hasLanded` and places once. It can
+    /// arrive from the controller's own layout pass or from the layout's first
+    /// height commit; both must be able to land it.
+    private func startAnchorDriverIfNeeded() {
+        guard !didStartAnchorDriver, layout.contentHeight > 0,
+              !currentItems.isEmpty else { return }
+        didStartAnchorDriver = true
+        anchorDriver?.viewportChanged()
     }
 
     /// A width change (rotation, split view) re-keyed rows without an apply.
@@ -2141,7 +2163,9 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         if phase.phase == .interacting {
             let transition = phase.apply(.didEndDragging(willDecelerate: decelerate))
             onPhaseChanged?(transition)
-            anchorDriver?.readerLifted(willCoast: decelerate)
+            if anchorDriver?.state.motion == .dragging {
+                anchorDriver?.readerLifted(willCoast: decelerate)
+            }
         }
         layout.noteDragDidEnd(willDecelerate: decelerate)
         scheduleVisibleCellSettle()
@@ -2160,7 +2184,12 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         if phase.phase == .decelerating {
             let transition = phase.apply(.didEndDecelerating)
             onPhaseChanged?(transition)
-            anchorDriver?.coastingEnded()
+            // A return started mid-coast owns the placement now; the native
+            // deceleration callback must not re-derive it from a mid-flight
+            // position (the reducer guard is motion == .coasting).
+            if anchorDriver?.state.motion == .coasting {
+                anchorDriver?.coastingEnded()
+            }
         }
         layout.noteDecelerationDidEnd()
         scheduleVisibleCellSettle()
@@ -2173,6 +2202,10 @@ extension TimelineCollectionController: UICollectionViewDelegate {
 
     func scrollViewShouldScrollToTop(_ scrollView: UIScrollView) -> Bool {
         guard !navigationSuspended else { return false }
+        if phase.phase == .decelerating {
+            let transition = phase.apply(.didEndDecelerating)
+            onPhaseChanged?(transition)
+        }
         // Official interception (`0x101a3cb14 → 0x101a3d838`): UIKit's own
         // scroll-to-top is refused; the anchor model owns the motion.
         anchorDriver?.requestStart()

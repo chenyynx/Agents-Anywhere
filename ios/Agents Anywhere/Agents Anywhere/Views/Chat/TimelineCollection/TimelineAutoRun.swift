@@ -2131,21 +2131,38 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await wait(500)
         let phaseAfterNoop = String(describing: controller.phase.phase)
 
-        // C5: the anchor model has no separate arm; the return lands on the
-        // .end placement and a follow request is gated by that placement.
-        let rearmed = controller.debugIsFollowing
-        let followRefused = false
-        let followAccepted = rearmed
+        // C5: the anchor model's follow gate is placement == .end.
+        // 1) Park in the middle: an external scroll derives a .reading
+        //    placement, so a follow request must be refused and must not move
+        //    the page.
+        let maxY = max(0, controller.collectionView.contentSize.height
+            - controller.collectionView.bounds.height)
+        controller.collectionView.setContentOffset(
+            CGPoint(x: 0, y: maxY / 2), animated: false)
+        await wait(120)
+        let readingPlacement = !controller.debugIsFollowing
+        let offsetBeforeFollow = controller.collectionView.contentOffset.y
+        controller.requestBottom(animated: false, forced: false)
+        await wait(120)
+        let followRefused = !controller.debugIsFollowing
+            && abs(controller.collectionView.contentOffset.y - offsetBeforeFollow) <= 0.5
+        // 2) A forced return lands on .end and re-arms following.
+        controller.requestBottom(animated: true, forced: true)
+        await waitForBottomSettle(controller, timeout: 1500)
+        let followAccepted = controller.debugIsFollowing
+        let rearmed = followAccepted
 
         if instantShortfall > 0.5 { failures.append("bottom: instant shortfall \(instantShortfall)") }
         if animatedShortfall > 0.5 { failures.append("bottom: animated shortfall \(animatedShortfall)") }
         if phaseAfterNoop != "idle" { failures.append("bottom: no-op phase \(phaseAfterNoop)") }
-        if followRefused { failures.append("bottom: follow armed while reading and away") }
-        if !followAccepted { failures.append("bottom: follow refused during a return") }
-        if !rearmed { failures.append("bottom: reader rest did not re-arm") }
+        if !readingPlacement { failures.append("bottom: mid-list scroll did not leave .end") }
+        if !followRefused { failures.append("bottom: follow armed while reading and away") }
+        if !followAccepted { failures.append("bottom: forced return did not reach .end") }
+        if !rearmed { failures.append("bottom: placement did not re-arm") }
         report["bottom"] = ["instantShortfall": instantShortfall,
                             "animatedShortfall": animatedShortfall,
                             "phaseAfterNoop": phaseAfterNoop,
+                            "readingPlacement": readingPlacement,
                             "followRefused": followRefused,
                             "followAccepted": followAccepted,
                             "rearmed": rearmed]

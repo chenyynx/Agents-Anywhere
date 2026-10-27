@@ -70,6 +70,7 @@
 - 真机截图二轮修正（2026-10-27，build 563/566/567/569）：
   - 成功文件卡改为官方 140×140：白底卡 + 灰衬 `#F0EFEC` + 白预览 112×91.6（圆角 8、1px 边）+ 灰色 `anthropicon.file` + 两行 name 13/550/18.2 `#0B0B0B` / type 13/400/18.2 `#52514E`（CORRECTIONS #96/#99）。
   - 底部文字区 = 两行 line box + **上 3.0 pt / 下 2.5 pt padding**；灰衬 = 140 − (两行 + 5.5)，preview 底边与文字区分界齐平（#99 → #104 同机截图修正）。文件图标中心在**整卡垂直中心**，不是 preview 中心（#104）。
+  - 白 preview 与 footer 交界处**不画底边线**：官方同位置逐像素纯白；AA 旧的四边圆角描边会多出一条淡线。preview 改为上两角 8pt、下两角直角，底边用 preview 填充色盖掉 1.5/displayScale（#105）；外卡仍 14 continuous。
   - 用户行顺序改为 **附件 → 文本气泡**；builder / `CodeMessageRowView` / `CodeUserMessageRow` / measurer 全部一致（#97）。
   - 3 图官方分支 wide 上 / wide 下 / 2+1；gap 8。图片 tile 边框：pp 2026-10-27 真机确认「官方图片有线」，最终口径为**图片 tile 也画 `CodeAttachmentHairline`**（与 file card / preview 同 token，`1/displayScale`，CORRECTIONS #103）。此前 #101/#102 的黑图/营销图像素「未见独立灰线」保留为观察记录，不再作为否定依据；build 575 是误撤线版本，以恢复后的 build 576 为准。
 - 已知非阻塞残余：
@@ -113,7 +114,7 @@
 ### 成功文件卡（官方 Code 页实际 UI，CORRECTIONS #96/#99）
 - **140×140 pt 方格**；白底卡 + code-card 同款 1px hairline；圆角 14 continuous
 - 灰衬底 `#F0EFEC`，高 **140 − (两行 line box + 5.5 pt footer padding)**（#104）
-- 白预览 **112×91.6 pt**（左右 14 pt、顶 12 pt；底边与灰衬底/文字区分界齐平），圆角 8，1px `#CDCDCD` 边
+- 白预览：左右 14 pt、顶 12 pt；上两角 8pt 圆角、下两角直角，**底边不画线**（与 footer 融合，CORRECTIONS #105），上/左/右 1px 边；尺寸随 footer padding（#104）
 - 预览内灰色 `anthropicon.file`（`.large`，file 约 18×24 frame，aspect-fit；浅色下 tint `#8C8C8C`）；图标中心在**整卡垂直中心**（官方实测距卡中心 0.7pt，#104）
 - 底部两行：name **13/550/18.2 `#0B0B0B`**，type **13/400/18.2 `#52514E`**；左右 inset 10 pt；**无额外 top padding**
 - name lineLimit 1 + truncation `.middle`；type = 扩展名大写（`MD`/`TXT`），无扩展名回退 folder/file 文案

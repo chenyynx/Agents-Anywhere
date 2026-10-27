@@ -80,14 +80,34 @@ struct CodeFileTile: View {
     private var thumbnail: some View {
         ZStack {
             CodePageTheme.userBubbleFill.resolved(for: colorScheme)
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            // The official white page has rounded top corners and a square
+            // bottom edge: its bottom border is absent, so the page and the
+            // white footer read as one surface. A four-sided rounded border
+            // (the previous shape) drew a faint line under the preview that
+            // the official card does not have (CORRECTIONS #105).
+            UnevenRoundedRectangle(topLeadingRadius: 8,
+                                   bottomLeadingRadius: 0,
+                                   bottomTrailingRadius: 0,
+                                   topTrailingRadius: 8,
+                                   style: .continuous)
                 .fill(CodeFileCardColors.preview.resolved(for: colorScheme))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    UnevenRoundedRectangle(topLeadingRadius: 8,
+                                           bottomLeadingRadius: 0,
+                                           bottomTrailingRadius: 0,
+                                           topTrailingRadius: 8,
+                                           style: .continuous)
                         .strokeBorder(
                             CodeFileCardColors.previewBorder.resolved(for: colorScheme),
                             lineWidth: 1 / displayScale)
                 )
+                // Erase only the bottom stroke; the side strokes still run to
+                // the footer boundary.
+                .overlay(alignment: .bottom) {
+                    Rectangle()
+                        .fill(CodeFileCardColors.preview.resolved(for: colorScheme))
+                        .frame(height: 1.5 / displayScale)
+                }
                 .overlay(
                     AnthropiconView(name: iconName, size: .large)
                         .foregroundStyle(CodeFileCardColors.icon.resolved(for: colorScheme))

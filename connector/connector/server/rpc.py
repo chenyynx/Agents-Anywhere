@@ -46,7 +46,22 @@ CRITICAL_RPC_METHODS = frozenset({"interaction.respond", "session.notices"})
 # thresholds make that distinction visible from the connector side.
 EVENT_LOOP_HEARTBEAT_SECONDS = 1.0
 EVENT_LOOP_STALL_WARNING_SECONDS = 1.0
-RPC_SLOW_WARNING_SECONDS = 2.0
+# The send/state class this watchdog exists for answers in milliseconds; five
+# seconds is already pathological there. Lifecycle and discovery calls have
+# legitimate 30–90 s budgets on the server side, so warning on them would be
+# pure noise — and noise is how a real stall gets ignored.
+RPC_SLOW_WARNING_SECONDS = 5.0
+SLOW_RPC_EXEMPT_METHODS = frozenset(
+    {
+        "runtime.start",
+        "runtime.stop",
+        "runtime.discover",
+        "runtime.config",
+        "session.create",
+        "session.sync",
+        "session.discover",
+    }
+)
 
 
 class WebSocketSender(Protocol):
@@ -268,11 +283,17 @@ class ConnectorRpcChannel:
     async def _watchdog_loop(self) -> None:
         """Report stalls the server can otherwise only infer from its timeout.
 
-        Heartbeat drift means a synchronous call blocked the event loop — the
-        shape that swallows an incoming RPC for its whole duration. An in-flight
-        request past the slow threshold means the frame arrived and its handler
-        is the slow part. A healthy heartbeat with nothing in flight means a
-        request the server timed out never reached this process.
+        - Heartbeat drift: a synchronous call blocked the event loop, the shape
+          that swallows an incoming RPC for its whole duration.
+        - A tracked request past the threshold: this process read the request
+          and has not finished it. The window covers waiting on the request
+          semaphore, the handler itself and handing the response to the send
+          queue, so the log cannot by itself say which phase was slow; the
+          server-side `request_id` correlates it with the matching send.
+        - Healthy heartbeat and nothing tracked: this process never read the
+          request from the socket — or it finished it and queued the reply
+          while the server's own read loop was slow. Correlate the ids before
+          concluding the frame never arrived.
         """
         previous = time.monotonic()
         while True:
@@ -289,12 +310,14 @@ class ConnectorRpcChannel:
             for request_id, (method, started_at) in list(self._inflight.items()):
                 if request_id in self._inflight_warned:
                     continue
+                if method in SLOW_RPC_EXEMPT_METHODS:
+                    continue
                 elapsed = now - started_at
                 if elapsed < RPC_SLOW_WARNING_SECONDS:
                     continue
                 self._inflight_warned.add(request_id)
                 logger.warning(
-                    "connector rpc request still running method={} id={} elapsed_ms={:.1f}",
+                    "connector rpc request not finished method={} id={} elapsed_ms={:.1f}",
                     method,
                     request_id,
                     elapsed * 1000,

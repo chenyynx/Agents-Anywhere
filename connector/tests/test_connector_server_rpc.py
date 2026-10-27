@@ -305,9 +305,128 @@ def test_watchdog_reports_rpc_request_stuck_past_threshold(monkeypatch) -> None:
     lines = asyncio.run(exercise())
 
     assert any(
-        "connector rpc request still running" in line and "slow-1" in line
+        "connector rpc request not finished" in line and "slow-1" in line
         for line in lines
     )
+
+
+def test_watchdog_stays_quiet_for_fast_requests(monkeypatch) -> None:
+    monkeypatch.setattr(rpc_module, "EVENT_LOOP_HEARTBEAT_SECONDS", 0.05)
+    monkeypatch.setattr(rpc_module, "RPC_SLOW_WARNING_SECONDS", 0.2)
+
+    async def exercise() -> list[str]:
+        captured: list[str] = []
+        sink = logger.add(
+            lambda message: captured.append(str(message)), level="WARNING", format="{message}"
+        )
+        channel = ConnectorRpcChannel()
+        channel.set_connection(MemoryWebSocket())
+
+        async def dispatch(method: str, params: dict[str, object]) -> dict[str, object]:
+            # In flight across several ticks but under the threshold: the
+            # watchdog must leave it alone.
+            _ = method, params
+            await asyncio.sleep(0.1)
+            return {"state": None}
+
+        try:
+            channel.start_request(
+                {"type": "request", "id": "fast-1", "method": "session.state", "params": {}},
+                dispatch,
+            )
+            await asyncio.sleep(0.4)
+        finally:
+            channel.clear_connection()
+            logger.remove(sink)
+        return captured
+
+    lines = asyncio.run(exercise())
+
+    assert not any("not finished" in line for line in lines)
+
+
+def test_watchdog_reports_requests_waiting_for_a_semaphore_slot(monkeypatch) -> None:
+    monkeypatch.setattr(rpc_module, "EVENT_LOOP_HEARTBEAT_SECONDS", 0.05)
+    monkeypatch.setattr(rpc_module, "RPC_SLOW_WARNING_SECONDS", 0.2)
+
+    async def exercise() -> list[str]:
+        captured: list[str] = []
+        sink = logger.add(
+            lambda message: captured.append(str(message)), level="WARNING", format="{message}"
+        )
+        channel = ConnectorRpcChannel()
+        channel.set_connection(MemoryWebSocket())
+        release = asyncio.Event()
+        started = 0
+        all_started = asyncio.Event()
+
+        async def dispatch(method: str, params: dict[str, object]) -> dict[str, object]:
+            nonlocal started
+            _ = method, params
+            started += 1
+            if started == 8:
+                all_started.set()
+            await release.wait()
+            return {"state": None}
+
+        try:
+            for index in range(8):
+                channel.start_request(
+                    {"type": "request", "id": f"slot-{index}", "method": "session.state", "params": {}},
+                    dispatch,
+                )
+            await asyncio.wait_for(all_started.wait(), timeout=1)
+            # The ninth waits behind the semaphore; the tracking starts before
+            # it, so the wait is reported even though no handler has begun.
+            channel.start_request(
+                {"type": "request", "id": "queued-1", "method": "session.state", "params": {}},
+                dispatch,
+            )
+            await asyncio.sleep(0.4)
+        finally:
+            release.set()
+            channel.clear_connection()
+            logger.remove(sink)
+        return captured
+
+    lines = asyncio.run(exercise())
+
+    assert any("not finished" in line and "queued-1" in line for line in lines)
+
+
+def test_watchdog_keeps_lifecycle_methods_out_of_the_warning(monkeypatch) -> None:
+    monkeypatch.setattr(rpc_module, "EVENT_LOOP_HEARTBEAT_SECONDS", 0.05)
+    monkeypatch.setattr(rpc_module, "RPC_SLOW_WARNING_SECONDS", 0.2)
+
+    async def exercise() -> list[str]:
+        captured: list[str] = []
+        sink = logger.add(
+            lambda message: captured.append(str(message)), level="WARNING", format="{message}"
+        )
+        channel = ConnectorRpcChannel()
+        channel.set_connection(MemoryWebSocket())
+        release = asyncio.Event()
+
+        async def dispatch(method: str, params: dict[str, object]) -> dict[str, object]:
+            _ = method, params
+            await release.wait()
+            return {"state": None}
+
+        try:
+            channel.start_request(
+                {"type": "request", "id": "slow-start", "method": "runtime.start", "params": {}},
+                dispatch,
+            )
+            await asyncio.sleep(0.4)
+        finally:
+            release.set()
+            channel.clear_connection()
+            logger.remove(sink)
+        return captured
+
+    lines = asyncio.run(exercise())
+
+    assert not any("not finished" in line and "slow-start" in line for line in lines)
 
 
 def test_watchdog_reports_blocked_event_loop(monkeypatch) -> None:
@@ -338,12 +457,15 @@ def test_watchdog_reports_blocked_event_loop(monkeypatch) -> None:
 
 
 def test_clear_connection_cancels_watchdog() -> None:
-    async def exercise() -> bool:
+    async def exercise() -> tuple[bool, bool]:
         channel = ConnectorRpcChannel()
         channel.set_connection(MemoryWebSocket())
-        assert channel._watchdog_task is not None
+        task = channel._watchdog_task
+        assert task is not None
         channel.clear_connection()
         await asyncio.sleep(0)
-        return channel._watchdog_task is None
+        # The property being nil is not proof the task stopped; a reconnect loop
+        # would leak one live watchdog per connection if the cancel were lost.
+        return channel._watchdog_task is None, task.done()
 
-    assert asyncio.run(exercise()) is True
+    assert asyncio.run(exercise()) == (True, True)

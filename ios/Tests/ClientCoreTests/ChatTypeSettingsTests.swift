@@ -19,7 +19,7 @@ struct ChatTypeSettingsTests {
         // shrunk it to 11.42 the moment the body dropped below the 14pt
         // reference.
         #expect(abs(scale.codeBlockSize - 12.3) < 0.0001)
-        #expect(abs(scale.inlineCodeSize - 13) < 0.0001)
+        #expect(abs(scale.inlineCodeSize - 13 * 14.8 / 14) < 0.0001)
         // 43px baseline pitch minus the 12.3pt glyphs, held as a share of the
         // code size so a pinned size keeps its proportions.
         #expect(abs(scale.codeBlockSize * scale.codeBlockLineSpacingRatio - 2.03) < 0.0001)
@@ -52,7 +52,7 @@ struct ChatTypeSettingsTests {
         let large = ChatTypeSettings.resolve(schemeRaw: "compact", bodySizeRaw: 20, customRaw: nil)
         #expect(abs(small.codeBlockSize - large.codeBlockSize) < 0.0001)
         // The unpinned one does follow.
-        #expect(abs(large.inlineCodeSize - 20) < 0.0001)
+        #expect(abs(large.inlineCodeSize - 20 * 14.8 / 14) < 0.0001)
     }
 
     @Test("an out-of-range body override is clamped, not rejected")
@@ -100,9 +100,8 @@ struct ChatTypeSettingsTests {
         """
         let scale = try #require(ChatTypeSettings.decodeCustom(legacy))
         #expect(scale.body == 15)
-        // No pins: old snapshots keep the frozen legacy inline-code ratio, so
-        // changing the compact default does not resize an existing custom
-        // scale.
+        // No pins: the legacy absolute values were ratios of the old body in
+        // practice, and the ratios the compact preset holds reproduce them.
         #expect(scale.inlineCodePin == nil)
         #expect(abs(scale.inlineCodeSize - 15 * 14.8 / 14) < 0.0001)
     }

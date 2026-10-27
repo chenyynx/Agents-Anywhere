@@ -75,11 +75,6 @@ enum ChatTypeSettings {
         return text
     }
 
-    /// The inline-code ratio old custom snapshots rendered with before the
-    /// ratio was stored. Frozen so changing the compact default does not
-    /// silently resize a reader's custom scale.
-    private static let legacyInlineCodeRatio: CGFloat = 14.8 / 14
-
     static func decodeCustom(_ raw: String?) -> ChatTypeScale? {
         guard let raw, let data = raw.data(using: .utf8),
               let stored = try? JSONDecoder().decode(Stored.self, from: data),
@@ -90,9 +85,7 @@ enum ChatTypeSettings {
             lineSpacing: stored.lineSpacing,
             paragraphSpacing: stored.paragraphSpacing,
             headings: stored.headings,
-            // Old snapshots predate the stored ratio. Keep the size they
-            // rendered with instead of inheriting the new 1:1 default.
-            inlineCodeRatio: stored.inlineCodeRatio ?? Self.legacyInlineCodeRatio,
+            inlineCodeRatio: stored.inlineCodeRatio ?? fallback.inlineCodeRatio,
             codeBlockRatio: stored.codeBlockRatio ?? fallback.codeBlockRatio,
             codeBlockLineSpacingRatio: stored.codeBlockLineSpacingRatio ?? fallback.codeBlockLineSpacingRatio,
             inlineCodePin: stored.inlineCodePin,

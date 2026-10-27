@@ -36,9 +36,9 @@ nonisolated enum ChatMetrics {
     /// AA's preset holds 8pt, moonveil's holds 0.5em.
     static var bodyLineSpacing: CGFloat { ChatTypeSettings.current.lineSpacing }
 
-    /// Inline code. `[pp 2026-10-21]` the compact preset now matches running
-    /// text 1:1 (13pt at the shipped body), down from the calibrated 14.8/14.
-    /// The scheme decides whether that is a ratio of the body or a pinned size.
+    /// Inline code. `[calibrated]` back-derived from the character advance
+    /// width; the reference set it slightly *larger* than running text. The
+    /// scheme decides whether that is a ratio of the body or a pinned size.
     static var inlineCodeSize: CGFloat { ChatTypeSettings.current.inlineCodeSize }
 
     // MARK: Blocks

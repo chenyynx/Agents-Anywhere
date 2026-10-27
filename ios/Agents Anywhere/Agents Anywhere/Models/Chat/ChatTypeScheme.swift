@@ -67,17 +67,16 @@ enum ChatTypeScheme: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// `[measured]` AA's current values. Inline code tracks the body 1:1
-    /// (`[pp 2026-10-21]` 13pt at the shipped 13pt body, down from the
-    /// calibrated 14.8/14); fenced code was a constant, so it is pinned at its
-    /// measured size rather than re-derived — deriving it from the 13pt body
-    /// would silently shrink it below what ships.
+    /// `[measured]` AA's current values. Inline code was always a ratio of the
+    /// body (14.8pt against the 14pt reference); fenced code was a constant,
+    /// so it is pinned at its measured size rather than re-derived — deriving
+    /// it from the 13pt body would silently shrink it below what ships.
     static let compactScale = ChatTypeScale(
         body: 13,
         lineSpacing: 8,
         paragraphSpacing: 20,
         headings: [18, 16, 14],
-        inlineCodeRatio: 1,
+        inlineCodeRatio: 14.8 / 14,
         // What turning「跟随正文」on produces at the shipped body size: the
         // same 12.3pt the pin holds, so the toggle never moves the text.
         codeBlockRatio: 12.3 / 13,

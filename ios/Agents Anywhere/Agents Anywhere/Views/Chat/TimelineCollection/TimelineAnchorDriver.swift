@@ -104,11 +104,14 @@ final class TimelineAnchorDriver {
     // MARK: - Safe area (inset owner)
 
     /// Applies the official inset and keeps the reader's place across the
-    /// write. Every change is written directly in the current transaction:
-    /// a keyboard change rides the system animation, a composer-only change
-    /// lands at once (official `0x101a3c820` adds no animation). A shrink
-    /// moves the offset before the inset so UIKit cannot clamp it against the
-    /// old maximum.
+    /// write. A change with an ambient animation (keyboard, `inherited=0.383s`
+    /// on device) is written directly and rides it. A composer-only change
+    /// arrives with **no** animation transaction (`inherited=0.000s`, b558
+    /// probe): writing the offset directly there was a measured 49 pt hard
+    /// jump, so the follow adds a 0.24 s spring matched to the composer's
+    /// `.smooth(duration: 0.24)` (fix `499b3e3f`, device-verified on b559).
+    /// A shrink moves the offset before the inset so UIKit cannot clamp it
+    /// against the old maximum.
     func updateSafeAreaInsets(_ insets: UIEdgeInsets) {
         pageInsets = insets
         applyInsets()
@@ -159,24 +162,35 @@ final class TimelineAnchorDriver {
         let destination = bottomTarget(topInset: top, bottomInset: bottom)
         let needsMove = abs(view.contentOffset.y - destination) > 0.5
         let shrinking = target.bottom < current.bottom - 0.5
-        // Official `0x101a3c820`: write the inset and keep the offset in the
-        // transaction that delivered the safe-area change — no animation of
-        // its own. The composer bar animates by itself; a self-made spring on
-        // top of it made the list trail the bar and read as a swing
-        // (`composer-official-alignment-task.md` §15.12-1).
-        isApplying = true
-        if shrinking && needsMove {
-            view.setContentOffset(CGPoint(x: view.contentOffset.x, y: destination),
-                                  animated: false)
-            view.contentInset = target
-        } else {
-            view.contentInset = target
-            if needsMove {
+        let ambient = UIView.inheritedAnimationDuration > 0.01
+        let reduceMotion = UIAccessibility.isReduceMotionEnabled
+            || UIAccessibility.isVoiceOverRunning
+        let apply = { [weak self, weak view] in
+            guard let self, let view else { return }
+            self.isApplying = true
+            if shrinking && needsMove {
                 view.setContentOffset(CGPoint(x: view.contentOffset.x, y: destination),
                                       animated: false)
+                view.contentInset = target
+            } else {
+                view.contentInset = target
+                if needsMove {
+                    view.setContentOffset(CGPoint(x: view.contentOffset.x, y: destination),
+                                          animated: false)
+                }
+            }
+            self.isApplying = false
+        }
+        if ambient || reduceMotion {
+            apply()
+        } else {
+            UIView.animate(withDuration: 0.24, delay: 0,
+                           usingSpringWithDamping: 1,
+                           initialSpringVelocity: 0,
+                           options: [.beginFromCurrentState, .allowUserInteraction]) {
+                apply()
             }
         }
-        isApplying = false
     }
 
     // MARK: - Events

@@ -190,6 +190,18 @@ final class CodeMarkdownTextStackView: UIView {
         rebuild(width: width)
     }
 
+    private func enableTextInteraction(in view: UIView) {
+        if view is AssistantCodeBlockView || view is AssistantTableBlockView {
+            return
+        }
+        if let textView = view as? AssistantMarkdownBlockTextView {
+            textView.enableTextInteraction()
+        }
+        for subview in view.subviews {
+            enableTextInteraction(in: subview)
+        }
+    }
+
     private func rebuild(width: CGFloat) {
 
         for constraint in heightConstraints { constraint.isActive = false }
@@ -202,6 +214,11 @@ final class CodeMarkdownTextStackView: UIView {
         for block in document.blocks {
             let made = AssistantMarkdownBlockViewFactory.make(
                 block, width: width, displayScale: displayScale)
+            // Body text (including list/quote paragraphs) gets system
+            // link/selection interaction. Fenced code owns its copy button and
+            // horizontal scroll; tables keep their own link lift/menu, so
+            // those subtrees stay inert.
+            enableTextInteraction(in: made.view)
             stack.addArrangedSubview(made.view)
             let constraint = made.view.heightAnchor.constraint(equalToConstant: made.height)
             constraint.isActive = true

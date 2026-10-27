@@ -274,8 +274,12 @@ enum AssistantMarkdownTextLayout {
 /// (`MarkdownUITextView` holds a custom `NSTextLayoutManager`); the M2 cell
 /// only needs the default TextKit 2 stack and an intrinsic height that matches
 /// `AssistantMarkdownTextLayout.height(of:)`.
-final class AssistantMarkdownBlockTextView: UITextView {
+final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate {
     private var lastMeasuredWidth: CGFloat = -1
+    /// The Code page opts in; Chat's hosted cell leaves the text inert for now.
+    private var textInteractionEnabled = false
+    /// Set by the owner when it wants a non-default URL router.
+    var openLink: ((URL) -> Void)?
 
     init() {
         super.init(frame: .zero, textContainer: nil)
@@ -292,6 +296,55 @@ final class AssistantMarkdownBlockTextView: UITextView {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// The Code page's body text: links tap and long-press selection/copy
+    /// work. The official page uses the same system text view with a custom
+    /// link action (`part-aa-markdown-ui.md` §Q6); the composite cross-block
+    /// selection adapter is a later batch.
+    func enableTextInteraction() {
+        guard !textInteractionEnabled else { return }
+        textInteractionEnabled = true
+        isSelectable = true
+        isUserInteractionEnabled = true
+        // Links are body-coloured and underlined in the official page, not
+        // the system blue (`CANONICAL/06-visuals-assets.md`).
+        linkTextAttributes = [
+            .foregroundColor: CodePageTheme.markdownTextUIColor,
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+        ]
+        if openLink == nil {
+            openLink = { url in
+                guard let scheme = url.scheme?.lowercased(),
+                      ["http", "https", "mailto", "tel"].contains(scheme) else {
+                    return
+                }
+                UIApplication.shared.open(url)
+            }
+        }
+        delegate = self
+    }
+
+    // iOS 17+ link action. Returning a custom action keeps the official
+    // "invoke default action" path instead of the system menu's open button.
+    @available(iOS 17.0, *)
+    func textView(_ textView: UITextView,
+                  primaryActionFor textItem: UITextItem,
+                  defaultAction: UIAction) -> UIAction? {
+        guard case let .link(url) = textItem.content else { return defaultAction }
+        return UIAction(title: defaultAction.title, image: defaultAction.image) { [weak self] _ in
+            self?.openLink?(url)
+        }
+    }
+
+    // iOS 16 fallback.
+    func textView(_ textView: UITextView,
+                  shouldInteractWith URL: URL,
+                  in characterRange: NSRange,
+                  interaction: UITextItemInteraction) -> Bool {
+        guard interaction == .invokeDefaultAction else { return true }
+        openLink?(URL)
+        return false
+    }
 
     /// Paints the official inline-code chips *under* the glyphs. The chip is a
     /// pure decoration of the attributed run

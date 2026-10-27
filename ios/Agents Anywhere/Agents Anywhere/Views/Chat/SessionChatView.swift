@@ -105,7 +105,9 @@ struct SessionChatView: View, Equatable {
                 isLoadingSettings: model.isLoadingSettings,
                 settingsError: model.settingsError, sessionChat: model,
                 contextUsage: model.contextUsage,
-                onSend: model.send, onStop: model.interrupt, onLoadSettings: model.loadSettings,
+                // A defaulted parameter is not part of a function's type: the
+                // two-argument `send` cannot stand in for `(String) async -> Void`.
+                onSend: { await model.send($0) }, onStop: model.interrupt, onLoadSettings: model.loadSettings,
                 onApplySettings: model.applySettings, applyError: { model.settingsError },
                 onDraftChange: { model.repository.draftDidChange(sessionID: model.session.id) },
                 canQueueSend: model.canQueueSend, queueEnqueueTick: model.queueEnqueueTick,

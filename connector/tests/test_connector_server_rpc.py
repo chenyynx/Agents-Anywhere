@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import pytest
 
+from connector.logging import logger
+from connector.server import rpc as rpc_module
 from connector.server.client import notification_requires_ingest
 from connector.server.rpc import (
     CONNECTOR_WS_MAX_NOTIFICATION_BYTES,
@@ -259,3 +262,88 @@ def test_connector_rpc_rejects_oversized_notification_before_send() -> None:
 def test_timeline_sync_uses_ingest_route() -> None:
     assert notification_requires_ingest("timeline.sync") is True
     assert notification_requires_ingest("timeline.itemUpsert") is False
+
+
+def test_watchdog_reports_rpc_request_stuck_past_threshold(monkeypatch) -> None:
+    monkeypatch.setattr(rpc_module, "EVENT_LOOP_HEARTBEAT_SECONDS", 0.05)
+    monkeypatch.setattr(rpc_module, "RPC_SLOW_WARNING_SECONDS", 0.2)
+
+    async def exercise() -> list[str]:
+        captured: list[str] = []
+        sink = logger.add(
+            lambda message: captured.append(str(message)), level="WARNING", format="{message}"
+        )
+        channel = ConnectorRpcChannel()
+        channel.set_connection(MemoryWebSocket())
+        release = asyncio.Event()
+        started = asyncio.Event()
+
+        async def dispatch(method: str, params: dict[str, object]) -> dict[str, object]:
+            _ = method, params
+            started.set()
+            await release.wait()
+            return {"state": None}
+
+        try:
+            channel.start_request(
+                {
+                    "type": "request",
+                    "id": "slow-1",
+                    "method": "session.state",
+                    "params": {},
+                },
+                dispatch,
+            )
+            await asyncio.wait_for(started.wait(), timeout=1)
+            await asyncio.sleep(0.4)
+        finally:
+            release.set()
+            channel.clear_connection()
+            logger.remove(sink)
+        return captured
+
+    lines = asyncio.run(exercise())
+
+    assert any(
+        "connector rpc request still running" in line and "slow-1" in line
+        for line in lines
+    )
+
+
+def test_watchdog_reports_blocked_event_loop(monkeypatch) -> None:
+    monkeypatch.setattr(rpc_module, "EVENT_LOOP_HEARTBEAT_SECONDS", 0.05)
+    monkeypatch.setattr(rpc_module, "EVENT_LOOP_STALL_WARNING_SECONDS", 0.05)
+
+    async def exercise() -> list[str]:
+        captured: list[str] = []
+        sink = logger.add(
+            lambda message: captured.append(str(message)), level="WARNING", format="{message}"
+        )
+        channel = ConnectorRpcChannel()
+        channel.set_connection(MemoryWebSocket())
+        try:
+            await asyncio.sleep(0.06)
+            # A synchronous call blocking the loop is what the server sees as a
+            # silently swallowed request; the heartbeat must call it out.
+            time.sleep(0.3)
+            await asyncio.sleep(0.15)
+        finally:
+            channel.clear_connection()
+            logger.remove(sink)
+        return captured
+
+    lines = asyncio.run(exercise())
+
+    assert any("connector event loop stalled" in line for line in lines)
+
+
+def test_clear_connection_cancels_watchdog() -> None:
+    async def exercise() -> bool:
+        channel = ConnectorRpcChannel()
+        channel.set_connection(MemoryWebSocket())
+        assert channel._watchdog_task is not None
+        channel.clear_connection()
+        await asyncio.sleep(0)
+        return channel._watchdog_task is None
+
+    assert asyncio.run(exercise()) is True

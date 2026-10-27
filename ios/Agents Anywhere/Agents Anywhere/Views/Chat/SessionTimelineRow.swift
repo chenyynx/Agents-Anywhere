@@ -123,13 +123,22 @@ struct PendingMessageRow: View {
     @State private var confirmsDismiss = false
     var body: some View {
         Group {
-            // The Code page has no attachment bubble yet, so a pending message
-            // that carries files keeps the Chat bubble (which renders them)
-            // instead of hiding the files until the echo arrives.
-            if bubbleStyle == .code, pending.attachments.isEmpty {
-                CodeUserBubble(text: pending.content,
+            if bubbleStyle == .code {
+                // The optimistic Code row uses the same shape the settled echo
+                // gets: text bubble then attachment grids. The old Chat-bubble
+                // fallback changed the message's colour, padding and attachment
+                // layout the moment the server acknowledged it.
+                CodeUserMessageRow(
+                    text: pending.content,
+                    attachments: chat.session.attachmentPreviews.resolve(
+                        pending.attachments.map(\.content), clientID: pending.id),
                     isPending: pending.delivery == .sending || pending.delivery == .accepted,
-                    onDeliveryIssue: deliveryIssue == nil ? nil : { confirmsDismiss = true })
+                    onDeliveryIssue: deliveryIssue == nil ? nil : { confirmsDismiss = true },
+                    attachmentState: { content in
+                        pending.codeAttachmentState(for: content)
+                    },
+                    onAttachment: onAttachment,
+                    loadThumbnail: chat.thumbnail)
             } else {
                 UserMessageBubble(text: pending.content,
                     attachments: chat.session.attachmentPreviews.resolve(pending.attachments.map(\.content), clientID: pending.id),

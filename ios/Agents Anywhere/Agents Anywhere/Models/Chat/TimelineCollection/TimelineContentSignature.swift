@@ -153,7 +153,12 @@ nonisolated enum TimelineContentSignature: Equatable {
     /// verb; neither changes its height, so one stable signature is enough.
     case workingStatus
     case notice(id: String, status: V2RuntimeNoticeStatus, revision: Int)
-    case pending(id: String, attachments: [TimelineAttachmentPreviewSignature])
+    /// `deliveryState` is a stable token for the pending send's lifecycle
+    /// (sending / accepted / confirmed / uncertain / rejected). It changes the
+    /// drawn attachment layout when an upload has failed, so it must change
+    /// the height key and force a re-estimate.
+    case pending(id: String, attachments: [TimelineAttachmentPreviewSignature],
+                 deliveryState: Int)
     case tail(TimelineTailContentSignature)
 
     /// The value the height key carries. Two signatures that hash equally but
@@ -178,9 +183,10 @@ nonisolated enum TimelineContentSignature: Equatable {
             var hasher = TimelineStableHasher()
             hasher.combine(id); hasher.combine(status.rawValue); hasher.combine(revision)
             return hasher.revision
-        case .pending(let id, let attachments):
+        case .pending(let id, let attachments, let deliveryState):
             var hasher = TimelineStableHasher()
             hasher.combine(id)
+            hasher.combine(deliveryState)
             for attachment in attachments {
                 hasher.combine(attachment.id)
                 hasher.combine(attachment.pixelWidth ?? 0)

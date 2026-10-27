@@ -274,10 +274,32 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         case .notice: return .row
         case .pending(let id):
             guard let pending = pendingByID[id] else { return .row }
-            return .text(textEstimate(for: item,
-                rows: [TimelineHeightEstimate.TextRow(text: pending.content,
-                                                     attachmentCount: pending.attachments.count)],
-                minimum: 60))
+            // The optimistic Code row has the same block shape a settled
+            // message gets: one text bubble followed by its attachment grids.
+            // Measuring it with `CodeRowHeightPlan` (not the Chat line/180 pt
+            // estimate) keeps the first frame from jumping when the echo
+            // replaces the pending row.
+            var blocks: [CodeMessageRow.Block] = []
+            if !pending.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                blocks.append(.text(id: id, text: pending.content))
+            }
+            let contents = pending.attachments.map(\.content)
+            if !contents.isEmpty {
+                blocks.append(.attachments(id: id, files: contents,
+                                           clientMessageID: pending.id))
+            }
+            guard !blocks.isEmpty else { return .row }
+            let width = TimelineHeightKey.quantize(lastWidth > 0 ? lastWidth : 361)
+            return .fixed(CodeMessageHeightMeasurer.height(
+                rows: [CodeMessageRow(id: id, role: .user, blocks: blocks)],
+                width: width,
+                typography: codeTypography,
+                traits: controller?.traitCollection,
+                measured: false,
+                pixelSize: attachmentPixelSize,
+                attachmentIsFailed: { content in
+                    pending.codeAttachmentState(for: content) == .failed
+                }))
         case .group(let id):
             guard let group = groupsByID[id] else { return .row }
             // A Code message group has no folds: its estimate is the message's
@@ -344,7 +366,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             width: width,
             typography: typography,
             traits: controller?.traitCollection,
-            measured: false)
+            measured: false,
+            pixelSize: attachmentPixelSize)
         if codeEstimateCache.count > 600 { codeEstimateCache.removeAll() }
         codeEstimateCache[cacheKey] = height
         return .fixed(height)
@@ -383,6 +406,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let font = UIFont.systemFont(ofSize: max(1, codeTypography.body))
         let attributes: [NSAttributedString.Key: Any] = [.font: font]
         var lines: CGFloat = 0
+        // [I] The official estimator counts text lines; an attachment grid has
+        // no line count. Adding the structural grid height keeps the seed from
+        // parking a 150–288 pt block on a row whose first frame would then
+        // collapse under the reader's finger.
+        var attachmentHeight: CGFloat = 0
         var hasContent = false
         for row in rows {
             for block in row.blocks {
@@ -405,6 +433,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 case let .toolCalls(segments):
                     hasContent = true
                     lines += min(CGFloat(segments.count), lineCap)
+                case let .attachments(_, files, _):
+                    hasContent = true
+                    attachmentHeight += CodeAttachmentLayout.blockHeights(
+                        files: files, pixelSize: attachmentPixelSize).reduce(0, +)
                 case .other:
                     hasContent = true
                     lines += 1
@@ -414,6 +446,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         guard hasContent else { return nil }
         let lineHeight = max(1, codeTypography.body + codeTypography.lineSpacing)
         return TimelineHeightEstimate.officialEstimate(lines: lines, lineHeight: lineHeight)
+            + attachmentHeight
     }
 
     /// Parsed Markdown for the Code row's first frame, keyed by the text digest
@@ -514,7 +547,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             typography: codeTypography,
             traits: controller?.traitCollection,
             measured: true,
-            hasActionBar: hasActionBar)
+            hasActionBar: hasActionBar,
+            pixelSize: attachmentPixelSize)
         codeHeightCache[id] = CachedCodeHeight(digest: digest, height: height)
         return height
     }
@@ -590,6 +624,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 case let .toolCalls(segments):
                     hasher.combine(2)
                     hasher.combine(segments.count)
+                case let .attachments(_, files, clientMessageID):
+                    // The drawn tile boxes depend on the resolved pixel sizes,
+                    // so a preview that lands after the wire payload must
+                    // retire the measured height.
+                    hasher.combine(4)
+                    for signature in attachmentSignatures(files, clientID: clientMessageID) {
+                        hasher.combine(signature.id)
+                        hasher.combine(signature.pixelWidth ?? 0)
+                        hasher.combine(signature.pixelHeight ?? 0)
+                    }
                 case .other:
                     hasher.combine(3)
                 }
@@ -1027,6 +1071,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // with no message key and keeps the existing renderer.
             if group.explicitID != nil {
                 let streamingText = codeStreamingTexts(for: item)
+                // Capture the model itself, not `self`: the escaping closures
+                // live in the cell's hosted view and must not keep the
+                // adapter (and its controller) alive.
+                let chatModel = model
                 return AnyView(CodeMessageRowView(
                     group: group,
                     profile: codeProfile,
@@ -1039,7 +1087,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     },
                     onThinkingDetail: { [weak self] request in
                         self?.onCodeThinkingDetail?(request)
-                    }))
+                    },
+                    attachmentResolver: { contents, clientID in
+                        chatModel.session.attachmentPreviews.resolve(contents,
+                                                                     clientID: clientID)
+                    },
+                    attachmentState: { _ in .complete },
+                    loadThumbnail: { file in
+                        try await chatModel.thumbnail(for: file)
+                    },
+                    onAttachment: onAttachment))
             }
             return AnyView(SessionTimelineGroupView(
                 group: group,
@@ -1266,6 +1323,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     case let .toolCalls(blockSegments):
                         toolBlocks += 1
                         segments += blockSegments.count
+                    case .attachments:
+                        others += 1
                     case .other:
                         others += 1
                     }
@@ -1307,6 +1366,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 case let .toolCalls(blockSegments):
                     toolBlocks += 1
                     segments += blockSegments.count
+                case .attachments:
+                    others += 1
                 case .other:
                     others += 1
                 }
@@ -1316,7 +1377,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let exact = CodeMessageHeightMeasurer.height(
             rows: rows,
             width: width, typography: typography,
-            traits: controller?.traitCollection, measured: true)
+            traits: controller?.traitCollection, measured: true,
+            pixelSize: attachmentPixelSize)
         return "est=\(probeFormat(estimate)) exact=\(probeFormat(exact)) "
             + "textBlocks=\(textBlocks) toolBlocks=\(toolBlocks) segs=\(segments) "
             + "other=\(others) rows=\(rows.count)"
@@ -1408,7 +1470,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                         // An empty text block renders nothing; it must not
                         // keep a group (or a 44 pt estimate) alive.
                         return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    case .toolCalls, .other:
+                    case .toolCalls, .other, .attachments:
                         return true
                     }
                 }
@@ -1663,14 +1725,32 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             }
             return .notice(id: id, status: notice.notice.status, revision: notice.notice.revision)
         case .pending(let id):
-            guard let pending = pendingByID[id] else { return .pending(id: id, attachments: []) }
-            return .pending(id: id, attachments: attachmentSignatures(
-                pending.attachments.map(\.content), clientID: pending.id))
+            guard let pending = pendingByID[id] else {
+                return .pending(id: id, attachments: [], deliveryState: 0)
+            }
+            return .pending(id: id,
+                            attachments: attachmentSignatures(
+                                pending.attachments.map(\.content), clientID: pending.id),
+                            deliveryState: Self.pendingDeliveryState(pending.delivery))
         case .tail:
             return .tail(tailSignature())
         case .group(let id):
             guard let group = groupsByID[id] else { return .group(Self.emptyGroupSignature) }
             return .group(groupSignature(group))
+        }
+    }
+
+    /// A stable token for the pending send's lifecycle. Only a state that
+    /// changes what the row draws matters: a failed upload turns its
+    /// document into an `ArtifactPreviewCard`, which changes the height.
+    private static func pendingDeliveryState(_ delivery: V2PendingMessage.Delivery) -> Int {
+        switch delivery {
+        // `.sending` and `.accepted` draw the same spinner; they do not
+        // change the layout and must not re-key the row.
+        case .sending, .accepted: return 0
+        case .confirmed: return 1
+        case .uncertain: return 2
+        case .rejected: return 3
         }
     }
 
@@ -1685,13 +1765,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     }
 
     private func groupSignature(_ group: ChatTimelineGroup) -> TimelineGroupContentSignature {
-        // The Code row renders only its rows. The generic signature also
-        // hashes the turn action, suppression, inline notices and attachments;
-        // none of them reach `CodeMessageRowView`, and hashing the turn state
-        // re-keyed every group when a turn ended (probe 2026-10-23: one apply
-        // reconfigured 192 rows, dropping every measured height). Keep the
-        // Code signature to what the row draws. The working status is its own
-        // row now, so it is not signed here either.
+        // The Code row renders only its rows and those rows' attachments. The
+        // generic signature also hashes the turn action, suppression and
+        // inline notices; none of them reach `CodeMessageRowView`, and hashing
+        // the turn state re-keyed every group when a turn ended (probe
+        // 2026-10-23: one apply reconfigured 192 rows, dropping every measured
+        // height). Keep the Code signature to what the row draws. The working
+        // status is its own row now, so it is not signed here either.
         if group.explicitID != nil {
             // The official data layer publishes whole snapshots on the 0.1 s
             // leading-edge throttle (CANONICAL/03-streaming.md §5.1); a row is
@@ -1744,7 +1824,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 expandedRowIDs: [],
                 revealingRowIDs: [],
                 inlineNotices: [],
-                attachments: [],
+                attachments: codeAttachmentPreviews(group),
                 turnAction: nil,
                 turnSuppression: TimelineTurnSuppression(
                     isRunning: false, hasNewerItems: false, hasPendingUserMessage: false),
@@ -1987,6 +2067,39 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             return TimelineAttachmentPreviewSignature(id: attachment.id,
                                                        pixelWidth: width, pixelHeight: height)
         }
+    }
+
+    /// The pixel size the attachment tile will draw at: the locally decoded
+    /// preview size when the store has one, otherwise the server's reported
+    /// dimensions. `CodeMessageRowView` resolves the same value through the
+    /// store, so the measured height and the drawn tile box cannot disagree
+    /// when a preview arrives after the wire payload.
+    private func attachmentPixelSize(_ content: V2AttachmentContent) -> CGSize? {
+        let resolved = model.session.attachmentPreviews.resolve([content]).first
+        // The row draws the merge-filled content, so the size fallback must
+        // come from that same content, not the raw wire payload.
+        return resolved?.previewPixelSize
+            ?? resolved?.content.serverPixelSize
+            ?? content.serverPixelSize
+    }
+
+    /// The attachment identities the Code row draws for one group. Only a
+    /// message's own `attachments` reach the Code row (its `.attachment`
+    /// items have no attachment block), and the builder hands the row the
+    /// wire `clientMessageId` so the store can resolve local previews before
+    /// the echo carries the uploaded file ids.
+    private func codeAttachmentPreviews(
+        _ group: ChatTimelineGroup
+    ) -> [TimelineAttachmentPreviewSignature] {
+        var previews: [TimelineAttachmentPreviewSignature] = []
+        for row in group.rows where row.value.role == .user {
+            guard case let .message(content) = row.value.content,
+                  !content.attachments.isEmpty else { continue }
+            let clientID = row.value.source["clientMessageId"]?.stringValue
+            previews.append(contentsOf:
+                attachmentSignatures(content.attachments, clientID: clientID))
+        }
+        return previews
     }
 
     private func groupHasInteractiveContent(_ group: ChatTimelineGroup) -> Bool {

@@ -299,7 +299,8 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         #expect(notice != .notice(id: "n", status: .resolved, revision: 1))
         #expect(notice != .notice(id: "n", status: .open, revision: 2))
 
-        let pending = TimelineContentSignature.pending(id: "p", attachments: [])
+        let pending = TimelineContentSignature.pending(
+            id: "p", attachments: [], deliveryState: 0)
         var oneFold = groupSignature()
         oneFold.expandedRowIDs = ["a"]
         var twoFolds = groupSignature()
@@ -314,7 +315,12 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
 
         #expect(pending != .pending(id: "p", attachments: [
             TimelineAttachmentPreviewSignature(id: "a", pixelWidth: 1, pixelHeight: 1)
-        ]))
+        ], deliveryState: 0))
+        // A delivery transition (sending → failed) must re-key the row: a
+        // failed upload turns its document into a taller/shorter card.
+        #expect(pending != .pending(id: "p", attachments: [], deliveryState: 3))
+        #expect(pending.contentRevision != TimelineContentSignature.pending(
+            id: "p", attachments: [], deliveryState: 3).contentRevision)
 
         let tail = TimelineContentSignature.tail(TimelineTailContentSignature(
             queue: [TimelineQueueEntrySignature(id: "q", state: "queued")],
@@ -795,6 +801,21 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         cache.setCurrentKey(second)
         cache.set(126, for: second, tier: .provisional)
         #expect(cache.resolvedHeight(for: second, itemID: "g:new", fallback: .row) == 126)
+    }
+
+    @Test func aPrecalcOnANewKeyBeatsAnEverDisplayedRowsOldHeight() {
+        // The pending row's delivery change re-keys it; the controller writes
+        // the new estimate as a precalc so a displayed file grid cannot keep
+        // its old height over the failed card's height.
+        let cache = TimelineHeightCache()
+        let old = heightKey("p:p", revision: 1)
+        cache.setCurrentKey(old)
+        cache.noteDisplayedHeight(150, for: "p:p")
+        cache.markEverDisplayed("p:p")
+        let new = heightKey("p:p", revision: 2)
+        cache.setCurrentKey(new)
+        cache.set(53.2, for: new, tier: .precalc)
+        #expect(cache.resolvedHeight(for: new, itemID: "p:p", fallback: .row) == 53.2)
     }
 
     @Test func aNeverDisplayedRowUsesItsProvisional() {

@@ -22,6 +22,12 @@ nonisolated struct CodeMessageRow: Identifiable, Hashable {
         case reasoning(id: String, text: String, status: V2TimelineItemStatus)
         /// `Block.text`.
         case text(id: String, text: String)
+        /// The user message's attachments (wire `V2MessageContent.attachments`).
+        /// The official page draws them outside the text bubble, as an image
+        /// grid and a file row (CLOSURE.md §4), so they are a sibling block of
+        /// `.text` rather than part of the bubble. `clientMessageID` is the
+        /// send correlation id, kept for the local preview cache.
+        case attachments(id: String, files: [V2AttachmentContent], clientMessageID: String?)
         /// `Block.toolCalls`, already segmented.
         case toolCalls([CodeToolSegment])
         /// A row the Code page has no dedicated block for; kept so nothing is
@@ -137,15 +143,46 @@ nonisolated enum CodeMessageBuilder {
                                      text: reasoningText,
                                      status: settled ? .done : .running))
         }
-        blocks.append(contentsOf: bodies.map {
-            .text(id: $0.id, text: $0.displayText)
-        })
+        // One body is one official `Block.text`, followed by that body's
+        // attachment block. A body with no text still keeps its attachments
+        // (the official page draws no bubble for a pure-attachment message),
+        // and one file draws once even when several bodies carry it: the key
+        // is the server file id, or the payload identity before upload.
+        let rowRole = role(of: items)
+        // Attachments are a user-message block only (CLOSURE.md §4); an
+        // assistant message's `attachments` payload is not a user grid and
+        // must not be drawn with the user attachment layout.
+        var seenAttachments: Set<String> = []
+        for body in bodies {
+            blocks.append(.text(id: body.id, text: body.displayText))
+            guard rowRole == .user,
+                  case let .message(content) = body.content else { continue }
+            let files = content.attachments.filter { file in
+                seenAttachments.insert(attachmentKey(file)).inserted
+            }
+            if !files.isEmpty {
+                blocks.append(.attachments(
+                    id: body.id, files: files,
+                    clientMessageID: TimelineText.first(body.source["clientMessageId"])))
+            }
+        }
         if !segments.isEmpty { blocks.append(.toolCalls(segments)) }
         // A message whose only content is skipped tool calls (ExitPlanMode /
         // AskUserQuestion) has nothing to render; a zero-block row would still
         // pay row margins and inter-message spacing.
         guard !blocks.isEmpty else { return nil }
-        return CodeMessageRow(id: id, role: role(of: items), blocks: blocks)
+        return CodeMessageRow(id: id, role: rowRole, blocks: blocks)
+    }
+
+    /// The dedup key for one attachment: the server file id, or the payload
+    /// identity before upload. Deliberately local, like `isReasoning`: the
+    /// shared `V2AttachmentContent.cacheKey` extension is main-actor isolated
+    /// under the package's default isolation, and this builder is
+    /// `nonisolated`. The fallback matches that key's non-device branch (a
+    /// pre-upload attachment is optimistic, so it never reads from a device
+    /// path).
+    private static func attachmentKey(_ file: V2AttachmentContent) -> String {
+        file.fileId ?? "raw:\(file.raw.hashValue)"
     }
 
     /// The first message item's role (wire order). A row with no message item

@@ -65,6 +65,7 @@ private func blockDescriptors(_ row: CodeMessageRow) -> [String] {
         switch block {
         case let .reasoning(id, _, _): return "reasoning:\(id)"
         case let .text(id, _): return "text:\(id)"
+        case let .attachments(id, _, _): return "attachments:\(id)"
         case let .other(id, _): return "other:\(id)"
         case .toolCalls: return "toolCalls"
         }

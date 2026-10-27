@@ -1350,6 +1350,29 @@ final class TimelineCollectionController: UIViewController {
         // The cell only exists for items that got a real height here, so the
         // row never pairs a TextKit cell with an estimate.
         for item in items {
+            // A pending row's height is a structured estimate, not a cell
+            // fit. Its delivery transition can replace a file grid with a
+            // failed card, so the new key must outrank the height the row is
+            // currently displaying: `resolvedHeight` only prefers
+            // measured/precalc tiers over an ever-displayed row's old height,
+            // and an estimate alone would be ignored. Write the adapter's
+            // pending estimate as a pre-calc for the new key (the pending row
+            // has no cell self-measure to report one).
+            if case .pending = item {
+                let key = content.heightKey(for: item, width: width)
+                // The precalc tier normally means a plain-text pre-calculation;
+                // here it carries the pending row's structured estimate so it
+                // outranks the ever-displayed height. Do not pin the generic
+                // `.row` fallback: a pending record with no text and no
+                // attachments (only reachable through an archive-restore
+                // race) has no structured height to offer.
+                if case let .fixed(height) = content.estimateKind(for: item),
+                   !layout.heights.hasMeasuredOrPrecalcHeight(for: key) {
+                    layout.heights.set(height, for: key, tier: .precalc)
+                }
+                documentHeights.removeValue(forKey: item.itemID)
+                continue
+            }
             // Official hosted-cell contract rows measure themselves once when
             // the cell materializes and report later changes through
             // `heightDidChange`; the controller must not mark them measured.

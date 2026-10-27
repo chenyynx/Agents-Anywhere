@@ -76,6 +76,11 @@ struct TimelineChatTimelineView: View {
         // row text in place (the rows array identity does not move).
         let _ = model.timeline.flushRevision
         let _ = model.timeline.pendingMessages
+        // A pending send changes layout when an upload fails (failed card
+        // instead of a file tile). Reading the delivery state here makes the
+        // representable re-evaluate, so the adapter re-signs the row and the
+        // height key re-prices it.
+        let _ = model.timeline.pendingMessages.map(\.delivery)
         let _ = model.session.notices.notices
         let _ = model.session.sendQueue.items
         // A queued row's own state and the queue-wide pause add/remove the

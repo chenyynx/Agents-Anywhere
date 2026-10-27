@@ -60,6 +60,20 @@ struct CodeMessageRowView: View {
     var onToolDetail: (CodeToolDetailRequest) -> Void
     /// A `思考过程` row's tap; same page-level presentation as a tool detail.
     var onThinkingDetail: (CodeThinkingDetailRequest) -> Void
+    /// Turns the wire attachments of one `.attachments` block into the
+    /// page's cached attachments. The page owns `ChatAttachmentStore` and the
+    /// send correlation id, so the adapter passes its
+    /// `resolve(contents, clientID:)` here; the default builds a cacheless
+    /// attachment that still draws the official layout.
+    var attachmentResolver: ([V2AttachmentContent], String?) -> [ChatMessageAttachment]
+    /// One attachment's official display state. A settled message's wire
+    /// attachment is complete; the pending row supplies its upload state.
+    var attachmentState: (V2AttachmentContent) -> CodeAttachmentDisplayState
+    /// Fetches one thumbnail when the cache has no preview bytes.
+    var loadThumbnail: (V2AttachmentContent) async throws -> Data?
+    /// A tap on an image tile or a successful file tile. The page owns the
+    /// viewer/QuickLook routing.
+    var onAttachment: (V2AttachmentContent, UIImage?) -> Void
 
     init(group: ChatTimelineGroup,
          profile: CodeRuntimeProfile,
@@ -69,7 +83,21 @@ struct CodeMessageRowView: View {
          typography: TimelineTypographySnapshot? = nil,
          turnActionCopyText: String? = nil,
          onToolDetail: @escaping (CodeToolDetailRequest) -> Void = { _ in },
-         onThinkingDetail: @escaping (CodeThinkingDetailRequest) -> Void = { _ in }) {
+         onThinkingDetail: @escaping (CodeThinkingDetailRequest) -> Void = { _ in },
+         attachmentResolver: @escaping ([V2AttachmentContent], String?) -> [ChatMessageAttachment] = { contents, _ in
+             contents.enumerated().map { index, content in
+                 // The index keeps the identity unique inside the block; the
+                 // page's resolver supplies the store's file-id-based id.
+                 ChatMessageAttachment(id: content.fileId ?? "attachment:\(index)",
+                                       content: content,
+                                       previewData: nil,
+                                       previewPixelSize: nil,
+                                       previewVersion: 0)
+             }
+         },
+         attachmentState: @escaping (V2AttachmentContent) -> CodeAttachmentDisplayState = { _ in .complete },
+         loadThumbnail: @escaping (V2AttachmentContent) async throws -> Data? = { _ in nil },
+         onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void = { _, _ in }) {
         self.group = group
         self.profile = profile
         self.cwd = cwd
@@ -79,6 +107,10 @@ struct CodeMessageRowView: View {
         self.turnActionCopyText = turnActionCopyText
         self.onToolDetail = onToolDetail
         self.onThinkingDetail = onThinkingDetail
+        self.attachmentResolver = attachmentResolver
+        self.attachmentState = attachmentState
+        self.loadThumbnail = loadThumbnail
+        self.onAttachment = onAttachment
     }
 
     var body: some View {
@@ -144,9 +176,11 @@ struct CodeMessageRowView: View {
 
     /// A user message renders as one right-aligned bubble. AA publishes one
     /// message's body as several text rows, so every `.text` block joins in
-    /// block order instead of stacking as separate paragraphs. A non-text
-    /// block on a user row does not occur today; it keeps the generic path
-    /// rather than being dropped.
+    /// block order instead of stacking as separate paragraphs. Any other
+    /// block keeps its declared place after the bubble; today that is only
+    /// `.attachments`, which the official page draws outside the bubble as a
+    /// sibling block (CLOSURE.md §4). A message with no text draws no bubble
+    /// at all, so a pure-attachment message is only its attachments.
     private func userRow(_ row: RenderedRow) -> some View {
         var texts: [String] = []
         var others: [CodeMessageRow.Block] = []
@@ -203,6 +237,15 @@ struct CodeMessageRowView: View {
 
         case let .other(_, type):
             otherRow(type)
+
+        case let .attachments(_, files, clientMessageID):
+            // The official user row draws attachments outside the text bubble
+            // (CLOSURE.md §4): the image grid, then the file row. The resolver
+            // lets the page attach cached previews through the client send id.
+            CodeAttachmentRow(files: attachmentResolver(files, clientMessageID),
+                              state: attachmentState,
+                              onAttachment: onAttachment,
+                              loadThumbnail: loadThumbnail)
         }
     }
 
@@ -259,7 +302,7 @@ struct CodeMessageRowView: View {
                             && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     case let .text(_, text):
                         return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    case .toolCalls, .other:
+                    case .toolCalls, .other, .attachments:
                         return true
                     }
                 }

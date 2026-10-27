@@ -22,11 +22,15 @@ enum CodeMessageHeightMeasurer {
                        typography: TimelineTypographySnapshot,
                        traits: UITraitCollection?,
                        measured: Bool,
-                       hasActionBar: Bool = false) -> CGFloat {
+                       hasActionBar: Bool = false,
+                       pixelSize: (V2AttachmentContent) -> CGSize? = { $0.serverPixelSize },
+                       attachmentIsFailed: (V2AttachmentContent) -> Bool = { _ in false }) -> CGFloat {
         let rows = CodeMessageBuilder.rows(for: group.rows.map(\.value), profile: profile)
         return height(rows: rows,
                       width: width, typography: typography, traits: traits,
-                      measured: measured, hasActionBar: hasActionBar)
+                      measured: measured, hasActionBar: hasActionBar,
+                      pixelSize: pixelSize,
+                      attachmentIsFailed: attachmentIsFailed)
     }
 
     static func height(rows: [CodeMessageRow],
@@ -34,7 +38,9 @@ enum CodeMessageHeightMeasurer {
                        typography: TimelineTypographySnapshot,
                        traits: UITraitCollection?,
                        measured: Bool,
-                       hasActionBar: Bool = false) -> CGFloat {
+                       hasActionBar: Bool = false,
+                       pixelSize: (V2AttachmentContent) -> CGSize? = { $0.serverPixelSize },
+                       attachmentIsFailed: (V2AttachmentContent) -> Bool = { _ in false }) -> CGFloat {
         // The renderer (`CodeMarkdownTextLeaf`) resolves the same roles from
         // SwiftUI's `dynamicTypeSize`; both go through the one factory, so the
         // stored height and the drawn row use identical scaled values.
@@ -42,7 +48,8 @@ enum CodeMessageHeightMeasurer {
             traits: traits ?? UITraitCollection.current)
         return CodeRowHeightPlan.height(
             rows: planRows(rows, width: width, typography: resolvedTypography,
-                           traits: traits, measured: measured),
+                           traits: traits, measured: measured, pixelSize: pixelSize,
+                           attachmentIsFailed: attachmentIsFailed),
             metrics: metrics(traits: traits),
             hasActionBar: hasActionBar)
     }
@@ -62,7 +69,9 @@ enum CodeMessageHeightMeasurer {
                                  width: CGFloat,
                                  typography: TimelineTypographySnapshot,
                                  traits: UITraitCollection?,
-                                 measured: Bool) -> [CodeRowHeightPlan.Row] {
+                                 measured: Bool,
+                                 pixelSize: (V2AttachmentContent) -> CGSize?,
+                                 attachmentIsFailed: (V2AttachmentContent) -> Bool) -> [CodeRowHeightPlan.Row] {
         let width = TimelineHeightKey.quantize(width)
         var planRows: [CodeRowHeightPlan.Row] = []
         planRows.reserveCapacity(rows.count)
@@ -81,6 +90,11 @@ enum CodeMessageHeightMeasurer {
                         if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             texts.append(text)
                         }
+                    case let .attachments(_, files, _):
+                        blocks.append(contentsOf: attachmentBlocks(
+                            files, pixelSize: pixelSize,
+                            attachmentIsFailed: attachmentIsFailed,
+                            traits: traits))
                     case let .toolCalls(segments):
                         blocks.append(.tools(segments: segments.count))
                     case .other:
@@ -109,6 +123,11 @@ enum CodeMessageHeightMeasurer {
                             : estimatedAssistantTextHeight(text, width: width,
                                                            typography: typography)
                         blocks.append(.text(height: height))
+                    case let .attachments(_, files, _):
+                        blocks.append(contentsOf: attachmentBlocks(
+                            files, pixelSize: pixelSize,
+                            attachmentIsFailed: attachmentIsFailed,
+                            traits: traits))
                     case let .toolCalls(segments):
                         blocks.append(.tools(segments: segments.count))
                     case .other:
@@ -119,6 +138,47 @@ enum CodeMessageHeightMeasurer {
             if !blocks.isEmpty { planRows.append(CodeRowHeightPlan.Row(blocks: blocks)) }
         }
         return planRows
+    }
+
+    /// The attachment blocks one `.attachments` model block draws, in draw
+    /// order: the image grid, then the failed cards, then the successful file
+    /// grid (CLOSURE.md §4 / `attachment-file-card.md` §0). They are siblings
+    /// of the same 8 pt stack, so `CodeRowHeightPlan` puts one block gap
+    /// between them exactly as the row's `VStack` does.
+    ///
+    /// `pixelSize` lets the page prefer the locally decoded preview size over
+    /// the server's reported dimensions. The settled row resolves both through
+    /// the same `ChatAttachmentStore`, so the measured height and the drawn
+    /// tile box cannot disagree. `attachmentIsFailed` pulls failed documents
+    /// out of the file grid and prices their cards. The defaults keep the
+    /// ClientCore geometry usable without a store (tests and the offscreen gate).
+    private static func attachmentBlocks(
+        _ files: [V2AttachmentContent],
+        pixelSize: (V2AttachmentContent) -> CGSize?,
+        attachmentIsFailed: (V2AttachmentContent) -> Bool,
+        traits: UITraitCollection?
+    ) -> [CodeRowHeightPlan.Block] {
+        let cardHeight = failedCardHeight(traits: traits)
+        var blocks: [CodeRowHeightPlan.Block] = []
+        for height in CodeAttachmentLayout.blockHeights(
+            files: files, pixelSize: pixelSize,
+            isFailed: attachmentIsFailed,
+            failedCardHeight: { _ in cardHeight }) {
+            blocks.append(.attachments(height: height))
+        }
+        return blocks
+    }
+
+    /// The card's line heights are `@ScaledMetric`s relative to the same
+    /// styles (`subheadline` for name, `callout` for artifactType), so the
+    /// measured card and the drawn card scale together.
+    private static func failedCardHeight(traits: UITraitCollection?) -> CGFloat {
+        let nameLine = UIFontMetrics(forTextStyle: .subheadline)
+            .scaledValue(for: 21, compatibleWith: traits)
+        let typeLine = UIFontMetrics(forTextStyle: .callout)
+            .scaledValue(for: 18.2, compatibleWith: traits)
+        return CodeAttachmentLayout.failedCardHeight(
+            nameLineHeight: nameLine, typeLineHeight: typeLine)
     }
 
     /// The metrics `CodeMessageRowView` actually lays out with. The tool line

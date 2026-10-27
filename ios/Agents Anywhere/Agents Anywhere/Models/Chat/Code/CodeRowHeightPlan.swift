@@ -19,6 +19,11 @@ nonisolated enum CodeRowHeightPlan {
     enum Block: Equatable {
         /// A text block whose content height was measured by its renderer.
         case text(height: CGFloat)
+        /// One user-attachment block whose height `CodeAttachmentLayout`
+        /// computed: an image grid, a failed `ArtifactPreviewCard`, or the
+        /// successful file grid. They are siblings of the same 8 pt stack,
+        /// so each one is a block in this plan.
+        case attachments(height: CGFloat)
         /// One `Block.toolCalls` with `segments` collapsed rows.
         case tools(segments: Int)
         /// One settled `thinkingContent` row (`CodeThinkingRow`): the same
@@ -65,6 +70,8 @@ nonisolated enum CodeRowHeightPlan {
                 if index > 0 { total += metrics.blockSpacing }
                 switch block {
                 case .text(let height):
+                    total += max(0, height)
+                case .attachments(let height):
                     total += max(0, height)
                 case .tools(let segments):
                     total += CGFloat(max(0, segments))

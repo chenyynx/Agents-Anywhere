@@ -78,6 +78,50 @@ final class CodeProfileAutoRunModel {
 
     // MARK: - Runtime fixtures
 
+    /// The official `AttachmentTileLayout` has three shapes for three items,
+    /// not one: wide on top, wide on the bottom, or the 2+1 fallback
+    /// (`attachment-tiles-arrangement.md` §1). The height matrix cannot tell
+    /// them apart (all are 288 pt), so the gate checks the shapes directly.
+    private func verifyAttachmentGridShapes() {
+        let cases: [(name: String, count: Int, wideFirst: Bool, wideLast: Bool,
+                     expected: [String])] = [
+            ("one", 1, false, false, ["large"]),
+            ("two", 2, false, false, ["square,square"]),
+            ("three-wide-first", 3, true, false, ["wide", "square,square"]),
+            ("three-wide-last", 3, false, true, ["square,square", "wide"]),
+            ("three-fallback", 3, false, false, ["square,square", "filler,square"]),
+            ("four", 4, false, false, ["square,square", "square,square"]),
+            ("five", 5, false, false, ["square,square", "square,square+n"]),
+        ]
+        for item in cases {
+            let rows = CodeAttachmentGridPlan.rows(
+                count: item.count, wideFirst: item.wideFirst, wideLast: item.wideLast)
+            let actual = rows.map { row in
+                row.map { placement -> String in
+                    if placement.isFiller { return "filler" }
+                    switch placement.size {
+                    case .square: return placement.overflow == nil ? "square" : "square+n"
+                    case .wide: return "wide"
+                    case .large: return "large"
+                    }
+                }.joined(separator: ",")
+            }
+            check(actual == item.expected,
+                  "attachmentLayout \(item.name): \(actual), expected \(item.expected)")
+        }
+        // The view's [I] three-item predicate: landscape = wide, a missing
+        // size is not wide (three files therefore fall to 2+1).
+        check(CodeAttachmentGridPlan.isWide(
+            pixelSize: CGSize(width: 400, height: 300)),
+              "attachmentLayout predicate: landscape should be wide")
+        check(!CodeAttachmentGridPlan.isWide(
+            pixelSize: CGSize(width: 300, height: 400)),
+              "attachmentLayout predicate: portrait should not be wide")
+        check(!CodeAttachmentGridPlan.isWide(pixelSize: nil),
+              "attachmentLayout predicate: no size should not be wide")
+        report["attachmentLayout"] = ["cases": cases.count]
+    }
+
     private struct RuntimeFixture {
         let name: String
         let family: CodeRuntimeProfile.Family
@@ -93,6 +137,7 @@ final class CodeProfileAutoRunModel {
     }
 
     private func runRuntimeFixtures() {
+        verifyAttachmentGridShapes()
         var scenarios: [String: Any] = [:]
         for fixture in Self.runtimeFixtures {
             guard let items = Self.decodeItems(fixture.json) else {
@@ -172,6 +217,7 @@ final class CodeProfileAutoRunModel {
             switch block {
             case let .reasoning(id, _, _): return "reasoning:\(id)"
             case let .text(id, _): return "text:\(id)"
+            case let .attachments(id, files, _): return "attachments:\(id):\(files.count)"
             case .toolCalls: return "toolCalls"
             case let .other(id, _): return "other:\(id)"
             }
@@ -689,6 +735,29 @@ final class CodeProfileAutoRunModel {
         // The user bubble, long CJK + emoji.
         RowHeightFixture(name: "bubble-cjk", kind: .bubble,
                          json: RowHeightFixtureJSON.bubble,
+                         widths: [361, 320],
+                         sizes: [.regular]),
+        // Text bubble followed by the image grid and the file grid. The
+        // attachments are sibling blocks outside the bubble, and the two
+        // grids pay one block gap each (CLOSURE.md §4).
+        RowHeightFixture(name: "bubble-attachment", kind: .bubble,
+                         json: RowHeightFixtureJSON.bubbleAttachment,
+                         widths: [361, 320],
+                         sizes: [.regular, .accessibility]),
+        // A pure-attachment message draws no bubble; the image grid is the
+        // row's only block.
+        RowHeightFixture(name: "bubble-pure-attachment", kind: .bubble,
+                         json: RowHeightFixtureJSON.bubblePureAttachment,
+                         widths: [361, 320],
+                         sizes: [.regular, .accessibility]),
+        // Three images: wide + two squares, two square rows tall.
+        RowHeightFixture(name: "bubble-three-images", kind: .bubble,
+                         json: RowHeightFixtureJSON.bubbleThreeImages,
+                         widths: [361, 320],
+                         sizes: [.regular]),
+        // Five images: the fourth square carries `+1`.
+        RowHeightFixture(name: "bubble-five-images", kind: .bubble,
+                         json: RowHeightFixtureJSON.bubbleFiveImages,
                          widths: [361, 320],
                          sizes: [.regular]),
         // Two text bodies plus a collapsed tool call in one message: the
@@ -2067,6 +2136,66 @@ final class CodeProfileAutoRunModel {
           {"id":"h-bubble","sessionId":"gate-height","type":"message","status":"done","role":"user","orderSeq":1,
            "content":{"text":"请检查这个中文用户气泡的高度：第一行比较长，包含标点和 emoji 😀🚀🎯，第二行继续说明为什么气泡在两种宽度下都必须与测量值一致。"},
            "source":{"itemId":"gate-bubble"}}
+        ]
+        """#
+
+        /// Text bubble + one image (4:3, so the large box is 200x150) + one
+        /// PDF (large file tile, 200x150: no pixel size → 4:3). The
+        /// attachments are sibling blocks
+        /// after the bubble.
+        static let bubbleAttachment = #"""
+        [
+          {"id":"h-ba","sessionId":"gate-height","type":"message","status":"done","role":"user","orderSeq":1,
+           "content":{"text":"Please check the attached screenshot and the report.",
+             "attachments":[
+               {"fileId":"gate-ba-img","name":"screen.png","mediaType":"image/png","size":2048,"width":400,"height":300},
+               {"fileId":"gate-ba-doc","name":"report.pdf","mediaType":"application/pdf","size":4096}
+             ]},
+           "source":{"itemId":"gate-bubble-attachment"}}
+        ]
+        """#
+
+        /// No text: the official `UserTextBubble` is not instantiated, so the
+        /// image grid alone keeps the row alive.
+        static let bubblePureAttachment = #"""
+        [
+          {"id":"h-bpa","sessionId":"gate-height","type":"message","status":"done","role":"user","orderSeq":1,
+           "content":{"text":"",
+             "attachments":[
+               {"fileId":"gate-bpa-img","name":"photo.png","mediaType":"image/png","size":2048,"width":400,"height":300}
+             ]},
+           "source":{"itemId":"gate-bubble-pure-attachment"}}
+        ]
+        """#
+
+        /// Three images: the wide tile on top, two squares below.
+        static let bubbleThreeImages = #"""
+        [
+          {"id":"h-b3","sessionId":"gate-height","type":"message","status":"done","role":"user","orderSeq":1,
+           "content":{"text":"Three shots:",
+             "attachments":[
+               {"fileId":"gate-b3-1","name":"one.png","mediaType":"image/png","size":1024,"width":400,"height":300},
+               {"fileId":"gate-b3-2","name":"two.png","mediaType":"image/png","size":1024,"width":300,"height":400},
+               {"fileId":"gate-b3-3","name":"three.png","mediaType":"image/png","size":1024,"width":800,"height":600}
+             ]},
+           "source":{"itemId":"gate-bubble-three-images"}}
+        ]
+        """#
+
+        /// Five images: the fourth square carries `+1`; the grid stays two
+        /// square rows tall.
+        static let bubbleFiveImages = #"""
+        [
+          {"id":"h-b5","sessionId":"gate-height","type":"message","status":"done","role":"user","orderSeq":1,
+           "content":{"text":"Five:",
+             "attachments":[
+               {"fileId":"gate-b5-1","name":"one.png","mediaType":"image/png","size":1024,"width":400,"height":300},
+               {"fileId":"gate-b5-2","name":"two.png","mediaType":"image/png","size":1024,"width":300,"height":400},
+               {"fileId":"gate-b5-3","name":"three.png","mediaType":"image/png","size":1024,"width":800,"height":600},
+               {"fileId":"gate-b5-4","name":"four.png","mediaType":"image/png","size":1024,"width":400,"height":400},
+               {"fileId":"gate-b5-5","name":"five.png","mediaType":"image/png","size":1024,"width":400,"height":400}
+             ]},
+           "source":{"itemId":"gate-bubble-five-images"}}
         ]
         """#
 

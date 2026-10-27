@@ -93,7 +93,12 @@
   - IPA：`AgentsAnywhere-feat-code-profile-beta-b570-09a0e7a.ipa`（17,102,308 B）
     `https://github.com/chenyynx/Agents-Anywhere/releases/download/ipa-feat-code-profile-beta/AgentsAnywhere-feat-code-profile-beta-b570-09a0e7a.ipa`
   - 已下载核对 `CFBundleVersion = 570`。
-- **最新包 = build 570**；build 567 保留作中间对照。
+- **build 575**（head `46cd63e7`，误撤图片 hairline 的版本）：run `40470129346`，已取消，不作为交付包。
+- **build 576**（head `bc9726c5`，恢复图片 tile hairline）：run `40471120972`，`test` ✅、`build` ✅、`code-profile` ✅（`failures: []`；附件 fixture 高度与 570 相同，delta 全 0）。
+  - IPA：`AgentsAnywhere-feat-code-profile-beta-b576-bc9726c.ipa`（17,102,307 B）
+    `https://github.com/chenyynx/Agents-Anywhere/releases/download/ipa-feat-code-profile-beta/AgentsAnywhere-feat-code-profile-beta-b576-bc9726c.ipa`
+  - 已下载核对 `CFBundleVersion = 576`。
+- **最新包 = build 576**；build 570 / 567 保留作中间对照。
 - **待 pp 真机验收**；dev 未合、未 force push。
 
 ## 3. 官方数值（压缩后也别丢）

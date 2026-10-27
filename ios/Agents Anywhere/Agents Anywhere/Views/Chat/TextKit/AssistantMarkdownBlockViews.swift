@@ -10,20 +10,23 @@ import UIKit
 enum AssistantMarkdownBlockViewFactory {
     static func make(_ block: AssistantMarkdownBlock,
                      width: CGFloat,
-                     displayScale: CGFloat) -> (view: UIView, height: CGFloat) {
+                     displayScale: CGFloat,
+                     interactiveText: Bool = false) -> (view: UIView, height: CGFloat) {
         let height = AssistantMarkdownTextLayout.height(
             of: block, width: width, displayScale: displayScale)
         switch block {
         case .text(let text):
-            let view = AssistantMarkdownBlockTextView()
+            let view = AssistantMarkdownBlockTextView(interactive: interactiveText)
             view.attributedText = text.attributed
             return (view, height)
         case .list(let list):
             return (AssistantListBlockView(list: list, width: width,
-                                           displayScale: displayScale), height)
+                                           displayScale: displayScale,
+                                           interactiveText: interactiveText), height)
         case .quote(let quote):
             return (AssistantQuoteBlockView(quote: quote, width: width,
-                                            displayScale: displayScale), height)
+                                            displayScale: displayScale,
+                                            interactiveText: interactiveText), height)
         case .code(let code):
             return (AssistantCodeBlockView(codeBlock: code, width: width,
                                            displayScale: displayScale), height)
@@ -153,7 +156,8 @@ final class AssistantListBlockView: UIView {
     private let stack = UIStackView()
     private var rowHeights: [NSLayoutConstraint] = []
 
-    init(list: AssistantListBlock, width: CGFloat, displayScale: CGFloat) {
+    init(list: AssistantListBlock, width: CGFloat, displayScale: CGFloat,
+         interactiveText: Bool = false) {
         self.list = list
         super.init(frame: .zero)
         backgroundColor = .clear
@@ -174,7 +178,8 @@ final class AssistantListBlockView: UIView {
 
         for item in list.items {
             let row = AssistantListItemRowView(item: item, list: list,
-                                               width: width, displayScale: displayScale)
+                                               width: width, displayScale: displayScale,
+                                               interactiveText: interactiveText)
             stack.addArrangedSubview(row)
             let height = row.contentHeight
             let constraint = row.heightAnchor.constraint(equalToConstant: height)
@@ -199,7 +204,8 @@ final class AssistantListItemRowView: UIView {
     init(item: AssistantListBlock.Item,
          list: AssistantListBlock,
          width: CGFloat,
-         displayScale: CGFloat) {
+         displayScale: CGFloat,
+         interactiveText: Bool = false) {
         self.list = list
         self.marker = item.marker
         self.contentIndent = list.contentIndent(for: item.marker)
@@ -227,7 +233,8 @@ final class AssistantListItemRowView: UIView {
         ])
         for block in item.blocks {
             let made = AssistantMarkdownBlockViewFactory.make(
-                block, width: contentWidth, displayScale: displayScale)
+                block, width: contentWidth, displayScale: displayScale,
+                interactiveText: interactiveText)
             stack.addArrangedSubview(made.view)
             made.view.heightAnchor.constraint(equalToConstant: made.height).isActive = true
         }
@@ -282,7 +289,8 @@ final class AssistantQuoteBlockView: UIView {
     private let quote: AssistantQuoteBlock
     private let bar = UIView()
 
-    init(quote: AssistantQuoteBlock, width: CGFloat, displayScale: CGFloat) {
+    init(quote: AssistantQuoteBlock, width: CGFloat, displayScale: CGFloat,
+         interactiveText: Bool = false) {
         self.quote = quote
         super.init(frame: .zero)
         backgroundColor = .clear
@@ -310,7 +318,8 @@ final class AssistantQuoteBlockView: UIView {
         ])
         for (index, block) in quote.blocks.enumerated() {
             let made = AssistantMarkdownBlockViewFactory.make(
-                block, width: contentWidth, displayScale: displayScale)
+                block, width: contentWidth, displayScale: displayScale,
+                interactiveText: interactiveText)
             stack.addArrangedSubview(made.view)
             made.view.heightAnchor.constraint(equalToConstant: made.height).isActive = true
             if index > 0 {

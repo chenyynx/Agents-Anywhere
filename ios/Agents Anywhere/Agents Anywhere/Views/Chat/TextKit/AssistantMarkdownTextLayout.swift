@@ -287,12 +287,12 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
     private var linkTapRecognizer: UITapGestureRecognizer?
     private var lastOpened: (url: URL, at: TimeInterval)?
 
-    init() {
+    init(interactive: Bool = false) {
         super.init(frame: .zero, textContainer: nil)
         isEditable = false
         isScrollEnabled = false
-        isSelectable = false
-        isUserInteractionEnabled = false
+        isSelectable = interactive
+        isUserInteractionEnabled = interactive
         backgroundColor = .clear
         isOpaque = false
         contentMode = .redraw
@@ -335,18 +335,28 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
         linkTapRecognizer = tap
     }
 
+    /// Resolve and open a link at a point in this text view. The owner's
+    /// stack view also calls this (ancestor gesture) when the text view's own
+    /// gesture loses arbitration inside the hosted list.
+    @discardableResult
+    func openLink(at point: CGPoint) -> Bool {
+        guard textInteractionEnabled,
+              let index = characterIndex(at: point),
+              let attributedText,
+              attributedText.length > 0 else { return false }
+        let clamped = min(max(index, 0), attributedText.length - 1)
+        guard let url = attributedText.attribute(.link, at: clamped,
+                                                 effectiveRange: nil) as? URL
+        else { return false }
+        open(url)
+        return true
+    }
+
     /// Fallback for hosting/scroll stacks that do not deliver the text view's
     /// own link action. Resolve the tapped character and forward only when it
     /// carries a `.link` attribute; non-link taps are ignored.
     @objc private func handleLinkTap(_ recognizer: UITapGestureRecognizer) {
-        let point = recognizer.location(in: self)
-        guard let index = characterIndex(at: point),
-              let attributedText,
-              attributedText.length > 0 else { return }
-        let clamped = min(max(index, 0), attributedText.length - 1)
-        guard let url = attributedText.attribute(.link, at: clamped, effectiveRange: nil) as? URL
-        else { return }
-        open(url)
+        openLink(at: recognizer.location(in: self))
     }
 
     private func characterIndex(at point: CGPoint) -> Int? {

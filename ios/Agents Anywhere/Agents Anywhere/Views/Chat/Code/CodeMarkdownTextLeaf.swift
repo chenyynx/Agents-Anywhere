@@ -137,7 +137,7 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
 /// The heights are constraints, exactly like `AssistantMarkdownCell`, so the
 /// rendered layout and the value returned by `sizeThatFits` are the same
 /// arithmetic.
-final class CodeMarkdownTextStackView: UIView {
+final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
     private let stack = UIStackView()
     private var heightConstraints: [NSLayoutConstraint] = []
     private var document: AssistantMarkdownDocument?
@@ -167,6 +167,14 @@ final class CodeMarkdownTextStackView: UIView {
             stack.topAnchor.constraint(equalTo: topAnchor),
             bottom,
         ])
+
+        // Ancestor fallback: the hosted list sometimes lets the text view's
+        // own link gesture lose arbitration. A tap recognizer on the stack
+        // still sees the touch; resolve it to the descendant text view.
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleAncestorLinkTap(_:)))
+        tap.cancelsTouchesInView = false
+        tap.delegate = self
+        addGestureRecognizer(tap)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -188,6 +196,28 @@ final class CodeMarkdownTextStackView: UIView {
         builtWidth = width
         builtKey = documentKey
         rebuild(width: width)
+    }
+
+    @objc private func handleAncestorLinkTap(_ recognizer: UITapGestureRecognizer) {
+        _ = openLink(in: self, at: recognizer.location(in: self))
+    }
+
+    private func openLink(in view: UIView, at point: CGPoint) -> Bool {
+        if let textView = view as? AssistantMarkdownBlockTextView {
+            let local = textView.convert(point, from: self)
+            if textView.bounds.contains(local), textView.openLink(at: local) {
+                return true
+            }
+        }
+        for subview in view.subviews {
+            if openLink(in: subview, at: point) { return true }
+        }
+        return false
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        true
     }
 
     private func enableTextInteraction(in view: UIView) {
@@ -213,7 +243,8 @@ final class CodeMarkdownTextStackView: UIView {
         guard let document else { return }
         for block in document.blocks {
             let made = AssistantMarkdownBlockViewFactory.make(
-                block, width: width, displayScale: displayScale)
+                block, width: width, displayScale: displayScale,
+                interactiveText: true)
             // Body text (including list/quote paragraphs) gets system
             // link/selection interaction. Fenced code owns its copy button and
             // horizontal scroll; tables keep their own link lift/menu, so

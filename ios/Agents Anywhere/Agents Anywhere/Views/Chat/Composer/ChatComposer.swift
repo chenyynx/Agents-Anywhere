@@ -47,8 +47,20 @@ struct ChatComposer: View {
                 if !draft.attachments.isEmpty { attachmentTray }
                 ComposerLayout(expanded: draft.isExpanded, maximumEditorHeight: maximumEditorHeight, controls: controls) {
                     Button(action: onOptions) {
-                        AppSymbol("plus", size: 24)
+                        AppSymbol("plus", size: controls.profile.plusSymbolSize)
                             .frame(width: controls.touchTarget, height: controls.touchTarget)
+                            .background {
+                                if controls.profile.plusStyle == .circle {
+                                    // The official chrome is 36 pt of circle
+                                    // inside the 44 pt hit slot; drawing the
+                                    // fill at the slot size ran into the card's
+                                    // rounded corner.
+                                    Circle()
+                                        .fill(Color.primary.opacity(0.05))
+                                        .frame(width: controls.profile.plusCircleDiameter,
+                                               height: controls.profile.plusCircleDiameter)
+                                }
+                            }
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
@@ -63,7 +75,9 @@ struct ChatComposer: View {
                                 .foregroundStyle(.secondary)
                                 .allowsHitTesting(false)
                         }
-                        NativeComposerEditor(draft: draft, controller: editor, maximumHeight: maximumEditorHeight, onCommandSend: onSend)
+                        NativeComposerEditor(draft: draft, controller: editor,
+                            maximumHeight: maximumEditorHeight, onCommandSend: onSend,
+                            expandAnimation: expandAnimation)
                     }
 
                     Button {
@@ -90,7 +104,9 @@ struct ChatComposer: View {
                     .accessibilityIdentifier(showsQueueSend ? "chat.composer.queueSend" : "chat.composer.send")
 
                     if contextUsage.isVisible, draft.isFocused {
-                        ContextRingButton(state: contextUsage, touchTarget: controls.touchTarget)
+                        ContextRingButton(state: contextUsage,
+                            touchTarget: controls.touchTarget,
+                            ringDiameter: controls.contextRingDiameter)
                     }
 
                     if showsCommands {
@@ -113,10 +129,10 @@ struct ChatComposer: View {
                 style: .continuous))
             .glassEffectID("composer", in: glass)
         }
-        .padding(.horizontal, draft.isExpanded ? ChatControlMetrics.expandedHorizontalInset : ChatControlMetrics.collapsedHorizontalInset)
-        .padding(.top, 8)
-        .padding(.bottom, 10)
-        .animation(reduceMotion ? nil : .smooth(duration: 0.24), value: draft.isExpanded)
+        .padding(.horizontal, controls.horizontalInset(expanded: draft.isExpanded))
+        .padding(.top, controls.topMargin)
+        .padding(.bottom, controls.bottomMargin(expanded: draft.isExpanded))
+        .animation(expandAnimation, value: draft.isExpanded)
         // The composer is the only subtree that already re-evaluates on every
         // keystroke, including each Chinese IME marked-text update. Observing
         // the draft from the page root re-evaluated the whole conversation.
@@ -126,6 +142,18 @@ struct ChatComposer: View {
 
     /// The queue form: the single accent key shows the arrow and enqueues.
     private var showsQueueSend: Bool { affordance.shape == .queueSend }
+
+    /// The profile owns the transition curve: Chat keeps `.smooth(0.24)`,
+    /// Code uses the official `spring(response: 0.22, dampingFraction: 0.77)`.
+    private var expandAnimation: Animation? {
+        guard !reduceMotion else { return nil }
+        switch controls.expandAnimation {
+        case .smooth(let duration):
+            return .smooth(duration: duration)
+        case .spring(let response, let dampingFraction):
+            return .spring(response: response, dampingFraction: dampingFraction)
+        }
+    }
 
     /// Enabled state of the accent key, owned by the resolved affordance.
     private var sendEnabled: Bool { affordance.isActionEnabled }

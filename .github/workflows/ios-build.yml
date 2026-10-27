@@ -39,6 +39,10 @@ on:
         description: "Run the C5 Code-profile simulator gate"
         type: boolean
         default: false
+      anchor_probe:
+        description: "Run the safe-area delivery probe (Anchors the list's inset source)"
+        type: boolean
+        default: false
       probe:
         description: "Compile the on-device timeline probe overlay (AA_TIMELINE_PROBE)"
         type: boolean
@@ -637,6 +641,126 @@ jobs:
             ${{ runner.temp }}/textkit-m3-failure.png
             ${{ runner.temp }}/sim-build.log
           if-no-files-found: ignore
+
+      - name: Shut down simulator
+        if: always()
+        run: xcrun simctl shutdown "${{ steps.sim.outputs.udid }}" || true
+
+  anchor-probe:
+    # Does the page's `safeAreaBar` host deliver the bar (and animated
+    # safe-area steps) to a nested GeometryReader? The JSON carries every
+    # proxy delivery with its timestamp, so a per-frame read is
+    # distinguishable from a single jump. No device or recording needed.
+    needs: test
+    if: inputs.anchor_probe == true
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pin Xcode
+        run: |
+          sudo xcode-select -s /Applications/${{ github.event.inputs.xcode || 'Xcode_26.5.app' }}
+          xcodebuild -version
+
+      - name: Pick an iPhone simulator
+        id: sim
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, re, subprocess
+          data = json.loads(subprocess.check_output(["xcrun", "simctl", "list", "devices", "available", "-j"]))
+          best = None
+          for runtime, devices in data.get("devices", {}).items():
+              if "iOS" not in runtime:
+                  continue
+              match = re.search(r"iOS-(\d+)-(\d+)", runtime)
+              version = (int(match.group(1)), int(match.group(2))) if match else (0, 0)
+              for device in devices:
+                  if not device.get("name", "").startswith("iPhone"):
+                      continue
+                  if not device.get("isAvailable", False):
+                      continue
+                  key = (version, device["name"])
+                  if best is None or key > best[0]:
+                      best = (key, device)
+          if best is None:
+              raise SystemExit("no available iPhone simulator runtime")
+          print(f"udid={best[1]['udid']}")
+          print(f"name={best[1]['name']}")
+          print(f"runtime={best[0][0]}.{best[0][1]}")
+          PY
+
+      - name: Boot simulator
+        run: |
+          xcrun simctl boot "${{ steps.sim.outputs.udid }}" || true
+          xcrun simctl bootstatus "${{ steps.sim.outputs.udid }}" -b
+
+      - name: Build for simulator
+        run: |
+          set -o pipefail
+          cd "ios/Agents Anywhere"
+          xcodebuild build \
+            -project "Agents Anywhere.xcodeproj" \
+            -scheme "Agents Anywhere" \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            ENABLE_DEBUG_DYLIB=NO \
+            -derivedDataPath build/DDSim \
+            2>&1 | tee "$RUNNER_TEMP/anchor-build.log" | tail -40
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: anchor-probe-build-log
+          path: ${{ runner.temp }}/anchor-build.log
+          if-no-files-found: ignore
+
+      - name: Run the anchor probe
+        run: |
+          set -euo pipefail
+          UDID="${{ steps.sim.outputs.udid }}"
+          APP="ios/Agents Anywhere/build/DDSim/Build/Products/Debug-iphonesimulator/Agents Anywhere.app"
+          xcrun simctl install "$UDID" "$APP"
+          xcrun simctl terminate "$UDID" com.agentsanywhere.app || true
+          xcrun simctl launch "$UDID" com.agentsanywhere.app aa-anchor-probe
+          CONTAINER=$(xcrun simctl get_app_container "$UDID" com.agentsanywhere.app data)
+          RESULT="$CONTAINER/Documents/anchor-probe.json"
+          for _ in $(seq 1 90); do
+            if [ -f "$RESULT" ] && grep -q '"completed"[[:space:]]*:[[:space:]]*true' "$RESULT"; then break; fi
+            sleep 1
+          done
+          if [ ! -f "$RESULT" ]; then
+            echo "::error::anchor probe produced no result file"
+            xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/anchor-failure.png" || true
+            exit 1
+          fi
+          cp "$RESULT" "$RUNNER_TEMP/anchor-probe.json"
+          cat "$RUNNER_TEMP/anchor-probe.json"
+          python3 - <<'PY'
+          import json, os, sys
+          path = os.path.join(os.environ["RUNNER_TEMP"], "anchor-probe.json")
+          report = json.load(open(path))
+          bar = report.get("barHeight", 0)
+          outer = report.get("outerProxyBottom", -1)
+          inner = report.get("innerProxyBottom", -1)
+          deliveries = report.get("deliveries", [])
+          animated = [d for d in deliveries
+                      if d.get("phase") in ("rise", "keyboard", "fall")]
+          print(f"bar={bar} outer={outer} inner={inner} delta={inner - outer}")
+          print(f"deliveries={len(deliveries)} animated={len(animated)}")
+          print("delivery timeline:",
+                [(round(d["t"], 3), d["bottom"], d["phase"]) for d in deliveries][:40])
+          if inner - outer < bar - 1:
+              print("::error::the inner proxy does not include the safe-area bar")
+              sys.exit(1)
+          if len(animated) < 2:
+              print("::error::the proxy did not receive the animated safe-area change")
+              sys.exit(1)
+          PY
 
       - name: Shut down simulator
         if: always()

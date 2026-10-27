@@ -2,9 +2,9 @@ import Combine
 import SwiftUI
 import UIKit
 
-/// The C4 product timeline: the SwiftUI page's chrome (opening gate, keyboard
-/// window, pending/queue/approval events, navigation suspension) around the
-/// collection container.
+/// The C4 product timeline: the SwiftUI page's chrome (opening gate,
+/// pending/queue/approval events, navigation suspension) around the collection
+/// container.
 ///
 /// The old `ChatTimelineView` stays intact and selectable; this view is only
 /// built when `aa.timeline.collectionView` is on. I10–I13/I14/I15/I20 and the
@@ -12,12 +12,12 @@ import UIKit
 /// load actions are inert until that wiring lands.
 struct TimelineChatTimelineView: View {
     let model: SessionChatModel
-    /// The composer bar's content height. The collection view is a full-screen
-    /// bleed, so it adds this to its content inset; the window inset (home
-    /// indicator, keyboard) stays UIKit's automatic adjustment.
-    let bottomBarInset: CGFloat
+    /// The page's SwiftUI safe area, read inside the composer `safeAreaBar`
+    /// and outside the list's ignore: bar + home indicator + keyboard. This is
+    /// the single inset source (official formula); no keyboard notifications
+    /// are involved.
+    let safeAreaInsets: EdgeInsets
     @StateObject private var bridge: TimelineChatBridge
-    @State private var keyboard = TimelineKeyboardMonitor()
     @Environment(\.dynamicTypeSize) private var dynamicType
     @Environment(\.layoutDirection) private var layoutDirection
     @Environment(\.legibilityWeight) private var legibilityWeight
@@ -35,9 +35,9 @@ struct TimelineChatTimelineView: View {
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void,
          onFile: @escaping (String) -> Void,
          onSubAgent: @escaping (String) -> Void,
-         bottomBarInset: CGFloat = 0) {
+         safeAreaInsets: EdgeInsets = EdgeInsets()) {
         self.model = model
-        self.bottomBarInset = bottomBarInset
+        self.safeAreaInsets = safeAreaInsets
         _bridge = StateObject(wrappedValue: TimelineChatBridge(model: model,
             onAttachment: onAttachment, onFile: onFile, onSubAgent: onSubAgent))
     }
@@ -107,7 +107,7 @@ struct TimelineChatTimelineView: View {
             content: bridge.adapter,
             measurer: bridge.adapter.measurer,
             typography: typography,
-            bottomBarInset: bottomBarInset,
+            safeAreaInsets: safeAreaInsets,
             onPhaseChanged: { transition in
                 if transition.gestureBegan { bridge.readerDidTakeOver() }
             },
@@ -168,19 +168,6 @@ struct TimelineChatTimelineView: View {
                 guard !Task.isCancelled else { return }
                 bridge.fallbackOpeningSettle()
             }
-            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { note in
-                keyboard.setVisible(true)
-                bridge.controller?.setKeyboardVisible(true)
-                keyboardTransitionBegan(TimelineKeyboardEvent(source: .willShow, userInfo: note.userInfo ?? [:]))
-            }
-            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { note in
-                keyboard.setVisible(false)
-                bridge.controller?.setKeyboardVisible(false)
-                keyboardTransitionBegan(TimelineKeyboardEvent(source: .willHide, userInfo: note.userInfo ?? [:]))
-            }
-            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
-                keyboardTransitionBegan(TimelineKeyboardEvent(source: .willChangeFrame, userInfo: note.userInfo ?? [:]))
-            }
             .onDisappear { bridge.cancel() }
             // Official TurnStatusView transfer: the end of a stream is the
             // one light impact; other phase changes are selections. Streamed
@@ -210,12 +197,17 @@ struct TimelineChatTimelineView: View {
             .timelineProbeOverlay(controller: bridge.controller,
                                   adapter: bridge.adapter,
                                   ready: bridge.controllerAttached)
+#if AA_TIMELINE_PROBE
+            // Copies the C3 inset log (proxy value, inherited animation
+            // duration, offset before/after) without a screen recording. The
+            // list ignores the safe area, so the pill sits on the leading
+            // edge at mid-height — inside the reachable area on every device.
+            .overlay(alignment: .leading) {
+                AnchorProbeLogOverlay().padding(.leading, 8)
+            }
+#endif
     }
 
-    private func keyboardTransitionBegan(_ event: TimelineKeyboardEvent) {
-        keyboard.noteLayoutEvent(event)
-        bridge.controller?.beginKeyboardTransition(duration: event.duration)
-    }
 }
 
 /// Owns the adapter and the controller handshake. A struct cannot capture

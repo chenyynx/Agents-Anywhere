@@ -18642,6 +18642,24 @@
         }
       }
     },
+    "排队至本轮结束后…": {
+      "comment": "Code composer placeholder while a turn is running and the field is focused; mirrors the official mid_turn_queue_placeholder.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Queue for after this turn…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "排队至本轮结束后…"
+          }
+        }
+      }
+    },
     "thought_process": {
       "extractionState": "manual",
       "localizations": {

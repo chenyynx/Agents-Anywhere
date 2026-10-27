@@ -18,9 +18,15 @@ struct NewSessionView: View, Equatable {
     @Environment(AppState.self) private var appState
     @State private var confirmsRetry = false
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
+    @AppStorage(TimelineCollectionSwitch.key) private var usesCollectionTimeline = false
     @ScaledMetric(relativeTo: .body) private var bodyLineHeight: CGFloat = 22
 
-    private var controls: ChatControlMetrics { .init(bodyLineHeight: bodyLineHeight) }
+    private var composerProfile: ComposerMetricsProfile {
+        usesCollectionTimeline ? .code : .chat(bodyLineHeight: bodyLineHeight)
+    }
+    private var controls: ChatControlMetrics {
+        .init(bodyLineHeight: bodyLineHeight, profile: composerProfile)
+    }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.model === rhs.model && lhs.connectors == rhs.connectors && lhs.sessions == rhs.sessions
@@ -52,8 +58,7 @@ struct NewSessionView: View, Equatable {
                     // Follows the composer's glass edge in both states, a few
                     // points inside it and slightly apart, to sit balanced.
                     workspaceButton
-                        .padding(.horizontal, model.draft.isExpanded
-                            ? ChatControlMetrics.expandedHorizontalInset : ChatControlMetrics.collapsedHorizontalInset)
+                        .padding(.horizontal, controls.horizontalInset(expanded: model.draft.isExpanded))
                         .padding(.leading, 6)
                         .padding(.bottom, 6)
                 ChatComposerDock(draft: model.draft, settings: model.settings,

@@ -342,7 +342,7 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
         // Delegate-level drag test: a finger always beats the follow. simctl
         // cannot synthesize touches, so the callback is invoked directly.
         controller.scrollViewWillBeginDragging(controller.collectionView)
-        dragDisarmed = !controller.armedBottom.isArmed
+        dragDisarmed = !controller.debugIsFollowing
         controller.scrollViewDidEndDragging(controller.collectionView,
                                             willDecelerate: false)
         if !dragDisarmed {
@@ -491,7 +491,7 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
             "starts": controller.debugStreamingFollowStarts,
             "frameCalls": controller.debugStreamingFrameCalls,
             "eligibleFrames": controller.debugStreamingFollowEligibleFrames,
-            "armedAtEnd": controller.armedBottom.isArmed,
+            "armedAtEnd": controller.debugIsFollowing,
             "offsets": followOffsets.map(Double.init),
             "sawReveal": sawReveal,
             "sawClamp": sawClamp,

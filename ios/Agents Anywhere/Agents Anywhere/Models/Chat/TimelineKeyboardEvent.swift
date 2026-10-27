@@ -38,6 +38,20 @@ nonisolated struct TimelineKeyboardEvent: Equatable {
         case privateSpring
         case unknown(Int)
 
+        /// The raw payload value, which UIKit also accepts as the high half of
+        /// `UIView.AnimationOptions` — that is how an animation gets the
+        /// keyboard's own spring (7) instead of a named curve.
+        var rawValue: Int {
+            switch self {
+            case .easeInOut: return 0
+            case .easeIn: return 1
+            case .easeOut: return 2
+            case .linear: return 3
+            case .privateSpring: return 7
+            case .unknown(let value): return value
+            }
+        }
+
         init(rawValue: Int) {
             switch rawValue {
             case 0: self = .easeInOut
@@ -55,7 +69,9 @@ nonisolated struct TimelineKeyboardEvent: Equatable {
     let duration: TimeInterval
     let curve: Curve
     let isLocal: Bool
-
+    /// The keyboard's final frame in screen coordinates: the transcript derives
+    /// its inset from it at the notification, before UIKit applies anything.
+    let endFrame: CGRect?
     /// A zero (or absent) duration applies the change without an animation:
     /// there is no transition window worth withholding anything for, and the
     /// settled sample is evaluated right away.
@@ -77,6 +93,7 @@ nonisolated struct TimelineKeyboardEvent: Equatable {
     /// documented defaults (no animation, ease-in-out, local) instead of
     /// dropping the transition.
     init(source: Source, userInfo: [AnyHashable: Any]) {
+        endFrame = Self.frame(from: userInfo[Key.frameEnd])
         self.source = source
         duration = (userInfo[Key.duration] as? NSNumber)?.doubleValue ?? 0
         curve = Curve(rawValue: (userInfo[Key.curve] as? NSNumber)?.intValue ?? 0)

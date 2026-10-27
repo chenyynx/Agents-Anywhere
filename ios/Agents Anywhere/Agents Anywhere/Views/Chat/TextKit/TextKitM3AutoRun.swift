@@ -246,6 +246,20 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
         let estimate = estimateKind(for: item).height
         let pending = controller.layout.pendingMeasurements.contains(item)
 
+        // The controller now opens at the official `.end` placement, so the
+        // second row can be far above the viewport. This gate tests TextKit
+        // rendering, not where the page opens: bring the row under test into
+        // the viewport explicitly.
+        if let attributes = controller.layout.attributes(for: item.itemID) {
+            let top = -controller.collectionView.adjustedContentInset.top
+            controller.collectionView.setContentOffset(
+                CGPoint(x: 0, y: max(top, attributes.frame.minY
+                    - controller.collectionView.adjustedContentInset.top)),
+                animated: false)
+            controller.collectionView.layoutIfNeeded()
+            await wait(150)
+        }
+
         var sample: (content: CGFloat, frame: CGFloat, inWindow: Bool)?
         var sampleWidth: CGFloat = 0
         var tableSurface: AssistantTableBlockView?

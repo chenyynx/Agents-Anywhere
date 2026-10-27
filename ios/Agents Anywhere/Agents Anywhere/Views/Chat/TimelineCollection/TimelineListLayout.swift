@@ -313,7 +313,7 @@ final class TimelineListLayout: UICollectionViewLayout {
     /// it belongs to and what absolute offset it wants.
     var debugInsertionOwed: String {
         guard let owed = insertionOwed else { return "nil" }
-        let target = owed.target.map { String($0) } ?? "nil"
+        let target = owed.target.map { String(describing: $0) } ?? "nil"
         return "gen=\(owed.generation) expected=\(owed.expectedFirstRowID ?? "nil")"
             + " target=\(target) settled=\(owed.isSettled)"
     }

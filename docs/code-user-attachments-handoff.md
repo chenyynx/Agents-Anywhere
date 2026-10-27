@@ -72,6 +72,7 @@
   - 底部文字区 = 两行 line box + **上 3.0 pt / 下 2.5 pt padding**；灰衬 = 140 − (两行 + 5.5)，preview 底边与文字区分界齐平（#99 → #104 同机截图修正）。文件图标中心在**整卡垂直中心**，不是 preview 中心（#104）。
   - 白 preview 与 footer 交界处**不画底边线**：官方同位置逐像素纯白；AA 旧的四边圆角描边会多出一条淡线。preview 改为上两角 **4pt**、下两角直角，底边用 preview 填充色盖掉 1.5/displayScale（#105/#106）；外卡仍 14 continuous。
   - 文件卡加 **shadow opacity 0.05 / radius 2 / y 1**（`file-card-style-round3.md` E 值，#106）；official 截图有柔和外沿，之前 582 是平的。
+  - **右侧阴影被 cell 裁**：`TimelineHostingCell` 的 `clipsToBounds` 止于内容右缘；用户行加 **trailing 4pt**（`CodePageTheme.userRowShadowInset`），measurer 的 bubble 宽度同步减 4（#107）。
   - 用户行顺序改为 **附件 → 文本气泡**；builder / `CodeMessageRowView` / `CodeUserMessageRow` / measurer 全部一致（#97）。
   - 3 图官方分支 wide 上 / wide 下 / 2+1；gap 8。图片 tile 边框：pp 2026-10-27 真机确认「官方图片有线」，最终口径为**图片 tile 也画 `CodeAttachmentHairline`**（与 file card / preview 同 token，`1/displayScale`，CORRECTIONS #103）。此前 #101/#102 的黑图/营销图像素「未见独立灰线」保留为观察记录，不再作为否定依据；build 575 是误撤线版本，以恢复后的 build 576 为准。
 - 已知非阻塞残余：
@@ -109,9 +110,10 @@
   - IPA：`AgentsAnywhere-feat-code-profile-beta-b585-57d6df4.ipa`（17,105,347 B）
     `https://github.com/chenyynx/Agents-Anywhere/releases/download/ipa-feat-code-profile-beta/AgentsAnywhere-feat-code-profile-beta-b585-57d6df4.ipa`
   - 已下载核对 `CFBundleVersion = 585`。
-- 同机截图交叉论证全表：`/home/ubuntu/aa-test/claude-ios-re/EVIDENCE/round25/file-card-cross-validation.md`（官方 vs AA 逐项 px/pt，含 #106 圆角/阴影）。
-- **最新包 = build 585**；build 582 / 576 / 570 / 567 保留作中间对照。
-- **待办（2026-10-27，pp 真机反馈）**：build 585 的文件卡阴影仍不可见。已记 `/home/ubuntu/repos/Agents-Anywhere/.local-dev/aa-backlog.md`「2026-10-27 文件卡阴影」；待查 `.shadow` 是否被 clip/父容器裁剪、0.05/2/1 是否太弱、是否改为 background ZStack 的 shape shadow。代码位置 `CodeFileTile.swift` 的 `card`。
+- **build 589**（head `0759a9b8`，右阴影 cell 裁剪修正）：run `40486464344`，CI 进行中；绿后补包名/链接。
+- 同机截图交叉论证全表：`/home/ubuntu/aa-test/claude-ios-re/EVIDENCE/round25/file-card-cross-validation.md`（官方 vs AA 逐项 px/pt，含 #106 圆角/阴影、#107 裁剪）。
+- **最新包 = build 585**（589 绿后更新）；build 582 / 576 / 570 / 567 保留作中间对照。
+- **待办（已被 #107 处理，待真机验）**：585 文件卡右阴影被 `TimelineHostingCell` 裁掉；589 加 trailing 4pt。
 - **待 pp 真机验收**；dev 未合、未 force push。
 
 ## 3. 官方数值（压缩后也别丢）

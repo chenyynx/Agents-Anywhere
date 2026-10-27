@@ -194,6 +194,10 @@ struct CodeMessageRowView: View {
                 others.append(block)
             }
         }
+        let hasFileAttachment = row.blocks.contains { block in
+            guard case let .attachments(_, files, _) = block else { return false }
+            return files.contains { !$0.isImage }
+        }
         return VStack(alignment: .leading, spacing: CodePageTheme.blockGap) {
             // The official row puts the attachment grids above the text
             // bubble (device screenshots 2026-10-27).
@@ -206,10 +210,11 @@ struct CodeMessageRowView: View {
                 CodeUserBubble(text: texts.joined(separator: "\n\n"))
             }
         }
-        // Keep the card's shadow inside the hosting cell: its right edge
-        // otherwise coincides with the cell's trailing edge and the shadow is
-        // clipped there while the left/top/bottom shadows draw.
-        .padding(.trailing, CodePageTheme.userRowShadowInset)
+        // Keep the file card's shadow inside the hosting cell: its right
+        // edge otherwise coincides with the cell's trailing edge and the
+        // shadow is clipped there while the left/top/bottom shadows draw.
+        // Text-only and image-only rows keep the official 16 pt edge.
+        .padding(.trailing, hasFileAttachment ? CodePageTheme.userRowShadowInset : 0)
     }
 
     // MARK: - Blocks

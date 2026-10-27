@@ -79,6 +79,7 @@ enum CodeMessageHeightMeasurer {
             var blocks: [CodeRowHeightPlan.Block] = []
             if row.role == .user {
                 var texts: [String] = []
+                var hasFileAttachment = false
                 for block in row.blocks {
                     switch block {
                     case let .reasoning(_, text, status):
@@ -91,6 +92,8 @@ enum CodeMessageHeightMeasurer {
                             texts.append(text)
                         }
                     case let .attachments(_, files, _):
+                        hasFileAttachment = hasFileAttachment
+                            || files.contains { !$0.isImage }
                         blocks.append(contentsOf: attachmentBlocks(
                             files, pixelSize: pixelSize,
                             attachmentIsFailed: attachmentIsFailed,
@@ -112,7 +115,8 @@ enum CodeMessageHeightMeasurer {
                     // measurement.
                     blocks.append(.text(height: userBubbleTextHeight(
                         texts.joined(separator: "\n\n"),
-                        width: width - CodePageTheme.userRowShadowInset,
+                        width: width - (hasFileAttachment
+                            ? CodePageTheme.userRowShadowInset : 0),
                         traits: traits)))
                 }
             } else {

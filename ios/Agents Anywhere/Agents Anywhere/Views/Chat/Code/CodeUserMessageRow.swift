@@ -32,9 +32,11 @@ struct CodeUserMessageRow: View {
                 CodeUserBubble(text: text)
             }
         }
-        // Same trailing inset as the settled row: keep the 140 pt card's
-        // right-side shadow inside the hosting cell.
-        .padding(.trailing, CodePageTheme.userRowShadowInset)
+        // Same conditional trailing inset as the settled row: only a file
+        // card needs the room for its shadow.
+        .padding(.trailing,
+                 attachments.contains { !$0.content.isImage }
+                    ? CodePageTheme.userRowShadowInset : 0)
         .overlay(alignment: .bottomLeading) {
             // The delivery state belongs to the whole user row: with
             // attachments the indicator sits beside the last block, not

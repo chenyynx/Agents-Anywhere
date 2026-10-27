@@ -26,6 +26,10 @@ final class SessionChatModel {
     @ObservationIgnored private var subagentStopReleases: [String: Task<Void, Never>] = [:]
     private(set) var isLoadingSettings = false
     var error: String?
+    /// Bumped on every refused send, so the toast can re-open even when the
+    /// copy is byte-identical to one the user dismissed. A value change alone
+    /// cannot signal that: the store dedups identical failures by design.
+    private(set) var blockedSendTick = 0
     var settingsError: String?
     private(set) var isOpeningPrepared = false
     var isOpeningReady: Bool { isOpeningPrepared && timeline.hasPresentedSnapshot }
@@ -587,8 +591,8 @@ final class SessionChatModel {
         }
     }
 
-    func send(_ text: String) async {
-        if let command = await catalogCommand(for: text) {
+    func send(_ text: String, allowsCommands: Bool = true) async {
+        if allowsCommands, let command = await catalogCommand(for: text) {
             session.composer.text = text
             await runCommand(command, raw: text)
             return
@@ -621,25 +625,52 @@ final class SessionChatModel {
     private func surfaceBlockedSendIfNeeded() {
         guard session.blockedSendPendingID != nil else { return }
         error = String(localized: "有相同内容的消息结果尚未确认，已阻止重复发送。请先处理那条发送记录，或修改内容后再发。")
+        blockedSendTick += 1
     }
 
-    /// Sends a failed record's payload again as a new message. The record is
-    /// removed first: its outcome cannot be resolved any more, and leaving it
-    /// in place would keep refusing the identical draft.
+    /// Sends a failed record's payload again. A running turn takes the queue
+    /// like any other composer commit; otherwise the record is retired and the
+    /// payload is sent as a fresh message. Retiring happens only after every
+    /// gate is open, and the payload sits in the composer first, so no early
+    /// return can lose it.
     func retryPendingMessage(_ pending: V2PendingMessage) async {
         guard session.isValid else { return }
-        // The send path overwrites the composer with the payload it sends;
-        // require an empty editor so a retry can never eat a draft the user
-        // is still writing.
-        guard session.composer.text.isEmpty, session.composer.attachments.isEmpty else {
+        // The payload is written into the composer; that is only safe when the
+        // editor is empty or already holds this exact record (its usual state:
+        // a failed send refills the draft).
+        let sameAsRecord = session.composer.text == pending.content
+            && session.composer.attachments.map(\.id) == pending.localAttachmentIDs
+        guard session.composer.text.isEmpty || sameAsRecord else {
             error = String(localized: "请先清空输入框，再重新发送这条记录。")
+            return
+        }
+        if isComposerStreaming {
+            session.dismissPendingMessage(id: pending.id)
+            session.draft = pending.content
+            session.composer.attachments = pending.attachments
+            session.draftAttachmentIDs = pending.attachmentIDs
+            guard let item = session.enqueueDraft() else {
+                surfaceBlockedSendIfNeeded()
+                return
+            }
+            queueEnqueueTick += 1
+            Task {
+                _ = await uploadQueuedAttachments(item)
+                session.evaluateSendQueue()
+            }
+            return
+        }
+        guard !isWorking, session.canSend, !session.composer.isComposing else {
+            error = String(localized: "Wait for the session to reconnect before sending.")
             return
         }
         session.dismissPendingMessage(id: pending.id)
         session.draft = pending.content
         session.composer.attachments = pending.attachments
         session.draftAttachmentIDs = pending.attachmentIDs
-        await send(pending.content)
+        // A record whose text starts with "/" was sent as plain text; resending
+        // it must not turn into a command invocation now.
+        await send(pending.content, allowsCommands: false)
     }
 
     /// Stop is idempotent on the server (an already-finished turn answers 409,

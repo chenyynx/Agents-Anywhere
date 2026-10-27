@@ -92,8 +92,12 @@ struct ChatNotification: Equatable {
     /// dismissed and persist the acknowledgement behind it.
     private var latestNotifications: [String: ChatNotification] = [:]
 
-    func update(source: String, failure: V2ClientFailure?, title: String? = nil, canRetry: Bool = false) {
-        guard latest[source] != failure else { return }
+    func update(source: String, failure: V2ClientFailure?, title: String? = nil, canRetry: Bool = false,
+                force: Bool = false) {
+        // `force` exists for events that repeat the same copy on purpose (a
+        // refused send the user taps again): the value channel cannot tell a
+        // new occurrence from a dismissed one, an event tick can.
+        guard force || latest[source] != failure else { return }
         latest[source] = failure
         items.removeAll { $0.id == source }
         guard let failure, failure.kind != .cancelled else { return }

@@ -485,4 +485,67 @@ import Testing
         #expect(refused.shape == .queueSend)
         #expect(!refused.isActionEnabled)
     }
+
+    @Test func blockedIdenticalSendExplainsEveryTap() async throws {
+        let http = TestHTTPTransport(); let realtime = TestRealtimeAPI()
+        let (repo, model) = makeSession(http, realtime: realtime)
+        defer { repo.reset() }
+        let task = Task { await model.connect() }
+        defer { task.cancel() }
+        http.respond = { call in
+            if call.path.hasSuffix("messages") { throw URLError(.timedOut) }
+            return try http.defaultResponse(call)
+        }
+        let chat = makeChat(model, repo, http)
+        model.draft = "Blocked"
+        await chat.send("Blocked")
+        #expect(model.draft == "Blocked")
+
+        // Same payload, unresolved outcome: refused, explained, and counted —
+        // the tick is what lets the toast re-open after a dismissal.
+        try await eventually { model.canSend }
+        await chat.send("Blocked")
+        #expect(chat.error != nil)
+        let firstTick = chat.blockedSendTick
+        #expect(firstTick > 0)
+
+        chat.error = nil
+        try await eventually { model.canSend }
+        await chat.send("Blocked")
+        #expect(chat.blockedSendTick == firstTick + 1)
+        #expect(chat.error != nil)
+        #expect(http.count("messages") == 1)
+    }
+
+    @Test func retryNeverEatsAForeignDraftAndSendsTheRecordPayload() async throws {
+        let http = TestHTTPTransport(); let realtime = TestRealtimeAPI()
+        let (repo, model) = makeSession(http, realtime: realtime)
+        defer { repo.reset() }
+        let task = Task { await model.connect() }
+        defer { task.cancel() }
+        http.respond = { call in
+            if call.path.hasSuffix("messages"), http.count("messages") == 1 { throw URLError(.timedOut) }
+            return try http.defaultResponse(call)
+        }
+        let chat = makeChat(model, repo, http)
+        model.draft = "Retry me."
+        await chat.send("Retry me.")
+        let record = try #require(model.pendingMessages.first)
+
+        // A draft the user is writing is never overwritten by a retry.
+        model.draft = "My next message"
+        await chat.retryPendingMessage(record)
+        #expect(chat.error != nil)
+        #expect(model.draft == "My next message")
+        #expect(model.pendingMessages.contains { $0.id == record.id })
+
+        // With the editor holding the record's own payload (its usual state),
+        // the retry retires the record and sends a fresh message.
+        chat.error = nil
+        model.draft = record.content
+        try await eventually { model.canSend }
+        await chat.retryPendingMessage(record)
+        #expect(!model.pendingMessages.contains { $0.id == record.id })
+        #expect(http.count("messages") == 2)
+    }
 }

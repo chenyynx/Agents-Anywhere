@@ -355,6 +355,13 @@ struct SessionChatView: View, Equatable {
         .onChange(of: model.error, initial: true) { _, message in
             toasts.update(source: "operation", failure: message.map { V2ClientFailure(kind: .rejected, message: $0) })
         }
+        // Refused sends re-open their explanation even when the copy is
+        // identical to a toast the user already dismissed; the value channel
+        // above cannot see a repeated tap, this tick can.
+        .onChange(of: model.blockedSendTick) { _, _ in
+            guard let message = model.error else { return }
+            toasts.update(source: "operation", failure: V2ClientFailure(kind: .rejected, message: message), force: true)
+        }
         .onChange(of: model.commandFailure) { _, feedback in
             // Each command failure is new, even when its text repeats a dismissed one.
             toasts.update(source: "command", failure: nil)

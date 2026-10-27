@@ -7,14 +7,14 @@
 
 - 工作副本：`/home/ubuntu/aa-wt-attachments`
 - 分支：`feat/code-profile-beta`
-- HEAD：`594ceb3f`（回底按钮死区修正；其后只有 docs）
-- 最新包：build **601**（`AgentsAnywhere-feat-code-profile-beta-b601-594ceb3.ipa`，17,134,134 B，`CFBundleVersion=601`）
-- CI：run `40524112345`（`iOS Build · 回底按钮·静止死区修正`）`test` / `build` / `code-profile` / `timeline-autorun` 全绿；gate `failures: []`
+- HEAD：`b8866809`（回底按钮键盘往返修复 + 门禁适配；其后只有 docs）
+- 最新包：build **610**（`AgentsAnywhere-feat-code-profile-beta-b610-b886680.ipa`，17,133,721 B，`CFBundleVersion=610`）
+- CI：run `40540247057`（`iOS Build · 回底按钮·键盘往返修复·门禁适配`）`test` / `build` / `code-profile` / `timeline-autorun` 全绿；gate `failures: []`
 - 已合入 composer/scroll 结构线（`c36b6fad`），`dev` 未碰未合
 - 已验证通过：
   - Code 用户附件（图片 tiles / 文件卡 / 失败卡 / pending）build 590
   - 正文链接点击 + 单块选中复制 build 597
-  - 回底按钮（CI 门禁 + 截图）build 601，**待 pp 真机验收**
+  - 回底按钮：build 601 开屏崩溃已修（603 验证通过）；居中 build 604；键盘往返不再复现按钮（build 610，CI 全绿），**待 pp 真机验收**
   - 附件/正文链接的官方截图交叉证据见 `docs/code-user-attachments-handoff.md`、`docs/code-text-interaction-task.md`
   - 回底按钮证据/任务单见 `docs/code-scroll-down-indicator-task.md`
 
@@ -65,13 +65,15 @@ Code 页滚动离开底部后，显示官方“回到/滚动到底部”控件�
 - 新增 `Views/Chat/Code/CodeScrollDownIndicator.swift`：40×40 pt 玻璃圆（`@ScaledMetric(.footnote) 16 + 2×12`）、`anthropicon.arrowDown`（`.large`，官方 SVG md5 `051cc5d4…`）、44 pt 点击区、`easeInOut(0.2)` 淡入淡出（Reduce Motion 跳过）、a11y「向下滚动」。
 - 资产：`Assets.xcassets/anthropicon.arrowDown.imageset`（1.261005.20 提取，与 1.261019.51 逐字节相同）；`AnthropiconAssets.table` 新增 `[11×12, 12×13, 14×15]`。
 - Controller：`canScrollDown` / `showsScrollDownIndicator` / `onScrollDownIndicatorChanged`；只在 `publishViewport` 与 `setNavigationSuspended` 发布布尔翻转。
-- 阈值：官方宿主判定 U。AA 产品规则：`TimelineAnchorPlacement == .end` 时一律隐藏；阅读态用 **16 pt 死区**（约一行）。原因：动画回底可停在布局底端前 1 物理像素（gate 600 实测 0.333 pt @3×），键盘/输入框 inset 往返还会留下几 pt 残差（pp 2026-10-27 真机：键盘收回后按钮又在底部出现）。
-- 位置：composer 之上、**水平居中**、`safeAreaInsets.bottom + 8`（pp 2026-10-27 真机定；官方 pills bar 是 leading 一侧，AA 无 pills bar；8 pt 同时避开 composer bar 的命中区）。build 601/603 的 leading 版已被此决定取代。
+- 阈值：官方宿主判定 U。AA 产品规则：`TimelineAnchorPlacement == .end` 时一律隐藏；阅读态用 **16 pt 死区**（约一行）。原因：动画回底可停在布局底端前 1 物理像素（gate 600 实测 0.333 pt @3×），键盘/输入框 inset 往返还会留下几 pt 残差（pp 2026-10-27 真机：键盘收回后按钮又在底部出现）。`requestBottom`/`disarmBottom` 后立即发布状态（placement 变化不一定动 offset）。
+- 位置：composer 之上、**水平居中**、`safeAreaInsets.bottom + 8`（pp 2026-10-27 真机定；官方 pills bar 是 leading 一侧，AA 无 pills bar；8 pt 同时避开 composer bar 的命中区）。build 601/603 的 leading 版、604 的 2 pt 版均已被取代。
 - 点击：`requestBottom(animated: true, forced: true)`（`forced:false` 对 `.reading` 页会被拒，见 `TimelineCollectionController.swift:1662`）。
-- 门禁：`TimelineAutoRun` 新增 `scrollDownIndicator` 场景，build 601 报告：
-  - `shownAway=true`、`hiddenAtBottom=true`、`animatedFlips=[true,false]`；
-  - Reduce Motion 同样 `[true,false]`、`hiddenReduced=true`；
-  - `settledPhase=idle`、`settledPlacement=end`。
+- 门禁：`TimelineAutoRun` 新增 `scrollDownIndicator` 场景，build 610 报告：
+  - `preLoadVisibility=false`（attach 早于 loadView 不触 viewport）；
+  - `shownAway=true`、`hiddenAtBottom=true`、`animatedFlips=[true,false]`、`settledShortfall=0`；
+  - 键盘 inset 往返：`shownWithKeyboard=false`、`shownAfterKeyboard=false`；
+  - Reduce Motion 同样 `[true,false]`、`hiddenReduced=true`。
+- 开屏崩溃（build 601）：`onControllerReady` 早于 SwiftUI 加载 view，attach 里读 `showsScrollDownIndicator` → `viewport` 解引用 nil `UICollectionView!`（EXC_BREAKPOINT）。修复：`canScrollDown` 先 `isViewLoaded` 短路；attach 不读状态；门禁加 pre-load 断言（build 603 验证通过）。
 - 截图：`code-profile` 新增 `code-scroll-down.png`（真实 Code 行 + 控件），已随 CI artifact 输出。
 - 待真机验收：长文上滑出现 → 点击回底并恢复跟随 → 流式中不抢滚动 → 键盘弹起随 composer 抬升 → Reduce Motion 无淡入淡出。
 - 已知 U：官方 pills bar 为空时是否仍显示；按压动画视觉量；返回过程中是否立即隐藏；键盘弹起是否隐藏。
@@ -103,6 +105,6 @@ Code 页滚动离开底部后，显示官方“回到/滚动到底部”控件�
 ## 5. 恢复提示词（下个会话直接粘贴）
 
 > 继续 AA Code 页。先读 `/home/ubuntu/aa-wt-attachments/docs/code-page-next-handoff.md`、`/home/ubuntu/aa-wt-attachments/docs/code-scroll-down-indicator-task.md`、`/home/ubuntu/aa-wt-attachments/docs/code-user-attachments-handoff.md`、`/home/ubuntu/aa-wt-attachments/docs/code-text-interaction-task.md`、`/home/ubuntu/.claude/projects/-home-ubuntu/memory/MEMORY.md`。
-> 工作副本 `/home/ubuntu/aa-wt-attachments`，分支 `feat/code-profile-beta`，代码 head `594ceb3f`（其后只有 docs，最新提交以 `git log` 为准），最新包 build 601；dev 不碰不合。
-> **回底按钮已实现，build 601 待 pp 真机验收**；验收通过后再做 **SubAgent 卡**（先证据闭合，参考 `CANONICAL/01-architecture.md`、`04-tool-calls.md`、`21-artifacts.md`、`EVIDENCE/round19/tool-row-status.md`）。
+> 工作副本 `/home/ubuntu/aa-wt-attachments`，分支 `feat/code-profile-beta`，代码 head `b8866809`（其后只有 docs，最新提交以 `git log` 为准），最新包 build 610；dev 不碰不合。
+> **回底按钮 build 610 待 pp 真机验收**（开屏崩溃/居中/键盘往返已修）；验收通过后再做 **SubAgent 卡**（先证据闭合，参考 `CANONICAL/01-architecture.md`、`04-tool-calls.md`、`21-artifacts.md`、`EVIDENCE/round19/tool-row-status.md`）。
 > 出包/交流带构建号；CI dispatch 必须带 `title`；不 force push、不合 dev。

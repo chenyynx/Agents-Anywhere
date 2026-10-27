@@ -106,8 +106,14 @@ enum CodeMessageHeightMeasurer {
                     // text bubble; the plan mirrors that order (the total is
                     // the same, but the block sequence no longer lies to the
                     // gate or to a future view).
+                    // The user row reserves the trailing shadow inset in the
+                    // view; measure the bubble at the same width or a long
+                    // line can wrap one word earlier/later than the
+                    // measurement.
                     blocks.append(.text(height: userBubbleTextHeight(
-                        texts.joined(separator: "\n\n"), width: width, traits: traits)))
+                        texts.joined(separator: "\n\n"),
+                        width: width - CodePageTheme.userRowShadowInset,
+                        traits: traits)))
                 }
             } else {
                 for block in row.blocks {

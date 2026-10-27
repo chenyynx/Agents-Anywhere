@@ -206,6 +206,10 @@ struct CodeMessageRowView: View {
                 CodeUserBubble(text: texts.joined(separator: "\n\n"))
             }
         }
+        // Keep the card's shadow inside the hosting cell: its right edge
+        // otherwise coincides with the cell's trailing edge and the shadow is
+        // clipped there while the left/top/bottom shadows draw.
+        .padding(.trailing, CodePageTheme.userRowShadowInset)
     }
 
     // MARK: - Blocks

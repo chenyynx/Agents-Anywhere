@@ -32,6 +32,9 @@ struct CodeUserMessageRow: View {
                 CodeUserBubble(text: text)
             }
         }
+        // Same trailing inset as the settled row: keep the 140 pt card's
+        // right-side shadow inside the hosting cell.
+        .padding(.trailing, CodePageTheme.userRowShadowInset)
         .overlay(alignment: .bottomLeading) {
             // The delivery state belongs to the whole user row: with
             // attachments the indicator sits beside the last block, not

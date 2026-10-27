@@ -143,6 +143,12 @@ nonisolated enum CodePageTheme {
 
     // MARK: - Timeline layout
 
+    /// Extra trailing inset for a user row. The hosting cell's width ends at
+    /// the 16 pt content margin, so a 140 pt card flush to that edge has its
+    /// right-side shadow clipped. Four points give the 2 pt-radius shadow its
+    /// full blur inside the cell, like the official card's outer edge.
+    static let userRowShadowInset: CGFloat = 4
+
     /// [E] CANONICAL/05-layout-scroll.md §3.3 — `SessionMessageStyle` default.
     static let interMessageSpacing: CGFloat = 10
 

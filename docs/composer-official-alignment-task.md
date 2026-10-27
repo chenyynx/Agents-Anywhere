@@ -793,3 +793,25 @@ Mover 弹簧，临界阻尼 ω≈15.7 跟踪 2716px/s 会有约 300px 滞后，�
   避免 UIKit 用旧 maxOffset 夹一下。键盘段保持直写、继续吃系统事务。
 - b559 真机反馈：空/有字两种状态都顺滑（pp 2026-10-27）。
 
+### 15.10 发送行为最终结论（2026-10-27，指令级 EVIDENCE，1.261005.20）
+
+- Code 页不发 `sending` / `sent` / `anchorChanged`（canonical 05 §13 已记录）：
+  `scrollAnchor == nil`、`nextAnchorIsOnItsWay == false` 均为门；
+- placement 恒 `.end`，发送后与流式均跟底，官方 Code 页**没有“新消息贴顶”**；
+- ⇒ C4 的发送段删除 `.row(id,.top)`，统一 `.end`；§15.2 块 10 的贴顶方案作废。
+
+### 15.11 C4 实施记录（2026-10-27）
+
+- **C4.1 `6079eb57`**：新增 `TimelineAnchorDriver`（唯一 contentOffset 写者：
+  placement 状态 + 目标解析 + Mover + inset 归属 + Reduce Motion 直置）。
+- **C4.2 `43c28712`**：控制器接线——首次布局 `viewportChanged`、内容变化
+  `contentChanged`、拖动/松手/减速、安全区、`askedForEnd/Start`、窗口替换、
+  审批、抽屉挂起全部转发给 driver；旧请求/预置逻辑停用。
+- **C4.3 `41251468`**：删除五套旧写者（流式跟随、回底弹簧、armedBottom、
+  开屏 snap/结算、watchdog、回顶跟踪、settle 任务），净减 683 行。
+- **C4.4 `5a218e38`**：Reduce Motion / VoiceOver 直接 place。
+- 发送行为按 §15.10 / canonical 05 §13：Code 页不做 `.row` 贴顶，`.end` 跟底。
+- 第一版真机包：`AgentsAnywhere-feat-code-composer-official-b565-5a218e3.ipa`
+  （head `5a218e38`）。
+- 待 C5：`TimelineAutoRun` 门禁断言改锚点/motion、布局内部 fallback 写者审计、
+  探针清理、全场景真机验收。

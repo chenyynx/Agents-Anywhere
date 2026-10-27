@@ -286,6 +286,7 @@ final class V2SessionModel: Identifiable {
             return nil
         }
         let item = V2QueuedMessage(content: content, attachments: attachments)
+        // Before `composer.clear()` below: the clear drops the provenance.
         item.supersededPendingIDs = takeSupersededPendingIDs()
         attachmentPreviews.remember(attachments, clientID: item.id)
         sendQueue.enqueue(item)
@@ -482,6 +483,7 @@ final class V2SessionModel: Identifiable {
         }
         let pending = V2PendingMessage(id: UUID().uuidString, content: content, attachmentIDs: attachments,
                                       localAttachmentIDs: composer.attachments.map(\.id), attachments: composer.attachments)
+        // Before `composer.clear()` below: the clear drops the provenance.
         pending.supersededPendingIDs = takeSupersededPendingIDs()
         attachmentPreviews.remember(pending.attachments, clientID: pending.id)
         pendingMessages.append(pending); awaitingReplyID = pending.id
@@ -551,11 +553,13 @@ final class V2SessionModel: Identifiable {
     /// user already resolved by re-sending — including the edited-retry case
     /// where the text no longer matches the record exactly.
     ///
-    /// Tradeoff, accepted deliberately: the provenance lives until the next
-    /// send, so a draft the user clears and replaces with an unrelated message
-    /// also supersedes the record. That is safe — a record whose write had
-    /// landed would have been retired by its own echo already; this chain only
-    /// ever retires records no echo can reach.
+    /// Contract: callers consume this **before** `composer.clear()`, because
+    /// that clear fires `onTextBecameEmpty` and drops the provenance. An
+    /// emptied editor abandons the retry (see the callback in `init`); an edit
+    /// that replaces the whole text without passing through empty still counts
+    /// as a retry and keeps the provenance — a declared tradeoff, since the
+    /// alternative (comparing text similarity) invents a rule the user cannot
+    /// see.
     private func takeSupersededPendingIDs() -> [String] {
         guard let origin = draftRestoredFromPendingID else { return [] }
         draftRestoredFromPendingID = nil
@@ -682,7 +686,13 @@ final class V2SessionModel: Identifiable {
         repository?.localWorkDidChange(sessionID: id)
     }
     func restoreDraft(from pending: V2PendingMessage) -> Bool {
-        guard isValid, composer.text.isEmpty, composer.attachments.isEmpty else { return false }
+        guard isValid else { return false }
+        // "Return to editing" is also offered while the failed send's own
+        // payload sits in the editor (its usual state); refusing that case
+        // leaves the button dead for the record it belongs to.
+        let sameAsRecord = composer.text == pending.content
+            && composer.attachments.map(\.id) == pending.localAttachmentIDs
+        guard composer.text.isEmpty || sameAsRecord else { return false }
         draft = pending.content; composer.attachments = pending.attachments; draftAttachmentIDs = pending.attachmentIDs
         pending.didRestoreDraft = true
         draftRestoredFromPendingID = pending.id

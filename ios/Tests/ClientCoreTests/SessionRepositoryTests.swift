@@ -347,6 +347,29 @@ import Testing
         try await eventually { model.pendingMessages.map(\.id) == [first.id] }
     }
 
+    @Test func restoreDraftAcceptsTheRecordsOwnPayloadInTheEditor() async throws {
+        let http = TestHTTPTransport(); let realtime = TestRealtimeAPI()
+        let repo = repository(transport: http, realtime: realtime)
+        defer { repo.reset() }
+        let model = repo.session(id: "session"); let task = Task { await model.connect() }
+        defer { task.cancel() }
+        try await eventually { model.canSend }
+        http.respond = { call in
+            if call.path.hasSuffix("messages") { throw URLError(.timedOut) }
+            return try http.defaultResponse(call)
+        }
+        model.draft = "Return to editing"
+        let record = try #require(await model.sendDraft())
+        #expect(model.draft == record.content)
+
+        // The failed send refilled the editor with its own payload; "return to
+        // editing" must not be dead for the record it belongs to.
+        #expect(model.restoreDraft(from: record))
+        model.draft = "A different draft"
+        #expect(!model.restoreDraft(from: record))
+        #expect(model.draft == "A different draft")
+    }
+
     @Test func echoBeforeHTTPFailureWinsAndConcurrentDraftEditsSurvive() async throws {
         let http = TestHTTPTransport(); let realtime = TestRealtimeAPI(); let gate = TestGate()
         let repo = repository(transport: http, realtime: realtime)

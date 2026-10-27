@@ -5,21 +5,21 @@ name: iOS Build & Test
 # commit message so the run list never becomes a wall of "iOS Build".
 run-name: "iOS Build · ${{ inputs.title || github.event.head_commit.message || github.ref_name }}"
 
-# Build & test pipeline for the `dev` development line. It mirrors the
-# downstream `ios-ci` flow —
+# Build & test pipeline for the product's main line, `feat/code-profile-beta`,
+# plus the legacy `dev` line. It mirrors the downstream `ios-ci` flow —
 # unsigned .ipa for on-device KSign re-signing, no Apple Developer account —
 # and adds the unit-test job (`swift test`).
 #
 # The `ios-ci` branch stays the clean upstream mirror; nothing here touches it.
-# Artifacts are released to the dedicated `ipa-dev` tag so the
-# mainline `ipa-latest` release is never overwritten.
+# Beta builds are released to `ipa-beta`, dev builds to `ipa-dev`, so neither
+# line can overwrite the other (nor the mainline `ipa-latest`).
 #
 # The deployment-target patch (26.5 -> 26.2, sideload compatibility) is
 # carried on this branch itself (cherry-pick of the ios-ci patch commit).
 
 on:
   push:
-    branches: [dev]
+    branches: [dev, feat/code-profile-beta]
     paths:
       - "ios/**"
       - ".github/workflows/ios-build.yml"
@@ -1130,7 +1130,7 @@ jobs:
     # A branch dispatch may opt into a build with `build: true`; that publishes
     # to its own `ipa-<branch>` tag and never touches `ipa-dev`, so a
     # half-finished branch can never clobber the dev line's installable IPA.
-    if: github.ref == 'refs/heads/dev' || inputs.build
+    if: github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/feat/code-profile-beta' || inputs.build
     runs-on: macos-26
     timeout-minutes: 90
     steps:
@@ -1228,6 +1228,12 @@ jobs:
             TAG="ipa-dev"; SLUG="dev"
             TITLE="Agents Anywhere unsigned builds — dev"
             NOTES="Built from the dev branch. Unsigned — re-sign on-device with KSign."
+          elif [ "${GITHUB_REF}" = "refs/heads/feat/code-profile-beta" ]; then
+            # Beta is the product's main line: it publishes under its own tag
+            # so a beta build can never clobber the legacy dev line.
+            TAG="ipa-beta"; SLUG="beta"
+            TITLE="Agents Anywhere unsigned builds — beta"
+            NOTES="Built from the beta (feat/code-profile-beta) branch. Unsigned — re-sign on-device with KSign."
           else
             # A branch name may contain '/', which cannot appear in a file name.
             SLUG=$(printf '%s' "${GITHUB_REF_NAME}" | tr '/' '-')

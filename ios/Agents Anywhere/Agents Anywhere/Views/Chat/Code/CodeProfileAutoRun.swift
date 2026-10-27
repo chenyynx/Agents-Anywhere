@@ -2395,13 +2395,13 @@ struct CodeProfileAutoRunRootView: View {
     }
 
     /// The return control over the real Code row. The product page places it
-    /// above the composer; the gate has no composer, so it sits at the same
-    /// leading margin near the bottom edge and the screenshot shows the
-    /// control's actual size and chrome.
+    /// centred above the composer; the gate has no composer, so it sits at the
+    /// same bottom edge and the screenshot shows the control's actual size and
+    /// chrome.
     @MainActor
     private func scrollDownStage(_ group: ChatTimelineGroup) -> some View {
         let state = CodeScrollDownIndicatorState(isVisible: true)
-        return ZStack(alignment: .bottomLeading) {
+        return ZStack(alignment: .bottom) {
             ScrollView {
                 CodeMessageRowView(group: group, profile: .claudeCode, cwd: "/repo")
                     .padding(.horizontal, CodePageTheme.rowMarginLeading)
@@ -2409,7 +2409,6 @@ struct CodeProfileAutoRunRootView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             CodeScrollDownIndicator(state: state, onTap: {})
-                .padding(.leading, CodePageTheme.rowMarginLeading)
                 .padding(.bottom, 16)
         }
         .background(Color(.systemBackground))

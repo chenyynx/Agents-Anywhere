@@ -7,7 +7,7 @@
 ## 0. 结论
 
 - 官方控件是 **`ClaudeCoreUI.ScrollDownIndicator`**：圆形玻璃按钮 + `anthropicon.arrowDown`，不是 `ScrollToBottomTextButton`（44 pt 文本按钮是另一组件）。
-- 官方 Code 页把它放在 **composer 上方的 pills bar**（`SessionPillsBar.onScrollDown` → `BarPillRow` overlay），AA 没有 pills bar，按“composer 之上、leading 对齐”落地（位置为 [I]，见 §3.4）。
+- 官方 Code 页把它放在 **composer 上方的 pills bar**（`SessionPillsBar.onScrollDown` → `BarPillRow` overlay，leading 一侧）；AA 没有 pills bar，**pp 2026-10-27 真机定：composer 之上、水平居中**（产品决定，见 §3.4）。
 - 官方默认尺寸：内容圆 **40×40 pt**（`iconSize 16 + 2×12`），最小点击区 **44×44**；淡入淡出 **0.2 s easeInOut**，Reduce Motion 跳过动画。
 - 显示阈值：官方宿主侧判定 **U**；同页 `TranscriptScrollPosition._canScrollDown` 的公式是 `target − visibleBottom > 1 物理像素`，作为 `hidden = !canScrollDown` 的依据 [I]。动画回底可停在布局底端前约 1px（gate 600 实测 0.333 pt @3×），故阈值取 **1 pt 死区**（见 §3.1）。
 - 图标资源已从 1.261005.20 提取并与 1.261019.51 逐字节一致（md5 `051cc5d474df11fd1ed6480cab45baba`）。
@@ -78,8 +78,7 @@
 
 ### 3.3 接线
 
-- `TimelineChatTimelineView`：在 `TimelineCollectionView` 上 `.overlay(alignment: .bottomLeading)`；
-  - leading = `CodePageTheme.rowMarginLeading`（16，与 composer 外边距一致）；
+- `TimelineChatTimelineView`：在 `TimelineCollectionView` 上 `.overlay(alignment: .bottom)`（水平居中，无 leading padding）；
   - bottom = `safeAreaInsets.bottom + 2`（`safeAreaInsets.bottom` = composer bar + home + keyboard，列表全 bleed，用它把按钮抬到 composer 之上）；2 是 44 pt 外框与 composer 的间隙，40 pt 视觉圆底距 composer 约 4 pt。
 - 点击：`bridge.controller?.requestBottom(animated: true, forced: true)`。
 - 键盘：不额外隐藏；按钮随 `safeAreaInsets` 一起抬升（官方 pills bar 在 composer 栈内 [I]）。
@@ -88,7 +87,7 @@
 ### 3.4 位置证据等级
 
 - 官方 = pills bar 的 leading 一侧（`BarPillRow` overlay + 偏移公式），EVIDENCE。
-- AA 无 pills bar → 取 composer 上方、leading 16、距 composer 2 pt：**[I]**；真机验收按观感决定是否调整。
+- AA 无 pills bar；build 601/603 先按 leading 16 落地，pp 2026-10-27 真机要求**居中** → 本批改为水平居中、距 composer 2 pt（外框）。这是产品决定，不是官方位置。
 
 ## 4. 门禁与验证
 

@@ -116,18 +116,18 @@ struct TimelineChatTimelineView: View {
             // collection view also sets its own top edge style; this covers
             // the page-level bar treatment.
             .scrollEdgeEffectStyle(.soft, for: .top)
-            // Official `ScrollDownIndicator` above the composer (the Code page
-            // has no pills bar to host it, so it takes the composer's leading
-            // margin). `safeAreaInsets.bottom` is bar + home + keyboard; the
-            // list is full-bleed, so this lifts the control clear of the bar.
-            .overlay(alignment: .bottomLeading) {
+            // Official `ScrollDownIndicator` above the composer. The official
+            // Code page hosts it on the leading side of its pills bar; AA has
+            // no pills bar, and pp chose the centred position on device
+            // (2026-10-27). `safeAreaInsets.bottom` is bar + home + keyboard;
+            // the list is full-bleed, so this lifts the control clear of the bar.
+            .overlay(alignment: .bottom) {
                 CodeScrollDownIndicator(state: bridge.scrollDownIndicator) {
                     // The indicator is the reader's explicit return: a
                     // follow-only request would refuse a page in `.reading`
                     // (TimelineCollectionController.requestBottom).
                     bridge.controller?.requestBottom(animated: true, forced: true)
                 }
-                .padding(.leading, CodePageTheme.rowMarginLeading)
                 .padding(.bottom, safeAreaInsets.bottom + 2)
             }
             .opacity(model.openingPositionSettled ? 1 : 0)

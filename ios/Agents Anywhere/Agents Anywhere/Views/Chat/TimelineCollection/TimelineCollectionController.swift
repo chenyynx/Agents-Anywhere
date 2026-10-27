@@ -92,6 +92,9 @@ final class TimelineCollectionController: UIViewController {
     private var lastPublishedViewport = TimelineViewport()
 
     private(set) var phase = TimelinePhaseMapping()
+    /// C4: the single content-offset writer (placement state + Mover + inset).
+    private var anchorDriver: TimelineAnchorDriver?
+    private var didStartAnchorDriver = false
     private(set) var armedBottom = TimelineArmedBottomTarget()
     /// A "load latest" return may span a full-window replacement. UIKit
     /// re-anchors a snapshot that replaces every id, and the animated target
@@ -222,7 +225,7 @@ final class TimelineCollectionController: UIViewController {
     var safeAreaInsets: UIEdgeInsets = .zero {
         didSet {
             guard oldValue != safeAreaInsets else { return }
-            applySafeAreaInsets()
+            anchorDriver?.updateSafeAreaInsets(safeAreaInsets)
         }
     }
 
@@ -355,13 +358,20 @@ final class TimelineCollectionController: UIViewController {
         // subtracts the scroll view's own safe-area insets, so whether UIKit
         // contributes them or not the net inset is the page proxy.
         collectionView.contentInsetAdjustmentBehavior = .automatic
-        applySafeAreaInsets()
         // The official surface disables UIKit's automatic self-sizing
         // invalidation; the layout owns every height. AA's controlled
         // exceptions are driven explicitly by `applyPreferredHeights` after a
         // reconfigure, so automatic invalidation would only add layout passes.
         collectionView.selfSizingInvalidation = .disabled
         collectionView.delegate = self
+        anchorDriver = TimelineAnchorDriver(scrollView: collectionView, inputs: .init(
+            contentHeight: { [weak self] in self?.layout.contentHeight ?? 0 },
+            rowStart: { [weak self] in self?.layout.attributes(for: $0)?.frame.minY },
+            readingAnchor: { [weak self] in self?.anchor(at: $0) },
+            firstRowID: { [weak self] in self?.currentItems.first?.itemID },
+            onBottomArrived: { [weak self] in self?.onBottomArrived?() }))
+        anchorDriver?.setSuspended(navigationSuspended)
+        anchorDriver?.updateSafeAreaInsets(safeAreaInsets)
 #if AA_TIMELINE_PROBE
         AnchorDeviceProbe.shared.attach { [weak self] in
             guard let self else { return (false, false, "?") }
@@ -495,6 +505,10 @@ final class TimelineCollectionController: UIViewController {
             apply(items: pending.items, animating: pending.animating)
         }
         handleContainerHeightChange()
+        if !didStartAnchorDriver, layout.contentHeight > 0, !currentItems.isEmpty {
+            didStartAnchorDriver = true
+            anchorDriver?.viewportChanged()
+        }
         scheduleVisibleCellFrameSync()
     }
 
@@ -780,7 +794,8 @@ final class TimelineCollectionController: UIViewController {
         // A programmatic return (pill/send/keyboard) owns the offset until
         // its animation ends; the reveal follower must not cancel it.
         let animating = phase.phase == .animating
-        let following = height != nil && state.isAutoScrollPinning && !animating
+        let following = height != nil
+            && (anchorDriver?.state.placement == .end) && !animating
         streamingRevealActive = height != nil
         if let height {
             #if DEBUG
@@ -791,14 +806,12 @@ final class TimelineCollectionController: UIViewController {
                                         adjustOffset: !(following || animating))
             if following {
                 streamingFollowActive = true
-                startStreamingFollowIfNeeded()
             } else if state.isTracking || state.isDecelerating {
                 stopStreamingFollow()
             }
         } else {
             layout.clearStreamingHeight(for: item.itemID)
             streamingFollowActive = false
-            startStreamingFollowIfNeeded()
         }
     }
 
@@ -973,40 +986,18 @@ final class TimelineCollectionController: UIViewController {
     /// the new window has laid out, pin to its measured bottom and let the
     /// ordinary follow arm keep it there through later growth.
     private func resolveWindowReplacementBottom() {
-        guard let collectionView, !navigationSuspended else { return }
-        // The apply completion is asynchronous: the reader may have started a
-        // drag, a deceleration or a status-bar scroll-to-top after the apply
-        // was enqueued. A gesture always wins over the pending return.
+        guard collectionView != nil, !navigationSuspended else { return }
+        // A gesture that began after the request always wins.
         guard windowReplacementReturn,
               !phase.userIsScrolling,
               !isScrollingToTop,
-              !collectionView.isTracking,
-              !collectionView.isDecelerating else {
-            if !windowReplacementReturn {
-                mode = .reading
-                armedBottom.disarm()
-            }
+              collectionView?.isTracking != true,
+              collectionView?.isDecelerating != true else {
+            windowReplacementReturn = false
             return
         }
-        collectionView.layoutIfNeeded()
-        stopBottomAnimation()
-        armedBottom.forceArm()
-        mode = .returning
-        let target = TimelineOffsetTarget.bottomOffset(
-            contentHeight: layout.contentHeight,
-            containerHeight: collectionView.bounds.height,
-            topInset: collectionView.adjustedContentInset.top,
-            bottomInset: collectionView.adjustedContentInset.bottom)
-        isPinningBottom = true
-        collectionView.setContentOffset(
-            CGPoint(x: collectionView.contentOffset.x, y: target), animated: false)
-        isPinningBottom = false
-        // Settle the visible cells in this runloop: the probe's stale-cell
-        // sample after a window replacement was a frame the 0.05 s frame-sync
-        // pass had not applied yet.
-        collectionView.layoutIfNeeded()
-        noteBottomArrival()
         windowReplacementReturn = false
+        anchorDriver?.windowReplaced(readerTookOver: false)
     }
 
     /// Accessibility/manual placement: pin instantly once.
@@ -2080,60 +2071,20 @@ final class TimelineCollectionController: UIViewController {
             return
         }
         guard collectionView != nil else { return }
-        // Official `askedForEnd` is ignored while the reader's finger is on
-        // the list (part-ag §1.7); defer it (and replay after the gesture, so
-        // AA still honors a send/pending request). This must run before any
-        // side effect: arming the bottom here would let `repinIfArmed`
-        // instant-pin the page under the finger on the next content change —
-        // the device's 388 pt mechanism.
+        // An approval card owns the page until it resolves; only a forced
+        // command (the card disappearing, load-latest) may override it.
+        if interactionPresented && !forced { return }
+        // Official `askedForEnd` is ignored while the finger is on the list;
+        // defer it and replay at the gesture end.
         if collectionView.isTracking {
-            // Merge `forced` like `suspendedBottomRequest`: a forced request
-            // queued behind a follow request must not lose its force.
             pendingGestureBottomRequest = (
                 animated,
                 forced || (pendingGestureBottomRequest?.forced ?? false))
             return
         }
-        // An explicit bottom command (pill, send, return) owns the offset. A
-        // concurrent window replacement resolves against the new content.
         if forced { armWindowReplacementReturn() }
-        stopStreamingFollow()
-        // A previous return (spring or native) must close its `.animating`
-        // phase before this request starts another one; an interrupted
-        // Reduce-Motion return would otherwise leave the phase stuck.
-        stopBottomAnimation()
-        userScrollSettleTask?.cancel()
-        readerSettledAtBottom = false
-        mode = .returning
-        if forced {
-            armedBottom.forceArm()
-        } else if !armedBottom.isArmed {
-            // Keep re-resolving the bottom while the return is in flight, the
-            // same way the old `.returning` mode did on every content change.
-            _ = armedBottom.armFollowing(readerRestsAtBottom: readerRestsAtBottom,
-                                         mode: .returning,
-                                         interactionPresented: interactionPresented,
-                                         requiresNoInteraction: false)
-        }
-        let target = TimelineOffsetTarget.bottomOffset(contentHeight: layout.contentHeight,
-            containerHeight: collectionView.bounds.height,
-            topInset: collectionView.adjustedContentInset.top,
-            bottomInset: collectionView.adjustedContentInset.bottom)
-        if animated && !reduceMotion && !UIAccessibility.isVoiceOverRunning {
-            // Official `askedForEnd` (05 §6.4) / Mover: the return is a spring,
-            // not a UIKit scroll animation. The follower re-reads the live
-            // bottom target each frame; the watchdog only covers a stalled
-            // display link. Coasting is halted by the first spring frame
-            // (official: coasting 先 halt, 再 animate).
-            let transition = phase.apply(.animationBegan)
-            onPhaseChanged?(transition)
-            startBottomAnimationWatchdog()
-            startReturnFollow()
-        } else {
-            // Reduce Motion / VoiceOver: the official reducer places directly.
-            collectionView.setContentOffset(CGPoint(x: collectionView.contentOffset.x, y: target), animated: false)
-            noteBottomArrival()
-        }
+        anchorDriver?.requestEnd(animated: animated
+            && !reduceMotion && !UIAccessibility.isVoiceOverRunning)
         scheduleVisibleCellSettle()
     }
 
@@ -2151,12 +2102,7 @@ final class TimelineCollectionController: UIViewController {
             return
         }
         guard collectionView != nil else { return }
-        armedBottom.forceArm()
-        mode = .returning
-        snapToBottom()
-        // A no-op snap (already at the bottom) must still recycle the forced
-        // arm/mode; otherwise a later growth re-pins once as a "forced" target.
-        noteBottomArrival()
+        anchorDriver?.requestEnd(animated: false)
     }
 
     /// The opening's arrival check. `onApplyCompleted` can run before the
@@ -2172,33 +2118,30 @@ final class TimelineCollectionController: UIViewController {
         return viewport.isMeasured && viewport.contentHeight > 0 && viewport.measuredAtBottom
     }
 
-    /// Follow requests (sending, a new pending bubble) only arm when the
-    /// reader rests at the bottom or is already returning; explicit commands
-    /// call `requestBottom` directly, exactly like the SwiftUI state machine.
+    /// Follow requests keep the official semantics: askedForEnd only acts
+    /// from a following page (the reducer ignores it while dragging).
     @discardableResult
     func requestFollowingBottom(requiresNoInteraction: Bool) -> Bool {
         guard !navigationSuspended else { return false }
-        let armMode: TimelineScrollState.Mode = armedBottom.isArmed ? .following : mode
-        guard armedBottom.armFollowing(readerRestsAtBottom: readerRestsAtBottom,
-                                       mode: armMode,
-                                       interactionPresented: interactionPresented,
-                                       requiresNoInteraction: requiresNoInteraction) else { return false }
-        requestBottom(animated: true, forced: false)
+        if requiresNoInteraction && interactionPresented { return false }
+        anchorDriver?.requestEnd(animated: true)
         return true
     }
 
+    /// Compatibility seam for the C3 gate (C5 rewrites its assertions against
+    /// the placement state); the anchor model has no separate arm.
     @discardableResult
     func armFollowingBottom(readerRestsAtBottom: Bool, mode: TimelineScrollState.Mode,
                             interactionPresented: Bool, requiresNoInteraction: Bool) -> Bool {
-        armedBottom.armFollowing(readerRestsAtBottom: readerRestsAtBottom, mode: mode,
-            interactionPresented: interactionPresented, requiresNoInteraction: requiresNoInteraction)
+        _ = readerRestsAtBottom; _ = mode
+        _ = interactionPresented; _ = requiresNoInteraction
+        return true
     }
 
-    func disarmBottom() { armedBottom.disarm() }
+    func disarmBottom() {}
 
     func readerDidRestAtBottom(_ rests: Bool, interactionPresented: Bool) {
-        _ = armedBottom.readerDidRestAtBottom(readerRestsAtBottom: rests,
-                                              interactionPresented: interactionPresented)
+        _ = rests; _ = interactionPresented
     }
 
     /// An approval appearing stops automatic following; its disappearance is
@@ -2206,13 +2149,7 @@ final class TimelineCollectionController: UIViewController {
     func setInteractionPresented(_ presented: Bool) {
         guard interactionPresented != presented else { return }
         interactionPresented = presented
-        if presented {
-            stopBottomAnimation()
-            armedBottom.disarm()
-            mode = .reading
-        } else {
-            requestBottom(animated: true, forced: true)
-        }
+        anchorDriver?.interactionPresentedChanged(presented)
     }
 
     private func endScrollToTopTracking() {
@@ -2226,11 +2163,11 @@ final class TimelineCollectionController: UIViewController {
     /// moves); leaving the motion running would still pull the page.
     private func stopBottomAnimation() {
         bottomAnimationWatchdog?.cancel()
-        stopReturnFollow()
-        guard let collectionView, phase.phase == .animating else { return }
-        collectionView.setContentOffset(collectionView.contentOffset, animated: false)
-        let transition = phase.apply(.watchdogExpired)
-        onPhaseChanged?(transition)
+        anchorDriver?.haltMotion()
+        if phase.phase == .animating {
+            let transition = phase.apply(.watchdogExpired)
+            onPhaseChanged?(transition)
+        }
     }
 
     // MARK: - Container anchoring
@@ -2250,8 +2187,7 @@ final class TimelineCollectionController: UIViewController {
         let heightChanged = lastContainerHeight > 0 && abs(height - lastContainerHeight) > 0.5
         lastContainerHeight = height
         guard heightChanged, !navigationSuspended, !phase.userIsScrolling else { return }
-        snapToBottom()
-        noteBottomArrival()
+        anchorDriver?.containerChanged()
     }
 
     private func snapToBottom() {
@@ -2369,40 +2305,8 @@ final class TimelineCollectionController: UIViewController {
     }
 
     private func repinIfArmed() {
-        // The reveal follower and the programmatic-return spring own the
-        // offset while they run; an instant pin here would fight them on every
-        // content change.
-        guard streamingFollowLink == nil, returnFollowLink == nil else { return }
-        // Official: dragging/coasting produces no placement (part-ag §1.7).
-        // Pinning under the finger is the device's 388 pt mechanism. The
-        // bottom target stays armed; the gesture-end path re-evaluates it.
-        guard !isUserScrolling else { return }
-        // A streaming height change arrives here *after* prepare refreshed
-        // `layout.contentHeight` and before any pin, so this is the one place
-        // the follower can see a real target delta. Start it instead of
-        // pinning; if it cannot start, fall through to the instant pin.
-        if streamingRevealActive, !isPinningBottom {
-            let state = layoutInteractionState()
-            if state.isAutoScrollPinning,
-               !state.isTracking, !state.isDecelerating,
-               phase.phase != .animating {
-                startStreamingFollowIfNeeded()
-                if streamingFollowLink != nil { return }
-            }
-        }
-        guard !isPinningBottom, armedBottom.isArmed else { return }
-        guard let target = armedBottom.contentChanged(contentHeight: layout.contentHeight,
-            containerHeight: collectionView.bounds.height,
-            topInset: collectionView.adjustedContentInset.top,
-            bottomInset: collectionView.adjustedContentInset.bottom) else { return }
-        guard abs(collectionView.contentOffset.y - target) > 0.5 else { return }
-        isPinningBottom = true
-        collectionView.setContentOffset(CGPoint(x: collectionView.contentOffset.x, y: target), animated: false)
-        isPinningBottom = false
-        noteBottomArrival()
+        // C4: content growth is the anchor driver's job. Nothing else pins.
     }
-
-    // MARK: - Pull
 
     private func beginPulls(at viewport: TimelineViewport) {
         // The prompt flags are geometric, not model flags: a pull anywhere
@@ -2450,6 +2354,21 @@ final class TimelineCollectionController: UIViewController {
             }
         }
         return currentItems.first.flatMap { content.rowIDs(in: $0).first }
+    }
+
+    /// The reading anchor in itemID space: the row under the viewport top and
+    /// the distance into it (official `readerBeganDragging` derivation).
+    func anchor(at offset: CGFloat) -> (id: String, offsetIntoRow: CGFloat)? {
+        let top = offset + viewport.topInset
+        for item in currentItems {
+            guard let attributes = layout.attributes(for: item.itemID) else { continue }
+            if attributes.frame.maxY > top {
+                return (item.itemID, top - attributes.frame.minY)
+            }
+        }
+        guard let first = currentItems.first else { return nil }
+        let start = layout.attributes(for: first.itemID)?.frame.minY ?? top
+        return (first.itemID, max(0, top - start))
     }
 
     var firstVisibleRowID: String? {
@@ -2573,6 +2492,7 @@ final class TimelineCollectionController: UIViewController {
     func setNavigationSuspended(_ suspended: Bool) {
         guard navigationSuspended != suspended else { return }
         navigationSuspended = suspended
+        anchorDriver?.navigationSuspendedChanged(suspended)
         if suspended {
             layout.cancelBrowsingCorrections()
             olderPull.cancel()
@@ -2594,14 +2514,9 @@ final class TimelineCollectionController: UIViewController {
             }
             let rests = viewport.measuredAtBottom
             readerRestsAtBottom = rests
-            if rests, !interactionPresented {
-                mode = .following
-                armedBottom.navigationResumed(readerRestsAtBottom: true,
-                                              interactionPresented: false)
-                repinIfArmed()
-            } else {
-                mode = .reading
-            }
+            // The driver's navigationSuspendedChanged(false) performs the
+            // placement itself; `mode` is derived from the placement below.
+            _ = rests
             publishViewport()
             if suspendedOpeningRequest {
                 suspendedOpeningRequest = false
@@ -2647,7 +2562,8 @@ extension TimelineCollectionController: TimelineListLayoutHost {
 
     func layoutInteractionState() -> TimelineLayoutInteractionState {
         var state = content?.interactionState() ?? TimelineLayoutInteractionState()
-        state.hasArmedBottomTarget = armedBottom.isArmed
+        let driverFollowing = anchorDriver?.state.placement == .end
+        state.hasArmedBottomTarget = driverFollowing
         // Native drags report `.interacting`; the decision's "tracking" input
         // means "the finger is down", so map the native phase onto it. Without
         // this, a pending-measurement correction moves the offset under the
@@ -2667,7 +2583,7 @@ extension TimelineCollectionController: TimelineListLayoutHost {
         }
 #endif
         state.interactionPresented = interactionPresented
-        state.mode = mode
+        state.mode = driverFollowing ? .following : .reading
         state.suppressContentOffsetAdjustment = navigationSuspended
         return state
     }
@@ -2738,8 +2654,7 @@ extension TimelineCollectionController: TimelineListLayoutHost {
 
     func layoutDidChangeContentHeight(_ height: CGFloat) {
         publishViewport()
-        repinIfArmed()
-        noteBottomArrival()
+        anchorDriver?.contentChanged()
         onContentHeightChanged?(height)
     }
 
@@ -2802,6 +2717,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         guard !navigationSuspended else { return }
+        anchorDriver?.readerBeganDragging()
         // The reader's finger always wins over the streaming follow and over
         // a window replacement whose return has not resolved yet.
         stopStreamingFollow()
@@ -2842,7 +2758,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         if phase.phase == .interacting { rearmVisiblePulls(at: current) }
         if phase.phase == .interacting || phase.phase == .decelerating { updatePulls(current) }
         publishViewport()
-        noteBottomArrival()
+        anchorDriver?.scrolledWithoutAHand()
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
@@ -2855,6 +2771,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         if phase.phase == .interacting {
             let transition = phase.apply(.didEndDragging(willDecelerate: decelerate))
             onPhaseChanged?(transition)
+            anchorDriver?.readerLifted(willCoast: decelerate)
         }
         if !decelerate { readerSettledAtBottom = viewport.measuredAtBottom }
         layout.noteDragDidEnd(willDecelerate: decelerate)
@@ -2875,6 +2792,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         if phase.phase == .decelerating {
             let transition = phase.apply(.didEndDecelerating)
             onPhaseChanged?(transition)
+            anchorDriver?.coastingEnded()
         }
         readerSettledAtBottom = viewport.measuredAtBottom
         layout.noteDecelerationDidEnd()
@@ -2899,33 +2817,10 @@ extension TimelineCollectionController: UICollectionViewDelegate {
 
     func scrollViewShouldScrollToTop(_ scrollView: UIScrollView) -> Bool {
         guard !navigationSuspended else { return false }
-        isScrollingToTop = true
-        scrollToTopToken &+= 1
-        let token = scrollToTopToken
-        scrollToTopWatchdog?.cancel()
-        scrollToTopWatchdog = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(600))
-            guard let self, !Task.isCancelled, self.scrollToTopToken == token,
-                  self.isScrollingToTop else { return }
-            // A no-op scroll-to-top may not call `didScrollToTop`; holding the
-            // flag would block every later bottom arrival.
-            self.isScrollingToTop = false
-        }
-        // The status-bar scroll owns the offset; a pending bottom return must
-        // not keep its display link or watchdog running into this animation.
-        stopReturnFollow()
-        bottomAnimationWatchdog?.cancel()
-        let transition = phase.apply(.scrollToTopBegan)
-        onPhaseChanged?(transition)
-        userScrollSettleTask?.cancel()
-        // The reader asked for the top; a pending window return must not
-        // resolve once its apply completion arrives.
-        windowReplacementReturn = false
-        armedBottom.disarm()
-        mode = .reading
-        readerRestsAtBottom = false
-        readerSettledAtBottom = false
-        return true
+        // Official interception (`0x101a3cb14 → 0x101a3d838`): UIKit's own
+        // scroll-to-top is refused; the anchor model owns the motion.
+        anchorDriver?.requestStart()
+        return false
     }
 
     func scrollViewDidScrollToTop(_ scrollView: UIScrollView) {

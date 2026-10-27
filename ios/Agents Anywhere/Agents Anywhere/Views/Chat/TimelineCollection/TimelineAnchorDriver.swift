@@ -114,6 +114,17 @@ final class TimelineAnchorDriver {
             || abs(current.bottom - target.bottom) > 0.5
             || abs(current.right - target.right) > 0.5
         guard changed else { return }
+#if AA_TIMELINE_PROBE
+        let offsetBefore = view.contentOffset
+        let insetBefore = current
+        defer {
+            AnchorDeviceProbe.shared.recordApply(
+                proxyBottom: pageInsets.bottom,
+                inherited: UIView.inheritedAnimationDuration,
+                insetBefore: insetBefore, insetAfter: view.contentInset,
+                offsetBefore: offsetBefore, offsetAfter: view.contentOffset)
+        }
+#endif
         let following = state.placement == .end
             && state.motion != .dragging && state.motion != .coasting
         if !following {
@@ -170,6 +181,12 @@ final class TimelineAnchorDriver {
         perform(.viewportChanged)
     }
 
+    /// Bounds changed (rotation, split view) without an inset change: only a
+    /// following page re-resolves; a reading page keeps its offset.
+    func containerChanged() {
+        if state.placement == .end { placeDirect() }
+    }
+
     func contentChanged() {
         perform(.contentChanged)
     }
@@ -202,10 +219,19 @@ final class TimelineAnchorDriver {
     /// write it — UIKit's own safe-area/layout adjustment (official
     /// `scrolledWithoutAHand`). The driver's own writes set `isApplying`.
     func scrolledWithoutAHand() {
+        guard state.hasLanded else { return }
         guard !isApplying, state.motion != .dragging, state.motion != .coasting else { return }
         guard let anchor = currentAnchor() else { return }
         perform(.scrolledWithoutAHand(atEnd: isAtEnd(),
                                       id: anchor.id, offsetIntoRow: anchor.offsetIntoRow))
+    }
+
+    /// Stops any Mover motion where it is (approval presented, drawer moves).
+    func haltMotion() {
+        stopMover()
+        if state.motion == .easing || state.motion == .flying {
+            state.motion = .resting
+        }
     }
 
     func requestEnd(animated: Bool) {
@@ -302,6 +328,15 @@ final class TimelineAnchorDriver {
         }
         let spring = TimelineSpringFollow.spring(
             target: target, current: current, visibleHeight: visible)
+        if mover.isRunning {
+            // Same motion, new destination: retarget without restarting the
+            // spring (a restart on every height change would jitter).
+            mover.retarget(spring: spring)
+            if state.motion == .easing, spring == .fly {
+                state.motion = .flying
+            }
+            return
+        }
         let preplaced = TimelineSpringFollow.preplacedOffset(
             target: target, current: current, visibleHeight: visible)
         if abs(preplaced - current) >= pixel {

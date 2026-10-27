@@ -431,20 +431,13 @@ final class TimelineListLayout: UICollectionViewLayout {
             // Otherwise this update belongs to an earlier page; keep the
             // target for the update that actually carries the prepend.
         }
-        // Official `offsetOwedToUpdate` exit: when UIKit never asked for the
-        // target, the layout applies the absolute offset itself. An offered
-        // value was already used for the update's target.
-        if var owed = heightOwedToUpdate {
-            heightOwedToUpdate = nil
-            if let fallback = owed.takeAfterFinalize() {
-                applyOffsetFallback(fallback)
-            }
-        }
         // Official `offsetOwedToUpdate` exit for the follow answer: when UIKit
         // never asked for the target, land the new end here. If the offered
         // target was used the offset already matches and this is a no-op.
+        // The new bottom subsumes any height owed for this update.
         if followBottomDuringUpdate {
             followBottomDuringUpdate = false
+            heightOwedToUpdate = nil
             if let view = collectionView {
                 let bottom = TimelineOffsetTarget.bottomOffset(
                     contentHeight: contentHeight,
@@ -454,6 +447,15 @@ final class TimelineListLayout: UICollectionViewLayout {
                 if abs(view.contentOffset.y - bottom) > 0.5 {
                     applyOffsetFallback(bottom)
                 }
+            }
+        }
+        // Official `offsetOwedToUpdate` exit: when UIKit never asked for the
+        // target, the layout applies the absolute offset itself. An offered
+        // value was already used for the update's target.
+        if var owed = heightOwedToUpdate {
+            heightOwedToUpdate = nil
+            if let fallback = owed.takeAfterFinalize() {
+                applyOffsetFallback(fallback)
             }
         }
 #if DEBUG

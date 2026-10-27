@@ -117,6 +117,12 @@ final class TimelineCollectionController: UIViewController {
     /// application moves the reader's scroll (gestureFreeze).
     private(set) var debugScrollCallSites: [String] = []
     private var debugScrollLastOffset: CGFloat?
+    /// C5 gate counters: reveal frames and whether they were eligible for the
+    /// follow, plus the driver's Mover starts.
+    private(set) var debugStreamingFrameCalls = 0
+    private(set) var debugStreamingFollowEligibleFrames = 0
+    var debugStreamingFollowStarts: Int { anchorDriver?.debugMoveStarts ?? 0 }
+    var debugIsFollowing: Bool { anchorDriver?.state.placement == .end }
     func clearDebugScrollCallSites() {
         debugScrollCallSites.removeAll()
         debugScrollLastOffset = nil
@@ -644,6 +650,10 @@ final class TimelineCollectionController: UIViewController {
         let following = height != nil
             && (anchorDriver?.state.placement == .end) && !animating
         if let height {
+#if DEBUG
+            debugStreamingFrameCalls += 1
+            if following { debugStreamingFollowEligibleFrames += 1 }
+#endif
             layout.applyStreamingHeight(height, for: item.itemID,
                                         adjustOffset: !(following || animating))
         } else {

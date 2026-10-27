@@ -37,6 +37,10 @@ final class TimelineAnchorDriver {
     private var isSuspended = false
     private var isInteractionPresented = false
     private var didReportOpeningArrival = false
+#if DEBUG
+    /// Gate counter: how many Mover motions actually started.
+    private(set) var debugMoveStarts = 0
+#endif
 
     init(scrollView: UICollectionView, inputs: Inputs) {
         self.scrollView = scrollView
@@ -350,6 +354,9 @@ final class TimelineAnchorDriver {
             writeOffset(preplaced)
         }
         mover.start(at: view.contentOffset.y, spring: spring)
+#if DEBUG
+        debugMoveStarts += 1
+#endif
         state.motion = spring == .fly ? .flying : .easing
         startLink()
     }

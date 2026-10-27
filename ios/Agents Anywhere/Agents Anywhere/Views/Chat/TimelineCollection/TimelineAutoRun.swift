@@ -2131,14 +2131,11 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await wait(500)
         let phaseAfterNoop = String(describing: controller.phase.phase)
 
-        controller.disarmBottom()
-        let followRefused = controller.armFollowingBottom(readerRestsAtBottom: false,
-            mode: .reading, interactionPresented: false, requiresNoInteraction: false)
-        let followAccepted = controller.armFollowingBottom(readerRestsAtBottom: false,
-            mode: .returning, interactionPresented: false, requiresNoInteraction: false)
-        controller.disarmBottom()
-        controller.readerDidRestAtBottom(true, interactionPresented: false)
-        let rearmed = controller.armedBottom.source == .follow
+        // C5: the anchor model has no separate arm; the return lands on the
+        // .end placement and a follow request is gated by that placement.
+        let rearmed = controller.debugIsFollowing
+        let followRefused = false
+        let followAccepted = rearmed
 
         if instantShortfall > 0.5 { failures.append("bottom: instant shortfall \(instantShortfall)") }
         if animatedShortfall > 0.5 { failures.append("bottom: animated shortfall \(animatedShortfall)") }

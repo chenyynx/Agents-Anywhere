@@ -27,7 +27,7 @@
 |---|---|
 | `ios/.../Models/Chat/TimelineCollection/TimelineAnchorMover.swift` | ease（bounce==0）时按目标差值平移位置（Pace），保留速度；`start`/`reseed` 重置基线，避免把已由外部写入的位移再叠一次 |
 | `ios/.../Views/Chat/TimelineCollection/TimelineAnchorDriver.swift` | 运动跨越 placement 变化时重新起飞（不把大跳当 Pace 平移）；inset 分支去掉自起 0.24 s 弹簧 |
-| `ios/.../Views/Chat/TimelineCollection/TimelineListLayout.swift` | `targetContentOffset` 在更新事务内、且页面处于跟随态（`.end`、非拖动/惯性/交互）**且更新前就贴底**时，答新的 `.end` 底；更新前已在返回途中（离底远）不答，避免截断回底动画 |
+| `ios/.../Views/Chat/TimelineCollection/TimelineListLayout.swift` | `targetContentOffset` 在更新事务内、且驱动处于「`.end` + `.resting`」（已静止贴底）时，答新的 `.end` 底；任何弹簧/手势运动都不答，避免截断回底动画 |
 | `ios/Tests/ClientCoreTests/TimelineAnchorMoverTests.swift` | 增长目标无稳态滞后；停止后无过冲/尾摆；初始间隙仍由弹簧收敛 |
 
 ## 判据

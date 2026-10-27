@@ -816,6 +816,34 @@ Mover 弹簧，临界阻尼 ω≈15.7 跟踪 2716px/s 会有约 300px 滞后，�
 - 待 C5：`TimelineAutoRun` 门禁断言改锚点/motion、布局内部 fallback 写者审计、
   探针清理、全场景真机验收。
 
+### 15.11.1 C5 门禁适配与证据（2026-10-27）
+
+- **C5.1 `9ee7f997`**：`TimelineAutoRun` 断言改为锚点模型（follow 只在
+  `placement == .end`；横滑不再当作 follow）。
+- **C5.2 `ef12daa0`**：独立审查问题收口（Mover 被外部写者覆盖后 reseed、
+  程序化返回关闭 coasting、窗口替换后重设 inset、Reduce Motion 弹簧等）。
+- **C5.3 `316922bc`**：`askedForEnd(animated: false)` 即使在 Mover 飞行中也
+  直接落位（原 reducer 在 flying 时吞掉即时请求，门禁实测 3320pt 残差）。
+- **C5.4 `af473404`**：M3 门禁先把被测行滚进视口；tool storm 门禁对仍折叠的
+  展开行走离屏测量器重测。两者都是 C4 首帧落到官方 `.end` 后门禁的旧假设失效。
+- **C5.5 `d8306f97`**：async markdown / prepend 两个场景改为确定性停靠并校验
+  停靠结果，断言含义不变。
+  - **async markdown 证据**：失败 run 571/581 的位移恒等于行高增长
+    （200→324，Δ124），且生长行横跨视口顶（offset 36 < maxY 200）。官方规则
+    只补偿“完全在视口顶之上”的行（`TimelinePreferredAttributesDecision.swift:101-106`
+    判 `cellMaxY <= viewportTop`）；横跨顶部的行向下生长是设计行为。旧形状在
+    页面停在底部时恒过（空断言），在新语义下被动失败。绿色 run 587 数据：
+    停靠 offset 256 ≥ maxY 216，`grew=true`（真实触发生长），offset 256→380
+    （布局 +124 补偿），下方锚点位移 0。
+  - **prepend 证据**：失败 run 581 的门禁自身没停住（screenY −8352，期望 68），
+    位移 3631 恒等于预插内容高度；根因是 driver 对“无手指滚动”的处理——
+    Mover 飞行中视作 UIKit 修正并续飞旧目标（`TimelineAnchorDriver.swift:239-251`），
+    门禁在飞行中发出的程序化滚动被吞。产品无此程序化滚动路径，属门禁自设竞态。
+    绿色 run 587 数据：停靠校验 screenY 68 通过，placement `.reading(g:table-1)`，
+    offset 2819→9119（+6300），锚点位移 0；`prependDuringApply` 68→68。
+- **run 587 `d8306f97` 全绿**：`test` + `timeline-autorun`（含 M3/M4/M4.3/
+  mask spike 同一作业内全部 PASS）。
+
 ### 15.12 真机观感待调项（2026-10-27，pp 反馈，正式包后再决定是否调）
 
 1. **空输入框弹键盘**：列表跟手“稍微荡一下、有点慢”，官方更快。

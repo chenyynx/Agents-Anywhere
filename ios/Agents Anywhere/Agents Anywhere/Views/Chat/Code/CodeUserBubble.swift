@@ -10,9 +10,14 @@ import SwiftUI
 // before handing it over.
 
 /// A user message on the Code page.
-struct CodeUserBubble: View {
+struct CodeUserBubble<Delivery: View>: View {
     /// The message body, already joined from the row's `.text` blocks.
     let text: String
+    /// Leading-gutter content owned by the bubble: the optimistic send's
+    /// spinner or its failed-send marker. It is anchored to the bubble itself
+    /// so it follows a short, right-aligned bubble instead of the row's
+    /// leading edge.
+    let delivery: Delivery
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -32,9 +37,24 @@ struct CodeUserBubble: View {
                                 cornerRadius: CodePageTheme.userBubbleCornerRadius,
                                 style: .continuous)
                         )
+                        .overlay(alignment: .bottomLeading) { delivery }
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+}
+
+extension CodeUserBubble where Delivery == EmptyView {
+    init(text: String) {
+        self.text = text
+        self.delivery = EmptyView()
+    }
+}
+
+extension CodeUserBubble {
+    init(text: String, @ViewBuilder delivery: () -> Delivery) {
+        self.text = text
+        self.delivery = delivery()
     }
 }

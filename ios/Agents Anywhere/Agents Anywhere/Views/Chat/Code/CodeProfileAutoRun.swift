@@ -750,6 +750,11 @@ final class CodeProfileAutoRunModel {
                          json: RowHeightFixtureJSON.bubblePureAttachment,
                          widths: [361, 320],
                          sizes: [.regular, .accessibility]),
+        // A pure file message: the official 140 pt square card, no bubble.
+        RowHeightFixture(name: "bubble-file-only", kind: .bubble,
+                         json: RowHeightFixtureJSON.bubbleFileOnly,
+                         widths: [361, 320],
+                         sizes: [.regular, .accessibility]),
         // Three images: wide + two squares, two square rows tall.
         RowHeightFixture(name: "bubble-three-images", kind: .bubble,
                          json: RowHeightFixtureJSON.bubbleThreeImages,
@@ -2140,8 +2145,8 @@ final class CodeProfileAutoRunModel {
         """#
 
         /// Text bubble + one image (4:3, so the large box is 200x150) + one
-        /// PDF (large file tile, 200x150: no pixel size → 4:3). The
-        /// attachments are sibling blocks
+        /// PDF (official file card: 140x140 square). The attachments are
+        /// sibling blocks
         /// after the bubble.
         static let bubbleAttachment = #"""
         [
@@ -2165,6 +2170,18 @@ final class CodeProfileAutoRunModel {
                {"fileId":"gate-bpa-img","name":"photo.png","mediaType":"image/png","size":2048,"width":400,"height":300}
              ]},
            "source":{"itemId":"gate-bubble-pure-attachment"}}
+        ]
+        """#
+
+        /// No text and one file: the official 140 pt square file card.
+        static let bubbleFileOnly = #"""
+        [
+          {"id":"h-bfo","sessionId":"gate-height","type":"message","status":"done","role":"user","orderSeq":1,
+           "content":{"text":"",
+             "attachments":[
+               {"fileId":"gate-bfo-doc","name":"report.pdf","mediaType":"application/pdf","size":4096}
+             ]},
+           "source":{"itemId":"gate-bubble-file-only"}}
         ]
         """#
 

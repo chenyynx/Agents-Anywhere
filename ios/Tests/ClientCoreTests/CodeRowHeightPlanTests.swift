@@ -123,9 +123,8 @@ import Testing
 
     @Test func theFileGridUsesTheSameTileRule() {
         #expect(CodeAttachmentLayout.fileGridHeight(count: 0) == 0)
-        // A single file has no pixel size: the unknown-pixel 4:3 rule puts
-        // its large slot at 200x150.
-        #expect(approximately(CodeAttachmentLayout.fileGridHeight(count: 1), 150))
+        // A file has no pixel size; the official card is a 140 pt square.
+        #expect(CodeAttachmentLayout.fileGridHeight(count: 1) == 140)
         #expect(CodeAttachmentLayout.fileGridHeight(count: 2) == 140)
         #expect(CodeAttachmentLayout.fileGridHeight(count: 3) == 288)
         #expect(CodeAttachmentLayout.fileGridHeight(count: 5) == 288)
@@ -142,7 +141,7 @@ import Testing
         let mixedRow = CodeAttachmentLayout.blockHeights(files: [image, secondImage, file])
         #expect(mixedRow.count == 2)
         #expect(mixedRow[0] == 140)
-        #expect(approximately(mixedRow[1], 150))
+        #expect(mixedRow[1] == 140)
         // One image and two files: the image's own grid, then a square row.
         let mixed = CodeAttachmentLayout.blockHeights(files: [image, file, file])
         #expect(mixed.count == 2)
@@ -162,7 +161,7 @@ import Testing
             isFailed: { $0.fileId == "f1" })
         #expect(heights.count == 2)
         #expect(approximately(heights[0], 53.2))
-        #expect(approximately(heights[1], 150))
+        #expect(heights[1] == 140)
     }
 
     @Test @MainActor func blockHeightsPreferTheProvidedPixelSize() throws {

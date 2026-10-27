@@ -33,12 +33,11 @@ nonisolated enum CodeAttachmentTileMetrics {
                                height: CodeAttachmentLayout.squareSide)
     static let wide = CGSize(width: CodeAttachmentLayout.wideWidth,
                              height: CodeAttachmentLayout.squareSide)
-    /// A single file has no pixel size, so the official unknown-pixel rule
-    /// gives the `large` slot a 4:3 frame: 200x150
-    /// (`attachment-tiles-geometry.md` §1 / `CodeAttachmentLayout.fileGridHeight`).
-    static let largeFile = CGSize(
-        width: CodeAttachmentLayout.largeBox,
-        height: CodeAttachmentLayout.largeBox / CodeAttachmentLayout.defaultImageAspect)
+    /// A file has no pixel size, so the official card is the square 140 pt
+    /// tile (verified from the device screenshots: the single-file card is
+    /// 140x140, not the image `large` box).
+    static let largeFile = CGSize(width: CodeAttachmentLayout.squareSide,
+                                  height: CodeAttachmentLayout.squareSide)
 }
 
 /// The official `AttachmentTileLayout` row shapes

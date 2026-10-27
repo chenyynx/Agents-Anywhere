@@ -38,15 +38,12 @@ nonisolated enum CodeAttachmentLayout {
                    largeHeight: largeImageHeight(pixelSize: pixelSizes.first ?? nil))
     }
 
-    /// The height of one `AttachmentTiles<UploadedAttachment>` file grid. The
-    /// file tile has no pixel size of its own, so the official single-item
-    /// path's aspect falls back to 4:3: a 200x150 large slot
-    /// (`attachment-tiles-geometry.md` §1: r=4/3 → w=200, h=200/r).
-    ///
-    /// [I] The 4:3 fallback is the attachment layout's unknown-pixel rule;
-    /// the FileTile itself carries no aspect ratio to fit.
+    /// The height of one `AttachmentTiles<UploadedAttachment>` file grid. A
+    /// file has no pixel size; the official card is the square 140 pt tile
+    /// (device screenshots 2026-10-27), so the single-item `large` slot is
+    /// also 140, not the image 200 box.
     static func fileGridHeight(count: Int) -> CGFloat {
-        gridHeight(count: count, largeHeight: largeBox / defaultImageAspect)
+        gridHeight(count: count, largeHeight: squareSide)
     }
 
     /// The vertical sum of the tile grid's rows.

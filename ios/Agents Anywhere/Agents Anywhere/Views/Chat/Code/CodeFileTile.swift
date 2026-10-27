@@ -1,11 +1,13 @@
 import SwiftUI
 import UIKit
 
-// The official successful file attachment (`FileTile`, CLOSURE.md §2): a
-// solid tile, a top-aligned icon plate with 4 pt top corners and a subtle
-// shadow, and one middle-truncated file name inset 10 pt at the bottom. The
-// tile carries no border, chip or badge; the file/folder glyph is the only
-// type signal. The slot sizes follow the same count-only grid as images.
+// The official successful-file card (Claude iOS Code page, verified from
+// device screenshots 2026-10-27): a 140x140 white tile with a hairline
+// border, a gray thumbnail mat, a white page preview with the file glyph,
+// and a two-line footer (name + extension). This is not the simple
+// "Color base + icon plate + one-line name" FileTile shape from round25;
+// that evidence describes a different surface. The screenshot card is the
+// view the Code page actually draws for `.md` / `.txt` / `.conf` files.
 
 /// One successful file tile.
 struct CodeFileTile: View {
@@ -17,89 +19,98 @@ struct CodeFileTile: View {
     var onOpen: (V2AttachmentContent, UIImage?) -> Void = { _, _ in }
 
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.displayScale) private var displayScale
     @ScaledMetric(relativeTo: .callout) private var nameSize: CGFloat = 13
     @ScaledMetric(relativeTo: .callout) private var nameLineHeight: CGFloat = 18.2
-    // [I] The official Anthropicon side is `textScale × sizePts[.large]`
-    // (`font-default-icon-size-final.md` #2), 24 pt at the default size.
-    @ScaledMetric(relativeTo: .body) private var iconSide: CGFloat = 24
+    @ScaledMetric(relativeTo: .callout) private var typeSize: CGFloat = 13
+    @ScaledMetric(relativeTo: .callout) private var typeLineHeight: CGFloat = 18.2
 
     var body: some View {
         Button { onOpen(file, nil) } label: {
-            ZStack(alignment: .bottom) {
-                // [I] CLOSURE.md §2 fixes the structure ("solid base") but not
-                // the base colour; the user row's neutral fill keeps the file
-                // tile consistent with the bubble it sits under.
-                CodePageTheme.userBubbleFill.resolved(for: colorScheme)
-                iconPlate
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                nameLabel
-                // One overlay only: the overflow tile's `TileCountOverlay`
-                // carries its own status child (see CodeAttachmentTiles).
-                if let overflow {
-                    CodeAttachmentCountOverlay(count: overflow, state: state)
-                } else {
-                    CodeAttachmentStateOverlay(state: state)
-                }
-            }
-            .frame(width: size.width, height: size.height)
-            .clipShape(RoundedRectangle(cornerRadius: CodeAttachmentTileMetrics.cornerRadius,
-                                        style: .continuous))
-            .contentShape(RoundedRectangle(cornerRadius: CodeAttachmentTileMetrics.cornerRadius,
-                                           style: .continuous))
+            card
         }
         .buttonStyle(.plain)
         .accessibilityLabel(Text(verbatim: file.name ?? String(localized: "附件")))
     }
 
-    /// The icon plate: the official glyph at `.large` inside a 10 pt padding,
-    /// on a `Color.black.opacity(0.1)` plate whose top two corners are 4 pt
-    /// continuous, with a shadow (CLOSURE.md §2).
-    ///
-    /// CLOSURE.md §2 gives the frame, not the artwork extent: the 24x24 frame
-    /// is aspect-fit, so the ink lands at the official 18x24 (file), 24x24
-    /// (image/chart), 24x18 (slides/spreadsheet) and 24x20.2 (code). Drawing
-    /// through `AnthropiconView` would pin the smaller preset extent instead
-    /// and leave the glyph undersized inside the frame.
-    private var iconPlate: some View {
-        // [I] The official icon layer builds `Color.white` as its tint
-        // (`file-tile-round2.md` §6), but CLOSURE.md §2 does not pair it with
-        // the tile's base fill. This tile uses the user-bubble fill as its
-        // base, so the glyph inherits primary and stays legible in both
-        // schemes; a literal white tint would disappear on the light base.
-        Image(iconName)
-            .resizable()
-            .scaledToFit()
-            .frame(width: iconSide, height: iconSide)
-            .accessibilityHidden(true)
-            .padding(10)
-            .background(Color.black.opacity(0.1))
-            .clipShape(UnevenRoundedRectangle(
-                topLeadingRadius: 4,
-                bottomLeadingRadius: 0,
-                bottomTrailingRadius: 0,
-                topTrailingRadius: 4,
-                style: .continuous))
-            // [I] CLOSURE.md §2 records a shadow but not its values; the
-            // failed card's official 5% / radius 2 / y 1 (CLOSURE.md §3) is
-            // the closest sampled pair.
-            .shadow(color: .black.opacity(0.05), radius: 2, x: 0, y: 1)
+    /// The screenshot geometry: 140 pt tile; footer `name 18.2 + type 18.2 +
+    /// 6 top padding`; the gray mat is the rest and the white preview sits
+    /// inside it with a 14 pt side inset and a 12 pt top inset.
+    private var card: some View {
+        VStack(spacing: 0) {
+            thumbnail
+                .frame(height: matHeight)
+            texts
+        }
+        .frame(width: size.width, height: size.height, alignment: .top)
+        .background(CodeFileCardColors.card.resolved(for: colorScheme))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(CodeFileCardColors.border.resolved(for: colorScheme),
+                              lineWidth: 1 / displayScale)
+        )
+        .overlay {
+            // One overlay only: an overflow tile owns the +N overlay, which
+            // carries its own status child (CodeAttachmentCountOverlay).
+            if let overflow {
+                CodeAttachmentCountOverlay(count: overflow, state: state)
+            } else {
+                CodeAttachmentStateOverlay(state: state)
+            }
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
-    /// One line, middle truncation, 13 pt relative / 550 / 18.2 pt line box,
-    /// 10 pt inset on all sides, primary label colour (CLOSURE.md §2).
-    private var nameLabel: some View {
-        Text(verbatim: file.name ?? String(localized: "附件"))
-            .font(Font(MarkdownFontFactory.font(name: CodePageTheme.sansFontName,
-                                               size: nameSize,
-                                               weight: 550)))
-            .foregroundStyle(.primary)
-            .lineLimit(1)
-            .truncationMode(.middle)
-            .frame(height: nameLineHeight)
-            // The 10 pt inset applies inside the tile; the outer flexible
-            // frame keeps the text leading-aligned at the tile's edge.
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
+    /// The gray mat + white page preview. The preview keeps rounded corners
+    /// and a hairline border; the file glyph is the official `.large`
+    /// Anthropicon (15x20 at the default size).
+    private var thumbnail: some View {
+        ZStack {
+            CodePageTheme.userBubbleFill.resolved(for: colorScheme)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(CodeFileCardColors.preview.resolved(for: colorScheme))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(
+                            CodeFileCardColors.previewBorder.resolved(for: colorScheme),
+                            lineWidth: 1 / displayScale)
+                )
+                .overlay(
+                    AnthropiconView(name: iconName, size: .large)
+                        .foregroundStyle(CodeFileCardColors.icon.resolved(for: colorScheme))
+                )
+                .padding(.horizontal, 14)
+                .padding(.top, 12)
+        }
+    }
+
+    private var texts: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(verbatim: file.name ?? String(localized: "附件"))
+                .font(Font(MarkdownFontFactory.font(name: CodePageTheme.sansFontName,
+                                                    size: nameSize,
+                                                    weight: 550)))
+                .foregroundStyle(CodeFileCardColors.name.resolved(for: colorScheme))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(height: nameLineHeight)
+            Text(verbatim: typeLabel)
+                .font(Font(MarkdownFontFactory.font(name: CodePageTheme.sansFontName,
+                                                    size: typeSize,
+                                                    weight: 400)))
+                .foregroundStyle(CodeFileCardColors.type.resolved(for: colorScheme))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(height: typeLineHeight)
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var matHeight: CGFloat {
+        max(0, size.height - (nameLineHeight + typeLineHeight + 6))
     }
 
     /// `.fileExtension` (a name with an extension) draws the file glyph;
@@ -111,13 +122,56 @@ struct CodeFileTile: View {
             ? "anthropicon.folder"
             : "anthropicon.file"
     }
+
+    /// The footer's second line. The official card shows the extension in
+    /// caps (`MD`, `TXT`); a folder/extensionless file falls back to the
+    /// localized type word.
+    private var typeLabel: String {
+        let ext = ((file.name ?? "") as NSString).pathExtension.uppercased()
+        if !ext.isEmpty { return ext }
+        return iconName == "anthropicon.folder"
+            ? String(localized: "文件夹")
+            : String(localized: "文件")
+    }
+}
+
+/// The screenshot card colours. The light row is sampled from the official
+/// device screenshots; the dark row is [I] (no dark screenshot was captured).
+private nonisolated enum CodeFileCardColors {
+    static let card = CodePageTheme.SchemeColor(
+        light: .white,
+        dark: Color(.sRGB, red: 0.11, green: 0.106, blue: 0.102))
+    static let preview = CodePageTheme.SchemeColor(
+        light: .white,
+        dark: Color(.sRGB, red: 0.043, green: 0.043, blue: 0.043))
+    /// Card hairline: sampled #C2C1BF.
+    static let border = CodePageTheme.SchemeColor(
+        light: Color(.sRGB, red: 0.761, green: 0.757, blue: 0.749),
+        dark: Color(.sRGB, red: 0.227, green: 0.227, blue: 0.216))
+    /// Preview hairline: sampled #CDCDCD.
+    static let previewBorder = CodePageTheme.SchemeColor(
+        light: Color(.sRGB, red: 0.804, green: 0.804, blue: 0.804),
+        dark: Color(.sRGB, red: 0.227, green: 0.227, blue: 0.216))
+    /// File name: sampled #0B0B0B.
+    static let name = CodePageTheme.SchemeColor(
+        light: Color(.sRGB, red: 0.043, green: 0.043, blue: 0.043),
+        dark: Color(.sRGB, red: 0.941, green: 0.937, blue: 0.925))
+    /// Extension line: sampled #52514E.
+    static let type = CodePageTheme.SchemeColor(
+        light: Color(.sRGB, red: 0.322, green: 0.318, blue: 0.306),
+        dark: Color(.sRGB, red: 0.765, green: 0.761, blue: 0.718))
+    /// Glyph: sampled #8C8C8C.
+    static let icon = CodePageTheme.SchemeColor(
+        light: Color(.sRGB, red: 0.549, green: 0.549, blue: 0.549),
+        dark: Color(.sRGB, red: 0.627, green: 0.627, blue: 0.604))
 }
 
 /// One message's successful files, in the same grid as images
 /// (`AttachmentTiles<UploadedAttachment>` shares the generic layout,
 /// CORRECTIONS #75). A successful file has no pixel size, so the three-item
 /// predicate never selects a wide tile and the official fallback is 2+1
-/// squares (`attachment-tiles-arrangement.md` §1).
+/// squares (`attachment-tiles-arrangement.md` §1). Every file slot is the
+/// official 140 pt square.
 struct CodeFileTiles: View {
     let files: [V2AttachmentContent]
     var state: (V2AttachmentContent) -> CodeAttachmentDisplayState = { _ in .complete }
@@ -131,19 +185,11 @@ struct CodeFileTiles: View {
             } else if files.indices.contains(placement.index) {
                 CodeFileTile(
                     file: files[placement.index],
-                    size: size(for: placement.size),
+                    size: CodeAttachmentTileMetrics.square,
                     overflow: placement.overflow,
                     state: state(files[placement.index]),
                     onOpen: onOpen)
             }
-        }
-    }
-
-    private func size(for slot: CodeAttachmentGridPlan.TileSize) -> CGSize {
-        switch slot {
-        case .square: return CodeAttachmentTileMetrics.square
-        case .wide: return CodeAttachmentTileMetrics.wide
-        case .large: return CodeAttachmentTileMetrics.largeFile
         }
     }
 }

@@ -40,6 +40,15 @@ nonisolated enum CodeAttachmentTileMetrics {
                                   height: CodeAttachmentLayout.squareSide)
 }
 
+/// The shared code-card hairline used by the image tiles (and the file card
+/// uses the same token): `rgba(0.118,0.118,0.114,0.3)` light /
+/// `rgba(0.882,0.878,0.851,0.3)` dark, drawn at one physical pixel.
+nonisolated enum CodeAttachmentHairline {
+    static let color = CodePageTheme.SchemeColor(
+        light: Color(.sRGB, red: 0.118, green: 0.118, blue: 0.114, opacity: 0.3),
+        dark: Color(.sRGB, red: 0.882, green: 0.878, blue: 0.851, opacity: 0.3))
+}
+
 /// The official `AttachmentTileLayout` row shapes
 /// (`attachment-tiles-arrangement.md` §1, E). Three items is the only count
 /// with three shapes: the wide row sits on the side the official predicate
@@ -212,6 +221,7 @@ private struct CodeAttachmentImageTile: View {
     /// the tile must reload when the file key changes instead of keeping the
     /// previous row's image (`image != nil` alone cannot tell them apart).
     @State private var loadedRequest: Request?
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.displayScale) private var displayScale
 
     private var tileSize: CGSize {
@@ -288,6 +298,12 @@ private struct CodeAttachmentImageTile: View {
             .frame(width: tileSize.width, height: tileSize.height)
             .clipShape(RoundedRectangle(cornerRadius: CodeAttachmentTileMetrics.cornerRadius,
                                         style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: CodeAttachmentTileMetrics.cornerRadius,
+                                 style: .continuous)
+                    .strokeBorder(CodeAttachmentHairline.color.resolved(for: colorScheme),
+                                  lineWidth: 1 / displayScale)
+            )
             .contentShape(RoundedRectangle(cornerRadius: CodeAttachmentTileMetrics.cornerRadius,
                                            style: .continuous))
         }

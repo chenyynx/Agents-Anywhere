@@ -146,11 +146,8 @@ private nonisolated enum CodeFileCardColors {
         dark: Color(.sRGB, red: 32.0 / 255.0,
                     green: 32.0 / 255.0, blue: 31.0 / 255.0))
     static let preview = card
-    /// Exactly the code card border token: `rgba(0.118,0.118,0.114,0.3)` /
-    /// `rgba(0.882,0.878,0.851,0.3)`.
-    static let border = CodePageTheme.SchemeColor(
-        light: Color(.sRGB, red: 0.118, green: 0.118, blue: 0.114, opacity: 0.3),
-        dark: Color(.sRGB, red: 0.882, green: 0.878, blue: 0.851, opacity: 0.3))
+    /// Exactly the code card border token, shared with the image tiles.
+    static let border = CodeAttachmentHairline.color
     static let previewBorder = border
     /// File name: sampled #0B0B0B.
     static let name = CodePageTheme.SchemeColor(

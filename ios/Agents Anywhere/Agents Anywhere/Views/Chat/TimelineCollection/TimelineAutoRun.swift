@@ -414,7 +414,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         let item = listItem(entry)
         let belowItem = listItem(below)
         func snapshot() -> [String: Any] {
-            let view = controller.collectionView
+            guard let view = controller.collectionView else { return [:] }
             let attributes = controller.layout.attributes(for: item.itemID)
             return ["offset": view.contentOffset.y,
                     "insetTop": view.adjustedContentInset.top,
@@ -427,11 +427,35 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                     "anchor": controller.debugAnchorState,
                     "mover": controller.debugMoverRunning]
         }
-        let stateBeforeScroll = snapshot()
-        controller.collectionView.setContentOffset(CGPoint(x: 0, y: 36), animated: false)
-        await wait(120)
+        // The incident shape is a long Markdown row *above* the viewport
+        // whose parse finishes. A row that still straddles the viewport top
+        // grows inside the page by design (the official placement anchor is
+        // the row containing the top), so it cannot judge a compensation. A
+        // row entirely above the viewport must be compensated. Park the
+        // viewport below the row's bottom and re-park if the parse landed
+        // while parking (the row then needs a lower viewport).
+        func parkBelowGrowingRow() async -> CGFloat {
+            for _ in 0..<4 {
+                if controller.debugMoverRunning {
+                    await waitForMoverRest(controller, timeout: 1500)
+                }
+                let bottom = controller.layout.attributes(for: item.itemID)?.frame.maxY ?? 0
+                if controller.collectionView.contentOffset.y >= bottom {
+                    return controller.collectionView.contentOffset.y
+                }
+                controller.collectionView.setContentOffset(
+                    CGPoint(x: 0, y: bottom + 40), animated: false)
+                await wait(120)
+                let live = controller.collectionView.contentOffset.y
+                let newBottom = controller.layout.attributes(for: item.itemID)?.frame.maxY ?? 0
+                if live >= newBottom, !controller.debugMoverRunning { return live }
+            }
+            return controller.collectionView.contentOffset.y
+        }
+        let parkedOffset = await parkBelowGrowingRow()
         let firstDisplayed = initialHeights[item.itemID]
             ?? controller.layout.attributes(for: item.itemID)?.frame.height ?? 0
+        let heightBefore = controller.layout.attributes(for: item.itemID)?.frame.height ?? 0
         let before = controller.screenY(for: belowItem) ?? 0
         let stateAtFirstSample = snapshot()
         await wait(900)
@@ -441,12 +465,18 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         let settled = controller.layout.attributes(for: item.itemID)?.frame.height ?? 0
         let after = controller.screenY(for: belowItem) ?? 0
         let delta = abs(after - before)
+        let grew = settled > heightBefore + 0.5
+        // The invariant holds whether the parse landed early or at the
+        // explicit remeasure: a row entirely above the viewport top must
+        // never move what the reader sees. `grew` records whether this run
+        // exercised the growth event at all.
         if delta > 0.5 {
-            failures.append("async markdown: below anchor moved \(delta)pt (first \(firstDisplayed), settled \(settled))")
+            failures.append("async markdown: below anchor moved \(delta)pt"
+                + " (first \(firstDisplayed), settled \(settled), parked \(parkedOffset))")
         }
         report["asyncMarkdown"] = ["firstDisplayed": firstDisplayed, "settled": settled,
-                                   "belowAnchorDelta": delta,
-                                   "beforeScroll": stateBeforeScroll,
+                                   "belowAnchorDelta": delta, "grew": grew,
+                                   "heightBefore": heightBefore, "parkedOffset": parkedOffset,
                                    "firstSample": stateAtFirstSample,
                                    "beforeRemeasure": stateBeforeRemeasure,
                                    "afterRemeasure": snapshot()]
@@ -2151,6 +2181,44 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         }
     }
 
+    /// Waits for the driver's Mover spring to reach its target. While it is
+    /// travelling, a no-hand scroll is adopted as a UIKit correction and the
+    /// spring keeps flying to its old target (the official rule), so a gate
+    /// scroll issued in that window is swallowed.
+    private func waitForMoverRest(_ controller: TimelineCollectionController,
+                                  timeout: Int) async {
+        var elapsed = 0
+        while elapsed < timeout {
+            if !controller.debugMoverRunning {
+                await wait(60)
+                return
+            }
+            await wait(50)
+            elapsed += 50
+        }
+    }
+
+    /// Parks the anchor row at the viewport top and verifies the park. The
+    /// driver treats a programmatic no-hand scroll as a reading placement,
+    /// but not while its Mover spring still travels; retry once the motion
+    /// rests instead of measuring a page the gate never parked.
+    private func parkAnchorAtTop(_ controller: TimelineCollectionController,
+                                 _ item: TimelineListItem) async -> CGFloat? {
+        guard let index = controller.indexPath(for: item) else { return nil }
+        let expected = controller.collectionView.adjustedContentInset.top
+        for attempt in 0..<5 {
+            if controller.debugMoverRunning {
+                await waitForMoverRest(controller, timeout: 1500)
+            }
+            controller.collectionView.scrollToItem(at: index, at: .top, animated: false)
+            await wait(120)
+            let y = controller.screenY(for: item) ?? .nan
+            if abs(y - expected) <= 1, !controller.debugMoverRunning { return y }
+            if !controller.debugMoverRunning, attempt >= 1 { break }
+        }
+        return controller.screenY(for: item)
+    }
+
     private func bottom() async {
         guard let controller else { return }
         controller.collectionView.setContentOffset(CGPoint(x: 0, y: 0), animated: false)
@@ -2219,16 +2287,20 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         // Anchor at the viewport top, the shape the product uses: the first
         // visible row. An offscreen anchor would also move when a visible row
         // above it grows, which is not what the prepend compensation owns.
-        guard let anchorIndex = controller.indexPath(for: anchorItem) else {
-            failures.append("prepend: no anchor index path")
-            return
-        }
         let stateBeforeScroll = ["offset": controller.collectionView.contentOffset.y,
                                  "anchor": controller.debugAnchorState,
                                  "mover": controller.debugMoverRunning] as [String: Any]
-        controller.collectionView.scrollToItem(at: anchorIndex, at: .top, animated: false)
-        await wait(120)
-        let before = controller.screenY(for: anchorItem) ?? 0
+        guard let parked = await parkAnchorAtTop(controller, anchorItem) else {
+            failures.append("prepend: no anchor index path")
+            return
+        }
+        let expectedTop = controller.collectionView.adjustedContentInset.top
+        if abs(parked - expectedTop) > 1 {
+            failures.append("prepend: could not park the anchor at the viewport top"
+                + " (screenY \(parked), expected \(expectedTop))")
+            return
+        }
+        let before = parked
         let stateAfterScroll = ["offset": controller.collectionView.contentOffset.y,
                                 "screenY": before,
                                 "anchor": controller.debugAnchorState,
@@ -2303,16 +2375,20 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         guard let controller, entries.count > 12 else { return }
         let anchor = entries[5]
         let anchorItem = listItem(anchor)
-        guard let index = controller.indexPath(for: anchorItem) else {
-            failures.append("prepend during apply: no anchor index path")
-            return
-        }
         let stateBeforeScroll = ["offset": controller.collectionView.contentOffset.y,
                                  "anchor": controller.debugAnchorState,
                                  "mover": controller.debugMoverRunning] as [String: Any]
-        controller.collectionView.scrollToItem(at: index, at: .top, animated: false)
-        await wait(120)
-        let before = controller.screenY(for: anchorItem) ?? 0
+        guard let parked = await parkAnchorAtTop(controller, anchorItem) else {
+            failures.append("prepend during apply: no anchor index path")
+            return
+        }
+        let expectedTop = controller.collectionView.adjustedContentInset.top
+        if abs(parked - expectedTop) > 1 {
+            failures.append("prepend during apply: could not park the anchor at the"
+                + " viewport top (screenY \(parked), expected \(expectedTop))")
+            return
+        }
+        let before = parked
         let stateAfterScroll = ["offset": controller.collectionView.contentOffset.y,
                                 "screenY": before,
                                 "anchor": controller.debugAnchorState,

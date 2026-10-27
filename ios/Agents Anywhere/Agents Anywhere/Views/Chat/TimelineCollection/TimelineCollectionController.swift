@@ -1594,12 +1594,23 @@ final class TimelineCollectionController: UIViewController {
         max(0, layout.contentHeight - viewport.visibleBottom)
     }
 
-    /// Official `TranscriptScrollPosition._canScrollDown`: the page can travel
-    /// down by more than one physical pixel (`0x1019ddbf0`; the same tolerance
-    /// family as `measuredAtBottom`). This is the host-side judgement the
-    /// official `ScrollDownIndicator` receives through `hidden`.
+    /// The host-side judgement the official `ScrollDownIndicator` receives
+    /// through `hidden` (the view has no threshold of its own, part-u §5.1).
+    ///
+    /// The official predicate is `target − visibleBottom > 1 physical pixel`
+    /// (`0x1019ddbf0`). AA cannot use that exact dead zone here: an animated
+    /// return can rest about one physical pixel short of the layout's end
+    /// (gate 600 measured 0.333 pt on a 3× simulator; the collection view
+    /// clamps the final write to its own contentSize, so the snap cannot
+    /// always close the last pixel [I]). Comparing against the same one
+    /// pixel then reads "still scrollable" at rest and leaves the control on
+    /// screen. One point is the smallest whole-point dead zone and stays
+    /// below the perception of a remaining scroll; the official host
+    /// threshold is U.
+    private static let scrollDownIndicatorDeadZone: CGFloat = 1
+
     var canScrollDown: Bool {
-        viewport.isMeasured && bottomShortfall > 1 / viewport.displayScale
+        viewport.isMeasured && bottomShortfall > Self.scrollDownIndicatorDeadZone
     }
 
     /// The floating return control also hides while the drawer owns

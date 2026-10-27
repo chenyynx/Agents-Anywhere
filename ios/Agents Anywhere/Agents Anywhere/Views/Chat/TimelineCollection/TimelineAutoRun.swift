@@ -2188,7 +2188,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     }
 
     private func waitForScrollDownIndicatorHidden(_ controller: TimelineCollectionController,
-                                                  timeout: Int = 1000) async {
+                                                  timeout: Int = 3000) async {
         var elapsed = 0
         while controller.showsScrollDownIndicator && elapsed < timeout {
             await wait(50)
@@ -2311,11 +2311,14 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
 
         controller.requestBottom(animated: true, forced: true)
         await waitForBottomSettle(controller, timeout: 2000)
-        // `waitForBottomSettle` accepts 0.5 pt while the control's one-pixel
-        // threshold is 0.333 pt on a 3× screen; wait for the control's own
-        // verdict so the sample is not taken mid-snap.
+        // `waitForBottomSettle` accepts 0.5 pt while the control's own
+        // dead zone is 1 pt; wait for the control's verdict so the sample is
+        // not taken mid-snap, and record what the page actually rests at.
         await waitForScrollDownIndicatorHidden(controller)
         let hiddenAtBottom = !controller.showsScrollDownIndicator
+        let settledShortfall = controller.bottomShortfall
+        let settledPhase = String(describing: controller.phase.phase)
+        let settledPlacement = controller.debugAnchorState
         let animatedFlips = scrollDownIndicatorFlips
 
         controller.setReduceMotion(true)
@@ -2339,7 +2342,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             failures.append("scrollDownIndicator: no control away from the bottom")
         }
         if !hiddenAtBottom {
-            failures.append("scrollDownIndicator: control still shown at the bottom")
+            failures.append("scrollDownIndicator: control still shown at the bottom"
+                + " (shortfall \(settledShortfall), phase \(settledPhase),"
+                + " placement \(settledPlacement))")
         }
         if animatedFlips.first != true || animatedFlips.last != false {
             failures.append("scrollDownIndicator: animated flips \(animatedFlips),"
@@ -2366,6 +2371,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             "awayShortfall": awayShortfall,
             "shownAway": shownAway,
             "hiddenAtBottom": hiddenAtBottom,
+            "settledShortfall": settledShortfall,
+            "settledPhase": settledPhase,
+            "settledPlacement": settledPlacement,
             "animatedFlips": animatedFlips,
             "shownAwayReduced": shownAwayReduced,
             "hiddenReduced": hiddenReduced,

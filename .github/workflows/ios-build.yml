@@ -1,5 +1,10 @@
 name: iOS Build & Test
 
+# Every run's display title must say what changed. Dispatchers pass `title`
+# (e.g. "附件阴影 cell 裁剪" / "正文链接+选中复制"); push runs fall back to the
+# commit message so the run list never becomes a wall of "iOS Build".
+run-name: "iOS Build · ${{ inputs.title || github.event.head_commit.message || github.ref_name }}"
+
 # Build & test pipeline for the `dev` development line. It mirrors the
 # downstream `ios-ci` flow —
 # unsigned .ipa for on-device KSign re-signing, no Apple Developer account —
@@ -20,6 +25,10 @@ on:
       - ".github/workflows/ios-build.yml"
   workflow_dispatch:
     inputs:
+      title:
+        description: "What this build changes (shown in the run title)"
+        required: false
+        default: ""
       xcode:
         description: "Xcode app name on the runner (e.g. Xcode_26.5.app)"
         default: "Xcode_26.5.app"

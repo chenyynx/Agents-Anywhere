@@ -111,6 +111,7 @@
   - 已下载核对 `CFBundleVersion = 585`。
 - 同机截图交叉论证全表：`/home/ubuntu/aa-test/claude-ios-re/EVIDENCE/round25/file-card-cross-validation.md`（官方 vs AA 逐项 px/pt，含 #106 圆角/阴影）。
 - **最新包 = build 585**；build 582 / 576 / 570 / 567 保留作中间对照。
+- **待办（2026-10-27，pp 真机反馈）**：build 585 的文件卡阴影仍不可见。已记 `/home/ubuntu/repos/Agents-Anywhere/.local-dev/aa-backlog.md`「2026-10-27 文件卡阴影」；待查 `.shadow` 是否被 clip/父容器裁剪、0.05/2/1 是否太弱、是否改为 background ZStack 的 shape shadow。代码位置 `CodeFileTile.swift` 的 `card`。
 - **待 pp 真机验收**；dev 未合、未 force push。
 
 ## 3. 官方数值（压缩后也别丢）

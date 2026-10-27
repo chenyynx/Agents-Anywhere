@@ -21,8 +21,9 @@ final class V2QueuedMessage: Identifiable {
     private(set) var state: State
     /// Unresolved pending records this queued message replaces: the draft was
     /// restored from them and the user queued the retry. The records leave the
-    /// timeline with this message's confirming echo. Not persisted — a restored
-    /// queue never outlives the records it names.
+    /// timeline with this message's confirming echo. Persisted with the queue
+    /// (and, when a queued item is demoted, with its pending record) so the
+    /// chain survives a relaunch.
     var supersededPendingIDs: [String] = []
 
     /// Every attachment has a server reference on file, or there is nothing to

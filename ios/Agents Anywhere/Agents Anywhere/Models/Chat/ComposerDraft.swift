@@ -44,7 +44,14 @@ nonisolated enum ComposerFocusTransition {
 @MainActor @Observable
 final class ComposerDraft {
     private(set) var isValid = true
-    var text = ""
+    var text = "" {
+        didSet {
+            // The session uses this to drop a retry provenance the user has
+            // abandoned: an emptied editor is a new draft, not a retry.
+            if text.isEmpty, !oldValue.isEmpty { onTextBecameEmpty?() }
+        }
+    }
+    @ObservationIgnored var onTextBecameEmpty: (() -> Void)?
     var attachments: [ChatAttachment] = []
     var isFocused = false
     var isComposing = false

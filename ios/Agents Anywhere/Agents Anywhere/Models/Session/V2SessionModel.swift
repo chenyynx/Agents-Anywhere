@@ -234,6 +234,12 @@ final class V2SessionModel: Identifiable {
 
     init(id: V2SessionID, scope: V2ClientScope, repository: V2SessionRepository) {
         self.id = id; self.scope = scope; self.repository = repository
+        // An emptied editor means the user moved on: the restored draft is no
+        // longer a retry of the unresolved record. This mirrors the archive,
+        // which never persists provenance for an empty draft.
+        composer.onTextBecameEmpty = { [weak self] in
+            self?.draftRestoredFromPendingID = nil
+        }
     }
 
     var canSend: Bool { isValid && runtime.allows("session.send_message") && !notices.notices.contains { $0.blocks(id) } }

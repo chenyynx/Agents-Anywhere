@@ -88,7 +88,12 @@
   - IPA：`AgentsAnywhere-feat-code-profile-beta-b567-1542633.ipa`
     `https://github.com/chenyynx/Agents-Anywhere/releases/download/ipa-feat-code-profile-beta/AgentsAnywhere-feat-code-profile-beta-b567-1542633.ipa`
   - 已下载核对 `CFBundleVersion = 567`。
-- **build 569**（head `2851b537`，footer 36.4）：run `40467265687`，CI 进行中；绿后补包名/链接与 `CFBundleVersion`。
+- **build 569**（head `2851b537`，footer 36.4）：run `40467265687`，只跑 `test`（dispatch 未带 `build`/`code_profile` 输入），test ✅；没有 IPA/gate。
+- **build 570**（head `09a0e7ac`，含 footer 36.4 + docs）：run `40467593816`，`test` ✅、`build` ✅、`code-profile` ✅（`failures: []`；`bubble-attachment` 389/389、565/565、624/624；`bubble-file-only` 150/150；3 图/5 图 352/352，delta 全 0）。
+  - IPA：`AgentsAnywhere-feat-code-profile-beta-b570-09a0e7a.ipa`（17,102,308 B）
+    `https://github.com/chenyynx/Agents-Anywhere/releases/download/ipa-feat-code-profile-beta/AgentsAnywhere-feat-code-profile-beta-b570-09a0e7a.ipa`
+  - 已下载核对 `CFBundleVersion = 570`。
+- **最新包 = build 570**；build 567 保留作中间对照。
 - **待 pp 真机验收**；dev 未合、未 force push。
 
 ## 3. 官方数值（压缩后也别丢）

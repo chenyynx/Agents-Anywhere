@@ -272,7 +272,11 @@ final class TimelineChatBridge: ObservableObject {
         self.controller = controller
         controllerAttached = true
         adapter.attach(controller)
-        scrollDownIndicator.isVisible = controller.showsScrollDownIndicator
+        // Do not read the indicator state here: attach runs from
+        // `onControllerReady` before SwiftUI loads the controller's view, and
+        // the viewport getter dereferences the not-yet-created collection view
+        // (build 601 crashed on open). The first viewport publication delivers
+        // the initial value through this callback.
         controller.onScrollDownIndicatorChanged = { [weak self] visible in
             self?.scrollDownIndicator.isVisible = visible
         }

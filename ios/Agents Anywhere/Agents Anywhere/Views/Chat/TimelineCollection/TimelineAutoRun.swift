@@ -208,10 +208,14 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     @ObservationIgnored private var initialHeights: [String: CGFloat] = [:]
     /// Every flip the Code page's return control observed, in order.
     @ObservationIgnored private var scrollDownIndicatorFlips: [Bool] = []
+    /// The visibility the controller answers from `onControllerReady`, before
+    /// SwiftUI loads its view. Build 601 crashed on this read.
+    @ObservationIgnored private var preLoadIndicatorVisibility: Bool?
 
     func attach(_ controller: TimelineCollectionController) {
         guard self.controller == nil else { return }
         self.controller = controller
+        preLoadIndicatorVisibility = controller.showsScrollDownIndicator
         controller.onApplyCompleted = { [weak self, weak controller] in
             guard let self, let controller else { return }
             self.captureInitialHeights(controller)
@@ -2334,6 +2338,10 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         let reducedFlips = scrollDownIndicatorFlips
         controller.setReduceMotion(false)
 
+        if preLoadIndicatorVisibility != false {
+            failures.append("scrollDownIndicator: pre-load visibility"
+                + " \(String(describing: preLoadIndicatorVisibility)) should be false")
+        }
         if awayShortfall <= 1 {
             failures.append("scrollDownIndicator: fixture is not taller than the viewport"
                 + " (shortfall \(awayShortfall))")
@@ -2368,6 +2376,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         }
 
         report["scrollDownIndicator"] = [
+            "preLoadVisibility": preLoadIndicatorVisibility ?? false,
             "awayShortfall": awayShortfall,
             "shownAway": shownAway,
             "hiddenAtBottom": hiddenAtBottom,

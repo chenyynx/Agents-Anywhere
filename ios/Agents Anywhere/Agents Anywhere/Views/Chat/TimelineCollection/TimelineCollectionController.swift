@@ -1610,7 +1610,14 @@ final class TimelineCollectionController: UIViewController {
     private static let scrollDownIndicatorDeadZone: CGFloat = 1
 
     var canScrollDown: Bool {
-        viewport.isMeasured && bottomShortfall > Self.scrollDownIndicatorDeadZone
+        // `onControllerReady` fires before SwiftUI first loads the controller's
+        // view, and `viewport` dereferences the implicitly-unwrapped
+        // `collectionView` (nil until `viewDidLoad`). Build 601 crashed here
+        // when the product bridge read this from attach; answer safely and let
+        // the first viewport publication deliver the real value.
+        isViewLoaded
+            && viewport.isMeasured
+            && bottomShortfall > Self.scrollDownIndicatorDeadZone
     }
 
     /// The floating return control also hides while the drawer owns

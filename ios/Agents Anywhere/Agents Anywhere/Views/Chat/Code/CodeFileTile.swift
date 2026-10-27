@@ -25,6 +25,15 @@ struct CodeFileTile: View {
     @ScaledMetric(relativeTo: .callout) private var typeSize: CGFloat = 13
     @ScaledMetric(relativeTo: .callout) private var typeLineHeight: CGFloat = 18.2
 
+    /// Fixed footer padding measured from the official/AA pair: the name ink
+    /// starts 6.5 pt below the mat and the type ink ends 6.3 pt above the card
+    /// bottom, i.e. 3.0 pt above and 2.5 pt below the two line boxes. These
+    /// are fixed points, not `@ScaledMetric` (the official padding does not
+    /// grow with the text).
+    private static let footerTopPadding: CGFloat = 3
+    private static let footerBottomPadding: CGFloat = 2.5
+    private static let previewTopInset: CGFloat = 12
+
     var body: some View {
         Button { onOpen(file, nil) } label: {
             card
@@ -33,11 +42,12 @@ struct CodeFileTile: View {
         .accessibilityLabel(Text(verbatim: file.name ?? String(localized: "附件")))
     }
 
-    /// The screenshot geometry: 140 pt tile; the footer is exactly the two
-    /// 18.2 pt line boxes (36.4 pt) with no extra top padding — the visible
-    /// gap above the name is the line box's own leading. The gray mat is the
-    /// remaining 103.6 pt and the white preview sits inside it with a 14 pt
-    /// side inset and a 12 pt top inset (device screenshot 2026-10-27).
+    /// The screenshot geometry: 140 pt tile. The footer is the two 18.2 pt
+    /// line boxes plus 3 pt top and 2.5 pt bottom padding; the mat/white
+    /// preview takes the rest. The preview has a 14 pt side inset and a 12 pt
+    /// top inset. The glyph is centered in the whole card, not the shorter
+    /// preview well (device screenshot 2026-10-27, cross-checked against the
+    /// AA capture on the same 1179x2556 canvas).
     private var card: some View {
         VStack(spacing: 0) {
             thumbnail
@@ -81,9 +91,13 @@ struct CodeFileTile: View {
                 .overlay(
                     AnthropiconView(name: iconName, size: .large)
                         .foregroundStyle(CodeFileCardColors.icon.resolved(for: colorScheme))
+                        // The official glyph sits on the card's vertical
+                        // center (measured 0.7 pt above it), not on the
+                        // shorter preview well's center.
+                        .offset(y: iconCenterOffset)
                 )
                 .padding(.horizontal, 14)
-                .padding(.top, 12)
+                .padding(.top, Self.previewTopInset)
         }
     }
 
@@ -107,11 +121,24 @@ struct CodeFileTile: View {
                 .frame(height: typeLineHeight)
         }
         .padding(.horizontal, 10)
+        .padding(.top, Self.footerTopPadding)
+        .padding(.bottom, Self.footerBottomPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var matHeight: CGFloat {
-        max(0, size.height - (nameLineHeight + typeLineHeight))
+        max(0, size.height
+            - (nameLineHeight + typeLineHeight
+                + Self.footerTopPadding + Self.footerBottomPadding))
+    }
+
+    /// Move the glyph from the preview well's center to the card's center.
+    /// The preview is `matHeight - previewTopInset` tall, so its center is
+    /// `previewTopInset + (matHeight - previewTopInset) / 2`.
+    private var iconCenterOffset: CGFloat {
+        let previewCenter = Self.previewTopInset
+            + (matHeight - Self.previewTopInset) / 2
+        return max(0, size.height / 2 - previewCenter)
     }
 
     /// `.fileExtension` (a name with an extension) draws the file glyph;

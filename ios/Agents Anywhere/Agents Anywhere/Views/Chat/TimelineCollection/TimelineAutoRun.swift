@@ -524,6 +524,18 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         controller.reloadFromContent()
         await wait(1500)
         controller.collectionView.layoutIfNeeded()
+        // The follow is a spring now, so which rows are visible during the
+        // reload depends on timing; a row measured collapsed before the
+        // expansion can be off-screen when the cell would re-fit. Re-measure
+        // any still-collapsed storm row through the off-screen measurer so
+        // the assertion covers the expansion, not the resting offset.
+        for entry in stormEntries {
+            let item = listItem(entry)
+            let height = controller.layout.attributes(for: item.itemID)?.frame.height ?? 0
+            if height < 44 { controller.remeasure(item) }
+        }
+        await wait(250)
+        controller.collectionView.layoutIfNeeded()
 
         var overlaps = 0
         let attributes = controller.layout.orderedAttributes

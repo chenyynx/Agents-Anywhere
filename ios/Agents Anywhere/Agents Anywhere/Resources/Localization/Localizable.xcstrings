@@ -10765,6 +10765,23 @@
         }
       }
     },
+    "请先清空输入框，再重新发送这条记录。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear the input before resending this record."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先清空输入框，再重新发送这条记录。"
+          }
+        }
+      }
+    },
     "有相同内容的消息结果尚未确认，已阻止重复发送。请先处理那条发送记录，或修改内容后再发。": {
       "extractionState": "manual",
       "localizations": {

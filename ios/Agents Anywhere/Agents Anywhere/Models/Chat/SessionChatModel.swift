@@ -628,6 +628,13 @@ final class SessionChatModel {
     /// in place would keep refusing the identical draft.
     func retryPendingMessage(_ pending: V2PendingMessage) async {
         guard session.isValid else { return }
+        // The send path overwrites the composer with the payload it sends;
+        // require an empty editor so a retry can never eat a draft the user
+        // is still writing.
+        guard session.composer.text.isEmpty, session.composer.attachments.isEmpty else {
+            error = String(localized: "请先清空输入框，再重新发送这条记录。")
+            return
+        }
         session.dismissPendingMessage(id: pending.id)
         session.draft = pending.content
         session.composer.attachments = pending.attachments

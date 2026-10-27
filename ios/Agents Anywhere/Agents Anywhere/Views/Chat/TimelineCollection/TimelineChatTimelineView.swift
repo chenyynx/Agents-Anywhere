@@ -112,6 +112,20 @@ struct TimelineChatTimelineView: View {
                 if transition.gestureBegan { bridge.readerDidTakeOver() }
             },
             onControllerReady: { controller in bridge.attach(controller) })
+            // Official `ScrollDownIndicator` above the composer (the Code page
+            // has no pills bar to host it, so it takes the composer's leading
+            // margin). `safeAreaInsets.bottom` is bar + home + keyboard; the
+            // list is full-bleed, so this lifts the control clear of the bar.
+            .overlay(alignment: .bottomLeading) {
+                CodeScrollDownIndicator(state: bridge.scrollDownIndicator) {
+                    // The indicator is the reader's explicit return: a
+                    // follow-only request would refuse a page in `.reading`
+                    // (TimelineCollectionController.requestBottom).
+                    bridge.controller?.requestBottom(animated: true, forced: true)
+                }
+                .padding(.leading, CodePageTheme.rowMarginLeading)
+                .padding(.bottom, safeAreaInsets.bottom + 2)
+            }
             // Match the SwiftUI timeline's soft navigation-bar edge. The
             // collection view also sets its own top edge style; this covers
             // the page-level bar treatment.
@@ -217,6 +231,9 @@ struct TimelineChatTimelineView: View {
 final class TimelineChatBridge: ObservableObject {
     let model: SessionChatModel
     let adapter: TimelineChatContentAdapter
+    /// Only the floating return control observes this; the page body stays
+    /// unscaled by scroll-driven visibility changes.
+    let scrollDownIndicator = CodeScrollDownIndicatorState()
     private(set) weak var controller: TimelineCollectionController?
     /// Probe-only attach trigger: a weak `controller` cannot publish, and the
     /// floating overlay must learn when the representable hands one over.
@@ -255,6 +272,10 @@ final class TimelineChatBridge: ObservableObject {
         self.controller = controller
         controllerAttached = true
         adapter.attach(controller)
+        scrollDownIndicator.isVisible = controller.showsScrollDownIndicator
+        controller.onScrollDownIndicatorChanged = { [weak self] visible in
+            self?.scrollDownIndicator.isVisible = visible
+        }
         controller.onApplyCompleted = { [weak self] in self?.applyCompleted() }
         controller.onBottomArrived = { [weak self] in self?.openingArrived() }
         controller.onLoadOlder = { [weak self] in self?.loadOlder() }

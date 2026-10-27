@@ -172,6 +172,15 @@ final class TimelineCollectionController: UIViewController {
     /// C3 gate uses it to capture the first displayed height for the async
     /// Markdown probe.
     var onApplyCompleted: (() -> Void)?
+    /// The Code page's `ScrollDownIndicator` visibility. The official view has
+    /// no threshold of its own — the host passes `hidden` (part-u §5.1) — and
+    /// the host-side predicate is the shared `_canScrollDown` judgement:
+    /// `target − visibleBottom > 1 physical pixel` (part-ag §1.3, `0x1019ddbf0`).
+    /// The product owns this callback directly: the representable reassigns
+    /// its own callback parameters on every update, which would clear one
+    /// installed there (TimelineCollectionView.updateUIViewController).
+    var onScrollDownIndicatorChanged: ((Bool) -> Void)?
+    private var lastScrollDownIndicator: Bool?
     /// The page's SwiftUI safe area: composer bar + home indicator + keyboard.
     /// The list is a full-bleed representable, so this is its only inset
     /// source. The probe (run 40353074977) measured the proxy inside the
@@ -1585,12 +1594,34 @@ final class TimelineCollectionController: UIViewController {
         max(0, layout.contentHeight - viewport.visibleBottom)
     }
 
+    /// Official `TranscriptScrollPosition._canScrollDown`: the page can travel
+    /// down by more than one physical pixel (`0x1019ddbf0`; the same tolerance
+    /// family as `measuredAtBottom`). This is the host-side judgement the
+    /// official `ScrollDownIndicator` receives through `hidden`.
+    var canScrollDown: Bool {
+        viewport.isMeasured && bottomShortfall > 1 / viewport.displayScale
+    }
+
+    /// The floating return control also hides while the drawer owns
+    /// navigation, matching the old page's return pill.
+    var showsScrollDownIndicator: Bool {
+        canScrollDown && !navigationSuspended
+    }
+
     private func publishViewport() {
         let next = viewport
         guard next.isMeasured else { return }
         guard next != lastPublishedViewport else { return }
         lastPublishedViewport = next
         onViewportChanged?(next)
+        publishScrollDownIndicator()
+    }
+
+    private func publishScrollDownIndicator() {
+        let next = showsScrollDownIndicator
+        guard next != lastScrollDownIndicator else { return }
+        lastScrollDownIndicator = next
+        onScrollDownIndicatorChanged?(next)
     }
 
     /// Called by `loadLatest()` before its await: the newer window can be
@@ -1952,6 +1983,10 @@ final class TimelineCollectionController: UIViewController {
                 requestBottom(animated: request.animated, forced: request.forced)
             }
         }
+        // Suspension hides the return control without a viewport change;
+        // resume re-measures through `publishViewport`, and the dedupe keeps
+        // this second call free.
+        publishScrollDownIndicator()
     }
 }
 

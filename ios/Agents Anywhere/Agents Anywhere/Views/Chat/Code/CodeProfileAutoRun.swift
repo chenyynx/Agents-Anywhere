@@ -40,6 +40,7 @@ final class CodeProfileAutoRunModel {
         case detail
         case workingMark
         case thinkingStatus
+        case scrollDown
     }
 
     private(set) var stage: Stage = .idle
@@ -608,6 +609,17 @@ final class CodeProfileAutoRunModel {
         views["thinkingStatus"] = capture("code-thinking-status.png")
         report["views"] = views
         persist(phase: "views.thinkingStatus")
+
+        // The return control over the same Code row: this is the only capture
+        // that shows its glass circle, icon and leading margin, so a reviewer
+        // can check the placement before the device build.
+        if messageGroup != nil {
+            stage = .scrollDown
+            await wait(500)
+            views["scrollDown"] = capture("code-scroll-down.png")
+            report["views"] = views
+            persist(phase: "views.scrollDown")
+        }
     }
 
     private func prepareViews() {
@@ -2357,6 +2369,12 @@ struct CodeProfileAutoRunRootView: View {
                 workingMarkStage
             case .thinkingStatus:
                 thinkingStatusStage
+            case .scrollDown:
+                if let group = model.messageGroup {
+                    scrollDownStage(group)
+                } else {
+                    Color(.systemBackground)
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -2372,6 +2390,27 @@ struct CodeProfileAutoRunRootView: View {
             CodeMessageRowView(group: group, profile: .claudeCode, cwd: "/repo")
                 .padding(.horizontal, CodePageTheme.rowMarginLeading)
                 .padding(.vertical, 20)
+        }
+        .background(Color(.systemBackground))
+    }
+
+    /// The return control over the real Code row. The product page places it
+    /// above the composer; the gate has no composer, so it sits at the same
+    /// leading margin near the bottom edge and the screenshot shows the
+    /// control's actual size and chrome.
+    @MainActor
+    private func scrollDownStage(_ group: ChatTimelineGroup) -> some View {
+        let state = CodeScrollDownIndicatorState(isVisible: true)
+        return ZStack(alignment: .bottomLeading) {
+            ScrollView {
+                CodeMessageRowView(group: group, profile: .claudeCode, cwd: "/repo")
+                    .padding(.horizontal, CodePageTheme.rowMarginLeading)
+                    .padding(.vertical, 20)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            CodeScrollDownIndicator(state: state, onTap: {})
+                .padding(.leading, CodePageTheme.rowMarginLeading)
+                .padding(.bottom, 16)
         }
         .background(Color(.systemBackground))
     }

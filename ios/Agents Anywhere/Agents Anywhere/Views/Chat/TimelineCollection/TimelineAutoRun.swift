@@ -206,6 +206,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     // MARK: - Mutations
 
     @ObservationIgnored private var initialHeights: [String: CGFloat] = [:]
+    /// Every flip the Code page's return control observed, in order.
+    @ObservationIgnored private var scrollDownIndicatorFlips: [Bool] = []
 
     func attach(_ controller: TimelineCollectionController) {
         guard self.controller == nil else { return }
@@ -213,6 +215,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         controller.onApplyCompleted = { [weak self, weak controller] in
             guard let self, let controller else { return }
             self.captureInitialHeights(controller)
+        }
+        controller.onScrollDownIndicatorChanged = { [weak self] visible in
+            self?.scrollDownIndicatorFlips.append(visible)
         }
         Task { await run() }
     }
@@ -297,6 +302,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await collapseWhileStreaming(); persist(phase: "collapseWhileStreaming")
         await streaming(); persist(phase: "streaming")
         await bottom(); persist(phase: "bottom")
+        await scrollDownIndicator(); persist(phase: "scrollDownIndicator")
         await prepend(); persist(phase: "prepend")
         await prependDuringApply(); persist(phase: "prependDuringApply")
         await owedRace(); persist(phase: "owedRace")
@@ -2278,6 +2284,79 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                             "followRefused": followRefused,
                             "followAccepted": followAccepted,
                             "rearmed": rearmed]
+    }
+
+    /// The Code page's return control, driven through the exact sequence the
+    /// button uses: leave the bottom → the indicator appears; the button's own
+    /// call (`requestBottom(animated: true, forced: true)`) lands the page and
+    /// hides it. The same run repeats under Reduce Motion, where the return
+    /// must still land (the animation is skipped, not the action).
+    private func scrollDownIndicator() async {
+        guard let controller else { return }
+
+        scrollDownIndicatorFlips.removeAll()
+        controller.collectionView.setContentOffset(CGPoint(x: 0, y: 0), animated: false)
+        await wait(150)
+        let awayShortfall = controller.bottomShortfall
+        let shownAway = controller.showsScrollDownIndicator
+
+        controller.requestBottom(animated: true, forced: true)
+        await waitForBottomSettle(controller, timeout: 2000)
+        let hiddenAtBottom = !controller.showsScrollDownIndicator
+        let animatedFlips = scrollDownIndicatorFlips
+
+        controller.setReduceMotion(true)
+        scrollDownIndicatorFlips.removeAll()
+        controller.collectionView.setContentOffset(CGPoint(x: 0, y: 0), animated: false)
+        await wait(150)
+        let shownAwayReduced = controller.showsScrollDownIndicator
+
+        controller.requestBottom(animated: true, forced: true)
+        await waitForBottomSettle(controller, timeout: 2000)
+        let hiddenReduced = !controller.showsScrollDownIndicator
+        let reducedFlips = scrollDownIndicatorFlips
+        controller.setReduceMotion(false)
+
+        if awayShortfall <= 1 {
+            failures.append("scrollDownIndicator: fixture is not taller than the viewport"
+                + " (shortfall \(awayShortfall))")
+        }
+        if !shownAway {
+            failures.append("scrollDownIndicator: no control away from the bottom")
+        }
+        if !hiddenAtBottom {
+            failures.append("scrollDownIndicator: control still shown at the bottom")
+        }
+        if animatedFlips.first != true || animatedFlips.last != false {
+            failures.append("scrollDownIndicator: animated flips \(animatedFlips),"
+                + " expected true then false")
+        }
+        if zip(animatedFlips, animatedFlips.dropFirst()).contains(where: { $0.0 == $0.1 }) {
+            failures.append("scrollDownIndicator: duplicate consecutive flips \(animatedFlips)")
+        }
+        if zip(reducedFlips, reducedFlips.dropFirst()).contains(where: { $0.0 == $0.1 }) {
+            failures.append("scrollDownIndicator: duplicate Reduce Motion flips \(reducedFlips)")
+        }
+        if !shownAwayReduced {
+            failures.append("scrollDownIndicator: no control away from the bottom (Reduce Motion)")
+        }
+        if !hiddenReduced {
+            failures.append("scrollDownIndicator: control still shown at the bottom (Reduce Motion)")
+        }
+        if reducedFlips.first != true || reducedFlips.last != false {
+            failures.append("scrollDownIndicator: Reduce Motion flips \(reducedFlips),"
+                + " expected true then false")
+        }
+
+        report["scrollDownIndicator"] = [
+            "awayShortfall": awayShortfall,
+            "shownAway": shownAway,
+            "hiddenAtBottom": hiddenAtBottom,
+            "animatedFlips": animatedFlips,
+            "shownAwayReduced": shownAwayReduced,
+            "hiddenReduced": hiddenReduced,
+            "reducedFlips": reducedFlips,
+        ]
     }
 
     private func prepend() async {

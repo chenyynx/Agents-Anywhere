@@ -274,12 +274,18 @@ enum AssistantMarkdownTextLayout {
 /// (`MarkdownUITextView` holds a custom `NSTextLayoutManager`); the M2 cell
 /// only needs the default TextKit 2 stack and an intrinsic height that matches
 /// `AssistantMarkdownTextLayout.height(of:)`.
-final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate {
+final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
+                                           UIGestureRecognizerDelegate {
     private var lastMeasuredWidth: CGFloat = -1
     /// The Code page opts in; Chat's hosted cell leaves the text inert for now.
     private var textInteractionEnabled = false
     /// Set by the owner when it wants a non-default URL router.
     var openLink: ((URL) -> Void)?
+    /// Some hosting/scroll combinations swallow UITextView's own link tap;
+    /// the explicit tap recognizer is the fallback (the official custom
+    /// engine uses its own tapGestureRecognizer for the same reason).
+    private var linkTapRecognizer: UITapGestureRecognizer?
+    private var lastOpened: (url: URL, at: TimeInterval)?
 
     init() {
         super.init(frame: .zero, textContainer: nil)
@@ -322,6 +328,54 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate {
             }
         }
         delegate = self
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleLinkTap(_:)))
+        tap.cancelsTouchesInView = false
+        tap.delegate = self
+        addGestureRecognizer(tap)
+        linkTapRecognizer = tap
+    }
+
+    /// Fallback for hosting/scroll stacks that do not deliver the text view's
+    /// own link action. Resolve the tapped character and forward only when it
+    /// carries a `.link` attribute; non-link taps are ignored.
+    @objc private func handleLinkTap(_ recognizer: UITapGestureRecognizer) {
+        let point = recognizer.location(in: self)
+        guard let index = characterIndex(at: point),
+              let attributedText,
+              attributedText.length > 0 else { return }
+        let clamped = min(max(index, 0), attributedText.length - 1)
+        guard let url = attributedText.attribute(.link, at: clamped, effectiveRange: nil) as? URL
+        else { return }
+        open(url)
+    }
+
+    private func characterIndex(at point: CGPoint) -> Int? {
+        if textLayoutManager != nil {
+            guard let position = closestPosition(to: point) else { return nil }
+            return offset(from: beginningOfDocument, to: position)
+        }
+        let local = CGPoint(x: point.x - textContainerInset.left,
+                            y: point.y - textContainerInset.top)
+        let index = layoutManager.characterIndex(
+            for: local, in: textContainer,
+            fractionOfDistanceBetweenInsertionPoints: nil)
+        return index
+    }
+
+    /// Both the system link action and the fallback tap can fire for one tap;
+    /// keep the URL open once.
+    private func open(_ url: URL) {
+        let now = Date.timeIntervalSinceReferenceDate
+        if let lastOpened, lastOpened.url == url, now - lastOpened.at < 0.4 {
+            return
+        }
+        lastOpened = (url, now)
+        openLink?(url)
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        true
     }
 
     // iOS 17+ link action. Returning a custom action keeps the official
@@ -332,7 +386,7 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate {
                   defaultAction: UIAction) -> UIAction? {
         guard case let .link(url) = textItem.content else { return defaultAction }
         return UIAction(title: defaultAction.title, image: defaultAction.image) { [weak self] _ in
-            self?.openLink?(url)
+            self?.open(url)
         }
     }
 
@@ -342,7 +396,7 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate {
                   in characterRange: NSRange,
                   interaction: UITextItemInteraction) -> Bool {
         guard interaction == .invokeDefaultAction else { return true }
-        openLink?(URL)
+        open(URL)
         return false
     }
 

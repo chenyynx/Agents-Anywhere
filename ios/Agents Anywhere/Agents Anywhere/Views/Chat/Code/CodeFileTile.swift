@@ -33,6 +33,10 @@ struct CodeFileTile: View {
     private static let footerTopPadding: CGFloat = 3
     private static let footerBottomPadding: CGFloat = 2.5
     private static let previewTopInset: CGFloat = 12
+    /// The white page's top corner is much tighter than the 14 pt outer card:
+    /// the same-device screenshot gives 26 px on a 988 px card (≈3.7 pt), so
+    /// the official value is 4 pt, not the 8 pt used before.
+    private static let previewCornerRadius: CGFloat = 4
 
     var body: some View {
         Button { onOpen(file, nil) } label: {
@@ -57,6 +61,12 @@ struct CodeFileTile: View {
         .frame(width: size.width, height: size.height, alignment: .top)
         .background(CodeFileCardColors.card.resolved(for: colorScheme))
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        // Same ShadowEffect as the artifact card: opacity 0.05, radius 2,
+        // y offset 1 (E values: round25/CLOSURE.md §3 and
+        // file-card-style-round3.md). The successful card uses the same card
+        // style [I]; the flat version read as a more-rounded card because
+        // the soft edge was missing.
+        .shadow(color: .black.opacity(0.05), radius: 2, x: 0, y: 1)
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(CodeFileCardColors.border.resolved(for: colorScheme),
@@ -85,17 +95,17 @@ struct CodeFileTile: View {
             // white footer read as one surface. A four-sided rounded border
             // (the previous shape) drew a faint line under the preview that
             // the official card does not have (CORRECTIONS #105).
-            UnevenRoundedRectangle(topLeadingRadius: 8,
+            UnevenRoundedRectangle(topLeadingRadius: Self.previewCornerRadius,
                                    bottomLeadingRadius: 0,
                                    bottomTrailingRadius: 0,
-                                   topTrailingRadius: 8,
+                                   topTrailingRadius: Self.previewCornerRadius,
                                    style: .continuous)
                 .fill(CodeFileCardColors.preview.resolved(for: colorScheme))
                 .overlay(
-                    UnevenRoundedRectangle(topLeadingRadius: 8,
+                    UnevenRoundedRectangle(topLeadingRadius: Self.previewCornerRadius,
                                            bottomLeadingRadius: 0,
                                            bottomTrailingRadius: 0,
-                                           topTrailingRadius: 8,
+                                           topTrailingRadius: Self.previewCornerRadius,
                                            style: .continuous)
                         .strokeBorder(
                             CodeFileCardColors.previewBorder.resolved(for: colorScheme),

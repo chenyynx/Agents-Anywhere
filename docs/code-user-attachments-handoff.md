@@ -99,7 +99,13 @@
   - IPA：`AgentsAnywhere-feat-code-profile-beta-b576-bc9726c.ipa`（17,102,307 B）
     `https://github.com/chenyynx/Agents-Anywhere/releases/download/ipa-feat-code-profile-beta/AgentsAnywhere-feat-code-profile-beta-b576-bc9726c.ipa`
   - 已下载核对 `CFBundleVersion = 576`。
-- **最新包 = build 576**；build 570 / 567 保留作中间对照。
+- **build 580**（head `a8c3b3ac`，footer 3/2.5 + 图标居中）：run `40475137740`，已取消（被 582 取代）。
+- **build 582**（head `ef8e9713`，footer 3/2.5 + 图标居中 + preview 底边线去除）：run `40476245030`，`test` ✅、`build` ✅、`code-profile` ✅（`failures: []`）。
+  - IPA：`AgentsAnywhere-feat-code-profile-beta-b582-ef8e971.ipa`（17,104,036 B）
+    `https://github.com/chenyynx/Agents-Anywhere/releases/download/ipa-feat-code-profile-beta/AgentsAnywhere-feat-code-profile-beta-b582-ef8e971.ipa`
+  - 已下载核对 `CFBundleVersion = 582`。
+- 同机截图交叉论证全表：`/home/ubuntu/aa-test/claude-ios-re/EVIDENCE/round25/file-card-cross-validation.md`（官方 vs AA 逐项 px/pt）。
+- **最新包 = build 582**；build 576 / 570 / 567 保留作中间对照。
 - **待 pp 真机验收**；dev 未合、未 force push。
 
 ## 3. 官方数值（压缩后也别丢）

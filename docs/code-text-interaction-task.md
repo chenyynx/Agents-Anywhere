@@ -73,3 +73,10 @@
 - 所以屏幕上有下划线但没有可点击 link；UITextView 和自定义 tap 的 `attribute(.link)` 都返回 nil。
 - 修复：构造 attributes 时补 `if let url = run.link { attributes[.link] = url }`。
 - 门禁新增 `verifyLinkAttribute()`：解析 `[release](https://example.com/release)`，断言 `.link` == URL 且 underline == 1。
+
+## 10. 597（根因修复）
+
+- head `520c45cf`，run `40509037631`，标题 `iOS Build · 正文链接 .link 属性修复`。
+- IPA：`AgentsAnywhere-feat-code-profile-beta-b597-520c45c.ipa`（17,122,471 B）。
+- pp 2026-10-27 真机：「我已经下载了 现在可以了」= **链接点击验收通过**。
+- 选中复制仍待 pp 继续验（596 的 isSelectable 已启用）。

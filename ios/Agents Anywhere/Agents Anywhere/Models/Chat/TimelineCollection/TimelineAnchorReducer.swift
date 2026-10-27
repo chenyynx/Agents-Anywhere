@@ -156,9 +156,10 @@ nonisolated enum TimelineAnchorReducer {
 
         case .askedForEnd(let animated):
             // Official `askedForEnd` is ignored while the finger owns the
-            // page and while the page is already flying to `.end`.
+            // page and while the page is already flying to `.end`. An
+            // *instant* request is a direct command and must still land.
             guard next.motion != .dragging else { break }
-            if next.placement == .end,
+            if animated, next.placement == .end,
                next.motion == .easing || next.motion == .flying {
                 break
             }

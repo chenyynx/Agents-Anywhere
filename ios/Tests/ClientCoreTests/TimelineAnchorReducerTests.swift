@@ -112,6 +112,12 @@ import Testing
         #expect(instant.action == .placeDirect)
     }
 
+    @Test func anInstantEndRequestLandsEvenWhileFlying() {
+        let result = reduce(landed(.end, motion: .flying), .askedForEnd(animated: false))
+        #expect(result.state.placement == .end)
+        #expect(result.action == .placeDirect)
+    }
+
     @Test func askedForStartPlacesTheFirstRowAtTheTop() {
         let result = reduce(landed(.end), .askedForStart(id: "u0"))
         #expect(result.state.placement == .reading(id: "u0", offsetIntoRow: 0))

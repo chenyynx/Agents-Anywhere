@@ -9,7 +9,7 @@
 - 官方控件是 **`ClaudeCoreUI.ScrollDownIndicator`**：圆形玻璃按钮 + `anthropicon.arrowDown`，不是 `ScrollToBottomTextButton`（44 pt 文本按钮是另一组件）。
 - 官方 Code 页把它放在 **composer 上方的 pills bar**（`SessionPillsBar.onScrollDown` → `BarPillRow` overlay，leading 一侧）；AA 没有 pills bar，**pp 2026-10-27 真机定：composer 之上、水平居中**（产品决定，见 §3.4）。
 - 官方默认尺寸：内容圆 **40×40 pt**（`iconSize 16 + 2×12`），最小点击区 **44×44**；淡入淡出 **0.2 s easeInOut**，Reduce Motion 跳过动画。
-- 显示阈值：官方宿主侧判定 **U**；同页 `TranscriptScrollPosition._canScrollDown` 的公式是 `target − visibleBottom > 1 物理像素`，作为 `hidden = !canScrollDown` 的依据 [I]。动画回底可停在布局底端前约 1px（gate 600 实测 0.333 pt @3×），故阈值取 **1 pt 死区**（见 §3.1）。
+- 显示阈值：官方宿主侧判定 **U**；同页 `TranscriptScrollPosition._canScrollDown` 的公式是 `target − visibleBottom > 1 物理像素`，作为 `hidden = !canScrollDown` 的依据 [I]。动画回底可停在布局底端前约 1px（gate 600 实测 0.333 pt @3×），且键盘/输入框 inset 往返会在底部留下几 pt 残差（pp 2026-10-27 真机：键盘收回后按钮又在底部出现），故改为 **`.end` placement 隐藏 + 16 pt 死区**（见 §3.1）。
 - 图标资源已从 1.261005.20 提取并与 1.261019.51 逐字节一致（md5 `051cc5d474df11fd1ed6480cab45baba`）。
 
 ## 1. 官方证据（本会话补）
@@ -43,7 +43,7 @@
   - 水平偏移 `FUN_10298ae14`：`±(pillHeight + rowHeight) / 2`（RTL 取负），即按钮贴在 pills 行 leading 一侧 [I]。
 - 显示/隐藏动画：pills 行自身 `easeInOut(0.15)`（`DAT_10422ea08 = 0.15`，`FUN_10298addc`）；指示器内部仍是 **0.2 s**。
 - **宿主阈值 U**：`_hostDrawsScrollDownIndicator` 只是环境键，未解出 `hidden` 的判定。
-- 同页可下滚判据（EVIDENCE 公式 / INFERENCE 命名）：`target − visibleBottom > 1 物理像素`，`part-ag-scroll-params-draft.md:78`（`0x1019ddbf0`）。本任务以 `hidden = !canScrollDown` 落地 [I]；动画回底可停在布局底端前约 1px（gate 600 实测 0.333 pt @3×；滚动视图把最终写入夹到自身 contentSize，最后一像素可能不可达 [I]），直接用 1px 会在静止时误判“还能滚”，故取 **1 pt 死区**。
+- 同页可下滚判据（EVIDENCE 公式 / INFERENCE 命名）：`target − visibleBottom > 1 物理像素`，`part-ag-scroll-params-draft.md:78`（`0x1019ddbf0`）。本任务以 `hidden = !canScrollDown` 落地 [I]。AA 的产品规则：`.end` placement 一律隐藏；阅读态用 **16 pt 死区**（约一行），避开动画回底的 1px 残差、键盘/输入框 inset 往返的小残差和亚行抖动。官方宿主阈值仍是 U。
 
 ## 2. AA 现状
 
@@ -57,7 +57,7 @@
 ### 3.1 Controller
 
 - 新增：
-  - `var canScrollDown: Bool { viewport.isMeasured && bottomShortfall > 1 }`（1 pt 死区；官方 1px 判据与动画回底的约 1px 残差不兼容，见 §1.3）
+  - `var canScrollDown: Bool { guard isViewLoaded, !isFollowingEnd else { return false }; return viewport.isMeasured && bottomShortfall > 16 }`（`.end` placement 隐藏 + 16 pt 死区；见 §1.3）
   - `var showsScrollDownIndicator: Bool { canScrollDown && !navigationSuspended }`
   - `var onScrollDownIndicatorChanged: ((Bool) -> Void)?`（controller 自有，**不经** `TimelineCollectionView` 的 per-update 赋值，避免被 `updateUIViewController` 清空）
 - 在 `publishViewport()` 末尾、`setNavigationSuspended()` 后发布布尔翻转（去重）。
@@ -79,7 +79,7 @@
 ### 3.3 接线
 
 - `TimelineChatTimelineView`：在 `TimelineCollectionView` 上 `.overlay(alignment: .bottom)`（水平居中，无 leading padding）；
-  - bottom = `safeAreaInsets.bottom + 2`（`safeAreaInsets.bottom` = composer bar + home + keyboard，列表全 bleed，用它把按钮抬到 composer 之上）；2 是 44 pt 外框与 composer 的间隙，40 pt 视觉圆底距 composer 约 4 pt。
+  - bottom = `safeAreaInsets.bottom + 8`（`safeAreaInsets.bottom` = composer bar + home + keyboard，列表全 bleed，用它把按钮抬到 composer 之上）；8 pt 同时把 44 pt 点击区抬离 composer bar 的命中区（pp 真机反馈点按钮时键盘弹起；2 pt 间隙偏紧，键盘是否由点击穿透引起未证实 [I]）。
 - 点击：`bridge.controller?.requestBottom(animated: true, forced: true)`。
 - 键盘：不额外隐藏；按钮随 `safeAreaInsets` 一起抬升（官方 pills bar 在 composer 栈内 [I]）。
 - 返回动画期间按钮保持可见，到顶后按 `canScrollDown` 自然消失（官方宿主判定 U，不做额外抑制）。
@@ -87,7 +87,7 @@
 ### 3.4 位置证据等级
 
 - 官方 = pills bar 的 leading 一侧（`BarPillRow` overlay + 偏移公式），EVIDENCE。
-- AA 无 pills bar；build 601/603 先按 leading 16 落地，pp 2026-10-27 真机要求**居中** → 本批改为水平居中、距 composer 2 pt（外框）。这是产品决定，不是官方位置。
+- AA 无 pills bar；build 601/603 先按 leading 16 落地，pp 2026-10-27 真机要求**居中** → 本批改为水平居中、距 composer 8 pt（外框）。这是产品决定，不是官方位置。
 
 ## 4. 门禁与验证
 
@@ -103,7 +103,7 @@
 ## 5. 不做 / 遗留（U）
 
 - `ScrollToBottomTextButton` / 44 pt 文本按钮（另一组件，Code 页不用）。
-- 官方宿主侧精确阈值与“返回中是否立即隐藏”：U；本批按几何 `canScrollDown`。
+- 官方宿主侧精确阈值与“返回中是否立即隐藏”：U；本批按 `.end` placement 隐藏 + 阅读态 16 pt 死区（产品规则）。
 - 官方指示器挂在 `SessionPillsBar` 上；pills bar 为空（无 diff/outputs）时宿主是否仍显示为 **U**（`SessionPillsBarSlot` 的 body 在 bar 为 nil 时整体不渲染）。AA 无 pills bar，按 `canScrollDown` 独立显示。
 - 按压动画的具体视觉量（scale/opacity/时长曲线组合）：U；本批不加按压反馈。
 - 是否在键盘弹起时隐藏：官方无直接证据；按 pills bar 随 composer 抬升实现 [I]。

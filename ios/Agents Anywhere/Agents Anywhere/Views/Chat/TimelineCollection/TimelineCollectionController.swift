@@ -1598,16 +1598,24 @@ final class TimelineCollectionController: UIViewController {
     /// through `hidden` (the view has no threshold of its own, part-u §5.1).
     ///
     /// The official predicate is `target − visibleBottom > 1 physical pixel`
-    /// (`0x1019ddbf0`). AA cannot use that exact dead zone here: an animated
+    /// (`0x1019ddbf0`). AA needs a wider product dead zone: an animated
     /// return can rest about one physical pixel short of the layout's end
-    /// (gate 600 measured 0.333 pt on a 3× simulator; the collection view
-    /// clamps the final write to its own contentSize, so the snap cannot
-    /// always close the last pixel [I]). Comparing against the same one
-    /// pixel then reads "still scrollable" at rest and leaves the control on
-    /// screen. One point is the smallest whole-point dead zone and stays
-    /// below the perception of a remaining scroll; the official host
-    /// threshold is U.
-    private static let scrollDownIndicatorDeadZone: CGFloat = 1
+    /// (gate 600 measured 0.333 pt on a 3× simulator), and a keyboard/composer
+    /// inset cycle can leave a few points of residual while the page still
+    /// looks bottomed out (pp device report 2026-10-27: the control showed at
+    /// the bottom after a keyboard round trip). Sixteen points is about one
+    /// line of text — the smallest remaining travel a reader would notice.
+    /// The official host threshold is U.
+    private static let scrollDownIndicatorDeadZone: CGFloat = 16
+
+    /// The driver owns the "at the end" truth. While it is following (or a
+    /// return is on its way), the page is bottomed out by definition, so a
+    /// transient inset residual must not summon the control. If a return
+    /// genuinely fails, the reader can scroll once to leave `.end` and the
+    /// control returns.
+    private var isFollowingEnd: Bool {
+        anchorDriver?.state.placement == .end
+    }
 
     var canScrollDown: Bool {
         // `onControllerReady` fires before SwiftUI first loads the controller's
@@ -1615,8 +1623,8 @@ final class TimelineCollectionController: UIViewController {
         // `collectionView` (nil until `viewDidLoad`). Build 601 crashed here
         // when the product bridge read this from attach; answer safely and let
         // the first viewport publication deliver the real value.
-        isViewLoaded
-            && viewport.isMeasured
+        guard isViewLoaded, !isFollowingEnd else { return false }
+        return viewport.isMeasured
             && bottomShortfall > Self.scrollDownIndicatorDeadZone
     }
 
@@ -1696,6 +1704,10 @@ final class TimelineCollectionController: UIViewController {
         }
         anchorDriver?.requestEnd(animated: animated
             && !reduceMotion && !UIAccessibility.isVoiceOverRunning)
+        // The request moves the placement to `.end` synchronously; hide the
+        // return control now instead of waiting for the first offset sample
+        // (a request that needs no movement would otherwise leave it up).
+        publishScrollDownIndicator()
         scheduleVisibleCellSettle()
     }
 

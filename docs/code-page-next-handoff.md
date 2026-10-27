@@ -65,8 +65,8 @@ Code 页滚动离开底部后，显示官方“回到/滚动到底部”控件�
 - 新增 `Views/Chat/Code/CodeScrollDownIndicator.swift`：40×40 pt 玻璃圆（`@ScaledMetric(.footnote) 16 + 2×12`）、`anthropicon.arrowDown`（`.large`，官方 SVG md5 `051cc5d4…`）、44 pt 点击区、`easeInOut(0.2)` 淡入淡出（Reduce Motion 跳过）、a11y「向下滚动」。
 - 资产：`Assets.xcassets/anthropicon.arrowDown.imageset`（1.261005.20 提取，与 1.261019.51 逐字节相同）；`AnthropiconAssets.table` 新增 `[11×12, 12×13, 14×15]`。
 - Controller：`canScrollDown` / `showsScrollDownIndicator` / `onScrollDownIndicatorChanged`；只在 `publishViewport` 与 `setNavigationSuspended` 发布布尔翻转。
-- 阈值：官方宿主判定 U；沿用 `_canScrollDown` 语义，但 AA 动画回底会停在布局底端前 **1 物理像素**（gate 600 失败；build 601 `settledShortfall = 0.33333333333394 @3×`），故用 **1 pt 死区**。这是 AA 适配，不是官方值。
-- 位置：composer 之上、**水平居中**、`safeAreaInsets.bottom + 2`（pp 2026-10-27 真机定；官方 pills bar 是 leading 一侧，AA 无 pills bar）。build 601/603 的 leading 版已被此决定取代。
+- 阈值：官方宿主判定 U。AA 产品规则：`TimelineAnchorPlacement == .end` 时一律隐藏；阅读态用 **16 pt 死区**（约一行）。原因：动画回底可停在布局底端前 1 物理像素（gate 600 实测 0.333 pt @3×），键盘/输入框 inset 往返还会留下几 pt 残差（pp 2026-10-27 真机：键盘收回后按钮又在底部出现）。
+- 位置：composer 之上、**水平居中**、`safeAreaInsets.bottom + 8`（pp 2026-10-27 真机定；官方 pills bar 是 leading 一侧，AA 无 pills bar；8 pt 同时避开 composer bar 的命中区）。build 601/603 的 leading 版已被此决定取代。
 - 点击：`requestBottom(animated: true, forced: true)`（`forced:false` 对 `.reading` 页会被拒，见 `TimelineCollectionController.swift:1662`）。
 - 门禁：`TimelineAutoRun` 新增 `scrollDownIndicator` 场景，build 601 报告：
   - `shownAway=true`、`hiddenAtBottom=true`、`animatedFlips=[true,false]`；

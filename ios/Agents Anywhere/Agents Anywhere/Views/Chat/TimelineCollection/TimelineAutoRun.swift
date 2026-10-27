@@ -2325,6 +2325,18 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         let settledPlacement = controller.debugAnchorState
         let animatedFlips = scrollDownIndicatorFlips
 
+        // Keyboard/composer inset round trip at the bottom: the control must
+        // stay hidden (pp device report 2026-10-27 — it reappeared after the
+        // keyboard retracted).
+        controller.safeAreaInsets = UIEdgeInsets(top: 0, left: 0, bottom: 300, right: 0)
+        await wait(350)
+        let shownWithKeyboard = controller.showsScrollDownIndicator
+        let keyboardShortfall = controller.bottomShortfall
+        controller.safeAreaInsets = .zero
+        await wait(500)
+        let shownAfterKeyboard = controller.showsScrollDownIndicator
+        let afterKeyboardShortfall = controller.bottomShortfall
+
         controller.setReduceMotion(true)
         scrollDownIndicatorFlips.removeAll()
         controller.collectionView.setContentOffset(CGPoint(x: 0, y: 0), animated: false)
@@ -2353,6 +2365,14 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             failures.append("scrollDownIndicator: control still shown at the bottom"
                 + " (shortfall \(settledShortfall), phase \(settledPhase),"
                 + " placement \(settledPlacement))")
+        }
+        if shownWithKeyboard {
+            failures.append("scrollDownIndicator: control shown with the keyboard inset"
+                + " (shortfall \(keyboardShortfall))")
+        }
+        if shownAfterKeyboard {
+            failures.append("scrollDownIndicator: control shown after the keyboard hid"
+                + " (shortfall \(afterKeyboardShortfall))")
         }
         if animatedFlips.first != true || animatedFlips.last != false {
             failures.append("scrollDownIndicator: animated flips \(animatedFlips),"
@@ -2384,6 +2404,10 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             "settledPhase": settledPhase,
             "settledPlacement": settledPlacement,
             "animatedFlips": animatedFlips,
+            "shownWithKeyboard": shownWithKeyboard,
+            "keyboardShortfall": keyboardShortfall,
+            "shownAfterKeyboard": shownAfterKeyboard,
+            "afterKeyboardShortfall": afterKeyboardShortfall,
             "shownAwayReduced": shownAwayReduced,
             "hiddenReduced": hiddenReduced,
             "reducedFlips": reducedFlips,

@@ -120,7 +120,11 @@ struct TimelineChatTimelineView: View {
             // Code page hosts it on the leading side of its pills bar; AA has
             // no pills bar, and pp chose the centred position on device
             // (2026-10-27). `safeAreaInsets.bottom` is bar + home + keyboard;
-            // the list is full-bleed, so this lifts the control clear of the bar.
+            // the list is full-bleed, so this lifts the control clear of the
+            // bar. Eight points also keeps the whole 44 pt target clear of
+            // the composer bar's hit region; the old 2 pt gap was tight, and
+            // pp reported the keyboard rising on a return tap (whether the
+            // tap reached the composer is unconfirmed [I]).
             .overlay(alignment: .bottom) {
                 CodeScrollDownIndicator(state: bridge.scrollDownIndicator) {
                     // The indicator is the reader's explicit return: a
@@ -128,7 +132,7 @@ struct TimelineChatTimelineView: View {
                     // (TimelineCollectionController.requestBottom).
                     bridge.controller?.requestBottom(animated: true, forced: true)
                 }
-                .padding(.bottom, safeAreaInsets.bottom + 2)
+                .padding(.bottom, safeAreaInsets.bottom + 8)
             }
             .opacity(model.openingPositionSettled ? 1 : 0)
             .allowsHitTesting(model.isOpeningReady)

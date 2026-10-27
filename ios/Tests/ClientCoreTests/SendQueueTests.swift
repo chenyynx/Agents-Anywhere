@@ -497,6 +497,7 @@ import Testing
             return try http.defaultResponse(call)
         }
         let chat = makeChat(model, repo, http)
+        try await eventually { model.canSend }
         model.draft = "Blocked"
         await chat.send("Blocked")
         #expect(model.draft == "Blocked")
@@ -528,6 +529,7 @@ import Testing
             return try http.defaultResponse(call)
         }
         let chat = makeChat(model, repo, http)
+        try await eventually { model.canSend }
         model.draft = "Retry me."
         await chat.send("Retry me.")
         let record = try #require(model.pendingMessages.first)

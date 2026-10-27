@@ -9,20 +9,20 @@
 
 **根因（已闭合）**：`CodeMessageBuilder` 只读 `.text`，`CodeMessageRowView`/`CodeUserBubble` 没有附件分支；pending 带附件时回退 Chat 气泡，echo 后 pending 删除 → 附件消失。wire 数据正常（`V2MessageContent.attachments`）。
 
-**证据已闭合**：`/home/ubuntu/aa-test/claude-ios-re/EVIDENCE/round25/CLOSURE.md` 判定“附件默认视觉所需数值全部闭合，无阻塞项”。跨轮修正在 `CANONICAL/CORRECTIONS.md` #70–#90。
+**证据已闭合**：`/home/ubuntu/aa-test/claude-ios-re/EVIDENCE/round25/CLOSURE.md` 判定“附件默认视觉所需数值全部闭合，无阻塞项”。跨轮修正在 `CANONICAL/CORRECTIONS.md` #70–#99（#96–#99 为 2026-10-27 真机截图二轮修正）。
 
 ## 1. 分支 / 工作区（当前）
 
 - 工作副本：`/home/ubuntu/aa-wt-attachments`
 - 分支：`feat/code-profile-beta`
-- HEAD：`0d727e7b`（docs 交接；其前为 `afb8ed0a` 任务单）
-- 历史包含：`6fa985de`（附件链路审计）、`b160c90f`（Merge `feat/drawer-fullscreen-swipe` → 实验分支，侧栏改动）、`ae2ea037`（动作条 medium）
+- HEAD：`2851b537`（成功文件卡 footer 间距修正；其前 `15426330` 图片 tile hairline）
+- 历史包含：`4d46ed2c`（附件主体）、`d107e072`（文件卡 140）、`7536293f`（附件先于气泡）、`15426330`（图片 tile hairline）、`2851b537`（footer 36.4 无额外 padding）
 - 另有 `/home/ubuntu/aa-ring-work` 处于 detached `b2f13f1a`（未动）；composer 线在 `/home/ubuntu/aa-ring-work-composer`（独立分支）
-- 工作区当前有阶段 1/2A/2B 的**未提交**实现改动，不要回退
+- 工作区干净；阶段 1/2A/2B 已全部提交并进入 build 561→569
 
 ## 2. 实现进度
 
-### 阶段 1（已完成，未提交）
+### 阶段 1（已完成，已提交）
 
 - 新增 `Models/Chat/Code/CodeAttachmentLayout.swift`、`Tests/ClientCoreTests/CodeMessageTimelineTests.swift`
 - 修改 `CodeMessageTimeline.swift`：`Block.attachments(id:files:clientMessageID:)`；builder 读 `V2MessageContent.attachments`、按 `fileId ?? raw` 去重、多 body 顺序、纯附件保留
@@ -67,6 +67,11 @@
   - pending 失败文档现在按卡高计入，delivery 进入 pending 签名/heightKey；`measureSynchronously` 为 pending 新 key 写 `.precalc` 估算，优先于 `TimelineHeightCache` 的已显示旧高度，失败时真正采用新高度（不再依赖不可能发生的 `.interactive` 自纠；pending 实际是 `.measured`）。
   - 3 项 fallback 的单个 square 加 leading `Color.clear` filler，贴右；`isWide` 抽成纯函数并进 gate 三断言（横向/纵向/nil）；3 项形状 gate 断言 `filler,square`。
   - `attachmentPixelSize` 用 merge 后的 content 回退；空白文本 pending 不画气泡；失败卡/图片格 a11y 保留文件名。
+- 真机截图二轮修正（2026-10-27，build 563/566/567/569）：
+  - 成功文件卡改为官方 140×140：白底卡 + 灰衬 `#F0EFEC` + 白预览 112×91.6（圆角 8、1px 边）+ 灰色 `anthropicon.file` + 两行 name 13/550/18.2 `#0B0B0B` / type 13/400/18.2 `#52514E`（CORRECTIONS #96/#99）。
+  - 底部文字区 = 两行 line box 36.4，**无额外 top padding**；灰衬 103.6，preview 底边与文字区分界齐平（#99）。
+  - 用户行顺序改为 **附件 → 文本气泡**；builder / `CodeMessageRowView` / `CodeUserMessageRow` / measurer 全部一致（#97）。
+  - 3 图官方分支 wide 上 / wide 下 / 2+1；gap 8；图片 tile 官方截图无可见边框（#98）。根据 pp 明确要求，当前代码给图片 tile 也加了 file/code-card 同款 hairline（`CodeAttachmentHairline`），这是**有意偏离像素证据**，待 pp 真机确认。
 - 已知非阻塞残余：
   - echo 若 wire 完全不回附件，尚无 clientID fallback；当前证据显示 connector 三条 lifecycle 都带附件。
   - FileTile 底色用 `userBubbleFill` [I]；图标 tint 用 primary [I]（官方 white 在浅底不可见）。
@@ -75,11 +80,15 @@
 
 ## 2.6 CI 与包（2026-10-27）
 
-- 分支 `feat/code-profile-beta`，head `762edc6f`（`4d46ed2c` 实现 + `762edc6f` 文档）。
-- Actions run `40441663226` / **build 561**：`test` ✅、`build` ✅、`code-profile` ✅（`failures: []`）。
-- `code-profile` 新增 4 组 fixture 全部通过：`bubble-attachment` 399/399（361 large）、575/575（361 accessibility3）、634/634（320 accessibility3）；纯附件 160/160；3 图 352/352；5 图 352/352；delta 全 0；`attachmentLayout` 7 条形状断言通过。
-- IPA：`AgentsAnywhere-feat-code-profile-beta-b561-762edc6.ipa`
-  `https://github.com/chenyynx/Agents-Anywhere/releases/download/ipa-feat-code-profile-beta/AgentsAnywhere-feat-code-profile-beta-b561-762edc6.ipa`
+- 分支 `feat/code-profile-beta`；最新 head `2851b537`（footer 修正）。
+- Actions run `40441663226` / **build 561**（head `762edc6f`）：`test` ✅、`build` ✅、`code-profile` ✅（`failures: []`）。
+- **build 563**（head `d107e072`，文件卡 140）：run `40463365195`，三 job 全绿。
+- **build 566**（head `7536293f`，附件先于气泡）：run `40465298850`，三 job 全绿。
+- **build 567**（head `15426330`，图片 tile hairline）：run `40465573070`，三 job 全绿；`code-profile` 行高 delta 全 0，`bubble-attachment` 389/389（361 large）、565/565（361 accessibility3）、624/624（320 accessibility3）；`bubble-three-images` 352/352；`bubble-five-images` 352/352。
+  - IPA：`AgentsAnywhere-feat-code-profile-beta-b567-1542633.ipa`
+    `https://github.com/chenyynx/Agents-Anywhere/releases/download/ipa-feat-code-profile-beta/AgentsAnywhere-feat-code-profile-beta-b567-1542633.ipa`
+  - 已下载核对 `CFBundleVersion = 567`。
+- **build 569**（head `2851b537`，footer 36.4）：run `40467265687`，CI 进行中；绿后补包名/链接与 `CFBundleVersion`。
 - **待 pp 真机验收**；dev 未合、未 force push。
 
 ## 3. 官方数值（压缩后也别丢）
@@ -91,11 +100,14 @@
 - 图片：resizable stretchy + aspectRatio + Rectangle 裁剪，center，fill
 - 遮罩：inFlight/failed/unopenable 黑 0.5；failed 加 `anthropicon.warning`；complete/displayOnly 无
 
-### 成功文件 FileTile
-- 纯色底 + 顶部图标 overlay + 底部单行文件名
-- 图标：`.fileExtension`→`anthropicon.file`；`.folder`/nil→`anthropicon.folder`；`.large` **24×24 frame**，aspect-fit
-- 图标 overlay：`Color.black.opacity(0.1)`，上两角 4pt continuous，shadow
-- 文件名：inset 10；lineLimit 1；truncationMode **.middle**；**13pt relative / 550 / 18.2 / AnthropicSansMobileVariable-TextRegular / .callout**；默认 primary label；无边框/chip/角标
+### 成功文件卡（官方 Code 页实际 UI，CORRECTIONS #96/#99）
+- **140×140 pt 方格**；白底卡 + code-card 同款 1px hairline；圆角 14 continuous
+- 灰衬底 `#F0EFEC`，高 **103.6 pt**（= 140 − 两行 line box 36.4）
+- 白预览 **112×91.6 pt**（左右 14 pt、顶 12 pt；底边与灰衬底/文字区分界齐平），圆角 8，1px `#CDCDCD` 边
+- 预览内灰色 `anthropicon.file`（`.large`，file 约 18×24 frame，aspect-fit；浅色下 tint `#8C8C8C`）
+- 底部两行：name **13/550/18.2 `#0B0B0B`**，type **13/400/18.2 `#52514E`**；左右 inset 10 pt；**无额外 top padding**
+- name lineLimit 1 + truncation `.middle`；type = 扩展名大写（`MD`/`TXT`），无扩展名回退 folder/file 文案
+- 单文件与多文件都用 140 方格；旧 `FileTile` 简单形（纯色底+图标板+单行名）不是 Code 页实际卡片（#96）
 
 ### 失败卡 ArtifactPreviewCard
 - `.frame(maxWidth: 520)`；圆角 14 continuous；padding **leading20 / trailing16 / bottom8 / top6**；HStack spacing **20**
@@ -108,7 +120,8 @@
 - 失败态 opacity 0.5 + `anthropicon.warning` + a11y `upload_failed`；无可见文案
 
 ### 用户行
-- 顺序：文本气泡 → 图片 AttachmentTiles → 文件 SendUserMessageAttachmentRow（内部先失败卡、后成功 FileTile）
+- 顺序：**图片 AttachmentTiles → 文件 SendUserMessageAttachmentRow → 文本气泡**（2026-10-27 真机截图修正，CORRECTIONS #97；旧 CSV 类型树是反向）
+- 文件行内部：先失败卡，后成功 tiles
 - 附件在气泡外；右缘与气泡共享行内容右缘；附件无 36pt 槽位；块间距默认 8 [I]
 - 纯附件不渲染气泡；pending 与 settled 同 block 结构
 
@@ -121,8 +134,8 @@
 
 ## 5. 恢复提示词（下个会话直接粘贴）
 
-> 继续 AA Code 页用户附件实现。先读 `/home/ubuntu/aa-wt-attachments/docs/code-user-attachments-handoff.md`、`/home/ubuntu/aa-wt-attachments/docs/code-user-attachments-task.md`、`/home/ubuntu/aa-test/claude-ios-re/EVIDENCE/round25/CLOSURE.md`。
-> 工作副本 `/home/ubuntu/aa-wt-attachments`，分支 `feat/code-profile-beta`，HEAD `0d727e7b`（含 `b160c90f` 侧栏 merge），dev 不碰不合。
-> 当前阶段 1 已完成未提交；阶段 2A 视图子代理可能仍在跑或已完成（看通知/工作区）。不要重复和回退它的文件。
-> 下一步：阶段 2B（adapter 接线/签名/高度/pending 统一/gate fixture）→ L 级审查 → commit/push → CI test/build/code-profile → 出包（包名带构建号）→ 真机验收。
-> 所有视觉值严格照 CLOSURE.md，不编；出包/交流带构建号；不要 force push、不要合 dev。
+> 继续 AA Code 页用户附件实现。先读 `/home/ubuntu/aa-wt-attachments/docs/code-user-attachments-handoff.md`、`/home/ubuntu/aa-wt-attachments/docs/code-user-attachments-task.md`、`/home/ubuntu/aa-test/claude-ios-re/EVIDENCE/round25/CLOSURE.md`、`/home/ubuntu/aa-test/claude-ios-re/CANONICAL/CORRECTIONS.md` #96–#99。
+> 工作副本 `/home/ubuntu/aa-wt-attachments`，分支 `feat/code-profile-beta`，HEAD `2851b537`（footer 修正），dev 不碰不合。
+> 阶段 1/2A/2B 已提交；build 561、563、566、567 全绿，build 569 等 CI。不要回退 #96–#99 的视觉修正。
+> 下一步：build 569 绿后取包名/链接与 CFBundleVersion，交 pp 真机验收；若 pp 反馈 3 图仍非 wide+2square，先确认测试页是 Code Beta 还是 Chat/旧包，再查 Code row fallback。
+> 所有视觉值严格照 CLOSURE/CORRECTIONS，不编；出包/交流带构建号；不要 force push、不要合 dev。

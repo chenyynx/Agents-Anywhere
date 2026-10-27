@@ -5652,7 +5652,7 @@ def test_send_message_and_display_use_live_capabilities_when_cache_disagrees(
     assert sends == (["first", "second"] if live_allowed else [])
 
 
-def test_failed_live_capability_read_is_retryable_without_dispatching_message(tmp_path):
+def test_failed_live_capability_read_is_a_definite_rejection(tmp_path):
     client = make_client(tmp_path)
     _, _, session_id, headers = create_connector_and_session(client)
     rpc = FakeLocalRpc()
@@ -5661,12 +5661,64 @@ def test_failed_live_capability_read_is_retryable_without_dispatching_message(tm
     rpc.timeout_session_methods = {"session.capabilities"}
     response = client.post(f"/sessions/{session_id}/runtime/messages", headers=headers,
                            json={"content": "retry", "clientMessageId": "retry"})
-    assert response.status_code == 504, response.text
+    # The capability probe runs before the message is forwarded, so its timeout
+    # is as definite as the state read's: 4xx, never an ambiguous 5xx.
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "runtime_capabilities_timeout"
     assert not any(method == "session.send_message" for _, method, _, _ in rpc.requests)
     rpc.timeout_session_methods.clear()
     response = client.post(f"/sessions/{session_id}/runtime/messages", headers=headers,
                            json={"content": "retry", "clientMessageId": "retry"})
     assert response.status_code == 200, response.text
+
+
+def test_send_message_state_timeout_is_a_definite_rejection(tmp_path):
+    client = make_client(tmp_path)
+    connector_id, _, session_id, headers = create_connector_and_session(client)
+    rpc = FakeLocalRpc()
+    client.app.state.rpc = rpc
+    asyncio.run(client.app.state.store.set_connector_status(connector_id, "online"))
+    client.post(f"/sessions/{session_id}/takeover", headers=headers).raise_for_status()
+    rpc.timeout_session_methods = {"session.state"}
+
+    response = client.post(f"/sessions/{session_id}/runtime/messages", headers=headers,
+                           json={"content": "retry", "clientMessageId": "retry"})
+
+    # The state read runs before the message is forwarded, so the timeout is a
+    # definite rejection (4xx), never a 500 that clients read as "maybe sent".
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "runtime_state_timeout"
+    assert not any(method == "session.send_message" for _, method, _, _ in rpc.requests)
+    assert asyncio.run(client.app.state.store.get_active_run(session_id)) is None
+
+    # Retrying the same message after the transport recovers dispatches exactly
+    # one turn: nothing was left queued behind the rejected attempt.
+    rpc.timeout_session_methods.clear()
+    response = client.post(f"/sessions/{session_id}/runtime/messages", headers=headers,
+                           json={"content": "retry", "clientMessageId": "retry"})
+    assert response.status_code == 200, response.text
+    sends = [1 for _, method, _, _ in rpc.requests if method == "session.send_message"]
+    assert len(sends) == 1
+
+
+def test_send_rpc_timeout_stays_ambiguous(tmp_path):
+    # The uncaught TimeoutError is a 500 in production; the default test client
+    # would re-raise it instead of returning the response being asserted.
+    client = TestClient(create_app(), raise_server_exceptions=False)
+    connector_id, _, session_id, headers = create_connector_and_session(client)
+    rpc = FakeLocalRpc()
+    client.app.state.rpc = rpc
+    asyncio.run(client.app.state.store.set_connector_status(connector_id, "online"))
+    client.post(f"/sessions/{session_id}/takeover", headers=headers).raise_for_status()
+    rpc.timeout_session_methods = {"session.send_message"}
+
+    response = client.post(f"/sessions/{session_id}/runtime/messages", headers=headers,
+                           json={"content": "maybe sent", "clientMessageId": "maybe"})
+
+    # The write itself timed out: it may have executed, so it must never be
+    # reported as a definite rejection (4xx) — clients have to keep treating it
+    # as unknown instead of retrying blindly.
+    assert response.status_code >= 500, response.text
 
 
 def test_send_message_starts_new_turn_from_error_state(tmp_path):

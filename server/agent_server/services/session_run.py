@@ -418,11 +418,11 @@ class SessionRunService:
             raise SessionRunConflictError("session is read-only until takeover is enabled")
         if not await self._manager.is_online(session.connectorId):
             raise SessionRunConflictError("connector is offline")
-        await self._ensure_session_runtime_running(session, user_id=user_id)
+        await self._ensure_runtime_running_before_write(session, user_id=user_id)
         runtime_status = await self._read_runtime_status(session)
         if runtime_status not in {"idle", "error"}:
             raise SessionRunConflictError(f"session is {runtime_status}")
-        await self._require_session_capability(
+        await self._require_capability_before_write(
             session,
             SESSION_SEND_MESSAGE,
             user_id=user_id,
@@ -445,7 +445,7 @@ class SessionRunService:
                 user_id=user_id,
                 file_ids=[a.fileId for a in payload.attachments],
             )
-            await self._require_session_capability(
+            await self._require_capability_before_write(
                 session,
                 RUNTIME_ATTACHMENT,
                 user_id=user_id,
@@ -525,6 +525,55 @@ class SessionRunService:
             observation_origin=observation_origin,
         )
 
+    async def _ensure_runtime_running_before_write(
+        self,
+        session: SessionView,
+        *,
+        user_id: str,
+    ) -> None:
+        try:
+            await self._ensure_session_runtime_running(session, user_id=user_id)
+        except TimeoutError as exc:
+            # Still before start_active_run: the write was never forwarded, so
+            # clients may safely retry it.
+            raise SessionRunConflictError(
+                {
+                    "code": "runtime_start_timeout",
+                    "message": (
+                        "connector runtime did not answer while ensuring it was "
+                        "running; nothing was submitted"
+                    ),
+                }
+            ) from exc
+
+    async def _require_capability_before_write(
+        self,
+        session: SessionView,
+        capability_id: str,
+        *,
+        user_id: str,
+        attachment_media_types: list[str] | None = None,
+    ) -> None:
+        try:
+            await self._require_session_capability(
+                session,
+                capability_id,
+                user_id=user_id,
+                attachment_media_types=attachment_media_types,
+            )
+        except SessionRunTimeoutError as exc:
+            # The capability probe also precedes start_active_run, so its
+            # timeout means the same thing: nothing was submitted.
+            raise SessionRunConflictError(
+                {
+                    "code": "runtime_capabilities_timeout",
+                    "message": (
+                        "connector session capabilities request timed out; "
+                        "nothing was submitted"
+                    ),
+                }
+            ) from exc
+
     async def _read_runtime_status(self, session: SessionView) -> SessionStatus:
         params: dict[str, Any] = {
             "sessionId": session.id,
@@ -542,6 +591,22 @@ class SessionRunService:
             )
         except ConnectorOfflineError as exc:
             raise SessionRunConflictError(str(exc)) from exc
+        except TimeoutError as exc:
+            # Every caller reads the state before it writes (send_message and
+            # steer_session both forward their write only after this returns),
+            # so a timeout here proves the write was not forwarded. Answer with the
+            # conflict channel — a definite rejection every client understands —
+            # instead of letting the bare TimeoutError become a 500, which
+            # clients must treat as "the write may have landed".
+            raise SessionRunConflictError(
+                {
+                    "code": "runtime_state_timeout",
+                    "message": (
+                        "connector session state request timed out; "
+                        "nothing was submitted"
+                    ),
+                }
+            ) from exc
         except ConnectorRpcError as exc:
             raise SessionRunUpstreamError(exc.message or exc.code) from exc
         if not isinstance(result, dict):
@@ -650,11 +715,11 @@ class SessionRunService:
             )
         if not await self._manager.is_online(session.connectorId):
             raise SessionRunConflictError("connector is offline")
-        await self._ensure_session_runtime_running(session, user_id=user_id)
+        await self._ensure_runtime_running_before_write(session, user_id=user_id)
         runtime_status = await self._read_runtime_status(session)
         if runtime_status != "running":
             raise SessionRunConflictError("session is not running")
-        await self._require_session_capability(
+        await self._require_capability_before_write(
             session,
             SESSION_STEER,
             user_id=user_id,
@@ -679,7 +744,7 @@ class SessionRunService:
                 user_id=user_id,
                 file_ids=[attachment.fileId for attachment in payload.attachments],
             )
-            await self._require_session_capability(
+            await self._require_capability_before_write(
                 session,
                 RUNTIME_ATTACHMENT,
                 user_id=user_id,

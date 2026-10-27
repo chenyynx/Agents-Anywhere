@@ -40,6 +40,28 @@ RPC_LOG_PARTIAL_SECRET_KEYS = frozenset(
 )
 CONNECTOR_WS_MAX_NOTIFICATION_BYTES = 900 * 1024
 CRITICAL_RPC_METHODS = frozenset({"interaction.respond", "session.notices"})
+# The server reaches the connector over this channel (session.state and the
+# other runtime RPCs). When one stalls, the server only sees its own timeout
+# and cannot tell "the handler hung" from "the frame never arrived". These
+# thresholds make that distinction visible from the connector side.
+EVENT_LOOP_HEARTBEAT_SECONDS = 1.0
+EVENT_LOOP_STALL_WARNING_SECONDS = 1.0
+# The send/state class this watchdog exists for answers in milliseconds; five
+# seconds is already pathological there. Lifecycle and discovery calls have
+# legitimate 30–90 s budgets on the server side, so warning on them would be
+# pure noise — and noise is how a real stall gets ignored.
+RPC_SLOW_WARNING_SECONDS = 5.0
+SLOW_RPC_EXEMPT_METHODS = frozenset(
+    {
+        "runtime.start",
+        "runtime.stop",
+        "runtime.discover",
+        "runtime.config",
+        "session.create",
+        "session.sync",
+        "session.discover",
+    }
+)
 
 
 class WebSocketSender(Protocol):
@@ -90,6 +112,9 @@ class ConnectorRpcChannel:
         self._request_tasks: set[asyncio.Task[None]] = set()
         self._request_semaphore = asyncio.Semaphore(8)
         self._critical_request_semaphore = asyncio.Semaphore(2)
+        self._inflight: dict[str, tuple[str, float]] = {}
+        self._inflight_warned: set[str] = set()
+        self._watchdog_task: asyncio.Task[None] | None = None
 
     def set_connection(self, ws: WebSocketSender) -> None:
         self.clear_connection()
@@ -101,6 +126,7 @@ class ConnectorRpcChannel:
         self._send_worker_task = asyncio.create_task(
             self._send_worker_loop(ws, send_queue)
         )
+        self._watchdog_task = asyncio.create_task(self._watchdog_loop())
 
     def clear_connection(self) -> None:
         self._generation += 1
@@ -108,6 +134,11 @@ class ConnectorRpcChannel:
         if self._send_worker_task is not None:
             self._send_worker_task.cancel()
             self._send_worker_task = None
+        if self._watchdog_task is not None:
+            self._watchdog_task.cancel()
+            self._watchdog_task = None
+        self._inflight.clear()
+        self._inflight_warned.clear()
         send_queue = self._send_queue
         self._send_queue = None
         self._fail_pending_send_queue(
@@ -124,6 +155,8 @@ class ConnectorRpcChannel:
         tasks = list(self._request_tasks)
         if self._send_worker_task is not None:
             tasks.append(self._send_worker_task)
+        if self._watchdog_task is not None:
+            tasks.append(self._watchdog_task)
         self.clear_connection()
         await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -228,13 +261,67 @@ class ConnectorRpcChannel:
         generation: int | None = None,
     ) -> None:
         method = message.get("method")
+        request_id = message.get("id")
+        tracked = isinstance(request_id, str)
+        if tracked:
+            # Tracked from before the semaphore so a request that waits behind
+            # other work is reported too, not just a slow handler.
+            self._inflight[request_id] = (str(method), time.monotonic())
         semaphore = (
             self._critical_request_semaphore
             if method in CRITICAL_RPC_METHODS
             else self._request_semaphore
         )
-        async with semaphore:
-            await self.handle_message(message, dispatch, generation=generation)
+        try:
+            async with semaphore:
+                await self.handle_message(message, dispatch, generation=generation)
+        finally:
+            if tracked:
+                self._inflight.pop(request_id, None)
+                self._inflight_warned.discard(request_id)
+
+    async def _watchdog_loop(self) -> None:
+        """Report stalls the server can otherwise only infer from its timeout.
+
+        - Heartbeat drift: a synchronous call blocked the event loop, the shape
+          that swallows an incoming RPC for its whole duration.
+        - A tracked request past the threshold: this process read the request
+          and has not finished it. The window covers waiting on the request
+          semaphore, the handler itself and handing the response to the send
+          queue, so the log cannot by itself say which phase was slow; the
+          server-side `request_id` correlates it with the matching send.
+        - Healthy heartbeat and nothing tracked: this process never read the
+          request from the socket — or it finished it and queued the reply
+          while the server's own read loop was slow. Correlate the ids before
+          concluding the frame never arrived.
+        """
+        previous = time.monotonic()
+        while True:
+            await asyncio.sleep(EVENT_LOOP_HEARTBEAT_SECONDS)
+            now = time.monotonic()
+            drift = now - previous - EVENT_LOOP_HEARTBEAT_SECONDS
+            if drift >= EVENT_LOOP_STALL_WARNING_SECONDS:
+                logger.warning(
+                    "connector event loop stalled drift_ms={:.1f} inflight={}",
+                    drift * 1000,
+                    len(self._inflight),
+                )
+            previous = now
+            for request_id, (method, started_at) in list(self._inflight.items()):
+                if request_id in self._inflight_warned:
+                    continue
+                if method in SLOW_RPC_EXEMPT_METHODS:
+                    continue
+                elapsed = now - started_at
+                if elapsed < RPC_SLOW_WARNING_SECONDS:
+                    continue
+                self._inflight_warned.add(request_id)
+                logger.warning(
+                    "connector rpc request not finished method={} id={} elapsed_ms={:.1f}",
+                    method,
+                    request_id,
+                    elapsed * 1000,
+                )
 
     def handle_request_task_done(self, task: asyncio.Task[None]) -> None:
         self._request_tasks.discard(task)

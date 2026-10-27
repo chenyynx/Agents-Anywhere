@@ -202,6 +202,13 @@ async def _publish_session_protocol_update(
         await broker.publish(session_id, envelope)
 
 
+# The failure path runs on a connector that may be the very thing that just
+# timed out; the live read below can wait out two 10 s RPC timeouts of its own.
+# Bound it so the definite answer (a 4xx) reaches the client inside its request
+# window instead of being overtaken by the client's own timeout.
+_FAILURE_PUBLISH_TIMEOUT_SECONDS = 2.0
+
+
 async def _best_effort_publish_session_protocol_update(
     db: Store,
     broker: TimelineBroker,
@@ -212,14 +219,15 @@ async def _best_effort_publish_session_protocol_update(
     user_id: str | None,
 ) -> None:
     try:
-        await db.get_session(session_id, user_id=user_id)
-        await _publish_session_protocol_update(
-            db,
-            broker,
-            manager,
-            runtime_state_cache,
-            session_id,
-        )
+        async with asyncio.timeout(_FAILURE_PUBLISH_TIMEOUT_SECONDS):
+            await db.get_session(session_id, user_id=user_id)
+            await _publish_session_protocol_update(
+                db,
+                broker,
+                manager,
+                runtime_state_cache,
+                session_id,
+            )
     except Exception:
         return
 

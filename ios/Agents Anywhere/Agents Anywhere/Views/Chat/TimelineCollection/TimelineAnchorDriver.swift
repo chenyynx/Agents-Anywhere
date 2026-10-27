@@ -315,6 +315,13 @@ final class TimelineAnchorDriver {
             repairPlacement()
             return
         }
+        if UIAccessibility.isReduceMotionEnabled || UIAccessibility.isVoiceOverRunning {
+            // Official conditions: no sprung motion under Reduce Motion or
+            // VoiceOver; the placement is resolved directly.
+            writeOffset(target)
+            state.motion = .resting
+            return
+        }
         let current = view.contentOffset.y
         let visible = TimelineOffsetTarget.visibleHeight(
             containerHeight: view.bounds.height,

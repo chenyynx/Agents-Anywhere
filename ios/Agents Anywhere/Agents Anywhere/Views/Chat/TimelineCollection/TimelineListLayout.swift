@@ -354,27 +354,13 @@ final class TimelineListLayout: UICollectionViewLayout {
 #endif
             return CGPoint(x: proposedContentOffset.x, y: y)
         }
-        // A height change applied inside the update without a prepend target:
-        // answer with its absolute offset. The value is idempotent for the
-        // repeated queries UIKit makes in one transaction.
-        if var owed = heightOwedToUpdate {
-            let y = owed.offer(proposed: proposedContentOffset.y)
-            heightOwedToUpdate = owed
-            lastReturnedContentOffset = y
-#if DEBUG
-            if abs(y - proposedContentOffset.y) > 0.5 {
-                traceOffset("targetHeightOwed", before: proposedContentOffset.y,
-                            after: y, note: "owed height")
-            }
-#endif
-            return CGPoint(x: proposedContentOffset.x, y: y)
-        }
         // A page waiting at the bottom lands on the new end inside the update
         // that carries the inserted/deleted rows (official
         // `rowsOwedToNextUpdate` → `offsetOwedToUpdate`). Without this answer
         // the anchor Mover only sees the new height after the update and
         // springs there, so a new tool row read as a slow drift instead of the
-        // content pushing the page up.
+        // content pushing the page up. This outranks a height owed: the new
+        // bottom is already the final position for every change in the update.
         if isInsideUpdate, let host, let view = collectionView {
             let state = host.layoutInteractionState()
             let wasAtBottom = abs(view.contentOffset.y - TimelineOffsetTarget.bottomOffset(
@@ -390,6 +376,7 @@ final class TimelineListLayout: UICollectionViewLayout {
                     topInset: view.adjustedContentInset.top,
                     bottomInset: view.adjustedContentInset.bottom)
                 if abs(bottom - proposedContentOffset.y) > 0.5 {
+                    heightOwedToUpdate = nil
                     lastReturnedContentOffset = bottom
 #if DEBUG
                     traceOffset("targetFollowBottom", before: proposedContentOffset.y,
@@ -398,6 +385,21 @@ final class TimelineListLayout: UICollectionViewLayout {
                     return CGPoint(x: proposedContentOffset.x, y: bottom)
                 }
             }
+        }
+        // A height change applied inside the update without a prepend target:
+        // answer with its absolute offset. The value is idempotent for the
+        // repeated queries UIKit makes in one transaction.
+        if var owed = heightOwedToUpdate {
+            let y = owed.offer(proposed: proposedContentOffset.y)
+            heightOwedToUpdate = owed
+            lastReturnedContentOffset = y
+#if DEBUG
+            if abs(y - proposedContentOffset.y) > 0.5 {
+                traceOffset("targetHeightOwed", before: proposedContentOffset.y,
+                            after: y, note: "owed height")
+            }
+#endif
+            return CGPoint(x: proposedContentOffset.x, y: y)
         }
         lastReturnedContentOffset = proposedContentOffset.y
         return proposedContentOffset

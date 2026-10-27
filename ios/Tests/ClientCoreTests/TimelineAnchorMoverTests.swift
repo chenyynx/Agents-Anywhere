@@ -94,10 +94,16 @@ import Testing
         var mover = TimelineAnchorMover(position: 0)
         mover.start(at: 0, spring: .ease)
         let dt = 1.0 / 120
-        var target: CGFloat = 0
+        // A motion only exists because of a gap; close it while the stream
+        // keeps growing, then measure the steady state.
+        var target: CGFloat = 100
         _ = mover.step(target: target, dt: dt, displayScale: scale)
+        for _ in 0..<120 {
+            target += 300 * CGFloat(dt)
+            _ = mover.step(target: target, dt: dt, displayScale: scale)
+        }
         var worst: CGFloat = 0
-        for _ in 0..<240 {
+        for _ in 0..<120 {
             target += 300 * CGFloat(dt)
             let step = mover.step(target: target, dt: dt, displayScale: scale)
             #expect(!step.arrived)
@@ -112,7 +118,7 @@ import Testing
         var mover = TimelineAnchorMover(position: 0)
         mover.start(at: 0, spring: .ease)
         let dt = 1.0 / 120
-        var target: CGFloat = 0
+        var target: CGFloat = 100
         _ = mover.step(target: target, dt: dt, displayScale: scale)
         for _ in 0..<120 {
             target += 300 * CGFloat(dt)

@@ -2310,6 +2310,11 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         scrollDownIndicatorFlips.removeAll()
         controller.collectionView.setContentOffset(CGPoint(x: 0, y: 0), animated: false)
         await wait(150)
+        // A programmatic offset change is not a reader gesture; the driver
+        // keeps `.end` unless a gesture (or this seam) adopts a reading
+        // placement. The product path is always a gesture.
+        controller.disarmBottom()
+        await wait(50)
         let awayShortfall = controller.bottomShortfall
         let shownAway = controller.showsScrollDownIndicator
 
@@ -2341,6 +2346,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         scrollDownIndicatorFlips.removeAll()
         controller.collectionView.setContentOffset(CGPoint(x: 0, y: 0), animated: false)
         await wait(150)
+        controller.disarmBottom()
+        await wait(50)
         let shownAwayReduced = controller.showsScrollDownIndicator
 
         controller.requestBottom(animated: true, forced: true)

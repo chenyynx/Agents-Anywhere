@@ -60,7 +60,7 @@
   - `var canScrollDown: Bool { guard isViewLoaded, !isFollowingEnd else { return false }; return viewport.isMeasured && bottomShortfall > 16 }`（`.end` placement 隐藏 + 16 pt 死区；见 §1.3）
   - `var showsScrollDownIndicator: Bool { canScrollDown && !navigationSuspended }`
   - `var onScrollDownIndicatorChanged: ((Bool) -> Void)?`（controller 自有，**不经** `TimelineCollectionView` 的 per-update 赋值，避免被 `updateUIViewController` 清空）
-- 在 `publishViewport()` 末尾、`setNavigationSuspended()` 后发布布尔翻转（去重）。
+- 在 `publishViewport()` 末尾、`setNavigationSuspended()`、`requestBottom()`、`disarmBottom()` 后发布布尔翻转（去重；placement 变化不一定伴随 offset/视口变化）。
 - **时序约束**：回调在 `onControllerReady`（`makeUIViewController` 内）安装，此时 SwiftUI 尚未加载 controller 的 view；`viewport` 会解引用 `UICollectionView!`（`viewDidLoad` 才创建）。`canScrollDown` 必须先 `isViewLoaded` 短路，attach 里不得读 `showsScrollDownIndicator`（build 601 开屏 SIGTRAP 的根因）。初始值由第一次 `publishViewport` 回调送达。
 - 不改行高、不改 `CodeRowHeightPlan`/measurer。
 

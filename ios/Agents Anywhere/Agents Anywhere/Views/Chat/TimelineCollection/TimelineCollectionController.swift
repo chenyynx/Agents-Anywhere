@@ -1764,6 +1764,9 @@ final class TimelineCollectionController: UIViewController {
 
     func disarmBottom() {
         anchorDriver?.adoptReadingPlacement()
+        // The placement (not the offset) moved; re-evaluate the control so a
+        // reader takeover can reveal it without waiting for the next sample.
+        publishScrollDownIndicator()
     }
 
     func readerDidRestAtBottom(_ rests: Bool, interactionPresented: Bool) {

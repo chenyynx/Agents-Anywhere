@@ -10765,6 +10765,23 @@
         }
       }
     },
+    "当前无法发送带附件的消息，请稍后再试。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attachments cannot be sent right now. Try again later."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前无法发送带附件的消息，请稍后再试。"
+          }
+        }
+      }
+    },
     "请先清空输入框，再重新发送这条记录。": {
       "extractionState": "manual",
       "localizations": {

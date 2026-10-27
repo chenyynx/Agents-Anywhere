@@ -624,7 +624,13 @@ final class SessionChatModel {
     /// the user manually deleted a period).
     private func surfaceBlockedSendIfNeeded() {
         guard session.blockedSendPendingID != nil else { return }
-        error = String(localized: "有相同内容的消息结果尚未确认，已阻止重复发送。请先处理那条发送记录，或修改内容后再发。")
+        refuse(String(localized: "有相同内容的消息结果尚未确认，已阻止重复发送。请先处理那条发送记录，或修改内容后再发。"))
+    }
+
+    /// Refuses the current action and bumps the tick so the explanation can
+    /// re-open on every tap, not only when its copy changes.
+    private func refuse(_ message: String) {
+        error = message
         blockedSendTick += 1
     }
 
@@ -641,10 +647,16 @@ final class SessionChatModel {
         let sameAsRecord = session.composer.text == pending.content
             && session.composer.attachments.map(\.id) == pending.localAttachmentIDs
         guard session.composer.text.isEmpty || sameAsRecord else {
-            error = String(localized: "请先清空输入框，再重新发送这条记录。")
+            refuse(String(localized: "请先清空输入框，再重新发送这条记录。"))
             return
         }
         if isComposerStreaming {
+            // The queue has its own capability gate; a stale or unsupported
+            // runtime must not take a row that could never drain.
+            guard canQueueSend else {
+                refuse(String(localized: "Wait for the session to reconnect before sending."))
+                return
+            }
             session.dismissPendingMessage(id: pending.id)
             session.draft = pending.content
             session.composer.attachments = pending.attachments
@@ -661,7 +673,14 @@ final class SessionChatModel {
             return
         }
         guard !isWorking, session.canSend, !session.composer.isComposing else {
-            error = String(localized: "Wait for the session to reconnect before sending.")
+            refuse(String(localized: "Wait for the session to reconnect before sending."))
+            return
+        }
+        // `send` refuses attachments after this point would have retired the
+        // record; fold that gate in so the payload is never left behind a
+        // deleted row.
+        guard pending.attachments.isEmpty || canAttach else {
+            refuse(String(localized: "当前无法发送带附件的消息，请稍后再试。"))
             return
         }
         session.dismissPendingMessage(id: pending.id)

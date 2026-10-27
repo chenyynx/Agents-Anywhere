@@ -85,4 +85,78 @@ import Testing
         #expect(abs(stalled.position) <= 100)
         #expect(!stalled.arrived)
     }
+
+    /// Official `Ease.Pace`: a growing stream must be tracked, not chased. A
+    /// plain critically damped spring trails a target moving at `v` by
+    /// `duration/π · v` (≈ 36 pt at 300 pt/s), which is what read as a soft,
+    /// slow drift on device.
+    @Test func aSteadilyGrowingTargetIsTrackedWithinOnePixel() {
+        var mover = TimelineAnchorMover(position: 0)
+        mover.start(at: 0, spring: .ease)
+        let dt = 1.0 / 120
+        var target: CGFloat = 0
+        _ = mover.step(target: target, dt: dt, displayScale: scale)
+        var worst: CGFloat = 0
+        for _ in 0..<240 {
+            target += 300 * CGFloat(dt)
+            let step = mover.step(target: target, dt: dt, displayScale: scale)
+            #expect(!step.arrived)
+            worst = max(worst, abs(target - step.position))
+        }
+        #expect(worst < TimelineSpringFollow.pixel(displayScale: scale))
+    }
+
+    /// When the stream stops the pace leaves no accumulated gap, so the next
+    /// still frame is already at the target — no tail swing after the reply.
+    @Test func aStoppedTargetLandsWithoutATailSwing() {
+        var mover = TimelineAnchorMover(position: 0)
+        mover.start(at: 0, spring: .ease)
+        let dt = 1.0 / 120
+        var target: CGFloat = 0
+        _ = mover.step(target: target, dt: dt, displayScale: scale)
+        for _ in 0..<120 {
+            target += 300 * CGFloat(dt)
+            _ = mover.step(target: target, dt: dt, displayScale: scale)
+        }
+        var frames = 0
+        var arrived = false
+        while frames < 120 {
+            let step = mover.step(target: target, dt: dt, displayScale: scale)
+            frames += 1
+            #expect(step.position <= target + 0.001)
+            if step.arrived { arrived = true; break }
+        }
+        #expect(arrived)
+        #expect(frames <= 2)
+    }
+
+    /// The initial gap of a motion is still animated; the pace must not turn
+    /// an explicit return into a teleport.
+    @Test func anInitialGapIsStillClosedByTheSpring() {
+        var mover = TimelineAnchorMover(position: 0)
+        mover.start(at: 0, spring: .ease)
+        let first = mover.step(target: 100, dt: 1.0 / 60, displayScale: scale)
+        #expect(first.position < 100)
+        #expect(!first.arrived)
+    }
+
+    /// A UIKit write already moved the page; the same distance must not be
+    /// applied a second time by the pace shift.
+    @Test func anExternalWriteIsNotShiftedTwice() {
+        var mover = TimelineAnchorMover(position: 0)
+        mover.start(at: 0, spring: .ease)
+        _ = mover.step(target: 0, dt: 1.0 / 120, displayScale: scale)
+        mover.reseed(at: 120)
+        let step = mover.step(target: 120, dt: 1.0 / 120, displayScale: scale)
+        #expect(abs(step.position - 120) < 0.001)
+    }
+
+    /// A fly is a deliberate long jump and never carries the target's motion.
+    @Test func aFlyIsNotRedirectedByThePaceShift() {
+        var mover = TimelineAnchorMover(position: 0)
+        mover.start(at: 0, spring: .fly)
+        _ = mover.step(target: 1000, dt: 1.0 / 120, displayScale: scale)
+        _ = mover.step(target: 1300, dt: 1.0 / 120, displayScale: scale)
+        #expect(mover.position < 100)
+    }
 }

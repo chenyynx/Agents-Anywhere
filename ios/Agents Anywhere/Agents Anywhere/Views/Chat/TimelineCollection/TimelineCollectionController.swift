@@ -2057,6 +2057,14 @@ extension TimelineCollectionController: TimelineListLayoutHost {
         var state = content?.interactionState() ?? TimelineLayoutInteractionState()
         let driverFollowing = anchorDriver?.state.placement == .end
         state.hasArmedBottomTarget = driverFollowing
+        // Content that grows while the page waits at the bottom is applied by
+        // the update itself (official `offsetOwedToUpdate`); a long fly is a
+        // deliberate jump and must keep its animation.
+        let driverMotion = anchorDriver?.state.motion ?? .resting
+        state.bottomFollowTracksInPlace = driverFollowing
+            && driverMotion != .flying
+            && driverMotion != .dragging
+            && driverMotion != .coasting
         // Native drags report `.interacting`; the decision's "tracking" input
         // means "the finger is down", so map the native phase onto it. Without
         // this, a pending-measurement correction moves the offset under the

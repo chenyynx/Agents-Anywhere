@@ -25,6 +25,13 @@ nonisolated struct TimelineAnchorMover: Equatable {
     private(set) var velocity: CGFloat = 0
     private(set) var spring: TimelineSpringFollow.Spring = .ease
     private(set) var isRunning = false
+    /// The target the current motion last saw. The official Mover re-reads the
+    /// target every frame and, for an ease, shifts the motion by the target's
+    /// own movement instead of letting the spring chase a moving goal
+    /// (`Ease.Pace`; `CANONICAL/05-layout-scroll.md` §7.1, part-ag §1.5). This
+    /// is what keeps streaming growth 1:1: a plain critically damped spring
+    /// trails a target moving at `v` by `2ζ/ω·v = duration/π·v`.
+    private(set) var paceTarget: CGFloat?
 
     init(position: CGFloat) {
         self.position = position
@@ -35,6 +42,10 @@ nonisolated struct TimelineAnchorMover: Equatable {
         self.position = position
         self.spring = spring
         velocity = 0
+        // A fresh motion closes its initial gap with the spring; the first
+        // tick establishes the pace baseline. Shifting by that first target
+        // would teleport the page instead of animating it.
+        paceTarget = nil
         isRunning = true
     }
 
@@ -47,6 +58,7 @@ nonisolated struct TimelineAnchorMover: Equatable {
     mutating func stop() {
         isRunning = false
         velocity = 0
+        paceTarget = nil
     }
 
     /// An external writer (a UIKit layout correction) moved the scroll view.
@@ -56,6 +68,9 @@ nonisolated struct TimelineAnchorMover: Equatable {
         guard isRunning else { return }
         self.position = position
         velocity = 0
+        // The external write already accounts for whatever the target did;
+        // keeping the old baseline would shift that distance a second time.
+        paceTarget = nil
     }
 
     /// One display frame. `dt` is clamped to a 30 fps step so a stalled link
@@ -69,6 +84,22 @@ nonisolated struct TimelineAnchorMover: Equatable {
         guard step > 0 else {
             return Step(position: position, arrived: false, moved: false)
         }
+        let pixel = 1 / max(1, displayScale)
+        // Official Pace: an ease carries the target's own movement; only the
+        // gap this motion started with is left for the spring. Without it a
+        // growing stream leaves a permanent `duration/π · v` trail and the
+        // final catch-up reads as a tail swing. A fly (bounce > 0) is a
+        // deliberate long jump and never shifts.
+        var targetMoved = false
+        if spring.bounce == 0 {
+            if let previous = paceTarget, abs(target - previous) >= pixel {
+                position += target - previous
+                targetMoved = true
+            }
+            paceTarget = target
+        } else {
+            paceTarget = target
+        }
         let omega = spring.omega
         let zeta = spring.zeta
         let acceleration = omega * omega * Double(target - position)
@@ -76,8 +107,10 @@ nonisolated struct TimelineAnchorMover: Equatable {
         velocity += CGFloat(acceleration * step)
         position += CGFloat(Double(velocity) * step)
 
-        let pixel = 1 / max(1, displayScale)
-        if abs(target - position) < pixel,
+        // A target that moved this frame is a live stream: the motion must
+        // stay running (the official catch-up) even though the Pace shift
+        // leaves a zero gap. Arrival is only judged against a still target.
+        if !targetMoved, abs(target - position) < pixel,
            abs(velocity * CGFloat(step)) < pixel {
             position = target
             velocity = 0

@@ -94,6 +94,11 @@ final class TimelineListLayout: UICollectionViewLayout {
     /// `targetContentOffset` answers with this value, and no offset/size
     /// adjustment is posted in the same transaction.
     private var heightOwedToUpdate: TimelineOneShotOwed?
+    /// Content height when the current update started. A bottom-follow answer
+    /// compares the live offset with this value first, so an update landing
+    /// during a deliberate return (still hundreds of points away) cannot cut
+    /// that animation short.
+    private var contentHeightBeforeUpdate: CGFloat = 0
 
     // Integration-gate counters. They are cheap and make the C3 assertions
     // read the real layout path instead of re-deriving it in the test.
@@ -364,6 +369,36 @@ final class TimelineListLayout: UICollectionViewLayout {
 #endif
             return CGPoint(x: proposedContentOffset.x, y: y)
         }
+        // A page waiting at the bottom lands on the new end inside the update
+        // that carries the inserted/deleted rows (official
+        // `rowsOwedToNextUpdate` → `offsetOwedToUpdate`). Without this answer
+        // the anchor Mover only sees the new height after the update and
+        // springs there, so a new tool row read as a slow drift instead of the
+        // content pushing the page up.
+        if isInsideUpdate, let host, let view = collectionView {
+            let state = host.layoutInteractionState()
+            let wasAtBottom = abs(view.contentOffset.y - TimelineOffsetTarget.bottomOffset(
+                contentHeight: contentHeightBeforeUpdate,
+                containerHeight: view.bounds.height,
+                topInset: view.adjustedContentInset.top,
+                bottomInset: view.adjustedContentInset.bottom)) <= 1
+            if state.bottomFollowTracksInPlace, wasAtBottom,
+               !state.suppressContentOffsetAdjustment {
+                let bottom = TimelineOffsetTarget.bottomOffset(
+                    contentHeight: contentHeight,
+                    containerHeight: view.bounds.height,
+                    topInset: view.adjustedContentInset.top,
+                    bottomInset: view.adjustedContentInset.bottom)
+                if abs(bottom - proposedContentOffset.y) > 0.5 {
+                    lastReturnedContentOffset = bottom
+#if DEBUG
+                    traceOffset("targetFollowBottom", before: proposedContentOffset.y,
+                                after: bottom, note: "follow new end")
+#endif
+                    return CGPoint(x: proposedContentOffset.x, y: bottom)
+                }
+            }
+        }
         lastReturnedContentOffset = proposedContentOffset.y
         return proposedContentOffset
     }
@@ -375,6 +410,7 @@ final class TimelineListLayout: UICollectionViewLayout {
         // update UIKit never finalized (navigation interruption) must not
         // answer this update's queries.
         heightOwedToUpdate = nil
+        contentHeightBeforeUpdate = contentHeight
         isInsideUpdate = true
     }
 

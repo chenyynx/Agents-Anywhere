@@ -30,6 +30,11 @@ final class TimelineAnchorDriver {
 
     private(set) var state = TimelineAnchorState()
     private var mover: TimelineAnchorMover
+    /// The placement the running Mover was started for. A placement change is
+    /// a new motion: the Pace shift must not carry across it (the target jump
+    /// between `.end` and `.row` is a real distance to animate, not content
+    /// growth to track 1:1).
+    private var moverPlacement: TimelineAnchorPlacement?
     private var link: CADisplayLink?
     private var lastTick: CFTimeInterval = 0
     private var pageInsets: UIEdgeInsets = .zero
@@ -99,10 +104,11 @@ final class TimelineAnchorDriver {
     // MARK: - Safe area (inset owner)
 
     /// Applies the official inset and keeps the reader's place across the
-    /// write. A change with an ambient animation (keyboard) is written
-    /// directly and rides it; a layout-only change (composer focus) gets an
-    /// explicit 0.24 s spring. A shrink moves the offset before the inset so
-    /// UIKit cannot clamp it against the old maximum.
+    /// write. Every change is written directly in the current transaction:
+    /// a keyboard change rides the system animation, a composer-only change
+    /// lands at once (official `0x101a3c820` adds no animation). A shrink
+    /// moves the offset before the inset so UIKit cannot clamp it against the
+    /// old maximum.
     func updateSafeAreaInsets(_ insets: UIEdgeInsets) {
         pageInsets = insets
         applyInsets()
@@ -153,35 +159,24 @@ final class TimelineAnchorDriver {
         let destination = bottomTarget(topInset: top, bottomInset: bottom)
         let needsMove = abs(view.contentOffset.y - destination) > 0.5
         let shrinking = target.bottom < current.bottom - 0.5
-        let ambient = UIView.inheritedAnimationDuration > 0.01
-        let reduceMotion = UIAccessibility.isReduceMotionEnabled
-            || UIAccessibility.isVoiceOverRunning
-        let apply = { [weak self, weak view] in
-            guard let self, let view else { return }
-            self.isApplying = true
-            if shrinking && needsMove {
+        // Official `0x101a3c820`: write the inset and keep the offset in the
+        // transaction that delivered the safe-area change — no animation of
+        // its own. The composer bar animates by itself; a self-made spring on
+        // top of it made the list trail the bar and read as a swing
+        // (`composer-official-alignment-task.md` §15.12-1).
+        isApplying = true
+        if shrinking && needsMove {
+            view.setContentOffset(CGPoint(x: view.contentOffset.x, y: destination),
+                                  animated: false)
+            view.contentInset = target
+        } else {
+            view.contentInset = target
+            if needsMove {
                 view.setContentOffset(CGPoint(x: view.contentOffset.x, y: destination),
                                       animated: false)
-                view.contentInset = target
-            } else {
-                view.contentInset = target
-                if needsMove {
-                    view.setContentOffset(CGPoint(x: view.contentOffset.x, y: destination),
-                                          animated: false)
-                }
-            }
-            self.isApplying = false
-        }
-        if ambient || reduceMotion {
-            apply()
-        } else {
-            UIView.animate(withDuration: 0.24, delay: 0,
-                           usingSpringWithDamping: 1,
-                           initialSpringVelocity: 0,
-                           options: [.beginFromCurrentState, .allowUserInteraction]) {
-                apply()
             }
         }
+        isApplying = false
     }
 
     // MARK: - Events
@@ -362,7 +357,7 @@ final class TimelineAnchorDriver {
         }
         let spring = TimelineSpringFollow.spring(
             target: target, current: current, visibleHeight: visible)
-        if mover.isRunning {
+        if mover.isRunning, moverPlacement == state.placement {
             // Same motion, new destination: retarget without restarting the
             // spring (a restart on every height change would jitter).
             mover.retarget(spring: spring)
@@ -371,12 +366,18 @@ final class TimelineAnchorDriver {
             }
             return
         }
+        if mover.isRunning {
+            // Different placement: start a new motion so the Pace shift cannot
+            // mistake the placement jump for content growth.
+            stopMover()
+        }
         let preplaced = TimelineSpringFollow.preplacedOffset(
             target: target, current: current, visibleHeight: visible)
         if abs(preplaced - current) >= pixel {
             writeOffset(preplaced)
         }
         mover.start(at: view.contentOffset.y, spring: spring)
+        moverPlacement = state.placement
 #if DEBUG
         debugMoveStarts += 1
 #endif
@@ -401,6 +402,7 @@ final class TimelineAnchorDriver {
 
     private func stopMover() {
         mover.stop()
+        moverPlacement = nil
         link?.invalidate()
         link = nil
     }

@@ -1,12 +1,12 @@
 import SwiftUI
 
-// The Code page's user message as one block stack: the text bubble first, then
-// the attachment grids as sibling blocks outside it (CLOSURE.md §4). The
-// settled `CodeMessageRowView` builds the same stack from the same
+// The Code page's user message as one block stack: the attachment grids
+// first, then the text bubble below them (device screenshots 2026-10-27).
+// The settled `CodeMessageRowView` builds the same stack from the same
 // `CodeUserBubble` and `CodeAttachmentRow` components; this view is the
 // optimistic-send entry point, and the two share the 8 pt block gap.
 
-/// One Code user message: text bubble then attachments, in that order.
+/// One Code user message: attachments then text bubble, in that order.
 struct CodeUserMessageRow: View {
     var text: String = ""
     var attachments: [ChatMessageAttachment] = []
@@ -22,14 +22,14 @@ struct CodeUserMessageRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: CodePageTheme.blockGap) {
-            if hasText {
-                CodeUserBubble(text: text)
-            }
             if !attachments.isEmpty {
                 CodeAttachmentRow(files: attachments,
                                   state: attachmentState,
                                   onAttachment: onAttachment,
                                   loadThumbnail: loadThumbnail)
+            }
+            if hasText {
+                CodeUserBubble(text: text)
             }
         }
         .overlay(alignment: .bottomLeading) {
@@ -38,16 +38,16 @@ struct CodeUserMessageRow: View {
             // inside the bubble above them. A text-only row places it at the
             // bubble's bottom edge, which is the row's bottom edge.
             if isPending || onDeliveryIssue != nil {
-                // A text-only row keeps the bubble's 36 pt leading gutter, so
-                // the indicator sits inside that gutter. A row with
-                // attachments ends on the trailing attachment grid, whose
-                // leading edge is the row edge; the same negative offset
-                // would push the indicator off screen.
+                // When a text bubble is present it is the last block and
+                // keeps the 36 pt leading gutter, so the indicator sits
+                // inside that gutter. A pure-attachment row ends on the
+                // trailing grid, whose leading edge is the row edge; the
+                // same negative offset would push the indicator off screen.
                 CodeDeliveryGutter(
                     isPending: isPending,
                     onDeliveryIssue: onDeliveryIssue,
-                    pendingOffset: attachments.isEmpty ? -26 : 0,
-                    issueOffset: attachments.isEmpty ? -30 : 0)
+                    pendingOffset: hasText ? -26 : 0,
+                    issueOffset: hasText ? -30 : 0)
             }
         }
     }

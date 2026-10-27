@@ -143,20 +143,24 @@ nonisolated enum CodeMessageBuilder {
                                      text: reasoningText,
                                      status: settled ? .done : .running))
         }
-        // One body is one official `Block.text`, followed by that body's
-        // attachment block. A body with no text still keeps its attachments
-        // (the official page draws no bubble for a pure-attachment message),
+        // The official user row draws its attachments first, then the text
+        // bubble below them (device screenshots 2026-10-27; the earlier
+        // round25 CSV reading of "text then attachments" was the type-tree
+        // order, not the rendered block order). A body with no text still
+        // keeps its attachments (no bubble for a pure-attachment message),
         // and one file draws once even when several bodies carry it: the key
         // is the server file id, or the payload identity before upload.
         let rowRole = role(of: items)
-        // Attachments are a user-message block only (CLOSURE.md §4); an
-        // assistant message's `attachments` payload is not a user grid and
-        // must not be drawn with the user attachment layout.
+        // Attachments are a user-message block only; an assistant message's
+        // `attachments` payload is not a user grid and must not be drawn with
+        // the user attachment layout.
         var seenAttachments: Set<String> = []
         for body in bodies {
-            blocks.append(.text(id: body.id, text: body.displayText))
             guard rowRole == .user,
-                  case let .message(content) = body.content else { continue }
+                  case let .message(content) = body.content else {
+                blocks.append(.text(id: body.id, text: body.displayText))
+                continue
+            }
             let files = content.attachments.filter { file in
                 seenAttachments.insert(attachmentKey(file)).inserted
             }
@@ -165,6 +169,7 @@ nonisolated enum CodeMessageBuilder {
                     id: body.id, files: files,
                     clientMessageID: TimelineText.first(body.source["clientMessageId"])))
             }
+            blocks.append(.text(id: body.id, text: body.displayText))
         }
         if !segments.isEmpty { blocks.append(.toolCalls(segments)) }
         // A message whose only content is skipped tool calls (ExitPlanMode /

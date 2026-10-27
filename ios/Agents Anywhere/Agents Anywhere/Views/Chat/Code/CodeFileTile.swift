@@ -138,20 +138,20 @@ struct CodeFileTile: View {
 /// The screenshot card colours. The light row is sampled from the official
 /// device screenshots; the dark row is [I] (no dark screenshot was captured).
 private nonisolated enum CodeFileCardColors {
+    /// The code card surface (`CodePageTheme.codeCardFillUIColor`): white /
+    /// #20201F. The file card uses the same surface and the same hairline
+    /// as the fenced code card.
     static let card = CodePageTheme.SchemeColor(
         light: .white,
-        dark: Color(.sRGB, red: 0.11, green: 0.106, blue: 0.102))
-    static let preview = CodePageTheme.SchemeColor(
-        light: .white,
-        dark: Color(.sRGB, red: 0.043, green: 0.043, blue: 0.043))
-    /// Card hairline: sampled #C2C1BF.
+        dark: Color(.sRGB, red: 32.0 / 255.0,
+                    green: 32.0 / 255.0, blue: 31.0 / 255.0))
+    static let preview = card
+    /// Exactly the code card border token: `rgba(0.118,0.118,0.114,0.3)` /
+    /// `rgba(0.882,0.878,0.851,0.3)`.
     static let border = CodePageTheme.SchemeColor(
-        light: Color(.sRGB, red: 0.761, green: 0.757, blue: 0.749),
-        dark: Color(.sRGB, red: 0.227, green: 0.227, blue: 0.216))
-    /// Preview hairline: sampled #CDCDCD.
-    static let previewBorder = CodePageTheme.SchemeColor(
-        light: Color(.sRGB, red: 0.804, green: 0.804, blue: 0.804),
-        dark: Color(.sRGB, red: 0.227, green: 0.227, blue: 0.216))
+        light: Color(.sRGB, red: 0.118, green: 0.118, blue: 0.114, opacity: 0.3),
+        dark: Color(.sRGB, red: 0.882, green: 0.878, blue: 0.851, opacity: 0.3))
+    static let previewBorder = border
     /// File name: sampled #0B0B0B.
     static let name = CodePageTheme.SchemeColor(
         light: Color(.sRGB, red: 0.043, green: 0.043, blue: 0.043),

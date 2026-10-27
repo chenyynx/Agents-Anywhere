@@ -174,13 +174,14 @@ struct CodeMessageRowView: View {
         }
     }
 
-    /// A user message renders as one right-aligned bubble. AA publishes one
+    /// A user message renders its attachments first, then one right-aligned
+    /// text bubble (device screenshots 2026-10-27). AA publishes one
     /// message's body as several text rows, so every `.text` block joins in
-    /// block order instead of stacking as separate paragraphs. Any other
-    /// block keeps its declared place after the bubble; today that is only
-    /// `.attachments`, which the official page draws outside the bubble as a
-    /// sibling block (CLOSURE.md §4). A message with no text draws no bubble
-    /// at all, so a pure-attachment message is only its attachments.
+    /// block order instead of stacking as separate paragraphs. Today the
+    /// non-text block is only `.attachments`, which the official page draws
+    /// outside the bubble as a sibling block above it. A message with no text
+    /// draws no bubble at all, so a pure-attachment message is only its
+    /// attachments.
     private func userRow(_ row: RenderedRow) -> some View {
         var texts: [String] = []
         var others: [CodeMessageRow.Block] = []
@@ -194,13 +195,15 @@ struct CodeMessageRowView: View {
             }
         }
         return VStack(alignment: .leading, spacing: CodePageTheme.blockGap) {
+            // The official row puts the attachment grids above the text
+            // bubble (device screenshots 2026-10-27).
+            ForEach(Array(others.enumerated()), id: \.offset) { _, block in
+                blockView(block)
+            }
             if !texts.isEmpty {
                 // The bubble owns its 12 pt vertical padding; the cell adds
                 // none and only stacks the attachment/other blocks beside it.
                 CodeUserBubble(text: texts.joined(separator: "\n\n"))
-            }
-            ForEach(Array(others.enumerated()), id: \.offset) { _, block in
-                blockView(block)
             }
         }
     }

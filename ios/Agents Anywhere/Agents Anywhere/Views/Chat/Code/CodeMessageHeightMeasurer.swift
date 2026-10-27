@@ -102,8 +102,12 @@ enum CodeMessageHeightMeasurer {
                     }
                 }
                 if !texts.isEmpty {
-                    blocks.insert(.text(height: userBubbleTextHeight(
-                        texts.joined(separator: "\n\n"), width: width, traits: traits)), at: 0)
+                    // The official user row draws attachments above the
+                    // text bubble; the plan mirrors that order (the total is
+                    // the same, but the block sequence no longer lies to the
+                    // gate or to a future view).
+                    blocks.append(.text(height: userBubbleTextHeight(
+                        texts.joined(separator: "\n\n"), width: width, traits: traits)))
                 }
             } else {
                 for block in row.blocks {

@@ -56,7 +56,7 @@ private func attachmentBlock(
 
 @Suite("Code user attachments")
 struct CodeMessageTimelineTests {
-    @Test func textIsFollowedByItsAttachmentBlock() throws {
+    @Test func attachmentsPrecedeTheTextBubble() throws {
         let body = try makeBody(
             id: "m1", order: 1, message: "msg-1", text: "hello",
             attachments: [attachment("f1"),
@@ -65,24 +65,24 @@ struct CodeMessageTimelineTests {
 
         #expect(rows.count == 1)
         #expect(rows[0].role == .user)
-        #expect(rows[0].blocks.map(descriptor) == ["text:m1", "attachments:m1"])
-        #expect(attachmentBlock(rows[0].blocks, at: 1)?.files.compactMap(\.fileId) == ["f1", "f2"])
+        #expect(rows[0].blocks.map(descriptor) == ["attachments:m1", "text:m1"])
+        #expect(attachmentBlock(rows[0].blocks, at: 0)?.files.compactMap(\.fileId) == ["f1", "f2"])
     }
 
     @Test func aPureAttachmentMessageKeepsItsRow() throws {
-        // No text at all: the empty `.text` block is still built first (the
-        // renderer drops it), and the attachments keep the row alive instead
-        // of `guard !blocks.isEmpty` discarding it.
+        // No text at all: the attachments are followed by an empty `.text`
+        // block (the renderer drops it), and the attachments keep the row
+        // alive instead of `guard !blocks.isEmpty` discarding it.
         let body = try makeBody(id: "m1", order: 1, message: "msg-1", text: "",
                                 attachments: [attachment("f1")])
         let rows = CodeMessageBuilder.rows(for: [body], profile: .claudeCode)
 
         #expect(rows.count == 1)
-        #expect(rows[0].blocks.map(descriptor) == ["text:m1", "attachments:m1"])
-        #expect(attachmentBlock(rows[0].blocks, at: 1)?.files.count == 1)
+        #expect(rows[0].blocks.map(descriptor) == ["attachments:m1", "text:m1"])
+        #expect(attachmentBlock(rows[0].blocks, at: 0)?.files.count == 1)
     }
 
-    @Test func multipleBodiesKeepTextThenAttachmentsOrder() throws {
+    @Test func multipleBodiesKeepAttachmentsThenTextOrder() throws {
         let first = try makeBody(id: "m1", order: 1, message: "msg-1", text: "one",
                                  attachments: [attachment("f1")])
         let second = try makeBody(id: "m2", order: 2, message: "msg-1", text: "two",
@@ -91,9 +91,9 @@ struct CodeMessageTimelineTests {
 
         #expect(rows.count == 1)
         #expect(rows[0].blocks.map(descriptor) ==
-            ["text:m1", "attachments:m1", "text:m2", "attachments:m2"])
-        #expect(attachmentBlock(rows[0].blocks, at: 1)?.files.compactMap(\.fileId) == ["f1"])
-        #expect(attachmentBlock(rows[0].blocks, at: 3)?.files.compactMap(\.fileId) == ["f2"])
+            ["attachments:m1", "text:m1", "attachments:m2", "text:m2"])
+        #expect(attachmentBlock(rows[0].blocks, at: 0)?.files.compactMap(\.fileId) == ["f1"])
+        #expect(attachmentBlock(rows[0].blocks, at: 2)?.files.compactMap(\.fileId) == ["f2"])
     }
 
     @Test func duplicateFilesDrawOnceAtTheirFirstBody() throws {
@@ -103,7 +103,7 @@ struct CodeMessageTimelineTests {
                                   attachments: [attachment("f1")])
         let rows = CodeMessageBuilder.rows(for: [first, second], profile: .claudeCode)
 
-        #expect(rows[0].blocks.map(descriptor) == ["text:m1", "attachments:m1", "text:m2"])
+        #expect(rows[0].blocks.map(descriptor) == ["attachments:m1", "text:m1", "text:m2"])
     }
 
     @Test func duplicateFilesInsideOneBodyDrawOnce() throws {
@@ -112,7 +112,7 @@ struct CodeMessageTimelineTests {
                                               attachment("f1", name: "renamed.png")])
         let rows = CodeMessageBuilder.rows(for: [body], profile: .claudeCode)
 
-        #expect(attachmentBlock(rows[0].blocks, at: 1)?.files.compactMap(\.fileId) == ["f1"])
+        #expect(attachmentBlock(rows[0].blocks, at: 0)?.files.compactMap(\.fileId) == ["f1"])
     }
 
     @Test func filesWithoutAFileIDDeduplicateByCacheKey() throws {
@@ -123,7 +123,7 @@ struct CodeMessageTimelineTests {
                                               attachment(nil, name: "x.png")])
         let rows = CodeMessageBuilder.rows(for: [body], profile: .claudeCode)
 
-        #expect(attachmentBlock(rows[0].blocks, at: 1)?.files.count == 1)
+        #expect(attachmentBlock(rows[0].blocks, at: 0)?.files.count == 1)
     }
 
     @Test func assistantAttachmentsAreNotDrawnAsAUserGrid() throws {
@@ -143,6 +143,6 @@ struct CodeMessageTimelineTests {
                                 clientMessageID: "client-1")
         let rows = CodeMessageBuilder.rows(for: [body], profile: .claudeCode)
 
-        #expect(attachmentBlock(rows[0].blocks, at: 1)?.clientMessageID == "client-1")
+        #expect(attachmentBlock(rows[0].blocks, at: 0)?.clientMessageID == "client-1")
     }
 }

@@ -2187,6 +2187,15 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         }
     }
 
+    private func waitForScrollDownIndicatorHidden(_ controller: TimelineCollectionController,
+                                                  timeout: Int = 1000) async {
+        var elapsed = 0
+        while controller.showsScrollDownIndicator && elapsed < timeout {
+            await wait(50)
+            elapsed += 50
+        }
+    }
+
     /// Waits for the driver's Mover spring to reach its target. While it is
     /// travelling, a no-hand scroll is adopted as a UIKit correction and the
     /// spring keeps flying to its old target (the official rule), so a gate
@@ -2302,6 +2311,10 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
 
         controller.requestBottom(animated: true, forced: true)
         await waitForBottomSettle(controller, timeout: 2000)
+        // `waitForBottomSettle` accepts 0.5 pt while the control's one-pixel
+        // threshold is 0.333 pt on a 3× screen; wait for the control's own
+        // verdict so the sample is not taken mid-snap.
+        await waitForScrollDownIndicatorHidden(controller)
         let hiddenAtBottom = !controller.showsScrollDownIndicator
         let animatedFlips = scrollDownIndicatorFlips
 
@@ -2313,6 +2326,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
 
         controller.requestBottom(animated: true, forced: true)
         await waitForBottomSettle(controller, timeout: 2000)
+        await waitForScrollDownIndicatorHidden(controller)
         let hiddenReduced = !controller.showsScrollDownIndicator
         let reducedFlips = scrollDownIndicatorFlips
         controller.setReduceMotion(false)

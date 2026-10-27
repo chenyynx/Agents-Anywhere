@@ -29,7 +29,16 @@ struct CodeUserMessageRow: View {
                                   loadThumbnail: loadThumbnail)
             }
             if hasText {
-                CodeUserBubble(text: text)
+                // The delivery state rides on the bubble itself (text is the
+                // last block), so it follows a short, right-aligned bubble and
+                // keeps the chat page's bubble-relative offsets.
+                CodeUserBubble(text: text) {
+                    CodeDeliveryGutter(
+                        isPending: isPending,
+                        onDeliveryIssue: onDeliveryIssue,
+                        pendingOffset: -26,
+                        issueOffset: -30)
+                }
             }
         }
         // Same conditional trailing inset as the settled row: only a file
@@ -38,21 +47,14 @@ struct CodeUserMessageRow: View {
                  attachments.contains { !$0.content.isImage }
                     ? CodePageTheme.userRowShadowInset : 0)
         .overlay(alignment: .bottomLeading) {
-            // The delivery state belongs to the whole user row: with
-            // attachments the indicator sits beside the last block, not
-            // inside the bubble above them. A text-only row places it at the
-            // bubble's bottom edge, which is the row's bottom edge.
-            if isPending || onDeliveryIssue != nil {
-                // When a text bubble is present it is the last block and
-                // keeps the 36 pt leading gutter, so the indicator sits
-                // inside that gutter. A pure-attachment row ends on the
-                // trailing grid, whose leading edge is the row edge; the
-                // same negative offset would push the indicator off screen.
+            // A pure-attachment row has no text bubble to anchor on; its
+            // indicator sits inside the row's own leading edge.
+            if !hasText, isPending || onDeliveryIssue != nil {
                 CodeDeliveryGutter(
                     isPending: isPending,
                     onDeliveryIssue: onDeliveryIssue,
-                    pendingOffset: hasText ? -26 : 0,
-                    issueOffset: hasText ? -30 : 0)
+                    pendingOffset: 0,
+                    issueOffset: 0)
             }
         }
     }

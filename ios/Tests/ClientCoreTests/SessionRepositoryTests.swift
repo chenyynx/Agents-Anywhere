@@ -243,6 +243,133 @@ import Testing
         #expect(http.count("snapshot") == 1)
     }
 
+    @Test func unresolvedPendingBlocksBothSendPathsAndNamesTheRecord() async throws {
+        let http = TestHTTPTransport(); let realtime = TestRealtimeAPI()
+        let repo = repository(transport: http, realtime: realtime)
+        defer { repo.reset() }
+        let model = repo.session(id: "session"); let task = Task { await model.connect() }
+        defer { task.cancel() }
+        try await eventually { model.canSend }
+        http.respond = { call in
+            if call.path.hasSuffix("messages") { throw URLError(.timedOut) }
+            return try http.defaultResponse(call)
+        }
+        model.draft = "Same text"
+        let pending = try #require(await model.sendDraft())
+        if case .uncertain = pending.delivery {} else { Issue.record("Timeout must leave delivery uncertain") }
+        // The restored draft is identical: both outbound paths refuse it and
+        // leave the record's id for the chat layer to explain (the tap used to
+        // be a silent no-op).
+        #expect(await model.sendDraft() == nil)
+        #expect(model.blockedSendPendingID == pending.id)
+        #expect(model.enqueueDraft() == nil)
+        #expect(model.blockedSendPendingID == pending.id)
+        #expect(http.count("messages") == 1)
+    }
+
+    @Test func editedRetryRetiresTheSupersededPendingOnConfirm() async throws {
+        let http = TestHTTPTransport(); let realtime = TestRealtimeAPI()
+        let repo = repository(transport: http, realtime: realtime)
+        defer { repo.reset() }
+        let model = repo.session(id: "session"); let task = Task { await model.connect() }
+        defer { task.cancel() }
+        try await eventually { model.canSend }
+        http.respond = { call in
+            if call.path.hasSuffix("messages"), http.count("messages") == 1 { throw URLError(.timedOut) }
+            return try http.defaultResponse(call)
+        }
+        model.draft = "Same text."
+        let first = try #require(await model.sendDraft())
+        if case .uncertain = first.delivery {} else { Issue.record("First send must be uncertain") }
+        #expect(model.draft == "Same text.")
+
+        // Editing the restored draft (pp's report: one character removed) is a
+        // new message by content, but it is still the retry of this record;
+        // its confirming echo must retire the ghost row at the tail.
+        model.draft = "Same text"
+        let retry = try #require(await model.sendDraft())
+        #expect(retry.supersededPendingIDs == [first.id])
+        #expect(model.pendingMessages.map(\.id) == [first.id, retry.id])
+
+        realtime.yield(try event("timeline.item_created", seq: 12,
+            payload: ["item": itemObject(id: "echo", order: 3, seq: 12, clientID: retry.id)]))
+        try await eventually { model.pendingMessages.isEmpty }
+    }
+
+    @Test func queuedEditedRetryRetiresTheSupersededPendingOnConfirm() async throws {
+        let http = TestHTTPTransport(); let realtime = TestRealtimeAPI()
+        let repo = repository(transport: http, realtime: realtime)
+        defer { repo.reset() }
+        let model = repo.session(id: "session"); let task = Task { await model.connect() }
+        defer { task.cancel() }
+        try await eventually { model.canSend }
+        http.respond = { call in
+            if call.path.hasSuffix("messages"), http.count("messages") == 1 { throw URLError(.timedOut) }
+            return try http.defaultResponse(call)
+        }
+        model.draft = "Queue retry."
+        let first = try #require(await model.sendDraft())
+        if case .uncertain = first.delivery {} else { Issue.record("First send must be uncertain") }
+
+        // The edited retry takes the queue instead of the wire; its chain must
+        // travel with the queued row and retire the old record on the echo.
+        model.draft = "Queue retry"
+        let item = try #require(model.enqueueDraft())
+        #expect(item.supersededPendingIDs == [first.id])
+        realtime.yield(try event("timeline.item_created", seq: 13,
+            payload: ["item": itemObject(id: "echo2", order: 4, seq: 13, clientID: item.id)]))
+        try await eventually { model.pendingMessages.isEmpty && model.sendQueue.items.isEmpty }
+    }
+
+    @Test func emptiedDraftDropsTheRetryProvenance() async throws {
+        let http = TestHTTPTransport(); let realtime = TestRealtimeAPI()
+        let repo = repository(transport: http, realtime: realtime)
+        defer { repo.reset() }
+        let model = repo.session(id: "session"); let task = Task { await model.connect() }
+        defer { task.cancel() }
+        try await eventually { model.canSend }
+        http.respond = { call in
+            if call.path.hasSuffix("messages"), http.count("messages") == 1 { throw URLError(.timedOut) }
+            return try http.defaultResponse(call)
+        }
+        model.draft = "Original"
+        let first = try #require(await model.sendDraft())
+        if case .uncertain = first.delivery {} else { Issue.record("First send must be uncertain") }
+
+        // Clearing the editor abandons the retry: an unrelated message must
+        // not retire a record whose write may still land.
+        model.draft = ""
+        model.draft = "Unrelated"
+        let second = try #require(await model.sendDraft())
+        #expect(second.supersededPendingIDs.isEmpty)
+        realtime.yield(try event("timeline.item_created", seq: 14,
+            payload: ["item": itemObject(id: "echo3", order: 5, seq: 14, clientID: second.id)]))
+        try await eventually { model.pendingMessages.map(\.id) == [first.id] }
+    }
+
+    @Test func restoreDraftAcceptsTheRecordsOwnPayloadInTheEditor() async throws {
+        let http = TestHTTPTransport(); let realtime = TestRealtimeAPI()
+        let repo = repository(transport: http, realtime: realtime)
+        defer { repo.reset() }
+        let model = repo.session(id: "session"); let task = Task { await model.connect() }
+        defer { task.cancel() }
+        try await eventually { model.canSend }
+        http.respond = { call in
+            if call.path.hasSuffix("messages") { throw URLError(.timedOut) }
+            return try http.defaultResponse(call)
+        }
+        model.draft = "Return to editing"
+        let record = try #require(await model.sendDraft())
+        #expect(model.draft == record.content)
+
+        // The failed send refilled the editor with its own payload; "return to
+        // editing" must not be dead for the record it belongs to.
+        #expect(model.restoreDraft(from: record))
+        model.draft = "A different draft"
+        #expect(!model.restoreDraft(from: record))
+        #expect(model.draft == "A different draft")
+    }
+
     @Test func echoBeforeHTTPFailureWinsAndConcurrentDraftEditsSurvive() async throws {
         let http = TestHTTPTransport(); let realtime = TestRealtimeAPI(); let gate = TestGate()
         let repo = repository(transport: http, realtime: realtime)

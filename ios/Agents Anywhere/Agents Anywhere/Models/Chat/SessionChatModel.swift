@@ -26,6 +26,10 @@ final class SessionChatModel {
     @ObservationIgnored private var subagentStopReleases: [String: Task<Void, Never>] = [:]
     private(set) var isLoadingSettings = false
     var error: String?
+    /// Bumped on every refused send, so the toast can re-open even when the
+    /// copy is byte-identical to one the user dismissed. A value change alone
+    /// cannot signal that: the store dedups identical failures by design.
+    private(set) var blockedSendTick = 0
     var settingsError: String?
     private(set) var isOpeningPrepared = false
     var isOpeningReady: Bool { isOpeningPrepared && timeline.hasPresentedSnapshot }
@@ -518,7 +522,10 @@ final class SessionChatModel {
         guard canQueueSend,
               !session.composer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return }
-        guard let item = session.enqueueDraft() else { return }
+        guard let item = session.enqueueDraft() else {
+            surfaceBlockedSendIfNeeded()
+            return
+        }
         queueEnqueueTick += 1
         Task {
             _ = await uploadQueuedAttachments(item)
@@ -584,8 +591,8 @@ final class SessionChatModel {
         }
     }
 
-    func send(_ text: String) async {
-        if let command = await catalogCommand(for: text) {
+    func send(_ text: String, allowsCommands: Bool = true) async {
+        if allowsCommands, let command = await catalogCommand(for: text) {
             session.composer.text = text
             await runCommand(command, raw: text)
             return
@@ -608,6 +615,81 @@ final class SessionChatModel {
                     self.repository.draftDidChange(sessionID: self.session.id)
                 }
         }
+        surfaceBlockedSendIfNeeded()
+    }
+
+    /// Explains a send the session refused because an identical message's
+    /// outcome is still unknown. The refusal used to be a silent no-op that
+    /// left the user guessing (2026-10-27 report: the message only left after
+    /// the user manually deleted a period).
+    private func surfaceBlockedSendIfNeeded() {
+        guard session.blockedSendPendingID != nil else { return }
+        refuse(String(localized: "有相同内容的消息结果尚未确认，已阻止重复发送。请先处理那条发送记录，或修改内容后再发。"))
+    }
+
+    /// Refuses the current action and bumps the tick so the explanation can
+    /// re-open on every tap, not only when its copy changes.
+    private func refuse(_ message: String) {
+        error = message
+        blockedSendTick += 1
+    }
+
+    /// Sends a failed record's payload again. A running turn takes the queue
+    /// like any other composer commit; otherwise the record is retired and the
+    /// payload is sent as a fresh message. Retiring happens only after every
+    /// gate is open, and the payload sits in the composer first, so no early
+    /// return can lose it.
+    func retryPendingMessage(_ pending: V2PendingMessage) async {
+        guard session.isValid else { return }
+        // The payload is written into the composer; that is only safe when the
+        // editor is empty or already holds this exact record (its usual state:
+        // a failed send refills the draft).
+        let sameAsRecord = session.composer.text == pending.content
+            && session.composer.attachments.map(\.id) == pending.localAttachmentIDs
+        guard session.composer.text.isEmpty || sameAsRecord else {
+            refuse(String(localized: "请先清空输入框，再重新发送这条记录。"))
+            return
+        }
+        if isComposerStreaming {
+            // The queue has its own capability gate; a stale or unsupported
+            // runtime must not take a row that could never drain.
+            guard canQueueSend else {
+                refuse(String(localized: "Wait for the session to reconnect before sending."))
+                return
+            }
+            session.dismissPendingMessage(id: pending.id)
+            session.draft = pending.content
+            session.composer.attachments = pending.attachments
+            session.draftAttachmentIDs = pending.attachmentIDs
+            guard let item = session.enqueueDraft() else {
+                surfaceBlockedSendIfNeeded()
+                return
+            }
+            queueEnqueueTick += 1
+            Task {
+                _ = await uploadQueuedAttachments(item)
+                session.evaluateSendQueue()
+            }
+            return
+        }
+        guard !isWorking, session.canSend, !session.composer.isComposing else {
+            refuse(String(localized: "Wait for the session to reconnect before sending."))
+            return
+        }
+        // `send` refuses attachments after this point would have retired the
+        // record; fold that gate in so the payload is never left behind a
+        // deleted row.
+        guard pending.attachments.isEmpty || canAttach else {
+            refuse(String(localized: "当前无法发送带附件的消息，请稍后再试。"))
+            return
+        }
+        session.dismissPendingMessage(id: pending.id)
+        session.draft = pending.content
+        session.composer.attachments = pending.attachments
+        session.draftAttachmentIDs = pending.attachmentIDs
+        // A record whose text starts with "/" was sent as plain text; resending
+        // it must not turn into a command invocation now.
+        await send(pending.content, allowsCommands: false)
     }
 
     /// Stop is idempotent on the server (an already-finished turn answers 409,

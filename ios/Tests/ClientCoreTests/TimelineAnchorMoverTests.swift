@@ -145,7 +145,11 @@ import Testing
     @Test func anExternalWriteIsNotShiftedTwice() {
         var mover = TimelineAnchorMover(position: 0)
         mover.start(at: 0, spring: .ease)
-        _ = mover.step(target: 0, dt: 1.0 / 120, displayScale: scale)
+        for _ in 0..<4 {
+            _ = mover.step(target: 100, dt: 1.0 / 120, displayScale: scale)
+        }
+        // UIKit applied the new content height itself: the offset is already
+        // at the new target when the next tick runs.
         mover.reseed(at: 120)
         let step = mover.step(target: 120, dt: 1.0 / 120, displayScale: scale)
         #expect(abs(step.position - 120) < 0.001)

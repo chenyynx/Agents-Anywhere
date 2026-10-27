@@ -105,9 +105,12 @@
   - IPA：`AgentsAnywhere-feat-code-profile-beta-b582-ef8e971.ipa`（17,104,036 B）
     `https://github.com/chenyynx/Agents-Anywhere/releases/download/ipa-feat-code-profile-beta/AgentsAnywhere-feat-code-profile-beta-b582-ef8e971.ipa`
   - 已下载核对 `CFBundleVersion = 582`。
-- **build 583**（head 待提交，preview 上圆角 4 + shadow 0.05/2/1）：CI 待跑；582 的 preview 8pt/无阴影由 #106 修正。
-- 同机截图交叉论证全表：`/home/ubuntu/aa-test/claude-ios-re/EVIDENCE/round25/file-card-cross-validation.md`（官方 vs AA 逐项 px/pt，后续补 #106 圆角/阴影）。
-- **最新包 = build 582**（583 绿后更新）；build 576 / 570 / 567 保留作中间对照。
+- **build 585**（head `57d6df48`，preview 上圆角 4 + shadow 0.05/2/1）：run `40481002139`，`test` ✅、`build` ✅、`code-profile` ✅（`failures: []`）。
+  - IPA：`AgentsAnywhere-feat-code-profile-beta-b585-57d6df4.ipa`（17,105,347 B）
+    `https://github.com/chenyynx/Agents-Anywhere/releases/download/ipa-feat-code-profile-beta/AgentsAnywhere-feat-code-profile-beta-b585-57d6df4.ipa`
+  - 已下载核对 `CFBundleVersion = 585`。
+- 同机截图交叉论证全表：`/home/ubuntu/aa-test/claude-ios-re/EVIDENCE/round25/file-card-cross-validation.md`（官方 vs AA 逐项 px/pt，含 #106 圆角/阴影）。
+- **最新包 = build 585**；build 582 / 576 / 570 / 567 保留作中间对照。
 - **待 pp 真机验收**；dev 未合、未 force push。
 
 ## 3. 官方数值（压缩后也别丢）

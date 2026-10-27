@@ -122,6 +122,54 @@ final class CodeProfileAutoRunModel {
         report["attachmentLayout"] = ["cases": cases.count]
     }
 
+    /// A Markdown link must carry both the visible underline and the real
+    /// `NSAttributedString.Key.link` URL. 594–596 only underlined the text;
+    /// the converter dropped the destination, so UITextView never made it
+    /// interactive.
+    private func verifyLinkAttribute() {
+        let category = DynamicTypeSize.large.contentSizeCategory
+        let typography = TimelineChatContentAdapter.typography(
+            dynamicType: String(describing: DynamicTypeSize.large),
+            layoutDirection: 0,
+            boldText: false,
+            scale: CodePageTheme.markdownScale)
+            .resolvedForCodePage(category: category)
+        let target = "https://example.com/release"
+        let text = "[release](\(target))"
+        guard let document = AssistantMarkdownDocumentParser.make(
+            text: text,
+            resolvesFileReferences: false,
+            typography: typography,
+            codeStyle: CodePageTheme.codeCardStyle(category: category))?
+            .applyingCodePageTextColors() else {
+            failures.append("links: markdown parse failed")
+            return
+        }
+        let attributed = document.blocks.compactMap { block -> NSAttributedString? in
+            guard case let .text(text) = block else { return nil }
+            return text.attributed
+        }.first
+        guard let attributed else {
+            failures.append("links: no text block")
+            return
+        }
+        let range = (attributed.string as NSString).range(of: "release")
+        guard range.location != NSNotFound,
+              let url = attributed.attribute(.link, at: range.location,
+                                             effectiveRange: nil) as? URL else {
+            failures.append("links: .link missing at \(range)")
+            return
+        }
+        check(url.absoluteString == target,
+              "links: \(url.absoluteString), expected \(target)")
+        let underline = attributed.attribute(.underlineStyle, at: range.location,
+                                             effectiveRange: nil) as? Int
+        check(underline == NSUnderlineStyle.single.rawValue,
+              "links: underline \(String(describing: underline)), expected 1")
+        report["links"] = ["url": url.absoluteString,
+                           "underline": underline ?? -1]
+    }
+
     private struct RuntimeFixture {
         let name: String
         let family: CodeRuntimeProfile.Family
@@ -138,6 +186,7 @@ final class CodeProfileAutoRunModel {
 
     private func runRuntimeFixtures() {
         verifyAttachmentGridShapes()
+        verifyLinkAttribute()
         var scenarios: [String: Any] = [:]
         for fixture in Self.runtimeFixtures {
             guard let items = Self.decodeItems(fixture.json) else {

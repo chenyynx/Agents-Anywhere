@@ -1180,6 +1180,13 @@ enum AssistantMarkdownDocumentParser {
                 .foregroundColor: color,
                 .paragraphStyle: paragraph,
             ]
+            // The parser knows the destination, but this converter used to
+            // emit only the link *styling* (colour/underline). UITextView and
+            // the Code page's tap fallback both look for `.link`; without it
+            // the underlined text is not interactive (595/596 symptom).
+            if let url = run.link {
+                attributes[.link] = url
+            }
             if let underline {
                 attributes[.underlineStyle] = underline.rawValue
             }

@@ -60,3 +60,16 @@
   `https://github.com/chenyynx/Agents-Anywhere/releases/download/ipa-feat-code-profile-beta/AgentsAnywhere-feat-code-profile-beta-b594-567125d.ipa`
 - 已下载核对 `CFBundleVersion = 594`。
 - run 标题已验证：`iOS Build · 正文链接+选中复制`。
+
+## 8. 595（链接点击兜底）
+
+- 594 真机：链接有下划线但点击无反应；`UITextView` 自带的 link action 在 hosted list 里没有触发。
+- 595：在 `AssistantMarkdownBlockTextView` 上额外加 `UITapGestureRecognizer`，按点击位置解析 `.link` 属性并打开；系统 delegate 路径保留，0.4 s 内同一 URL 去重，避免一次点击开两次。
+- 范围仍是 per-block 选择；跨块选择未做。
+
+## 9. 根因（596 之后定位）
+
+- 594–596 全部无反应，不是触摸层：`AssistantMarkdownDocument` 的 run→NSAttributedString 转换只从 `run.link` 取了颜色/下划线，**没有把 `NSAttributedString.Key.link` 写进 attributes**（`AssistantMarkdownDocument.swift:1154` vs `:1178-1182`）。
+- 所以屏幕上有下划线但没有可点击 link；UITextView 和自定义 tap 的 `attribute(.link)` 都返回 nil。
+- 修复：构造 attributes 时补 `if let url = run.link { attributes[.link] = url }`。
+- 门禁新增 `verifyLinkAttribute()`：解析 `[release](https://example.com/release)`，断言 `.link` == URL 且 underline == 1。

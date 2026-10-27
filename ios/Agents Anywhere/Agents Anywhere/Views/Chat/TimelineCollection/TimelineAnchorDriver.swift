@@ -349,21 +349,24 @@ final class TimelineAnchorDriver {
             containerHeight: view.bounds.height,
             topInset: view.adjustedContentInset.top,
             bottomInset: view.adjustedContentInset.bottom)
-        guard TimelineSpringFollow.shouldMove(
-            target: target, current: current,
-            displayScale: view.traitCollection.displayScale) else {
-            state.motion = .resting
-            return
-        }
         let spring = TimelineSpringFollow.spring(
             target: target, current: current, visibleHeight: visible)
         if mover.isRunning, moverPlacement == state.placement {
             // Same motion, new destination: retarget without restarting the
-            // spring (a restart on every height change would jitter).
+            // spring (a restart on every height change would jitter). This
+            // must outrank the dead band below: with the Pace shift a live
+            // stream keeps a sub-pixel gap while the motion still has to stay
+            // alive.
             mover.retarget(spring: spring)
             if state.motion == .easing, spring == .fly {
                 state.motion = .flying
             }
+            return
+        }
+        guard TimelineSpringFollow.shouldMove(
+            target: target, current: current,
+            displayScale: view.traitCollection.displayScale) else {
+            state.motion = .resting
             return
         }
         if mover.isRunning {

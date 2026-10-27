@@ -52,3 +52,11 @@
 - 跨块复合选择 + HTML/plain 剪贴板（官方 `CompositeTextSelection` / `CopyToClipboard`）。
 - 文件路径链接路由到 AA 文件查看器；App 内浏览器（Tailscale/WKWebView）。
 - 表格/列表/引用内的链接与选择。
+
+## 7. 构建
+
+- build **594**（head `567125d7`，含本任务 + CI run 标题规则）：run `40499066444`，`test` ✅、`build` ✅、`code-profile` ✅（`failures: []`）。
+- IPA：`AgentsAnywhere-feat-code-profile-beta-b594-567125d.ipa`（17,118,062 B）
+  `https://github.com/chenyynx/Agents-Anywhere/releases/download/ipa-feat-code-profile-beta/AgentsAnywhere-feat-code-profile-beta-b594-567125d.ipa`
+- 已下载核对 `CFBundleVersion = 594`。
+- run 标题已验证：`iOS Build · 正文链接+选中复制`。

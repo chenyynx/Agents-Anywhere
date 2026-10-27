@@ -26,11 +26,13 @@ nonisolated struct TimelineAnchorMover: Equatable {
     private(set) var spring: TimelineSpringFollow.Spring = .ease
     private(set) var isRunning = false
     /// The target the current motion last saw. The official Mover re-reads the
-    /// target every frame and, for an ease, shifts the motion by the target's
-    /// own movement instead of letting the spring chase a moving goal
-    /// (`Ease.Pace`; `CANONICAL/05-layout-scroll.md` §7.1, part-ag §1.5). This
-    /// is what keeps streaming growth 1:1: a plain critically damped spring
-    /// trails a target moving at `v` by `2ζ/ω·v = duration/π·v`.
+    /// target every frame and tracks its movement through `Ease.Pace`
+    /// (`CANONICAL/05-layout-scroll.md` §7.1, part-ag §1.5; the type, fields
+    /// and constants are EVIDENCE, the wiring is INFERENCE). AA takes the
+    /// flat reading — shift the motion by the target's own delta — instead of
+    /// the official `pace.interval/step` + exponential smoothing. Either way
+    /// a plain critically damped spring would trail a target moving at `v` by
+    /// `2ζ/ω·v = duration/π·v`, which is the drift this removes.
     private(set) var paceTarget: CGFloat?
 
     init(position: CGFloat) {

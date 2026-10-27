@@ -360,23 +360,25 @@ final class TimelineListLayout: UICollectionViewLayout {
         // springs there, so a new tool row read as a slow drift instead of the
         // content pushing the page up. This outranks a height owed: the new
         // bottom is already the final position for every change in the update.
-        if isInsideUpdate, let host, let view = collectionView {
-            let state = host.layoutInteractionState()
-            if state.bottomFollowTracksInPlace, !state.suppressContentOffsetAdjustment {
-                let bottom = TimelineOffsetTarget.bottomOffset(
-                    contentHeight: contentHeight,
-                    containerHeight: view.bounds.height,
-                    topInset: view.adjustedContentInset.top,
-                    bottomInset: view.adjustedContentInset.bottom)
-                if abs(bottom - proposedContentOffset.y) > 0.5 {
-                    heightOwedToUpdate = nil
-                    lastReturnedContentOffset = bottom
+        //
+        // The gate is the flag captured in `prepare(forCollectionViewUpdates:)`,
+        // not the live driver state: UIKit calls `prepare()` before asking for
+        // the target, and absorbing the rows there already starts the follow
+        // motion (`.easing`), which would make a live check skip this answer.
+        if isInsideUpdate, followBottomDuringUpdate, let view = collectionView {
+            let bottom = TimelineOffsetTarget.bottomOffset(
+                contentHeight: contentHeight,
+                containerHeight: view.bounds.height,
+                topInset: view.adjustedContentInset.top,
+                bottomInset: view.adjustedContentInset.bottom)
+            if abs(bottom - proposedContentOffset.y) > 0.5 {
+                heightOwedToUpdate = nil
+                lastReturnedContentOffset = bottom
 #if DEBUG
-                    traceOffset("targetFollowBottom", before: proposedContentOffset.y,
-                                after: bottom, note: "follow new end")
+                traceOffset("targetFollowBottom", before: proposedContentOffset.y,
+                            after: bottom, note: "follow new end")
 #endif
-                    return CGPoint(x: proposedContentOffset.x, y: bottom)
-                }
+                return CGPoint(x: proposedContentOffset.x, y: bottom)
             }
         }
         // A height change applied inside the update without a prepend target:

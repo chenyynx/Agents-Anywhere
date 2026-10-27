@@ -28,7 +28,7 @@
 |---|---|
 | `ios/.../Models/Chat/TimelineCollection/TimelineAnchorMover.swift` | ease（bounce==0）时按目标差值平移位置（Pace），保留速度；`start`/`reseed` 重置基线，避免把已由外部写入的位移再叠一次；目标本帧移动时不判到达 |
 | `ios/.../Views/Chat/TimelineCollection/TimelineAnchorDriver.swift` | 运动跨越 placement 变化时重新起飞（不把大跳当 Pace 平移）；running 的 retarget 提前到死区判断之前 |
-| `ios/.../Views/Chat/TimelineCollection/TimelineListLayout.swift` | `targetContentOffset` 在更新事务内、且驱动处于「`.end` + `.resting`」（已静止贴底）时，答新的 `.end` 底（优先于 height owed，并清 owed）；UIKit 不问 target 时由 `finalizeCollectionViewUpdates` 兜底 |
+| `ios/.../Views/Chat/TimelineCollection/TimelineListLayout.swift` | 在 `prepare(forCollectionViewUpdates:)` 先拍「`.end` + `.resting`」快照（此时 `prepare()` 还没起跟随运动）；`targetContentOffset` 按该快照答新的 `.end` 底（优先于 height owed，并清 owed）；UIKit 不问 target 时由 `finalizeCollectionViewUpdates` 兜底 |
 | `ios/.../Views/Chat/TimelineCollection/TimelineCollectionController.swift` | `layoutInteractionState` 暴露 `bottomFollowTracksInPlace` |
 | `ios/Tests/ClientCoreTests/TimelineAnchorMoverTests.swift` | 增长目标 ≤1 物理像素滞后；停止后无过冲/尾摆；初始间隙仍由弹簧收敛；reseed 不双移；fly 不跟随平移 |
 

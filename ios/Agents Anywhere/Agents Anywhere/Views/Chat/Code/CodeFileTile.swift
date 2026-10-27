@@ -33,9 +33,11 @@ struct CodeFileTile: View {
         .accessibilityLabel(Text(verbatim: file.name ?? String(localized: "附件")))
     }
 
-    /// The screenshot geometry: 140 pt tile; footer `name 18.2 + type 18.2 +
-    /// 6 top padding`; the gray mat is the rest and the white preview sits
-    /// inside it with a 14 pt side inset and a 12 pt top inset.
+    /// The screenshot geometry: 140 pt tile; the footer is exactly the two
+    /// 18.2 pt line boxes (36.4 pt) with no extra top padding — the visible
+    /// gap above the name is the line box's own leading. The gray mat is the
+    /// remaining 103.6 pt and the white preview sits inside it with a 14 pt
+    /// side inset and a 12 pt top inset (device screenshot 2026-10-27).
     private var card: some View {
         VStack(spacing: 0) {
             thumbnail
@@ -105,12 +107,11 @@ struct CodeFileTile: View {
                 .frame(height: typeLineHeight)
         }
         .padding(.horizontal, 10)
-        .padding(.top, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var matHeight: CGFloat {
-        max(0, size.height - (nameLineHeight + typeLineHeight + 6))
+        max(0, size.height - (nameLineHeight + typeLineHeight))
     }
 
     /// `.fileExtension` (a name with an extension) draws the file glyph;

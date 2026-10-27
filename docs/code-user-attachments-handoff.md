@@ -40,7 +40,7 @@
 - `CodeMessageRowView.swift`（`.attachments` 真正渲染，附件在气泡外）
 - `CodeUserBubble.swift`（删空 `attachments` 槽位）
 
-### 阶段 2B（已完成，待 review 复验/CI）
+### 阶段 2B（已完成；CI build 561 全绿）
 
 - Adapter 接线：`CodeMessageRowView` 传 `onAttachment` / `model.thumbnail` / resolver（`model.session.attachmentPreviews.resolve(contents, clientID:)`）
 - Code group signature / `codeHeightDigest` / `heightKey` / `hasVisibleBlock` / `officialEstimateHeight` / `measuredCodeGroupHeight` 纳入附件
@@ -72,6 +72,15 @@
   - FileTile 底色用 `userBubbleFill` [I]；图标 tint 用 primary [I]（官方 white 在浅底不可见）。
   - +N 覆盖格非 inFlight 的状态子视图（官方 Anthropicon 具体值）U。
   - 3 项 wide 谓词 `0x101895bf4` 的精确语义 U（当前横向 = wide [I]）。
+
+## 2.6 CI 与包（2026-10-27）
+
+- 分支 `feat/code-profile-beta`，head `762edc6f`（`4d46ed2c` 实现 + `762edc6f` 文档）。
+- Actions run `40441663226` / **build 561**：`test` ✅、`build` ✅、`code-profile` ✅（`failures: []`）。
+- `code-profile` 新增 4 组 fixture 全部通过：`bubble-attachment` 399/399（361 large）、575/575（361 accessibility3）、634/634（320 accessibility3）；纯附件 160/160；3 图 352/352；5 图 352/352；delta 全 0；`attachmentLayout` 7 条形状断言通过。
+- IPA：`AgentsAnywhere-feat-code-profile-beta-b561-762edc6.ipa`
+  `https://github.com/chenyynx/Agents-Anywhere/releases/download/ipa-feat-code-profile-beta/AgentsAnywhere-feat-code-profile-beta-b561-762edc6.ipa`
+- **待 pp 真机验收**；dev 未合、未 force push。
 
 ## 3. 官方数值（压缩后也别丢）
 

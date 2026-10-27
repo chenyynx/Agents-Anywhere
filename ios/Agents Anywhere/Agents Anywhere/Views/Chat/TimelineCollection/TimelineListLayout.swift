@@ -94,6 +94,10 @@ final class TimelineListLayout: UICollectionViewLayout {
     /// `targetContentOffset` answers with this value, and no offset/size
     /// adjustment is posted in the same transaction.
     private var heightOwedToUpdate: TimelineOneShotOwed?
+    /// The page was settled at the bottom when this update started. Recorded
+    /// before `prepare` can start a follow motion, so the update itself can
+    /// land on the new end even when UIKit never asks for the target.
+    private var followBottomDuringUpdate = false
 
     // Integration-gate counters. They are cheap and make the C3 assertions
     // read the real layout path instead of re-deriving it in the test.
@@ -401,6 +405,12 @@ final class TimelineListLayout: UICollectionViewLayout {
         // update UIKit never finalized (navigation interruption) must not
         // answer this update's queries.
         heightOwedToUpdate = nil
+        if let state = host?.layoutInteractionState() {
+            followBottomDuringUpdate = state.bottomFollowTracksInPlace
+                && !state.suppressContentOffsetAdjustment
+        } else {
+            followBottomDuringUpdate = false
+        }
         isInsideUpdate = true
     }
 
@@ -426,6 +436,22 @@ final class TimelineListLayout: UICollectionViewLayout {
             heightOwedToUpdate = nil
             if let fallback = owed.takeAfterFinalize() {
                 applyOffsetFallback(fallback)
+            }
+        }
+        // Official `offsetOwedToUpdate` exit for the follow answer: when UIKit
+        // never asked for the target, land the new end here. If the offered
+        // target was used the offset already matches and this is a no-op.
+        if followBottomDuringUpdate {
+            followBottomDuringUpdate = false
+            if let view = collectionView {
+                let bottom = TimelineOffsetTarget.bottomOffset(
+                    contentHeight: contentHeight,
+                    containerHeight: view.bounds.height,
+                    topInset: view.adjustedContentInset.top,
+                    bottomInset: view.adjustedContentInset.bottom)
+                if abs(view.contentOffset.y - bottom) > 0.5 {
+                    applyOffsetFallback(bottom)
+                }
             }
         }
 #if DEBUG

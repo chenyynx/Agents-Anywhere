@@ -308,6 +308,17 @@ final class TimelineListLayout: UICollectionViewLayout {
 
     var insertionOwedIsSettled: Bool { insertionOwed?.isSettled ?? true }
 
+#if DEBUG
+    /// Gate probe: whether the prepend target is still armed, which page row
+    /// it belongs to and what absolute offset it wants.
+    var debugInsertionOwed: String {
+        guard let owed = insertionOwed else { return "nil" }
+        let target = owed.target.map { String($0) } ?? "nil"
+        return "gen=\(owed.generation) expected=\(owed.expectedFirstRowID ?? "nil")"
+            + " target=\(target) settled=\(owed.isSettled)"
+    }
+#endif
+
     /// A reader gesture, the bottom pill, `loadLatest` or a navigation change
     /// takes over; a slow response must not move them.
     func cancelInsertionOwed() {

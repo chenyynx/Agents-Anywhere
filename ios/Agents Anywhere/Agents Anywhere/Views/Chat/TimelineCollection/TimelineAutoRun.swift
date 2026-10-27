@@ -413,12 +413,29 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
               let below = entries.first(where: { $0.kind == .reasoning }) else { return }
         let item = listItem(entry)
         let belowItem = listItem(below)
+        func snapshot() -> [String: Any] {
+            let view = controller.collectionView
+            let attributes = controller.layout.attributes(for: item.itemID)
+            return ["offset": view.contentOffset.y,
+                    "insetTop": view.adjustedContentInset.top,
+                    "contentInsetTop": view.contentInset.top,
+                    "boundsHeight": view.bounds.height,
+                    "contentHeight": view.contentSize.height,
+                    "height": attributes?.frame.height ?? -1,
+                    "minY": attributes?.frame.minY ?? -1,
+                    "maxY": attributes?.frame.maxY ?? -1,
+                    "anchor": controller.debugAnchorState,
+                    "mover": controller.debugMoverRunning]
+        }
+        let stateBeforeScroll = snapshot()
         controller.collectionView.setContentOffset(CGPoint(x: 0, y: 36), animated: false)
         await wait(120)
         let firstDisplayed = initialHeights[item.itemID]
             ?? controller.layout.attributes(for: item.itemID)?.frame.height ?? 0
         let before = controller.screenY(for: belowItem) ?? 0
+        let stateAtFirstSample = snapshot()
         await wait(900)
+        let stateBeforeRemeasure = snapshot()
         controller.remeasure(item)
         await wait(250)
         let settled = controller.layout.attributes(for: item.itemID)?.frame.height ?? 0
@@ -428,7 +445,11 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             failures.append("async markdown: below anchor moved \(delta)pt (first \(firstDisplayed), settled \(settled))")
         }
         report["asyncMarkdown"] = ["firstDisplayed": firstDisplayed, "settled": settled,
-                                   "belowAnchorDelta": delta]
+                                   "belowAnchorDelta": delta,
+                                   "beforeScroll": stateBeforeScroll,
+                                   "firstSample": stateAtFirstSample,
+                                   "beforeRemeasure": stateBeforeRemeasure,
+                                   "afterRemeasure": snapshot()]
     }
 
     private func foldAndTail() async {
@@ -2202,9 +2223,16 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             failures.append("prepend: no anchor index path")
             return
         }
+        let stateBeforeScroll = ["offset": controller.collectionView.contentOffset.y,
+                                 "anchor": controller.debugAnchorState,
+                                 "mover": controller.debugMoverRunning] as [String: Any]
         controller.collectionView.scrollToItem(at: anchorIndex, at: .top, animated: false)
         await wait(120)
         let before = controller.screenY(for: anchorItem) ?? 0
+        let stateAfterScroll = ["offset": controller.collectionView.contentOffset.y,
+                                "screenY": before,
+                                "anchor": controller.debugAnchorState,
+                                "mover": controller.debugMoverRunning] as [String: Any]
         let newItems = prependPlain(100)
         guard var position = controller.beginHistoryRequest(generation: 42,
             anchorRowID: anchor.id, edge: .top, newItems: newItems) else {
@@ -2256,7 +2284,15 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                              "finalizeUpdatesCalls": controller.layout.finalizeUpdatesCallCount,
                              "proposed": proposed, "returned": returned,
                              "settled": settled, "doubleQuerySame": doubleQuerySame,
-                             "cancelledUnchanged": cancelledUnchanged]
+                             "cancelledUnchanged": cancelledUnchanged,
+                             "stateBeforeScroll": stateBeforeScroll,
+                             "stateAfterScroll": stateAfterScroll,
+                             "stateAfterReload": ["offset": controller.collectionView.contentOffset.y,
+                                                  "screenY": after,
+                                                  "contentHeight": controller.collectionView.contentSize.height,
+                                                  "anchor": controller.debugAnchorState,
+                                                  "mover": controller.debugMoverRunning,
+                                                  "owed": controller.layout.debugInsertionOwed] as [String: Any]]
     }
 
     /// Device report (6a18aa3): tapping "load older" jumped elsewhere instead
@@ -2271,9 +2307,16 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             failures.append("prepend during apply: no anchor index path")
             return
         }
+        let stateBeforeScroll = ["offset": controller.collectionView.contentOffset.y,
+                                 "anchor": controller.debugAnchorState,
+                                 "mover": controller.debugMoverRunning] as [String: Any]
         controller.collectionView.scrollToItem(at: index, at: .top, animated: false)
         await wait(120)
         let before = controller.screenY(for: anchorItem) ?? 0
+        let stateAfterScroll = ["offset": controller.collectionView.contentOffset.y,
+                                "screenY": before,
+                                "anchor": controller.debugAnchorState,
+                                "mover": controller.debugMoverRunning] as [String: Any]
 
         // Leave a normal apply in flight: a streamed line changes the list.
         guard let plain = entries.last(where: { $0.kind == .plain }) else { return }
@@ -2300,7 +2343,15 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         }
         report["prependDuringApply"] = ["before": Double(before), "after": Double(after),
                                         "delta": Double(delta),
-                                        "settled": position.isReadyToFinish]
+                                        "settled": position.isReadyToFinish,
+                                        "stateBeforeScroll": stateBeforeScroll,
+                                        "stateAfterScroll": stateAfterScroll,
+                                        "stateAfterReload": ["offset": controller.collectionView.contentOffset.y,
+                                                             "screenY": after,
+                                                             "contentHeight": controller.collectionView.contentSize.height,
+                                                             "anchor": controller.debugAnchorState,
+                                                             "mover": controller.debugMoverRunning,
+                                                             "owed": controller.layout.debugInsertionOwed] as [String: Any]]
     }
 
     /// Device report (package 426a7ec): tapping "load latest" jumped to the

@@ -40,6 +40,9 @@ final class TimelineAnchorDriver {
 #if DEBUG
     /// Gate counter: how many Mover motions actually started.
     private(set) var debugMoveStarts = 0
+    /// Gate probe: a programme-driven scroll must be interpreted differently
+    /// while a Mover spring is still travelling.
+    var debugMoverRunning: Bool { mover.isRunning }
 #endif
 
     init(scrollView: UICollectionView, inputs: Inputs) {

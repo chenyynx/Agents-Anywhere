@@ -123,6 +123,13 @@ final class TimelineCollectionController: UIViewController {
     private(set) var debugStreamingFollowEligibleFrames = 0
     var debugStreamingFollowStarts: Int { anchorDriver?.debugMoveStarts ?? 0 }
     var debugIsFollowing: Bool { anchorDriver?.state.placement == .end }
+    /// Gate probe for the offset-sensitive scenarios: which placement/motion
+    /// the driver holds and whether its Mover is travelling right now.
+    var debugAnchorState: String {
+        guard let driver = anchorDriver else { return "no-driver" }
+        return String(describing: driver.state)
+    }
+    var debugMoverRunning: Bool { anchorDriver?.debugMoverRunning ?? false }
     func clearDebugScrollCallSites() {
         debugScrollCallSites.removeAll()
         debugScrollLastOffset = nil

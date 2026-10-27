@@ -542,6 +542,22 @@ class SessionRunService:
             )
         except ConnectorOfflineError as exc:
             raise SessionRunConflictError(str(exc)) from exc
+        except TimeoutError as exc:
+            # Every caller reads the state before it writes (send_message and
+            # steer_session both start their run only after this returns), so a
+            # timeout here proves the write was not forwarded. Answer with the
+            # conflict channel — a definite rejection every client understands —
+            # instead of letting the bare TimeoutError become a 500, which
+            # clients must treat as "the write may have landed".
+            raise SessionRunConflictError(
+                {
+                    "code": "runtime_state_timeout",
+                    "message": (
+                        "connector session state request timed out; "
+                        "nothing was submitted"
+                    ),
+                }
+            ) from exc
         except ConnectorRpcError as exc:
             raise SessionRunUpstreamError(exc.message or exc.code) from exc
         if not isinstance(result, dict):

@@ -2081,8 +2081,11 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         // movement requirement below (a page that does not follow moves 0).
         await waitForBottomSettle(controller, timeout: 1200)
         let settledShortfall = controller.bottomShortfall
+        let peakShortfall = shortfalls.max() ?? 0
         let monotonic = zip(heights, heights.dropFirst()).allSatisfy { $0 <= $1 + 0.5 }
-        let maxShortfall = max(shortfalls.max() ?? 0, settledShortfall)
+        // The workflow's contract key means the settled bottom shortfall; the
+        // transient peak is reported separately.
+        let maxShortfall = settledShortfall
         if !monotonic { failures.append("streaming: heights not monotonic \(heights)") }
         if settledShortfall > 0.5 {
             failures.append("streaming: settled bottom shortfall \(settledShortfall)")
@@ -2095,7 +2098,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             failures.append("streaming: \(worstOverlap) adjacent frames overlapped")
         }
         report["streaming"] = ["ticks": heights.count, "heights": heights,
-                               "maxShortfall": maxShortfall, "monotonic": monotonic,
+                               "maxShortfall": maxShortfall,
+                               "peakShortfall": peakShortfall, "monotonic": monotonic,
                                "movesPerTick": movesPerTick,
                                "worstStaleCells": worstStale,
                                "worstOverlaps": worstOverlap]

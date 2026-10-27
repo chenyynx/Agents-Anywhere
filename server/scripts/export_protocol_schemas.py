@@ -41,6 +41,18 @@ class ProtocolSchema:
     mode: SchemaMode
 
 
+# Response fields that stay *optional* in the published contract even though
+# the current server always emits them. ``ProtocolWireModel`` sets
+# ``json_schema_serialization_defaults_required``, so every defaulted response
+# field is marked required — accurate for the current server, but wrong for a
+# new client reading an older server during a rolling upgrade, which is the
+# exact case an additive response flag exists for. Keyed by artifact slug;
+# only top-level response fields are supported.
+OPTIONAL_SERIALIZATION_FIELDS: dict[str, frozenset[str]] = {
+    "session-snapshot-response": frozenset({"excludesAgentChildren"}),
+}
+
+
 SCHEMAS = (
     ProtocolSchema("handshake-request", ProtocolHandshakeRequest, "ingress", "validation"),
     ProtocolSchema("handshake-response", ProtocolHandshakeResponse, "egress", "serialization"),
@@ -88,6 +100,12 @@ def _schema_document(artifact: ProtocolSchema) -> dict[str, object]:
     schema["x-protocol-version"] = PROTOCOL_VERSION_1
     schema["x-direction"] = artifact.direction
     schema["x-pydantic-mode"] = artifact.mode
+    optional_fields = OPTIONAL_SERIALIZATION_FIELDS.get(artifact.slug, frozenset())
+    required = schema.get("required")
+    if optional_fields and isinstance(required, list):
+        schema["required"] = [
+            field_name for field_name in required if field_name not in optional_fields
+        ]
     return schema
 
 

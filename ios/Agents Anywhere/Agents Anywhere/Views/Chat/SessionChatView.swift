@@ -46,11 +46,13 @@ struct SessionChatView: View, Equatable {
     @State private var previewDirectory: URL?
     @State private var isDownloading = false
     /// The welcome line shows only for a settled, genuinely empty page — a
-    /// queued message counts as content even before its timeline rows exist.
-    /// Kept out of the overlay's ViewBuilder: the four-way conjunction inside
-    /// a builder pushes the type checker past its budget (it timed out once).
+    /// queued message counts as content even before its timeline rows exist,
+    /// and a window with older items is not empty: it is a partial window the
+    /// reader can page back from (C0). Kept out of the overlay's ViewBuilder:
+    /// the multi-way conjunction inside a builder pushes the type checker past
+    /// its budget (it timed out once).
     private var showsEmptyState: Bool {
-        model.isOpeningReady && model.timeline.rows.isEmpty
+        model.isOpeningReady && model.timeline.rows.isEmpty && !model.session.hasOlderItems
             && model.timeline.pendingMessages.isEmpty && model.session.sendQueue.isEmpty
     }
 

@@ -174,6 +174,9 @@ struct V2SessionProjection {
         // the window it may replace, but never acknowledges the event cursor.
         let newer = data.items.filter { $0.updatedSeq > page.nextSeq }
         replaceTimeline(page.items, hasMore: page.hasMore)
+        // This page now builds the window, so it also owns the window's read
+        // mode (the panel's loaded gate reads it).
+        data.windowExcludesAgentChildren = page.excludesAgentChildren
         merge(newer, history: false)
     }
 

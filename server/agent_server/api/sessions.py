@@ -835,7 +835,13 @@ async def session_timeline(
     session_id: str,
     after_seq: int = Query(0, alias="afterSeq", ge=0),
     before_order_seq: int | None = Query(None, alias="beforeOrderSeq", ge=1),
-    mode: str = Query("latest", pattern="^(latest|changes|history)$"),
+    mode: str = Query("latest", pattern="^(latest|changes|history|children)$"),
+    # Opt-in main-timeline window: drop subagent child rows
+    # (``content.parentItemId`` set) in SQL, before the LIMIT. Default false
+    # keeps web / android / desktop / older clients on the exact pre-existing
+    # behavior.
+    exclude_agent_children: bool = Query(False, alias="excludeAgentChildren"),
+    parent_item_id: str | None = Query(None, alias="parentItemId", min_length=1),
     limit: int = Query(100, ge=1, le=500),
     user_id: str = Depends(current_user_id),
     db: Store = Depends(get_store),
@@ -850,6 +856,7 @@ async def session_timeline(
                 items, has_more = await db.list_timeline_latest(
                     session_id=session_id,
                     limit=limit,
+                    main_only=exclude_agent_children,
                 )
             elif mode == "history":
                 if before_order_seq is None:
@@ -861,8 +868,33 @@ async def session_timeline(
                     session_id=session_id,
                     before_order_seq=before_order_seq,
                     limit=limit,
+                    main_only=exclude_agent_children,
                 )
+            elif mode == "children":
+                if parent_item_id is None:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="parentItemId is required for children mode",
+                    )
+                items, has_more = await db.list_agent_children(
+                    session_id=session_id,
+                    parent_item_id=parent_item_id,
+                    before_order_seq=before_order_seq,
+                    limit=limit,
+                )
+                # A card's child rows can be as large as any timeline row, so
+                # the same 2MB serialized-byte ceiling that guards the snapshot
+                # applies here: keep the newest rows and tell the client more
+                # remain via hasMore.
+                items, budget_has_more = _apply_snapshot_timeline_byte_budget(
+                    session_id,
+                    items,
+                )
+                has_more = has_more or budget_has_more
             else:
+                # ``changes`` is the export/recovery feed: it must keep its
+                # exact pre-existing semantics, so ``excludeAgentChildren``
+                # deliberately does not apply here.
                 items, has_more = await db.list_timeline_since(
                     session_id=session_id,
                     after_seq=after_seq,
@@ -876,6 +908,11 @@ async def session_timeline(
         items=items,
         nextSeq=next_seq,
         hasMore=has_more,
+        # Echo only when the flag actually shaped the rows: ``changes`` and
+        # ``children`` do not honor it, so they must not claim they did.
+        excludesAgentChildren=(
+            exclude_agent_children and mode in ("latest", "history")
+        ),
         serverTime=utc_now(),
     )
 
@@ -961,7 +998,7 @@ def _apply_snapshot_timeline_byte_budget(
 
     kept = list(reversed(kept_reversed))
     logger.info(
-        "snapshot timeline byte budget exceeded session_id={} items={} "
+        "timeline byte budget exceeded session_id={} items={} "
         "kept={} bytes={} budget={}",
         session_id,
         len(items),
@@ -977,6 +1014,10 @@ async def session_snapshot(
     session_id: str,
     background_tasks: BackgroundTasks,
     limit: int = Query(100, ge=1, le=500),
+    # Opt-in main-timeline window (see the timeline route): drop subagent child
+    # rows in SQL before the LIMIT. Default false keeps every existing client
+    # on the pre-existing snapshot bytes.
+    exclude_agent_children: bool = Query(False, alias="excludeAgentChildren"),
     user_id: str = Depends(current_user_id),
     db: Store = Depends(get_store),
     manager: ConnectorRpcManager = Depends(get_rpc),
@@ -1056,6 +1097,7 @@ async def session_snapshot(
             items, has_more = await db.list_timeline_latest(
                 session_id=session_id,
                 limit=limit,
+                main_only=exclude_agent_children,
             )
             # P1: in-flight Agent cards ride beside the timeline page, outside
             # its (100-item / byte-budget) window and outside the 2MB timeline
@@ -1113,6 +1155,7 @@ async def session_snapshot(
             if catalog is not None
         },
         eventCursor=event_cursor(next_seq),
+        excludesAgentChildren=exclude_agent_children,
         serverTime=utc_now(),
     )
 

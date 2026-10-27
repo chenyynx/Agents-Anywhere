@@ -47,6 +47,13 @@ nonisolated struct V2SessionData: Hashable {
     var cursor: String
     var liveStateIsFresh = false
     var lastExtensionEvent: V2SessionEvent?
+    /// Whether the server built this window from main-agent rows only
+    /// (`excludeAgentChildren`). The panel needs it: in such a window a
+    /// SubAgent card's own row is always present while its activity rows can
+    /// never be, so the card row is not evidence that the content loaded.
+    /// Live child rows may still arrive; this flag describes the read mode,
+    /// not the current membership.
+    var windowExcludesAgentChildren = false
     /// Active top-level SubAgent cards, kept beside the window rather than in
     /// it. Fed by every merge, window guards included, so a card that has been
     /// pushed out of the window by later traffic still drives the capsule.
@@ -60,6 +67,7 @@ nonisolated struct V2SessionData: Hashable {
         capabilities = snapshot.effectiveCapabilities
         notices = snapshot.notices
         cursor = snapshot.eventCursor
+        windowExcludesAgentChildren = snapshot.excludesAgentChildren
         // session-open-coverage P1: the snapshot's active cards seed the
         // sidecar through the very same absorb rule every other source uses, so
         // a card the window does not hold yet — the cold-open case — is on the

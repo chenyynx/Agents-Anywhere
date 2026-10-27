@@ -199,6 +199,10 @@ class ProtocolTimelineResponse(ProtocolWireModel):
     items: list[TimelineItem] = Field(default_factory=list)
     nextSeq: int
     hasMore: bool = False
+    # True only when the request asked for the main-timeline window
+    # (``excludeAgentChildren``) and this mode honored it. Additive: older
+    # servers omit it and older clients ignore it.
+    excludesAgentChildren: bool = False
     serverTime: str
 
 
@@ -218,6 +222,10 @@ class ProtocolSessionSnapshotResponse(ProtocolWireModel):
     runtimeCapabilities: ProtocolCapabilitySet
     catalogs: dict[str, Any] = Field(default_factory=dict)
     eventCursor: str = Field(pattern=r"^seq:(0|[1-9][0-9]*)$")
+    # True when the request asked for the main-timeline window
+    # (``excludeAgentChildren``) and the snapshot's timeline honored it.
+    # Additive: older servers omit it and older clients ignore it.
+    excludesAgentChildren: bool = False
     serverTime: str
 
 

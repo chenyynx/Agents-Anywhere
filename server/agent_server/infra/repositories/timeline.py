@@ -1576,8 +1576,11 @@ class TimelineRepositoryMixin:
         *,
         session_id: str,
         limit: int,
+        main_only: bool = False,
     ) -> tuple[list[TimelineItem], bool]:
-        return await self.timeline.list_latest(session_id, limit=limit)
+        return await self.timeline.list_latest(
+            session_id, limit=limit, main_only=main_only
+        )
 
     async def list_timeline_before_order_seq(
         self,
@@ -1585,9 +1588,28 @@ class TimelineRepositoryMixin:
         session_id: str,
         before_order_seq: int,
         limit: int,
+        main_only: bool = False,
     ) -> tuple[list[TimelineItem], bool]:
         return await self.timeline.list_before_order_seq(
             session_id,
+            before_order_seq=before_order_seq,
+            limit=limit,
+            main_only=main_only,
+        )
+
+    async def list_agent_children(
+        self,
+        *,
+        session_id: str,
+        parent_item_id: str,
+        before_order_seq: int | None = None,
+        limit: int,
+    ) -> tuple[list[TimelineItem], bool]:
+        """One page of the child rows emitted inside one Agent card."""
+
+        return await self.timeline.list_children(
+            session_id,
+            parent_item_id=parent_item_id,
             before_order_seq=before_order_seq,
             limit=limit,
         )

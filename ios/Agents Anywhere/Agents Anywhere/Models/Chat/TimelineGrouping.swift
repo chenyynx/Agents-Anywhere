@@ -52,6 +52,42 @@ struct ChatTimelineGroup: Identifiable, Equatable {
 
 enum TimelineGrouping {
     static func groups(_ rows: [ChatTimelineRowModel], interactionTargets: Set<String>) -> [ChatTimelineGroup] {
+        grouped(rows, interactionTargets: interactionTargets, includeAgentRows: false)
+    }
+
+    /// C0 fallback (2026-10-23): the whole window can be rows the connector
+    /// attributed to an Agent card — the server used to return them inside the
+    /// latest page. The default grouping drops every one of them (L2.1), so the
+    /// main timeline would render nothing at all. Keeping them here groups the
+    /// window exactly as the card's own fold does (consecutive rows of one
+    /// parent merge); the panel still reads `chat.timeline.rows`, so nothing is
+    /// hidden from it.
+    static func fallbackGroups(_ rows: [ChatTimelineRowModel], interactionTargets: Set<String>) -> [ChatTimelineGroup] {
+        grouped(rows, interactionTargets: interactionTargets, includeAgentRows: true)
+    }
+
+    /// The fallback applies only when the window holds no main-agent row: the
+    /// default grouping then leaves the reader looking at a blank page. An
+    /// interaction-anchored child row keeps its own default group, but the card
+    /// it belongs to is still outside the window, so it must not suppress the
+    /// fallback either.
+    static func needsAgentFallback(_ rows: [ChatTimelineRowModel]) -> Bool {
+        !rows.isEmpty && !rows.contains { row in
+            if case .agents = row.structure.groupKind { return false }
+            return true
+        }
+    }
+
+    /// The older-history spinner is released by its anchor group's layout.
+    /// With no rows the page has no group to lay out, so a request started then
+    /// must not create a position that could never settle.
+    static func usesHistoryAnchor(_ rows: [ChatTimelineRowModel]) -> Bool { !rows.isEmpty }
+
+    private static func grouped(
+        _ rows: [ChatTimelineRowModel],
+        interactionTargets: Set<String>,
+        includeAgentRows: Bool
+    ) -> [ChatTimelineGroup] {
         var groups: [ChatTimelineGroup] = []
         var pending: [ChatTimelineRowModel] = []
         var pendingKind = ChatTimelineGroup.Kind.single
@@ -65,7 +101,8 @@ enum TimelineGrouping {
             // Every row the connector attributed to an Agent card — tool,
             // thinking and text alike — leaves the main timeline; its content is
             // read from `chat.timeline.rows` by the panel and the card's 查看详情
-            // entry, both of which this filter does not touch.
+            // entry, both of which this filter does not touch. `includeAgentRows`
+            // is the C0 fallback for a window that has nothing else to show.
             // An interaction target is exempt: an approval card anchors on its
             // own row, and that row has to stay visible or the card would fall
             // between the group renderer and the orphan notice list.
@@ -73,7 +110,7 @@ enum TimelineGrouping {
             // `groupKind == .agents` is set exactly when the item carries a
             // parentItemId, but reading the value would let a streaming token or
             // tool-output refresh invalidate the list and regroup history.
-            if case .agents = row.structure.groupKind, !interactionTargets.contains(row.id) { continue }
+            if case .agents = row.structure.groupKind, !interactionTargets.contains(row.id), !includeAgentRows { continue }
             let kind: ChatTimelineGroup.Kind = interactionTargets.contains(row.id) ? .single : row.structure.groupKind
             if kind == .single { flush(); groups.append(ChatTimelineGroup(kind: .single, rows: [row])); continue }
             if pendingKind != kind { flush() }

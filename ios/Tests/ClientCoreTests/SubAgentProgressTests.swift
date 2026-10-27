@@ -285,48 +285,97 @@ import Testing
         #expect(SubAgentUsageFormat.tokens(999_999) == "1M")
         #expect(SubAgentUsageFormat.tokens(1_000_000) == "1M")
         #expect(SubAgentUsageFormat.tokens(1_200_000) == "1.2M")
-        #expect(SubAgentUsageFormat.duration(milliseconds: 400) == "0.4s")
-        #expect(SubAgentUsageFormat.duration(milliseconds: 4_858) == "4.9s")
-        #expect(SubAgentUsageFormat.duration(milliseconds: 6_000) == "6s")
-        #expect(SubAgentUsageFormat.duration(milliseconds: 60_000) == "1m")
-        #expect(SubAgentUsageFormat.duration(milliseconds: 90_000) == "1.5m")
-        #expect(SubAgentUsageFormat.duration(milliseconds: 120_000) == "2m")
+        #expect(SubAgentUsageFormat.duration(milliseconds: 400) == "0.4 秒")
+        #expect(SubAgentUsageFormat.duration(milliseconds: 4_858) == "4.9 秒")
+        #expect(SubAgentUsageFormat.duration(milliseconds: 6_000) == "6 秒")
+        #expect(SubAgentUsageFormat.duration(milliseconds: 60_000) == "1 分钟")
+        #expect(SubAgentUsageFormat.duration(milliseconds: 90_000) == "1.5 分钟")
+        #expect(SubAgentUsageFormat.duration(milliseconds: 120_000) == "2 分钟")
+        // The visible strip uses clock notation beside the clock glyph.
+        #expect(SubAgentUsageFormat.clock(milliseconds: 400) == "0:00")
+        #expect(SubAgentUsageFormat.clock(milliseconds: 4_858) == "0:04")
+        #expect(SubAgentUsageFormat.clock(milliseconds: 60_000) == "1:00")
+        #expect(SubAgentUsageFormat.clock(milliseconds: 90_000) == "1:30")
+        #expect(SubAgentUsageFormat.clock(milliseconds: 2_268_000) == "37:48")
+        #expect(SubAgentUsageFormat.clock(milliseconds: 3_723_000) == "1:02:03")
     }
 
-    @Test func statsLineDropsMissingAndZeroCounters() throws {
-        let full = try card(try cardItem(usage: ["toolCalls": 7, "tokens": 33_555, "durationMs": 24_723]))
-        #expect(SubAgentProgress.statsLine(for: full) == "7 个工具 · 24.7s · 33.6k")
+    @Test func metricsStripUsesGlyphsAndClockTime() throws {
+        // One telemetry strip: ⚒ 100  ◷ 37:48  ↑ 380k  ↓ 12k (pp, 2026-10-21).
+        let split = try card(try cardItem(usage: [
+            "toolCalls": 100, "tokens": 502, "durationMs": 2_268_000,
+            "inputTokens": 380_000, "outputTokens": 12_000,
+        ]))
+        #expect(SubAgentProgress.metrics(for: split) == [
+            SubAgentProgress.SubAgentMetric(symbol: "hammer", value: "100"),
+            SubAgentProgress.SubAgentMetric(symbol: "clock", value: "37:48"),
+            SubAgentProgress.SubAgentMetric(symbol: "arrow.up", value: "380k"),
+            SubAgentProgress.SubAgentMetric(symbol: "arrow.down", value: "12k"),
+        ])
+    }
+
+    @Test func runningCardClockTicksBetweenPublications() throws {
+        // The engine's durationMs is measured at the last publication; the
+        // panel adds the wall time elapsed since `updatedAt` so a running
+        // card's clock keeps moving between task events (pp, 2026-10-21 实时).
+        let published = "2026-10-21T14:00:00.000Z"
+        let running = try card(try cardItem(status: "running",
+            usage: ["toolCalls": 3, "durationMs": 60_000], updatedAt: published))
+        let now = try #require(SubAgentProgress.date(published)?.addingTimeInterval(12))
+        #expect(SubAgentProgress.metrics(for: running, now: now) == [
+            SubAgentProgress.SubAgentMetric(symbol: "hammer", value: "3"),
+            SubAgentProgress.SubAgentMetric(symbol: "clock", value: "1:12"),
+        ])
+        // No clock reference (the terminal render path): the stored value.
+        #expect(SubAgentProgress.liveDurationMs(for: running, now: nil) == 60_000)
+    }
+
+    @Test func finishedCardKeepsTheEnginesFinalDuration() throws {
+        let published = "2026-10-21T14:00:00.000Z"
+        let done = try card(try cardItem(status: "done",
+            usage: ["durationMs": 60_000], updatedAt: published))
+        let later = try #require(SubAgentProgress.date(published)?.addingTimeInterval(3_600))
+        #expect(SubAgentProgress.liveDurationMs(for: done, now: later) == 60_000)
+    }
+
+    @Test func runningCardWithoutAPublicationTimeStaysFrozen() throws {
+        // The wire always carries `updatedAt`; an unparsable stamp is the only
+        // way the card has none, and then the engine's number is all we know.
+        let running = try card(try cardItem(status: "running",
+            usage: ["durationMs": 5_000], updatedAt: "not-a-timestamp"))
+        #expect(SubAgentProgress.liveDurationMs(for: running, now: Date()) == 5_000)
+    }
+
+    @Test func metricsStripOmitsTheWireCounterWithoutASplit() throws {
+        // The wire's single counter is a context estimate, not a total: without
+        // the transcript split the strip shows only tools and time (宁缺勿假).
+        let plain = try card(try cardItem(usage: ["toolCalls": 7, "tokens": 33_555, "durationMs": 24_723]))
+        #expect(SubAgentProgress.metrics(for: plain) == [
+            SubAgentProgress.SubAgentMetric(symbol: "hammer", value: "7"),
+            SubAgentProgress.SubAgentMetric(symbol: "clock", value: "0:24"),
+        ])
+    }
+
+    @Test func metricsStripDropsMissingAndZeroCounters() throws {
         let bare = try card(try cardItem())
-        #expect(SubAgentProgress.statsLine(for: bare) == "")
+        #expect(SubAgentProgress.metrics(for: bare).isEmpty)
         let zeros = try card(try cardItem(usage: ["toolCalls": 0, "tokens": 0, "durationMs": 0]))
-        #expect(SubAgentProgress.statsLine(for: zeros) == "")
-        let closed = try card(try cardItem(status: "done", usage: ["toolCalls": 3]))
-        #expect(SubAgentProgress.statsLine(for: closed) == "3 个工具")
-    }
-
-    @Test func statsLineCarriesTheMetricsOnly() throws {
-        // The phase word moved into the status badge; the visible line keeps
-        // no "用时" and no "tokens" suffix, and each counter keeps its place.
-        let full = try card(try cardItem(usage: ["toolCalls": 12, "tokens": 31_200, "durationMs": 8_100]))
-        let line = SubAgentProgress.statsLine(for: full)
-        #expect(line == "12 个工具 · 8.1s · 31.2k")
-        #expect(!line.contains("用时"))
-        #expect(!line.contains("tokens"))
-        #expect(!line.contains("运行中"))
-        // One counter at a time still renders, and never with a leading separator.
-        let toolsOnly = try card(try cardItem(usage: ["toolCalls": 12, "tokens": 0, "durationMs": 0]))
-        #expect(SubAgentProgress.statsLine(for: toolsOnly) == "12 个工具")
-        let timeOnly = try card(try cardItem(usage: ["toolCalls": 0, "tokens": 0, "durationMs": 8_100]))
-        #expect(SubAgentProgress.statsLine(for: timeOnly) == "8.1s")
-        let tokensOnly = try card(try cardItem(usage: ["toolCalls": 0, "tokens": 31_200, "durationMs": 0]))
-        #expect(SubAgentProgress.statsLine(for: tokensOnly) == "31.2k")
+        #expect(SubAgentProgress.metrics(for: zeros).isEmpty)
+        // A one-sided split keeps the side it has.
+        let inputOnly = try card(try cardItem(usage: ["inputTokens": 1_000]))
+        #expect(SubAgentProgress.metrics(for: inputOnly)
+            == [SubAgentProgress.SubAgentMetric(symbol: "arrow.up", value: "1k")])
     }
 
     @Test func statsAccessibilityLabelReadsAsOneSentence() throws {
-        // The badge dot, the badge word and the metrics must not become three
-        // separate stops: one label, phase first, unit words restored.
-        let full = try card(try cardItem(usage: ["toolCalls": 7, "tokens": 33_555, "durationMs": 24_723]))
-        #expect(SubAgentProgress.statsAccessibilityLabel(for: full) == "运行中，7 个工具，用时 24.7s，33.6k tokens")
+        // The badge dot, the badge word and the strip must not become separate
+        // stops: one label, phase first, the unit words the strip omits.
+        let full = try card(try cardItem(usage: [
+            "toolCalls": 7, "durationMs": 24_723,
+            "inputTokens": 17_593, "outputTokens": 6_398,
+        ]))
+        #expect(SubAgentProgress.statsAccessibilityLabel(for: full)
+            == "运行中，7 个工具，用时 24.7 秒，输入 17.6k tokens，输出 6.4k tokens")
         let bare = try card(try cardItem())
         #expect(SubAgentProgress.statsAccessibilityLabel(for: bare) == "运行中")
         let zeros = try card(try cardItem(usage: ["toolCalls": 0, "tokens": 0, "durationMs": 0]))
@@ -678,6 +727,41 @@ import Testing
         #expect(SubAgentProgress.isContentLoaded(alias, in: withoutAlias))
         // 3. Neither: no card, no rows — the neutral notice is honest.
         #expect(!SubAgentProgress.isContentLoaded(alias, in: withoutAlias.filter { $0.id != "dispatch" }))
+    }
+
+    @Test func aMainOnlyWindowLoadsActivityOnlyFromChildRows() throws {
+        let cardRow = try cardItem("card", order: 1, status: "done")
+        let child = try item("t1", status: "done", order: 2,
+                             content: ["kind": "command", "command": "ls", "parentItemId": "card"])
+        let parsed = try card(cardRow)
+        // C2: a main-only window always holds the card itself (it is a main
+        // row), so that row alone says nothing about the activity.
+        #expect(!SubAgentProgress.isContentLoaded(parsed, in: [cardRow], windowExcludesAgentChildren: true))
+        // A child row is the proof it can render.
+        #expect(SubAgentProgress.isContentLoaded(parsed, in: [cardRow, child], windowExcludesAgentChildren: true))
+        // The lineage merge keeps working: an alias card loads through its
+        // sibling's child rows even in a main-only window.
+        let items = try resumeAliasItems()
+        let alias = try card(items[3])
+        let withoutAlias = items.filter { $0.id != "alias" }
+        #expect(SubAgentProgress.isContentLoaded(alias, in: withoutAlias, windowExcludesAgentChildren: true))
+        // The panel's on-demand rows are child rows only (no card rows at all):
+        // deriving the lineage from that list would collapse it to the alias id
+        // and drop the dispatch sibling's rows — the C3 regression. The caller
+        // passes the lineage it resolved from the window instead.
+        let childRowsOnly = items.filter { SubAgentProgress.parentItemID($0) != nil }
+        #expect(!SubAgentProgress.isContentLoaded(alias, in: childRowsOnly, windowExcludesAgentChildren: true))
+        #expect(SubAgentProgress.isContentLoaded(alias, in: childRowsOnly, windowExcludesAgentChildren: true,
+            lineage: ["alias", "dispatch"]))
+        #expect(SubAgentProgress.activityRows(of: alias, in: childRowsOnly,
+            lineage: ["alias", "dispatch"]).map(\.id) == ["r1", "t1", "m1"])
+        // Outside a main-only window the card's own row still passes, exactly
+        // as before this flag existed.
+        #expect(SubAgentProgress.isContentLoaded(parsed, in: [cardRow]))
+        #expect(SubAgentProgress.isContentLoaded(parsed, in: [cardRow], windowExcludesAgentChildren: false))
+        // The sidecar-only case stays unloaded in both modes.
+        #expect(!SubAgentProgress.isContentLoaded(parsed, in: [], windowExcludesAgentChildren: true))
+        #expect(!SubAgentProgress.isContentLoaded(parsed, in: []))
     }
 
     // MARK: Main timeline filter (L2.1: keep only the dispatch card)

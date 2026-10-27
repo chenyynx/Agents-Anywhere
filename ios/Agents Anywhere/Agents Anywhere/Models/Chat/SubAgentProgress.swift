@@ -105,6 +105,11 @@ struct SubAgentCard: Identifiable, Equatable {
     let phase: SubAgentPhase
     let toolCalls: Int?
     let tokens: Int?
+    /// The transcript's summed non-cached input / output over the task's
+    /// calls (connector, 2026-10-21). The wire's single `tokens` is the last
+    /// call's context size, so these are what the panel prefers to show.
+    let inputTokens: Int?
+    let outputTokens: Int?
     let durationMs: Int?
     /// The subagent's verbatim final reply (task_notification fold).
     let summary: String?
@@ -127,6 +132,11 @@ struct SubAgentCard: Identifiable, Equatable {
     /// else the item's completion (or last update) time. Only consulted for
     /// failed/interrupted cards.
     let failedAt: Date?
+    /// When the connector last republished this card (the item's `updatedAt`).
+    /// A running card's `durationMs` is the engine's number at that moment, so
+    /// the panel lets the clock run on from here between publications instead
+    /// of freezing until the next task event (pp, 2026-10-21: 实时).
+    let updatedAt: Date?
 
     var isTopLevel: Bool { parentItemID == nil }
 
@@ -183,6 +193,8 @@ enum SubAgentProgress {
                          launching: entry?["status"]?.stringValue == asyncLaunchedStatus),
             toolCalls: usage["toolCalls"]?.intValue,
             tokens: usage["tokens"]?.intValue,
+            inputTokens: usage["inputTokens"]?.intValue,
+            outputTokens: usage["outputTokens"]?.intValue,
             durationMs: usage["durationMs"]?.intValue,
             summary: TimelineText.first(raw["summary"]),
             parentItemID: parent,
@@ -190,7 +202,8 @@ enum SubAgentProgress {
             liveTasks: liveTasks(in: item),
             taskIDs: taskIDs(in: item),
             dispatchedAt: Self.date(item.createdAt),
-            failedAt: Self.terminalDate(raw: raw, item: item)
+            failedAt: Self.terminalDate(raw: raw, item: item),
+            updatedAt: Self.date(item.updatedAt)
         )
     }
 
@@ -304,8 +317,13 @@ enum SubAgentProgress {
     /// dispatch card does, so the alias renders them instead of an empty body.
     /// Two cards of one lineage never list a row twice, and the union is merged
     /// back into timeline order (orderSeq) rather than dispatch order.
-    static func activityRows(of card: SubAgentCard, in items: [V2TimelineItem]) -> [V2TimelineItem] {
-        let ids = lineageIDs(of: card, in: items)
+    /// `lineage` lets a main-only caller pass the ids it already resolved from
+    /// the timeline window: the panel's fetched rows carry no card rows, so
+    /// deriving the lineage from `items` alone would collapse it to the card's
+    /// own id and drop a resume-alias sibling's rows (C3).
+    static func activityRows(of card: SubAgentCard, in items: [V2TimelineItem],
+                             lineage: Set<String>? = nil) -> [V2TimelineItem] {
+        let ids = lineage ?? lineageIDs(of: card, in: items)
         var seen: Set<String> = []
         return items
             .filter { item in
@@ -498,10 +516,28 @@ enum SubAgentProgress {
     /// sibling's rows are in the window and the activity list can render them,
     /// so the panel must not claim "内容未加载" and then show nothing.
     ///
+    /// A main-only window (`excludeAgentChildren`) is the exception to the
+    /// first rule: the card is a main row, so it is always present while its
+    /// child rows can never be. Only the activity rows the panel would render
+    /// prove the content loaded there; otherwise the panel would show a silent
+    /// empty activity area.
+    ///
     /// False means the panel can still show the card's own facts (name, phase,
     /// prompt) but none of its tool / thinking / output rows, and must say so
     /// rather than render an empty body or a silent "finished".
-    static func isContentLoaded(_ card: SubAgentCard, in items: [V2TimelineItem]) -> Bool {
+    static func isContentLoaded(
+        _ card: SubAgentCard,
+        in items: [V2TimelineItem],
+        windowExcludesAgentChildren: Bool = false,
+        lineage: Set<String>? = nil
+    ) -> Bool {
+        // The card's own row is always in a main-only window and its children
+        // never are, so only the rows the activity list would actually render
+        // are evidence there. `lineage` comes from the window's card rows when
+        // the caller's items are the fetched child rows alone (C3).
+        if windowExcludesAgentChildren {
+            return !activityRows(of: card, in: items, lineage: lineage).isEmpty
+        }
         if items.contains(where: { $0.id == card.id }) { return true }
         let ids = lineageIDs(of: card, in: items)
         return items.contains { item in
@@ -544,43 +580,87 @@ enum SubAgentProgress {
         return date(item.completedAt) ?? date(item.updatedAt)
     }
 
-    /// The panel's metrics, beside the status badge: "12 个工具 · 8.1s · 31.2k".
-    /// Bare values only — the phase word is the badge's job and the unit words
-    /// are the spoken label's. Empty when every counter is missing or zero;
-    /// the values freeze when the card closes because the task events stop
-    /// writing.
-    static func statsLine(for card: SubAgentCard) -> String {
-        metrics(for: card).joined(separator: " · ")
+    /// One metric on the panel's telemetry strip: an AppSymbol glyph and its
+    /// value. The strip is one line — glyph + number pairs (pp, 2026-10-21).
+    struct SubAgentMetric: Equatable {
+        let symbol: String
+        let value: String
     }
 
-    /// The same row as one spoken sentence: "已完成，12 个工具，用时 8.1s，31.2k
-    /// tokens". VoiceOver needs the words "用时"/"tokens" — a bare "8.1s" is
-    /// read as a stray letter — and it needs the phase word, which the badge
+    /// The panel's stats strip, in reading order: tools, duration, then the
+    /// transcript's input/output split. Rules (pp, 2026-10-21):
+    /// - glyph + number only; the badge already carries the phase word;
+    /// - duration is clock notation (`37:48`), self-evident beside the clock;
+    /// - the token pair appears only when the split exists — the wire's single
+    ///   counter is a context estimate and is not shown (宁缺勿假).
+    /// Empty when every counter is missing or zero; the values freeze when the
+    /// card closes because the task events stop writing.
+    static func metrics(for card: SubAgentCard, now: Date? = nil) -> [SubAgentMetric] {
+        var metrics: [SubAgentMetric] = []
+        if let toolCalls = card.toolCalls, toolCalls > 0 {
+            metrics.append(SubAgentMetric(symbol: "hammer", value: "\(toolCalls)"))
+        }
+        if let durationMs = liveDurationMs(for: card, now: now), durationMs > 0 {
+            metrics.append(
+                SubAgentMetric(
+                    symbol: "clock",
+                    value: SubAgentUsageFormat.clock(milliseconds: durationMs)
+                )
+            )
+        }
+        if let input = card.inputTokens, input > 0 {
+            metrics.append(
+                SubAgentMetric(
+                    symbol: "arrow.up",
+                    value: SubAgentUsageFormat.tokens(input)
+                )
+            )
+        }
+        if let output = card.outputTokens, output > 0 {
+            metrics.append(
+                SubAgentMetric(
+                    symbol: "arrow.down",
+                    value: SubAgentUsageFormat.tokens(output)
+                )
+            )
+        }
+        return metrics
+    }
+
+    /// A running card's elapsed time as of `now`, else the stored value.
+    ///
+    /// The engine measures `durationMs` at the publication point and the wire
+    /// carries no heartbeat between task events, so a long tool call froze the
+    /// clock. Adding the gap since `updatedAt` lets the panel tick every second
+    /// on its own; terminal cards keep the engine's final number verbatim.
+    static func liveDurationMs(for card: SubAgentCard, now: Date?) -> Int? {
+        guard card.phase.isActive, let now, let updatedAt = card.updatedAt,
+              let base = card.durationMs else { return card.durationMs }
+        let delta = now.timeIntervalSince(updatedAt)
+        return delta > 0 ? base + Int(delta * 1_000) : base
+    }
+
+    /// The same strip as one spoken sentence: "已完成，100 个工具，用时 37.8
+    /// 分钟，输入 380k tokens，输出 12k tokens". VoiceOver needs the unit
+    /// words the visible line deliberately omits, and the phase word the badge
     /// already carries visually.
     static func statsAccessibilityLabel(for card: SubAgentCard) -> String {
-        let spoken = metrics(for: card,
-            duration: { String(localized: "用时 \(SubAgentUsageFormat.duration(milliseconds: $0))") },
-            tokens: { String(localized: "\(SubAgentUsageFormat.tokens($0)) tokens") })
-        return ([card.phase.word] + spoken).joined(separator: "，")
-    }
-
-    /// The counters in display order, dropping the missing and the zero ones
-    /// (缺失不显、不留 "0"). Only the unit wording changes between the visible
-    /// line and the spoken label, so the drop rule stays in one place.
-    private static func metrics(for card: SubAgentCard,
-                                duration: (Int) -> String = { SubAgentUsageFormat.duration(milliseconds: $0) },
-                                tokens: (Int) -> String = { SubAgentUsageFormat.tokens($0) }) -> [String] {
         var parts: [String] = []
         if let toolCalls = card.toolCalls, toolCalls > 0 {
             parts.append(String(localized: "\(toolCalls) 个工具"))
         }
         if let durationMs = card.durationMs, durationMs > 0 {
-            parts.append(duration(durationMs))
+            parts.append(
+                String(localized: "用时 \(SubAgentUsageFormat.duration(milliseconds: durationMs))")
+            )
         }
-        if let tokenCount = card.tokens, tokenCount > 0 {
-            parts.append(tokens(tokenCount))
+        if let input = card.inputTokens, input > 0 {
+            parts.append(String(localized: "输入 \(SubAgentUsageFormat.tokens(input)) tokens"))
         }
-        return parts
+        if let output = card.outputTokens, output > 0 {
+            parts.append(String(localized: "输出 \(SubAgentUsageFormat.tokens(output)) tokens"))
+        }
+        return ([card.phase.word] + parts).joined(separator: "，")
     }
 
     /// The `agents` entry that belongs to the card. The map is normally keyed
@@ -641,10 +721,27 @@ enum SubAgentUsageFormat {
         return trimmed(Double(value) / 1_000_000) + "M"
     }
 
-    /// Elapsed time: "4.9s" below a minute, "1.5m" above.
+    /// Elapsed time as clock notation: "37:48", "1:02:15" past an hour. The
+    /// visible strip pairs it with the clock glyph, so no unit word is needed;
+    /// VoiceOver uses :func:`duration` for the spoken sentence.
+    static func clock(milliseconds: Int) -> String {
+        let seconds = max(milliseconds, 0) / 1_000
+        let hours = seconds / 3_600
+        let minutes = (seconds % 3_600) / 60
+        let secs = seconds % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, secs)
+        }
+        return String(format: "%d:%02d", minutes, secs)
+    }
+
+    /// Spoken elapsed time: "4.9 秒" below a minute, "1.5 分钟" above. The unit
+    /// is spelled out — "1.5m" reads as metres or a bare letter (pp, 2026-10-21).
     static func duration(milliseconds: Int) -> String {
-        if milliseconds < 60_000 { return trimmed(Double(milliseconds) / 1_000) + "s" }
-        return trimmed(Double(milliseconds) / 60_000) + "m"
+        if milliseconds < 60_000 {
+            return String(localized: "\(trimmed(Double(milliseconds) / 1_000)) 秒")
+        }
+        return String(localized: "\(trimmed(Double(milliseconds) / 60_000)) 分钟")
     }
 
     private static func trimmed(_ value: Double) -> String {

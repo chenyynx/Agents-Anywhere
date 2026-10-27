@@ -4,6 +4,9 @@ nonisolated enum V2TimelineMode: String {
     case latest
     case changes
     case history
+    /// One SubAgent card's child rows (C3): the panel's on-demand read for a
+    /// main-only window, which carries no child rows at all.
+    case children
 }
 
 nonisolated struct V2SessionTimelinePage: Decodable, Hashable {
@@ -12,6 +15,10 @@ nonisolated struct V2SessionTimelinePage: Decodable, Hashable {
     let nextSeq: Int
     let hasMore: Bool
     let serverTime: String?
+    /// Whether the server applied the `excludeAgentChildren` opt-in to this
+    /// page. A pre-field server cannot say, so an absent key reads `false`:
+    /// the client must keep its own fallback for child-only windows.
+    var excludesAgentChildren = false
 }
 
 extension V2SessionTimelinePage {
@@ -28,6 +35,7 @@ extension V2SessionTimelinePage {
         nextSeq = try container.decode(Int.self, forKey: .nextSeq)
         hasMore = try container.decode(Bool.self, forKey: .hasMore)
         serverTime = try container.decodeIfPresent(String.self, forKey: .serverTime)
+        excludesAgentChildren = try container.decodeIfPresent(Bool.self, forKey: .excludesAgentChildren) ?? false
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -36,6 +44,7 @@ extension V2SessionTimelinePage {
         case nextSeq
         case hasMore
         case serverTime
+        case excludesAgentChildren
     }
 }
 
@@ -57,6 +66,10 @@ nonisolated struct V2SessionSnapshot: Decodable, Hashable {
     /// archive rebuilds and pre-field servers keep constructing exactly as
     /// before; decoding is lenient (see the extension below).
     var activeAgents: [V2TimelineItem] = []
+    /// Whether the server applied the `excludeAgentChildren` opt-in to this
+    /// snapshot. Same rule as the timeline page: an absent key (老服务端) reads
+    /// `false`, which keeps the C0 fallback in charge of child-only windows.
+    var excludesAgentChildren = false
 
     /// A custom `init(from:)` suppresses the synthesized keys, so they are
     /// spelled out (the `V2TimelineItem` convention).
@@ -72,6 +85,7 @@ nonisolated struct V2SessionSnapshot: Decodable, Hashable {
         case eventCursor
         case serverTime
         case activeAgents
+        case excludesAgentChildren
     }
 }
 
@@ -94,6 +108,7 @@ extension V2SessionSnapshot {
         eventCursor = try container.decode(String.self, forKey: .eventCursor)
         serverTime = try container.decode(String.self, forKey: .serverTime)
         activeAgents = ((try? container.decode(LossyElements<V2TimelineItem>.self, forKey: .activeAgents))?.elements) ?? []
+        excludesAgentChildren = try container.decodeIfPresent(Bool.self, forKey: .excludesAgentChildren) ?? false
     }
 }
 

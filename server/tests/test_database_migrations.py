@@ -1014,9 +1014,9 @@ def test_unversioned_runtime_schema_is_classified_by_actual_columns(tmp_path,
     )
 
 
-def test_current_schema_version_is_v2_46() -> None:
-    assert CURRENT_SCHEMA_REVISION == "v2_46"
-    assert CURRENT_SCHEMA_VERSION == "2.46"
+def test_current_schema_version_is_v2_47() -> None:
+    assert CURRENT_SCHEMA_REVISION == "v2_47"
+    assert CURRENT_SCHEMA_VERSION == "2.47"
 
 
 def _insert_required(connection, table: str, values: dict) -> None:
@@ -1030,6 +1030,286 @@ def _insert_required(connection, table: str, values: dict) -> None:
     names = ", ".join(row)
     params = ", ".join(f":{name}" for name in row)
     connection.execute(text(f"INSERT INTO {table} ({names}) VALUES ({params})"), row)
+
+
+def test_v2_47_adds_the_parent_item_id_column_and_index(fresh_database_url) -> None:
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_46")
+    engine = create_engine(_sync_url(url))
+    try:
+        assert "parent_item_id" not in {
+            column["name"] for column in inspect(engine).get_columns("timeline_items")
+        }
+    finally:
+        engine.dispose()
+
+    upgrade_database(db_url=url)
+
+    engine = create_engine(_sync_url(url))
+    try:
+        columns = {c["name"]: c for c in inspect(engine).get_columns("timeline_items")}
+        assert "parent_item_id" in columns
+        assert columns["parent_item_id"]["nullable"] is True
+        index_names = {i["name"] for i in inspect(engine).get_indexes("timeline_items")}
+        assert "idx_timeline_items_session_parent_order" in index_names
+    finally:
+        engine.dispose()
+
+    # A second upgrade call on an already-current database is harmless
+    # (Alembic is at head, so the migration body does not run again).
+    upgrade_database(db_url=url)
+
+
+def test_v2_47_backfill_retries_a_failed_concurrent_index(monkeypatch) -> None:
+    """A ``CREATE INDEX CONCURRENTLY`` killed mid-build leaves an INVALID
+    index. The retry must drop that shell first and rebuild CONCURRENTLY, not
+    conclude "already built" and leave the column unindexed."""
+
+    from types import SimpleNamespace
+
+    from migrations.versions import v2_47
+
+    events: list[tuple] = []
+
+    class _Context:
+        def autocommit_block(self):
+            class _CM:
+                def __enter__(self):
+                    return None
+
+                def __exit__(self, *_exc):
+                    return False
+
+            return _CM()
+
+    class _Bind:
+        dialect = SimpleNamespace(name="postgresql")
+
+    class _Op:
+        def get_context(self):
+            return _Context()
+
+        def get_bind(self):
+            return _Bind()
+
+        def create_index(self, *args, **kwargs):
+            events.append(("create", args[0], kwargs.get("postgresql_concurrently")))
+
+    monkeypatch.setattr(v2_47, "op", _Op())
+    monkeypatch.setattr(v2_47, "_column_names", lambda: {"parent_item_id"})
+    monkeypatch.setattr(v2_47, "_backfill_parent_item_id", lambda: None)
+    monkeypatch.setattr(v2_47, "_index_is_usable", lambda _name: False)
+    monkeypatch.setattr(v2_47, "_index_exists", lambda _name: True)
+    monkeypatch.setattr(v2_47, "_bound_lock_wait", lambda: None)
+    monkeypatch.setattr(
+        v2_47,
+        "_drop_index_concurrently",
+        lambda name: events.append(("drop", name)),
+    )
+
+    v2_47.upgrade()
+
+    assert events == [
+        ("drop", "idx_timeline_items_session_parent_order"),
+        ("create", "idx_timeline_items_session_parent_order", True),
+    ]
+
+
+def test_v2_47_index_check_ignores_an_unusable_index(monkeypatch) -> None:
+    """The existence check must ask whether the index is planner-usable
+    (``indisvalid``), not merely whether the name is present."""
+
+    from types import SimpleNamespace
+
+    from migrations.versions import v2_47
+
+    class _Result:
+        def __init__(self, row) -> None:
+            self._row = row
+
+        def first(self):
+            return self._row
+
+    class _Bind:
+        dialect = SimpleNamespace(name="postgresql")
+
+        def __init__(self, row) -> None:
+            self.row = row
+            self.statements: list[str] = []
+
+        def execute(self, statement, _parameters):
+            self.statements.append(str(statement))
+            return _Result(self.row)
+
+    class _Op:
+        def __init__(self, bind) -> None:
+            self._bind = bind
+
+        def get_bind(self):
+            return self._bind
+
+    for row, expected in (
+        ((True,), True),
+        ((False,), False),
+        (None, False),
+    ):
+        bind = _Bind(row)
+        monkeypatch.setattr(v2_47, "op", _Op(bind))
+        assert v2_47._index_is_usable("idx_x") is expected
+        assert "indisvalid" in bind.statements[-1]
+        assert "relkind" in bind.statements[-1]
+
+
+def test_v2_47_backfills_parent_item_id_from_the_payload(fresh_database_url) -> None:
+    """A child row's payload already declares ``content.parentItemId``; the
+    migration must copy it so the main-only window can filter historical rows
+    in SQL. Anything that is not a non-empty string — absent, empty, numeric,
+    malformed payload — stays NULL rather than being guessed."""
+
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_46")
+    engine = create_engine(_sync_url(url))
+    try:
+        with engine.begin() as connection:
+            _insert_required(connection, "connectors", {"id": "c1", "revoked": 0})
+            _insert_required(connection, "sessions", {
+                "id": "s1", "connector_id": "c1", "runtime": "claude", "runtime_id": "r1",
+            })
+            for iid, payload in (
+                ("c1", '{"id":"c1","content":{"kind":"command","parentItemId":"card-A"}}'),
+                ("c2", '{"id":"c2","content":{"text":"child","parentItemId":"card-A"}}'),
+                ("m1", '{"id":"m1","content":{"text":"main"}}'),
+                ("e1", '{"id":"e1","content":{"parentItemId":""}}'),
+                ("n1", '{"id":"n1","content":{"parentItemId":42}}'),
+                ("x1", "not json"),
+            ):
+                _insert_required(connection, "timeline_items", {
+                    "session_id": "s1", "id": iid, "payload_json": payload,
+                })
+    finally:
+        engine.dispose()
+
+    upgrade_database(db_url=url)
+
+    engine = create_engine(_sync_url(url))
+    try:
+        with engine.connect() as connection:
+            rows = {
+                row[0]: row[1]
+                for row in connection.execute(
+                    text("SELECT id, parent_item_id FROM timeline_items")
+                )
+            }
+        assert rows["c1"] == "card-A"
+        assert rows["c2"] == "card-A"
+        assert rows["m1"] is None
+        assert rows["e1"] is None
+        assert rows["n1"] is None
+        assert rows["x1"] is None
+    finally:
+        engine.dispose()
+
+
+def test_v2_47_backfill_pages_without_skipping_or_looping(
+    fresh_database_url, monkeypatch
+) -> None:
+    """The backfill pages by ``(session_id, id)`` so a tiny page size still
+    covers every row (and a payload without a parent id cannot stall it)."""
+
+    from migrations.versions import v2_47
+
+    monkeypatch.setattr(v2_47, "_BACKFILL_BATCH", 1)
+
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_46")
+    engine = create_engine(_sync_url(url))
+    try:
+        with engine.begin() as connection:
+            _insert_required(connection, "connectors", {"id": "c1", "revoked": 0})
+            _insert_required(connection, "sessions", {
+                "id": "s1", "connector_id": "c1", "runtime": "claude", "runtime_id": "claude",
+            })
+            for idx in range(4):
+                extra = f',"parentItemId":"CARD{idx}"' if idx != 2 else ""
+                _insert_required(connection, "timeline_items", {
+                    "session_id": "s1", "id": f"m{idx}",
+                    "payload_json": '{"id":"m%d","content":{"text":"x"%s}}' % (idx, extra),
+                })
+    finally:
+        engine.dispose()
+
+    upgrade_database(db_url=url)
+
+    engine = create_engine(_sync_url(url))
+    try:
+        with engine.connect() as connection:
+            rows = {
+                row[0]: row[1]
+                for row in connection.execute(
+                    text("SELECT id, parent_item_id FROM timeline_items")
+                )
+            }
+        assert rows == {"m0": "CARD0", "m1": "CARD1", "m2": None, "m3": "CARD3"}
+    finally:
+        engine.dispose()
+
+
+def test_v2_47_downgrade_then_upgrade_round_trips(fresh_database_url) -> None:
+    """Each step runs in its own ``autocommit_block``, so a partial run is
+    recovered by re-running rather than automatic rollback; a downgrade then an
+    upgrade must land back on the same schema with no manual repair."""
+
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_46")
+    engine = create_engine(_sync_url(url))
+    try:
+        with engine.begin() as connection:
+            _insert_required(connection, "connectors", {"id": "c1", "revoked": 0})
+            _insert_required(connection, "sessions", {
+                "id": "s1", "connector_id": "c1", "runtime": "claude", "runtime_id": "claude",
+            })
+            _insert_required(connection, "timeline_items", {
+                "session_id": "s1", "id": "c1",
+                "payload_json": '{"id":"c1","content":{"kind":"command","parentItemId":"card-A"}}',
+            })
+    finally:
+        engine.dispose()
+
+    def _columns() -> set[str]:
+        e = create_engine(_sync_url(url))
+        try:
+            return {c["name"] for c in inspect(e).get_columns("timeline_items")}
+        finally:
+            e.dispose()
+
+    def _parent_item_id() -> str | None:
+        e = create_engine(_sync_url(url))
+        try:
+            with e.connect() as connection:
+                return connection.execute(
+                    text("SELECT parent_item_id FROM timeline_items WHERE id = 'c1'")
+                ).scalar()
+        finally:
+            e.dispose()
+
+    def _index_names() -> set[str]:
+        e = create_engine(_sync_url(url))
+        try:
+            return {i["name"] for i in inspect(e).get_indexes("timeline_items")}
+        finally:
+            e.dispose()
+
+    upgrade_database(db_url=url)
+    assert _parent_item_id() == "card-A"
+    assert "idx_timeline_items_session_parent_order" in _index_names()
+
+    command.downgrade(_alembic_config(url), "v2_46")
+    assert "parent_item_id" not in _columns()
+    assert "idx_timeline_items_session_parent_order" not in _index_names()
+
+    upgrade_database(db_url=url)
+    assert _parent_item_id() == "card-A"
+    assert "idx_timeline_items_session_parent_order" in _index_names()
 
 
 def test_v2_46_drops_unconfigured_runtime_placeholders(fresh_database_url) -> None:

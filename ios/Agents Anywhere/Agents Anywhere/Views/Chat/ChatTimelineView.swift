@@ -253,7 +253,12 @@ struct ChatTimelineView: View {
             .task(id: olderLoadRequest) {
                 guard let request = olderLoadRequest else { return }
                 await model.session.loadOlder()
-                guard !Task.isCancelled, historyPosition?.id == request else { return }
+                guard !Task.isCancelled else { return }
+                // A request started on an empty window has no anchor position
+                // to settle (C0): end the spinner here instead of waiting for a
+                // settlement that can never arrive.
+                guard let position = historyPosition else { olderLoadRequest = nil; return }
+                guard position.id == request else { return }
                 if !model.session.isValid { historyPosition = nil; olderLoadRequest = nil; return }
                 historyPosition?.receivedPage(firstRowID: model.session.timeline.first { $0.value.isVisibleInChat }?.id)
             }
@@ -313,9 +318,13 @@ struct ChatTimelineView: View {
         olderPull.cancel(); latestPull.cancel()
         scrolling.browseHistory(byReader: true)
         position.isPositionedByUser = true
-        let layout = historyLayout.flatMap { $0.firstRowID == model.timeline.rows.first?.id ? $0 : nil }
-        historyPosition = TimelineHistoryPosition(id: scrolling.navigationGeneration, layout: layout,
-            offsetY: viewport.offsetY, topInset: viewport.topInset)
+        // An empty window has no anchor group to lay out (C0), so it must not
+        // create a position the spinner could never settle against.
+        if TimelineGrouping.usesHistoryAnchor(model.timeline.rows) {
+            let layout = historyLayout.flatMap { $0.firstRowID == model.timeline.rows.first?.id ? $0 : nil }
+            historyPosition = TimelineHistoryPosition(id: scrolling.navigationGeneration, layout: layout,
+                offsetY: viewport.offsetY, topInset: viewport.topInset)
+        }
         hasRequestedOlder = true
         olderLoadRequest = scrolling.navigationGeneration
     }
@@ -581,8 +590,16 @@ private struct ChatTimelineContent: View, Equatable {
     }
     var body: some View {
         let visibleNotices = model.session.notices.notices.filter { $0.isVisible && !$0.blocks(model.session.id) }
-        let groups = TimelineGrouping.groups(model.timeline.rows, interactionTargets: Set(model.session.notices.notices
-            .filter(\.isVisible).compactMap(\.timelineTargetID)))
+        let interactionTargets = Set(model.session.notices.notices
+            .filter(\.isVisible).compactMap(\.timelineTargetID))
+        // C0: a window made only of SubAgent child rows groups to nothing under
+        // L2.1 and would render a blank page. Show those rows instead; the
+        // card's 查看详情 entry is disabled below because the card itself is
+        // outside the window, so the entry would open a wrong or empty panel.
+        let usesAgentFallback = TimelineGrouping.needsAgentFallback(model.timeline.rows)
+        let groups = usesAgentFallback
+            ? TimelineGrouping.fallbackGroups(model.timeline.rows, interactionTargets: interactionTargets)
+            : TimelineGrouping.groups(model.timeline.rows, interactionTargets: interactionTargets)
         // Resolve notice targets once per body instead of once per row.
         let rowIDs = Set(model.timeline.rows.map(\.id))
         let noticesByTarget = Dictionary(grouping: visibleNotices.filter { $0.timelineTargetID != nil }) { $0.timelineTargetID! }
@@ -621,7 +638,7 @@ private struct ChatTimelineContent: View, Equatable {
             ForEach(groups) { group in
                 SessionTimelineGroupView(group: group, chat: model, onAttachment: onAttachment, onFile: onFile,
                     turnAction: actions[group.id],
-                    onSubAgent: onSubAgent,
+                    onSubAgent: usesAgentFallback ? nil : onSubAgent,
                     inlineNotices: group.rows.flatMap { noticesByTarget[$0.id] ?? [] })
                     .equatable()
                     .id(group.id)

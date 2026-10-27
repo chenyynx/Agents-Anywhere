@@ -79,4 +79,4 @@
 - head `520c45cf`，run `40509037631`，标题 `iOS Build · 正文链接 .link 属性修复`；`test`/`build`/`code-profile` 全绿（`failures: []`），gate `links = {underline: 1, url: https://example.com/release}`。
 - IPA：`AgentsAnywhere-feat-code-profile-beta-b597-520c45c.ipa`（17,122,471 B）。
 - pp 2026-10-27 真机：「我已经下载了 现在可以了」= **链接点击验收通过**。
-- 选中复制仍待 pp 继续验（596 的 isSelectable 已启用）。
+- 选中复制 pp 2026-10-27 验：「选中复制没问题」= **单块系统选择/Copy 验收通过**。

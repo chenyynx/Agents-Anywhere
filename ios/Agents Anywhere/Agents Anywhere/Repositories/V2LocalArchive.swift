@@ -20,6 +20,11 @@ nonisolated struct V2SessionArchive: Codable {
         let attachments: [ChatAttachment]
         let error: String?
         let rejected: Bool
+        /// The unresolved records this one replaced (see
+        /// `V2PendingMessage.supersededPendingIDs`). Persisted so a relaunch
+        /// does not strand the tail bubble after an edited retry. Optional:
+        /// archives written before this field existed decode without it.
+        var superseded: [String]? = nil
     }
     /// A queued message that was never put on the wire. Only never-sent items
     /// are stored as `queued`: an item mid-send (`sending`/`awaitingEcho`) may
@@ -30,6 +35,8 @@ nonisolated struct V2SessionArchive: Codable {
         let content: String
         let attachmentIDs: [V2AttachmentID]
         let attachments: [ChatAttachment]
+        /// See `Pending.superseded`.
+        var superseded: [String]? = nil
     }
     let session: V2SessionMeta
     let items: [JSONValue]
@@ -51,6 +58,10 @@ nonisolated struct V2SessionArchive: Codable {
     /// a notification toast stays one-shot across a relaunch. Optional: bytes
     /// written before this field existed decode without it.
     var acknowledgedNotifications: V2NotificationAcknowledgements? = nil
+    /// The unresolved record the current draft was restored from, so a
+    /// relaunched app still retires it when the edited retry is confirmed.
+    /// Optional: archives written before this field existed decode without it.
+    var draftOriginPendingID: String? = nil
 
     @MainActor init(data: V2SessionData, model: V2SessionModel) {
         session = data.session; items = data.items.map(\.raw); cursor = data.cursor
@@ -65,7 +76,8 @@ nonisolated struct V2SessionArchive: Codable {
             default: error = nil; rejected = false
             }
             return Pending(id: value.id, content: value.content, attachmentIDs: value.attachmentIDs,
-                attachments: value.attachments.map { $0.archived() }, error: error, rejected: rejected)
+                attachments: value.attachments.map { $0.archived() }, error: error, rejected: rejected,
+                superseded: value.supersededPendingIDs.isEmpty ? nil : value.supersededPendingIDs)
         }
         // Split the queue by certainty. A waiting, fully-uploaded message never
         // left the client, so it is safe to re-arm on restore. Anything already
@@ -76,15 +88,18 @@ nonisolated struct V2SessionArchive: Codable {
         for item in model.sendQueue.items {
             if item.state == .queued, item.isUploadComplete {
                 storedQueued.append(Queued(id: item.id, content: item.content,
-                    attachmentIDs: item.attachmentIDs, attachments: item.attachments.map { $0.archived() }))
+                    attachmentIDs: item.attachmentIDs, attachments: item.attachments.map { $0.archived() },
+                    superseded: item.supersededPendingIDs.isEmpty ? nil : item.supersededPendingIDs))
             } else {
                 storedPending.append(Pending(id: item.id, content: item.content,
                     attachmentIDs: item.attachmentIDs, attachments: item.attachments.map { $0.archived() },
-                    error: nil, rejected: false))
+                    error: nil, rejected: false,
+                    superseded: item.supersededPendingIDs.isEmpty ? nil : item.supersededPendingIDs))
             }
         }
         pending = storedPending
         queued = storedQueued.isEmpty ? nil : storedQueued
+        draftOriginPendingID = model.draft.isEmpty ? nil : model.draftRestoredFromPendingID
     }
 
     @MainActor func projection(maximumItems: Int, now: @escaping () -> Date = Date.init) throws -> V2SessionProjection {

@@ -296,6 +296,31 @@ import Testing
         try await eventually { model.pendingMessages.isEmpty }
     }
 
+    @Test func queuedEditedRetryRetiresTheSupersededPendingOnConfirm() async throws {
+        let http = TestHTTPTransport(); let realtime = TestRealtimeAPI()
+        let repo = repository(transport: http, realtime: realtime)
+        defer { repo.reset() }
+        let model = repo.session(id: "session"); let task = Task { await model.connect() }
+        defer { task.cancel() }
+        try await eventually { model.canSend }
+        http.respond = { call in
+            if call.path.hasSuffix("messages"), http.count("messages") == 1 { throw URLError(.timedOut) }
+            return try http.defaultResponse(call)
+        }
+        model.draft = "Queue retry."
+        let first = try #require(await model.sendDraft())
+        if case .uncertain = first.delivery {} else { Issue.record("First send must be uncertain") }
+
+        // The edited retry takes the queue instead of the wire; its chain must
+        // travel with the queued row and retire the old record on the echo.
+        model.draft = "Queue retry"
+        let item = try #require(model.enqueueDraft())
+        #expect(item.supersededPendingIDs == [first.id])
+        realtime.yield(try event("timeline.item_created", seq: 13,
+            payload: ["item": itemObject(id: "echo2", order: 4, seq: 13, clientID: item.id)]))
+        try await eventually { model.pendingMessages.isEmpty && model.sendQueue.items.isEmpty }
+    }
+
     @Test func echoBeforeHTTPFailureWinsAndConcurrentDraftEditsSurvive() async throws {
         let http = TestHTTPTransport(); let realtime = TestRealtimeAPI(); let gate = TestGate()
         let repo = repository(transport: http, realtime: realtime)

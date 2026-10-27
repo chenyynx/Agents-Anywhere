@@ -88,14 +88,12 @@ final class TimelineCollectionController: UIViewController {
     /// running ladder wakes early instead of being cancelled and restarted
     /// (restarting at the streaming frame rate starved every later read).
     private var visibleCellSettleNudged = false
-    private var bottomAnimationWatchdog: Task<Void, Never>?
     private var lastPublishedViewport = TimelineViewport()
 
     private(set) var phase = TimelinePhaseMapping()
     /// C4: the single content-offset writer (placement state + Mover + inset).
     private var anchorDriver: TimelineAnchorDriver?
     private var didStartAnchorDriver = false
-    private(set) var armedBottom = TimelineArmedBottomTarget()
     /// A "load latest" return may span a full-window replacement. UIKit
     /// re-anchors a snapshot that replaces every id, and the animated target
     /// was computed against the old content height; the return must be
@@ -109,16 +107,6 @@ final class TimelineCollectionController: UIViewController {
     private(set) var latestPull = TimelineHistoryPull(edge: .latest)
     private(set) var streamingItemIDs: Set<String> = []
 
-    // C4 product state. `mode` and `readerRestsAtBottom` mirror the facts the
-    // SwiftUI timeline kept in `TimelineScrollState`; the layout's correction
-    // decisions read them through `layoutInteractionState()`.
-    private(set) var mode: TimelineScrollState.Mode = .reading
-    private(set) var readerRestsAtBottom = false
-    /// The at-bottom verdict at the instant the finger let go. A layout tick
-    /// inside the 64 ms settlement window can move the measured viewport; the
-    /// old state ORed this latch with the fresh measurement so a reader who
-    /// arrived still resumes following.
-    private var readerSettledAtBottom = false
     private(set) var interactionPresented = false
     private var navigationSuspended = false
 #if DEBUG
@@ -145,52 +133,6 @@ final class TimelineCollectionController: UIViewController {
     private var pendingGestureBottomRequest: (animated: Bool, forced: Bool)?
     private var suspendedOpeningRequest = false
     private var lastContainerHeight: CGFloat = 0
-    private var userScrollSettleTask: Task<Void, Never>?
-    private var isPinningBottom = false
-    /// Streaming height follow (M4.2): the official sprung motion toward the
-    /// bottom, driven by its own display link while the reveal grows the row.
-    private var streamingFollowLink: CADisplayLink?
-    private var streamingFollowSpring = TimelineSpringFollow.Spring.ease
-    private var streamingFollowStartPosition: CGFloat = 0
-    private var streamingFollowStartTime: TimeInterval = 0
-    private var streamingFollowLastTime: TimeInterval = 0
-    private var streamingFollowLastPosition: CGFloat = 0
-    /// Last frame that actually moved; a link with no movement for 0.5 s is
-    /// stopped even while the reveal flag is still set (a cell that scrolled
-    /// away never reports its completion frame).
-    private var streamingFollowLastMoveAt: TimeInterval = 0
-    /// True between the first reveal frame and its completion frame. While
-    /// true the follower keeps running even when it momentarily reaches the
-    /// current bottom, because the target is still growing.
-    private var streamingFollowActive = false
-    /// True between the first and last reveal height frame. While set, the
-    /// instant re-pin yields to the sprung follower (otherwise the pin would
-    /// satisfy the target before the follower could ever see a delta).
-    private var streamingRevealActive = false
-    /// Programmatic bottom return (`requestBottom(animated: true)`): the
-    /// official Mover spring, not UIKit's system scroll animation.
-    /// `Spring(0.4, bounce 0)` within one viewport, `Spring(0.36, bounce 0.15)`
-    /// beyond it, with the one-viewport pre-place
-    /// (`CANONICAL/05-layout-scroll.md` §6.4; `11-motion-haptics.md` §3.1;
-    /// `EVIDENCE/round19/motion.md` P1-2). The target is re-read every frame,
-    /// so content that grows during the return is still followed.
-    private var returnFollowLink: CADisplayLink?
-    private var returnFollowSpring = TimelineSpringFollow.Spring.ease
-    private var returnFollowStartPosition: CGFloat = 0
-    private var returnFollowStartTime: TimeInterval = 0
-    private var returnFollowLastTime: TimeInterval = 0
-    private var returnFollowLastPosition: CGFloat = 0
-    #if DEBUG
-    /// Number of sprung follows started; the M4 gate asserts the follower
-    /// actually ran (an instant pin would leave this at zero).
-    private(set) var debugStreamingFollowStarts = 0
-    private(set) var debugStreamingFrameCalls = 0
-    private(set) var debugStreamingFollowEligibleFrames = 0
-    #endif
-    private var isScrollingToTop = false
-    private var scrollToTopWatchdog: Task<Void, Never>?
-    private var scrollToTopToken = 0
-    private var bottomArrivalCallbackScheduled = false
     /// The old path passed `nil` to `withAnimation` under Reduce Motion, so a
     /// return landed immediately. The wrapper forwards the environment value.
     private var reduceMotion = false
@@ -226,100 +168,6 @@ final class TimelineCollectionController: UIViewController {
         didSet {
             guard oldValue != safeAreaInsets else { return }
             anchorDriver?.updateSafeAreaInsets(safeAreaInsets)
-        }
-    }
-
-    /// Writes the official content inset and keeps the reader's place across
-    /// the write.
-    ///
-    /// The official `TranscriptListSurface` does the same (`0x101a3c820`):
-    /// capture `contentOffset`, set the inset under `isSettingItsOwnInset`
-    /// (`0x104e3d208`), then restore the offset (`0x10418f9a0`). It computes
-    /// `max(safeArea − scrollView.safeAreaInsets, 0)`; the subtraction keeps
-    /// the value independent of whether UIKit also contributes the view's own
-    /// safe area through automatic adjustment. AA keeps the same formula and
-    /// the same system-default adjustment, so the net inset equals the page's
-    /// proxy either way.
-    ///
-    /// The write happens inside the safe-area update's animation transaction,
-    /// so a keyboard change inherits the keyboard's own animation with no
-    /// `UIView.animate` of our own and no keyboard notifications. A composer
-    /// focus/height change is layout-only and arrives with **no** ambient
-    /// animation (device log: `inherited 0.000`), so it gets an explicit
-    /// 0.24 s spring — the composer's own expansion timing. Without that the
-    /// 49 pt bar delta crossed instantly, which is the empty-composer jump.
-    private func applySafeAreaInsets() {
-        guard isViewLoaded, let collectionView else { return }
-        let viewInsets = collectionView.safeAreaInsets
-        let target = UIEdgeInsets(top: max(safeAreaInsets.top - viewInsets.top, 0),
-                                  left: max(safeAreaInsets.left - viewInsets.left, 0),
-                                  bottom: max(safeAreaInsets.bottom - viewInsets.bottom, 0),
-                                  right: max(safeAreaInsets.right - viewInsets.right, 0))
-        let current = collectionView.contentInset
-        let changed = abs(current.top - target.top) > 0.5
-            || abs(current.left - target.left) > 0.5
-            || abs(current.bottom - target.bottom) > 0.5
-            || abs(current.right - target.right) > 0.5
-        guard changed else { return }
-        let offsetBefore = collectionView.contentOffset
-#if AA_TIMELINE_PROBE
-        defer {
-            AnchorDeviceProbe.shared.recordApply(
-                proxyBottom: safeAreaInsets.bottom,
-                inherited: UIView.inheritedAnimationDuration,
-                insetBefore: current, insetAfter: collectionView.contentInset,
-                offsetBefore: offsetBefore, offsetAfter: collectionView.contentOffset)
-        }
-#endif
-        // A reader resting at the bottom follows the new inset; a reading
-        // position keeps the offset-restore path below.
-        let following = layout.contentHeight > 0
-            && readerRestsAtBottom && !phase.userIsScrolling && !isPinningBottom
-        guard following else {
-            let offset = collectionView.contentOffset
-            collectionView.contentInset = target
-            if collectionView.contentOffset != offset {
-                collectionView.setContentOffset(offset, animated: false)
-            }
-            return
-        }
-        // Resolve against the inset this write installs, not the scroll view's
-        // possibly-stale adjusted value.
-        let bottomTarget = TimelineOffsetTarget.bottomOffset(
-            contentHeight: layout.contentHeight,
-            containerHeight: collectionView.bounds.height,
-            topInset: target.top + viewInsets.top,
-            bottomInset: target.bottom + viewInsets.bottom)
-        let needsMove = abs(collectionView.contentOffset.y - bottomTarget) > 0.5
-        let shrinking = target.bottom < current.bottom - 0.5
-        let ambient = UIView.inheritedAnimationDuration > 0.01
-        let apply = {
-            if shrinking && needsMove {
-                // Writing the inset first would clamp the offset against the
-                // old, larger maximum before the follow lands. Move to the new
-                // bottom first.
-                collectionView.setContentOffset(
-                    CGPoint(x: collectionView.contentOffset.x, y: bottomTarget),
-                    animated: false)
-                collectionView.contentInset = target
-            } else {
-                collectionView.contentInset = target
-                if needsMove {
-                    collectionView.setContentOffset(
-                        CGPoint(x: collectionView.contentOffset.x, y: bottomTarget),
-                        animated: false)
-                }
-            }
-        }
-        if ambient {
-            apply()
-        } else {
-            UIView.animate(withDuration: 0.24, delay: 0,
-                           usingSpringWithDamping: 1,
-                           initialSpringVelocity: 0,
-                           options: [.beginFromCurrentState, .allowUserInteraction]) {
-                apply()
-            }
         }
     }
 
@@ -375,7 +223,7 @@ final class TimelineCollectionController: UIViewController {
 #if AA_TIMELINE_PROBE
         AnchorDeviceProbe.shared.attach { [weak self] in
             guard let self else { return (false, false, "?") }
-            return (self.readerRestsAtBottom, self.isPinningBottom,
+            return (self.anchorDriver?.state.placement == .end, false,
                     String(describing: self.phase.phase))
         }
 #endif
@@ -407,7 +255,6 @@ final class TimelineCollectionController: UIViewController {
                     cell.onStreamingRevealCaughtUp = { [weak self] in
                         DispatchQueue.main.async {
                             guard let self else { return }
-                            self.streamingRevealActive = false
                             self.content?.streamingRevealDidFinish(for: item)
                             self.reloadFromContent()
                         }
@@ -796,201 +643,19 @@ final class TimelineCollectionController: UIViewController {
         let animating = phase.phase == .animating
         let following = height != nil
             && (anchorDriver?.state.placement == .end) && !animating
-        streamingRevealActive = height != nil
         if let height {
-            #if DEBUG
-            debugStreamingFrameCalls += 1
-            if following { debugStreamingFollowEligibleFrames += 1 }
-            #endif
             layout.applyStreamingHeight(height, for: item.itemID,
                                         adjustOffset: !(following || animating))
-            if following {
-                streamingFollowActive = true
-            } else if state.isTracking || state.isDecelerating {
-                stopStreamingFollow()
-            }
         } else {
             layout.clearStreamingHeight(for: item.itemID)
-            streamingFollowActive = false
         }
     }
 
-    // MARK: - Streaming bottom follow
-
-    /// The official `Mover.ease`: step the analytic spring toward the live
-    /// content bottom on a display link. The target is re-read every frame
-    /// (the reveal keeps growing the row); the spring phase keeps its original
-    /// start so the motion does not restart each frame.
-    private func startStreamingFollowIfNeeded() {
-        guard let collectionView, !navigationSuspended,
-              armedBottom.isArmed, phase.phase != .animating else { return }
-        let state = layoutInteractionState()
-        guard !state.isTracking, !state.isDecelerating else { return }
-        guard !UIAccessibility.isReduceMotionEnabled,
-              !UIAccessibility.isVoiceOverRunning else {
-            // Accessibility bypass: place directly, as the official reducer
-            // does instead of easing.
-            stopStreamingFollow()
-            repinDirectly()
-            return
-        }
-        if streamingFollowLink != nil { return }
-
-        let target = streamingFollowEndOffset()
-        let current = collectionView.contentOffset.y
-        let scale = traitCollection.displayScale
-        guard TimelineSpringFollow.shouldMove(
-            target: target, current: current, displayScale: scale) else { return }
-
-        let visible = streamingFollowVisibleHeight()
-        // The curve is chosen from the original distance; the pre-place only
-        // moves the takeoff point (official: >1 viewport pre-places, then
-        // flies the remainder).
-        let spring = TimelineSpringFollow.spring(
-            target: target, current: current, visibleHeight: visible)
-        let preplaced = TimelineSpringFollow.preplacedOffset(
-            target: target, current: current, visibleHeight: visible)
-        if abs(preplaced - current) >= TimelineSpringFollow.pixel(displayScale: scale) {
-            collectionView.setContentOffset(
-                CGPoint(x: collectionView.contentOffset.x, y: preplaced),
-                animated: false)
-        }
-        streamingFollowSpring = spring
-        streamingFollowStartPosition = collectionView.contentOffset.y
-        streamingFollowStartTime = ProcessInfo.processInfo.systemUptime
-        streamingFollowLastTime = streamingFollowStartTime
-        streamingFollowLastPosition = streamingFollowStartPosition
-        streamingFollowLastMoveAt = streamingFollowStartTime
-
-        let maxFPS = max(60, view.window?.screen.maximumFramesPerSecond ?? 60)
-        let link = CADisplayLink(target: self,
-                                 selector: #selector(streamingFollowTick(_:)))
-        // Official range: [maxFPS/2, maxFPS]; no preferred rate is set.
-        link.preferredFrameRateRange = CAFrameRateRange(
-            minimum: Float(maxFPS) / 2, maximum: Float(maxFPS),
-            preferred: 0)
-        link.add(to: .main, forMode: .common)
-        streamingFollowLink = link
-        #if DEBUG
-        debugStreamingFollowStarts += 1
-        #endif
-    }
-
-    @objc private func streamingFollowTick(_ link: CADisplayLink) {
-        guard let collectionView else {
-            stopStreamingFollow()
-            return
-        }
-        let state = layoutInteractionState()
-        guard armedBottom.isArmed, !navigationSuspended,
-              phase.phase != .animating,
-              !state.isTracking, !state.isDecelerating else {
-            stopStreamingFollow()
-            return
-        }
-        let now = ProcessInfo.processInfo.systemUptime
-        // Another writer (keyboard snap, explicit return, inset change) moved
-        // the page between frames. Re-seed the spring at the real offset so the
-        // next step cannot pull it back toward the old takeoff point.
-        let actual = collectionView.contentOffset.y
-        if abs(actual - streamingFollowLastPosition) > 1.0 {
-            streamingFollowStartPosition = actual
-            streamingFollowStartTime = now
-            streamingFollowLastPosition = actual
-            streamingFollowLastTime = now
-            streamingFollowLastMoveAt = now
-        }
-        let maxFPS = Double(max(60, view.window?.screen.maximumFramesPerSecond ?? 60))
-        let dt = min(max(0, now - streamingFollowLastTime), 2 / maxFPS)
-        let target = streamingFollowEndOffset()
-        let visible = streamingFollowVisibleHeight()
-        // A burst that moved the target more than two viewports: jump one
-        // viewport short of the target, then fly (official catch-up distance).
-        if streamingFollowActive,
-           target - streamingFollowLastPosition
-            > TimelineSpringFollow.catchUpDistance(visibleHeight: visible) {
-            let preplaced = target - visible
-            collectionView.setContentOffset(
-                CGPoint(x: collectionView.contentOffset.x, y: preplaced),
-                animated: false)
-            streamingFollowSpring = .fly
-            streamingFollowStartPosition = preplaced
-            streamingFollowStartTime = now
-            streamingFollowLastPosition = preplaced
-            streamingFollowLastTime = now
-            return
-        }
-        let elapsed = now - streamingFollowStartTime
-        let progress = CGFloat(streamingFollowSpring.progress(at: elapsed))
-        let position = streamingFollowStartPosition
-            + (target - streamingFollowStartPosition) * progress
-        let velocity = dt > 0
-            ? (position - streamingFollowLastPosition) / CGFloat(dt) : 0
-        if abs(position - streamingFollowLastPosition) >= 0.5 {
-            streamingFollowLastMoveAt = now
-        }
-        collectionView.setContentOffset(
-            CGPoint(x: collectionView.contentOffset.x, y: position),
-            animated: false)
-        if !streamingFollowActive, TimelineSpringFollow.hasArrived(
-            target: target, position: position, velocity: velocity,
-            dt: dt, displayScale: traitCollection.displayScale) {
-            collectionView.setContentOffset(
-                CGPoint(x: collectionView.contentOffset.x, y: target),
-                animated: false)
-            stopStreamingFollow()
-            noteBottomArrival()
-            return
-        }
-        // No movement for half a second and already at the target: the reveal
-        // is over, or its cell scrolled away before reporting completion. A
-        // later reveal frame restarts the link.
-        if now - streamingFollowLastMoveAt > 0.5,
-           abs(target - position) < TimelineSpringFollow.pixel(
-            displayScale: traitCollection.displayScale) {
-            stopStreamingFollow()
-            return
-        }
-        streamingFollowLastTime = now
-        streamingFollowLastPosition = position
-    }
-
-    private func stopStreamingFollow() {
-        streamingFollowLink?.invalidate()
-        streamingFollowLink = nil
-    }
-
-    private func streamingFollowVisibleHeight() -> CGFloat {
-        guard let collectionView else { return 0 }
-        return TimelineOffsetTarget.visibleHeight(
-            containerHeight: collectionView.bounds.height,
-            topInset: collectionView.adjustedContentInset.top,
-            bottomInset: collectionView.adjustedContentInset.bottom)
-    }
-
-    /// The `.end` target for the streaming follow: the measured content bottom
-    /// (AA has no send anchor pad).
-    private func streamingFollowEndOffset() -> CGFloat {
-        guard let collectionView else { return 0 }
-        return TimelineOffsetTarget.bottomOffset(
-            contentHeight: layout.contentHeight,
-            containerHeight: collectionView.bounds.height,
-            topInset: collectionView.adjustedContentInset.top,
-            bottomInset: collectionView.adjustedContentInset.bottom)
-    }
-
-    /// Pin an explicit return to the bottom of a just-replaced window.
-    ///
-    /// UIKit re-anchors a snapshot that replaces every id; the animated target
-    /// from `requestBottom` was computed against the old content height. Once
-    /// the new window has laid out, pin to its measured bottom and let the
-    /// ordinary follow arm keep it there through later growth.
     private func resolveWindowReplacementBottom() {
         guard collectionView != nil, !navigationSuspended else { return }
         // A gesture that began after the request always wins.
         guard windowReplacementReturn,
               !phase.userIsScrolling,
-              !isScrollingToTop,
               collectionView?.isTracking != true,
               collectionView?.isDecelerating != true else {
             windowReplacementReturn = false
@@ -1000,166 +665,12 @@ final class TimelineCollectionController: UIViewController {
         anchorDriver?.windowReplaced(readerTookOver: false)
     }
 
-    /// Accessibility/manual placement: pin instantly once.
-    private func repinDirectly() {
-        guard let collectionView, armedBottom.isArmed else { return }
-        let target = streamingFollowEndOffset()
-        guard abs(collectionView.contentOffset.y - target) > 0.5 else { return }
-        isPinningBottom = true
-        collectionView.setContentOffset(
-            CGPoint(x: collectionView.contentOffset.x, y: target), animated: false)
-        isPinningBottom = false
-        noteBottomArrival()
-    }
-
-    // MARK: - Programmatic bottom return (official Mover spring)
-
-    /// Official `askedForEnd` (05 §6.4): a programmatic return is the Mover
-    /// spring — `Spring(0.4, bounce 0)` (`0x1019fa768`) inside one viewport,
-    /// `Spring(0.36, bounce 0.15)` (`0x1019fa780`) beyond it — with the
-    /// one-viewport pre-place (`11-motion-haptics.md` §3.1, part-ag §1.3/§1.5).
-    /// The target is re-read every frame, so growth during the return is
-    /// followed instead of being snapped to at the end.
-    private func startReturnFollow() {
-        guard let collectionView, !navigationSuspended else { return }
-        let scale = traitCollection.displayScale
-        let current = collectionView.contentOffset.y
-        let target = streamingFollowEndOffset()
-        guard TimelineSpringFollow.shouldMove(
-            target: target, current: current, displayScale: scale) else {
-            // Official dead band: less than one physical pixel is a no-op.
-            finishReturnFollow(at: target)
-            return
-        }
-        let visible = streamingFollowVisibleHeight()
-        // The curve is chosen from the original distance; the pre-place only
-        // moves the takeoff point (official >1 viewport: pre-place one screen,
-        // then fly).
-        let spring = TimelineSpringFollow.spring(
-            target: target, current: current, visibleHeight: visible)
-        let preplaced = TimelineSpringFollow.preplacedOffset(
-            target: target, current: current, visibleHeight: visible)
-        var start = current
-        if abs(preplaced - current) >= TimelineSpringFollow.pixel(displayScale: scale) {
-            collectionView.setContentOffset(
-                CGPoint(x: collectionView.contentOffset.x, y: preplaced),
-                animated: false)
-            start = preplaced
-        }
-        returnFollowSpring = spring
-        returnFollowStartPosition = start
-        returnFollowStartTime = ProcessInfo.processInfo.systemUptime
-        returnFollowLastTime = returnFollowStartTime
-        returnFollowLastPosition = start
-
-        let maxFPS = max(60, view.window?.screen.maximumFramesPerSecond ?? 60)
-        let link = CADisplayLink(target: self,
-                                 selector: #selector(returnFollowTick(_:)))
-        link.preferredFrameRateRange = CAFrameRateRange(
-            minimum: Float(maxFPS) / 2, maximum: Float(maxFPS), preferred: 0)
-        link.add(to: .main, forMode: .common)
-        returnFollowLink = link
-    }
-
-    @objc private func returnFollowTick(_ link: CADisplayLink) {
-        guard let collectionView else {
-            stopReturnFollow()
-            return
-        }
-        // A reader gesture, navigation suspension or another explicit write
-        // owns the page.
-        guard !navigationSuspended, phase.phase == .animating else {
-            stopReturnFollow()
-            return
-        }
-        let now = ProcessInfo.processInfo.systemUptime
-        let actual = collectionView.contentOffset.y
-        // Another writer (keyboard snap, container anchor) moved the page
-        // between frames: re-seed the spring at the real offset instead of
-        // pulling it back toward the old takeoff point.
-        if abs(actual - returnFollowLastPosition) > 1.0 {
-            returnFollowStartPosition = actual
-            returnFollowStartTime = now
-            returnFollowLastTime = now
-            returnFollowLastPosition = actual
-        }
-        let maxFPS = Double(max(60, view.window?.screen.maximumFramesPerSecond ?? 60))
-        let dt = min(max(0, now - returnFollowLastTime), 2 / maxFPS)
-        let target = streamingFollowEndOffset()
-        let visible = streamingFollowVisibleHeight()
-        // Content that pushes the bottom more than two viewports away mid
-        // flight: jump one viewport short of the target, then fly (official
-        // catch-up distance).
-        if target - returnFollowLastPosition
-            > TimelineSpringFollow.catchUpDistance(visibleHeight: visible) {
-            let preplaced = target - visible
-            collectionView.setContentOffset(
-                CGPoint(x: collectionView.contentOffset.x, y: preplaced),
-                animated: false)
-            returnFollowSpring = .fly
-            returnFollowStartPosition = preplaced
-            returnFollowStartTime = now
-            returnFollowLastTime = now
-            returnFollowLastPosition = preplaced
-            return
-        }
-        let elapsed = now - returnFollowStartTime
-        let progress = CGFloat(returnFollowSpring.progress(at: elapsed))
-        let position = returnFollowStartPosition
-            + (target - returnFollowStartPosition) * progress
-        let velocity = dt > 0
-            ? (position - returnFollowLastPosition) / CGFloat(dt) : 0
-        collectionView.setContentOffset(
-            CGPoint(x: collectionView.contentOffset.x, y: position),
-            animated: false)
-        if TimelineSpringFollow.hasArrived(
-            target: target, position: position, velocity: velocity,
-            dt: dt, displayScale: traitCollection.displayScale) {
-            finishReturnFollow(at: target)
-            return
-        }
-        returnFollowLastTime = now
-        returnFollowLastPosition = position
-    }
-
-    /// Lands the return exactly on the live target and closes the
-    /// `.animating` phase the way `scrollViewDidEndScrollingAnimation` did for
-    /// UIKit's native animation.
-    private func finishReturnFollow(at target: CGFloat) {
-        stopReturnFollow()
-        bottomAnimationWatchdog?.cancel()
-        guard let collectionView else { return }
-        collectionView.setContentOffset(
-            CGPoint(x: collectionView.contentOffset.x, y: target), animated: false)
-        if phase.phase == .animating {
-            let transition = phase.apply(.animationEnded)
-            onPhaseChanged?(transition)
-        }
-        noteBottomArrival()
-        // The native animation's completion used to schedule this from
-        // `scrollViewDidEndScrollingAnimation`; the spring replaces it, so the
-        // stale-frame check after a return must be scheduled here.
-        scheduleVisibleCellSettle()
-        scheduleVisibleCellFrameSync()
-    }
-
-    private func stopReturnFollow() {
-        returnFollowLink?.invalidate()
-        returnFollowLink = nil
-    }
-
-    /// Re-issues a bottom request that arrived with the finger down. The
-    /// deceleration-end callback keeps it until the coast is truly over; a
-    /// newer return already in flight supersedes it.
     private func replayPendingGestureBottomRequest() {
         guard let request = pendingGestureBottomRequest else { return }
-        // A status-bar scroll-to-top owns the offset; its own end callback
-        // re-evaluates the page, and a replayed return must not fight it.
-        guard !isScrollingToTop, !phase.userIsScrolling,
+        guard !phase.userIsScrolling,
               !collectionView.isTracking,
               !collectionView.isDecelerating else { return }
         pendingGestureBottomRequest = nil
-        guard returnFollowLink == nil else { return }
         requestBottom(animated: request.animated, forced: request.forced)
     }
 
@@ -1697,7 +1208,9 @@ final class TimelineCollectionController: UIViewController {
         // for this key, so the one-shot first-materialization fallback must
         // not fit the same row as well.
         hostedGeometryKeys[item.itemID] = key
-        if phase.phase == .animating, returnFollowLink != nil {
+        let driverMoving = anchorDriver?.state.motion == .easing
+            || anchorDriver?.state.motion == .flying
+        if driverMoving {
             // The programmatic-return spring owns the offset and re-reads the
             // live bottom every frame (`CANONICAL/05-layout-scroll.md` §6.4).
             // The height must land now — freezing it would freeze the target —
@@ -2074,6 +1587,9 @@ final class TimelineCollectionController: UIViewController {
         // An approval card owns the page until it resolves; only a forced
         // command (the card disappearing, load-latest) may override it.
         if interactionPresented && !forced { return }
+        // A follow request only follows a page that is waiting at the end;
+        // a reader up in history is never pulled by new content.
+        if !forced, anchorDriver?.state.placement != .end { return }
         // Official `askedForEnd` is ignored while the finger is on the list;
         // defer it and replay at the gesture end.
         if collectionView.isTracking {
@@ -2124,6 +1640,7 @@ final class TimelineCollectionController: UIViewController {
     func requestFollowingBottom(requiresNoInteraction: Bool) -> Bool {
         guard !navigationSuspended else { return false }
         if requiresNoInteraction && interactionPresented { return false }
+        guard anchorDriver?.state.placement == .end else { return false }
         anchorDriver?.requestEnd(animated: true)
         return true
     }
@@ -2152,17 +1669,10 @@ final class TimelineCollectionController: UIViewController {
         anchorDriver?.interactionPresentedChanged(presented)
     }
 
-    private func endScrollToTopTracking() {
-        scrollToTopToken &+= 1
-        scrollToTopWatchdog?.cancel()
-        isScrollingToTop = false
-    }
-
     /// Stops the in-flight programmatic return. The old view released its
     /// `ScrollPosition` target on the same edges (approval appears, drawer
     /// moves); leaving the motion running would still pull the page.
     private func stopBottomAnimation() {
-        bottomAnimationWatchdog?.cancel()
         anchorDriver?.haltMotion()
         if phase.phase == .animating {
             let transition = phase.apply(.watchdogExpired)
@@ -2178,9 +1688,8 @@ final class TimelineCollectionController: UIViewController {
     /// only while the bottom target is armed.
     ///
     /// Inset-only changes (keyboard, composer height) do not come through
-    /// here: `applySafeAreaInsets` writes them inside the safe-area update's
-    /// animation transaction and follows the bottom only when the reader rests
-    /// there.
+    /// here: the anchor driver writes them inside the safe-area update's
+    /// animation transaction and follows only a waiting-at-end placement.
     private func handleContainerHeightChange() {
         guard let collectionView else { return }
         let height = collectionView.bounds.height
@@ -2188,124 +1697,6 @@ final class TimelineCollectionController: UIViewController {
         lastContainerHeight = height
         guard heightChanged, !navigationSuspended, !phase.userIsScrolling else { return }
         anchorDriver?.containerChanged()
-    }
-
-    private func snapToBottom() {
-        guard !isPinningBottom, let collectionView else { return }
-        let target = TimelineOffsetTarget.bottomOffset(contentHeight: layout.contentHeight,
-            containerHeight: collectionView.bounds.height,
-            topInset: collectionView.adjustedContentInset.top,
-            bottomInset: collectionView.adjustedContentInset.bottom)
-        guard abs(collectionView.contentOffset.y - target) > 0.5 else { return }
-        isPinningBottom = true
-        collectionView.setContentOffset(CGPoint(x: collectionView.contentOffset.x, y: target), animated: false)
-        isPinningBottom = false
-    }
-
-    private func noteBottomArrival() {
-        // A zero content height is an unprepared layout, not an arrival:
-        // `measuredAtBottom` is true for any viewport taller than the
-        // (empty) content. Arming there would pin the page on the first
-        // measured growth.
-        guard viewport.contentHeight > 0,
-              !isScrollingToTop, !phase.userIsScrolling,
-              viewport.measuredAtBottom else { return }
-        readerRestsAtBottom = true
-        if mode == .returning { mode = interactionPresented ? .reading : .following }
-        if interactionPresented {
-            // A presented approval owns the page until it resolves; an
-            // opening/forced target that happened to land must not keep
-            // re-pinning on later stream growth.
-            armedBottom.disarm()
-        } else if mode != .reading,
-                  armedBottom.source == .forced || armedBottom.source == nil {
-            // Only a return (`.returning`) or an already-following page turns
-            // an arrival into persistence. A programmatic offset change while
-            // the mode is `.reading` is not a reader gesture and must not
-            // start following.
-            armedBottom.disarm()
-            armedBottom.readerDidRestAtBottom(readerRestsAtBottom: true,
-                                              interactionPresented: false)
-        }
-        if onBottomArrived != nil, !bottomArrivalCallbackScheduled {
-            // `noteBottomArrival` can run inside `prepare`; never mutate
-            // SwiftUI model state from a layout pass.
-            bottomArrivalCallbackScheduled = true
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                self.bottomArrivalCallbackScheduled = false
-                self.onBottomArrived?()
-            }
-        }
-    }
-
-    private func scheduleUserScrollSettle() {
-        userScrollSettleTask?.cancel()
-        userScrollSettleTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(64))
-            guard let self, !Task.isCancelled else { return }
-            self.settleUserScroll()
-        }
-    }
-
-    /// I31: a stop at the measured bottom resumes following; a stop in
-    /// history leaves the reader in reading mode (the explicit return pill,
-    /// C5, is their way back).
-    private func settleUserScroll() {
-        if phase.userIsScrolling {
-            // Deceleration outlived the 64 ms window; judge after it ends.
-            scheduleUserScrollSettle()
-            return
-        }
-        guard !navigationSuspended, mode != .returning else { return }
-        let rests = viewport.contentHeight > 0
-            && (readerSettledAtBottom || viewport.measuredAtBottom)
-        readerSettledAtBottom = false
-        readerRestsAtBottom = rests
-        if rests, !interactionPresented {
-            mode = .following
-            armedBottom.readerDidRestAtBottom(readerRestsAtBottom: true, interactionPresented: false)
-        } else {
-            mode = .reading
-        }
-    }
-
-    /// Nominal official ease duration (`Spring(0.4, bounce 0)`); the analytic
-    /// spring needs longer to fall under one physical pixel, so the watchdog
-    /// below is a stalled-display-link cap, not the expected completion.
-    private static let returnAnimationDuration: TimeInterval = 0.4
-    /// A display link that never delivers its arrival frame must not leave
-    /// the phase `.animating` (which would block every settle pass). The
-    /// margin covers the spring's sub-pixel settling time.
-    private static let returnWatchdog = Duration.milliseconds(
-        Int((returnAnimationDuration + 1.1) * 1000))
-
-    private func startBottomAnimationWatchdog() {
-        bottomAnimationWatchdog?.cancel()
-        bottomAnimationWatchdog = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: Self.returnWatchdog)
-            guard let self, !Task.isCancelled, self.phase.phase == .animating else { return }
-            // The spring follower stalled (backgrounded, display link starved,
-            // or a target that kept moving): land on the live bottom.
-            self.stopReturnFollow()
-            if let collectionView = self.collectionView {
-                collectionView.setContentOffset(
-                    CGPoint(x: collectionView.contentOffset.x,
-                            y: self.streamingFollowEndOffset()),
-                    animated: false)
-            }
-            let transition = self.phase.apply(.watchdogExpired)
-            self.onPhaseChanged?(transition)
-            // The display link is the normal arrival signal; a starved or
-            // interrupted one must still close the phase or the settle passes
-            // stay blocked behind `.animating`.
-            self.noteBottomArrival()
-            self.scheduleVisibleCellSettle()
-        }
-    }
-
-    private func repinIfArmed() {
-        // C4: content growth is the anchor driver's job. Nothing else pins.
     }
 
     private func beginPulls(at viewport: TimelineViewport) {
@@ -2448,14 +1839,8 @@ final class TimelineCollectionController: UIViewController {
                              edge: TimelineHistoryLayout.Edge,
                              newItems: [TimelineListItem],
                              origin: TimelineHistoryLayout) -> TimelineHistoryPosition? {
-        // Loading older is a browsing action. Stop any follow target before
-        // the prepend's content-size changes: a still-armed bottom would pin
-        // the page and the absolute anchor could never hold.
-        armedBottom.disarm()
-        mode = .reading
-        readerRestsAtBottom = false
-        readerSettledAtBottom = false
-        userScrollSettleTask?.cancel()
+        // Loading older is a browsing action. Stop any programmatic motion;
+        // the reading placement then absorbs the prepend by construction.
         stopBottomAnimation()
         measureSynchronously(newItems, width: columnWidth)
         guard let projected = projectedHistoryLayout(items: newItems,
@@ -2500,11 +1885,6 @@ final class TimelineCollectionController: UIViewController {
             pendingMeasurementTask?.cancel()
             stopBottomAnimation()
             pendingGestureBottomRequest = nil
-            userScrollSettleTask?.cancel()
-            armedBottom.disarm()
-            mode = .reading
-            readerSettledAtBottom = false
-            endScrollToTopTracking()
         } else {
             // An interrupted animation has no completion; clear the phase so
             // the next reader gesture is not read as an animation completion.
@@ -2512,11 +1892,8 @@ final class TimelineCollectionController: UIViewController {
                 let transition = phase.apply(.watchdogExpired)
                 onPhaseChanged?(transition)
             }
-            let rests = viewport.measuredAtBottom
-            readerRestsAtBottom = rests
             // The driver's navigationSuspendedChanged(false) performs the
-            // placement itself; `mode` is derived from the placement below.
-            _ = rests
+            // placement itself.
             publishViewport()
             if suspendedOpeningRequest {
                 suspendedOpeningRequest = false
@@ -2601,18 +1978,10 @@ extension TimelineCollectionController: TimelineListLayoutHost {
             // `noteBottomArrival` re-arm the bottom target on every frame;
             // the repin then dragged the offset down with the growing row
             // (gate: target moved 388 pt off the screen).
-            stopStreamingFollow()
-            stopReturnFollow()
+            anchorDriver?.readerBeganDragging()
             windowReplacementReturn = false
-            bottomAnimationWatchdog?.cancel()
-            userScrollSettleTask?.cancel()
-            endScrollToTopTracking()
             _ = phase.apply(.willBeginDragging)
             layout.noteDragWillBegin()
-            armedBottom.disarm()
-            mode = .reading
-            readerRestsAtBottom = false
-            readerSettledAtBottom = false
             return
         }
         guard wasScrolling else {
@@ -2625,16 +1994,16 @@ extension TimelineCollectionController: TimelineListLayoutHost {
         // settle passes see a finished drag, exactly like a real scroll end.
         let decelerated = previous?.decelerating == true
         _ = phase.apply(.didEndDragging(willDecelerate: decelerated))
+        anchorDriver?.readerLifted(willCoast: decelerated)
         layout.noteDragDidEnd(willDecelerate: decelerated)
         if decelerated {
             _ = phase.apply(.didEndDecelerating)
+            anchorDriver?.coastingEnded()
             layout.noteDecelerationDidEnd()
         }
-        readerSettledAtBottom = viewport.measuredAtBottom
         scheduleVisibleCellSettle()
         scheduleVisibleCellFrameSync()
         schedulePendingMeasurements()
-        scheduleUserScrollSettle()
         publishViewport()
     }
 #endif
@@ -2718,21 +2087,12 @@ extension TimelineCollectionController: UICollectionViewDelegate {
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         guard !navigationSuspended else { return }
         anchorDriver?.readerBeganDragging()
-        // The reader's finger always wins over the streaming follow and over
-        // a window replacement whose return has not resolved yet.
-        stopStreamingFollow()
-        stopReturnFollow()
+        // The reader's finger always wins over a window replacement whose
+        // return has not resolved yet.
         windowReplacementReturn = false
-        bottomAnimationWatchdog?.cancel()
-        userScrollSettleTask?.cancel()
-        endScrollToTopTracking()
         let transition = phase.apply(.willBeginDragging)
         onPhaseChanged?(transition)
         layout.noteDragWillBegin()
-        armedBottom.disarm()
-        mode = .reading
-        readerRestsAtBottom = false
-        readerSettledAtBottom = false
         beginPulls(at: viewport)
     }
 
@@ -2773,12 +2133,10 @@ extension TimelineCollectionController: UICollectionViewDelegate {
             onPhaseChanged?(transition)
             anchorDriver?.readerLifted(willCoast: decelerate)
         }
-        if !decelerate { readerSettledAtBottom = viewport.measuredAtBottom }
         layout.noteDragDidEnd(willDecelerate: decelerate)
         scheduleVisibleCellSettle()
         scheduleVisibleCellFrameSync()
         schedulePendingMeasurements()
-        scheduleUserScrollSettle()
         publishViewport()
         replayPendingGestureBottomRequest()
     }
@@ -2794,25 +2152,13 @@ extension TimelineCollectionController: UICollectionViewDelegate {
             onPhaseChanged?(transition)
             anchorDriver?.coastingEnded()
         }
-        readerSettledAtBottom = viewport.measuredAtBottom
         layout.noteDecelerationDidEnd()
         scheduleVisibleCellSettle()
         scheduleVisibleCellFrameSync()
         schedulePendingMeasurements()
-        scheduleUserScrollSettle()
         scheduleVisibleCellSettle()
         publishViewport()
         replayPendingGestureBottomRequest()
-    }
-
-    func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
-        bottomAnimationWatchdog?.cancel()
-        let transition = phase.apply(.animationEnded)
-        onPhaseChanged?(transition)
-        scheduleVisibleCellSettle()
-        scheduleVisibleCellFrameSync()
-        noteBottomArrival()
-        publishViewport()
     }
 
     func scrollViewShouldScrollToTop(_ scrollView: UIScrollView) -> Bool {
@@ -2823,14 +2169,5 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         return false
     }
 
-    func scrollViewDidScrollToTop(_ scrollView: UIScrollView) {
-        guard !navigationSuspended else { return }
-        endScrollToTopTracking()
-        let transition = phase.apply(.scrollToTopEnded)
-        onPhaseChanged?(transition)
-        armedBottom.disarm()
-        mode = .reading
-        readerRestsAtBottom = false
-        publishViewport()
-    }
+
 }

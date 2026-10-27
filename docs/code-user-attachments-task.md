@@ -1,5 +1,11 @@
 # Code 页用户附件（图片 tiles / 文件格 / 失败卡）任务单（2026-10-27）
 
+> 2026-10-27 实现后证据修正（以 `CANONICAL/CORRECTIONS.md` #92–#95 为准）：
+> 3 项排布有 wide 在上 / wide 在下 / 2+1 三条分支；失败卡前导框只有宽度
+> `min(ScaledMetric,84)`，默认卡高 53.2（不是 98）；单文件 large 槽位是
+> 200×150（无 pixelSize → 4:3）；`TileCountOverlay` 是
+> `VStack(spacing:4){状态子视图; +N}`。
+>
 > 分支 `feat/code-profile-beta`（worktree `/home/ubuntu/aa-wt-attachments`），dev 不碰不合。
 > 级别：**L**（数据链路 + 视图 + 高度/签名 + pending 统一；跨多个文件）。
 > 证据：`/home/ubuntu/aa-test/claude-ios-re/EVIDENCE/round25/CLOSURE.md`（闭合判定）+ 各分报告；二进制 1.261005.20（pp 明确旧版为准）。

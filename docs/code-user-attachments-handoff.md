@@ -15,10 +15,10 @@
 
 - 工作副本：`/home/ubuntu/aa-wt-attachments`
 - 分支：`feat/code-profile-beta`
-- HEAD：`afb8ed0a`（docs 任务单）
+- HEAD：`0d727e7b`（docs 交接；其前为 `afb8ed0a` 任务单）
 - 历史包含：`6fa985de`（附件链路审计）、`b160c90f`（Merge `feat/drawer-fullscreen-swipe` → 实验分支，侧栏改动）、`ae2ea037`（动作条 medium）
 - 另有 `/home/ubuntu/aa-ring-work` 处于 detached `b2f13f1a`（未动）；composer 线在 `/home/ubuntu/aa-ring-work-composer`（独立分支）
-- 工作区当前有阶段 1/2A 的**未提交**实现改动，不要回退
+- 工作区当前有阶段 1/2A/2B 的**未提交**实现改动，不要回退
 
 ## 2. 实现进度
 
@@ -30,25 +30,48 @@
 - `CodeMessageRowView` / `TimelineChatContentAdapter` / `CodeProfileAutoRun` / `CodeProfileModelTests` 只加枚举占位分支
 - 10 个文件 `swiftc -parse` 全过；本机 Swift 6.0.3 不能跑 6.2 包测试
 
-### 阶段 2A（进行中）
+### 阶段 2A（已完成）
 
-视图子代理正在写：
 - `CodeAttachmentTiles.swift`（图片网格 + `+N` + 状态遮罩）
 - `CodeFileTile.swift`（成功文件格）
 - `CodeArtifactPreviewCard.swift`（失败卡）
 - `CodeAttachmentRow.swift`（图片块 + 文件块组合）
+- `CodeUserMessageRow.swift`（气泡 + 附件 + 交付指示器）
 - `CodeMessageRowView.swift`（`.attachments` 真正渲染，附件在气泡外）
 - `CodeUserBubble.swift`（删空 `attachments` 槽位）
 
-完成后不要重复它的文件。
-
-### 阶段 2B（下一步）
+### 阶段 2B（已完成，待 review 复验/CI）
 
 - Adapter 接线：`CodeMessageRowView` 传 `onAttachment` / `model.thumbnail` / resolver（`model.session.attachmentPreviews.resolve(contents, clientID:)`）
 - Code group signature / `codeHeightDigest` / `heightKey` / `hasVisibleBlock` / `officialEstimateHeight` / `measuredCodeGroupHeight` 纳入附件
-- pending 统一：`.code` 不再回退 Chat 气泡；抽共享 `CodeUserMessageRow`
-- `CodeProfileAutoRun` fixtures：`bubble-attachment`、纯附件、3 图、5 图 +N、大字号
-- 然后 L 级独立审查（reviewer 子代理）→ commit → push → CI（test/build/code-profile）→ 出包（构建号进文件名）→ 真机验收
+- pending 统一：`.code` 不再回退 Chat 气泡；`CodeUserMessageRow` 共用气泡/附件组件；delivery 进入 pending 签名
+- `CodeProfileAutoRun` fixtures：`bubble-attachment`、纯附件、3 图、5 图 +N、大字号；并直接断言 3 项的三条排布
+- L 级独立审查已跑（两份 reviewer），P1/P2 已按证据修正；复验后 commit → push → CI（test/build/code-profile）→ 出包（构建号进文件名）→ 真机验收
+
+## 2.5 阶段 2A/2B 落地状态（2026-10-27 更新）
+
+- 阶段 2A 已完成：`CodeAttachmentTiles.swift`、`CodeFileTile.swift`、`CodeArtifactPreviewCard.swift`、`CodeAttachmentRow.swift`、`CodeUserMessageRow.swift`；`CodeMessageRowView` 渲染 `.attachments`；`CodeUserBubble` 去掉空槽位与旧 pending 指示器（指示器移到 `CodeUserMessageRow`/`CodeDeliveryGutter`）。
+- 阶段 2B 已完成（未提交）：
+  - adapter 接 `attachmentResolver` / `model.thumbnail` / `onAttachment`；settled 行 `attachmentState = .complete`。
+  - `codeHeightDigest` / Code group signature 纳入附件身份与解析像素；`attachmentPixelSize` 用 `ChatAttachmentStore` 的 preview 尺寸，measurer 与视图共用。
+  - `officialEstimateHeight` 加附件结构高度 [I]；pending 高度改用 `CodeRowHeightPlan`，不再用 Chat 的 180/附件。
+  - pending 统一：`PendingMessageRow(.code)` 走 `CodeUserMessageRow`，上传成功=complete、发送中=inFlight、发送失败且未上传=failed。
+  - `CodeProfileAutoRun` 加 `bubble-attachment`、纯附件、3 图、5 图+N 四组 fixture。
+  - 新增 6 个官方 Anthropicon imageset（folder/image/chart/slides/spreadsheet/code），1.261005.20 vs 1.261019.51 md5 全同（`EVIDENCE/round25/asset-version-check.md`）。
+  - 失败卡图标修正：始终 UTType 6 类；`anthropicon.warning` 只属于 tile 的 failed 遮罩（CORRECTIONS #91）。
+- 审查后修正（2026-10-27）：
+  - 3 项排布补齐官方三条分支：wide 在上 / wide 在下 / 2+1；谓词语义仍 U，当前用“横向 pixelSize（width>height）” [I]；文件无 pixelSize → 2+1。
+  - 失败卡前导框改为只有宽度 `min(ScaledMetric,84)`，默认卡高 6+8+(21+18.2)=53.2；旧 98 作废（CORRECTIONS #93）。
+  - 单文件 large 槽位改为 200×150（无 pixelSize → 4:3；CORRECTIONS #94）。
+  - TileCountOverlay 改为 `VStack(spacing:4){状态子视图; +N}`，覆盖格不再另叠状态遮罩；非 inFlight 图标 U（CORRECTIONS #95）。
+  - pending 失败文档现在按卡高计入，delivery 进入 pending 签名/heightKey；`measureSynchronously` 为 pending 新 key 写 `.precalc` 估算，优先于 `TimelineHeightCache` 的已显示旧高度，失败时真正采用新高度（不再依赖不可能发生的 `.interactive` 自纠；pending 实际是 `.measured`）。
+  - 3 项 fallback 的单个 square 加 leading `Color.clear` filler，贴右；`isWide` 抽成纯函数并进 gate 三断言（横向/纵向/nil）；3 项形状 gate 断言 `filler,square`。
+  - `attachmentPixelSize` 用 merge 后的 content 回退；空白文本 pending 不画气泡；失败卡/图片格 a11y 保留文件名。
+- 已知非阻塞残余：
+  - echo 若 wire 完全不回附件，尚无 clientID fallback；当前证据显示 connector 三条 lifecycle 都带附件。
+  - FileTile 底色用 `userBubbleFill` [I]；图标 tint 用 primary [I]（官方 white 在浅底不可见）。
+  - +N 覆盖格非 inFlight 的状态子视图（官方 Anthropicon 具体值）U。
+  - 3 项 wide 谓词 `0x101895bf4` 的精确语义 U（当前横向 = wide [I]）。
 
 ## 3. 官方数值（压缩后也别丢）
 
@@ -90,7 +113,7 @@
 ## 5. 恢复提示词（下个会话直接粘贴）
 
 > 继续 AA Code 页用户附件实现。先读 `/home/ubuntu/aa-wt-attachments/docs/code-user-attachments-handoff.md`、`/home/ubuntu/aa-wt-attachments/docs/code-user-attachments-task.md`、`/home/ubuntu/aa-test/claude-ios-re/EVIDENCE/round25/CLOSURE.md`。
-> 工作副本 `/home/ubuntu/aa-wt-attachments`，分支 `feat/code-profile-beta`，HEAD `afb8ed0a`（含 `b160c90f` 侧栏 merge），dev 不碰不合。
+> 工作副本 `/home/ubuntu/aa-wt-attachments`，分支 `feat/code-profile-beta`，HEAD `0d727e7b`（含 `b160c90f` 侧栏 merge），dev 不碰不合。
 > 当前阶段 1 已完成未提交；阶段 2A 视图子代理可能仍在跑或已完成（看通知/工作区）。不要重复和回退它的文件。
 > 下一步：阶段 2B（adapter 接线/签名/高度/pending 统一/gate fixture）→ L 级审查 → commit/push → CI test/build/code-profile → 出包（包名带构建号）→ 真机验收。
 > 所有视觉值严格照 CLOSURE.md，不编；出包/交流带构建号；不要 force push、不要合 dev。

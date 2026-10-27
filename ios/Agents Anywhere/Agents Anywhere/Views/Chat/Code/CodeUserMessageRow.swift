@@ -43,16 +43,19 @@ struct CodeUserMessageRow: View {
             // inside the bubble above them. A text-only row places it at the
             // bubble's bottom edge, which is the row's bottom edge.
             if isPending || onDeliveryIssue != nil {
-                // When a text bubble is present it is the last block and
-                // keeps the 36 pt leading gutter, so the indicator sits
-                // inside that gutter. A pure-attachment row ends on the
-                // trailing grid, whose leading edge is the row edge; the
-                // same negative offset would push the indicator off screen.
+                // The overlay anchors to the row's leading edge, not the
+                // bubble's: CodeUserBubble expands to the full row width and
+                // keeps a `userBubbleLeadingGutter` spacer before the text.
+                // The chat page's -26/-30 are relative to the bubble, so the
+                // gutter has to be added back here or the marker lands off
+                // the row and never becomes visible (2026-10-27).
+                let offsets = CodeDeliveryGutter.textBubbleOffsets(
+                    leadingGutter: CodePageTheme.userBubbleLeadingGutter)
                 CodeDeliveryGutter(
                     isPending: isPending,
                     onDeliveryIssue: onDeliveryIssue,
-                    pendingOffset: hasText ? -26 : 0,
-                    issueOffset: hasText ? -30 : 0)
+                    pendingOffset: hasText ? offsets.pending : 0,
+                    issueOffset: hasText ? offsets.issue : 0)
             }
         }
     }
@@ -99,6 +102,15 @@ struct CodeDeliveryGutter: View {
     /// attachments passes 0 so it stays on screen.
     var pendingOffset: CGFloat = -26
     var issueOffset: CGFloat = -30
+
+    /// Offsets that seat the indicator inside the text bubble's leading
+    /// gutter. The row-level overlay anchors on the row's leading edge while
+    /// the bubble starts `leadingGutter` inside it, so the chat page's
+    /// bubble-relative -26/-30 gain the gutter back. Both values stay inside
+    /// `0...leadingGutter`, which keeps the marker on screen.
+    static func textBubbleOffsets(leadingGutter: CGFloat) -> (pending: CGFloat, issue: CGFloat) {
+        (leadingGutter - 26, leadingGutter - 30)
+    }
 
     var body: some View {
         if isPending {

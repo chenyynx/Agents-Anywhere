@@ -1117,6 +1117,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             return AnyView(PendingMessageRow(pending: pending, chat: model,
                 onAttachment: onAttachment,
                 onDismiss: { [weak self] in self?.model.session.dismissPendingMessage(id: id) },
+                onRetry: { Task { await model.retryPendingMessage(pending) } },
                 bubbleStyle: .code)
                 .padding(.vertical, CodePageTheme.rowMarginTop))
         case .tail:

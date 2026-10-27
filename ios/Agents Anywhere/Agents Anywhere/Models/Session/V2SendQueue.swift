@@ -19,6 +19,11 @@ final class V2QueuedMessage: Identifiable {
     private(set) var attachments: [ChatAttachment]
     private(set) var attachmentIDs: [V2AttachmentID]
     private(set) var state: State
+    /// Unresolved pending records this queued message replaces: the draft was
+    /// restored from them and the user queued the retry. The records leave the
+    /// timeline with this message's confirming echo. Not persisted — a restored
+    /// queue never outlives the records it names.
+    var supersededPendingIDs: [String] = []
 
     /// Every attachment has a server reference on file, or there is nothing to
     /// upload. `attachmentIDs` is rebuilt from the uploaded references, so this

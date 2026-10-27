@@ -118,6 +118,30 @@ final class V2PendingMessage: Identifiable {
     private(set) var attachments: [ChatAttachment]
     private(set) var delivery: Delivery = .sending
     var didRestoreDraft = false
+    /// Unresolved records this bubble replaces: the draft was restored from
+    /// them and the user sent again (possibly after editing). They leave the
+    /// timeline together with this record's confirming echo, so a successful
+    /// retry cannot strand the old bubble at the tail forever.
+    var supersededPendingIDs: [String] = []
+
+    /// While true the write's outcome is unknown and no echo has arrived, so
+    /// sending the identical draft again would risk a duplicate.
+    var blocksRepeatSend: Bool {
+        switch delivery {
+        case .sending, .accepted, .uncertain: return true
+        case .rejected, .confirmed: return false
+        }
+    }
+
+    /// `rejected` records never reached the server and are safe to retire once
+    /// the user resolves them by sending again; `uncertain` ones are the ghost
+    /// this supersede chain exists for.
+    var isSupersedable: Bool {
+        switch delivery {
+        case .uncertain, .rejected: return true
+        case .sending, .accepted, .confirmed: return false
+        }
+    }
 
     init(id: String, content: String, attachmentIDs: [V2AttachmentID], localAttachmentIDs: [String] = [], attachments: [ChatAttachment] = []) {
         self.id = id; self.content = content; self.attachmentIDs = attachmentIDs
@@ -180,6 +204,14 @@ final class V2SessionModel: Identifiable {
     var isPerformingAction = false
     private(set) var pendingMessages: [V2PendingMessage] = []
     private(set) var awaitingReplyID: String?
+    /// Set when the composer's text came back from an unresolved send record;
+    /// the next send from that draft replaces the record once it is confirmed.
+    @ObservationIgnored private(set) var draftRestoredFromPendingID: String?
+    /// The unresolved record that just made sendDraft/enqueueDraft a no-op.
+    /// The chat layer reads it to explain the silence instead of swallowing
+    /// the tap (2026-10-27: a user had to guess and delete a character before
+    /// the message would leave).
+    private(set) var blockedSendPendingID: String?
     /// The session's outbound queue: messages the user committed while a turn
     /// was running. Session-scoped like `pendingMessages`, so navigating away
     /// and back keeps it, and persisted with the archive so it survives a
@@ -236,11 +268,19 @@ final class V2SessionModel: Identifiable {
     /// nothing to queue. Attachments travel with the message; the eager upload
     /// is the caller's to start.
     @discardableResult func enqueueDraft() -> V2QueuedMessage? {
+        blockedSendPendingID = nil
         guard isValid else { return nil }
         let content = draft
         let attachments = composer.attachments
         guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty else { return nil }
+        // The queue is the other way a draft leaves the composer; it must
+        // refuse the same unresolved duplicate the send path refuses.
+        if let blocking = unresolvedPending(matching: content, attachmentIDs: draftAttachmentIDs) {
+            blockedSendPendingID = blocking.id
+            return nil
+        }
         let item = V2QueuedMessage(content: content, attachments: attachments)
+        item.supersededPendingIDs = takeSupersededPendingIDs()
         attachmentPreviews.remember(attachments, clientID: item.id)
         sendQueue.enqueue(item)
         composer.clear(); draftAttachmentIDs = []
@@ -415,6 +455,7 @@ final class V2SessionModel: Identifiable {
     /// Explicit user action only. No outbox replay: clientMessageId correlates an echo
     /// but is not a promise of backend idempotency.
     @discardableResult func sendDraft(upload: ((V2PendingMessage) async throws -> Void)? = nil) async -> V2PendingMessage? {
+        blockedSendPendingID = nil
         guard let repository, canSend else {
             failure = V2ClientFailure(kind: .unavailable, message: String(localized: "Wait for the session to reconnect before sending."))
             return nil
@@ -426,13 +467,13 @@ final class V2SessionModel: Identifiable {
             return nil
         }
         // Avoid a repeated tap while this exact draft's outcome remains unresolved.
-        guard !pendingMessages.contains(where: {
-            guard $0.content == content && $0.attachmentIDs == attachments else { return false }
-            if case .rejected = $0.delivery { return false }
-            return true
-        }) else { return nil }
+        if let blocking = unresolvedPending(matching: content, attachmentIDs: attachments) {
+            blockedSendPendingID = blocking.id
+            return nil
+        }
         let pending = V2PendingMessage(id: UUID().uuidString, content: content, attachmentIDs: attachments,
                                       localAttachmentIDs: composer.attachments.map(\.id), attachments: composer.attachments)
+        pending.supersededPendingIDs = takeSupersededPendingIDs()
         attachmentPreviews.remember(pending.attachments, clientID: pending.id)
         pendingMessages.append(pending); awaitingReplyID = pending.id
         // Commit the local bubble and release the editor immediately. A failed
@@ -464,6 +505,7 @@ final class V2SessionModel: Identifiable {
                 if draft.isEmpty && composer.attachments.isEmpty && !composer.isComposing {
                     draft = pending.content; composer.attachments = pending.attachments; draftAttachmentIDs = pending.attachmentIDs
                     pending.didRestoreDraft = true
+                    draftRestoredFromPendingID = pending.id
                 }
             }
         }
@@ -474,7 +516,30 @@ final class V2SessionModel: Identifiable {
     /// An explicit UI action may dismiss a reviewed outcome; it never resends it.
     func dismissPendingMessage(id: String) {
         pendingMessages.removeAll { $0.id == id && $0.delivery != .sending }
+        if draftRestoredFromPendingID == id { draftRestoredFromPendingID = nil }
         repository?.localWorkDidChange(sessionID: self.id)
+    }
+
+    /// The unresolved record that makes sending this exact draft again unsafe.
+    /// A definite rejection never blocks: the user already knows it failed and
+    /// retrying is the intended next step.
+    private func unresolvedPending(matching content: String, attachmentIDs: [V2AttachmentID]) -> V2PendingMessage? {
+        pendingMessages.first {
+            $0.content == content && $0.attachmentIDs == attachmentIDs && $0.blocksRepeatSend
+        }
+    }
+
+    /// Consumes the restore provenance for the send about to start. The chain
+    /// travels with the new record, so confirming it retires every record the
+    /// user already resolved by re-sending — including the edited-retry case
+    /// where the text no longer matches the record exactly.
+    private func takeSupersededPendingIDs() -> [String] {
+        guard let origin = draftRestoredFromPendingID else { return [] }
+        draftRestoredFromPendingID = nil
+        guard let record = pendingMessages.first(where: { $0.id == origin }), record.isSupersedable else {
+            return []
+        }
+        return [origin] + record.supersededPendingIDs
     }
 
     func update(_ observation: V2SessionObservation, network: V2NetworkStatus) {
@@ -562,11 +627,16 @@ final class V2SessionModel: Identifiable {
         if let pending = pendingMessages.first(where: { $0.id == clientID }) {
             pending.update(.confirmed)
             clearDraft(ifMatching: pending)
-            pendingMessages.removeAll { $0.id == clientID }
+            let superseded = Set(pending.supersededPendingIDs)
+            pendingMessages.removeAll { $0.id == clientID || superseded.contains($0.id) }
         }
         // A queued message reconciles the same way: the authoritative echo
         // removes its row (the rest slide up) and releases the next message.
-        if sendQueue.items.contains(where: { $0.id == clientID }) {
+        if let queued = sendQueue.items.first(where: { $0.id == clientID }) {
+            let superseded = Set(queued.supersededPendingIDs)
+            if !superseded.isEmpty {
+                pendingMessages.removeAll { superseded.contains($0.id) }
+            }
             sendQueue.remove(id: clientID)
             awaitingEchoSince = nil
             if awaitingReplyID == clientID { awaitingReplyID = nil }
@@ -592,6 +662,7 @@ final class V2SessionModel: Identifiable {
         guard isValid, composer.text.isEmpty, composer.attachments.isEmpty else { return false }
         draft = pending.content; composer.attachments = pending.attachments; draftAttachmentIDs = pending.attachmentIDs
         pending.didRestoreDraft = true
+        draftRestoredFromPendingID = pending.id
         composer.isFocused = true
         repository?.draftDidChange(sessionID: id)
         return true
@@ -628,6 +699,7 @@ final class V2SessionModel: Identifiable {
         awaitingEchoSince = nil
         sendQueue.replaceAll([])
         metadata = nil; timeline = []; rowsByID = [:]; pendingMessages = []; awaitingReplyID = nil; draft = ""; draftAttachmentIDs = []
+        draftRestoredFromPendingID = nil; blockedSendPendingID = nil
         activeAgentCards = []; recoveryNotice = nil; acknowledgedNotifications = V2NotificationAcknowledgements()
         composer.invalidate()
         attachmentPreviews.clear()

@@ -119,6 +119,10 @@ struct PendingMessageRow: View {
     let chat: SessionChatModel
     let onAttachment: (V2AttachmentContent, UIImage?) -> Void
     let onDismiss: () -> Void
+    /// Sends this record's payload again as a fresh message (the record is
+    /// retired first). Offered only for real sessions — a local-creation
+    /// pending has its own edit/discard flow.
+    var onRetry: (() -> Void)? = nil
     var bubbleStyle: BubbleStyle = .chat
     @State private var confirmsDismiss = false
     var body: some View {
@@ -147,6 +151,9 @@ struct PendingMessageRow: View {
             }
         }
         .confirmationDialog(deliveryIssue ?? "", isPresented: $confirmsDismiss, titleVisibility: .visible) {
+            if let onRetry, !chat.session.isLocalCreation {
+                Button(String(localized: "重新发送")) { onRetry() }
+            }
             Button(String(localized: "返回编辑")) {
                 if chat.session.isLocalCreation { chat.onEditCreation?(pending) }
                 else { _ = chat.session.restoreDraft(from: pending) }

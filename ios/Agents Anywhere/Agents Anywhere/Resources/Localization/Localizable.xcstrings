@@ -10765,6 +10765,23 @@
         }
       }
     },
+    "有相同内容的消息结果尚未确认，已阻止重复发送。请先处理那条发送记录，或修改内容后再发。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "An identical message is still unconfirmed, so the duplicate send was blocked. Resolve that send record or edit the text before sending again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "有相同内容的消息结果尚未确认，已阻止重复发送。请先处理那条发送记录，或修改内容后再发。"
+          }
+        }
+      }
+    },
     "取消": {
       "comment": "Shared with Web: common.cancel. Sync with ios/scripts/web_copy.py.",
       "extractionState": "manual",
@@ -16059,6 +16076,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "刷新"
+          }
+        }
+      }
+    },
+    "重新发送": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send again"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新发送"
           }
         }
       }

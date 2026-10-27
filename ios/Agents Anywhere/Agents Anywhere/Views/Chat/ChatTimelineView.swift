@@ -644,7 +644,8 @@ private struct ChatTimelineContent: View, Equatable {
             }
             ForEach(model.timeline.pendingMessages) { pending in
                 PendingMessageRow(pending: pending, chat: model, onAttachment: onAttachment,
-                    onDismiss: { model.session.dismissPendingMessage(id: pending.id) })
+                    onDismiss: { model.session.dismissPendingMessage(id: pending.id) },
+                    onRetry: { Task { await model.retryPendingMessage(pending) } })
                     .id(pending.id)
             }
             if model.session.hasNewerItems {

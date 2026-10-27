@@ -518,7 +518,10 @@ final class SessionChatModel {
         guard canQueueSend,
               !session.composer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return }
-        guard let item = session.enqueueDraft() else { return }
+        guard let item = session.enqueueDraft() else {
+            surfaceBlockedSendIfNeeded()
+            return
+        }
         queueEnqueueTick += 1
         Task {
             _ = await uploadQueuedAttachments(item)
@@ -608,6 +611,28 @@ final class SessionChatModel {
                     self.repository.draftDidChange(sessionID: self.session.id)
                 }
         }
+        surfaceBlockedSendIfNeeded()
+    }
+
+    /// Explains a send the session refused because an identical message's
+    /// outcome is still unknown. The refusal used to be a silent no-op that
+    /// left the user guessing (2026-10-27 report: the message only left after
+    /// the user manually deleted a period).
+    private func surfaceBlockedSendIfNeeded() {
+        guard session.blockedSendPendingID != nil else { return }
+        error = String(localized: "有相同内容的消息结果尚未确认，已阻止重复发送。请先处理那条发送记录，或修改内容后再发。")
+    }
+
+    /// Sends a failed record's payload again as a new message. The record is
+    /// removed first: its outcome cannot be resolved any more, and leaving it
+    /// in place would keep refusing the identical draft.
+    func retryPendingMessage(_ pending: V2PendingMessage) async {
+        guard session.isValid else { return }
+        session.dismissPendingMessage(id: pending.id)
+        session.draft = pending.content
+        session.composer.attachments = pending.attachments
+        session.draftAttachmentIDs = pending.attachmentIDs
+        await send(pending.content)
     }
 
     /// Stop is idempotent on the server (an already-finished turn answers 409,

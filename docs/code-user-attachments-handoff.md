@@ -71,7 +71,7 @@
   - 成功文件卡改为官方 140×140：白底卡 + 灰衬 `#F0EFEC` + 白预览 112×91.6（圆角 8、1px 边）+ 灰色 `anthropicon.file` + 两行 name 13/550/18.2 `#0B0B0B` / type 13/400/18.2 `#52514E`（CORRECTIONS #96/#99）。
   - 底部文字区 = 两行 line box 36.4，**无额外 top padding**；灰衬 103.6，preview 底边与文字区分界齐平（#99）。
   - 用户行顺序改为 **附件 → 文本气泡**；builder / `CodeMessageRowView` / `CodeUserMessageRow` / measurer 全部一致（#97）。
-  - 3 图官方分支 wide 上 / wide 下 / 2+1；gap 8；图片 tile 官方截图无可见边框（#98）。根据 pp 明确要求，当前代码给图片 tile 也加了 file/code-card 同款 hairline（`CodeAttachmentHairline`），这是**有意偏离像素证据**，待 pp 真机确认。
+  - 3 图官方分支 wide 上 / wide 下 / 2+1；gap 8；图片 tile 官方截图无可见边框（#98）。build 571 之前的 567/570 曾给图片 tile 加 file/code-card 同款 hairline；2026-10-27 官方真机截图 `Photo-F3B6FCAE.png` 逐像素复核后确认 tile 边缘只有抗锯齿、无灰色描边，**已撤掉图片 tile 的 hairline**（#101）；file card / preview 的 hairline 保留。
 - 已知非阻塞残余：
   - echo 若 wire 完全不回附件，尚无 clientID fallback；当前证据显示 connector 三条 lifecycle 都带附件。
   - FileTile 底色用 `userBubbleFill` [I]；图标 tint 用 primary [I]（官方 white 在浅底不可见）。

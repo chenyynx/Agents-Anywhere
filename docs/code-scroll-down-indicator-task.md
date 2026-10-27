@@ -79,7 +79,7 @@
 
 - `TimelineChatTimelineView`：在 `TimelineCollectionView` 上 `.overlay(alignment: .bottomLeading)`；
   - leading = `CodePageTheme.rowMarginLeading`（16，与 composer 外边距一致）；
-  - bottom = `safeAreaInsets.bottom + 2`（`safeAreaInsets.bottom` = composer bar + home + keyboard，列表全 bleed，用它把按钮抬到 composer 之上）。
+  - bottom = `safeAreaInsets.bottom + 2`（`safeAreaInsets.bottom` = composer bar + home + keyboard，列表全 bleed，用它把按钮抬到 composer 之上）；2 是 44 pt 外框与 composer 的间隙，40 pt 视觉圆底距 composer 约 4 pt。
 - 点击：`bridge.controller?.requestBottom(animated: true, forced: true)`。
 - 键盘：不额外隐藏；按钮随 `safeAreaInsets` 一起抬升（官方 pills bar 在 composer 栈内 [I]）。
 - 返回动画期间按钮保持可见，到顶后按 `canScrollDown` 自然消失（官方宿主判定 U，不做额外抑制）。

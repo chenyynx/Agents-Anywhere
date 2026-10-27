@@ -112,6 +112,10 @@ struct TimelineChatTimelineView: View {
                 if transition.gestureBegan { bridge.readerDidTakeOver() }
             },
             onControllerReady: { controller in bridge.attach(controller) })
+            // Match the SwiftUI timeline's soft navigation-bar edge. The
+            // collection view also sets its own top edge style; this covers
+            // the page-level bar treatment.
+            .scrollEdgeEffectStyle(.soft, for: .top)
             // Official `ScrollDownIndicator` above the composer (the Code page
             // has no pills bar to host it, so it takes the composer's leading
             // margin). `safeAreaInsets.bottom` is bar + home + keyboard; the
@@ -126,10 +130,6 @@ struct TimelineChatTimelineView: View {
                 .padding(.leading, CodePageTheme.rowMarginLeading)
                 .padding(.bottom, safeAreaInsets.bottom + 2)
             }
-            // Match the SwiftUI timeline's soft navigation-bar edge. The
-            // collection view also sets its own top edge style; this covers
-            // the page-level bar treatment.
-            .scrollEdgeEffectStyle(.soft, for: .top)
             .opacity(model.openingPositionSettled ? 1 : 0)
             .allowsHitTesting(model.isOpeningReady)
             .accessibilityHidden(!model.isOpeningReady)

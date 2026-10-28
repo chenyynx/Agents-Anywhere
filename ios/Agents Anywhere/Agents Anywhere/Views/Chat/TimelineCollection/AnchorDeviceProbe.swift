@@ -48,6 +48,16 @@ final class AnchorDeviceProbe: NSObject {
         append(line)
     }
 
+    /// Follow-motion events interleaved with the inset applies: a tail after
+    /// the keyboard is gone is either one more inset animation or a Mover
+    /// that started late, and the order tells them apart.
+    func recordMover(_ event: String, spring: String, target: CGFloat,
+                     position: CGFloat, motion: String) {
+        let line = String(format: "mover %@ %@ tgt %.0f pos %.0f %@",
+                          event, spring, Double(target), Double(position), motion)
+        append(line)
+    }
+
     var report: String {
         lines.isEmpty ? "（还没有记录：先在 Code 会话里点几次输入框）" : lines.joined(separator: "\n")
     }

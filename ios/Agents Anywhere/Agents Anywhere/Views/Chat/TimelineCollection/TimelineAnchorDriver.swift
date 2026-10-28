@@ -218,6 +218,13 @@ final class TimelineAnchorDriver {
     }
 
     func contentChanged() {
+#if AA_TIMELINE_PROBE
+        AnchorDeviceProbe.shared.recordMover(
+            "contentChanged", spring: "-",
+            target: state.placement.target(in: geometry()) ?? -1,
+            position: scrollView?.contentOffset.y ?? -1,
+            motion: String(describing: state.motion))
+#endif
         perform(.contentChanged)
     }
 
@@ -375,6 +382,12 @@ final class TimelineAnchorDriver {
             if state.motion == .easing, spring == .fly {
                 state.motion = .flying
             }
+#if AA_TIMELINE_PROBE
+            AnchorDeviceProbe.shared.recordMover(
+                "retarget", spring: spring == .fly ? "fly" : "ease",
+                target: target, position: mover.position,
+                motion: String(describing: state.motion))
+#endif
             return
         }
         guard TimelineSpringFollow.shouldMove(
@@ -395,6 +408,12 @@ final class TimelineAnchorDriver {
         }
         mover.start(at: view.contentOffset.y, spring: spring)
         moverPlacement = state.placement
+#if AA_TIMELINE_PROBE
+        AnchorDeviceProbe.shared.recordMover(
+            "start", spring: spring == .fly ? "fly" : "ease",
+            target: target, position: view.contentOffset.y,
+            motion: String(describing: state.motion))
+#endif
 #if DEBUG
         debugMoveStarts += 1
 #endif
@@ -418,6 +437,13 @@ final class TimelineAnchorDriver {
     }
 
     private func stopMover() {
+#if AA_TIMELINE_PROBE
+        if mover.isRunning {
+            AnchorDeviceProbe.shared.recordMover(
+                "stop", spring: "-", target: 0, position: mover.position,
+                motion: String(describing: state.motion))
+        }
+#endif
         mover.stop()
         moverPlacement = nil
         link?.invalidate()

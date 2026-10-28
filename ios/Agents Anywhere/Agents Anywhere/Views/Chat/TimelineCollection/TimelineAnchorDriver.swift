@@ -35,6 +35,8 @@ final class TimelineAnchorDriver {
     /// between `.end` and `.row` is a real distance to animate, not content
     /// growth to track 1:1).
     private var moverPlacement: TimelineAnchorPlacement?
+    /// One deferred direct placement for content growth at the bottom.
+    private var contentPlaceScheduled = false
     private var link: CADisplayLink?
     private var lastTick: CFTimeInterval = 0
     private var pageInsets: UIEdgeInsets = .zero
@@ -225,7 +227,30 @@ final class TimelineAnchorDriver {
             position: scrollView?.contentOffset.y ?? -1,
             motion: String(describing: state.motion))
 #endif
+        // Content growth on a page that already rests at the bottom is the
+        // official `rowMeasured` case: the offset takes the height delta
+        // directly, it does not start a spring. Starting one here also made
+        // the follow flag false for the snapshot apply that follows (motion
+        // `.easing`), so the in-update answer was skipped and the row was
+        // chased over 0.4 s. Deferred one turn because `prepare` must not be
+        // re-entered; by then the update's own answer usually landed it.
+        if state.placement == .end, state.motion == .resting {
+            scheduleContentPlace()
+            return
+        }
         perform(.contentChanged)
+    }
+
+    /// Coalesced direct placement for content growth at the bottom.
+    private func scheduleContentPlace() {
+        guard !contentPlaceScheduled else { return }
+        contentPlaceScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.contentPlaceScheduled = false
+            guard self.state.placement == .end, self.state.motion == .resting else { return }
+            self.placeDirect()
+        }
     }
 
     func readerBeganDragging() {

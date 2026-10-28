@@ -39,6 +39,15 @@
 - 修复：删掉这两处显式回底。插入本身是内容变化，贴底页在更新事务内落底；输入框收起由 inset 弹簧带走。官方 Code 页发送同样不发 `sending`/`sent`、placement 恒 `.end`（`CANONICAL/05-layout-scroll.md` §13）。
 - 保留：发完收键盘（pp 确认行为正确）；`responseRevision`（notice 接受）的回底不动。
 
+### 探针定位（b625/b626，pp 真机日志）
+
+- 收键盘、输入框收起都正常（`inh 0.383` 随键盘、`inh 0.000` 的 49pt 是输入框收起）。
+- 真正原因：气泡的高度在**快照 apply 之前**就变了 → `contentChanged` 先起了一个 0.4 s Mover（38→91 pt）；等 apply 的
+  `prepareForUpdates` 跑时 `motion` 已是 `.easing`，跟随 flag 为假 → `target inside=1 follow=0`，更新内答案被跳过，
+  两次增量全靠弹簧追。
+- 修复：`.end` + `.resting` 时的内容变高不再起 Mover，改为**下一轮主线程直接落底**（官方 `rowMeasured` 事务外
+  `setContentOffsetAdjustment` 的语义）；这样 flag 保持 `.resting`，更新内答案也能接手。`prepare` 内不写 offset，避免重入。
+
 ## 明确不做（回退）
 
 - **safe-area 自起 0.24 s 弹簧保留原样**。b558 探针实测：输入框展开段 `inherited=0.000s`，安全区 60↔109 没有系统动画事务，

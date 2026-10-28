@@ -12,6 +12,10 @@ import Foundation
 // - file operations count distinct files, not calls: six edits to one file
 //   read as "Edited that file", never "Edited 6 files";
 // - Bash counts commands, Task counts agents, MCP/other counts tools;
+// - summary groups follow the official 13 `ToolCallCategory` values
+//   (round27 §4.1): WebSearch and WebFetch share `web`, cleared and updated
+//   todos share `todo`, and AskUserQuestion falls into `other`; SendMessage
+//   is the `sessionMessage` category;
 // - a span whose calls all resolve to one target keeps the single-call shape
 //   ("Edited MEMORY.md"); the 1023 predicate behind that choice is still
 //   undecoded (round27 A3, TODO(round28));
@@ -63,6 +67,8 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
     /// ("Searched code", "Updated todos") whose count is always 1.
     nonisolated enum Unit: Hashable, Sendable {
         case none, files, notebooks, commands, agents, tools, times
+        /// Official `sessionMessage`: distinct SendMessage calls.
+        case sessions
     }
 
     nonisolated struct Phrase: Hashable, Sendable {
@@ -325,8 +331,8 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
         var fileFailedTargets: [FileGroupKey: Set<String>] = [:]
         var fileUntargeted: [FileGroupKey: Int] = [:]
         var fileFailedUntargeted: [FileGroupKey: Int] = [:]
-        var counters: [PhraseKey: Int] = [:]
-        var failedCounters: [PhraseKey: Int] = [:]
+        var callIDs: [PhraseKey: Set<String>] = [:]
+        var failedIDs: [PhraseKey: Set<String>] = [:]
 
         for call in calls {
             let failed = call.status == .failed
@@ -344,8 +350,10 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
             }
             let key = PhraseKey.forCall(call)
             if !order.contains(key) { order.append(key) }
-            counters[key, default: 0] += 1
-            if failed { failedCounters[key, default: 0] += 1 }
+            // Official non-file categories count distinct `ToolCall.id`s
+            // (round21 §1.3); a repeated id must not double the count.
+            callIDs[key, default: []].insert(call.id)
+            if failed { failedIDs[key, default: []].insert(call.id) }
         }
 
         let built = order.compactMap { key -> Phrase? in
@@ -362,9 +370,9 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
                               failed: failed,
                               whole: failed > 0 && failed == count)
             case .other(let phraseKey):
-                let count = counters[.other(phraseKey)] ?? 1
+                let count = callIDs[.other(phraseKey)]?.count ?? 1
                 return phraseKey.phrase(count: count,
-                                        failed: failedCounters[.other(phraseKey)] ?? 0)
+                                        failed: failedIDs[.other(phraseKey)]?.count ?? 0)
             }
         }
         return capped(built)
@@ -391,28 +399,45 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
             .map(\.element)
     }
 
-    /// A non-file phrase's identity. Fixed official summary forms keep their
-    /// own key; generic search/tool counts keep `times` / `tools`.
+    /// A non-file phrase's identity. Each case is one official summary
+    /// category; file operations are grouped by the file branch above.
     private enum PhraseKey: Hashable {
         case file(FileGroupKey)
         case other(OtherKey)
 
         static func forCall(_ call: CodeToolCall) -> PhraseKey {
+            // Official `sessionMessage` is the SendMessage tool (`ToolInput`
+            // tag 0x16=22). AA has no such kind, and the runtime may stamp it
+            // `mcp`, so the tool name is the only signal.
+            switch call.name.lowercased() {
+            case "sendmessage", "send_message", "send-message":
+                return .other(.sessionMessage)
+            default:
+                break
+            }
             switch call.kind {
             case .bash: return .other(.bash)
             case .task: return .other(.task)
             case .search:
+                // Official `grep` / `glob` / `web` categories; a search tool
+                // that names neither has no official category, so it falls
+                // into `other`.
                 switch call.name.lowercased() {
                 case "grep": return .other(.searchedCode)
                 case "glob": return .other(.foundFiles)
-                case "websearch", "web_search": return .other(.browsedWeb)
-                case "webfetch", "web-fetch", "fetch": return .other(.fetched)
-                default: return .other(.searched)
+                case "websearch", "web_search", "webfetch", "web-fetch", "fetch":
+                    return .other(.browsedWeb)
+                default: return .other(.tools)
                 }
             case .todo:
-                return .other(todoIsEmpty(call) ? .clearedTodos : .updatedTodos)
+                // Official `todo` has one fixed phrase whether the list was
+                // cleared or updated (`ccr_summary_updated_todos`).
+                return .other(.updatedTodos)
             case .plan: return .other(.proposedPlan)
-            case .question: return .other(.asked)
+            case .question:
+                // AskUserQuestion has no category: answered calls are lifted
+                // out of the span, and a transient one renders alone.
+                return .other(.tools)
             case .mcp, .other: return .other(.tools)
             case .read, .edit, .write:
                 // Handled by the file branch; a file kind without a target
@@ -422,9 +447,13 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
         }
     }
 
+    /// The official non-file summary categories (round27 §4.1). Every case
+    /// here maps to one of the 13 `ToolCallCategory` values; AA-only groups
+    /// (webfetch, cleared todos, AskUserQuestion, unnamed search) are folded
+    /// into `web`, `todo` and `other` instead of inventing phrases.
     private enum OtherKey: Hashable {
-        case bash, task, searched, searchedCode, foundFiles, browsedWeb, fetched
-        case clearedTodos, updatedTodos, proposedPlan, asked, tools
+        case bash, task, searchedCode, foundFiles, browsedWeb
+        case updatedTodos, proposedPlan, sessionMessage, tools
 
         func phrase(count: Int, failed: Int) -> Phrase {
             // `count` is the category's distinct-key total even for fixed
@@ -435,15 +464,15 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
             switch self {
             case .bash: return Phrase(verb: .ran, unit: .commands, count: count, failed: failed, whole: whole)
             case .task: return Phrase(verb: .ranAgent, unit: .agents, count: count, failed: failed, whole: whole)
-            case .searched: return Phrase(verb: .searched, unit: .times, count: count, failed: failed, whole: whole)
             case .searchedCode: return Phrase(verb: .searchedCode, unit: .none, count: 1, failed: failed, whole: whole)
             case .foundFiles: return Phrase(verb: .foundFiles, unit: .none, count: 1, failed: failed, whole: whole)
             case .browsedWeb: return Phrase(verb: .browsedWeb, unit: .none, count: 1, failed: failed, whole: whole)
-            case .fetched: return Phrase(verb: .fetched, unit: .none, count: 1, failed: failed, whole: whole)
-            case .clearedTodos: return Phrase(verb: .clearedTodos, unit: .none, count: 1, failed: failed, whole: whole)
             case .updatedTodos: return Phrase(verb: .updatedTodos, unit: .none, count: 1, failed: failed, whole: whole)
             case .proposedPlan: return Phrase(verb: .proposedPlan, unit: .none, count: 1, failed: failed, whole: whole)
-            case .asked: return Phrase(verb: .asked, unit: .none, count: 1, failed: failed, whole: whole)
+            // `used` is only the neutral verb slot: adding a `Verb` case
+            // would break the app target's exhaustive switches. The row keys
+            // on `.sessions` for `ccr_summary_session_message_*`.
+            case .sessionMessage: return Phrase(verb: .used, unit: .sessions, count: count, failed: failed, whole: whole)
             case .tools: return Phrase(verb: .used, unit: .tools, count: count, failed: failed, whole: whole)
             }
         }

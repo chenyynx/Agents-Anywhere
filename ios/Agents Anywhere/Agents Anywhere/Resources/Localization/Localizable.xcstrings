@@ -18421,6 +18421,40 @@
         }
       }
     },
+    "ccr_summary_session_message_one": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Messaged another session"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已向其他 1 个会话发送消息"
+          }
+        }
+      }
+    },
+    "ccr_summary_session_message_other": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Messaged %lld other sessions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已向其他 %lld 个会话发送消息"
+          }
+        }
+      }
+    },
     "ccr_summary_failed_count": {
       "extractionState": "manual",
       "localizations": {

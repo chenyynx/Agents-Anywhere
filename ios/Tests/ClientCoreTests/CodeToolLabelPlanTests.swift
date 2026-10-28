@@ -148,6 +148,102 @@ struct CodeToolLabelPlanTests {
         ])
     }
 
+    // MARK: Official 13 categories (round27 §4.1)
+
+    /// `web` has one fixed phrase: WebSearch and WebFetch share it.
+    @Test func webSearchAndWebFetchShareTheWebCategory() throws {
+        let calls = [
+            try makeCall("w1", name: "WebSearch", kind: .search,
+                         input: ["query": "swift"]),
+            try makeCall("w2", name: "WebFetch", kind: .search,
+                         input: ["url": "https://example.com"]),
+            try makeCall("w3", name: "web_fetch", kind: .search,
+                         input: ["url": "https://example.org"]),
+        ]
+        let plan = try #require(CodeToolLabelPlan.make(calls: calls, cwd: nil))
+        #expect(plan.phrases == [
+            .init(verb: .browsedWeb, unit: .none, count: 1),
+        ])
+    }
+
+    /// `todo` has one fixed phrase whether the list was cleared or updated.
+    @Test func emptyAndFilledTodosShareTheTodoCategory() throws {
+        let calls = [
+            try makeCall("td1", name: "TodoWrite", kind: .todo,
+                         input: ["todos": []]),
+            try makeCall("td2", name: "TodoWrite", kind: .todo,
+                         input: ["todos": [["content": "ship it", "status": "pending"]]]),
+        ]
+        let plan = try #require(CodeToolLabelPlan.make(calls: calls, cwd: nil))
+        #expect(plan.phrases == [
+            .init(verb: .updatedTodos, unit: .none, count: 1),
+        ])
+    }
+
+    /// SendMessage is the official `sessionMessage` category, recognised by
+    /// name because AA has no kind for it (the runtime may stamp `mcp`).
+    @Test func sendMessageCallsUseTheSessionMessageCategory() throws {
+        let calls = [
+            try makeCall("s1", name: "SendMessage", kind: .mcp,
+                         input: ["content": "hi"]),
+            try makeCall("s2", name: "send_message", kind: .other,
+                         input: ["content": "yo"]),
+            try makeCall("s3", name: "SendMessage", kind: .mcp,
+                         input: ["content": "hey"], status: "failed"),
+        ]
+        let plan = try #require(CodeToolLabelPlan.make(calls: calls, cwd: nil))
+        #expect(plan.phrases == [
+            .init(verb: .used, unit: .sessions, count: 3, failed: 1),
+        ])
+    }
+
+    /// AskUserQuestion has no category of its own; it counts as `other`.
+    @Test func askUserQuestionJoinsTheOtherCategory() throws {
+        let calls = [
+            try makeCall("q1", name: "AskUserQuestion", kind: .question,
+                         input: ["question": "Continue?"]),
+            try makeCall("m1", name: "mcp__github__search", kind: .mcp),
+        ]
+        let plan = try #require(CodeToolLabelPlan.make(calls: calls, cwd: nil))
+        #expect(plan.phrases == [
+            .init(verb: .used, unit: .tools, count: 2),
+        ])
+    }
+
+    /// A search tool that names neither Grep, Glob nor a web tool has no
+    /// official category either, so it counts as `other`.
+    @Test func unnamedSearchToolsJoinTheOtherCategory() throws {
+        let calls = [
+            try makeCall("s1", name: "Search", kind: .search,
+                         input: ["query": "a"]),
+            try makeCall("m1", name: "mcp__x__y", kind: .mcp),
+        ]
+        let plan = try #require(CodeToolLabelPlan.make(calls: calls, cwd: nil))
+        #expect(plan.phrases == [
+            .init(verb: .used, unit: .tools, count: 2),
+        ])
+    }
+
+    /// Merged categories count once toward the cap: web + webfetch and both
+    /// todo shapes are two groups here, so nothing is dropped.
+    @Test func mergedCategoriesCountOnceTowardTheCap() throws {
+        let calls = [
+            try makeCall("w1", name: "WebSearch", kind: .search,
+                         input: ["query": "swift"]),
+            try makeCall("w2", name: "WebFetch", kind: .search,
+                         input: ["url": "https://example.com"]),
+            try makeCall("td1", name: "TodoWrite", kind: .todo,
+                         input: ["todos": []]),
+            try makeCall("td2", name: "TodoWrite", kind: .todo,
+                         input: ["todos": [["content": "ship it", "status": "pending"]]]),
+        ]
+        let plan = try #require(CodeToolLabelPlan.make(calls: calls, cwd: nil))
+        #expect(plan.phrases == [
+            .init(verb: .browsedWeb, unit: .none, count: 1),
+            .init(verb: .updatedTodos, unit: .none, count: 1),
+        ])
+    }
+
     @Test func grepSpanUsesSearchedCodeSummary() throws {
         let calls = [
             try makeCall("g1", name: "Grep", kind: .search, input: ["pattern": "a"]),
@@ -572,9 +668,11 @@ struct CodeToolLabelPlanTests {
     // MARK: String catalog (`Localizable.xcstrings`)
 
     /// The official failed suffix is `ccr_summary_failed_count`
-    /// (`(%lld failed)` / `（%lld 项失败）`, zh full-width with no space) and
-    /// the separator is the hard-coded `", "` (`0x103140514`). The row lives
-    /// in the app target, so these values are asserted from the catalog data.
+    /// (`(%lld failed)` / `（%lld 项失败）`, zh full-width with no space), the
+    /// separator is the hard-coded `", "` (`0x103140514`), and the session
+    /// message phrases are `ccr_summary_session_message_*` (round27 §4.2).
+    /// The row lives in the app target, so these values are asserted from the
+    /// catalog data.
     @Test func summaryCatalogCarriesTheOfficialSeparatorAndFailedSuffix() throws {
         let catalog = try stringCatalog()
         #expect(catalog["ccr_summary_separator"]?["en"] == ", ")
@@ -592,6 +690,16 @@ struct CodeToolLabelPlanTests {
         // the official key.
         #expect(catalog["(%lld failed)"]?["en"] == en)
         #expect(catalog["(%lld failed)"]?["zh-Hans"] == zh)
+
+        // Official `sessionMessage` (round27 §4.2).
+        let sessionOne = try #require(catalog["ccr_summary_session_message_one"]?["en"])
+        let sessionOther = try #require(catalog["ccr_summary_session_message_other"]?["en"])
+        #expect(sessionOne == "Messaged another session")
+        #expect(sessionOther == "Messaged %lld other sessions")
+        #expect(String(format: sessionOther, 3) == "Messaged 3 other sessions")
+        let sessionOtherZH = try #require(catalog["ccr_summary_session_message_other"]?["zh-Hans"])
+        #expect(sessionOtherZH == "已向其他 %lld 个会话发送消息")
+        #expect(String(format: sessionOtherZH, 3) == "已向其他 3 个会话发送消息")
     }
 }
 

@@ -42,45 +42,98 @@ nonisolated enum CodePageTheme {
 
     // MARK: - Collapsed tool row
 
-    /// [E] CANONICAL/04-tool-calls.md §6.2 and `DATA/tokens.json`
-    /// `typography.mono.size` — `Typography.monospaced` 15 pt.
+    /// [E] R28 §1.2/§2.1 — the collapsed row's sans text is 15 pt.
     static let toolRowFontSize: CGFloat = 15
 
-    /// [E] CANONICAL/04-tool-calls.md §6.2 and `DATA/tokens.json`
-    /// `typography.mono.lineHeight` — lineHeight 24.
+    /// [E] R28 §2.2 — the summary target run is `JetBrainsMono-Regular`
+    /// 15.0 / 400.0 / 24.0; the 24 pt is its unscaled line height.
     static let toolRowLineHeight: CGFloat = 24
 
-    /// [E] CANONICAL/04-tool-calls.md §6.2 and `DATA/tokens.json`
-    /// `typography.mono` — weight 400.
+    /// [E] R28 §2.1 — row text weight 400.
     static let toolRowFontWeight: Font.Weight = .regular
 
-    /// [E] `DATA/tokens.json` `typography.mono.textStyle`, also
-    /// CANONICAL/04-tool-calls.md §6.2 — the official 15 pt monospaced preset
-    /// is built on the footnote text style.
+    /// [E] R28 §2.1 — the row's sans text is `relative(15.0, .body)`.
+    /// Kept apart from `toolRowTextStyle`, which stays the mono/aux
+    /// `.footnote` base the official monospaced preset uses.
+    static let toolRowBodyTextStyle: Font.TextStyle = .body
+
+    /// [E] R28 §2.1 — the row text's unscaled line height is 21.0; the line
+    /// box is pinned to this value so a pure-text row is 21 + 12 = 33 pt.
+    static let toolRowTextLineHeight: CGFloat = 21
+
+    /// [E] R28 §2.2/U-B.2 — the official 15 pt monospaced preset and the
+    /// DiffIndicator's 11 pt aux preset are built on the footnote text style.
     static let toolRowTextStyle: Font.TextStyle = .footnote
+
+    /// [E] R28 §1.2 — the leading `IconFrame` regular slot is 24 x 24 pt.
+    static let toolRowIconFrameSize: CGFloat = 24
+
+    /// [E] R28 U-B.1 — the caret is `Icon.Size.medium` (20 pt) in a
+    /// `.frame(height: 24)`; its drawn artwork extent comes from
+    /// `AnthropiconAssets` (8 x 15 pt at the medium preset).
+    static let toolRowCaretFrameHeight: CGFloat = 24
 
     /// The official fonts, bundled from the official IPA's
     /// `ClaudeFonts_ClaudeFonts.bundle` (registered by `AppFontRegistry`).
     static let sansFontName = "AnthropicSansMobileVariable-TextRegular"
     static let monoFontName = "JetBrainsMono-Regular"
 
-    /// [E] R19 `tool-row-status.md` — the Code page's collapsed row is the
-    /// `CollapsedRowButton`: `.padding(.vertical, 6)`, no horizontal padding.
+    /// [E] R28 §1.2 — `CollapsedStepsRow` outer padding is
+    /// `.padding(.vertical, 6)`, no horizontal padding and no `minHeight`.
     /// The 8 pt all-sides value belongs to `ToolCallRowContent` (welcome /
     /// expanded card), a different component.
     static let toolRowButtonPadding: CGFloat = 6
 
-    /// [E] R19 `tool-row-status.md` — the verb (proportional run) is
-    /// secondary: light `(0.482, 0.475, 0.455)`, dark
-    /// `(0.592, 0.584, 0.553)`. The target (monospaced run) is the body ink.
-    static let toolRowSecondaryColor: SchemeColor = SchemeColor(
+    /// [E] R28 §3/U-B.3 — the official `text400` token, sRGB alpha 1.0:
+    /// light `(0.482, 0.475, 0.455)`, dark `(0.592, 0.584, 0.553)`.
+    /// Used by the row's plain text and its caret.
+    static let text400Color: SchemeColor = SchemeColor(
         light: Color(.sRGB, red: 0.482, green: 0.475, blue: 0.455),
         dark: Color(.sRGB, red: 0.592, green: 0.584, blue: 0.553))
 
-    /// The collapsed row's failure ink. The official constant
-    /// (`0x1009d78b8`) has not been decoded ([U]); this reuses the Code
-    /// page's decoded remove-line red ([E]) as the closest official token.
-    static let toolRowFailureColor: SchemeColor = diffIndicatorRemoveText
+    /// [E] R28 §3 — the official `text500` token. In 1023 it shares
+    /// `text400`'s light/dark RGB pair; only the token name differs. Used by
+    /// the leading `IconFrame`.
+    static let text500Color: SchemeColor = text400Color
+
+    /// [E] R28 §2.3 — the summary target run's `text100` token:
+    /// light `(0.075, 0.075, 0.075)`, dark `(0.976, 0.976, 0.969)`.
+    static let text100Color: SchemeColor = SchemeColor(
+        light: Color(.sRGB, red: 0.075, green: 0.075, blue: 0.075),
+        dark: Color(.sRGB, red: 0.976, green: 0.976, blue: 0.969))
+
+    /// [E] R28 §2.3 — the summary's non-target runs (verb / category phrase /
+    /// separator) use `text300`: light `(0.22, 0.22, 0.208)`, dark
+    /// `(0.765, 0.761, 0.718)`.
+    static let text300Color: SchemeColor = SchemeColor(
+        light: Color(.sRGB, red: 0.22, green: 0.22, blue: 0.208),
+        dark: Color(.sRGB, red: 0.765, green: 0.761, blue: 0.718))
+
+    /// [E] R28 §2.3 — the summary's failure run `danger00` token:
+    /// light `(0.557, 0.149, 0.149)`, dark `(0.957, 0.671, 0.671)`.
+    /// (`FailureGlyph`'s own foreground is UNKNOWN after §U 收口二 二-B.3;
+    /// do not reuse this token for the glyph.)
+    static let danger00Color: SchemeColor = SchemeColor(
+        light: Color(.sRGB, red: 0.557, green: 0.149, blue: 0.149),
+        dark: Color(.sRGB, red: 0.957, green: 0.671, blue: 0.671))
+
+    /// [E] R28 §U 收口二 二-B.4 — the status glyph's `accentSecondary100`
+    /// token. R1 names the token; the light/dark RGB pair is read from its
+    /// two provider functions (`0x100b4c270` light / `0x100b4cbb0` dark),
+    /// which load the sRGB doubles and call the generic sRGB helper
+    /// `0x100b3a2e0`: light `(0.145, 0.416, 0.749)`, dark
+    /// `(0.333, 0.596, 0.906)`, alpha 1.0.
+    static let accentSecondary100Color: SchemeColor = SchemeColor(
+        light: Color(.sRGB, red: 0.145, green: 0.416, blue: 0.749),
+        dark: Color(.sRGB, red: 0.333, green: 0.596, blue: 0.906))
+
+    /// Kept under its old name because other Code chrome (the turn action
+    /// bar) reads it as the secondary ink; its value stays `text400`.
+    static let toolRowSecondaryColor: SchemeColor = text400Color
+
+    /// The collapsed row's failure ink is the official `danger00` token
+    /// (R28 §2.3/U-B.3).
+    static let toolRowFailureColor: SchemeColor = danger00Color
 
     /// Spacing inside a status/tool row. Kept separate from the button
     /// padding: the official evidence fixes the 8 pt padding, not the gap
@@ -93,9 +146,11 @@ nonisolated enum CodePageTheme {
     /// official app, so views should scale it with Dynamic Type.
     static let diffIndicatorCornerRadius: CGFloat = 4.5
 
-    /// [E] R19 `tool-row-status.md` — 11 pt / weight 550 / lineHeight 16.
+    /// [E] R28 U-B.2 — 11 pt / weight 550 / lineHeight 16, relative to
+    /// `.footnote` (`0x100b6c300`/`0x100b6c3d0`/`0x100b6c424`).
     static let diffIndicatorFontSize: CGFloat = 11
     static let diffIndicatorFontWeight: CGFloat = 550
+    static let diffIndicatorLineHeight: CGFloat = 16
 
     /// [E] R19 `tool-row-status.md` — horizontal padding 6 (ScaledMetric).
     static let diffIndicatorHorizontalPadding: CGFloat = 6
@@ -103,9 +158,9 @@ nonisolated enum CodePageTheme {
     /// [E] R19 `tool-row-status.md` — each half is 18 pt tall (ScaledMetric).
     static let diffIndicatorHeight: CGFloat = 18
 
-    /// [E] R19 `tool-row-status.md` — add ink light
-    /// `(0.118, 0.620, 0.235)` / dark `(0.196, 0.843, 0.294)`; the fill is the
-    /// same colour at alpha 0.2.
+    /// [E] R28 U-B.2 — add ink light
+    /// `(0.118, 0.620, 0.235)` / dark `(0.196, 0.843, 0.294)`, sRGB; the fill
+    /// is the same colour at alpha 0.2.
     static let diffIndicatorAddText: SchemeColor = SchemeColor(
         light: Color(.sRGB, red: 0.118, green: 0.620, blue: 0.235),
         dark: Color(.sRGB, red: 0.196, green: 0.843, blue: 0.294))
@@ -114,9 +169,9 @@ nonisolated enum CodePageTheme {
         light: Color(.sRGB, red: 0.118, green: 0.620, blue: 0.235, opacity: 0.2),
         dark: Color(.sRGB, red: 0.196, green: 0.843, blue: 0.294, opacity: 0.2))
 
-    /// [E] R19 `tool-row-status.md` — remove ink light
-    /// `(0.804, 0.125, 0.329)` / dark `(1.000, 0.173, 0.337)`; the fill is the
-    /// same colour at alpha 0.2.
+    /// [E] R28 U-B.2 — remove ink light
+    /// `(0.804, 0.125, 0.329)` / dark `(1.000, 0.173, 0.337)`, sRGB; the fill
+    /// is the same colour at alpha 0.2.
     static let diffIndicatorRemoveText: SchemeColor = SchemeColor(
         light: Color(.sRGB, red: 0.804, green: 0.125, blue: 0.329),
         dark: Color(.sRGB, red: 1.000, green: 0.173, blue: 0.337))

@@ -10,14 +10,14 @@ nonisolated enum AnthropiconSize: Int, CaseIterable, Sendable {
 }
 
 /// The official Anthropicon artwork, shipped from the app bundle's
-/// `ClaudeDesignSystem_ClaudeIcons.bundle/Assets.car`
-/// (`/data/com.anthropic.claude-1.261019.51-eeveedecrypter.ipa`, extracted
-/// 2026-10-25).
+/// `ClaudeDesignSystem_ClaudeIcons.bundle/Assets.car`. The collapsed-row
+/// icons are the 1023 (1.261023.20) SVG bytes (R28 §5.1/§U-A.2); the table's
+/// extents come from the official `DATA/anthropicon-map.tsv`.
 ///
 /// The SVGs are vector assets; each row below is the **drawn artwork extent**
-/// at the small / medium / large preset, read from `DATA/anthropicon-map.tsv`.
-/// The official slot size (16 / 20 / 24 pt) is larger than the artwork, which
-/// is why the icons are pinned to these extents instead of the slot.
+/// at the small / medium / large preset. The official slot size (16 / 20 /
+/// 24 pt) is larger than the artwork, which is why the icons are pinned to
+/// these extents instead of the slot.
 nonisolated enum AnthropiconAssets {
     static func pointSize(_ name: String, _ size: AnthropiconSize) -> CGSize? {
         guard let sizes = table[name],
@@ -57,6 +57,13 @@ nonisolated enum AnthropiconAssets {
         "anthropicon.codeBlock": [size(15, 12), size(17, 13), size(20, 16)],
         "anthropicon.commandLinePrompt": [size(11, 10), size(12, 11), size(14, 13)],
         "anthropicon.share": [size(13, 14), size(15, 16), size(18, 19)],
+        // R28 §4.1 — the four row icons AA did not ship. Artwork extents are
+        // the official `anthropicon-map.tsv` point sizes (100/200/300 dpi),
+        // the same source as every other entry in this table.
+        "anthropicon.listBullet": [size(13, 12), size(15, 14), size(18, 16)],
+        "anthropicon.fileAdd": [size(11, 15), size(13, 17), size(15, 20)],
+        "anthropicon.agentSimple": [size(10, 10), size(11, 11), size(13, 13)],
+        "anthropicon.wrench": [size(14, 14), size(16, 16), size(19, 19)],
     ]
 
     private static func size(_ width: CGFloat, _ height: CGFloat) -> CGSize {

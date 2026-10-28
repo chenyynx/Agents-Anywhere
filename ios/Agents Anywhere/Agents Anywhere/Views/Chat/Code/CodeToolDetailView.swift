@@ -36,12 +36,11 @@ struct CodeToolDetailView: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
-    @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle) private var toolRowFontSize =
-        CodePageTheme.toolRowFontSize
     @ScaledMetric(relativeTo: .caption) private var sectionLabelFontSize =
         CodeToolDetailMetrics.sectionLabelFontSize
-    @ScaledMetric(relativeTo: .footnote) private var followingFontSize =
-        CodeToolDetailMetrics.followingFontSize
+    /// The D9 placeholder line box (see `CodeDetailRowHooks`).
+    @ScaledMetric(relativeTo: CodeDetailRowHooks.textStyle)
+    private var detailTextLineHeight = CodePageTheme.toolRowTextLineHeight
 
     init(call: CodeToolCall,
          followingCalls: [CodeToolCall] = [],
@@ -106,12 +105,11 @@ struct CodeToolDetailView: View {
                                   weight: .regular,
                                   design: .monospaced))
                     .foregroundStyle(.secondary)
+                // [E] R28 §U 收口二 二-D — `TimelineListRowPlain` hides the
+                // separators, so the rows are stacked without dividers.
                 VStack(spacing: 0) {
                     ForEach(followingCalls) { following in
                         followingRow(following)
-                        if following.id != followingCalls.last?.id {
-                            Divider()
-                        }
                     }
                 }
             }
@@ -138,93 +136,110 @@ struct CodeToolDetailView: View {
 
     // MARK: - Rows
 
-    /// The detail page's row identity. The official `TimelineRow` is an icon,
-    /// a label and an optional failure glyph; SF Symbols stand in for the
-    /// non-distributable Anthropicon set (`docs/perf-6b-c5-code-profile-task.md`
-    /// §6.5).
+    /// The detail page's row identity, built from the same official row
+    /// primitives as the collapsed row: an `IconFrame` slot, the label,
+    /// `TimelineStatusGlyph`, `DiffIndicator` and the caret. The official
+    /// `TimelineGroupRow`'s own typography/row height/divider are UNKNOWN
+    /// (D9), so the type/row box stays a single hook here
+    /// (`CodeDetailRowHooks`) rather than being invented per call site.
     private var summaryRow: some View {
-        HStack(alignment: .center, spacing: 10) {
-            AnthropiconView(name: CodeToolLabels.anthropicon(for: call.kind),
+        HStack(alignment: .center, spacing: CodeDetailRowHooks.iconSpacing) {
+            AnthropiconView(name: CodeToolLabels.anthropicon(for: call),
                             size: .large)
-                .foregroundStyle(call.status == .failed ? Color.red : Color.secondary)
-                .frame(width: 20)
+                .foregroundStyle(CodeDetailRowHooks.iconTint)
+                .frame(width: CodePageTheme.toolRowIconFrameSize,
+                       height: CodePageTheme.toolRowIconFrameSize)
                 .accessibilityHidden(true)
 
-            Text(verbatim: call.name)
-                .font(.system(size: toolRowFontSize,
-                              weight: CodePageTheme.toolRowFontWeight,
-                              design: .monospaced))
-                .lineLimit(1)
-                .truncationMode(.tail)
+            // The official `TimelineRow` is a two-child HStack (icon,
+            // content); the content's own spacing is UNKNOWN (D9), so it
+            // keeps SwiftUI's default rather than the icon's 16 pt gap.
+            HStack(alignment: .center) {
+                Text(verbatim: call.name)
+                    .font(.custom(CodePageTheme.monoFontName,
+                                  size: CodeDetailRowHooks.textSize,
+                                  relativeTo: CodeDetailRowHooks.textStyle))
+                    .foregroundStyle(CodeDetailRowHooks.primaryText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(minHeight: detailTextLineHeight, alignment: .leading)
 
-            if case let .diff(diff) = output,
-               diff.added > 0 || diff.removed > 0 {
-                CodeDetailDiffIndicator(added: diff.added, removed: diff.removed)
-            }
+                CodeTimelineStatusGlyph(status: call.status,
+                                        failureExtent: failureExtent)
 
-            Spacer(minLength: 8)
+                if case let .diff(diff) = output,
+                   diff.added > 0 || diff.removed > 0 {
+                    CodeDiffIndicator(stat: CodeDiffStat(added: diff.added,
+                                                         removed: diff.removed))
+                }
 
-            if call.status == .failed {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.red)
-                    .accessibilityHidden(true)
+                Spacer(minLength: 0)
             }
         }
-        .frame(minHeight: CodePageTheme.toolRowLineHeight)
-        .accessibilityElement(children: .combine)
-        // The visible status word is gone; VoiceOver still gets the state.
-        .accessibilityValue(accessibilityValue)
+        .padding(.vertical, CodeDetailRowHooks.verticalPadding)
+        // [E] R28 §U 收口二 二-D — `TimelineListRowPlain` hides separators
+        // and clears the row background. These are no-ops unless the row is
+        // hosted in the official `List`; the List container and its
+        // `PlainListRowInsets` remain UNKNOWN (U), so the sheet keeps its
+        // ScrollView sections.
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
     }
 
-    private var accessibilityValue: String {
-        var parts = [call.item.status.label]
-        if case let .diff(diff) = output {
-            if diff.added > 0 { parts.append("+\(diff.added)") }
-            if diff.removed > 0 { parts.append("−\(diff.removed)") }
+    private var failureExtent: CodeFailureExtent? {
+        switch call.status {
+        case .complete, .running: return nil
+        case .failed: return .failed
         }
-        return parts.joined(separator: " ")
     }
 
     /// A following call keeps the collapsed row's verb + target shape. Showing
     /// the bare tool name ("Edit" five times) told the reader nothing about
-    /// what the siblings touched (device report 2026-10-23).
+    /// what the siblings touched (device report 2026-10-23). The row uses the
+    /// official `TimelineGroupRow` composition (icon slot, status glyph, diff,
+    /// single-line text); its typography/vertical box is the D9 hook above.
     private func followingRow(_ following: CodeToolCall) -> some View {
         let label = CodeToolLabels.label(for: [following], cwd: cwd)
-        return HStack(spacing: 10) {
-            AnthropiconView(name: CodeToolLabels.anthropicon(for: following.kind),
+        return HStack(alignment: .center, spacing: CodeDetailRowHooks.iconSpacing) {
+            AnthropiconView(name: CodeToolLabels.anthropicon(for: following),
                             size: .large)
-                .foregroundStyle(.secondary)
-                .frame(width: 20)
+                .foregroundStyle(CodeDetailRowHooks.iconTint)
+                .frame(width: CodePageTheme.toolRowIconFrameSize,
+                       height: CodePageTheme.toolRowIconFrameSize)
                 .accessibilityHidden(true)
-            followingLabelText(label)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer(minLength: 8)
-            if following.status == .failed {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.red)
-                    .accessibilityHidden(true)
+            HStack(alignment: .center) {
+                followingLabelText(label)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(minHeight: detailTextLineHeight, alignment: .leading)
+                CodeTimelineStatusGlyph(
+                    status: following.status,
+                    failureExtent: following.status == .failed ? .failed : nil)
+                if let diff = label.diff, diff.hasCounts {
+                    CodeDiffIndicator(stat: diff)
+                }
+                Spacer(minLength: 0)
             }
         }
-        .frame(minHeight: 32)
-        .accessibilityElement(children: .combine)
-        .accessibilityValue(following.item.status.label)
+        .padding(.vertical, CodeDetailRowHooks.verticalPadding)
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
     }
 
     private func followingLabelText(_ label: CodeToolRowLabel) -> Text {
+        let sans = Font.custom(CodePageTheme.sansFontName,
+                               size: CodeDetailRowHooks.textSize,
+                               relativeTo: CodeDetailRowHooks.textStyle)
+        let mono = Font.custom(CodePageTheme.monoFontName,
+                               size: CodeDetailRowHooks.textSize,
+                               relativeTo: CodePageTheme.toolRowTextStyle)
+        let secondary = CodeDetailRowHooks.secondaryText
+        let primary = CodeDetailRowHooks.primaryText
         guard let target = label.target, !target.isEmpty else {
-            return Text(label.verb)
-                .font(.system(size: followingFontSize))
-                .foregroundStyle(.secondary)
+            return Text(label.verb).font(sans).foregroundStyle(secondary)
         }
-        return Text(label.verb + " ")
-            .font(.system(size: followingFontSize))
-            .foregroundStyle(.secondary)
-            + Text(target)
-            .font(.system(size: followingFontSize, design: .monospaced))
-            .foregroundStyle(.primary)
+        return Text(label.verb + " ").font(sans).foregroundStyle(secondary)
+            + Text(target).font(mono).foregroundStyle(primary)
     }
 
     // MARK: - Wire reads
@@ -244,58 +259,32 @@ struct CodeToolDetailView: View {
 
 }
 
-/// The row's `DiffIndicator` (`CANONICAL/04-tool-calls.md` §4.2/§6.2). The
-/// detail page has no separate component for it, so this mirrors the themed
-/// token set the collapsed row uses.
-private struct CodeDetailDiffIndicator: View {
-    let added: Int
-    let removed: Int
+// MARK: - Detail-row hook (D9)
 
-    @Environment(\.colorScheme) private var colorScheme
-    @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
-    private var fontSize = CodePageTheme.diffIndicatorFontSize
-    @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
-    private var horizontalPadding = CodePageTheme.diffIndicatorHorizontalPadding
-    /// [E] R19 tool-row-status.md — each half is 18 pt tall.
-    @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
-    private var halfHeight = CodePageTheme.diffIndicatorHeight
-    @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
-    private var cornerRadius = CodePageTheme.diffIndicatorCornerRadius
-
-    var body: some View {
-        HStack(spacing: 0) {
-            if added > 0 {
-                half(text: "+\(added)",
-                     fill: CodePageTheme.diffIndicatorAddFill,
-                     ink: CodePageTheme.diffIndicatorAddText)
-            }
-            if removed > 0 {
-                half(text: "−\(removed)",
-                     fill: CodePageTheme.diffIndicatorRemoveFill,
-                     ink: CodePageTheme.diffIndicatorRemoveText)
-            }
-        }
-        // [E] 11 pt / weight 550 in the official mono face.
-        .font(Font(MarkdownFontFactory.font(
-            name: CodePageTheme.monoFontName,
-            size: fontSize,
-            weight: CodePageTheme.diffIndicatorFontWeight)))
-        .lineLimit(1)
-        .fixedSize()
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .accessibilityHidden(true)
-    }
-
-    private func half(text: String,
-                      fill: CodePageTheme.SchemeColor,
-                      ink: CodePageTheme.SchemeColor) -> some View {
-        Text(verbatim: text)
-            .monospacedDigit()
-            .foregroundStyle(ink.resolved(for: colorScheme))
-            .padding(.horizontal, horizontalPadding)
-            .frame(height: halfHeight)
-            .background(fill.resolved(for: colorScheme))
-    }
+/// The official `TimelineGroupRow`'s geometry and its still-unknown values
+/// (R28 §U-C.7, closed further by §U 收口二 二-D).
+///
+/// Evidenced:
+/// - `TimelineRow` is `HStack(spacing: 16)<icon, content>` (0x100fd6958);
+/// - the row's vertical padding is 8.0 pt (0x100fd6638/0x100fd6a90);
+/// - `TimelineListRowPlain` hides separators and clears the row background.
+///
+/// Still UNKNOWN (D9): the row Typography (the environment
+/// `TypographyMetadata`), its light/dark RGB, `PlainListRowInsets`, and the
+/// connector. `textSize`/`textStyle` below are the only decoded Code text
+/// preset (the collapsed row's 15/400/21), used as the placeholder so one
+/// probe replaces this block.
+private enum CodeDetailRowHooks {
+    static let iconSpacing: CGFloat = 16
+    static let verticalPadding: CGFloat = 8
+    static let textSize: CGFloat = CodePageTheme.toolRowFontSize
+    static let textStyle: Font.TextStyle = CodePageTheme.toolRowBodyTextStyle
+    /// D9 UNKNOWN: the official detail text is a semantic UIColor→Color
+    /// token; its light/dark RGB is not decoded. System semantic colours
+    /// match that mechanism without inventing an RGB.
+    static let primaryText: Color = .primary
+    static let secondaryText: Color = .secondary
+    static let iconTint: Color = .secondary
 }
 
 // MARK: - Detail-page-only metrics
@@ -324,10 +313,9 @@ private enum CodeToolDetailMetrics {
     /// Markdown block spacing [E] V55 and keeps the first row off the bar.
     static let verticalInset: CGFloat = 16
 
-    /// [I] V02-V04 — the detail page reuses the 15 pt mono row label; the
-    /// section headers use the 13 pt code-card title preset (V62).
+    /// [I] V02-V04 — the section headers use the 13 pt code-card title
+    /// preset (V62).
     static let sectionLabelFontSize: CGFloat = 13
-    static let followingFontSize: CGFloat = 15
 
 }
 

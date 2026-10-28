@@ -64,6 +64,16 @@ nonisolated struct CodeRuntimeProfile: Hashable, Sendable {
     let toolTable: CodeRuntimeToolTable?
     let subagentShape: SubagentShape
     let toolRowRole: ToolRowRole
+    /// Whether the runtime folds one turn's serial tool rows into a single
+    /// collapsed span across API message boundaries.
+    ///
+    /// Only Claude has evidence for this: the official engine merges a
+    /// `DisplayMessage`'s `toolCalls` block into the previous row within a
+    /// turn (merge function `0x102fa3c24` in 1.261023.20; round27
+    /// `01-tool-merge-and-turn-1023.md` §2). Codex/DSH/generic have no such
+    /// evidence, so they keep the declared per-message grouping until their
+    /// own engine is read — the planner never guesses a merge for them.
+    let mergesToolRowsAcrossMessages: Bool
 
     /// Resolve a session's runtime id (`V2SessionMeta.runtime`, or the
     /// declared `runtimeType`) to its profile.
@@ -121,7 +131,8 @@ nonisolated struct CodeRuntimeProfile: Hashable, Sendable {
         segmentPolicy: CodeRuntimeToolTable.claudeCode.segmentPolicy,
         toolTable: .claudeCode,
         subagentShape: .claudeAgentCard,
-        toolRowRole: .tool)
+        toolRowRole: .tool,
+        mergesToolRowsAcrossMessages: true)
 
     /// Codex shares W2's observed table, plus one product rule.
     ///
@@ -172,11 +183,13 @@ nonisolated struct CodeRuntimeProfile: Hashable, Sendable {
                  segmentPolicy: CodeToolSegmentPolicy,
                  toolTable: CodeRuntimeToolTable?,
                  subagentShape: SubagentShape,
-                 toolRowRole: ToolRowRole) {
+                 toolRowRole: ToolRowRole,
+                 mergesToolRowsAcrossMessages: Bool = false) {
         self.family = family
         self.segmentPolicy = segmentPolicy
         self.toolTable = toolTable
         self.subagentShape = subagentShape
         self.toolRowRole = toolRowRole
+        self.mergesToolRowsAcrossMessages = mergesToolRowsAcrossMessages
     }
 }

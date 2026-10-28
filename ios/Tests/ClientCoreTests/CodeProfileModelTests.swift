@@ -368,11 +368,24 @@ struct CodeMessageRowTests {
         #expect(status == .running)
     }
 
-    @Test func toolsOrderByDeclaredBlockIndexEvenWhenInputIsReversed() throws {
-        // Input order is the reverse of blockIndex order.
+    @Test func spanOrderFollowsOrderSeqEvenWhenBlockIndexDisagrees() throws {
+        // The merged span orders by `orderSeq` (the only sequence truth across
+        // messages; each message restarts `blockIndex` at 0). Input order is the
+        // reverse of the arrival order, and `blockIndex` disagrees with it:
+        // `orderSeq` wins.
         let late = try makeToolItem(id: "t2", order: 2, message: "msg-1", blockIndex: 5)
         let early = try makeToolItem(id: "t1", order: 3, message: "msg-1", blockIndex: 1)
         let rows = CodeMessageBuilder.rows(for: [late, early], profile: .claudeCode)
+        #expect(spanIDs(in: rows[0].blocks) == [["t2", "t1"]])
+    }
+
+    @Test func aNonMergingRuntimeKeepsTheDeclaredBlockIndexOrder() throws {
+        // Codex has no cross-message merge evidence, so its rows keep the
+        // pre-round27 per-message correction: `blockIndex` when every tool row
+        // declares it.
+        let late = try makeToolItem(id: "t2", order: 2, message: "msg-1", blockIndex: 5)
+        let early = try makeToolItem(id: "t1", order: 3, message: "msg-1", blockIndex: 1)
+        let rows = CodeMessageBuilder.rows(for: [late, early], profile: .codex)
         #expect(spanIDs(in: rows[0].blocks) == [["t1", "t2"]])
     }
 
@@ -531,5 +544,365 @@ struct CodeMessageRowTests {
         #expect(calls.map(\.id) == ["a1"])
         #expect(calls[0].name == "file_change")
         #expect(calls[0].kind == .edit)
+    }
+}
+
+// Round 27: the official engine merges a turn's serial `toolCalls` blocks
+// across `DisplayMessage`s (merge function `0x102fa3c24` in 1.261023.20),
+// skipping `thinkingContent`, and stops at text/attachment/marker rows, at a
+// turn end, and at any row type it does not stack. The planner is the single
+// source of the row sequence; these tests pin its units, its idempotency, the
+// runtime gate and the grouping hand-off.
+@Suite("Code message planner")
+struct CodeMessagePlannerTests {
+    /// A unit's stable address, in the form a test can compare across runs.
+    private func unitDescriptor(_ unit: CodeMessageUnit) -> String {
+        switch unit {
+        case let .message(key, _): return "message:\(key)"
+        case let .span(id, _): return "span:\(id)"
+        case let .standalone(item): return "item:\(item.id)"
+        }
+    }
+
+    // MARK: - Merge
+
+    @Test func parallelToolCallsInOneMessageStayOneSpan() throws {
+        let items = [try makeToolItem(id: "t1", order: 1, message: "msg-1", blockIndex: 0),
+                     try makeToolItem(id: "t2", order: 2, message: "msg-1", blockIndex: 1),
+                     try makeToolItem(id: "t3", order: 3, message: "msg-1", blockIndex: 2)]
+        let rows = CodeMessageBuilder.rows(for: items, profile: .claudeCode)
+        #expect(rows.count == 1)
+        #expect(spanIDs(in: rows[0].blocks) == [["t1", "t2", "t3"]])
+    }
+
+    @Test func serialToolMessagesMergeIntoOneSpanAcrossMessageIDs() throws {
+        // Three serial tools live in three API messages; the official engine
+        // folds them into the earliest `toolCalls` row. Input is deliberately
+        // shuffled: the planner sorts by `orderSeq`.
+        let first = try makeToolItem(id: "t1", order: 1, message: "msg-1", blockIndex: 0)
+        let second = try makeToolItem(id: "t2", order: 2, message: "msg-2", blockIndex: 0)
+        let third = try makeToolItem(id: "t3", order: 3, message: "msg-3", blockIndex: 0)
+        let rows = CodeMessageBuilder.rows(for: [third, first, second], profile: .claudeCode)
+        #expect(rows.count == 1)
+        #expect(spanIDs(in: rows[0].blocks) == [["t1", "t2", "t3"]])
+        // The span id is the first tool row's stable `source.itemId`.
+        #expect(rows[0].id == "t1")
+        #expect(rows[0].role == .system)
+    }
+
+    @Test func interleavedMessageIDsStayOneSpanInWireOrder() throws {
+        // A-B-A: message A's second tool arrives after message B's tool. The
+        // declared row order is the only ordering truth; `blockIndex` restarts
+        // at 0 per message and must never be used to re-sort the run.
+        let aFirst = try makeToolItem(id: "a1", order: 1, message: "msg-a", blockIndex: 0)
+        let bFirst = try makeToolItem(id: "b1", order: 2, message: "msg-b", blockIndex: 0)
+        let aSecond = try makeToolItem(id: "a2", order: 3, message: "msg-a", blockIndex: 1)
+        let rows = CodeMessageBuilder.rows(for: [aFirst, bFirst, aSecond], profile: .claudeCode)
+        #expect(rows.count == 1)
+        #expect(spanIDs(in: rows[0].blocks) == [["a1", "b1", "a2"]])
+    }
+
+    @Test func spanOrderFollowsOrderSeqNotACrossMessageBlockIndex() throws {
+        // Sorting by `blockIndex` globally would put t2 first (0 before 5);
+        // the declared sequence says t1 first.
+        let first = try makeToolItem(id: "t1", order: 1, message: "msg-1", blockIndex: 5)
+        let second = try makeToolItem(id: "t2", order: 2, message: "msg-2", blockIndex: 0)
+        let rows = CodeMessageBuilder.rows(for: [first, second], profile: .claudeCode)
+        #expect(spanIDs(in: rows[0].blocks) == [["t1", "t2"]])
+    }
+
+    // MARK: - Breaks
+
+    @Test func anAssistantTextMessageEndsTheRun() throws {
+        // The sheet's "中间有 assistant text → 2 行" counts the two tool rows;
+        // the text message keeps its own row, so the builder returns three
+        // units: span, text, span.
+        let first = try makeToolItem(id: "t1", order: 1, message: "msg-1", blockIndex: 0)
+        let body = try makeBody(id: "m1", order: 2, message: "msg-2", text: "Now the fix.")
+        let second = try makeToolItem(id: "t2", order: 3, message: "msg-3", blockIndex: 0)
+        let rows = CodeMessageBuilder.rows(for: [first, body, second], profile: .claudeCode)
+        #expect(rows.count == 3)
+        #expect(rows.map(\.id) == ["t1", "msg-2", "t2"])
+        #expect(spanIDs(in: rows[0].blocks) == [["t1"]])
+        #expect(blockDescriptors(rows[1]) == ["text:m1"])
+        #expect(spanIDs(in: rows[2].blocks) == [["t2"]])
+    }
+
+    @Test func aTextMessageKeepsItsOwnToolAndMergesLaterToolRows() throws {
+        // The literal two-row case: the middle message declares text *and* a
+        // tool, so its row already ends in `toolCalls` and the following
+        // message's tool merges into it (official tail scan).
+        let first = try makeToolItem(id: "t1", order: 1, message: "msg-1", blockIndex: 0)
+        let body = try makeBody(id: "m1", order: 2, message: "msg-2", text: "Applying it.")
+        let own = try makeToolItem(id: "t2", order: 3, message: "msg-2", blockIndex: 0)
+        let later = try makeToolItem(id: "t3", order: 4, message: "msg-3", blockIndex: 0)
+        let rows = CodeMessageBuilder.rows(for: [first, body, own, later], profile: .claudeCode)
+        #expect(rows.count == 2)
+        #expect(rows.map(\.id) == ["t1", "msg-2"])
+        #expect(spanIDs(in: rows[0].blocks) == [["t1"]])
+        #expect(blockDescriptors(rows[1]) == ["text:m1", "toolCalls"])
+        #expect(spanIDs(in: rows[1].blocks) == [["t2", "t3"]])
+    }
+
+    @Test func aUserPromptEndsTheRunAndNeverMergesToolsAcrossIt() throws {
+        // "不跨 user 行": a user prompt is a turn boundary even when the client
+        // has no `turnId` yet. The two tool rows stay two spans; the prompt is
+        // the third builder row (the sheet counts the two tool rows).
+        let first = try makeToolItem(id: "t1", order: 1, message: "msg-1", blockIndex: 0)
+        let prompt = try makeItem(id: "u1", order: 2, role: "user",
+                                  content: ["text": "stop here"], source: ["itemId": "user-msg"])
+        let second = try makeToolItem(id: "t2", order: 3, message: "msg-2", blockIndex: 0)
+        let rows = CodeMessageBuilder.rows(for: [first, prompt, second], profile: .claudeCode)
+        #expect(rows.count == 3)
+        #expect(rows.map(\.id) == ["t1", "user-msg", "t2"])
+        #expect(rows[1].role == .user)
+        #expect(spanIDs(in: rows[0].blocks) == [["t1"]])
+        #expect(spanIDs(in: rows[2].blocks) == [["t2"]])
+    }
+
+    @Test func aMarkerEndsTheRun() throws {
+        let first = try makeToolItem(id: "t1", order: 1, message: "msg-1", blockIndex: 0)
+        let marker = try makeItem(id: "sys1", order: 2, type: "marker", role: nil,
+                                  content: ["text": "compacted"])
+        let second = try makeToolItem(id: "t2", order: 3, message: "msg-2", blockIndex: 0)
+        let rows = CodeMessageBuilder.rows(for: [first, marker, second], profile: .claudeCode)
+        #expect(rows.count == 3)
+        #expect(blockDescriptors(rows[1]) == ["other:sys1"])
+        #expect(spanIDs(in: rows[0].blocks) == [["t1"]])
+        #expect(spanIDs(in: rows[2].blocks) == [["t2"]])
+    }
+
+    @Test func anAttachmentMessageEndsTheRun() throws {
+        let first = try makeToolItem(id: "t1", order: 1, message: "msg-1", blockIndex: 0)
+        let attachmentMessage = try makeItem(
+            id: "u1", order: 2, role: "user",
+            content: ["text": "look",
+                      "attachments": [["name": "shot.png", "mediaType": "image/png",
+                                       "fileId": "f1"]]],
+            source: ["itemId": "user-msg"])
+        let second = try makeToolItem(id: "t2", order: 3, message: "msg-2", blockIndex: 0)
+        let rows = CodeMessageBuilder.rows(for: [first, attachmentMessage, second],
+                                           profile: .claudeCode)
+        #expect(rows.count == 3)
+        #expect(blockDescriptors(rows[1]) == ["attachments:u1", "text:u1"])
+        #expect(spanIDs(in: rows[0].blocks) == [["t1"]])
+        #expect(spanIDs(in: rows[2].blocks) == [["t2"]])
+    }
+
+    @Test func aToolRowWithoutAGroupingKeyEndsTheRun() throws {
+        // No `nativeMessageId` and no `itemId`: the row cannot join a span and
+        // keeps its own item.
+        let first = try makeToolItem(id: "t1", order: 1, message: "msg-1", blockIndex: 0)
+        let orphan = try makeItem(id: "o1", order: 2, type: "tool", role: "tool",
+                                  content: ["kind": "tool", "toolName": "Read"], source: [:])
+        let second = try makeToolItem(id: "t2", order: 3, message: "msg-2", blockIndex: 0)
+        let rows = CodeMessageBuilder.rows(for: [first, orphan, second], profile: .claudeCode)
+        #expect(rows.count == 3)
+        #expect(rows.map(\.id) == ["t1", "item:o1", "t2"])
+        #expect(spanIDs(in: rows[0].blocks) == [["t1"]])
+        #expect(spanIDs(in: rows[2].blocks) == [["t2"]])
+    }
+
+    @Test func anAgentCardWithoutABlockIndexEndsTheRun() throws {
+        // The connector's Agent card is `content.kind == "agent_call"` with no
+        // `blockIndex`; it is the official `threadSessionCard` shape and keeps
+        // its own row instead of merging into the surrounding run.
+        let first = try makeToolItem(id: "t1", order: 1, message: "msg-1", blockIndex: 0)
+        let card = try makeItem(id: "c1", order: 2, type: "tool", role: "tool",
+                                content: ["kind": "agent_call", "toolName": "Agent"],
+                                source: ["itemId": "c1", "nativeMessageId": "msg-2"])
+        let second = try makeToolItem(id: "t2", order: 3, message: "msg-3", blockIndex: 0)
+        let rows = CodeMessageBuilder.rows(for: [first, card, second], profile: .claudeCode)
+        #expect(rows.count == 3)
+        #expect(spanIDs(in: rows[0].blocks) == [["t1"]])
+        #expect(spanIDs(in: rows[1].blocks) == [["c1"]])
+        #expect(spanIDs(in: rows[2].blocks) == [["t2"]])
+    }
+
+    @Test func skippedPlanAndAnswerCallsNeitherRenderNorBreakTheSpan() throws {
+        // `ExitPlanMode` and an answered `AskUserQuestion` are pulled out of
+        // the tool block: no segment, and no flush either (round27 C A2).
+        let first = try makeToolItem(id: "t1", order: 1, message: "msg-1", blockIndex: 0)
+        let plan = try makeToolItem(id: "p", order: 2, message: "msg-2",
+                                    blockIndex: 0, name: "ExitPlanMode")
+        let answer = try makeToolItem(id: "q", order: 3, message: "msg-3",
+                                      blockIndex: 0, name: "AskUserQuestion")
+        let second = try makeToolItem(id: "t2", order: 4, message: "msg-4", blockIndex: 0)
+        let rows = CodeMessageBuilder.rows(for: [first, plan, answer, second],
+                                           profile: .claudeCode)
+        #expect(rows.count == 1)
+        #expect(spanIDs(in: rows[0].blocks) == [["t1", "t2"]])
+    }
+
+    @Test func aTransientQuestionInAnInteractionTargetStaysItsOwnRow() throws {
+        // A question still waiting for an answer is anchored by an interaction
+        // notice: it gets a standalone unit *and* ends the run, unlike the
+        // answered/skipped form above.
+        let first = try makeToolItem(id: "t1", order: 1, message: "msg-1", blockIndex: 0)
+        let question = try makeToolItem(id: "q", order: 2, message: "msg-2", blockIndex: 0,
+                                        name: "AskUserQuestion", status: "running")
+        let second = try makeToolItem(id: "t2", order: 3, message: "msg-3", blockIndex: 0)
+        let units = CodeMessageBuilder.units(for: [first, question, second],
+                                             profile: .claudeCode,
+                                             interactionTargets: ["q"])
+        #expect(units.map { unitDescriptor($0) } == ["span:t1", "item:q", "span:t2"])
+        guard case let .standalone(item) = units[1] else {
+            Issue.record("expected the question to keep its own unit"); return
+        }
+        #expect(item.id == "q")
+    }
+
+    // MARK: - Thinking
+
+    @Test func reasoningMergesAcrossSerialMessagesIntoOneThinkingBlock() throws {
+        let first = try makeReasoning(id: "r1", order: 1, message: "msg-1", text: "first")
+        let tool = try makeToolItem(id: "t1", order: 2, message: "msg-1", blockIndex: 0)
+        let second = try makeReasoning(id: "r2", order: 3, message: "msg-2", text: "second")
+        let laterTool = try makeToolItem(id: "t2", order: 4, message: "msg-2", blockIndex: 0)
+        let rows = CodeMessageBuilder.rows(for: [first, tool, second, laterTool],
+                                           profile: .claudeCode)
+        #expect(rows.count == 1)
+        guard case let .reasoning(id, text, status) = rows[0].blocks[0] else {
+            Issue.record("expected one merged thinking block"); return
+        }
+        #expect(id == "r1")
+        #expect(text == "first\n\nsecond")
+        #expect(status == .done)
+        #expect(blockDescriptors(rows[0]) == ["reasoning:r1", "toolCalls"])
+        #expect(spanIDs(in: rows[0].blocks) == [["t1", "t2"]])
+    }
+
+    @Test func thinkingFromLaterSerialMessagesJoinsTheOpenMessageRow() throws {
+        // The common production shape: an assistant text message with a tool,
+        // then serial tool-only messages that each start with thinking. The
+        // thinking is transparent (rule 3), so it joins the row that is still
+        // open; the official thinking merger backscans the same way.
+        let reasoning1 = try makeReasoning(id: "r1", order: 1, message: "msg-1",
+                                           text: "plan")
+        let body = try makeBody(id: "m1", order: 2, message: "msg-1",
+                                text: "Running it.")
+        let tool1 = try makeToolItem(id: "t1", order: 3, message: "msg-1", blockIndex: 0)
+        let reasoning2 = try makeReasoning(id: "r2", order: 4, message: "msg-2",
+                                           text: "check")
+        let tool2 = try makeToolItem(id: "t2", order: 5, message: "msg-2", blockIndex: 0)
+        let reasoning3 = try makeReasoning(id: "r3", order: 6, message: "msg-3",
+                                           text: "done")
+        let tool3 = try makeToolItem(id: "t3", order: 7, message: "msg-3", blockIndex: 0)
+        let rows = CodeMessageBuilder.rows(
+            for: [reasoning1, body, tool1, reasoning2, tool2, reasoning3, tool3],
+            profile: .claudeCode)
+        #expect(rows.count == 1)
+        #expect(rows[0].id == "msg-1")
+        guard case let .reasoning(id, text, status) = rows[0].blocks[0] else {
+            Issue.record("expected one merged thinking block"); return
+        }
+        #expect(id == "r1")
+        #expect(text == "plan\n\ncheck\n\ndone")
+        #expect(status == .done)
+        #expect(blockDescriptors(rows[0]) == ["reasoning:r1", "text:m1", "toolCalls"])
+        #expect(spanIDs(in: rows[0].blocks) == [["t1", "t2", "t3"]])
+    }
+
+    @Test func aRunningReasoningRowKeepsTheMergedBlockRunning() throws {
+        let running = try makeItem(id: "r1", order: 1, type: "reasoning", status: "running",
+                                   content: ["text": "still"],
+                                   source: ["itemId": "msg-1"])
+        let tool = try makeToolItem(id: "t1", order: 2, message: "msg-1", blockIndex: 0)
+        let done = try makeReasoning(id: "r2", order: 3, message: "msg-2", text: "done")
+        let laterTool = try makeToolItem(id: "t2", order: 4, message: "msg-2", blockIndex: 0)
+        let rows = CodeMessageBuilder.rows(for: [running, tool, done, laterTool],
+                                           profile: .claudeCode)
+        guard case let .reasoning(_, text, status) = rows[0].blocks[0] else {
+            Issue.record("expected one merged thinking block"); return
+        }
+        #expect(text == "still\n\ndone")
+        #expect(status == .running)
+    }
+
+    // MARK: - Stability
+
+    @Test func replanningOneUnitIsIdempotent() throws {
+        // The adapter, the row view and the height measurer rebuild a group
+        // from the group's own rows; a unit must plan back to itself.
+        let items = [try makeReasoning(id: "r1", order: 1, message: "msg-1", text: "think"),
+                     try makeBody(id: "m1", order: 2, message: "msg-1", text: "body"),
+                     try makeToolItem(id: "t1", order: 3, message: "msg-1", blockIndex: 0),
+                     try makeToolItem(id: "t2", order: 4, message: "msg-2", blockIndex: 0),
+                     try makeReasoning(id: "r2", order: 5, message: "msg-2", text: "more"),
+                     try makeToolItem(id: "t3", order: 6, message: "msg-2", blockIndex: 0)]
+        let units = CodeMessageBuilder.units(for: items, profile: .claudeCode)
+        #expect(units.map { unitDescriptor($0) } == ["message:msg-1"])
+        for unit in units {
+            let again = CodeMessageBuilder.units(for: unit.items, profile: .claudeCode)
+            #expect(again.map { unitDescriptor($0) } == [unitDescriptor(unit)])
+            #expect(again[0].items.map(\.id) == unit.items.map(\.id))
+        }
+    }
+
+    @Test func aWindowThatStartsMidRunPlansDeterministically() throws {
+        // History pagination can hand over a suffix of a turn. The planner
+        // knows nothing about the missing earlier tools; it must not crash or
+        // invent a row, and the first surviving tool anchors the span.
+        let first = try makeToolItem(id: "t2", order: 2, message: "msg-2", blockIndex: 0)
+        let second = try makeToolItem(id: "t3", order: 3, message: "msg-3", blockIndex: 0)
+        let rows = CodeMessageBuilder.rows(for: [first, second], profile: .claudeCode)
+        #expect(rows.count == 1)
+        #expect(rows[0].id == "t2")
+        #expect(spanIDs(in: rows[0].blocks) == [["t2", "t3"]])
+    }
+
+    // MARK: - Runtime gate and grouping hand-off
+
+    @Test func anInjectedTurnBoundaryEndsTheRun() throws {
+        // Rule 6's seam: the default boundary is a user row; a future
+        // `source.turnId` line can pass its own predicate without touching
+        // the planner.
+        let first = try makeToolItem(id: "t1", order: 1, message: "msg-1", blockIndex: 0)
+        let second = try makeToolItem(id: "t2", order: 2, message: "msg-2", blockIndex: 0)
+        let units = CodeMessageBuilder.units(for: [first, second],
+                                             profile: .claudeCode,
+                                             isTurnBoundary: { $0.id == "t2" })
+        #expect(units.map { unitDescriptor($0) } == ["span:t1", "span:t2"])
+    }
+
+    @Test func onlyTheClaudeProfileMergesToolRowsAcrossMessages() throws {
+        #expect(CodeRuntimeProfile.claudeCode.mergesToolRowsAcrossMessages)
+        for profile in [CodeRuntimeProfile.codex, .dsh, .generic] {
+            #expect(!profile.mergesToolRowsAcrossMessages, "\(profile.family)")
+        }
+
+        let first = try makeToolItem(id: "t1", order: 1, message: "msg-1", blockIndex: 0)
+        let second = try makeToolItem(id: "t2", order: 2, message: "msg-2", blockIndex: 0)
+        #expect(CodeMessageBuilder.rows(for: [first, second], profile: .claudeCode).count == 1)
+        let codexRows = CodeMessageBuilder.rows(for: [first, second], profile: .codex)
+        #expect(codexRows.count == 2)
+        #expect(codexRows.map(\.id) == ["msg-1", "msg-2"])
+    }
+
+    @Test func codeGroupsGroupSerialToolsIntoOneSpan() throws {
+        // `TimelineGrouping.codeGroups` must reuse the planner, so the
+        // collection identity and the row builder agree on the unit list.
+        let first = try makeToolItem(id: "t1", order: 1, message: "msg-1", blockIndex: 0)
+        let second = try makeToolItem(id: "t2", order: 2, message: "msg-2", blockIndex: 0)
+        let models = [ChatTimelineRowModel(first), ChatTimelineRowModel(second)]
+        let groups = TimelineGrouping.codeGroups(models, profile: .claudeCode,
+                                                 interactionTargets: [])
+        #expect(groups.count == 1)
+        #expect(groups[0].explicitID == "t1")
+        #expect(groups[0].rows.map(\.id) == ["t1", "t2"])
+    }
+
+    @Test func codeGroupsKeepATransientQuestionAsItsOwnGroup() throws {
+        let first = try makeToolItem(id: "t1", order: 1, message: "msg-1", blockIndex: 0)
+        let question = try makeToolItem(id: "q", order: 2, message: "msg-2", blockIndex: 0,
+                                        name: "AskUserQuestion", status: "running")
+        let second = try makeToolItem(id: "t2", order: 3, message: "msg-3", blockIndex: 0)
+        let models = [ChatTimelineRowModel(first), ChatTimelineRowModel(question),
+                      ChatTimelineRowModel(second)]
+        let groups = TimelineGrouping.codeGroups(models, profile: .claudeCode,
+                                                 interactionTargets: ["q"])
+        #expect(groups.count == 3)
+        #expect(groups.map(\.explicitID) == ["t1", nil, "t2"])
+        #expect(groups[1].rows.map(\.id) == ["q"])
     }
 }

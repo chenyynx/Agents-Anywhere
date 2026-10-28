@@ -77,6 +77,14 @@
 - 摘要：类别首次出现序、`", "` 连接、**最多 3 类 + 失败优先**；文件类按去重路径计数，其余按调用 id；失败逐类内联 `(N failed)` / `（N 项失败）`；单条是动词+目标；`serverSummary` 非空整行替换（AA 无此数据）[E]。
 - **跨 API assistant 消息合并：MERGE [E，1.261019.51 / 1.261023.20]**。工具块合并函数 `0x102fa3c24`（1019 `0x102c669dc`）跨 `DisplayMessage` 回扫，跳过 `thinkingContent`(tag3)、并入 `toolCalls`(tag2)；停止条件为 `endsTurn`(+0x62)、非 assistant 且 blocks 空、其它块。`apiMessageIds` 仍为单元素 Set（round27 A 静态闭合），消息级不合并、块级合并。
 
+### 1.4 round28 残余证据（R2，2026-10-28）
+
+- **单目标（已闭合，E）**：1023 的 summary/label 路径**没有** 1005 的 `count==1 || 全部 target 相同` 谓词。`0x1031412e4` 的 `x2` 是代表调用的 `Optional<GitOperation>` 判别字节：`0xff`(nil) → 动词+目标；`0..11` → 12 种 git 动词且不带目标。代表调用 = 最后一个 `running`，否则最后一个。同 target 合并只存在于**详情列表** `ToolCallRun`（相邻同 category + 同 target，`0x102d3a648`）。AA 无 `gitOperation` 数据源，按宁缺勿假保持现有单目标近似；不实现 git 动词。
+- **同一 assistant 消息内 text↔tool 交错（契约级遗留）**：官方按 Block 序列把 span 切开；AA 服务端 v2_43 的 RBT 重排已丢失原始 block 顺序，纯客户端无法还原。要 1:1 需 connector 给 body/reasoning 带 `blockIndex` 且 server 保留原始顺序，属跨端契约改动，本批不做。
+- **AA 看不到的断组块**：`contextUsage` / `usageReport` / `commandOutput` / `error` / `threadReplies` / 未投影卡片在官方断组，AA 可能无对应行 → 过度合并风险中高；现有生产数据未见样本，记录并留 LLDB/抓包方案。
+- **narration**：CLI 2.1.311 会下发非空 `narration_block_indexes`（服务端把 thinking signature 标成 narration 时）；其效果是「工具之间插入不合并的思考块」，`thinkingContent` 透明，**不影响工具分组**；AA 无该字段，差异只在思考行是否合并（已知）。
+- 验证方案见 `/home/ubuntu/aa-test/claude-ios-re/EVIDENCE/round28/residual-break-signals.md` §A.7/§C.4。
+
 ---
 
 ## 2. AA 现状

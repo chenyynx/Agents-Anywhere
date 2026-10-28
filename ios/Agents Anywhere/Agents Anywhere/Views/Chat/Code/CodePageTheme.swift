@@ -68,10 +68,10 @@ nonisolated enum CodePageTheme {
     /// [E] R28 §1.2 — the leading `IconFrame` regular slot is 24 x 24 pt.
     static let toolRowIconFrameSize: CGFloat = 24
 
-    /// [E] R28 U-B.1 + pp device measurement (2026-10-28) — the caret is
-    /// `Icon.Size.medium`, i.e. a **20 x 20 pt icon box** with the artwork
-    /// aspect-fitted inside it, not the 8 x 15 pt drawn extent. The outer
-    /// frame stays 24 pt tall.
+    /// [E] R28 U-B.1 / §U 收口三 — the caret is the `anthropicon.caretRight`
+    /// descriptor (`0x100bbfb60`) at `Icon.Size.medium` (`w0 = 1`), i.e. a
+    /// **20 x 20 pt icon box** with the artwork aspect-fitted inside it. The
+    /// outer frame is `.frame(height: 24)` (`0x101e3eaa0`), no rotation.
     static let toolRowCaretSlotSize: CGFloat = 20
     static let toolRowCaretFrameHeight: CGFloat = 24
 
@@ -330,6 +330,33 @@ nonisolated enum CodePageTheme {
         body: markdownBodySize,
         lineSpacing: markdownLineSpacing,
         paragraphSpacing: markdownParagraphSpacing,
+        headings: markdownHeadings,
+        inlineCodeRatio: markdownInlineCodeSize / markdownBodySize,
+        codeBlockRatio: markdownCodeBlockSize / markdownBodySize,
+        codeBlockLineSpacingRatio: markdownCodeBlockLineSpacing / markdownCodeBlockSize,
+        inlineCodePin: markdownInlineCodeSize,
+        codeBlockPin: markdownCodeBlockSize)
+    }
+
+    /// [E] R28 §U 收口三 — the detail `thinkingText` renders through
+    /// `ClaudeRichMarkdown.MarkdownText` (`0x101be0ccc`) with 15.0 pt /
+    /// weight 400 / lineHeight 21.0, relative `.body`
+    /// (`0x100b6a998`; constants `0x100b6ab48` / `0x100b6abc8` /
+    /// `0x100b6ac5c`; `.body` GOT `0x10748c858`), ink `text100`/`text300`.
+    /// The Code message body keeps its own 17/27.2 preset — a different
+    /// official component.
+    ///
+    /// U for this surface: paragraph spacing, heading sizes and the
+    /// inline-code/code-block presets are not decoded; they reuse the Code
+    /// page ratios, while body size and line height are the decoded values.
+    static var toolRowSansFont: UIFont {
+        MarkdownFontFactory.font(name: sansFontName,
+                                 size: toolRowFontSize, weight: 400)
+    }
+    static var thinkingMarkdownScale: ChatTypeScale { ChatTypeScale(
+        body: toolRowFontSize,
+        lineSpacing: max(0, toolRowTextLineHeight - toolRowSansFont.lineHeight),
+        paragraphSpacing: toolRowFontSize,
         headings: markdownHeadings,
         inlineCodeRatio: markdownInlineCodeSize / markdownBodySize,
         codeBlockRatio: markdownCodeBlockSize / markdownBodySize,

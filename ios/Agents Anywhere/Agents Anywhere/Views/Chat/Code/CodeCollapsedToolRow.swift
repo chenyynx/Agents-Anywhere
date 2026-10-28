@@ -3,36 +3,43 @@ import UIKit
 
 // The Code page's collapsed row, shared by tool calls and thinking blocks.
 //
-// Official structure (R28 §1 + pp device screenshots of 1.261019.51,
-// 2026-10-28): `Button(CollapsedStepsRow)` with
-// `.buttonStyle(TapTargetButtonStyle)`; the row is always collapsed and a tap
-// opens the detail, never an in-place expansion. Body = a single HStack
-// (alignment `.center`, no explicit spacing), an optional leading `IconFrame`
-// at the regular 24×24 slot, the label, the caret when `hasDetails`, then a
-// spacer. The device captures settle two visible rules the static spec did
-// not: a **settled tool row draws no category icon and no status check**
-// (text + caret only), while a **running row keeps its category icon** and
-// also draws no check. A thinking row keeps its `extendedThinking` icon.
+// Official structure (1023 static analysis, R28 §1 / §U 收口三):
+// `Button(CollapsedStepsRow)` with `.buttonStyle(TapTargetButtonStyle)`; the
+// row is always collapsed and a tap opens the detail, never an in-place
+// expansion. Body = a single HStack (alignment `.center`, no explicit
+// spacing): the leading `ConditionalContent<IconFrame, WorkingMarkSlot…>`
+// slot, the label, `TimelineStatusGlyph`, an optional `DiffIndicator`, the
+// caret when `hasDetails`, then a spacer.
+//
+// 1023 construction evidence for the two rules this row once guessed wrong:
+// both row builds — the tool packer `0x1033b901c` and the summary direct path
+// `0x1033b8b20` — pass a concrete non-nil icon into the row init
+// (`0x101e3dbd8`), so a settled row keeps its category icon; the slot only
+// swaps to the working mark while a mark is seated. And `TimelineStatusGlyph`
+// is a fixed tuple element of the row body (not behind a row-level
+// condition); its body is `ConditionalContent<FailureGlyph, Image>` whose
+// non-failure branch is `Image(systemName: "checkmark")` with
+// `.fontWeight(.semibold)` and `accentSecondary100`.
 //
 // The only outer padding is `.padding(.vertical, 6)`; the official view
 // carries no `minHeight` and no background/corner radius, so the row's height
 // is the natural content height: 24 + 12 = 36 pt with an icon/caret, 21 + 12 =
 // 33 pt for pure text.
 //
-// Every visible constant is from R28 (`visual-spec.md` §1–§4, §U) or the
-// device captures listed above.
+// Every visible constant is from R28 (`visual-spec.md` §1–§4, §U 收口二/三)
+// or the 1023 construction points above.
 
 /// One run of the collapsed row's label. The official label is an
 /// `AttributedString` with at most two runs (verb / target) or a per-category
 /// summary; the view maps these semantic runs to fonts and token colours.
 nonisolated struct CodeToolLabelRun: Equatable {
     nonisolated enum Role: Equatable {
-        /// `text400` — the single-target verb. The device capture measures
-        /// this run at the row's body colour, not the summary's `text300`.
+        /// `text300` — the verb run. 1023 label colours: the summary's
+        /// non-target runs (verb / category phrase / separator) use `text300`
+        /// (`0x100b4e334`); AA previously painted the verb `text400`.
         case primary
-        /// `text300` — multi-category summary phrases and separators.
-        /// TODO(1023 multi-category screenshot): keep `text300` until the
-        /// official multi-class summary is captured pixel-for-pixel.
+        /// `text300` — multi-category summary phrases and separators
+        /// (`0x100b4e334`, R28 §U 收口二 二-B).
         case secondary
         /// `text100` — the summary's target run (path / command / query).
         case target
@@ -59,8 +66,8 @@ nonisolated enum CodeFailureExtent: Hashable {
 
 extension CodeToolLabelRun {
     /// Renders the semantic runs with the official fonts and tokens. Shared
-    /// by the collapsed row and the group-detail list so the single-target
-    /// verb (`text400`) and target (`text100`) can never drift between them.
+    /// by the collapsed row and the group-detail list so the verb (`text300`)
+    /// and target (`text100`) can never drift between them.
     static func styledText(_ runs: [CodeToolLabelRun],
                            scheme: ColorScheme) -> Text {
         var text = Text("")
@@ -83,7 +90,7 @@ extension CodeToolLabelRun {
     private static func color(for role: Role, scheme: ColorScheme) -> Color {
         switch role {
         case .primary:
-            return CodePageTheme.text400Color.resolved(for: scheme)
+            return CodePageTheme.text300Color.resolved(for: scheme)
         case .secondary:
             return CodePageTheme.text300Color.resolved(for: scheme)
         case .target:
@@ -98,13 +105,15 @@ extension CodeToolLabelRun {
 ///
 /// Field list follows R28 §1.1 exactly. Two fields are hooks, not guessed
 /// values:
-/// - `workingMark`: a seated mark replaces the leading icon; only the 20×20
-///   content box and 30 fps cadence are decoded (D2/D3), so the slot renders
-///   a frame-less skeleton instead of the retired 1019 artwork. Product rows
-///   keep the category icon while running (device capture), so they pass nil.
-/// - `TimelineStatusGlyph` is not drawn in the device captures: neither a
-///   settled nor a running row shows the checkmark; the failure glyph branch
-///   is UNKNOWN (D6) and stays empty until the artwork/colour are read.
+/// - `workingMark`: a seated mark replaces the leading icon
+///   (`ConditionalContent<IconFrame, WorkingMarkSlot…>`); only the 20×20
+///   content box and the 30 fps cadence are decoded (D2/D3), so the slot
+///   renders a frame-less skeleton instead of the retired 1019 artwork. AA
+///   passes nil because no decoded predicate maps a live pose to the mark yet.
+/// - `TimelineStatusGlyph` is a fixed element of the official row body. Its
+///   non-failure branch is `Image(systemName: "checkmark")` semibold in
+///   `accentSecondary100`; the `FailureGlyph` branch (failed / partial) is
+///   UNKNOWN artwork (D6) and stays empty until asset/colour/frame are read.
 struct CodeCollapsedStepsRow: View {
     var icon: String?
     var iconSize: AnthropiconSize = .large
@@ -116,7 +125,6 @@ struct CodeCollapsedStepsRow: View {
     var hasDetails: Bool
     var diffIndicator: CodeDiffStat?
     var workingMark: WorkingMarkBody?
-    var keepsIcon: Bool = false
     var isTextHidden: Bool = false
     /// D10 (R28 §U 收口二 二-E): the official `ToolRowCompanions` container
     /// draws settled rows first and `AttachmentTiles` second, and skips the
@@ -152,11 +160,8 @@ struct CodeCollapsedStepsRow: View {
                         .modifier(CodeCollapsedRowShimmer(active: isRunning))
                 }
 
-                if Self.drawsStatusGlyph(status: status,
-                                        failureExtent: failureExtent) {
-                    CodeTimelineStatusGlyph(status: status,
-                                            failureExtent: failureExtent)
-                }
+                CodeTimelineStatusGlyph(status: status,
+                                        failureExtent: failureExtent)
 
                 if let diffIndicator, diffIndicator.hasCounts {
                     CodeDiffIndicator(stat: diffIndicator)
@@ -184,20 +189,21 @@ struct CodeCollapsedStepsRow: View {
                                                 voiceControlName: voiceControlName))
     }
 
-    /// Device evidence (pp, 1.261019.51): a settled tool row shows text + caret
-    /// only; the category icon appears only while the row is running. A
-    /// thinking row keeps its icon through `keepsIcon`.
-    static func drawsLeadingIcon(isRunning: Bool, keepsIcon: Bool) -> Bool {
-        isRunning || keepsIcon
-    }
-
-    /// Device evidence: a successful or running row draws no
-    /// `TimelineStatusGlyph`. Only the `.failed`/`.partial` branch reaches the
-    /// glyph view, and that view is still the empty D6 hook until the
-    /// FailureGlyph artwork is read.
-    static func drawsStatusGlyph(status: CodeToolStatus,
-                                 failureExtent: CodeFailureExtent?) -> Bool {
-        failureExtent != nil
+    /// 1023 `TimelineStatusGlyph` branch. The row body always carries the
+    /// glyph (fixed tuple element); the view itself chooses between the
+    /// `FailureGlyph` branch and the decoded `checkmark` branch.
+    ///
+    /// - `.failed` / any non-nil extent → `FailureGlyph` (D6 hook: artwork,
+    ///   colour and frame are UNKNOWN, so nothing is drawn yet).
+    /// - `.complete` → `checkmark` (E: non-failure branch of the glyph body).
+    /// - `.running` → nothing. Whether a running call renders this row at all
+    ///   is not decoded (the running build path is U), so no unproven mark is
+    ///   drawn; this is a hook, not a visual claim.
+    static func statusGlyphKind(status: CodeToolStatus,
+                                failureExtent: CodeFailureExtent?) -> CodeStatusGlyphKind {
+        if status == .failed || failureExtent != nil { return .failure }
+        if status == .complete { return .checkmark }
+        return .none
     }
 
     /// [E] R28 §1.2 — `IconFrame` regular 24×24; the glyph inside keeps its
@@ -205,7 +211,7 @@ struct CodeCollapsedStepsRow: View {
     /// thinking row and large for tool category icons.
     @ViewBuilder
     private var leadingSlot: some View {
-        if let workingMark, !keepsIcon {
+        if let workingMark {
             // The official first slot is `ConditionalContent<IconFrame,
             // WorkingMarkSlot + ZStack<WorkingMarkView>>`: a seated mark
             // replaces the category icon. D2/D3: only the 20×20 content box
@@ -213,8 +219,7 @@ struct CodeCollapsedStepsRow: View {
             // UNKNOWN, so the skeleton draws no frames yet (do not reuse the
             // retired 1019 mark, R28 §6).
             CodeWorkingMarkSkeleton(mark: workingMark)
-        } else if let icon,
-                  Self.drawsLeadingIcon(isRunning: isRunning, keepsIcon: keepsIcon) {
+        } else if let icon {
             AnthropiconView(name: icon, size: iconSize)
                 .foregroundStyle(CodePageTheme.text500Color
                     .resolved(for: colorScheme))
@@ -225,10 +230,10 @@ struct CodeCollapsedStepsRow: View {
 
 }
 
-/// The collapsed row's caret: the official `Icon.Size.medium` 20 x 20 icon
-/// box with the artwork aspect-fitted inside, wrapped in a 24 pt tall frame
-/// (`R28 §U-A.1`, corrected by the pp device measurement 2026-10-28). No
-/// rotation; ink is `text400`.
+/// The collapsed row's caret: `anthropicon.caretRight` (`0x100bbfb60`) at
+/// `Icon.Size.medium` (20 x 20 pt icon box, artwork aspect-fitted) inside a
+/// 24 pt tall frame (`0x101e3eaa0`). No rotation; ink is `text400`
+/// (`0x101e3ead0` → `0x100b50c28`).
 struct CodeRowCaret: View {
     @Environment(\.colorScheme) private var colorScheme
 
@@ -295,26 +300,50 @@ private struct CodeCollapsedRowAccessibility: ViewModifier {
     }
 }
 
-/// The official `TimelineStatusGlyph` (`R28 §4.3`), kept as the D6 hook.
+/// Which branch of the official `TimelineStatusGlyph`
+/// (`ConditionalContent<FailureGlyph, Image>`) a row takes.
+nonisolated enum CodeStatusGlyphKind: Equatable {
+    /// `Image(systemName: "checkmark")`, `.fontWeight(.semibold)`,
+    /// `accentSecondary100` — E from the 1023 non-failure branch.
+    case checkmark
+    /// `FailureGlyph` — artwork, colour and frame still UNKNOWN (D6).
+    case failure
+    /// Running: the official construction for that state is not decoded.
+    case none
+}
+
+/// The official `TimelineStatusGlyph` (`R28 §4.3` + 1023 row construction).
 ///
-/// The static spec read a `checkmark` in the non-failure branch, but the pp
-/// device captures of both a settled row and a running row (1.261019.51) show
-/// no check at all. The visible rule is therefore "no glyph on success or
-/// running"; the failure glyph remains UNKNOWN (D6).
+/// The view is always present in the row body; this wrapper renders the
+/// decoded non-failure branch (`checkmark` ink) and keeps the `FailureGlyph`
+/// branch as the empty D6 hook.
 ///
 /// Still UNKNOWN (D6): the `FailureGlyph` artwork for `.failed`/`.partial`,
 /// its foreground token and its frame size. Do not substitute a warning
-/// symbol or `danger00`; `drawsStatusGlyph` keeps the whole view out of the
-/// row until the artwork is read.
+/// symbol or `danger00`. The checkmark's font size is likewise undecoded; the
+/// image renders at its natural semibold size with no explicit frame.
 struct CodeTimelineStatusGlyph: View {
     let status: CodeToolStatus
     let failureExtent: CodeFailureExtent?
 
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
-        // TODO(D6): FailureGlyph(extent:size:) — asset/glyph, colour and frame
-        // size are UNKNOWN; `0x101e913c0` is the Thumbnail body and must not be
-        // used here. The non-failure branch is empty per the device captures.
-        EmptyView()
+        switch CodeCollapsedStepsRow.statusGlyphKind(status: status,
+                                                     failureExtent: failureExtent) {
+        case .checkmark:
+            Image(systemName: "checkmark")
+                .fontWeight(.semibold)
+                .foregroundStyle(CodePageTheme.accentSecondary100Color
+                    .resolved(for: colorScheme))
+        case .failure:
+            // TODO(D6): FailureGlyph(extent:size:) — asset/glyph, colour and
+            // frame size are UNKNOWN; `0x101e913c0` is the Thumbnail body and
+            // must not be used here.
+            EmptyView()
+        case .none:
+            EmptyView()
+        }
     }
 }
 
@@ -370,7 +399,6 @@ struct CodeCollapsedToolRow: View {
             hasDetails: hasDetails,
             diffIndicator: label.diff,
             workingMark: workingMark,
-            keepsIcon: false,
             isTextHidden: false,
             includesImages: false,
             voiceControlName: nil,

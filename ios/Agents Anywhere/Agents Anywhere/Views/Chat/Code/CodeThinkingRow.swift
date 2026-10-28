@@ -33,10 +33,6 @@ struct CodeThinkingRow: View {
             hasDetails: true,
             diffIndicator: nil,
             workingMark: nil,
-            // The thinking row is never "running" in the persistent block,
-            // but it keeps its `extendedThinking` glyph like the official
-            // device capture (the icon rule otherwise applies to tool rows).
-            keepsIcon: true,
             isTextHidden: false,
             includesImages: false,
             voiceControlName: nil,

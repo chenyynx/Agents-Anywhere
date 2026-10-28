@@ -167,10 +167,10 @@ struct CodeMessageRowView: View {
     /// (EVIDENCE/round19/bubble-layout.md:89). The only separator is the
     /// inter-block gap.
     private func blockStack(_ row: RenderedRow) -> some View {
-        // The official span detail (pp device screenshot of 1.261019.51)
-        // repeats the group's thinking text above its call list. The block
-        // model keeps reasoning and toolCalls as siblings, so the reasoning
-        // text is threaded into the first toolCalls block at render time.
+        // The official span detail carries the group's thinking text above
+        // its call list (I-high, R28 §U 收口三). The block model keeps
+        // reasoning and toolCalls as siblings, so the reasoning text is
+        // threaded into the first toolCalls block at render time.
         // Only the first block receives it: one message's thinking precedes
         // its tool list once, even when a special segment splits the calls.
         let thinkingText = row.blocks.compactMap { block -> String? in
@@ -313,14 +313,14 @@ struct CodeMessageRowView: View {
         return CodeCollapsedToolRow(label: label,
                                     // [E] R28 §4.1 — a tool row carries its
                                     // category icon in the 24 pt slot; a
-                                    // mixed span uses listBullet. The row
-                                    // draws it only while running (device
-                                    // capture); a settled row is text+caret.
+                                    // mixed span uses listBullet. The 1023
+                                    // packer passes a concrete icon for every
+                                    // row state, so the slot is never empty.
                                     icon: CodeToolLabels.anthropicon(for: calls),
-                                    // The pp device capture shows the
-                                    // category icon on a running row, not the
-                                    // working-mark slot the 1023 static spec
-                                    // describes; the mark stays a D2/D3 hook.
+                                    // A seated working mark would replace the
+                                    // category icon; AA has no decoded pose
+                                    // mapping yet, so the mark stays a D2/D3
+                                    // hook and the icon renders.
                                     workingMark: nil,
                                     status: status,
                                     failureExtent: failureExtent,
@@ -590,11 +590,10 @@ nonisolated enum CodeToolLabels {
     ///   out in `text300`;
     /// - a partially failed category keeps `text300` and always carries the
     ///   `ccr_summary_failed_count` suffix;
-    /// - the single-target verb is `text400` (pp device capture, 2026-10-28)
-    ///   and its target `text100`; both turn `danger00` only when the call
-    ///   failed and colour is allowed to carry that meaning. Multi-category
-    ///   summary phrases stay `text300` until a 1023 multi-class screenshot
-    ///   closes their token;
+    /// - the single-target verb is `text300` (`0x100b4e334`) and its target
+    ///   `text100`; both turn `danger00` only when the call failed and colour
+    ///   is allowed to carry that meaning. Multi-category summary phrases are
+    ///   the same `text300` token (R28 §U 收口二 二-B);
     /// - an empty label falls back to `ccr_collapsed_steps_title`.
     static func runs(for label: CodeToolRowLabel,
                      differentiateWithoutColor: Bool) -> [CodeToolLabelRun] {

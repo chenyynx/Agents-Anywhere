@@ -51,13 +51,10 @@ struct CodeCollapsedRowFixture: Identifiable {
     /// The row's exact default-size height from the R28 layout: the tallest
     /// child (24 pt icon/caret slot, 21 pt text line) plus 6 pt padding a
     /// side. A row with neither a drawn icon nor a caret is the 33 pt
-    /// pure-text case. A settled tool row passes its category icon but does
-    /// not draw it (device evidence), so only a running or thinking row counts
-    /// the icon here.
+    /// pure-text case. Every 1023 tool row is built with a concrete icon
+    /// (`0x1033b901c` / `0x1033b8b20`), so any row with an icon measures 36.
     var expectedDefaultHeight: CGFloat {
-        let drawsIcon = icon != nil
-            && (label.isRunning || kind == .thinking)
-        return (drawsIcon || hasDetails) ? 36 : 33
+        (icon != nil || hasDetails) ? 36 : 33
     }
 }
 
@@ -837,28 +834,25 @@ final class CodeProfileAutoRunModel {
                   "collapsedRows icon: \(actual), expected \(expected)")
         }
 
-        // 9. Row-shape rules from the pp device captures (2026-10-28):
-        // settled tool rows are text + caret only, running rows keep the
-        // category icon, thinking rows keep `extendedThinking`, and no row
-        // draws the status check. The caret is a 20x20 icon box in a 24 pt
-        // frame.
-        check(!CodeCollapsedStepsRow.drawsLeadingIcon(isRunning: false,
-                                                      keepsIcon: false),
-              "collapsedRows rule: a settled tool row drew its category icon")
-        check(CodeCollapsedStepsRow.drawsLeadingIcon(isRunning: true,
-                                                     keepsIcon: false),
-              "collapsedRows rule: a running row lost its category icon")
-        check(CodeCollapsedStepsRow.drawsLeadingIcon(isRunning: false,
-                                                     keepsIcon: true),
-              "collapsedRows rule: a thinking row lost its icon")
-        for status in [CodeToolStatus.complete, .running, .failed] {
-            check(!CodeCollapsedStepsRow.drawsStatusGlyph(status: status,
-                                                          failureExtent: nil),
-                  "collapsedRows rule: \(status) drew the status glyph")
-        }
-        check(CodeCollapsedStepsRow.drawsStatusGlyph(status: .failed,
-                                                     failureExtent: .failed),
+        // 9. Row-shape rules from the 1023 row construction: the tool packer
+        // (`0x1033b901c`) and the summary direct path (`0x1033b8b20`) both
+        // pass a concrete icon into the row init, so the leading icon is
+        // never omitted. `TimelineStatusGlyph` is a fixed element of the row
+        // body; its non-failure branch is the semibold checkmark and the
+        // FailureGlyph branch stays the D6 hook. The caret is a 20x20 icon
+        // box in a 24 pt frame.
+        check(CodeCollapsedStepsRow.statusGlyphKind(status: .complete,
+                                                    failureExtent: nil) == .checkmark,
+              "collapsedRows rule: a settled row lost its checkmark branch")
+        check(CodeCollapsedStepsRow.statusGlyphKind(status: .failed,
+                                                    failureExtent: nil) == .failure,
               "collapsedRows rule: the D6 failure-glyph hook was removed")
+        check(CodeCollapsedStepsRow.statusGlyphKind(status: .complete,
+                                                    failureExtent: .partial) == .failure,
+              "collapsedRows rule: a partial extent lost the failure branch")
+        check(CodeCollapsedStepsRow.statusGlyphKind(status: .running,
+                                                    failureExtent: nil) == .none,
+              "collapsedRows rule: a running row drew an unproven glyph")
         check(CodePageTheme.toolRowCaretSlotSize == 20
                 && CodePageTheme.toolRowCaretFrameHeight == 24,
               "collapsedRows rule: caret slot \(CodePageTheme.toolRowCaretSlotSize)"

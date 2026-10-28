@@ -25,8 +25,10 @@ import Foundation
 /// row pushes `CodeToolCallDetailView`.
 struct CodeToolGroupDetailView: View {
     let calls: [CodeToolCall]
-    /// Settled thinking text that belongs to the group; the official group
-    /// screenshot places it above the call list.
+    /// Settled thinking text that belongs to the group. The official detail
+    /// carries a `thinkingText` rendered above the call list (I-high, R28
+    /// §U 收口三; the leaf Typography for that path is E: 15/400/21 relative
+    /// `.body`, `text100`/`text300`).
     let thinkingText: String?
     let cwd: String?
 
@@ -40,9 +42,7 @@ struct CodeToolGroupDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: CodePageTheme.blockSpacing) {
                     if let thinkingText, !thinkingText.isEmpty {
-                        ChatMarkdownView(text: thinkingText,
-                                         isStreaming: false,
-                                         resolvesFileReferences: true)
+                        CodeThinkingMarkdownView(text: thinkingText)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     LazyVStack(spacing: 0) {
@@ -89,8 +89,11 @@ struct CodeToolGroupDetailView: View {
 }
 
 /// One call row inside the group list: category icon + single-call label +
-/// caret. The official `ToolCallRunRow` typography/colours are the D9 hook;
-/// 15 pt text is the one decoded Code text preset.
+/// caret. The row box is the decoded 1023 `TimelineRow`: 8 pt vertical
+/// padding and a 16 pt icon/content gap (E). The list container is a
+/// `List`/`PlainListStyle` in the official view with hidden separators (E),
+/// but its `PlainListRowInsets` value is U, so AA keeps the equivalent
+/// VStack geometry rather than introducing unverifiable insets.
 struct CodeToolGroupCallRow: View {
     let call: CodeToolCall
     let cwd: String?
@@ -128,8 +131,8 @@ struct CodeToolGroupCallRow: View {
 }
 
 /// Maps the semantic label runs to the row fonts and tokens. Shared by the
-/// collapsed row and the group list so the single-target verb is `text400`
-/// and the target `text100` in both places.
+/// collapsed row and the group list so the verb is `text300` and the target
+/// `text100` in both places.
 struct CodeToolLabelText: View {
     let runs: [CodeToolLabelRun]
 
@@ -334,7 +337,11 @@ struct CodeToolDetailView: View {
 /// preset (the collapsed row's 15/400/21), used as the placeholder so one
 /// probe replaces this block.
 private enum CodeDetailRowHooks {
+    /// [E] 1023 `TimelineRow` — the content HStack spacing is 16 pt
+    /// (`0x100fd6958` → `0x100b60408`).
     static let iconSpacing: CGFloat = 16
+    /// [E] 1023 `TimelineRow` — vertical padding 8 pt (`0x100fd6638`
+    /// writes `0x105a68218`, applied at `0x100fd6a90`).
     static let verticalPadding: CGFloat = 8
     static let textSize: CGFloat = CodePageTheme.toolRowFontSize
     static let textStyle: Font.TextStyle = CodePageTheme.toolRowBodyTextStyle

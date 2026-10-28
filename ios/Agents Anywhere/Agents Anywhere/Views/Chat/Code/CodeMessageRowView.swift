@@ -167,9 +167,27 @@ struct CodeMessageRowView: View {
     /// (EVIDENCE/round19/bubble-layout.md:89). The only separator is the
     /// inter-block gap.
     private func blockStack(_ row: RenderedRow) -> some View {
-        VStack(alignment: .leading, spacing: CodePageTheme.blockGap) {
-            ForEach(Array(row.blocks.enumerated()), id: \.offset) { _, block in
-                blockView(block)
+        // The official span detail (pp device screenshot of 1.261019.51)
+        // repeats the group's thinking text above its call list. The block
+        // model keeps reasoning and toolCalls as siblings, so the reasoning
+        // text is threaded into the first toolCalls block at render time.
+        // Only the first block receives it: one message's thinking precedes
+        // its tool list once, even when a special segment splits the calls.
+        let thinkingText = row.blocks.compactMap { block -> String? in
+            guard case let .reasoning(_, text, status) = block,
+                  status == .done, !text.isEmpty else { return nil }
+            return text
+        }.joined(separator: "\n\n")
+        let firstToolIndex = row.blocks.firstIndex { block in
+            if case .toolCalls = block { return true }
+            return false
+        }
+        let groupThinking = thinkingText.isEmpty ? nil : thinkingText
+        return VStack(alignment: .leading, spacing: CodePageTheme.blockGap) {
+            ForEach(Array(row.blocks.enumerated()), id: \.offset) { index, block in
+                blockView(block,
+                          groupThinkingText: index == firstToolIndex
+                              ? groupThinking : nil)
             }
         }
     }
@@ -220,7 +238,8 @@ struct CodeMessageRowView: View {
     // MARK: - Blocks
 
     @ViewBuilder
-    private func blockView(_ block: CodeMessageRow.Block) -> some View {
+    private func blockView(_ block: CodeMessageRow.Block,
+                           groupThinkingText: String? = nil) -> some View {
         switch block {
         case let .reasoning(id, text, status):
             if status == .done {
@@ -248,8 +267,13 @@ struct CodeMessageRowView: View {
             // settled tasks nor attachment images, so no companions child is
             // built here; the empty-tiles condition and stack spacing stay U.
             VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
-                    toolRow(segment)
+                ForEach(Array(segments.enumerated()), id: \.offset) { index, segment in
+                    // The thinking text belongs to the block, not to every
+                    // span a special segment splits off: the first span's
+                    // group page carries it.
+                    toolRow(segment,
+                            groupThinkingText: index == 0
+                                ? groupThinkingText : nil)
                 }
             }
 
@@ -267,7 +291,8 @@ struct CodeMessageRowView: View {
         }
     }
 
-    private func toolRow(_ segment: CodeToolSegment) -> some View {
+    private func toolRow(_ segment: CodeToolSegment,
+                         groupThinkingText: String? = nil) -> some View {
         let calls = CodeToolLabels.calls(in: segment)
         let label = CodeToolLabels.label(for: calls, cwd: cwd)
         let failed = calls.filter { $0.status == .failed }.count
@@ -285,23 +310,25 @@ struct CodeMessageRowView: View {
         let failureExtent: CodeFailureExtent? = failed == 0
             ? nil
             : (failed == calls.count ? .failed : .partial)
-        // A running span seats the working mark in the leading slot; the pose
-        // comes from the official `CodeWorkingMarkPose` predicate. Its frame
-        // sequence is still UNKNOWN (D2/D3), so the view draws the skeleton.
-        let workingMark = label.isRunning
-            ? calls.last(where: { $0.status == .running })
-                .map { CodeWorkingMarkPose.body(forToolName: $0.name) }
-            : nil
         return CodeCollapsedToolRow(label: label,
-                                    // [E] R28 §4.1 — every tool row carries
-                                    // its category icon in the 24 pt slot;
-                                    // a mixed span uses listBullet.
+                                    // [E] R28 §4.1 — a tool row carries its
+                                    // category icon in the 24 pt slot; a
+                                    // mixed span uses listBullet. The row
+                                    // draws it only while running (device
+                                    // capture); a settled row is text+caret.
                                     icon: CodeToolLabels.anthropicon(for: calls),
-                                    workingMark: workingMark,
+                                    // The pp device capture shows the
+                                    // category icon on a running row, not the
+                                    // working-mark slot the 1023 static spec
+                                    // describes; the mark stays a D2/D3 hook.
+                                    workingMark: nil,
                                     status: status,
                                     failureExtent: failureExtent,
                                     hasDetails: !calls.isEmpty) {
-            if let request = CodeToolDetailRequest(calls: calls) { onToolDetail(request) }
+            if let request = CodeToolDetailRequest(calls: calls,
+                                                   thinkingText: groupThinkingText) {
+                onToolDetail(request)
+            }
         }
     }
 
@@ -563,8 +590,11 @@ nonisolated enum CodeToolLabels {
     ///   out in `text300`;
     /// - a partially failed category keeps `text300` and always carries the
     ///   `ccr_summary_failed_count` suffix;
-    /// - the single-target shape paints both runs `danger00` only when the
-    ///   call failed and colour is allowed to carry that meaning;
+    /// - the single-target verb is `text400` (pp device capture, 2026-10-28)
+    ///   and its target `text100`; both turn `danger00` only when the call
+    ///   failed and colour is allowed to carry that meaning. Multi-category
+    ///   summary phrases stay `text300` until a 1023 multi-class screenshot
+    ///   closes their token;
     /// - an empty label falls back to `ccr_collapsed_steps_title`.
     static func runs(for label: CodeToolRowLabel,
                      differentiateWithoutColor: Bool) -> [CodeToolLabelRun] {
@@ -595,7 +625,7 @@ nonisolated enum CodeToolLabels {
         if !verb.isEmpty, hasTarget { verb += " " }
         if !verb.isEmpty {
             runs.append(CodeToolLabelRun(text: verb,
-                                         role: failedColorOnly ? .failure : .secondary,
+                                         role: failedColorOnly ? .failure : .primary,
                                          face: .sans))
         }
         if let target = label.target, !target.isEmpty {
@@ -827,19 +857,21 @@ struct CodeThinkingDetailRequest: Identifiable {
     let text: String
 }
 
-/// One detail request: the tapped segment's first call plus its followers, in
-/// official order (`ToolCallDetail{call, followingCalls}`). The row reports it
-/// upward; `TimelineChatTimelineView` owns the sheet.
+/// One detail request: the tapped segment's whole call list in official order
+/// plus the group's settled thinking text. The official tap opens
+/// `collapsedToolCalls(CollapsedToolCallsGroup)`, a summary list; a row in
+/// that list pushes the single call. The row reports this upward;
+/// `TimelineChatTimelineView` owns the sheet.
 struct CodeToolDetailRequest: Identifiable {
     let id: String
-    let call: CodeToolCall
-    let following: [CodeToolCall]
+    let calls: [CodeToolCall]
+    let thinkingText: String?
 
-    init?(calls: [CodeToolCall]) {
+    init?(calls: [CodeToolCall], thinkingText: String? = nil) {
         guard let first = calls.first else { return nil }
         id = first.id
-        call = first
-        following = Array(calls.dropFirst())
+        self.calls = calls
+        self.thinkingText = thinkingText
     }
 }
 

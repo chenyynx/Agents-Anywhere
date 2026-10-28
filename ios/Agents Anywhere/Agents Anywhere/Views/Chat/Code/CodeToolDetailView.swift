@@ -2,66 +2,62 @@ import SwiftUI
 import UIKit
 import Foundation
 
-// The Code page's full-screen tool detail (`CANONICAL/04-tool-calls.md` §4.2).
+// The Code page's tool detail (`CANONICAL/04-tool-calls.md` §4.2).
 //
-// Official structure: a collapsed row's tap replaces the transcript with a
-// `NavigationStack` + `ScrollView` page. `ToolCallDetail` carries one call plus
-// the calls that followed it, and `ToolCallDetailSections` lays out, in order:
-// the detail section (row identity + input), the following calls, the main
-// content (the five-case output), and an optional footnote. The official
-// transcript has no in-place expansion; this view is the only expanded face of
-// a tool row.
+// Official structure (round26 §6, round28 §10): a collapsed row's tap opens a
+// sheet whose `NavigationStack` roots at `collapsedToolCalls` — the span's
+// summary title plus one row per call. A row in that list **pushes** the
+// single-call page, which carries the input and the five-case output. The two
+// layers are distinct; the single-call page never flattens the span's other
+// calls into a "following calls" section.
 //
-// The page presentation itself is [U] in the task sheet (§11): W7 decides
-// push / sheet / fullScreenCover. This view owns the NavigationStack and the
-// page body either way, and only needs `@Environment(\.dismiss)` to close.
+// This file owns both pages:
+// - `CodeToolGroupDetailView` (the sheet root, `NavigationStack` + list);
+// - `CodeToolCallDetailView` (the pushed single-call page, no stack of its
+//   own);
+// - `CodeToolDetailView` (a convenience wrapper that roots the single-call
+//   page in its own `NavigationStack`, used by previews and the gate).
 //
 // Detail-page-only visual values live in `CodeToolDetailMetrics` below, each
 // tagged with its source. Shared values come from `CodePageTheme`.
 
-struct CodeToolDetailView: View {
-    let call: CodeToolCall
-    /// The calls after this one in the same span. The W4 entry point is the
-    /// single call; the slot is kept in official order so a span renderer can
-    /// fill it without re-laying out the page.
-    let followingCalls: [CodeToolCall]
-    /// Official `ToolCallDetail.footnote?`. Rendered only when the caller has
-    /// something to say; the official page has no footnote in the common case.
-    let footnote: String?
-    /// The session's working directory, for the following-call labels.
+/// The sheet-root group page: the span summary plus its call list. Tapping a
+/// row pushes `CodeToolCallDetailView`.
+struct CodeToolGroupDetailView: View {
+    let calls: [CodeToolCall]
+    /// Settled thinking text that belongs to the group; the official group
+    /// screenshot places it above the call list.
+    let thinkingText: String?
     let cwd: String?
-
-    private let output: CodeToolOutput
-    private let inputText: String?
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
-    @ScaledMetric(relativeTo: .caption) private var sectionLabelFontSize =
-        CodeToolDetailMetrics.sectionLabelFontSize
-    /// The D9 placeholder line box (see `CodeDetailRowHooks`).
-    @ScaledMetric(relativeTo: CodeDetailRowHooks.textStyle)
-    private var detailTextLineHeight = CodePageTheme.toolRowTextLineHeight
-
-    init(call: CodeToolCall,
-         followingCalls: [CodeToolCall] = [],
-         footnote: String? = nil,
-         cwd: String? = nil) {
-        self.call = call
-        self.followingCalls = followingCalls
-        self.footnote = footnote
-        self.cwd = cwd
-        output = CodeToolOutput(item: call.item, kind: call.kind)
-        inputText = Self.inputText(for: call)
-    }
+    @Environment(\.accessibilityDifferentiateWithoutColor)
+    private var differentiateWithoutColor
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: CodePageTheme.blockSpacing) {
-                    detailSection
-                    followingCallsSection
-                    outputSection
-                    footnoteSection
+                    if let thinkingText, !thinkingText.isEmpty {
+                        ChatMarkdownView(text: thinkingText,
+                                         isStreaming: false,
+                                         resolvesFileReferences: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    LazyVStack(spacing: 0) {
+                        ForEach(calls) { call in
+                            NavigationLink {
+                                CodeToolCallDetailView(call: call)
+                            } label: {
+                                CodeToolGroupCallRow(
+                                    call: call,
+                                    cwd: cwd,
+                                    differentiateWithoutColor: differentiateWithoutColor)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
                 }
                 .padding(.horizontal, CodeToolDetailMetrics.contentInset)
                 .padding(.vertical, CodeToolDetailMetrics.verticalInset)
@@ -72,7 +68,7 @@ struct CodeToolDetailView: View {
                     .resolved(for: colorScheme)
                     .ignoresSafeArea()
             }
-            .navigationTitle(Text(verbatim: call.name))
+            .navigationTitle(Text(verbatim: title))
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(CodeToolDetailMetrics.pageBackground.resolved(for: colorScheme),
                                for: .navigationBar)
@@ -83,6 +79,112 @@ struct CodeToolDetailView: View {
         }
     }
 
+    /// The group title is the same summary the collapsed row shows, e.g.
+    /// "编辑了 2 个文件" / "已编辑 Main.dc.html".
+    private var title: String {
+        let label = CodeToolLabels.label(for: calls, cwd: cwd)
+        return CodeToolLabels.visibleText(
+            for: label, differentiateWithoutColor: differentiateWithoutColor)
+    }
+}
+
+/// One call row inside the group list: category icon + single-call label +
+/// caret. The official `ToolCallRunRow` typography/colours are the D9 hook;
+/// 15 pt text is the one decoded Code text preset.
+struct CodeToolGroupCallRow: View {
+    let call: CodeToolCall
+    let cwd: String?
+    let differentiateWithoutColor: Bool
+
+    @Environment(\.colorScheme) private var colorScheme
+    @ScaledMetric(relativeTo: CodeDetailRowHooks.textStyle)
+    private var textLineHeight = CodePageTheme.toolRowTextLineHeight
+
+    var body: some View {
+        let label = CodeToolLabels.label(for: [call], cwd: cwd)
+        let runs = CodeToolLabels.runs(
+            for: label, differentiateWithoutColor: differentiateWithoutColor)
+        HStack(alignment: .center, spacing: CodeDetailRowHooks.iconSpacing) {
+            AnthropiconView(name: CodeToolLabels.anthropicon(for: call),
+                            size: .large)
+                .foregroundStyle(CodePageTheme.text500Color
+                    .resolved(for: colorScheme))
+                .frame(width: CodePageTheme.toolRowIconFrameSize,
+                       height: CodePageTheme.toolRowIconFrameSize)
+                .accessibilityHidden(true)
+
+            CodeToolLabelText(runs: runs)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(minHeight: textLineHeight, alignment: .leading)
+                .layoutPriority(1)
+
+            Spacer(minLength: 0)
+            CodeRowCaret()
+        }
+        .padding(.vertical, CodeDetailRowHooks.verticalPadding)
+        .contentShape(Rectangle())
+    }
+}
+
+/// Maps the semantic label runs to the row fonts and tokens. Shared by the
+/// collapsed row and the group list so the single-target verb is `text400`
+/// and the target `text100` in both places.
+struct CodeToolLabelText: View {
+    let runs: [CodeToolLabelRun]
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        CodeToolLabelRun.styledText(runs, scheme: colorScheme)
+    }
+}
+
+/// The pushed single-call page: row identity + input, then the output. It
+/// deliberately has no `NavigationStack`; the group page owns the stack.
+struct CodeToolCallDetailView: View {
+    let call: CodeToolCall
+    let footnote: String?
+
+    private let output: CodeToolOutput
+    private let inputText: String?
+
+    @Environment(\.colorScheme) private var colorScheme
+    /// The D9 placeholder line box (see `CodeDetailRowHooks`).
+    @ScaledMetric(relativeTo: CodeDetailRowHooks.textStyle)
+    private var detailTextLineHeight = CodePageTheme.toolRowTextLineHeight
+
+    init(call: CodeToolCall,
+         footnote: String? = nil) {
+        self.call = call
+        self.footnote = footnote
+        output = CodeToolOutput(item: call.item, kind: call.kind)
+        inputText = Self.inputText(for: call)
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: CodePageTheme.blockSpacing) {
+                detailSection
+                outputSection
+                footnoteSection
+            }
+            .padding(.horizontal, CodeToolDetailMetrics.contentInset)
+            .padding(.vertical, CodeToolDetailMetrics.verticalInset)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .background {
+            CodeToolDetailMetrics.pageBackground
+                .resolved(for: colorScheme)
+                .ignoresSafeArea()
+        }
+        .navigationTitle(Text(verbatim: call.name))
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(CodeToolDetailMetrics.pageBackground.resolved(for: colorScheme),
+                           for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+    }
+
     // MARK: - Sections (official order)
 
     /// `ToolCallDetailSections`: row identity plus the input area.
@@ -91,27 +193,6 @@ struct CodeToolDetailView: View {
             summaryRow
             if let inputText {
                 CodeToolCodeCard(title: String(localized: "Input"), code: inputText)
-            }
-        }
-    }
-
-    /// `ToolCallDetail.followingCalls`: kept as a real section (not a blank
-    /// placeholder) so a multi-call span can render its siblings in order.
-    @ViewBuilder private var followingCallsSection: some View {
-        if !followingCalls.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(String(localized: "Following calls"))
-                    .font(.system(size: sectionLabelFontSize,
-                                  weight: .regular,
-                                  design: .monospaced))
-                    .foregroundStyle(.secondary)
-                // [E] R28 §U 收口二 二-D — `TimelineListRowPlain` hides the
-                // separators, so the rows are stacked without dividers.
-                VStack(spacing: 0) {
-                    ForEach(followingCalls) { following in
-                        followingRow(following)
-                    }
-                }
             }
         }
     }
@@ -193,60 +274,12 @@ struct CodeToolDetailView: View {
         }
     }
 
-    /// A following call keeps the collapsed row's verb + target shape. Showing
-    /// the bare tool name ("Edit" five times) told the reader nothing about
-    /// what the siblings touched (device report 2026-10-23). The row uses the
-    /// official `TimelineGroupRow` composition (icon slot, status glyph, diff,
-    /// single-line text); its typography/vertical box is the D9 hook above.
-    private func followingRow(_ following: CodeToolCall) -> some View {
-        let label = CodeToolLabels.label(for: [following], cwd: cwd)
-        return HStack(alignment: .center, spacing: CodeDetailRowHooks.iconSpacing) {
-            AnthropiconView(name: CodeToolLabels.anthropicon(for: following),
-                            size: .large)
-                .foregroundStyle(CodeDetailRowHooks.iconTint)
-                .frame(width: CodePageTheme.toolRowIconFrameSize,
-                       height: CodePageTheme.toolRowIconFrameSize)
-                .accessibilityHidden(true)
-            HStack(alignment: .center) {
-                followingLabelText(label)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(minHeight: detailTextLineHeight, alignment: .leading)
-                CodeTimelineStatusGlyph(
-                    status: following.status,
-                    failureExtent: following.status == .failed ? .failed : nil)
-                if let diff = label.diff, diff.hasCounts {
-                    CodeDiffIndicator(stat: diff)
-                }
-                Spacer(minLength: 0)
-            }
-        }
-        .padding(.vertical, CodeDetailRowHooks.verticalPadding)
-        .listRowSeparator(.hidden)
-        .listRowBackground(Color.clear)
-    }
-
-    private func followingLabelText(_ label: CodeToolRowLabel) -> Text {
-        let sans = Font.custom(CodePageTheme.sansFontName,
-                               size: CodeDetailRowHooks.textSize,
-                               relativeTo: CodeDetailRowHooks.textStyle)
-        let mono = Font.custom(CodePageTheme.monoFontName,
-                               size: CodeDetailRowHooks.textSize,
-                               relativeTo: CodePageTheme.toolRowTextStyle)
-        let secondary = CodeDetailRowHooks.secondaryText
-        let primary = CodeDetailRowHooks.primaryText
-        guard let target = label.target, !target.isEmpty else {
-            return Text(label.verb).font(sans).foregroundStyle(secondary)
-        }
-        return Text(label.verb + " ").font(sans).foregroundStyle(secondary)
-            + Text(target).font(mono).foregroundStyle(primary)
-    }
-
     // MARK: - Wire reads
 
     /// The input area reads the call's raw input; `arguments` is Codex's alias.
     /// An absent or empty object hides the card (official `showsInput`).
-    private static func inputText(for call: CodeToolCall) -> String? {
+    /// Internal so the gate can assert a group row's pushed page has input.
+    static func inputText(for call: CodeToolCall) -> String? {
         let content = call.item.raw["content"] ?? .object([:])
         guard let input = content["input"] ?? content["arguments"],
               input != .null else { return nil }
@@ -257,6 +290,32 @@ struct CodeToolDetailView: View {
         return json.isEmpty ? nil : json
     }
 
+}
+
+/// The single-call page rooted in its own `NavigationStack` with the sheet
+/// close control. Used by previews and the gate; the product presents the
+/// group page (`CodeToolGroupDetailView`) and pushes the bare
+/// `CodeToolCallDetailView`.
+struct CodeToolDetailView: View {
+    let call: CodeToolCall
+    let footnote: String?
+
+    @Environment(\.dismiss) private var dismiss
+
+    init(call: CodeToolCall,
+         footnote: String? = nil) {
+        self.call = call
+        self.footnote = footnote
+    }
+
+    var body: some View {
+        NavigationStack {
+            CodeToolCallDetailView(call: call, footnote: footnote)
+                .toolbar {
+                    SheetCloseToolbar { dismiss() }
+                }
+        }
+    }
 }
 
 // MARK: - Detail-row hook (D9)
@@ -283,7 +342,6 @@ private enum CodeDetailRowHooks {
     /// token; its light/dark RGB is not decoded. System semantic colours
     /// match that mechanism without inventing an RGB.
     static let primaryText: Color = .primary
-    static let secondaryText: Color = .secondary
     static let iconTint: Color = .secondary
 }
 
@@ -312,10 +370,6 @@ private enum CodeToolDetailMetrics {
     /// [I] Detail pages have no sampled vertical inset; 16 pt matches the
     /// Markdown block spacing [E] V55 and keeps the first row off the bar.
     static let verticalInset: CGFloat = 16
-
-    /// [I] V02-V04 — the section headers use the 13 pt code-card title
-    /// preset (V62).
-    static let sectionLabelFontSize: CGFloat = 13
 
 }
 

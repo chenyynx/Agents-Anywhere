@@ -21,13 +21,15 @@ struct CodeToolOutputView: View {
     var body: some View {
         switch output {
         case let .text(text):
-            // Read output is a whole file, not a code snippet. The generic
-            // horizontal code card stops drawing its glyphs on a long
-            // multi-line body (device report 2026-10-25: 24K/298-line Read
-            // rendered a blank card). The official page has a dedicated
-            // `FileReadDetailView`; this is its text branch: a vertical,
-            // wrapping monospaced reader with the same card chrome.
-            if kind == .read {
+            // An all-whitespace body would draw a header over a blank card;
+            // the detail page already treats it as empty, and this switcher
+            // must not render the empty shape on its own either. Read output
+            // is a whole file, not a code snippet: the generic horizontal
+            // code card dropped its glyphs on a long multi-line body (device
+            // report 2026-10-25), so Read takes the vertical reader instead.
+            if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                EmptyView()
+            } else if kind == .read {
                 CodeFileReadOutputView(text: text)
             } else {
                 CodeToolCodeCard(title: String(localized: "Output"), code: text)
@@ -54,14 +56,19 @@ struct CodeToolOutputView: View {
 /// `FileReadDetailView`/`CodeBlockContent`, not the generic horizontal code
 /// card; the body is a vertical, wrapping monospaced text so a 20K+ line
 /// document cannot fall out of the code card's fixed-size text path.
+///
+/// The body deliberately draws through `UITextView` (TextKit) instead of a
+/// SwiftUI `Text`. The pp device capture of b643 shows a 298-line Read whose
+/// card height is fully laid out while every glyph is missing: SwiftUI's
+/// `Text` reported the right height but drew nothing for this body size. A
+/// plain `Text` also cannot be selected. The TextKit view renders the same
+/// string, reports its own fitting height, and keeps the copy path working.
 private struct CodeFileReadOutputView: View {
     let text: String
+    private let displayText: String
 
-    @State private var displayText: String
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.displayScale) private var displayScale
-    @ScaledMetric(relativeTo: .footnote) private var codeFontSize =
-        CodeToolCardMetrics.codeFontSize
     @ScaledMetric(relativeTo: .caption) private var titleFontSize =
         CodeToolCardMetrics.titleFontSize
     @ScaledMetric(relativeTo: .caption) private var headerHeight =
@@ -69,7 +76,7 @@ private struct CodeFileReadOutputView: View {
 
     init(text: String) {
         self.text = text
-        _displayText = State(initialValue: String(text.prefix(CodeToolCardMetrics.previewLimit)))
+        displayText = String(text.prefix(CodeToolCardMetrics.previewLimit))
     }
 
     private var surface: Color {
@@ -102,9 +109,7 @@ private struct CodeFileReadOutputView: View {
                 .fill(border)
                 .frame(height: 1 / displayScale)
 
-            Text(verbatim: displayText)
-                .font(.system(size: codeFontSize, design: .monospaced))
-                .lineSpacing(CodeToolCardMetrics.codeLineSpacing)
+            CodeFileReadText(text: displayText)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(CodeToolCardMetrics.contentInset)
 
@@ -125,6 +130,86 @@ private struct CodeFileReadOutputView: View {
                 .stroke(border, lineWidth: 1 / displayScale)
                 .allowsHitTesting(false)
         }
+    }
+}
+
+/// The Read body's TextKit renderer. `UITextView` draws the long string that
+/// SwiftUI's `Text` dropped (b643 device capture: correct height, no glyphs)
+/// and keeps the text selectable. It never scrolls itself; the detail page is
+/// the only vertical scroller.
+private struct CodeFileReadText: UIViewRepresentable {
+    let text: String
+
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.displayScale) private var displayScale
+
+    private var traits: UITraitCollection {
+        UITraitCollection(
+            preferredContentSizeCategory: dynamicTypeSize.contentSizeCategory)
+    }
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.backgroundColor = .clear
+        view.isOpaque = false
+        view.isEditable = false
+        view.isScrollEnabled = false
+        view.isSelectable = true
+        view.textContainerInset = .zero
+        view.textContainer.lineFragmentPadding = 0
+        view.textContainer.widthTracksTextView = true
+        view.textContainer.heightTracksTextView = true
+        return view
+    }
+
+    func updateUIView(_ uiView: UITextView, context: Context) {
+        uiView.attributedText = CodeFileReadTextMetrics.attributed(
+            text, traits: traits)
+        uiView.invalidateIntrinsicContentSize()
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize,
+                      uiView: UITextView,
+                      context: Context) -> CGSize? {
+        let width = proposal.width ?? uiView.bounds.width
+        guard width > 0, width.isFinite else { return nil }
+        let measured = uiView.sizeThatFits(
+            CGSize(width: width, height: .greatestFiniteMagnitude)).height
+        // The text view can report 0 before its container follows the
+        // proposed width; the TextKit measure keeps the first layout from
+        // collapsing the card (the bubble view hit the same startup state).
+        let height: CGFloat
+        if measured > 1 {
+            height = measured
+        } else {
+            let attributed = uiView.attributedText
+                ?? CodeFileReadTextMetrics.attributed(text, traits: traits)
+            height = AssistantMarkdownTextLayout.height(
+                of: attributed, width: width, displayScale: displayScale)
+        }
+        return CGSize(width: width, height: ceil(max(0, height)))
+    }
+}
+
+private enum CodeFileReadTextMetrics {
+    /// The same 15 pt base and 6 pt leading the previous `@ScaledMetric`
+    /// body used, scaled on the `.footnote` base like the card chrome.
+    static func attributed(_ text: String,
+                           traits: UITraitCollection? = nil) -> NSAttributedString {
+        let size = UIFontMetrics(forTextStyle: .footnote)
+            .scaledValue(for: CodeToolCardMetrics.codeFontSize,
+                         compatibleWith: traits)
+        let font = MarkdownFontFactory.font(
+            name: CodePageTheme.monoFontName, size: size, weight: 400)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = CodeToolCardMetrics.codeLineSpacing
+        return NSAttributedString(string: text, attributes: [
+            .font: font,
+            .paragraphStyle: paragraph,
+            // The card body previously inherited SwiftUI's `.primary`; the
+            // UIKit twin stays adaptive for light/dark.
+            .foregroundColor: UIColor.label,
+        ])
     }
 }
 

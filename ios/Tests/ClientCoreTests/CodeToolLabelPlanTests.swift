@@ -93,6 +93,61 @@ struct CodeToolLabelPlanTests {
         ])
     }
 
+    // MARK: Category cap (`0x10313fdf4`)
+
+    /// Fewer than four category groups: every phrase is shown, in first-seen
+    /// order.
+    @Test func fewerThanFourCategoriesShowEveryPhrase() throws {
+        let calls = [
+            try makeCall("r1", name: "Read", kind: .read, input: ["file_path": "/repo/A.swift"]),
+            try makeCall("b1", name: "Bash", kind: .bash, input: ["command": "ls"]),
+            try makeCall("t1", name: "Task", kind: .task, input: ["description": "look"]),
+        ]
+        let plan = try #require(CodeToolLabelPlan.make(calls: calls, cwd: nil))
+        #expect(plan.phrases == [
+            .init(verb: .read, unit: .files, count: 1),
+            .init(verb: .ran, unit: .commands, count: 1),
+            .init(verb: .ranAgent, unit: .agents, count: 1),
+        ])
+    }
+
+    /// Four clean categories: only the first three are shown, still in
+    /// first-seen order.
+    @Test func fourCleanCategoriesKeepTheFirstThree() throws {
+        let calls = [
+            try makeCall("r1", name: "Read", kind: .read, input: ["file_path": "/repo/A.swift"]),
+            try makeCall("b1", name: "Bash", kind: .bash, input: ["command": "ls"]),
+            try makeCall("t1", name: "Task", kind: .task, input: ["description": "look"]),
+            try makeCall("m1", name: "mcp__github__search", kind: .mcp),
+        ]
+        let plan = try #require(CodeToolLabelPlan.make(calls: calls, cwd: nil))
+        #expect(plan.phrases == [
+            .init(verb: .read, unit: .files, count: 1),
+            .init(verb: .ran, unit: .commands, count: 1),
+            .init(verb: .ranAgent, unit: .agents, count: 1),
+        ])
+    }
+
+    /// Five categories, the failed one seen last: it displaces the third
+    /// clean category, and the kept phrases print in first-seen order.
+    @Test func fourOrMoreCategoriesKeepThreeWithFailuresFirst() throws {
+        let calls = [
+            try makeCall("r1", name: "Read", kind: .read, input: ["file_path": "/repo/A.swift"]),
+            try makeCall("t1", name: "Task", kind: .task, input: ["description": "look"]),
+            try makeCall("m1", name: "mcp__github__search", kind: .mcp),
+            try makeCall("td1", name: "TodoWrite", kind: .todo, input: ["todos": []]),
+            try makeCall("b1", name: "Bash", kind: .bash,
+                         input: ["command": "ls"], status: "failed"),
+            try makeCall("b2", name: "Bash", kind: .bash, input: ["command": "pwd"]),
+        ]
+        let plan = try #require(CodeToolLabelPlan.make(calls: calls, cwd: nil))
+        #expect(plan.phrases == [
+            .init(verb: .read, unit: .files, count: 1),
+            .init(verb: .ranAgent, unit: .agents, count: 1),
+            .init(verb: .ran, unit: .commands, count: 2, failed: 1),
+        ])
+    }
+
     @Test func grepSpanUsesSearchedCodeSummary() throws {
         let calls = [
             try makeCall("g1", name: "Grep", kind: .search, input: ["pattern": "a"]),
@@ -292,6 +347,21 @@ struct CodeToolLabelPlanTests {
             == CodeDiffStat(added: 1, removed: 1))
     }
 
+    /// `0x10288fa10`: a summed stat of +0 −0 draws no badge.
+    @Test func diffBadgeHidesAnAllZeroStat() throws {
+        let item: V2TimelineItem = try decode([
+            "id": "e0", "sessionId": "session", "type": "tool", "status": "done",
+            "content": [
+                "kind": "file_change", "toolName": "Edit",
+                "output": ["lineStat": ["addedLineCount": 0, "removedLineCount": 0]],
+            ],
+            "source": ["itemId": "e0"],
+            "orderSeq": 1, "revision": 1, "updatedSeq": 1, "contentHash": "e0",
+        ])
+        let call = CodeToolCall(item: item, kind: .edit)
+        #expect(CodeToolLabelPlan.diffStat(for: [call]) == nil)
+    }
+
     // MARK: Official failure counts and target rule
 
     /// `0x10288e3c0`: each category's `failed` is the number of distinct
@@ -310,7 +380,9 @@ struct CodeToolLabelPlanTests {
         let plan = try #require(CodeToolLabelPlan.make(calls: calls, cwd: nil))
         #expect(plan.phrases == [
             .init(verb: .read, unit: .files, count: 2, failed: 1),
-            .init(verb: .ran, unit: .commands, count: 2, failed: 2),
+            // Both commands failed, so the category carries the `whole` mark
+            // instead of the written suffix (round21 §1.11).
+            .init(verb: .ran, unit: .commands, count: 2, failed: 2, whole: true),
         ])
     }
 
@@ -328,8 +400,78 @@ struct CodeToolLabelPlanTests {
         #expect(plan.total == 2)
     }
 
-    /// The official single-target predicate is target equality only
-    /// (`0x10252df70`); the first call supplies the verb.
+    /// round21 §1.11: `whole` means every distinct entry in the category
+    /// failed. A partial failure keeps a real suffix count; a fixed phrase
+    /// ("Searched code") still compares against the category's distinct
+    /// calls, not its displayed count of 1.
+    @Test func allFailedCategoriesCarryTheWholeMark() throws {
+        let allFailed = [
+            try makeCall("r1", name: "Read", kind: .read,
+                         input: ["file_path": "/repo/A.swift"], status: "failed"),
+            try makeCall("r2", name: "Read", kind: .read,
+                         input: ["file_path": "/repo/B.swift"], status: "failed"),
+        ]
+        let wholePlan = try #require(CodeToolLabelPlan.make(calls: allFailed, cwd: nil))
+        #expect(wholePlan.phrases == [
+            .init(verb: .read, unit: .files, count: 2, failed: 2, whole: true),
+        ])
+
+        let partial = [
+            try makeCall("r1", name: "Read", kind: .read,
+                         input: ["file_path": "/repo/A.swift"], status: "failed"),
+            try makeCall("r2", name: "Read", kind: .read,
+                         input: ["file_path": "/repo/B.swift"]),
+        ]
+        let partialPlan = try #require(CodeToolLabelPlan.make(calls: partial, cwd: nil))
+        #expect(partialPlan.phrases == [
+            .init(verb: .read, unit: .files, count: 2, failed: 1),
+        ])
+
+        let failedGreps = [
+            try makeCall("g1", name: "Grep", kind: .search,
+                         input: ["pattern": "a"], status: "failed"),
+            try makeCall("g2", name: "Grep", kind: .search,
+                         input: ["pattern": "b"], status: "failed"),
+        ]
+        let grepPlan = try #require(CodeToolLabelPlan.make(calls: failedGreps, cwd: nil))
+        #expect(grepPlan.phrases == [
+            .init(verb: .searchedCode, unit: .none, count: 1, failed: 2, whole: true),
+        ])
+    }
+
+    /// The failed count inside a file category deduplicates by path, the same
+    /// key `count` uses (`0x10288e3c0`).
+    @Test func failedFilesDedupeByPathInTheSummary() throws {
+        let calls = [
+            try makeCall("r1", name: "Read", kind: .read,
+                         input: ["file_path": "/repo/A.swift"], status: "failed"),
+            try makeCall("r2", name: "Read", kind: .read,
+                         input: ["file_path": "/repo/A.swift"], status: "failed"),
+            try makeCall("r3", name: "Read", kind: .read,
+                         input: ["file_path": "/repo/B.swift"]),
+        ]
+        let plan = try #require(CodeToolLabelPlan.make(calls: calls, cwd: nil))
+        #expect(plan.phrases == [
+            .init(verb: .read, unit: .files, count: 2, failed: 1),
+        ])
+    }
+
+    /// AA's current single-target predicate is target equality, whatever the
+    /// tool; the official 1023 predicate is undecoded (round27 A3). Two Bash
+    /// calls with the same command therefore keep the single-call shape.
+    @Test func sameCommandBashSpanKeepsTheSingleTargetShape() throws {
+        let calls = [
+            try makeCall("b1", name: "Bash", kind: .bash, input: ["command": "git status"]),
+            try makeCall("b2", name: "Bash", kind: .bash, input: ["command": "git status"]),
+        ]
+        let plan = try #require(CodeToolLabelPlan.make(calls: calls, cwd: nil))
+        #expect(plan.verb == .ran)
+        #expect(plan.target == "git status")
+        #expect(plan.phrases.isEmpty)
+    }
+
+    /// Kept as a regression pin for the status quo the round28 work must
+    /// revisit: different tools on one target stay a single-target row.
     @Test func differentToolsOnOneTargetKeepTheSingleTargetShape() throws {
         let calls = [
             try makeCall("r1", name: "Read", kind: .read,
@@ -426,4 +568,71 @@ struct CodeToolLabelPlanTests {
             CodeToolCall(item: doneItem, kind: .edit),
         ]) == CodeDiffStat(added: 2, removed: 1))
     }
+
+    // MARK: String catalog (`Localizable.xcstrings`)
+
+    /// The official failed suffix is `ccr_summary_failed_count`
+    /// (`(%lld failed)` / `（%lld 项失败）`, zh full-width with no space) and
+    /// the separator is the hard-coded `", "` (`0x103140514`). The row lives
+    /// in the app target, so these values are asserted from the catalog data.
+    @Test func summaryCatalogCarriesTheOfficialSeparatorAndFailedSuffix() throws {
+        let catalog = try stringCatalog()
+        #expect(catalog["ccr_summary_separator"]?["en"] == ", ")
+        #expect(catalog["ccr_summary_separator"]?["zh-Hans"] == ", ")
+
+        let en = try #require(catalog["ccr_summary_failed_count"]?["en"])
+        let zh = try #require(catalog["ccr_summary_failed_count"]?["zh-Hans"])
+        #expect(en == " (%lld failed)")
+        #expect(zh == "（%lld 项失败）")
+        // The suffix is inline per category: "<phrase> (N failed)".
+        #expect("Read 2 files" + String(format: en, 2) == "Read 2 files (2 failed)")
+        #expect("读取了 2 个文件" + String(format: zh, 2) == "读取了 2 个文件（2 项失败）")
+
+        // The row's current key must keep the same wording until it moves to
+        // the official key.
+        #expect(catalog["(%lld failed)"]?["en"] == en)
+        #expect(catalog["(%lld failed)"]?["zh-Hans"] == zh)
+    }
+}
+
+private enum CatalogError: Error {
+    case notFound
+    case unreadable
+}
+
+/// Reads `Localizable.xcstrings` as key → language → value. ClientCore
+/// excludes the app's Resources, so `String(localized:)` cannot resolve these
+/// keys in tests; the catalog is read from the repo instead.
+private func stringCatalog() throws -> [String: [String: String]] {
+    let relative = "Agents Anywhere/Agents Anywhere/Resources/Localization/Localizable.xcstrings"
+    var directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    var catalogURL: URL?
+    for _ in 0..<6 {
+        let candidate = directory.appendingPathComponent(relative)
+        if FileManager.default.fileExists(atPath: candidate.path) {
+            catalogURL = candidate
+            break
+        }
+        directory = directory.deletingLastPathComponent()
+    }
+    guard let catalogURL else { throw CatalogError.notFound }
+    let object = try JSONSerialization.jsonObject(with: Data(contentsOf: catalogURL))
+    guard let root = object as? [String: Any],
+          let strings = root["strings"] as? [String: Any] else {
+        throw CatalogError.unreadable
+    }
+    var values: [String: [String: String]] = [:]
+    for (key, entry) in strings {
+        guard let localizations = (entry as? [String: Any])?["localizations"] as? [String: Any] else {
+            continue
+        }
+        var byLanguage: [String: String] = [:]
+        for (language, localization) in localizations {
+            guard let unit = (localization as? [String: Any])?["stringUnit"] as? [String: Any],
+                  let value = unit["value"] as? String else { continue }
+            byLanguage[language] = value
+        }
+        values[key] = byLanguage
+    }
+    return values
 }

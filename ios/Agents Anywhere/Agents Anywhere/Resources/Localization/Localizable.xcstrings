@@ -18421,6 +18421,23 @@
         }
       }
     },
+    "ccr_summary_failed_count": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": " (%lld failed)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "（%lld 项失败）"
+          }
+        }
+      }
+    },
     "ccr_summary_separator": {
       "extractionState": "manual",
       "localizations": {

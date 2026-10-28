@@ -12,8 +12,15 @@ import Foundation
 // - file operations count distinct files, not calls: six edits to one file
 //   read as "Edited that file", never "Edited 6 files";
 // - Bash counts commands, Task counts agents, MCP/other counts tools;
-// - a span whose calls all target one file keeps the single-call shape
-//   ("Edited MEMORY.md"), which is what the server summary would say.
+// - a span whose calls all resolve to one target keeps the single-call shape
+//   ("Edited MEMORY.md"); the 1023 predicate behind that choice is still
+//   undecoded (round27 A3, TODO(round28));
+// - four or more category groups keep at most three: categories with a
+//   failure first, then the clean ones, printed in first-seen order
+//   (`0x10313fdf4`);
+// - a category whose distinct entries all failed is marked `whole`: the row
+//   paints it red instead of writing the failed suffix (the official code
+//   does so when `differentiateWithoutColor` is off).
 //
 // This type stays free of SwiftUI and of localized strings: it returns
 // semantic verbs and counts, the view maps them to `String(localized:)`.
@@ -65,12 +72,21 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
         /// The category's failed entries: same distinct-key rule as `count`
         /// (`0x10288e3c0` counts `status == failed` in the same dictionary).
         let failed: Int
+        /// The official `whole` mark (round21 §1.11/§3.4): every distinct
+        /// entry in this category failed. The row paints the phrase in the
+        /// failure colour when `differentiateWithoutColor` is off and appends
+        /// the failed suffix otherwise. `count` cannot decide this: a fixed
+        /// phrase ("Searched code") always reads 1 while its category may
+        /// hold several calls.
+        let whole: Bool
 
-        init(verb: Verb, unit: Unit, count: Int, failed: Int = 0) {
+        init(verb: Verb, unit: Unit, count: Int, failed: Int = 0,
+             whole: Bool = false) {
             self.verb = verb
             self.unit = unit
             self.count = count
             self.failed = failed
+            self.whole = whole
         }
     }
 
@@ -116,10 +132,12 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
                                      failed: failed, total: calls.count)
         }
 
-        // The official single-target path is chosen by target equality alone
-        // (`0x10252df70`): every call's extracted target is the same string,
-        // whatever the tools are. The first call supplies the verb. This also
-        // avoids the false "Edited 6 files" when six edits hit one file.
+        // AA keeps its current single-target rule: every call's extracted
+        // target is the same string, whatever the tools are. This also avoids
+        // the false "Edited 6 files" when six edits hit one file. The 1023
+        // predicate is undecoded, so the 1005 "count == 1 or all same target"
+        // rule must not replace this.
+        // TODO(round28: official predicate UNKNOWN)
         if let shared = sharedTarget(calls: calls, cwd: cwd) {
             return CodeToolLabelPlan(verb: shared.verb, target: shared.target,
                                      phrases: [], diff: diff, isRunning: running,
@@ -251,10 +269,14 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
         let target: String
     }
 
-    /// The official single-target predicate: every call resolves to the same
-    /// target string (`0x10252df70`, target equality only — the tools may
-    /// differ). The first call supplies the verb; a call without a target
-    /// breaks the predicate and the row falls back to the category summary.
+    /// AA's single-target predicate: every call resolves to the same target
+    /// string, whatever the tool. The first call supplies the verb; a call
+    /// without a target breaks the predicate and the row falls back to the
+    /// category summary.
+    ///
+    /// TODO(round28: official predicate UNKNOWN) — 1023 has no equivalent of
+    /// the 1005 `count == 1 || all same target` function (round27 A3); keep
+    /// this behaviour until the mode byte is decoded.
     private static func sharedTarget(calls: [CodeToolCall],
                                      cwd: String?) -> FileTarget? {
         guard let first = calls.first,
@@ -326,7 +348,7 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
             if failed { failedCounters[key, default: 0] += 1 }
         }
 
-        return order.compactMap { key -> Phrase? in
+        let built = order.compactMap { key -> Phrase? in
             switch key {
             case .file(let group):
                 let count = (fileTargets[group]?.count ?? 0)
@@ -337,13 +359,36 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
                 return Phrase(verb: group.verb,
                               unit: group.notebook ? .notebooks : .files,
                               count: count,
-                              failed: failed)
+                              failed: failed,
+                              whole: failed > 0 && failed == count)
             case .other(let phraseKey):
                 let count = counters[.other(phraseKey)] ?? 1
                 return phraseKey.phrase(count: count,
                                         failed: failedCounters[.other(phraseKey)] ?? 0)
             }
         }
+        return capped(built)
+    }
+
+    /// The official category cap (`0x10313fdf4`): fewer than four category
+    /// groups show every phrase; four or more keep at most three — categories
+    /// with a failure first, then the clean ones, each in first-seen order —
+    /// and the kept phrases still print in their original first-seen order.
+    /// Dropped categories are not summarized as "and N more".
+    private static func capped(_ phrases: [Phrase]) -> [Phrase] {
+        guard phrases.count >= 4 else { return phrases }
+        var priority: [Int] = []
+        priority.reserveCapacity(phrases.count)
+        for (index, phrase) in phrases.enumerated() where phrase.failed > 0 {
+            priority.append(index)
+        }
+        for (index, phrase) in phrases.enumerated() where phrase.failed == 0 {
+            priority.append(index)
+        }
+        let kept = Set(priority.prefix(3))
+        return phrases.enumerated()
+            .filter { kept.contains($0.offset) }
+            .map(\.element)
     }
 
     /// A non-file phrase's identity. Fixed official summary forms keep their
@@ -382,19 +427,24 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
         case clearedTodos, updatedTodos, proposedPlan, asked, tools
 
         func phrase(count: Int, failed: Int) -> Phrase {
+            // `count` is the category's distinct-key total even for fixed
+            // phrases, whose displayed count stays 1; `whole` needs the real
+            // total (the official code compares failed against the category's
+            // distinct dictionary, round21 §1.11).
+            let whole = failed > 0 && failed == count
             switch self {
-            case .bash: return Phrase(verb: .ran, unit: .commands, count: count, failed: failed)
-            case .task: return Phrase(verb: .ranAgent, unit: .agents, count: count, failed: failed)
-            case .searched: return Phrase(verb: .searched, unit: .times, count: count, failed: failed)
-            case .searchedCode: return Phrase(verb: .searchedCode, unit: .none, count: 1, failed: failed)
-            case .foundFiles: return Phrase(verb: .foundFiles, unit: .none, count: 1, failed: failed)
-            case .browsedWeb: return Phrase(verb: .browsedWeb, unit: .none, count: 1, failed: failed)
-            case .fetched: return Phrase(verb: .fetched, unit: .none, count: 1, failed: failed)
-            case .clearedTodos: return Phrase(verb: .clearedTodos, unit: .none, count: 1, failed: failed)
-            case .updatedTodos: return Phrase(verb: .updatedTodos, unit: .none, count: 1, failed: failed)
-            case .proposedPlan: return Phrase(verb: .proposedPlan, unit: .none, count: 1, failed: failed)
-            case .asked: return Phrase(verb: .asked, unit: .none, count: 1, failed: failed)
-            case .tools: return Phrase(verb: .used, unit: .tools, count: count, failed: failed)
+            case .bash: return Phrase(verb: .ran, unit: .commands, count: count, failed: failed, whole: whole)
+            case .task: return Phrase(verb: .ranAgent, unit: .agents, count: count, failed: failed, whole: whole)
+            case .searched: return Phrase(verb: .searched, unit: .times, count: count, failed: failed, whole: whole)
+            case .searchedCode: return Phrase(verb: .searchedCode, unit: .none, count: 1, failed: failed, whole: whole)
+            case .foundFiles: return Phrase(verb: .foundFiles, unit: .none, count: 1, failed: failed, whole: whole)
+            case .browsedWeb: return Phrase(verb: .browsedWeb, unit: .none, count: 1, failed: failed, whole: whole)
+            case .fetched: return Phrase(verb: .fetched, unit: .none, count: 1, failed: failed, whole: whole)
+            case .clearedTodos: return Phrase(verb: .clearedTodos, unit: .none, count: 1, failed: failed, whole: whole)
+            case .updatedTodos: return Phrase(verb: .updatedTodos, unit: .none, count: 1, failed: failed, whole: whole)
+            case .proposedPlan: return Phrase(verb: .proposedPlan, unit: .none, count: 1, failed: failed, whole: whole)
+            case .asked: return Phrase(verb: .asked, unit: .none, count: 1, failed: failed, whole: whole)
+            case .tools: return Phrase(verb: .used, unit: .tools, count: count, failed: failed, whole: whole)
             }
         }
     }
@@ -409,11 +459,13 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
     /// `lineCounts`). Parsing the full diff model here would be heavy for a
     /// one-line badge, so this only scans prefixes.
     ///
-    /// Official span aggregation (`0x10288fa10`): failed calls and
-    /// `fileWriteKind == update` calls are skipped; a call that is neither a
-    /// diff nor skippable makes the whole span show no indicator. The write
-    /// kind comes from `fileWriteKind(for:)`; a Write with an unrecognised
-    /// result stays an ordinary call instead of being guessed as an update.
+    /// Official span aggregation (1019 `0x10288fa10`, 1023
+    /// `0x103140704..0x103140898`): failed calls and `fileWriteKind == update`
+    /// calls are skipped; a call that is neither a diff nor skippable makes
+    /// the whole span show no indicator, and an all-zero sum shows none
+    /// either. The write kind comes from `fileWriteKind(for:)`; a Write with
+    /// an unrecognised result stays an ordinary call instead of being guessed
+    /// as an update.
     static func diffStat(for calls: [CodeToolCall]) -> CodeDiffStat? {
         var added = 0
         var removed = 0

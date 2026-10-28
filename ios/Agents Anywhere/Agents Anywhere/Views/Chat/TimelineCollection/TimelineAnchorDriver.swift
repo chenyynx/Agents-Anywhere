@@ -37,6 +37,7 @@ final class TimelineAnchorDriver {
     private var moverPlacement: TimelineAnchorPlacement?
     /// One deferred direct placement for content growth at the bottom.
     private var contentPlaceScheduled = false
+    private var contentPlaceRetries = 0
     private var link: CADisplayLink?
     private var lastTick: CFTimeInterval = 0
     private var pageInsets: UIEdgeInsets = .zero
@@ -243,14 +244,32 @@ final class TimelineAnchorDriver {
 
     /// Coalesced direct placement for content growth at the bottom.
     private func scheduleContentPlace() {
+        contentPlaceRetries = 0
+        scheduleContentPlaceTurn()
+    }
+
+    private func scheduleContentPlaceTurn() {
         guard !contentPlaceScheduled else { return }
         contentPlaceScheduled = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.contentPlaceScheduled = false
             guard self.state.placement == .end, self.state.motion == .resting,
-                  self.state.hasLanded else { return }
+                  self.state.hasLanded, let view = self.scrollView else { return }
+            // Let the pending content-size change land first. A write issued
+            // before UIKit adopts the new size is clamped to the old maximum
+            // and — unlike the Mover, which retries every frame — a one-shot
+            // placement would leave the row below the fold.
+            view.layoutIfNeeded()
             self.placeDirect()
+            guard self.contentPlaceRetries < 2,
+                  let target = self.state.placement.target(in: self.geometry()),
+                  abs(view.contentOffset.y - target) > 0.5 else {
+                self.contentPlaceRetries = 0
+                return
+            }
+            self.contentPlaceRetries += 1
+            self.scheduleContentPlaceTurn()
         }
     }
 

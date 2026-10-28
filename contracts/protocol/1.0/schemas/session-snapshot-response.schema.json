@@ -1311,6 +1311,18 @@
           ],
           "default": null,
           "title": "Sessionid"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turnid"
         }
       },
       "required": [

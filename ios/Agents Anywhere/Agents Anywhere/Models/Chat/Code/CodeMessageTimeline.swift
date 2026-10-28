@@ -119,8 +119,12 @@ nonisolated enum CodeMessageBuilder {
     /// runtime would skip their call.
     ///
     /// `isTurnBoundary` is the injectable turn seam (rule 6): by default a user
-    /// message row ends the run; a later `source.turnId` line can pass a
-    /// predicate over the declared turn instead.
+    /// message row ends the run. `source.turnId` is the primary turn truth: a
+    /// declared turn id that differs from the previous row's is a hard boundary
+    /// (a scheduled turn publishes no user row), a row without one inherits the
+    /// previous row's turn, and a sequence with no turn ids at all keeps the
+    /// user-row-only behaviour. The change is detected inside one planning pass,
+    /// so replanning a unit stays idempotent.
     static func units(for items: [V2TimelineItem],
                       profile: CodeRuntimeProfile,
                       interactionTargets: Set<String> = [],
@@ -176,6 +180,9 @@ nonisolated enum CodeMessageBuilder {
         var target: MergeTarget?
         var pendingReasoning: [V2TimelineItem] = []
         var consumed: Set<String> = []
+        /// The last declared turn among the rows seen so far. A row with no
+        /// turnId inherits it; only a *declared* id that differs starts a turn.
+        var currentTurnID: V2TurnID?
 
         func append(_ item: V2TimelineItem, to index: Int) {
             switch units[index] {
@@ -221,11 +228,34 @@ nonisolated enum CodeMessageBuilder {
             messageIndexByKey.removeAll()
         }
 
+        /// True when `item` opens a new declared turn. The comparison is against
+        /// the last declared turn id of this pass, not the immediately previous
+        /// row, so a row without a turnId inherits the turn it belongs to and
+        /// never invents a boundary (old payloads and message-only turn ids).
+        func startsNewTurn(_ item: V2TimelineItem) -> Bool {
+            guard let declaredTurnID = item.turnId else { return false }
+            let changed = currentTurnID.map { $0 != declaredTurnID } ?? false
+            currentTurnID = declaredTurnID
+            return changed
+        }
+
         for item in items.sorted(by: wireOrder) {
             // The projection hands over one version per item id. A repeated id
             // inside one call would duplicate a block or a tool segment, so the
             // first occurrence wins.
             guard consumed.insert(item.id).inserted else { continue }
+            let isChild = isSubAgentChild(item)
+
+            // A declared turn change is a hard boundary: nothing before it may
+            // merge with anything after it. Thinking before the boundary
+            // belongs to the finished turn. A payload with no turn ids at all
+            // keeps the user-row-only seam. Sub-agent child rows are not part
+            // of this timeline and may carry a sub-agent-local fallback turn id
+            // (`turn_claude_subagent_*`), so they never advance the turn state.
+            if !isChild, startsNewTurn(item) || isTurnBoundary(item) {
+                flushPending()
+                endTurn()
+            }
 
             // An approval card anchors on this row: it has to stay its own
             // item, and it ends the run exactly like any other break.
@@ -237,13 +267,7 @@ nonisolated enum CodeMessageBuilder {
             }
             // Sub-agent child rows stay in the panel, not the main timeline.
             // A child row never breaks a run (it is not rendered here).
-            if isSubAgentChild(item) { continue }
-
-            if isTurnBoundary(item) {
-                // Thinking before a user prompt belongs to the finished turn.
-                flushPending()
-                endTurn()
-            }
+            if isChild { continue }
 
             if isToolRow(item) {
                 // `ExitPlanMode` and an answered `AskUserQuestion` are pulled

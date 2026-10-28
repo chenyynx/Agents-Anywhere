@@ -501,28 +501,38 @@ def test_usage_report_retention_cohorts(tmp_path):
     headers = auth_headers(client)
     carol = _create_member(client, headers, "carol")
 
+    # Keep the cohort relative to "now": d1/d7 must have elapsed so they can
+    # be measured, while d30 must still be in the future so its cell stays
+    # null. A fixed date silently turns into a time bomb once 30 days pass.
+    today = datetime.now(UTC).date()
+    cohort_start = today - timedelta(days=10)
+    cohort_start -= timedelta(days=cohort_start.weekday())
+    cohort_end = cohort_start + timedelta(days=6)
+    start_iso = cohort_start.isoformat()
+    next_day_iso = (cohort_start + timedelta(days=1)).isoformat()
+
     async def backdate() -> None:
         async with client.app.state.store.engine.begin() as conn:
             await conn.execute(
                 text("UPDATE users SET created_at = :created WHERE id = :user_id"),
-                {"created": "2026-09-28T09:00:00Z", "user_id": carol},
+                {"created": f"{start_iso}T09:00:00Z", "user_id": carol},
             )
 
     asyncio.run(backdate())
     _insert(
         client,
         [
-            UsageEvent(EVENT_USER_ACTIVE, "2026-09-28T09:05:00Z", user_id=carol),
-            UsageEvent(EVENT_MESSAGE_SENT, "2026-09-29T10:00:00Z", user_id=carol, session_id="s3", runtime_type="codex"),
+            UsageEvent(EVENT_USER_ACTIVE, f"{start_iso}T09:05:00Z", user_id=carol),
+            UsageEvent(EVENT_MESSAGE_SENT, f"{next_day_iso}T10:00:00Z", user_id=carol, session_id="s3", runtime_type="codex"),
         ],
     )
 
-    body = _report(client, headers, **{"from": "2026-09-28", "to": "2026-09-28", "tz": "UTC"})
+    body = _report(client, headers, **{"from": start_iso, "to": start_iso, "tz": "UTC"})
     assert body["summary"]["newUsers"] == 1
     assert body["users"]["retention"] == [
         {
-            "cohortStart": "2026-09-28",
-            "cohortEnd": "2026-10-04",
+            "cohortStart": start_iso,
+            "cohortEnd": cohort_end.isoformat(),
             "cohortSize": 1,
             "d1": 1.0,
             "d7": 1.0,

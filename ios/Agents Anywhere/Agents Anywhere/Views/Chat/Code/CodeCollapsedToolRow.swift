@@ -150,7 +150,7 @@ struct CodeCollapsedStepsRow: View {
             // and the 30 fps player are decoded; the sheet/frame sequence is
             // UNKNOWN, so the skeleton draws no frames yet (do not reuse the
             // retired 1019 mark, R28 §6).
-            CodeWorkingMarkSkeleton(body: workingMark)
+            CodeWorkingMarkSkeleton(mark: workingMark)
         } else if let icon {
             AnthropiconView(name: icon, size: iconSize)
                 .foregroundStyle(CodePageTheme.text500Color
@@ -172,7 +172,9 @@ struct CodeCollapsedStepsRow: View {
 /// 1.5/0.5 thresholds have no segment mapping to apply yet. The pose is
 /// passed through unchanged for the future sheet lookup.
 private struct CodeWorkingMarkSkeleton: View {
-    let body: WorkingMarkBody
+    /// The pose is reserved for the future sheet lookup; it must not be named
+    /// `body` because that collides with the `View.body` requirement.
+    let mark: WorkingMarkBody
 
     var body: some View {
         TimelineView(.animation(

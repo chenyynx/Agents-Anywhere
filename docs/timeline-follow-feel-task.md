@@ -29,7 +29,7 @@
 |---|---|
 | `ios/.../Models/Chat/TimelineCollection/TimelineSpringFollow.swift` | 新增内容增长专用弹簧 `content = Spring(duration: 0.2, bounce: 0)` |
 | `ios/.../Models/Chat/TimelineCollection/TimelineAnchorMover.swift` | Pace 可开关（`usesPace`）；目标本帧移动时不判到达；`start`/`reseed` 重置基线，避免把已由外部写入的位移再叠一次 |
-| `ios/.../Views/Chat/TimelineCollection/TimelineAnchorDriver.swift` | 内容增长：**新建运动**用 `.content`（0.2 s）且不走 Pace；**连续增长的重定向**回到 `.ease`（0.4 s）并关掉 Pace（pp 反馈 b614 的正文流式更顺）。显式运动（回底/回顶）保持自己的弹簧和 Pace；placement 变化时重新起飞 |
+| `ios/.../Views/Chat/TimelineCollection/TimelineAnchorDriver.swift` | 内容增长：**新建运动**用 `.content`（0.2 s）且不走 Pace；**连续增长的重定向**回到 `.ease`（0.4 s）并关掉 Pace（pp 反馈 b614 的正文流式更顺）。显式运动（回底/回顶）一律 `fly`（0.36 s / bounce 0.15，官方 `0x1019df668`；>1 屏先预置一屏、不再按距离退回 ease），并保留 Pace；placement 变化时重新起飞 |
 | `ios/.../Views/Chat/TimelineCollection/TimelineChatTimelineView.swift` | 删掉 pending/队列 id 变化时的显式回底（插入本身是内容变化；避免与 keyboard/composer 收起叠弹簧） |
 | `ios/Tests/ClientCoreTests/TimelineAnchorMoverTests.swift` | 增长目标 ≤1 物理像素滞后；停止后无过冲/尾摆；初始间隙仍由弹簧收敛；reseed 不双移；fly 不跟随平移 |
 

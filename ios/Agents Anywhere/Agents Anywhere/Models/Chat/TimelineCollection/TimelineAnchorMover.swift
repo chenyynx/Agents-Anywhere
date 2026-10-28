@@ -34,15 +34,22 @@ nonisolated struct TimelineAnchorMover: Equatable {
     /// a plain critically damped spring would trail a target moving at `v` by
     /// `2ζ/ω·v = duration/π·v`, which is the drift this removes.
     private(set) var paceTarget: CGFloat?
+    /// Whether a moving target is carried 1:1. Explicit motions keep it; a
+    /// content-driven follow turns it off — pp 2026-10-28 found the 1:1
+    /// shifts made streamed text step chunk-by-chunk, while the plain 0.4 s
+    /// spring of build 614 read smoother.
+    private(set) var usesPace = true
 
     init(position: CGFloat) {
         self.position = position
     }
 
     /// Takes over at `position` (the live offset) and starts stepping.
-    mutating func start(at position: CGFloat, spring: TimelineSpringFollow.Spring) {
+    mutating func start(at position: CGFloat, spring: TimelineSpringFollow.Spring,
+                        usesPace: Bool = true) {
         self.position = position
         self.spring = spring
+        self.usesPace = usesPace
         velocity = 0
         // A fresh motion closes its initial gap with the spring; the first
         // tick establishes the pace baseline. Shifting by that first target
@@ -53,8 +60,10 @@ nonisolated struct TimelineAnchorMover: Equatable {
 
     /// A new target arrived without wanting a new motion (the spring, the
     /// takeoff and the phase stay; only the destination moved).
-    mutating func retarget(spring newSpring: TimelineSpringFollow.Spring) {
+    mutating func retarget(spring newSpring: TimelineSpringFollow.Spring,
+                           usesPace: Bool? = nil) {
         spring = newSpring
+        if let usesPace { self.usesPace = usesPace }
     }
 
     mutating func stop() {
@@ -92,16 +101,11 @@ nonisolated struct TimelineAnchorMover: Equatable {
         // growing stream leaves a permanent `duration/π · v` trail and the
         // final catch-up reads as a tail swing. A fly (bounce > 0) is a
         // deliberate long jump and never shifts.
-        var targetMoved = false
-        if spring.bounce == 0 {
-            if let previous = paceTarget, abs(target - previous) >= pixel {
-                position += target - previous
-                targetMoved = true
-            }
-            paceTarget = target
-        } else {
-            paceTarget = target
+        let targetMoved = paceTarget.map { abs(target - $0) >= pixel } ?? false
+        if usesPace, spring.bounce == 0, let previous = paceTarget, targetMoved {
+            position += target - previous
         }
+        paceTarget = target
         let omega = spring.omega
         let zeta = spring.zeta
         let acceleration = omega * omega * Double(target - position)

@@ -38,6 +38,9 @@ final class TimelineAnchorDriver {
     /// The next `.move` was requested by content growth, so a fresh motion
     /// uses the short content spring instead of the 0.4 s catch-up ease.
     private var pendingContentMove = false
+    /// The running motion was started by content growth (not by an explicit
+    /// scroll request), so continuous growth keeps the plain ease follow.
+    private var moverIsContent = false
     private var link: CADisplayLink?
     private var lastTick: CFTimeInterval = 0
     private var pageInsets: UIEdgeInsets = .zero
@@ -388,12 +391,15 @@ final class TimelineAnchorDriver {
                                           visibleHeight: visible)
         if mover.isRunning, moverPlacement == state.placement {
             // Same motion, new destination: retarget without restarting the
-            // spring (a restart on every height change would jitter). A
-            // content retarget keeps the running motion's own spring so an
-            // explicit ease/fly is not re-timed by a stream flush. This must
-            // outrank the dead band below: with the Pace shift a live stream
-            // keeps a sub-pixel gap while the motion still has to stay alive.
-            if !contentMove {
+            // spring (a restart on every height change would jitter). Content
+            // growth that keeps arriving (streaming) follows with the plain
+            // 0.4 s ease and no 1:1 pace — pp found that smoother than the
+            // chunk-by-chunk shifts. An explicit motion is never re-timed by
+            // a stream flush. This must outrank the dead band below, where a
+            // live stream keeps a sub-pixel gap while the motion stays alive.
+            if contentMove, moverIsContent {
+                mover.retarget(spring: .ease, usesPace: false)
+            } else if !contentMove {
                 mover.retarget(spring: spring)
                 if state.motion == .easing, spring == .fly {
                     state.motion = .flying
@@ -423,8 +429,9 @@ final class TimelineAnchorDriver {
         if abs(preplaced - current) >= pixel {
             writeOffset(preplaced)
         }
-        mover.start(at: view.contentOffset.y, spring: spring)
+        mover.start(at: view.contentOffset.y, spring: spring, usesPace: !contentMove)
         moverPlacement = state.placement
+        moverIsContent = contentMove
 #if AA_TIMELINE_PROBE
         AnchorDeviceProbe.shared.recordMover(
             "start", spring: spring == .fly ? "fly" : "ease",
@@ -454,6 +461,7 @@ final class TimelineAnchorDriver {
     }
 
     private func stopMover() {
+        moverIsContent = false
 #if AA_TIMELINE_PROBE
         if mover.isRunning {
             AnchorDeviceProbe.shared.recordMover(

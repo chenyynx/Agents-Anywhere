@@ -161,6 +161,23 @@ import Testing
         #expect(abs(step.position - 120) < 0.001)
     }
 
+    /// Content-driven follows turn the pace shift off (pp prefers the plain
+    /// 0.4 s trail for streamed text). The spring must still know the target
+    /// is moving, or it would arrive mid-stream and restart on every flush.
+    @Test func aPaceFreeContentFollowTrailsButStaysAlive() {
+        var mover = TimelineAnchorMover(position: 0)
+        mover.start(at: 0, spring: .ease, usesPace: false)
+        let dt = 1.0 / 120
+        var target: CGFloat = 100
+        _ = mover.step(target: target, dt: dt, displayScale: scale)
+        for _ in 0..<120 {
+            target += 300 * CGFloat(dt)
+            _ = mover.step(target: target, dt: dt, displayScale: scale)
+        }
+        #expect(abs(target - mover.position) > 20)
+        #expect(mover.isRunning)
+    }
+
     /// A fly is a deliberate long jump and never carries the target's motion.
     @Test func aFlyIsNotRedirectedByThePaceShift() {
         var mover = TimelineAnchorMover(position: 0)

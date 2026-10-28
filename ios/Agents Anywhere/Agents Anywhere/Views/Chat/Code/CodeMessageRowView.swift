@@ -241,6 +241,12 @@ struct CodeMessageRowView: View {
                                  typography: typography)
 
         case let .toolCalls(segments):
+            // D10 (R28 §U 收口二 二-E): the official block is
+            // `VStack<ForEach<StyledToolRow>, ToolRowCompanions?>`, where
+            // companions draw settled rows first (only when count > 0) and
+            // `AttachmentTiles` second. AA's segment model carries neither
+            // settled tasks nor attachment images, so no companions child is
+            // built here; the empty-tiles condition and stack spacing stay U.
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
                     toolRow(segment)
@@ -264,14 +270,37 @@ struct CodeMessageRowView: View {
     private func toolRow(_ segment: CodeToolSegment) -> some View {
         let calls = CodeToolLabels.calls(in: segment)
         let label = CodeToolLabels.label(for: calls, cwd: cwd)
+        let failed = calls.filter { $0.status == .failed }.count
+        // Official row init (R28 §4.3, I-high): status/failureExtent are
+        // carried as data; only the known `.failed`/`.partial` branch shapes
+        // are UNKNOWN (D6), and the glyph is a hook.
+        let status: CodeToolStatus
+        if label.isRunning {
+            status = .running
+        } else if !calls.isEmpty, failed == calls.count {
+            status = .failed
+        } else {
+            status = .complete
+        }
+        let failureExtent: CodeFailureExtent? = failed == 0
+            ? nil
+            : (failed == calls.count ? .failed : .partial)
+        // A running span seats the working mark in the leading slot; the pose
+        // comes from the official `CodeWorkingMarkPose` predicate. Its frame
+        // sequence is still UNKNOWN (D2/D3), so the view draws the skeleton.
+        let workingMark = label.isRunning
+            ? calls.last(where: { $0.status == .running })
+                .map { CodeWorkingMarkPose.body(forToolName: $0.name) }
+            : nil
         return CodeCollapsedToolRow(label: label,
-                                    // A settled row carries no leading glyph
-                                    // in the official screenshot; a running
-                                    // row shows its category icon
-                                    // (CANONICAL/04-tool-calls.md §4.1/§7.3).
-                                    icon: label.isRunning
-                                        ? CodeToolLabels.anthropicon(for: calls.first?.kind ?? .other)
-                                        : nil) {
+                                    // [E] R28 §4.1 — every tool row carries
+                                    // its category icon in the 24 pt slot;
+                                    // a mixed span uses listBullet.
+                                    icon: CodeToolLabels.anthropicon(for: calls),
+                                    workingMark: workingMark,
+                                    status: status,
+                                    failureExtent: failureExtent,
+                                    hasDetails: !calls.isEmpty) {
             if let request = CodeToolDetailRequest(calls: calls) { onToolDetail(request) }
         }
     }
@@ -427,11 +456,15 @@ struct CodeThinkingStatusLine: View {
 
 /// One summary phrase of a multi-target span. The failed/total pair is the
 /// official per-category dictionary count (`0x10288e3c0`), which decides
-/// between the written suffix and the colour-only failure signal.
+/// between the written suffix and the colour-only failure signal. `whole` is
+/// the plan's distinct-entry mark: a fixed phrase ("Searched code") always
+/// reads 1 while its category may hold several calls, so `failed == total`
+/// cannot stand in for it.
 nonisolated struct CodeToolPhraseLabel: Hashable {
     let text: String
     let failed: Int
     let total: Int
+    let whole: Bool
 }
 
 /// One collapsed tool row's text and decorations.
@@ -507,34 +540,142 @@ nonisolated enum CodeToolLabels {
                                     return CodeToolPhraseLabel(
                                         text: index == 0 ? text : decapitalized(text),
                                         failed: phrase.failed,
-                                        total: phrase.count)
+                                        total: phrase.count,
+                                        whole: phrase.whole)
                                 })
     }
 
-    /// The official failed suffix (`ccr_summary_failed_count`, plural
-    /// `(%lld failed)` / `（%lld 项失败）`). The view appends it to a phrase or
+    /// The official failed suffix (`ccr_summary_failed_count`, R28 §2.4):
+    /// `(%lld failed)` / `（%lld 项失败）`. The view appends it to a phrase or
     /// to the single-target label; the English value carries the separating
     /// space, the zh-Hans value is the full-width bracket form.
     static func failedSuffix(_ failed: Int, locale: Locale = .autoupdatingCurrent) -> String {
-        let format = String(localized: "(%lld failed)", locale: locale)
+        let format = String(localized: "ccr_summary_failed_count", locale: locale)
         return String(format: format, failed)
     }
 
-    /// Official `category → Anthropicon` mapping
-    /// (`CANONICAL/04-tool-calls.md` §7.2; AskUserQuestion / MCP / unknown
-    /// fall into `other → tool`).
+    /// The collapsed row's label as semantic runs (R28 §2.4, task rule 6).
+    ///
+    /// - the summary keeps the plan's order and never re-sorts; the plan
+    ///   already caps it at three categories, failure-first;
+    /// - a `whole` category is painted `danger00` when
+    ///   `differentiateWithoutColor` is off, otherwise the suffix is written
+    ///   out in `text300`;
+    /// - a partially failed category keeps `text300` and always carries the
+    ///   `ccr_summary_failed_count` suffix;
+    /// - the single-target shape paints both runs `danger00` only when the
+    ///   call failed and colour is allowed to carry that meaning;
+    /// - an empty label falls back to `ccr_collapsed_steps_title`.
+    static func runs(for label: CodeToolRowLabel,
+                     differentiateWithoutColor: Bool) -> [CodeToolLabelRun] {
+        var runs: [CodeToolLabelRun] = []
+        if !label.phrases.isEmpty {
+            for (index, phrase) in label.phrases.enumerated() {
+                if index > 0 {
+                    runs.append(CodeToolLabelRun(text: phraseSeparator,
+                                                 role: .secondary,
+                                                 face: .sans))
+                }
+                let wholeRed = phrase.whole && !differentiateWithoutColor
+                runs.append(CodeToolLabelRun(text: phrase.text,
+                                             role: wholeRed ? .failure : .secondary,
+                                             face: .sans))
+                if phrase.failed > 0, !phrase.whole || differentiateWithoutColor {
+                    runs.append(CodeToolLabelRun(text: failedSuffix(phrase.failed),
+                                                 role: .secondary,
+                                                 face: .sans))
+                }
+            }
+            return runs
+        }
+
+        let failedColorOnly = label.failed > 0 && !differentiateWithoutColor
+        let hasTarget = !(label.target ?? "").isEmpty
+        var verb = label.verb
+        if !verb.isEmpty, hasTarget { verb += " " }
+        if !verb.isEmpty {
+            runs.append(CodeToolLabelRun(text: verb,
+                                         role: failedColorOnly ? .failure : .secondary,
+                                         face: .sans))
+        }
+        if let target = label.target, !target.isEmpty {
+            runs.append(CodeToolLabelRun(text: target,
+                                         role: failedColorOnly ? .failure : .target,
+                                         face: .mono))
+        }
+        if label.failed > 0, differentiateWithoutColor {
+            runs.append(CodeToolLabelRun(text: failedSuffix(label.failed),
+                                         role: .secondary,
+                                         face: .sans))
+        }
+        if runs.isEmpty {
+            // [E] R28 §8 — only the empty-summary fallback uses this key; the
+            // step-count key is never a Code transcript row.
+            runs.append(CodeToolLabelRun(
+                text: String(localized: "ccr_collapsed_steps_title"),
+                role: .secondary,
+                face: .sans))
+        }
+        return runs
+    }
+
+    /// The row's visible label as one string. The official row is a Button
+    /// with no direct accessibility-label call, so its automatic label reads
+    /// this visible text; the actual `voiceControlName`/`spokenLabel`
+    /// strings are UNKNOWN (D8).
+    static func visibleText(for label: CodeToolRowLabel,
+                            differentiateWithoutColor: Bool) -> String {
+        runs(for: label, differentiateWithoutColor: differentiateWithoutColor)
+            .map(\.text)
+            .joined()
+    }
+
+    /// Official `category → Anthropicon` mapping (R28 §4.1, the 1023
+    /// 13-category table). `write` is `fileAdd`, `bash` is
+    /// `commandLinePrompt`, `task` is `agentSimple`, and sessionMessage /
+    /// other / unknown use `wrench`.
     static func anthropicon(for kind: CodeToolKind) -> String {
         switch kind {
-        case .read: "anthropicon.eye"
-        case .edit: "anthropicon.edit"
-        case .write: "anthropicon.file"
-        case .bash: "anthropicon.prompt"
-        case .search: "anthropicon.search"
-        case .todo: "anthropicon.checklist"
-        case .task: "anthropicon.tasks"
-        case .plan: "anthropicon.checklist"
-        case .question, .mcp, .other: "anthropicon.tool"
+        case .read: return "anthropicon.eye"
+        case .edit: return "anthropicon.edit"
+        case .write: return "anthropicon.fileAdd"
+        case .bash: return "anthropicon.commandLinePrompt"
+        case .search: return "anthropicon.search"
+        case .todo: return "anthropicon.checklist"
+        case .task: return "anthropicon.agentSimple"
+        case .plan: return "anthropicon.checklist"
+        case .question, .mcp, .other: return "anthropicon.wrench"
         }
+    }
+
+    /// The single call's official icon, including the 1023 branches R28 §4.1
+    /// marks [I]-high: an `edit`/`notebookEdit` category, a web search/fetch
+    /// (the `web` category → globe), and a fileWrite whose kind is update
+    /// (renders the edit icon).
+    static func anthropicon(for call: CodeToolCall) -> String {
+        if call.kind == .write,
+           CodeToolLabelPlan.fileWriteKind(for: call) == .update {
+            return "anthropicon.edit"
+        }
+        if call.kind == .search {
+            switch call.name.lowercased() {
+            case "websearch", "web_search", "webfetch", "web_fetch",
+                 "web-fetch", "fetch":
+                return "anthropicon.globe"
+            default:
+                return "anthropicon.search"
+            }
+        }
+        return anthropicon(for: call.kind)
+    }
+
+    /// A span shows one category icon only when every call resolves to the
+    /// same official category; a mixed span falls back to `listBullet`
+    /// (R28 §4.1, [I]-high).
+    static func anthropicon(for calls: [CodeToolCall]) -> String {
+        let icons = Set(calls.map { anthropicon(for: $0) })
+        return icons.count == 1 ? (icons.first ?? "anthropicon.listBullet")
+                                : "anthropicon.listBullet"
     }
 
     // MARK: - Localized text
@@ -611,6 +752,10 @@ nonisolated enum CodeToolLabels {
         case (.ran, .commands): return plural(.bash, count: phrase.count)
         case (.ranAgent, .agents): return plural(.task, count: phrase.count)
         case (.searched, .times): return plural(.searchTimes, count: phrase.count)
+        // The official sessionMessage summary (`ccr_summary_session_message_*`)
+        // is "Messaged another session" / "Messaged %lld other sessions", not
+        // the neutral "Used" verb (R28 task rule 6).
+        case (.used, .sessions): return plural(.sessionMessage, count: phrase.count)
         case (.used, .tools): return plural(.other, count: phrase.count)
         case (.searchedCode, _): return String(localized: "ccr_summary_searched_code")
         case (.foundFiles, _): return String(localized: "ccr_summary_found_files")
@@ -625,7 +770,8 @@ nonisolated enum CodeToolLabels {
     }
 
     private enum PluralKey {
-        case read, edit, notebookEdit, write, bash, task, searchTimes, other
+        case read, edit, notebookEdit, write, bash, task, searchTimes
+        case sessionMessage, other
     }
 
     /// English plural forms are separate keys (`_one` / `_other`) because the
@@ -655,6 +801,9 @@ nonisolated enum CodeToolLabels {
         case .searchTimes:
             format = count == 1 ? String(localized: "ccr_summary_search_times_one")
                                 : String(localized: "ccr_summary_search_times_other")
+        case .sessionMessage:
+            format = count == 1 ? String(localized: "ccr_summary_session_message_one")
+                                : String(localized: "ccr_summary_session_message_other")
         case .other:
             format = count == 1 ? String(localized: "ccr_summary_other_one")
                                 : String(localized: "ccr_summary_other_other")

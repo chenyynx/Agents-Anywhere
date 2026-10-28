@@ -21,10 +21,59 @@ import UIKit
 //                               running reasoning line and collapsed tool rows
 //   - code-detail.png         — CodeToolDetailView (diff output + following call)
 //   - code-working-mark.png   — the 20 pt working mark beside its status text
+//   - code-collapsed-rows.png — the R28 row gallery (single / multi / failed
+//                               / diff / thinking / pure text)
+//   - code-collapsed-rows-dark.png — the same gallery under dark tokens
 //
 // `completed` is only true in the final write. Every earlier phase writes a
 // checkpoint with `completed: false`, so a crash mid-gate still leaves the last
 // finished phase and its assertions on disk for the CI assertion step.
+
+/// One row in the collapsed-row gallery. `thinking` renders `CodeThinkingRow`
+/// (the same shared component); every other item renders a tool row.
+struct CodeCollapsedRowFixture: Identifiable {
+    enum Kind {
+        case tool
+        case thinking
+    }
+
+    let id: String
+    let kind: Kind
+    let label: CodeToolRowLabel
+    let icon: String?
+    let status: CodeToolStatus
+    let failureExtent: CodeFailureExtent?
+    let hasDetails: Bool
+    var workingMark: WorkingMarkBody? = nil
+
+    /// The row's exact default-size height from the R28 layout: the tallest
+    /// child (24 pt icon/caret slot, 21 pt text line) plus 6 pt padding a
+    /// side. A row with neither icon nor caret is the 33 pt pure-text case.
+    var expectedDefaultHeight: CGFloat {
+        (icon != nil || hasDetails) ? 36 : 33
+    }
+}
+
+@MainActor
+extension CodeCollapsedRowFixture {
+    /// One gallery row. The root view renders this for the screenshots and
+    /// the height leg hosts the same view, so the capture and the measured
+    /// height cannot diverge.
+    @ViewBuilder
+    func rowView() -> some View {
+        switch kind {
+        case .thinking:
+            CodeThinkingRow {}
+        case .tool:
+            CodeCollapsedToolRow(label: label,
+                                 icon: icon,
+                                 workingMark: workingMark,
+                                 status: status,
+                                 failureExtent: failureExtent,
+                                 hasDetails: hasDetails) {}
+        }
+    }
+}
 
 @MainActor
 @Observable
@@ -41,12 +90,17 @@ final class CodeProfileAutoRunModel {
         case workingMark
         case thinkingStatus
         case scrollDown
+        case collapsedRows
+        case collapsedRowsDark
     }
 
     private(set) var stage: Stage = .idle
     private(set) var messageGroup: ChatTimelineGroup?
     private(set) var detailCall: CodeToolCall?
     private(set) var detailFollowing: [CodeToolCall] = []
+    /// The collapsed-row gallery rendered by the two dedicated capture
+    /// stages (light and dark).
+    private(set) var rowGallery: [CodeCollapsedRowFixture] = []
 
     @ObservationIgnored private var failures: [String] = []
     @ObservationIgnored private var report: [String: Any] = [:]
@@ -72,6 +126,9 @@ final class CodeProfileAutoRunModel {
 
         runToolLabels()
         persist(phase: "toolLabels")
+
+        runCollapsedRowFixtures()
+        persist(phase: "collapsedRows")
 
         await captureViews()
         finish()
@@ -559,6 +616,274 @@ final class CodeProfileAutoRunModel {
                                 "createWriteVerb": createVerb]
     }
 
+    // MARK: - Collapsed row fixtures (R28)
+
+    /// One row fixture's decode helper. Every call is built from the wire so
+    /// the plan (L) owns all label decisions; this leg only asserts the view
+    /// mapping on top of it.
+    private func makeRowCall(_ id: String,
+                             _ name: String,
+                             kind: CodeToolKind,
+                             status: String = "done",
+                             content: String) -> CodeToolCall? {
+        let json = """
+        {"id":"\(id)","sessionId":"gate-rows","type":"tool","status":"\(status)","orderSeq":1,
+         "content":{"toolName":"\(name)",\(content)},
+         "source":{"itemId":"\(id)","nativeMessageId":"gate-rows","blockIndex":0}}
+        """
+        guard let item = Self.decodeItem(json) else {
+            failures.append("collapsedRows: fixture \(id) did not decode")
+            return nil
+        }
+        return CodeToolCall(item: item, kind: kind)
+    }
+
+    /// R28 acceptance fixtures: single call, multiple categories (the cap
+    /// keeps three, failure first), partial failure, whole failure, diff,
+    /// thinking, the SendMessage/session mapping, the empty-summary fallback,
+    /// the official icon table and the row heights. The same fixtures feed
+    /// the two gallery screenshots (light and dark).
+    private func runCollapsedRowFixtures() {
+        let read = makeRowCall("row-read", "Read", kind: .read,
+                               content: #""input":{"file_path":"/repo/Sources/App.swift"}"#)
+        let runningBash = makeRowCall("row-bash-running", "Bash", kind: .bash,
+                                      status: "running",
+                                      content: #""input":{"command":"swift build"}"#)
+        let failedBash = makeRowCall("row-bash-failed", "Bash", kind: .bash,
+                                     status: "failed",
+                                     content: #""input":{"command":"npm test"}"#)
+        let bashA = makeRowCall("row-bash-a", "Bash", kind: .bash,
+                                status: "failed", content: #""input":{"command":"ls"}"#)
+        let bashB = makeRowCall("row-bash-b", "Bash", kind: .bash,
+                                status: "failed", content: #""input":{"command":"pwd"}"#)
+        let edit = makeRowCall("row-edit", "Edit", kind: .edit,
+                               content: #""input":{"file_path":"/repo/B.swift"}"#)
+        let editDiff = makeRowCall(
+            "row-edit-diff", "Edit", kind: .edit,
+            content: #""input":{"file_path":"/repo/validate-email.ts"},"output":{"lineStat":{"addedLineCount":2,"removedLineCount":1}}"#)
+        let task = makeRowCall("row-task", "Task", kind: .task,
+                               content: #""input":{"description":"audit the tests"}"#)
+        let readA = makeRowCall("row-read-a", "Read", kind: .read, status: "failed",
+                                content: #""input":{"file_path":"/repo/A.swift"}"#)
+        let readB = makeRowCall("row-read-b", "Read", kind: .read,
+                                content: #""input":{"file_path":"/repo/B.swift"}"#)
+        // Distinct `content.tool` values keep the span off the shared-target
+        // path (which counts the tool name for `.other` calls) so the plan
+        // emits the official `sessionMessage` summary phrase.
+        let send1 = makeRowCall("row-send-1", "SendMessage", kind: .mcp,
+                                content: #""tool":"alpha","input":{"content":"hey"}"#)
+        let send2 = makeRowCall("row-send-2", "SendMessage", kind: .mcp,
+                                status: "failed",
+                                content: #""tool":"beta","input":{"content":"yo"}"#)
+        let send3 = makeRowCall("row-send-3", "SendMessage", kind: .mcp,
+                                content: #""tool":"gamma","input":{"content":"sup"}"#)
+        let web = makeRowCall("row-web", "WebFetch", kind: .search,
+                              content: #""input":{"url":"https://example.com"}"#)
+        let grep = makeRowCall("row-grep", "Grep", kind: .search,
+                               content: #""input":{"pattern":"needle"}"#)
+        let writeCreate = makeRowCall(
+            "row-write-create", "Write", kind: .write,
+            content: #""input":{"file_path":"/repo/New.swift"},"text":"File created successfully at: /repo/New.swift""#)
+        let writeUpdate = makeRowCall(
+            "row-write-update", "Write", kind: .write,
+            content: #""input":{"file_path":"/repo/Old.swift"},"text":"The file /repo/Old.swift has been updated successfully. (file state is current in your context — no need to Read it back)""#)
+        let emptyLabel = CodeToolLabels.label(for: [], cwd: nil)
+
+        guard let read, let runningBash, let failedBash, let bashA, let bashB,
+              let edit, let editDiff, let task, let readA, let readB,
+              let send1, let send2, let send3, let web, let grep,
+              let writeCreate, let writeUpdate else { return }
+
+        var fixtures: [[String: Any]] = []
+
+        // 1. Single call: verb `text300` + mono target `text100`.
+        let readLabel = CodeToolLabels.label(for: [read], cwd: nil)
+        let readRuns = CodeToolLabels.runs(for: readLabel,
+                                           differentiateWithoutColor: false)
+        let expectedRead = String(localized: "ccr_verb_read")
+            + " " + (readLabel.target ?? "")
+        check(readRuns.map(\.text).joined() == expectedRead,
+              "collapsedRows single: '\(readRuns.map(\.text).joined())', expected '\(expectedRead)'")
+        check(readRuns.count == 2
+                && readRuns[0].role == .secondary
+                && readRuns[1].role == .target
+                && readRuns[1].face == .mono,
+              "collapsedRows single: runs \(readRuns)")
+        fixtures.append(["case": "single", "text": expectedRead,
+                         "height": Double(36)])
+
+        // 2. Single failed call: both runs `danger00`; with
+        // differentiateWithoutColor the colour is replaced by the written
+        // suffix and both runs return to their normal roles.
+        let failedLabel = CodeToolLabels.label(for: [failedBash], cwd: nil)
+        let failedRuns = CodeToolLabels.runs(for: failedLabel,
+                                             differentiateWithoutColor: false)
+        check(failedRuns.count == 2
+                && failedRuns.allSatisfy { $0.role == .failure },
+              "collapsedRows failed: runs \(failedRuns)")
+        check(failedRuns.map(\.text).joined()
+                == CodeToolLabels.visibleText(
+                    for: failedLabel, differentiateWithoutColor: false),
+              "collapsedRows failed: visible label differs from the runs")
+        let failedWords = CodeToolLabels.runs(for: failedLabel,
+                                              differentiateWithoutColor: true)
+        check(failedWords.count == 3
+                && failedWords[0].role == .secondary
+                && failedWords[1].role == .target
+                && failedWords[2].text == CodeToolLabels.failedSuffix(1),
+              "collapsedRows failed: differentiate runs \(failedWords)")
+        fixtures.append(["case": "failed",
+                         "text": failedRuns.map(\.text).joined()])
+
+        // 3. Partial failure: a category that did not wholly fail keeps
+        // `text300` and always carries `ccr_summary_failed_count`.
+        let partialLabel = CodeToolLabels.label(for: [readA, readB], cwd: nil)
+        let partialRuns = CodeToolLabels.runs(for: partialLabel,
+                                              differentiateWithoutColor: true)
+        check(partialLabel.phrases.count == 1
+                && partialLabel.phrases.first?.failed == 1
+                && partialLabel.phrases.first?.whole == false,
+              "collapsedRows partial: phrases \(partialLabel.phrases)")
+        check(partialRuns.filter { $0.role == .failure }.isEmpty,
+              "collapsedRows partial: a non-whole category must not paint red")
+        check(partialRuns.last?.text == CodeToolLabels.failedSuffix(1),
+              "collapsedRows partial: missing failed suffix in \(partialRuns)")
+        fixtures.append(["case": "partial",
+                         "text": partialRuns.map(\.text).joined()])
+
+        // 4. Four categories: the plan keeps three, failure first, printed in
+        // first-seen order; the wholly failed category is red and carries no
+        // suffix when colour is allowed.
+        let multiCalls = [read, bashA, bashB, edit, task]
+        let multiLabel = CodeToolLabels.label(for: multiCalls, cwd: nil)
+        let multiRuns = CodeToolLabels.runs(for: multiLabel,
+                                            differentiateWithoutColor: false)
+        let multiText = multiRuns.map(\.text).joined()
+        let taskText = String(localized: "ccr_summary_task_one")
+        check(multiLabel.phrases.count == 3,
+              "collapsedRows multi: \(multiLabel.phrases.count) phrases, expected 3")
+        check(!multiText.localizedCaseInsensitiveContains(taskText),
+              "collapsedRows multi: the dropped task category still rendered (\(multiText))")
+        check(multiRuns.filter { $0.role == .failure }.count == 1,
+              "collapsedRows multi: exactly the two failed commands are red (\(multiRuns))")
+        check(multiRuns.contains { $0.text == CodeToolLabels.phraseSeparator },
+              "collapsedRows multi: missing ', ' separator")
+        fixtures.append(["case": "multi", "text": multiText,
+                         "phrases": multiLabel.phrases.map(\.text)])
+
+        // 5. Diff indicator data. Its own accessibility label text is
+        // UNKNOWN (D8), so no row-level value is synthesised.
+        let diffLabel = CodeToolLabels.label(for: [editDiff], cwd: nil)
+        check(diffLabel.diff == CodeDiffStat(added: 2, removed: 1),
+              "collapsedRows diff: \(String(describing: diffLabel.diff))")
+        fixtures.append(["case": "diff", "text":
+                            CodeToolLabels.runs(for: diffLabel,
+                                                differentiateWithoutColor: false)
+                                .map(\.text).joined()])
+
+        // 6. SendMessage: the official `sessionMessage` summary, not "Used".
+        let sessionLabel = CodeToolLabels.label(for: [send1, send2, send3],
+                                                cwd: nil)
+        let sessionText = sessionLabel.phrases.first?.text ?? ""
+        let expectedSession = String(
+            format: String(localized: "ccr_summary_session_message_other"), 3)
+        check(sessionLabel.phrases.count == 1 && sessionText == expectedSession,
+              "collapsedRows session: '\(sessionText)', expected '\(expectedSession)'")
+        check(!sessionText.localizedCaseInsensitiveContains(
+                String(localized: "ccr_verb_used")),
+              "collapsedRows session: rendered the neutral Used verb (\(sessionText))")
+        let sessionRuns = CodeToolLabels.runs(for: sessionLabel,
+                                              differentiateWithoutColor: true)
+        check(sessionRuns.contains { $0.text == CodeToolLabels.failedSuffix(1) },
+              "collapsedRows session: missing failed suffix \(sessionRuns)")
+
+        // 7. Empty summary falls back to `ccr_collapsed_steps_title`.
+        let emptyRuns = CodeToolLabels.runs(for: emptyLabel,
+                                            differentiateWithoutColor: false)
+        check(emptyRuns.map(\.text).joined()
+                == String(localized: "ccr_collapsed_steps_title"),
+              "collapsedRows empty: '\(emptyRuns.map(\.text).joined())'")
+
+        // 8. The 1023 category → Anthropicon table (R28 §4.1).
+        let iconCases: [(String, String)] = [
+            (CodeToolLabels.anthropicon(for: read), "anthropicon.eye"),
+            (CodeToolLabels.anthropicon(for: edit), "anthropicon.edit"),
+            (CodeToolLabels.anthropicon(for: writeCreate), "anthropicon.fileAdd"),
+            (CodeToolLabels.anthropicon(for: writeUpdate), "anthropicon.edit"),
+            (CodeToolLabels.anthropicon(for: grep), "anthropicon.search"),
+            (CodeToolLabels.anthropicon(for: web), "anthropicon.globe"),
+            (CodeToolLabels.anthropicon(for: task), "anthropicon.agentSimple"),
+            (CodeToolLabels.anthropicon(for: send1), "anthropicon.wrench"),
+            (CodeToolLabels.anthropicon(for: [read, bashA]), "anthropicon.listBullet"),
+            (CodeToolLabels.anthropicon(for: [edit, edit]), "anthropicon.edit"),
+        ]
+        for (actual, expected) in iconCases {
+            check(actual == expected,
+                  "collapsedRows icon: \(actual), expected \(expected)")
+        }
+
+        // 9. Gallery: single / multi / running / failed / diff / thinking /
+        // pure text.
+        let runningLabel = CodeToolLabels.label(for: [runningBash], cwd: nil)
+        check(runningLabel.isRunning,
+              "collapsedRows running: the label is not in the running state")
+        rowGallery = [
+            CodeCollapsedRowFixture(id: "g-single", kind: .tool,
+                                    label: readLabel, icon: "anthropicon.eye",
+                                    status: .complete, failureExtent: nil,
+                                    hasDetails: true),
+            CodeCollapsedRowFixture(id: "g-running", kind: .tool,
+                                    label: runningLabel,
+                                    icon: "anthropicon.commandLinePrompt",
+                                    status: .running, failureExtent: nil,
+                                    hasDetails: true,
+                                    workingMark: .generic),
+            CodeCollapsedRowFixture(id: "g-multi", kind: .tool,
+                                    label: multiLabel, icon: "anthropicon.listBullet",
+                                    status: .complete, failureExtent: .partial,
+                                    hasDetails: true),
+            CodeCollapsedRowFixture(id: "g-failed", kind: .tool,
+                                    label: failedLabel, icon: "anthropicon.commandLinePrompt",
+                                    status: .failed, failureExtent: .failed,
+                                    hasDetails: true),
+            CodeCollapsedRowFixture(id: "g-diff", kind: .tool,
+                                    label: diffLabel, icon: "anthropicon.edit",
+                                    status: .complete, failureExtent: nil,
+                                    hasDetails: true),
+            CodeCollapsedRowFixture(id: "g-thinking", kind: .thinking,
+                                    label: CodeToolRowLabel(verb: "", isRunning: false),
+                                    icon: "anthropicon.extendedThinking",
+                                    status: .complete, failureExtent: nil,
+                                    hasDetails: true),
+            CodeCollapsedRowFixture(id: "g-text", kind: .tool,
+                                    label: emptyLabel, icon: nil,
+                                    status: .complete, failureExtent: nil,
+                                    hasDetails: false),
+        ]
+
+        // D8 is still UNKNOWN: the row has no direct accessibility-label call
+        // (Button automatic label). Record the visible text the automatic
+        // label reads, so a VoiceOver Inspector pass can compare against it.
+        let autoLabels = rowGallery.map { item -> [String: String] in
+            switch item.kind {
+            case .thinking:
+                return ["id": item.id,
+                        "text": String(localized: "thought_process")]
+            case .tool:
+                return ["id": item.id,
+                        "text": CodeToolLabels.visibleText(
+                            for: item.label, differentiateWithoutColor: false)]
+            }
+        }
+
+        report["collapsedRows"] = [
+            "fixtures": fixtures,
+            "iconCases": iconCases.map { ["actual": $0.0, "expected": $0.1] },
+            "gallery": rowGallery.map(\.id),
+            "autoLabels": autoLabels,
+        ] as [String: Any]
+    }
+
     // MARK: - Views and screenshots
 
     private func captureViews() async {
@@ -566,6 +891,7 @@ final class CodeProfileAutoRunModel {
         await verifyMessageRowHeight()
         await verifyRowHeights()
         await verifyReadOutputHeight()
+        await verifyCollapsedRowHeights()
         await verifyRendererMeasure()
         await verifyRealCollectionFirstFit()
 
@@ -620,6 +946,89 @@ final class CodeProfileAutoRunModel {
             report["views"] = views
             persist(phase: "views.scrollDown")
         }
+
+        // The R28 collapsed-row gallery, once light and once dark. The dark
+        // stage is the same view tree under `.preferredColorScheme(.dark)`,
+        // so a reviewer can diff every token pair on one page.
+        if !rowGallery.isEmpty {
+            stage = .collapsedRows
+            await wait(500)
+            views["collapsedRows"] = capture("code-collapsed-rows.png")
+            report["views"] = views
+            persist(phase: "views.collapsedRows")
+
+            stage = .collapsedRowsDark
+            await wait(500)
+            views["collapsedRowsDark"] = capture("code-collapsed-rows-dark.png")
+            report["views"] = views
+            persist(phase: "views.collapsedRowsDark")
+        } else {
+            failures.append("views: collapsed-row gallery unavailable")
+        }
+    }
+
+    /// Hosts every gallery fixture at the default and AX3 sizes and asserts
+    /// the R28 heights: 36 pt (24 pt slot + 12 pt padding) with an icon or
+    /// caret, 33 pt (21 pt text line + 12) for pure text. AX3 must be taller
+    /// than default (the row text is `relative(.body)`), never clipped.
+    private func verifyCollapsedRowHeights() async {
+        guard let window = keyWindow else {
+            failures.append("collapsedRows height: no key window")
+            return
+        }
+        guard !rowGallery.isEmpty else {
+            failures.append("collapsedRows height: gallery is empty")
+            return
+        }
+        let width: CGFloat = 361
+        var cases: [[String: Any]] = []
+        for item in rowGallery {
+            let regular = measureCollapsedRow(item, width: width,
+                                              category: .large, window: window)
+            let accessibility = measureCollapsedRow(
+                item, width: width,
+                category: .accessibilityExtraLarge, window: window)
+            let expected = item.expectedDefaultHeight
+            let pass = abs(regular - expected) <= 0.5
+            check(pass, "collapsedRows height \(item.id): \(regular) pt,"
+                    + " expected \(expected)")
+            check(accessibility > regular,
+                  "collapsedRows height \(item.id): AX3 \(accessibility) pt"
+                    + " is not taller than default \(regular) pt")
+            cases.append(["id": item.id,
+                          "expected": Double(expected),
+                          "regular": Double(regular),
+                          "accessibility3": Double(accessibility),
+                          "passed": pass])
+            print("collapsedRowHeight \(item.id) expected=\(expected)"
+                + " regular=\(regular) ax3=\(accessibility) pass=\(pass)")
+        }
+        report["collapsedRowHeights"] = [
+            "width": Double(width),
+            "cases": cases,
+        ] as [String: Any]
+        persist(phase: "views.collapsedRowHeights")
+    }
+
+    private func measureCollapsedRow(_ item: CodeCollapsedRowFixture,
+                                     width: CGFloat,
+                                     category: UIContentSizeCategory,
+                                     window: UIWindow) -> CGFloat {
+        let host = UIHostingController(rootView:
+            AnyView(item.rowView()
+                .frame(width: width)
+                .ignoresSafeArea()))
+        host.view.backgroundColor = .clear
+        host.traitOverrides.preferredContentSizeCategory = category
+        host.view.frame = CGRect(x: 0, y: 0, width: width, height: 120)
+        window.addSubview(host.view)
+        host.view.layoutIfNeeded()
+        let safeTop = host.view.safeAreaInsets.top
+        let safeBottom = host.view.safeAreaInsets.bottom
+        let raw = host.sizeThatFits(
+            in: CGSize(width: width, height: .greatestFiniteMagnitude)).height
+        host.view.removeFromSuperview()
+        return max(0, raw - safeTop - safeBottom)
     }
 
     private func prepareViews() {
@@ -2375,12 +2784,37 @@ struct CodeProfileAutoRunRootView: View {
                 } else {
                     Color(.systemBackground)
                 }
+            case .collapsedRows, .collapsedRowsDark:
+                collapsedRowsStage
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Deterministic captures: the gate always renders the light appearance.
-        .preferredColorScheme(.light)
+        // Deterministic captures: every stage is light except the dedicated
+        // dark row gallery, which renders the same tree under dark tokens.
+        .preferredColorScheme(model.stage == .collapsedRowsDark ? .dark : .light)
         .task { await model.run() }
+    }
+
+    /// The R28 acceptance gallery: one row per state, exactly the fixtures
+    /// the height leg hosts. 16 pt margins / page background match the Code
+    /// transcript so the screenshot is comparable with the official one.
+    private var collapsedRowsStage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(model.rowGallery) { item in
+                    item.rowView()
+                }
+            }
+            .padding(.horizontal, CodePageTheme.rowMarginLeading)
+            .padding(.vertical, 20)
+        }
+        // The official Code page background (#F9F9F7 / #151515), so the
+        // gallery's token comparison includes the surface behind the rows.
+        // Chosen from the stage rather than the environment: the stage is
+        // what drives `preferredColorScheme`, so there is no update race.
+        .background(model.stage == .collapsedRowsDark
+                    ? CodePageTheme.pageBackgroundColor.dark
+                    : CodePageTheme.pageBackgroundColor.light)
     }
 
     private func messageStage(_ group: ChatTimelineGroup) -> some View {

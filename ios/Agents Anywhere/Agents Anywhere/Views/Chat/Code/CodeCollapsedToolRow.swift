@@ -1,196 +1,391 @@
 import SwiftUI
 import UIKit
 
-/// The Code page's collapsed tool row: one line, never an in-place expansion.
-///
-/// Official structure (`CANONICAL/04-tool-calls.md` §4.1, §6.2): the
-/// `CollapsedRowButton` is an optional leading icon, a label, an optional
-/// `DiffIndicator` (+N / −N, corner radius 4.5), a running shimmer and a
-/// trailing caret, all inside 6 pt padding. The official label mixes two runs:
-/// the verb ("Edited") is proportional and secondary, its target
-/// ("validate-email.ts") is monospaced and primary — the 2026-10-22 screenshot
-/// shows both at the same 15 pt size. A tap routes to the full-screen detail
-/// and never expands the row (§4.2), so this view only calls `action`;
-/// navigation belongs to the caller.
-///
-/// Every visual constant comes from `CodePageTheme`; this file adds none.
-struct CodeCollapsedToolRow: View {
-    /// The label plan's localized text plus the failure counts. One value
-    /// keeps the verb/target runs and the per-phrase summary in sync.
-    let label: CodeToolRowLabel
-    /// An official Anthropicon asset name for the leading icon (see
-    /// `AnthropiconAssets`). Defaults to none because a completed row in the
-    /// official screenshot has no leading glyph; the caller passes one for
-    /// the states that show it (running / background task,
-    /// `04-tool-calls.md` §7.3).
-    let icon: String?
-    let action: () -> Void
+// The Code page's collapsed row, shared by tool calls and thinking blocks.
+//
+// Official structure (R28 §1): `Button(CollapsedStepsRow)` with
+// `.buttonStyle(TapTargetButtonStyle)`; the row is always collapsed and a tap
+// opens the detail, never an in-place expansion. Body = a single HStack
+// (alignment `.center`, no explicit spacing), a leading `IconFrame` at the
+// regular 24×24 slot, the label, an optional `TimelineStatusGlyph`, an
+// optional `DiffIndicator`, the caret when `hasDetails`, then a spacer. The
+// only outer padding is `.padding(.vertical, 6)`; the official view carries
+// no `minHeight` and no background/corner radius, so the row's height is the
+// natural content height: 24 + 12 = 36 pt with an icon/caret, 21 + 12 = 33 pt
+// for pure text.
+//
+// Every visible constant is from R28 (`visual-spec.md` §1–§4, §U).
 
-    /// Both glyphs are the official Anthropicon artwork now (shipped from the
-    /// app bundle, see `AnthropiconAssets`): the tool icon at the `.large`
-    /// preset and the caret at `.medium`. The device-measured caret
-    /// (7.7×14.3 pt) matches the medium 8×15 artwork extent, not the large
-    /// 10×18 one, which is why the caret uses the smaller preset.
+/// One run of the collapsed row's label. The official label is an
+/// `AttributedString` with at most two runs (verb / target) or a per-category
+/// summary; the view maps these semantic runs to fonts and token colours.
+nonisolated struct CodeToolLabelRun: Equatable {
+    nonisolated enum Role: Equatable {
+        /// `text300` — verbs, category phrases and separators.
+        case secondary
+        /// `text100` — the summary's target run (path / command / query).
+        case target
+        /// `danger00` — a failed call, or a `whole` failed category when
+        /// `differentiateWithoutColor` is off.
+        case failure
+    }
 
-    @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
-    private var lineHeight = CodePageTheme.toolRowLineHeight
+    nonisolated enum Face: Equatable {
+        case sans
+        case mono
+    }
+
+    let text: String
+    let role: Role
+    let face: Face
+}
+
+/// The official `FailureExtent` (`swift_types.csv`, dump 20352).
+nonisolated enum CodeFailureExtent: Hashable {
+    case failed
+    case partial
+}
+
+/// The official `CollapsedStepsRow` for the Code page.
+///
+/// Field list follows R28 §1.1 exactly. Two fields are hooks, not guessed
+/// values:
+/// - `workingMark`: a seated mark replaces the leading icon; only the 20×20
+///   content box and 30 fps cadence are decoded (D2/D3), so the slot renders
+///   a frame-less skeleton instead of the retired 1019 artwork.
+/// - the `TimelineStatusGlyph` non-failure branch draws the evidenced
+///   `checkmark`; its `.failed`/`.partial` `FailureGlyph` branch is UNKNOWN
+///   (D6) and stays empty until the artwork/colour are read.
+struct CodeCollapsedStepsRow: View {
+    var icon: String?
+    var iconSize: AnthropiconSize = .large
+    /// The pre-styled label. The caller owns the per-run fonts/colours, which
+    /// keeps the failure rules in one place (`CodeToolLabels`).
+    var text: Text
+    var status: CodeToolStatus
+    var failureExtent: CodeFailureExtent?
+    var hasDetails: Bool
+    var diffIndicator: CodeDiffStat?
+    var workingMark: WorkingMarkBody?
+    var keepsIcon: Bool = false
+    var isTextHidden: Bool = false
+    /// D10 (R28 §U 收口二 二-E): the official `ToolRowCompanions` container
+    /// draws settled rows first and `AttachmentTiles` second, and skips the
+    /// settled `ForEach` when its count is 0. AA's segment model carries no
+    /// settled/image data, so this row only reserves the flag; the U parts
+    /// (empty attachment condition, VStack spacing) stay unimplemented.
+    var includesImages: Bool = false
+    var voiceControlName: String?
+    var spokenLabel: String?
+    var isRunning: Bool
+    var action: () -> Void
+
+    /// [E] R28 §2.1 — row text unscaled line height 21, relative `.body`.
+    @ScaledMetric(relativeTo: CodePageTheme.toolRowBodyTextStyle)
+    private var textLineHeight = CodePageTheme.toolRowTextLineHeight
 
     @Environment(\.colorScheme) private var colorScheme
-    /// The official `failureInWords` is the accessibility "differentiate
-    /// without colour" value (`0x102ab2fb4`): when set, failures are written
-    /// out and the label keeps its normal ink.
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .center) {
+                leadingSlot
+
+                if !isTextHidden {
+                    text
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        // The official row has no minHeight; the line box is
+                        // the 21 pt unscaled line height (V3). With an icon
+                        // or caret the 24 pt slot wins, giving 36 pt.
+                        .frame(minHeight: textLineHeight, alignment: .leading)
+                        .layoutPriority(1)
+                        .modifier(CodeCollapsedRowShimmer(active: isRunning))
+                }
+
+                CodeTimelineStatusGlyph(status: status, failureExtent: failureExtent)
+
+                if let diffIndicator, diffIndicator.hasCounts {
+                    CodeDiffIndicator(stat: diffIndicator)
+                }
+
+                if hasDetails {
+                    // [E] R28 U-B.1 — caretRight, medium (8×15 artwork),
+                    // `.frame(height: 24)`, text400, no rotation, a11y
+                    // hidden.
+                    AnthropiconView(name: "anthropicon.caretRight", size: .medium)
+                        .foregroundStyle(CodePageTheme.text400Color
+                            .resolved(for: colorScheme))
+                        .frame(height: CodePageTheme.toolRowCaretFrameHeight)
+                        .accessibilityHidden(true)
+                }
+
+                // Official body ends in a `Spacer`, so the row's tap target
+                // fills the transcript width while the content stays leading.
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, CodePageTheme.toolRowButtonPadding)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        // D8 UNKNOWN (R28 §U 收口二 二-C): the official row has no direct
+        // `.accessibilityLabel`/`.accessibilityValue` call; the Button's
+        // automatic label from its visible text is the evidenced behaviour.
+        // The optional `spokenLabel`/`voiceControlName` fields exist in the
+        // official model, so apply them only when a caller supplies the
+        // (not-yet-decoded) strings. Do not synthesise a spoken sentence.
+        .modifier(CodeCollapsedRowAccessibility(spokenLabel: spokenLabel,
+                                                voiceControlName: voiceControlName))
+    }
+
+    /// [E] R28 §1.2 — `IconFrame` regular 24×24; the glyph inside keeps its
+    /// official artwork extent (`AnthropiconAssets`), i.e. medium for the
+    /// thinking row and large for tool category icons.
+    @ViewBuilder
+    private var leadingSlot: some View {
+        if let workingMark, !keepsIcon {
+            // The official first slot is `ConditionalContent<IconFrame,
+            // WorkingMarkSlot + ZStack<WorkingMarkView>>`: a seated mark
+            // replaces the category icon. D2/D3: only the 20×20 content box
+            // and the 30 fps player are decoded; the sheet/frame sequence is
+            // UNKNOWN, so the skeleton draws no frames yet (do not reuse the
+            // retired 1019 mark, R28 §6).
+            CodeWorkingMarkSkeleton(body: workingMark)
+        } else if let icon {
+            AnthropiconView(name: icon, size: iconSize)
+                .foregroundStyle(CodePageTheme.text500Color
+                    .resolved(for: colorScheme))
+                .frame(width: CodePageTheme.toolRowIconFrameSize,
+                       height: CodePageTheme.toolRowIconFrameSize)
+        }
+    }
+
+}
+
+/// D2/D3 skeleton for the 1023 `WorkingMarkView` (R28 §U 收口二 二-F).
+///
+/// Evidenced: the content box is 20×20 pt, the player ticks at 30 fps
+/// (1/30 s), and its key thresholds are 1.5 s / 0.5 s
+/// (`0x101f070c0`/`0x101f07128`). The `WorkingMarkSheet` frame counts and the
+/// per-pose opening/looping/closing/grow sequences are not decoded, so this
+/// view reserves the official slot and cadence but draws no artwork; the
+/// 1.5/0.5 thresholds have no segment mapping to apply yet. The pose is
+/// passed through unchanged for the future sheet lookup.
+private struct CodeWorkingMarkSkeleton: View {
+    let body: WorkingMarkBody
+
+    var body: some View {
+        TimelineView(.animation(
+            minimumInterval: 1.0 / CodePageTheme.workingMarkFrameRate)) { _ in
+            Color.clear
+                .frame(width: CodePageTheme.workingMarkSize,
+                       height: CodePageTheme.workingMarkSize)
+        }
+        .frame(width: CodePageTheme.workingMarkSize,
+               height: CodePageTheme.workingMarkSize)
+        .accessibilityHidden(true)
+    }
+}
+
+/// The row's optional accessibility fields. The official row is a `Button`,
+/// so its automatic label already reads the visible text; only the model's
+/// `spokenLabel`/`voiceControlName` override that, and their strings are
+/// UNKNOWN (D8). Keeping the branch empty by default avoids inventing a
+/// spoken sentence while still wiring the fields.
+private struct CodeCollapsedRowAccessibility: ViewModifier {
+    let spokenLabel: String?
+    let voiceControlName: String?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let spokenLabel {
+            content
+                .accessibilityLabel(Text(spokenLabel))
+                .accessibilityInputLabels(voiceControlName.map { [Text($0)] } ?? [])
+        } else if let voiceControlName {
+            content.accessibilityInputLabels([Text(voiceControlName)])
+        } else {
+            content
+        }
+    }
+}
+
+/// The official `TimelineStatusGlyph` (`R28 §4.3`, corrected by §U 收口二
+/// 二-A/二-B).
+///
+/// Evidenced: Body is `ConditionalContent<FailureGlyph, Image>`; the
+/// non-failure branch constructs `Image(systemName: "checkmark")` with
+/// `.fontWeight(.semibold)`, the `accentSecondary100` token and
+/// `.accessibilityHidden(true)` (`0x100d9fe38`). The inference (I-high, no
+/// per-instruction branch proof) is `failureExtent == nil` → checkmark.
+///
+/// Still UNKNOWN (D6): the `FailureGlyph` artwork for `.failed`/`.partial`,
+/// its foreground token and its frame size. That branch is a hook — do not
+/// substitute a warning symbol or `danger00`.
+struct CodeTimelineStatusGlyph: View {
+    let status: CodeToolStatus
+    let failureExtent: CodeFailureExtent?
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    @ViewBuilder
+    var body: some View {
+        if failureExtent == nil {
+            Image(systemName: "checkmark")
+                .fontWeight(.semibold)
+                .foregroundStyle(CodePageTheme.accentSecondary100Color
+                    .resolved(for: colorScheme))
+                .accessibilityHidden(true)
+        } else {
+            // TODO(D6): FailureGlyph(extent:size:) — asset/glyph, colour and
+            // frame size are UNKNOWN; `0x101e913c0` is the Thumbnail body and
+            // must not be used here.
+            EmptyView()
+        }
+    }
+}
+
+/// The official tool row wrapper: maps a segment's label plan to the shared
+/// collapsed row. It never expands and never navigates itself; the caller
+/// owns the detail sheet.
+struct CodeCollapsedToolRow: View {
+    let label: CodeToolRowLabel
+    let icon: String?
+    let iconSize: AnthropiconSize
+    /// The seated working-mark pose; nil keeps the category icon. The pose
+    /// comes from the official predicate (`CodeWorkingMarkPose`), not from a
+    /// visual guess.
+    let workingMark: WorkingMarkBody?
+    let status: CodeToolStatus
+    let failureExtent: CodeFailureExtent?
+    let hasDetails: Bool
+    let action: () -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
+    /// The official `failureInWords` switch: a `whole` failed category is
+    /// written out instead of painted red (R28 §2.4, task rule 6).
     @Environment(\.accessibilityDifferentiateWithoutColor)
     private var differentiateWithoutColor
 
     init(label: CodeToolRowLabel,
          icon: String? = nil,
+         iconSize: AnthropiconSize = .large,
+         workingMark: WorkingMarkBody? = nil,
+         status: CodeToolStatus = .complete,
+         failureExtent: CodeFailureExtent? = nil,
+         hasDetails: Bool = true,
          action: @escaping () -> Void) {
         self.label = label
         self.icon = icon
+        self.iconSize = iconSize
+        self.workingMark = workingMark
+        self.status = status
+        self.failureExtent = failureExtent
+        self.hasDetails = hasDetails
         self.action = action
     }
 
     var body: some View {
-        Button(action: action) {
-            HStack(alignment: .center) {
-                if let icon {
-                    AnthropiconView(name: icon, size: .large)
-                        .foregroundStyle(CodePageTheme.toolRowSecondaryColor
-                            .resolved(for: colorScheme))
-                }
-
-                labelText
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .layoutPriority(1)
-                    // The official running row sweeps a shimmer across the
-                    // label (`ShimmerView`, §4.1). Reuse the app's shared
-                    // opacity sweep; it already honours Reduce Motion.
-                    .modifier(StatusShimmer(active: label.isRunning))
-
-                if let diff = label.diff, diff.hasCounts {
-                    CodeDiffIndicator(stat: diff)
-                }
-
-                // Official `caretRight`, secondary, at the medium artwork
-                // extent (8×15 pt); the device screenshots measure 7.7×14.3.
-                AnthropiconView(name: "anthropicon.caretRight", size: .medium)
-                    .foregroundStyle(CodePageTheme.toolRowSecondaryColor
-                        .resolved(for: colorScheme))
-            }
-            // The official line box is 24 pt even though the 15 pt text is
-            // shorter; `lineHeight` is the theme's scaled copy of that value.
-            // [E] `CollapsedRowButton`: `minHeight: 24`, `.padding(.vertical, 6)`,
-            // no horizontal padding (R19 tool-row-status.md).
-            .frame(minHeight: lineHeight, alignment: .leading)
-            .padding(.vertical, CodePageTheme.toolRowButtonPadding)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(accessibilityText)
-        .accessibilityValue(diffAccessibilityValue)
+        let runs = CodeToolLabels.runs(
+            for: label, differentiateWithoutColor: differentiateWithoutColor)
+        CodeCollapsedStepsRow(
+            icon: icon,
+            iconSize: iconSize,
+            text: styledText(runs),
+            status: status,
+            failureExtent: failureExtent,
+            hasDetails: hasDetails,
+            diffIndicator: label.diff,
+            workingMark: workingMark,
+            keepsIcon: false,
+            isTextHidden: false,
+            includesImages: false,
+            voiceControlName: nil,
+            spokenLabel: nil,
+            isRunning: label.isRunning,
+            action: action)
     }
 
-    /// The single-target shape: two runs sharing one line, the secondary
-    /// proportional verb then the primary monospaced target. Failure follows
-    /// the official switch (`0x10289036c`): red verb unless colour must not
-    /// carry meaning alone (`differentiateWithoutColor`), in which case the
-    /// written `(N failed)` suffix is appended.
-    private var labelText: Text {
-        if !label.phrases.isEmpty { return phrasesText }
-        let secondary = CodePageTheme.toolRowSecondaryColor.resolved(for: colorScheme)
-        let failedColorOnly = label.failed > 0 && !differentiateWithoutColor
-        let verbColor = failedColorOnly
-            ? CodePageTheme.toolRowFailureColor.resolved(for: colorScheme)
-            : secondary
-        let targetColor = Color(uiColor: CodePageTheme.markdownTextUIColor)
-        let suffix = singleTargetSuffix
-        let sans = Font.custom(CodePageTheme.sansFontName,
-                               size: CodePageTheme.toolRowFontSize,
-                               relativeTo: CodePageTheme.toolRowTextStyle)
-        guard let target = label.target, !target.isEmpty else {
-            return Text(label.verb).font(sans).foregroundStyle(verbColor) + suffix
-        }
-        return Text(label.verb + " ")
-            .font(sans)
-            .foregroundStyle(verbColor)
-            + Text(target)
-            .font(.custom(CodePageTheme.monoFontName,
+    /// [E] R28 §2.1/§2.2 — sans runs are Anthropic Sans 15/400 relative
+    /// `.body` (21 pt line box); the target run is JetBrainsMono 15/400
+    /// relative `.footnote` (24 pt line box). Colours are §2.3's tokens.
+    private func styledText(_ runs: [CodeToolLabelRun]) -> Text {
+        var text = Text("")
+        for run in runs {
+            let font: Font = run.face == .mono
+                ? .custom(CodePageTheme.monoFontName,
                           size: CodePageTheme.toolRowFontSize,
-                          relativeTo: CodePageTheme.toolRowTextStyle))
-            .foregroundStyle(targetColor)
-            + suffix
-    }
-
-    private var singleTargetSuffix: Text {
-        guard label.failed > 0, differentiateWithoutColor else { return Text("") }
-        return Text(CodeToolLabels.failedSuffix(label.failed))
-            .font(.custom(CodePageTheme.sansFontName,
+                          relativeTo: CodePageTheme.toolRowTextStyle)
+                : .custom(CodePageTheme.sansFontName,
                           size: CodePageTheme.toolRowFontSize,
-                          relativeTo: CodePageTheme.toolRowTextStyle))
-            .foregroundStyle(CodePageTheme.toolRowSecondaryColor.resolved(for: colorScheme))
-    }
-
-    /// The multi-target summary. Official rules (`0x10288ea34`): a partially
-    /// failed category carries the written suffix; a category whose entries
-    /// all failed is painted red unless colour is not a differentiator, in
-    /// which case it carries the suffix instead.
-    private var phrasesText: Text {
-        let secondary = CodePageTheme.toolRowSecondaryColor.resolved(for: colorScheme)
-        let failure = CodePageTheme.toolRowFailureColor.resolved(for: colorScheme)
-        let sans = Font.custom(CodePageTheme.sansFontName,
-                               size: CodePageTheme.toolRowFontSize,
-                               relativeTo: CodePageTheme.toolRowTextStyle)
-        var result = Text("")
-        for (index, phrase) in label.phrases.enumerated() {
-            if index > 0 {
-                result = result
-                    + Text(CodeToolLabels.phraseSeparator).font(sans)
-                    .foregroundStyle(secondary)
-            }
-            let allFailed = phrase.total > 0 && phrase.failed == phrase.total
-            let color = allFailed && !differentiateWithoutColor ? failure : secondary
-            var text = phrase.text
-            if phrase.failed > 0, !allFailed || differentiateWithoutColor {
-                text += CodeToolLabels.failedSuffix(phrase.failed)
-            }
-            result = result + Text(text).font(sans).foregroundStyle(color)
-        }
-        return result
-    }
-
-    private var accessibilityText: String {
-        if !label.phrases.isEmpty {
-            return label.phrases.map { phrase in
-                var text = phrase.text
-                let allFailed = phrase.total > 0 && phrase.failed == phrase.total
-                if phrase.failed > 0, !allFailed || differentiateWithoutColor {
-                    text += CodeToolLabels.failedSuffix(phrase.failed)
-                }
-                return text
-            }.joined(separator: CodeToolLabels.phraseSeparator)
-        }
-        var text = label.verb
-        if let target = label.target, !target.isEmpty { text += " " + target }
-        if label.failed > 0, differentiateWithoutColor {
-            text += CodeToolLabels.failedSuffix(label.failed)
+                          relativeTo: CodePageTheme.toolRowBodyTextStyle)
+            text = text
+                + Text(run.text)
+                    .font(font)
+                    .foregroundStyle(color(for: run.role))
         }
         return text
     }
 
-    /// "+1 −1" in symbols rather than words, so it needs no localisation.
-    private var diffAccessibilityValue: String {
-        guard let diff = label.diff else { return "" }
-        var parts: [String] = []
-        if diff.added > 0 { parts.append("+\(diff.added)") }
-        if diff.removed > 0 { parts.append("−\(diff.removed)") }
-        return parts.joined(separator: " ")
+    private func color(for role: CodeToolLabelRun.Role) -> Color {
+        switch role {
+        case .secondary:
+            return CodePageTheme.text300Color.resolved(for: colorScheme)
+        case .target:
+            return CodePageTheme.text100Color.resolved(for: colorScheme)
+        case .failure:
+            return CodePageTheme.danger00Color.resolved(for: colorScheme)
+        }
+    }
+}
+
+/// The official shimmer: `KeyframeAnimator(initialValue: 0.0, repeating:
+/// true)` over a `LinearKeyframe(1.0, duration: 2.0, .linear)` (R28 U-C.3,
+/// closed). The gradient geometry follows the previously decoded ShimmerView
+/// (two tiled copies, 0.2 edge opacity); only its alpha profile is used.
+///
+/// D5 UNKNOWN: the official static scan found no `accessibilityReduceMotion`
+/// read in `ShimmerOverlay`/`WorkingMark`; whether the animation stops under
+/// Reduce Motion is unverified. Do not add a gating branch until measured.
+private struct CodeCollapsedRowShimmer: ViewModifier {
+    let active: Bool
+
+    private static let period: Double = 2.0
+    private static let edgeOpacity: Double = 0.2
+
+    func body(content: Content) -> some View {
+        if active {
+            content.mask {
+                GeometryReader { geometry in
+                    let width = geometry.size.width
+                    let gradient = LinearGradient(stops: [
+                        .init(color: .white.opacity(Self.edgeOpacity), location: 0),
+                        .init(color: .white, location: 0.5),
+                        .init(color: .white.opacity(Self.edgeOpacity), location: 1)
+                    ], startPoint: .leading, endPoint: .trailing)
+                    KeyframeAnimator(initialValue: CGFloat.zero, repeating: true) { progress in
+                        ZStack {
+                            gradient
+                                .frame(width: width)
+                                .offset(x: (progress - 1) * width)
+                            gradient
+                                .frame(width: width)
+                                .offset(x: progress * width)
+                        }
+                    } keyframes: { _ in
+                        LinearKeyframe(1.0, duration: Self.period, timingCurve: .linear)
+                    }
+                }
+            }
+        } else {
+            content
+        }
     }
 }
 
 /// The official `DiffIndicator`: `+N` and `−N` share one 4.5 pt rounded pill,
-/// each half carrying its own fill and ink (`04-tool-calls.md` §4.1/§6.2).
-private struct CodeDiffIndicator: View {
+/// each half carrying its own fill and ink (R28 U-B.2).
+struct CodeDiffIndicator: View {
     let stat: CodeDiffStat
 
     @Environment(\.colorScheme) private var colorScheme
@@ -198,13 +393,17 @@ private struct CodeDiffIndicator: View {
     @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
     private var horizontalPadding = CodePageTheme.diffIndicatorHorizontalPadding
 
-    /// [E] Each half is 18 pt tall and the glyph is 11 pt / 550 / 16
-    /// (R19 tool-row-status.md).
+    /// [E] R28 U-B.2 — each half is 18 pt tall and the glyph is
+    /// 11 pt / 550 / 16 (ScaledMetric base values).
     @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
     private var halfHeight = CodePageTheme.diffIndicatorHeight
 
     @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
     private var fontSize = CodePageTheme.diffIndicatorFontSize
+
+    /// [E] R28 U-B.2 — the glyph's unscaled line height is 16 pt.
+    @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
+    private var textLineHeight = CodePageTheme.diffIndicatorLineHeight
 
     @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
     private var cornerRadius = CodePageTheme.diffIndicatorCornerRadius
@@ -222,8 +421,7 @@ private struct CodeDiffIndicator: View {
                      ink: CodePageTheme.diffIndicatorRemoveText)
             }
         }
-        // [E] 11 pt / weight 550. The variable face needs a CT variation
-        // weight, so the font is built once from the scaled size.
+        // [E] 11 pt / weight 550 in the official mono face.
         .font(Font(MarkdownFontFactory.font(
             name: CodePageTheme.monoFontName,
             size: fontSize,
@@ -231,6 +429,10 @@ private struct CodeDiffIndicator: View {
         .lineLimit(1)
         .fixedSize()
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        // D8 UNKNOWN (R28 §U 收口二 二-C): the official `DiffIndicator` has
+        // an `accessibilityLabel: Text` field whose text is not decoded.
+        // Hiding it avoids inventing a spoken "+N −N" sentence; revisit with
+        // the VoiceOver Inspector.
         .accessibilityHidden(true)
     }
 
@@ -240,6 +442,7 @@ private struct CodeDiffIndicator: View {
         Text(text)
             .monospacedDigit()
             .foregroundStyle(ink.resolved(for: colorScheme))
+            .frame(minHeight: textLineHeight)
             .padding(.horizontal, horizontalPadding)
             .frame(height: halfHeight)
             .background(fill.resolved(for: colorScheme))
@@ -257,7 +460,9 @@ private struct CodeDiffIndicator: View {
     CodeCollapsedToolRow(label: CodeToolRowLabel(verb: "Ran",
                                                  target: "npm test",
                                                  isRunning: true),
-                         icon: "terminal") {}
+                         icon: "anthropicon.commandLinePrompt",
+                         workingMark: .generic,
+                         status: .running) {}
         .padding(.horizontal, CodePageTheme.rowMarginLeading)
 }
 
@@ -265,6 +470,19 @@ private struct CodeDiffIndicator: View {
     CodeCollapsedToolRow(label: CodeToolRowLabel(verb: "Edited",
                                                  target: "validate-email.ts",
                                                  diff: CodeDiffStat(added: 1, removed: 1),
-                                                 isRunning: false)) {}
+                                                 isRunning: false),
+                         icon: "anthropicon.edit") {}
+        .padding(.horizontal, CodePageTheme.rowMarginLeading)
+}
+
+#Preview("Collapsed tool row — failed") {
+    CodeCollapsedToolRow(label: CodeToolRowLabel(verb: "Ran",
+                                                 target: "npm test",
+                                                 isRunning: false,
+                                                 failed: 1,
+                                                 total: 1),
+                         icon: "anthropicon.commandLinePrompt",
+                         status: .failed,
+                         failureExtent: .failed) {}
         .padding(.horizontal, CodePageTheme.rowMarginLeading)
 }

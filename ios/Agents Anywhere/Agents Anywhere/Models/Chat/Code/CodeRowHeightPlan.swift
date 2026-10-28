@@ -5,10 +5,11 @@ import Foundation
 /// `CodeMessageRowView` stacks rendered rows with `interMessageSpacing`
 /// between them (10 pt, the pair of 5 pt row margins). Each row stacks its
 /// blocks with `blockGap` (8 pt, the explicit stand-in for the official
-/// `interBlockSpacing = nil`) and adds no padding around a block. A collapsed
-/// tool row is a 24 pt line box (scaled by Dynamic Type at render time) plus
-/// 6 pt button padding on each side; the status line is the 20 pt mark plus
-/// its own vertical padding.
+/// `interBlockSpacing = nil`) and adds no padding around a block. The 1023
+/// collapsed tool/thinking row has no `minHeight`: its line box is the tallest
+/// child — max(24 pt icon/caret slot, the 21 pt row text line box scaled with
+/// `.body`) — plus 6 pt button padding on each side (R28 §1.2/§2.1). The
+/// status line is the 20 pt mark plus its own vertical padding.
 ///
 /// The adapter supplies the text blocks' measured heights; everything else is
 /// fixed. Keeping the sums here, rather than in the adapter, lets the estimate,

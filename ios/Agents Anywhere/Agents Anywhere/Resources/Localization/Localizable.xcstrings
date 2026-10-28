@@ -18489,6 +18489,23 @@
         }
       }
     },
+    "ccr_collapsed_steps_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tool calls"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工具调用"
+          }
+        }
+      }
+    },
     "Following calls": {
       "extractionState": "manual",
       "localizations": {

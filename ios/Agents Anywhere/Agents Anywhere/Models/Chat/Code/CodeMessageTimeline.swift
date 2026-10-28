@@ -262,7 +262,7 @@ nonisolated enum CodeMessageBuilder {
             if interactionTargets.contains(item.id) {
                 flushPending()
                 breakRun()
-                units.append(.standalone(item))
+                units.append(.standalone(item: item))
                 continue
             }
             // Sub-agent child rows stay in the panel, not the main timeline.
@@ -281,7 +281,7 @@ nonisolated enum CodeMessageBuilder {
                     // No declared grouping key: the row cannot join a span.
                     flushPending()
                     breakRun()
-                    units.append(.standalone(item))
+                    units.append(.standalone(item: item))
                     continue
                 }
                 // The Agent card is the official `threadSessionCard` shape: it
@@ -324,7 +324,7 @@ nonisolated enum CodeMessageBuilder {
                 guard let key = groupKey(for: item) else {
                     flushPending()
                     breakRun()
-                    units.append(.standalone(item))
+                    units.append(.standalone(item: item))
                     continue
                 }
                 // Thinking is transparent (rule 3): whatever row is open —
@@ -377,7 +377,7 @@ nonisolated enum CodeMessageBuilder {
             // key: it keeps its own item and stops the run.
             flushPending()
             breakRun()
-            units.append(.standalone(item))
+            units.append(.standalone(item: item))
         }
 
         flushPending()

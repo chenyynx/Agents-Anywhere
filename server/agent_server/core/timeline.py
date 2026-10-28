@@ -32,7 +32,16 @@ def timeline_item_state_is_unchanged(
 ) -> bool:
     """Compare the Runtime-owned state identity for one stable item ID."""
 
-    return existing.contentHash == incoming.contentHash
+    if existing.contentHash != incoming.contentHash:
+        return False
+    # ``contentHash`` covers type/status/role/content only, never ``source``.
+    # A history rebuild that now declares ``turnId`` on an otherwise identical
+    # row would look unchanged, so the stored payload would never gain the turn
+    # boundary. Force exactly that one rewrite: every other source field keeps
+    # the old contentHash-only behaviour.
+    if incoming.source.turnId and not existing.source.turnId:
+        return False
+    return True
 
 
 def native_item_id_from_payload(payload_json: str) -> str | None:

@@ -1178,7 +1178,7 @@ final class CodeProfileAutoRunModel {
         check(detailGroupCalls.count == 3,
               "views: detail group has \(detailGroupCalls.count) calls, expected 3")
         let groupLabel = CodeToolLabels.label(for: detailGroupCalls, cwd: "/repo")
-        check(groupLabel.phrases.count == 1 && groupLabel.phrases.first?.count == 2,
+        check(groupLabel.phrases.count == 1 && groupLabel.phrases.first?.total == 2,
               "views: detail group phrases \(groupLabel.phrases), expected one 2-file phrase")
         let groupTitle = CodeToolLabels.visibleText(
             for: groupLabel, differentiateWithoutColor: false)

@@ -123,6 +123,15 @@ final class TimelineAnchorDriver {
         applyInsets()
     }
 
+    /// UIKit's own safe area changed (window attach, nav bar, rotation). The
+    /// official formula subtracts it from the page proxy, so the inset must be
+    /// recomputed when it moves: a page can attach before UIKit installs that
+    /// safe area, and the later addition would otherwise be counted twice
+    /// (a new session rested its first row ~100 pt too low, 2026-10-28).
+    func containerInsetsChanged() {
+        applyInsets()
+    }
+
     private func applyInsets() {
         guard let view = scrollView else { return }
         let viewInsets = view.safeAreaInsets

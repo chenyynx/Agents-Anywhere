@@ -2214,6 +2214,15 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         scheduleVisibleCellFrameSync()
     }
 
+    func scrollViewDidChangeAdjustedContentInset(_ scrollView: UIScrollView) {
+        guard !navigationSuspended else { return }
+        // UIKit can install its own safe area after the first inset write; the
+        // official formula subtracts it from the page proxy, so recompute here
+        // or the proxy is counted twice (new session, 2026-10-28). Our own
+        // writes land here too and are a no-op (the value already matches).
+        anchorDriver?.containerInsetsChanged()
+    }
+
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         guard !navigationSuspended else { return }
         anchorDriver?.readerBeganDragging()

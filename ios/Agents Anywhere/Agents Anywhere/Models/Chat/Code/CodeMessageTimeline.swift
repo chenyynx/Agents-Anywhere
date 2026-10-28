@@ -183,6 +183,10 @@ nonisolated enum CodeMessageBuilder {
         /// The last declared turn among the rows seen so far. A row with no
         /// turnId inherits it; only a *declared* id that differs starts a turn.
         var currentTurnID: V2TurnID?
+        /// The user message key already open. One user message may arrive as
+        /// several body rows (one per content block); those rows share the key
+        /// and must stay one row, so only a *new* user key ends the turn.
+        var lastUserKey: String?
 
         func append(_ item: V2TimelineItem, to index: Int) {
             switch units[index] {
@@ -226,6 +230,7 @@ nonisolated enum CodeMessageBuilder {
         func endTurn() {
             target = nil
             messageIndexByKey.removeAll()
+            lastUserKey = nil
         }
 
         /// True when `item` opens a new declared turn. The comparison is against
@@ -245,6 +250,9 @@ nonisolated enum CodeMessageBuilder {
             // first occurrence wins.
             guard consumed.insert(item.id).inserted else { continue }
             let isChild = isSubAgentChild(item)
+            let userKey = item.type == .message && item.role == .user
+                ? groupKey(for: item) : nil
+            let repeatsUserMessage = userKey != nil && userKey == lastUserKey
 
             // A declared turn change is a hard boundary: nothing before it may
             // merge with anything after it. Thinking before the boundary
@@ -252,10 +260,14 @@ nonisolated enum CodeMessageBuilder {
             // keeps the user-row-only seam. Sub-agent child rows are not part
             // of this timeline and may carry a sub-agent-local fallback turn id
             // (`turn_claude_subagent_*`), so they never advance the turn state.
-            if !isChild, startsNewTurn(item) || isTurnBoundary(item) {
+            // A user message's own later body rows share its key and are part
+            // of the same turn, so they must not reopen the boundary.
+            if !isChild,
+               startsNewTurn(item) || (!repeatsUserMessage && isTurnBoundary(item)) {
                 flushPending()
                 endTurn()
             }
+            if let userKey { lastUserKey = userKey }
 
             // An approval card anchors on this row: it has to stay its own
             // item, and it ends the run exactly like any other break.
@@ -350,8 +362,6 @@ nonisolated enum CodeMessageBuilder {
 
             // A body row, or any other row the Code page does not stack.
             if isStackable(item), let key = groupKey(for: item) {
-                let role = item.role ?? .unknown
-                if role == .user { endTurn() }
                 if !pendingReasoning.isEmpty,
                    !pendingReasoning.contains(where: { groupKey(for: $0) == key }) {
                     flushPending()
@@ -359,15 +369,18 @@ nonisolated enum CodeMessageBuilder {
                 if let index = messageIndexByKey[key] {
                     appendPending(to: index)
                     append(item, to: index)
+                    // A user prompt is never a merge target; an assistant row
+                    // becomes one only once a tool lands in it.
                     target = containsToolRows(units[index]) ? MergeTarget.message(index) : nil
                 } else {
                     var rows = pendingReasoning
                     pendingReasoning.removeAll()
                     rows.append(item)
                     units.append(.message(key: key, items: rows))
-                    // A user prompt is never a merge target; an assistant row
-                    // becomes one only once a tool lands in it.
-                    if role != .user { messageIndexByKey[key] = units.count - 1 }
+                    // Later body rows of the same message find this row. A
+                    // tool row never shares a user message key, so keeping the
+                    // user key here cannot merge tools across the prompt.
+                    messageIndexByKey[key] = units.count - 1
                     target = nil
                 }
                 continue

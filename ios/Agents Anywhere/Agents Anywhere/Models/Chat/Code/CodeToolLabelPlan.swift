@@ -425,7 +425,8 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
                 switch call.name.lowercased() {
                 case "grep": return .other(.searchedCode)
                 case "glob": return .other(.foundFiles)
-                case "websearch", "web_search", "webfetch", "web-fetch", "fetch":
+                case "websearch", "web_search", "webfetch", "web_fetch",
+                     "web-fetch", "fetch":
                     return .other(.browsedWeb)
                 default: return .other(.tools)
                 }

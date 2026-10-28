@@ -9,39 +9,54 @@ import Testing
 
 private func makeItem(id: String, order: Int, type: String = "message",
                       role: String? = "assistant", status: String = "done",
-                      content: [String: Any] = [:], source: [String: Any] = [:]) throws -> V2TimelineItem {
+                      content: [String: Any] = [:], source: [String: Any] = [:],
+                      topLevelTurnID: String? = nil) throws -> V2TimelineItem {
     var object: [String: Any] = [
         "id": id, "sessionId": "session", "type": type, "status": status,
         "content": content, "source": source, "orderSeq": order,
         "revision": 1, "updatedSeq": order, "contentHash": id,
     ]
     if let role { object["role"] = role }
+    if let topLevelTurnID { object["turnId"] = topLevelTurnID }
     return try decode(object)
 }
 
+/// The connector declares a row's turn on `source` (`TimelineSource.turn_id`);
+/// the server persists it there verbatim. Only old/local payloads carry a
+/// top-level `turnId`.
+private func turnSource(_ turnId: String?, _ source: [String: Any]) -> [String: Any] {
+    guard let turnId else { return source }
+    var source = source
+    source["turnId"] = turnId
+    return source
+}
+
 private func makeBody(id: String, order: Int, message: String, text: String = "body",
-                      role: String = "assistant") throws -> V2TimelineItem {
+                      role: String = "assistant",
+                      turnId: String? = nil) throws -> V2TimelineItem {
     try makeItem(id: id, order: order, role: role, content: ["text": text],
-                 source: ["itemId": message])
+                 source: turnSource(turnId, ["itemId": message]))
 }
 
 private func makeReasoning(id: String, order: Int, message: String,
-                           text: String = "thinking") throws -> V2TimelineItem {
+                           text: String = "thinking",
+                           turnId: String? = nil) throws -> V2TimelineItem {
     try makeItem(id: id, order: order, type: "reasoning", content: ["text": text],
-                 source: ["itemId": message])
+                 source: turnSource(turnId, ["itemId": message]))
 }
 
 private func makeToolItem(id: String, order: Int, message: String? = "msg-1",
                           blockIndex: Int? = 0, name: String = "Read",
                           parentItemId: String? = nil,
-                          status: String = "done") throws -> V2TimelineItem {
+                          status: String = "done",
+                          turnId: String? = nil) throws -> V2TimelineItem {
     var content: [String: Any] = ["kind": "tool", "toolName": name]
     if let parentItemId { content["parentItemId"] = parentItemId }
     var source: [String: Any] = ["itemId": id]
     if let message { source["nativeMessageId"] = message }
     if let blockIndex { source["blockIndex"] = blockIndex }
     return try makeItem(id: id, order: order, type: "tool", status: status,
-                        content: content, source: source)
+                        content: content, source: turnSource(turnId, source))
 }
 
 private func makeCall(_ name: String, id: String = "call", order: Int = 1,
@@ -78,6 +93,36 @@ private func spanIDs(in blocks: [CodeMessageRow.Block]) -> [[String]] {
     return segments.compactMap { segment in
         guard case let .span(calls) = segment else { return nil }
         return calls.map(\.id)
+    }
+}
+
+@Suite("V2 timeline item turn id")
+struct V2TimelineItemTurnIDTests {
+    @Test func sourceTurnIdWinsAndEmptyIsAbsent() throws {
+        let declared = try makeItem(id: "m1", order: 1, content: ["text": "x"],
+                                    source: ["itemId": "msg-1", "turnId": "source-turn"])
+        #expect(declared.turnId == "source-turn")
+
+        // Both shapes present: the connector's `source.turnId` is the truth.
+        let both = try makeItem(id: "m2", order: 2, content: ["text": "x"],
+                                source: ["itemId": "msg-2", "turnId": "source-turn"],
+                                topLevelTurnID: "top-turn")
+        #expect(both.turnId == "source-turn")
+
+        // Old/local payload: the top-level shape stays a compatible fallback.
+        let topLevelOnly = try makeItem(id: "m3", order: 3, content: ["text": "x"],
+                                        source: ["itemId": "msg-3"],
+                                        topLevelTurnID: "top-turn")
+        #expect(topLevelOnly.turnId == "top-turn")
+
+        // An empty declared id is absent, like every other identity string.
+        let empty = try makeItem(id: "m4", order: 4, content: ["text": "x"],
+                                 source: ["itemId": "msg-4", "turnId": ""])
+        #expect(empty.turnId == nil)
+        let emptySourceWithFallback = try makeItem(
+            id: "m5", order: 5, content: ["text": "x"],
+            source: ["itemId": "msg-5", "turnId": ""], topLevelTurnID: "top-turn")
+        #expect(emptySourceWithFallback.turnId == "top-turn")
     }
 }
 
@@ -817,6 +862,129 @@ struct CodeMessagePlannerTests {
         }
         #expect(text == "still\n\ndone")
         #expect(status == .running)
+    }
+
+    // MARK: - Turn boundaries (source.turnId)
+
+    @Test func twoScheduledTurnsWithoutAUserRowStayTwoRows() throws {
+        // A scheduled turn publishes no user row. Two turns' tool-only
+        // messages declare different turn ids and must not merge into one span
+        // even though they are adjacent in `orderSeq`.
+        let firstInA = try makeToolItem(id: "a1", order: 1, message: "msg-a1",
+                                        blockIndex: 0, turnId: "turn-a")
+        let secondInA = try makeToolItem(id: "a2", order: 2, message: "msg-a2",
+                                         blockIndex: 0, turnId: "turn-a")
+        let firstInB = try makeToolItem(id: "b1", order: 3, message: "msg-b1",
+                                        blockIndex: 0, turnId: "turn-b")
+        let secondInB = try makeToolItem(id: "b2", order: 4, message: "msg-b2",
+                                         blockIndex: 0, turnId: "turn-b")
+        let rows = CodeMessageBuilder.rows(
+            for: [firstInA, firstInB, secondInA, secondInB], profile: .claudeCode)
+        #expect(rows.count == 2)
+        #expect(rows.map(\.id) == ["a1", "b1"])
+        #expect(spanIDs(in: rows[0].blocks) == [["a1", "a2"]])
+        #expect(spanIDs(in: rows[1].blocks) == [["b1", "b2"]])
+    }
+
+    @Test func oneTurnAcrossThreeMessagesIsOneRow() throws {
+        let first = try makeToolItem(id: "t1", order: 1, message: "msg-1",
+                                     blockIndex: 0, turnId: "turn-1")
+        let second = try makeToolItem(id: "t2", order: 2, message: "msg-2",
+                                      blockIndex: 0, turnId: "turn-1")
+        let third = try makeToolItem(id: "t3", order: 3, message: "msg-3",
+                                     blockIndex: 0, turnId: "turn-1")
+        let rows = CodeMessageBuilder.rows(for: [third, first, second], profile: .claudeCode)
+        #expect(rows.count == 1)
+        #expect(rows[0].id == "t1")
+        #expect(spanIDs(in: rows[0].blocks) == [["t1", "t2", "t3"]])
+    }
+
+    @Test func missingTurnIdFallsBackToTheUserRowBoundary() throws {
+        // Old payloads carry no turn id anywhere: the pre-turnId grouping is
+        // untouched. Tools merge across messages; a user prompt still splits.
+        let first = try makeToolItem(id: "t1", order: 1, message: "msg-1", blockIndex: 0)
+        let second = try makeToolItem(id: "t2", order: 2, message: "msg-2", blockIndex: 0)
+        let merged = CodeMessageBuilder.rows(for: [first, second], profile: .claudeCode)
+        #expect(merged.count == 1)
+        #expect(spanIDs(in: merged[0].blocks) == [["t1", "t2"]])
+
+        let prompt = try makeItem(id: "u1", order: 2, role: "user",
+                                  content: ["text": "next"], source: ["itemId": "user-msg"])
+        let split = CodeMessageBuilder.rows(for: [first, prompt, second], profile: .claudeCode)
+        #expect(split.count == 3)
+        #expect(spanIDs(in: split[0].blocks) == [["t1"]])
+        #expect(split[1].role == .user)
+        #expect(spanIDs(in: split[2].blocks) == [["t2"]])
+    }
+
+    @Test func aRowWithoutATurnIdInheritsThePreviousTurn() throws {
+        // `t2` declares no turn, so it belongs to `turn-a` and may merge; it
+        // neither starts a boundary nor swallows the next declared turn.
+        let first = try makeToolItem(id: "t1", order: 1, message: "msg-1",
+                                     blockIndex: 0, turnId: "turn-a")
+        let inherited = try makeToolItem(id: "t2", order: 2, message: "msg-2", blockIndex: 0)
+        let nextTurn = try makeToolItem(id: "t3", order: 3, message: "msg-3",
+                                        blockIndex: 0, turnId: "turn-b")
+        let rows = CodeMessageBuilder.rows(for: [first, inherited, nextTurn],
+                                           profile: .claudeCode)
+        #expect(rows.count == 2)
+        #expect(rows.map(\.id) == ["t1", "t3"])
+        #expect(spanIDs(in: rows[0].blocks) == [["t1", "t2"]])
+        #expect(spanIDs(in: rows[1].blocks) == [["t3"]])
+    }
+
+    @Test func aTurnIdOnOnlyTheBodyRowStillSplitsAtTheNextDeclaredTurn() throws {
+        // Production history shape: the body row declares the turn, its tool
+        // rows do not. The tools inherit the body's turn, and the next
+        // message's declared turn ends the run.
+        let bodyA = try makeBody(id: "m1", order: 1, message: "msg-a",
+                                 text: "first", turnId: "turn-a")
+        let toolA = try makeToolItem(id: "t1", order: 2, message: "msg-a", blockIndex: 0)
+        let bodyB = try makeBody(id: "m2", order: 3, message: "msg-b",
+                                 text: "second", turnId: "turn-b")
+        let toolB = try makeToolItem(id: "t2", order: 4, message: "msg-b", blockIndex: 0)
+        let rows = CodeMessageBuilder.rows(for: [bodyA, toolA, bodyB, toolB],
+                                           profile: .claudeCode)
+        #expect(rows.count == 2)
+        #expect(rows.map(\.id) == ["msg-a", "msg-b"])
+        #expect(blockDescriptors(rows[0]) == ["text:m1", "toolCalls"])
+        #expect(spanIDs(in: rows[0].blocks) == [["t1"]])
+        #expect(blockDescriptors(rows[1]) == ["text:m2", "toolCalls"])
+        #expect(spanIDs(in: rows[1].blocks) == [["t2"]])
+    }
+
+    @Test func aSubAgentChildsOwnTurnIdDoesNotSplitTheParentRun() throws {
+        // A captured subagent frame can fall back to a sub-agent-local turn id
+        // (`turn_claude_subagent_*`) when its parent card is not projected yet.
+        // The child row is not part of this timeline, so it must not end the
+        // parent turn's span.
+        let first = try makeToolItem(id: "t1", order: 1, message: "msg-1",
+                                     blockIndex: 0, turnId: "turn-a")
+        let child = try makeToolItem(id: "c1", order: 2, message: "msg-2",
+                                     blockIndex: 0, parentItemId: "card-1",
+                                     turnId: "turn_claude_subagent_card")
+        let second = try makeToolItem(id: "t2", order: 3, message: "msg-3",
+                                      blockIndex: 0, turnId: "turn-a")
+        let rows = CodeMessageBuilder.rows(for: [first, child, second],
+                                           profile: .claudeCode)
+        #expect(rows.count == 1)
+        #expect(spanIDs(in: rows[0].blocks) == [["t1", "t2"]])
+    }
+
+    @Test func replanningTurnUnitsIsIdempotent() throws {
+        let items = [try makeToolItem(id: "t1", order: 1, message: "msg-1",
+                                      blockIndex: 0, turnId: "turn-a"),
+                     try makeToolItem(id: "t2", order: 2, message: "msg-2",
+                                      blockIndex: 0, turnId: "turn-a"),
+                     try makeToolItem(id: "t3", order: 3, message: "msg-3",
+                                      blockIndex: 0, turnId: "turn-b")]
+        let units = CodeMessageBuilder.units(for: items, profile: .claudeCode)
+        #expect(units.map { unitDescriptor($0) } == ["span:t1", "span:t3"])
+        for unit in units {
+            let again = CodeMessageBuilder.units(for: unit.items, profile: .claudeCode)
+            #expect(again.map { unitDescriptor($0) } == [unitDescriptor(unit)])
+            #expect(again[0].items.map(\.id) == unit.items.map(\.id))
+        }
     }
 
     // MARK: - Stability

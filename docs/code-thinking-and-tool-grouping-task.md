@@ -147,6 +147,7 @@
 
 **同批文案修复（iOS PATCH）**：
 
+- **类别按官方 13 类合并**（round27-C §4.1）：WebSearch/WebFetch → `web`、空/非空 todo → `todo`、AskUserQuestion → `other`、SendMessage → `sessionMessage`；未命名的 search 工具归 `other`。不再保留 AA 自造的 fetched/clearedTodos/asked/searched 摘要类别。
 - 失败后缀 `(N failed)` / `（N 项失败）`：`CodeToolLabelPlan.Phrase` 加 failed 字段、`CodeCollapsedToolRow` 加 failed 参数、补本地化 key；计数语义按 round21 §1.11。
 - 分隔符：`ccr_summary_separator` 的中文值从 `，` 改回官方硬编码 `", "`（`CodeMessageRowView.swift:390`；round21 §1.5）。
 - 单目标判定：从“同一文件/同一路径”放宽到官方“所有 call 的 target 相同”（`CodeToolLabelPlan.swift:90-93,182-194`）。

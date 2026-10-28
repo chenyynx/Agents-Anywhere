@@ -2057,12 +2057,6 @@ extension TimelineCollectionController: TimelineListLayoutHost {
         var state = content?.interactionState() ?? TimelineLayoutInteractionState()
         let driverFollowing = anchorDriver?.state.placement == .end
         state.hasArmedBottomTarget = driverFollowing
-        // Content that grows while the page waits at the bottom is applied by
-        // the update itself (official `offsetOwedToUpdate`). `.end` + resting
-        // is exactly "settled at the bottom"; any spring or native motion is
-        // a deliberate movement that the update must not cut short.
-        let driverMotion = anchorDriver?.state.motion ?? .resting
-        state.bottomFollowTracksInPlace = driverFollowing && driverMotion == .resting
         // Native drags report `.interacting`; the decision's "tracking" input
         // means "the finger is down", so map the native phase onto it. Without
         // this, a pending-measurement correction moves the offset under the

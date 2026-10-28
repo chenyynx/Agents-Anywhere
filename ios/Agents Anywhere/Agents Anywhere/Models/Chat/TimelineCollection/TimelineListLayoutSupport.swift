@@ -17,11 +17,6 @@ nonisolated struct TimelineLayoutInteractionState: Equatable {
     var suppressContentOffsetAdjustment = false
     var interactionPresented = false
     var hasArmedBottomTarget = false
-    /// The anchor driver follows `.end` and is not in a long fly. A row
-    /// insertion or deletion can then land the page on the new bottom inside
-    /// the update transaction, exactly like the official
-    /// `rowsOwedToNextUpdate` → `offsetOwedToUpdate` answer.
-    var bottomFollowTracksInPlace = false
     var userIsScrolling = false
     var mode: TimelineScrollState.Mode = .reading
     var streamingItemIDs: Set<String> = []

@@ -15,6 +15,11 @@ nonisolated enum TimelineSpringFollow {
 
         static let ease = Spring(duration: 0.4, bounce: 0)
         static let fly = Spring(duration: 0.36, bounce: 0.15)
+        /// Content that grows under a page resting at the bottom. The official
+        /// surface moves it like a collection-view insert (~0.25 s), not with
+        /// the 0.4 s catch-up ease and not as a hard jump: pp 2026-10-28 found
+        /// the 0.4 s chase soft and the instant placement too abrupt.
+        static let content = Spring(duration: 0.2, bounce: 0)
 
         var omega: Double { 2 * Double.pi / duration }
         var zeta: Double { 1 - bounce }

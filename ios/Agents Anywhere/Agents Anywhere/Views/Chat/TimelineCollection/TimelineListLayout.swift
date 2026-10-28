@@ -94,10 +94,6 @@ final class TimelineListLayout: UICollectionViewLayout {
     /// `targetContentOffset` answers with this value, and no offset/size
     /// adjustment is posted in the same transaction.
     private var heightOwedToUpdate: TimelineOneShotOwed?
-    /// The page was settled at the bottom when this update started. Recorded
-    /// before `prepare` can start a follow motion, so the update itself can
-    /// land on the new end even when UIKit never asks for the target.
-    private var followBottomDuringUpdate = false
 
     // Integration-gate counters. They are cheap and make the C3 assertions
     // read the real layout path instead of re-deriving it in the test.
@@ -335,7 +331,7 @@ final class TimelineListLayout: UICollectionViewLayout {
         lastProposedContentOffset = proposedContentOffset.y
 #if AA_TIMELINE_PROBE
         AnchorDeviceProbe.shared.recordLayout(
-            "target inside=\(isInsideUpdate ? 1 : 0) follow=\(followBottomDuringUpdate ? 1 : 0) proposed=\(Int(proposedContentOffset.y))")
+            "target inside=\(isInsideUpdate ? 1 : 0) proposed=\(Int(proposedContentOffset.y))")
 #endif
         // The target belongs to the update that carries the prepended page.
         // An unrelated update (a streaming batch landing first) must not
@@ -356,37 +352,6 @@ final class TimelineListLayout: UICollectionViewLayout {
             }
 #endif
             return CGPoint(x: proposedContentOffset.x, y: y)
-        }
-        // A page waiting at the bottom lands on the new end inside the update
-        // that carries the inserted/deleted rows (official
-        // `rowsOwedToNextUpdate` → `offsetOwedToUpdate`). Without this answer
-        // the anchor Mover only sees the new height after the update and
-        // springs there, so a new tool row read as a slow drift instead of the
-        // content pushing the page up. This outranks a height owed: the new
-        // bottom is already the final position for every change in the update.
-        //
-        // The gate is the flag captured in `prepare(forCollectionViewUpdates:)`,
-        // not the live driver state: UIKit calls `prepare()` before asking for
-        // the target, and absorbing the rows there already starts the follow
-        // motion (`.easing`), which would make a live check skip this answer.
-        if isInsideUpdate, followBottomDuringUpdate, let view = collectionView {
-            let bottom = TimelineOffsetTarget.bottomOffset(
-                contentHeight: contentHeight,
-                containerHeight: view.bounds.height,
-                topInset: view.adjustedContentInset.top,
-                bottomInset: view.adjustedContentInset.bottom)
-            if abs(bottom - proposedContentOffset.y) > 0.5 {
-                heightOwedToUpdate = nil
-                lastReturnedContentOffset = bottom
-#if AA_TIMELINE_PROBE
-                AnchorDeviceProbe.shared.recordLayout("targetFollow bottom=\(Int(bottom))")
-#endif
-#if DEBUG
-                traceOffset("targetFollowBottom", before: proposedContentOffset.y,
-                            after: bottom, note: "follow new end")
-#endif
-                return CGPoint(x: proposedContentOffset.x, y: bottom)
-            }
         }
         // A height change applied inside the update without a prepend target:
         // answer with its absolute offset. The value is idempotent for the
@@ -414,15 +379,8 @@ final class TimelineListLayout: UICollectionViewLayout {
         // update UIKit never finalized (navigation interruption) must not
         // answer this update's queries.
         heightOwedToUpdate = nil
-        if let state = host?.layoutInteractionState() {
-            followBottomDuringUpdate = state.bottomFollowTracksInPlace
-                && !state.suppressContentOffsetAdjustment
-        } else {
-            followBottomDuringUpdate = false
-        }
 #if AA_TIMELINE_PROBE
-        AnchorDeviceProbe.shared.recordLayout(
-            "prepareForUpdates follow=\(followBottomDuringUpdate ? 1 : 0) content=\(Int(contentHeight))")
+        AnchorDeviceProbe.shared.recordLayout("prepareForUpdates content=\(Int(contentHeight))")
 #endif
         isInsideUpdate = true
     }
@@ -433,7 +391,7 @@ final class TimelineListLayout: UICollectionViewLayout {
         isInsideUpdate = false
 #if AA_TIMELINE_PROBE
         AnchorDeviceProbe.shared.recordLayout(
-            "finalize follow=\(followBottomDuringUpdate ? 1 : 0) off=\(Int(collectionView?.contentOffset.y ?? -1)) content=\(Int(contentHeight))")
+            "finalize off=\(Int(collectionView?.contentOffset.y ?? -1)) content=\(Int(contentHeight))")
 #endif
         if var owed = insertionOwed {
             if owed.expectedFirstRowID == host?.layoutFirstRowID {
@@ -445,27 +403,6 @@ final class TimelineListLayout: UICollectionViewLayout {
             }
             // Otherwise this update belongs to an earlier page; keep the
             // target for the update that actually carries the prepend.
-        }
-        // Official `offsetOwedToUpdate` exit for the follow answer: when UIKit
-        // never asked for the target, land the new end here. If the offered
-        // target was used the offset already matches and this is a no-op.
-        // The new bottom subsumes any height owed for this update.
-        if followBottomDuringUpdate {
-            followBottomDuringUpdate = false
-            heightOwedToUpdate = nil
-            if let view = collectionView {
-                let bottom = TimelineOffsetTarget.bottomOffset(
-                    contentHeight: contentHeight,
-                    containerHeight: view.bounds.height,
-                    topInset: view.adjustedContentInset.top,
-                    bottomInset: view.adjustedContentInset.bottom)
-                if abs(view.contentOffset.y - bottom) > 0.5 {
-#if AA_TIMELINE_PROBE
-                    AnchorDeviceProbe.shared.recordLayout("finalizeFollow bottom=\(Int(bottom))")
-#endif
-                    applyOffsetFallback(bottom)
-                }
-            }
         }
         // Official `offsetOwedToUpdate` exit: when UIKit never asked for the
         // target, the layout applies the absolute offset itself. An offered

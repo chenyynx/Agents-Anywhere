@@ -35,9 +35,9 @@ final class TimelineAnchorDriver {
     /// between `.end` and `.row` is a real distance to animate, not content
     /// growth to track 1:1).
     private var moverPlacement: TimelineAnchorPlacement?
-    /// One deferred direct placement for content growth at the bottom.
-    private var contentPlaceScheduled = false
-    private var contentPlaceRetries = 0
+    /// The next `.move` was requested by content growth, so a fresh motion
+    /// uses the short content spring instead of the 0.4 s catch-up ease.
+    private var pendingContentMove = false
     private var link: CADisplayLink?
     private var lastTick: CFTimeInterval = 0
     private var pageInsets: UIEdgeInsets = .zero
@@ -228,49 +228,11 @@ final class TimelineAnchorDriver {
             position: scrollView?.contentOffset.y ?? -1,
             motion: String(describing: state.motion))
 #endif
-        // Content growth on a page that already rests at the bottom is the
-        // official `rowMeasured` case: the offset takes the height delta
-        // directly, it does not start a spring. Starting one here also made
-        // the follow flag false for the snapshot apply that follows (motion
-        // `.easing`), so the in-update answer was skipped and the row was
-        // chased over 0.4 s. Deferred one turn because `prepare` must not be
-        // re-entered; by then the update's own answer usually landed it.
-        if state.placement == .end, state.motion == .resting, state.hasLanded {
-            scheduleContentPlace()
-            return
-        }
+        // Content growth follows with the short content spring (official
+        // collection-view insert feel); only an explicit scroll request uses
+        // the 0.4 s ease/fly.
+        pendingContentMove = true
         perform(.contentChanged)
-    }
-
-    /// Coalesced direct placement for content growth at the bottom.
-    private func scheduleContentPlace() {
-        contentPlaceRetries = 0
-        scheduleContentPlaceTurn()
-    }
-
-    private func scheduleContentPlaceTurn() {
-        guard !contentPlaceScheduled else { return }
-        contentPlaceScheduled = true
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.contentPlaceScheduled = false
-            guard self.state.placement == .end, self.state.motion == .resting,
-                  self.state.hasLanded, let view = self.scrollView else { return }
-            // Let the pending content-size change land first. A write issued
-            // before UIKit adopts the new size is clamped to the old maximum
-            // and — unlike the Mover, which retries every frame — a one-shot
-            // placement would leave the row below the fold.
-            view.layoutIfNeeded()
-            self.placeDirect()
-            guard self.contentPlaceRetries < 2,
-                  let target = self.state.placement.target(in: self.geometry()),
-                  abs(view.contentOffset.y - target) > 0.5 else {
-                self.contentPlaceRetries = 0
-                return
-            }
-            self.contentPlaceRetries += 1
-            self.scheduleContentPlaceTurn()
-        }
     }
 
     func readerBeganDragging() {
@@ -359,6 +321,7 @@ final class TimelineAnchorDriver {
     private func perform(_ event: TimelineAnchorEvent) {
         let reduction = TimelineAnchorReducer.reduce(state, event)
         state = reduction.state
+        if reduction.action != .move { pendingContentMove = false }
         switch reduction.action {
         case .none:
             break
@@ -398,6 +361,10 @@ final class TimelineAnchorDriver {
     }
 
     private func startMover() {
+        // Consume the content flag for this motion whatever branch runs; a
+        // later explicit request must not inherit it.
+        let contentMove = pendingContentMove
+        pendingContentMove = false
         guard let view = scrollView else { return }
         guard let target = state.placement.target(in: geometry()) else {
             repairPlacement()
@@ -415,17 +382,22 @@ final class TimelineAnchorDriver {
             containerHeight: view.bounds.height,
             topInset: view.adjustedContentInset.top,
             bottomInset: view.adjustedContentInset.bottom)
-        let spring = TimelineSpringFollow.spring(
-            target: target, current: current, visibleHeight: visible)
+        let spring = contentMove
+            ? TimelineSpringFollow.Spring.content
+            : TimelineSpringFollow.spring(target: target, current: current,
+                                          visibleHeight: visible)
         if mover.isRunning, moverPlacement == state.placement {
             // Same motion, new destination: retarget without restarting the
-            // spring (a restart on every height change would jitter). This
-            // must outrank the dead band below: with the Pace shift a live
-            // stream keeps a sub-pixel gap while the motion still has to stay
-            // alive.
-            mover.retarget(spring: spring)
-            if state.motion == .easing, spring == .fly {
-                state.motion = .flying
+            // spring (a restart on every height change would jitter). A
+            // content retarget keeps the running motion's own spring so an
+            // explicit ease/fly is not re-timed by a stream flush. This must
+            // outrank the dead band below: with the Pace shift a live stream
+            // keeps a sub-pixel gap while the motion still has to stay alive.
+            if !contentMove {
+                mover.retarget(spring: spring)
+                if state.motion == .easing, spring == .fly {
+                    state.motion = .flying
+                }
             }
 #if AA_TIMELINE_PROBE
             AnchorDeviceProbe.shared.recordMover(

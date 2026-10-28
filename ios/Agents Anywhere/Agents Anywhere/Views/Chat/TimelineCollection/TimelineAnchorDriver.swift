@@ -394,10 +394,14 @@ final class TimelineAnchorDriver {
             containerHeight: view.bounds.height,
             topInset: view.adjustedContentInset.top,
             bottomInset: view.adjustedContentInset.bottom)
+        // Official `0x1019df668` / `0x1019df974`: every ANIMATED placement is a
+        // fly (`Spring(0.36, bounce 0.15)`, pre-placed one viewport short for
+        // longer jumps). The 0.4 s ease is only the streaming catch-up
+        // (`0x1019deecc`), never an explicit return — using it here made a
+        // short back-to-bottom read slow and soft (pp 2026-10-28).
         let spring = contentMove
             ? TimelineSpringFollow.Spring.content
-            : TimelineSpringFollow.spring(target: target, current: current,
-                                          visibleHeight: visible)
+            : TimelineSpringFollow.Spring.fly
         if mover.isRunning, moverPlacement == state.placement {
             // Same motion, new destination: retarget without restarting the
             // spring (a restart on every height change would jitter). Content

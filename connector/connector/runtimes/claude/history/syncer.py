@@ -32,6 +32,7 @@ from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 from connector.runtimes.claude.sessions.reader import (
     _history_items_from_messages,
     _history_tool_call_context,
+    _history_turn_ids,
     _match_history_client_messages,
     _read_raw_transcript_scan,
     _sdk_session_metadata,
@@ -194,11 +195,18 @@ class ClaudeHistorySyncer:
         # rotation's page accounting. A value the live transport already
         # authored stays authoritative (the G1 guard): ``ensure`` overwrites a
         # truthy field, so pass None for any value the store already holds.
+        raw_scan = _read_raw_transcript_scan(session)
+        # Turn identity is computed over the FULL chain even when the
+        # projection below only covers an incremental window: a window that
+        # starts mid-turn must reproduce the seed the full import used, or the
+        # same row would be re-keyed with a different turn id on every sync.
+        turn_ids = _history_turn_ids(session, visible_messages, raw_scan)
         tool_call_lookup, hidden_tool_use_ids = await asyncer.asyncify(
             _history_tool_call_context
         )(
             session,
             visible_messages,
+            turn_ids=turn_ids,
         )
         client_message_matches = await _match_history_client_messages(
             session=session,
@@ -212,7 +220,8 @@ class ClaudeHistorySyncer:
             client_message_matches=client_message_matches,
             tool_call_lookup=tool_call_lookup,
             hidden_tool_use_ids=hidden_tool_use_ids,
-            raw_scan=_read_raw_transcript_scan(session),
+            raw_scan=raw_scan,
+            turn_ids=turn_ids,
             oracle=self.oracle,
             live_task_ids=(
                 self.live_task_ids(session) if self.live_task_ids else frozenset()

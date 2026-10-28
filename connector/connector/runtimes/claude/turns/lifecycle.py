@@ -68,7 +68,10 @@ from connector.runtimes.claude.sdk.tasks import ClaudeTaskEvent
 from connector.runtimes.claude.sdk.title_tool import build_change_title_tool
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 from connector.runtimes.claude.sessions.open_cards import ClaudeOpenAgentCards
-from connector.runtimes.claude.sessions.reader import scan_agent_call_cards
+from connector.runtimes.claude.sessions.reader import (
+    _history_turn_id,
+    scan_agent_call_cards,
+)
 from connector.runtimes.claude.sessions.scheduled import ClaudeScheduledSessions
 from connector.runtimes.claude.sessions.subagent_oracle import (
     ClaudeSubagentOracle,
@@ -109,6 +112,44 @@ from connector.runtimes.claude.turns.attachments import (
 )
 from connector.runtimes.claude.turns.interactions import ClaudeInteractionController
 from connector.runtimes.claude.turns.selections import SelectionApplyResult
+
+
+def _turn_anchor_from_frame(frame: Any) -> str | None:
+    """The transcript-stable id a live frame contributes as a turn anchor.
+
+    This is the live half of the turn-id contract; history reads the same
+    strings off the persisted rows (``reader._history_turn_ids``).
+
+    * ``message_start`` stream event: ``event.message.id``. It is the first
+      frame of the reply and already carries the id every persisted row of
+      that API message shares, so even the partial rows published before the
+      full ``assistant`` frame are keyed by the final id.
+    * full assistant frame: ``message_id`` (prefers the Anthropic
+      ``message.id``; the row uuid is the fallback).
+
+    A user frame contributes nothing on purpose: a turn cast by an injected
+    user frame (peer/channel message) has no AA user item, and history can
+    only anchor such a turn on its first assistant row as well. Anything
+    else has no anchor: the caller keeps the provisional id and binds on a
+    later frame (see ``drive_turn``).
+    """
+
+    if frame is None:
+        return None
+    if is_stream_event(frame):
+        event = getattr(frame, "event", None)
+        if isinstance(event, Mapping):
+            payload = event.get("message")
+            if isinstance(payload, Mapping):
+                value = payload.get("id")
+                if isinstance(value, str) and value:
+                    return value
+        return None
+    if message_role(frame) != "assistant":
+        return None
+    value = message_id(frame)
+    return value if isinstance(value, str) and value else None
+
 
 # The execution-lock circuit breaker (pp verdict, 2026-10-02, product-level):
 # guarding a minted-from-silence turn is invariant-shaped, not trigger-shaped,
@@ -652,8 +693,21 @@ class ClaudeTurnRunner:
             if response.execution is not None:
                 return
             session.queued_execution = session.execution
+            # A user-less turn is anchored on its FIRST assistant message.
+            # The reader stamps the frame that cast this turn before calling
+            # here, and for the normal wire that frame is the reply's
+            # ``message_start`` (or the full assistant frame on a resume that
+            # joined mid-message): both expose the id every persisted row of
+            # that message carries. If the cast frame is one that carries no
+            # anchor, the turn keeps an opaque id and `drive_turn` binds it on
+            # the first anchor-bearing frame instead.
+            anchor = _turn_anchor_from_frame(response.cast_frame)
             execution = ClaudeExecution(
-                turn_id=f"turn_claude_{secrets.token_urlsafe(12)}"
+                turn_id=(
+                    _history_turn_id(session.session_id, anchor)
+                    if anchor is not None
+                    else f"turn_claude_{secrets.token_urlsafe(12)}"
+                )
             )
             session.execution = execution
             response.execution = execution
@@ -2796,8 +2850,19 @@ class ClaudeTurnRunner:
         scheduled: bool = False,
         response: ClaudeResponse | None = None,
         command: str | None = None,
+        prompt_uuid: str | None = None,
     ) -> None:
         turn_id = execution.turn_id
+        # A scheduled turn whose cast frame carried no anchor binds on the
+        # first anchor-bearing frame; a turn whose id is already anchored (or
+        # a user/command turn) never rebinds.
+        scheduled_anchor = (
+            _turn_anchor_from_frame(response.cast_frame)
+            if scheduled and response
+            else None
+        )
+        turn_anchor_bound = not scheduled or scheduled_anchor is not None
+        turn_bind_warned = False
         stderr = ClaudeStderrBuffer(session.session_id)
         client = response
         connection = response.connection if response is not None else None
@@ -2873,7 +2938,25 @@ class ClaudeTurnRunner:
                 attachment.to_mapping() for attachment in materialized_attachments
             )
             if not scheduled:
-                prompt_uuid = client.ensure_prompt_uuid() if command is None else None
+                if command is None and prompt_uuid is None:
+                    prompt_uuid = client.ensure_prompt_uuid()
+                if prompt_uuid is not None:
+                    # Bind the identity the submit path already committed to
+                    # (or the one just pre-assigned above) before ANY row is
+                    # published: the user item, every assistant/tool/reasoning
+                    # row of this turn and the history projection all hash
+                    # this same uuid. `user_id` is the field the reader
+                    # matches the prompt echo against, so a response that HAS
+                    # one (a retained/queried transport) takes the same uuid.
+                    # A first-turn response intentionally keeps `user_id=None`:
+                    # the reader's silence routing treats None as "every frame
+                    # belongs to the pending", and setting it would make an
+                    # unowned `interrupted` terminal get absorbed instead.
+                    client.prompt_uuid = prompt_uuid
+                    if client.user_id is not None:
+                        client.user_id = prompt_uuid
+                    turn_id = _history_turn_id(session.session_id, prompt_uuid)
+                    execution.turn_id = turn_id
                 if command is None and (
                     client_message_id is not None
                     or session.external_session_id is not None
@@ -3025,6 +3108,32 @@ class ClaudeTurnRunner:
             turn_started = cast_frame is None and client.prompt_uuid is None
             emitted_final_assistant_content = False
             async for message in receive_response_messages(client):
+                if scheduled and not turn_anchor_bound:
+                    # Deferred half of the scheduled anchor: the cast frame
+                    # was one that carries no transcript id (a reconnect can
+                    # start on a mid-message delta), so the first assistant
+                    # frame that does carry one fixes the turn. Binding is
+                    # only legal while nothing has been published — every row
+                    # of the turn must share the id, and a rebind after a
+                    # publish would split the turn.
+                    deferred_anchor = _turn_anchor_from_frame(message)
+                    if deferred_anchor is not None:
+                        if execution.published_items == 0:
+                            turn_id = _history_turn_id(
+                                session.session_id, deferred_anchor
+                            )
+                            execution.turn_id = turn_id
+                            turn_anchor_bound = True
+                        elif not turn_bind_warned:
+                            turn_bind_warned = True
+                            logger.warning(
+                                "Claude scheduled turn kept its provisional "
+                                "turn id: the anchor arrived after rows were "
+                                "published session_id={} turn_id={}",
+                                session.session_id,
+                                turn_id,
+                            )
+                            turn_anchor_bound = True
                 # Position, not shape: the same payload would count one frame
                 # later.
                 counts_as_labour = cast_reached

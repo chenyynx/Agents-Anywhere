@@ -333,6 +333,10 @@ final class TimelineListLayout: UICollectionViewLayout {
     override func targetContentOffset(forProposedContentOffset proposedContentOffset: CGPoint) -> CGPoint {
         targetContentOffsetCallCount += 1
         lastProposedContentOffset = proposedContentOffset.y
+#if AA_TIMELINE_PROBE
+        AnchorDeviceProbe.shared.recordLayout(
+            "target inside=\(isInsideUpdate ? 1 : 0) follow=\(followBottomDuringUpdate ? 1 : 0) proposed=\(Int(proposedContentOffset.y))")
+#endif
         // The target belongs to the update that carries the prepended page.
         // An unrelated update (a streaming batch landing first) must not
         // consume it or the history request loses its compensation.
@@ -374,6 +378,9 @@ final class TimelineListLayout: UICollectionViewLayout {
             if abs(bottom - proposedContentOffset.y) > 0.5 {
                 heightOwedToUpdate = nil
                 lastReturnedContentOffset = bottom
+#if AA_TIMELINE_PROBE
+                AnchorDeviceProbe.shared.recordLayout("targetFollow bottom=\(Int(bottom))")
+#endif
 #if DEBUG
                 traceOffset("targetFollowBottom", before: proposedContentOffset.y,
                             after: bottom, note: "follow new end")
@@ -413,6 +420,10 @@ final class TimelineListLayout: UICollectionViewLayout {
         } else {
             followBottomDuringUpdate = false
         }
+#if AA_TIMELINE_PROBE
+        AnchorDeviceProbe.shared.recordLayout(
+            "prepareForUpdates follow=\(followBottomDuringUpdate ? 1 : 0) content=\(Int(contentHeight))")
+#endif
         isInsideUpdate = true
     }
 
@@ -420,6 +431,10 @@ final class TimelineListLayout: UICollectionViewLayout {
         super.finalizeCollectionViewUpdates()
         finalizeUpdatesCallCount += 1
         isInsideUpdate = false
+#if AA_TIMELINE_PROBE
+        AnchorDeviceProbe.shared.recordLayout(
+            "finalize follow=\(followBottomDuringUpdate ? 1 : 0) off=\(Int(collectionView?.contentOffset.y ?? -1)) content=\(Int(contentHeight))")
+#endif
         if var owed = insertionOwed {
             if owed.expectedFirstRowID == host?.layoutFirstRowID {
                 if let fallback = owed.finalizeFallback() {
@@ -445,6 +460,9 @@ final class TimelineListLayout: UICollectionViewLayout {
                     topInset: view.adjustedContentInset.top,
                     bottomInset: view.adjustedContentInset.bottom)
                 if abs(view.contentOffset.y - bottom) > 0.5 {
+#if AA_TIMELINE_PROBE
+                    AnchorDeviceProbe.shared.recordLayout("finalizeFollow bottom=\(Int(bottom))")
+#endif
                     applyOffsetFallback(bottom)
                 }
             }

@@ -58,6 +58,12 @@ final class AnchorDeviceProbe: NSObject {
         append(line)
     }
 
+    /// Layout-side answers: whether the update callbacks run at all and what
+    /// the follow answer was allowed to return.
+    func recordLayout(_ line: String) {
+        append("layout \(line)")
+    }
+
     var report: String {
         lines.isEmpty ? "（还没有记录：先在 Code 会话里点几次输入框）" : lines.joined(separator: "\n")
     }

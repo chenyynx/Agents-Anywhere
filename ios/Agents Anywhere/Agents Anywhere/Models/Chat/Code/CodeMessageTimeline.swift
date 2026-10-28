@@ -49,6 +49,47 @@ nonisolated struct CodeMessageRow: Identifiable, Hashable {
     let blocks: [Block]
 }
 
+/// The thinking text one row hands to its collapsed tool row's detail page.
+///
+/// The official span detail carries the group's thinking text above its call
+/// list (I-high, R28 §U 收口三). AA's row model keeps reasoning and
+/// `toolCalls` as sibling blocks, so the text is threaded into the first
+/// `toolCalls` block at render time — only that block receives it, so one
+/// message's thinking precedes its tool list once even when a special segment
+/// splits the calls. This is a pure function so the row view and the profile
+/// gate share the exact mapping instead of each rebuilding it.
+nonisolated struct CodeGroupThinkingPlan: Equatable {
+    /// The settled reasoning text, in block order, joined with a blank line
+    /// (the same `\n\n` join the builder uses for one merged thinking block).
+    let text: String
+    /// The index of the first `.toolCalls` block: the only block that carries
+    /// the text into its detail request.
+    let anchorBlockIndex: Int
+}
+
+nonisolated enum CodeGroupThinking {
+    /// The plan for one row's blocks, or nil when the row has no settled
+    /// reasoning text or no `.toolCalls` block to attach it to.
+    ///
+    /// Only `.done` reasoning contributes. A running thinking row belongs to
+    /// the turn-level working line, not to a persisted block (the 2026-10-28
+    /// flicker regression), and an empty run adds no text.
+    static func plan(for blocks: [CodeMessageRow.Block]) -> CodeGroupThinkingPlan? {
+        let text = blocks.compactMap { block -> String? in
+            guard case let .reasoning(_, text, status) = block,
+                  status == .done,
+                  !text.isEmpty else { return nil }
+            return text
+        }.joined(separator: "\n\n")
+        guard !text.isEmpty else { return nil }
+        guard let anchor = blocks.firstIndex(where: { block in
+            if case .toolCalls = block { return true }
+            return false
+        }) else { return nil }
+        return CodeGroupThinkingPlan(text: text, anchorBlockIndex: anchor)
+    }
+}
+
 /// One top-level Code row before it is turned into a `CodeMessageRow`.
 ///
 /// A unit is the official `DisplayMessage` unit after the cross-message merge:

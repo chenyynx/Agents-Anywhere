@@ -191,14 +191,18 @@ struct CodeCollapsedStepsRow: View {
 
     /// 1023 `TimelineStatusGlyph` branch. The row body always carries the
     /// glyph (fixed tuple element); the view itself chooses between the
-    /// `FailureGlyph` branch and the decoded `checkmark` branch.
+    /// `FailureGlyph` branch and the `checkmark` branch.
     ///
-    /// - `.failed` / any non-nil extent → `FailureGlyph` (D6 hook: artwork,
-    ///   colour and frame are UNKNOWN, so nothing is drawn yet).
-    /// - `.complete` → `checkmark` (E: non-failure branch of the glyph body).
-    /// - `.running` → nothing. Whether a running call renders this row at all
-    ///   is not decoded (the running build path is U), so no unproven mark is
-    ///   drawn; this is a hook, not a visual claim.
+    /// - `.failed` / any non-nil extent → `FailureGlyph` (D6 hook: its
+    ///   artwork, colour and frame are UNKNOWN — R28 §U 收口三 — so nothing
+    ///   is drawn yet).
+    /// - `.complete` → `checkmark`. The glyph's `ConditionalContent` branch
+    ///   predicate itself was not located; the checkmark builder is the
+    ///   candidate and the non-failure branch is the only decoded one (R28
+    ///   §U 收口三; still U at the predicate level).
+    /// - `.running` → nothing. The running row's exact construction
+    ///   (status/icon/workingMark) is not decoded — R28 §U 收口三 — so no
+    ///   unproven mark is drawn; this is a hook, not a visual claim.
     static func statusGlyphKind(status: CodeToolStatus,
                                 failureExtent: CodeFailureExtent?) -> CodeStatusGlyphKind {
         if status == .failed || failureExtent != nil { return .failure }
@@ -234,6 +238,13 @@ struct CodeCollapsedStepsRow: View {
 /// `Icon.Size.medium` (20 x 20 pt icon box, artwork aspect-fitted) inside a
 /// 24 pt tall frame (`0x101e3eaa0`). No rotation; ink is `text400`
 /// (`0x101e3ead0` → `0x100b50c28`).
+///
+/// The group-detail list row shares this view (same descriptor, same
+/// `Icon.Size.medium`, gated by `hasDetails`). Its colour token getter is
+/// `0x100b4ac5c`, which is not decoded to a name/colour (U, R28 §U 收口三);
+/// the `text400` ink above is the collapsed row's value used as the stand-in.
+/// Do not treat it as the group row's verified colour, and do not invent a
+/// second one.
 struct CodeRowCaret: View {
     @Environment(\.colorScheme) private var colorScheme
 
@@ -302,13 +313,18 @@ private struct CodeCollapsedRowAccessibility: ViewModifier {
 
 /// Which branch of the official `TimelineStatusGlyph`
 /// (`ConditionalContent<FailureGlyph, Image>`) a row takes.
+///
+/// The branch predicate is not located (U, R28 §U 收口三); the non-failure
+/// `Image` construction is E, so `.checkmark` is the evidenced candidate.
 nonisolated enum CodeStatusGlyphKind: Equatable {
     /// `Image(systemName: "checkmark")`, `.fontWeight(.semibold)`,
     /// `accentSecondary100` — E from the 1023 non-failure branch.
     case checkmark
-    /// `FailureGlyph` — artwork, colour and frame still UNKNOWN (D6).
+    /// `FailureGlyph` — artwork, colour and frame still UNKNOWN (D6; R28
+    /// §U 收口三).
     case failure
-    /// Running: the official construction for that state is not decoded.
+    /// Running: the official construction for that state is not decoded
+    /// (R28 §U 收口三).
     case none
 }
 
@@ -318,10 +334,11 @@ nonisolated enum CodeStatusGlyphKind: Equatable {
 /// decoded non-failure branch (`checkmark` ink) and keeps the `FailureGlyph`
 /// branch as the empty D6 hook.
 ///
-/// Still UNKNOWN (D6): the `FailureGlyph` artwork for `.failed`/`.partial`,
-/// its foreground token and its frame size. Do not substitute a warning
-/// symbol or `danger00`. The checkmark's font size is likewise undecoded; the
-/// image renders at its natural semibold size with no explicit frame.
+/// Still UNKNOWN (D6, re-closed as U by R28 §U 收口三): the `FailureGlyph`
+/// artwork for `.failed`/`.partial`, its foreground token and its frame size.
+/// Do not substitute a warning symbol or `danger00`. The checkmark's font size
+/// is likewise undecoded; the image renders at its natural semibold size with
+/// no explicit frame.
 struct CodeTimelineStatusGlyph: View {
     let status: CodeToolStatus
     let failureExtent: CodeFailureExtent?

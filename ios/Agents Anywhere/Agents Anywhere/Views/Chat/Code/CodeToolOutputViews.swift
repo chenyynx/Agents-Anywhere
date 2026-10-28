@@ -12,6 +12,19 @@ import UIKit
 // V-numbers, or the CANONICAL section) so they can be folded into
 // `CodePageTheme` once the detail page's visual gate is closed.
 
+/// The official monospaced face for the tool-output renderers.
+///
+/// `.system(design: .monospaced)` resolves to SF Mono, but the official Code
+/// page draws with `JetBrainsMono-Regular`: the 1023 mono preset is 15.0 /
+/// 400.0 / lineHeight 24.0 (`0x100b6e96c` / `0x100b6e9ec` / `0x100b6ea84`,
+/// family string `0x1063267d0`), and the 13 pt card title is the same family's
+/// monoAux preset. Only the family changes here — every size still comes from
+/// the view's `@ScaledMetric`, and no line height or layout moves.
+private func codeOutputMonoFont(_ size: CGFloat) -> Font {
+    Font(MarkdownFontFactory.font(name: CodePageTheme.monoFontName,
+                                  size: size, weight: 400))
+}
+
 // MARK: - Output switcher
 
 struct CodeToolOutputView: View {
@@ -91,9 +104,7 @@ private struct CodeFileReadOutputView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
                 Text(String(localized: "Output"))
-                    .font(.system(size: titleFontSize,
-                                  weight: .regular,
-                                  design: .monospaced))
+                    .font(codeOutputMonoFont(titleFontSize))
                     .foregroundStyle(.secondary)
                     .frame(minHeight: CodeToolCardMetrics.titleLineHeight)
                     .lineLimit(1)
@@ -287,9 +298,7 @@ struct CodeToolCodeCard: View {
     private var header: some View {
         HStack(spacing: 8) {
             Text(verbatim: title)
-                .font(.system(size: titleFontSize,
-                              weight: .regular,
-                              design: .monospaced))
+                .font(codeOutputMonoFont(titleFontSize))
                 .foregroundStyle(.secondary)
                 .frame(minHeight: CodeToolCardMetrics.titleLineHeight)
                 .lineLimit(1)
@@ -305,7 +314,7 @@ struct CodeToolCodeCard: View {
     private var codeBody: some View {
         ScrollView(.horizontal) {
             Text(verbatim: displayCode)
-                .font(.system(size: codeFontSize, design: .monospaced))
+                .font(codeOutputMonoFont(codeFontSize))
                 .lineSpacing(CodeToolCardMetrics.codeLineSpacing)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: true, vertical: false)
@@ -475,20 +484,16 @@ private struct CodeToolDiffOutputView: View {
     private var header: some View {
         HStack(spacing: 8) {
             Text(String(localized: "Diff"))
-                .font(.system(size: titleFontSize,
-                              weight: .regular,
-                              design: .monospaced))
+                .font(codeOutputMonoFont(titleFontSize))
                 .foregroundStyle(.secondary)
             if diff.added > 0 {
                 Text(verbatim: "+\(diff.added)")
-                    .font(.system(size: diffStatFontSize,
-                                  design: .monospaced))
+                    .font(codeOutputMonoFont(diffStatFontSize))
                     .foregroundStyle(CodeToolCardMetrics.diffStatAdd.resolved(for: colorScheme))
             }
             if diff.removed > 0 {
                 Text(verbatim: "−\(diff.removed)")
-                    .font(.system(size: diffStatFontSize,
-                                  design: .monospaced))
+                    .font(codeOutputMonoFont(diffStatFontSize))
                     .foregroundStyle(CodeToolCardMetrics.diffStatRemove.resolved(for: colorScheme))
             }
             Spacer(minLength: 8)
@@ -518,7 +523,7 @@ private struct CodeToolDiffOutputView: View {
     private func row(_ line: TimelineDiff.Line) -> some View {
         if isMetadata(line.kind) {
             Text(verbatim: line.text.isEmpty ? " " : line.text)
-                .font(.system(size: diffFontSize, design: .monospaced))
+                .font(codeOutputMonoFont(diffFontSize))
                 .foregroundStyle(.secondary)
                 .padding(.leading, CodeToolCardMetrics.contentInset)
                 .padding(.trailing, CodeToolCardMetrics.contentInset)
@@ -543,7 +548,7 @@ private struct CodeToolDiffOutputView: View {
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .font(.system(size: diffFontSize, design: .monospaced))
+            .font(codeOutputMonoFont(diffFontSize))
             .monospacedDigit()
             .foregroundStyle(.primary)
             .padding(.leading, CodeToolCardMetrics.contentInset)
@@ -733,9 +738,7 @@ private struct CodeToolSectionHeader: View {
     var body: some View {
         HStack(spacing: 8) {
             Text(verbatim: title)
-                .font(.system(size: titleFontSize,
-                              weight: .regular,
-                              design: .monospaced))
+                .font(codeOutputMonoFont(titleFontSize))
                 .foregroundStyle(.secondary)
             Spacer(minLength: 8)
             if let copyText {
@@ -800,8 +803,10 @@ private enum CodeToolCardMetrics {
     /// the derived `codeLineSpacing` below, so no separate unused token stays.
     static let codeFontSize: CGFloat = 15
 
-    /// [I] Derived from the [E] 24 pt line height: SF Mono at 15 pt has a
-    /// ~17.9 pt default line box, so SwiftUI needs ~6.1 pt extra spacing.
+    /// [I] Derived from the [E] 24 pt line height against SF Mono's ~17.9 pt
+    /// line box (~6.1 pt of leading). The renderer now draws the official
+    /// JetBrains Mono face; this font-only pass keeps the value unchanged, so
+    /// the line box is not re-derived against the official face here.
     static let codeLineSpacing: CGFloat = 6
 
     /// Existing `TimelineCodePanel` guard (rendered prefix capped at 200 000

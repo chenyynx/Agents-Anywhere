@@ -911,11 +911,32 @@ final class CodeProfileAutoRunModel {
             }
         }
 
+        // 11. Detail thinking Typography (E, R28 §U 收口三): the thinking
+        // `MarkdownText` leaf is 15.0 / weight 400 / lineHeight 21.0 relative
+        // `.body` (`0x100b6a998`; constants `0x100b6ab48` / `0x100b6abc8` /
+        // `0x100b6ac5c`), paragraph spacing = body size. The line spacing is
+        // the delta over the real face's natural line box, so these pin the
+        // scale while the font swap below cannot silently move it.
+        let thinkingScale = CodePageTheme.thinkingMarkdownScale
+        check(thinkingScale.body == 15,
+              "collapsedRows thinking: body \(thinkingScale.body), expected 15")
+        check(thinkingScale.lineSpacing == 21 - CodePageTheme.toolRowSansFont.lineHeight,
+              "collapsedRows thinking: line spacing \(thinkingScale.lineSpacing),"
+                + " expected 21 − \(CodePageTheme.toolRowSansFont.lineHeight)")
+        check(thinkingScale.paragraphSpacing == 15,
+              "collapsedRows thinking: paragraph spacing"
+                + " \(thinkingScale.paragraphSpacing), expected 15")
+
         report["collapsedRows"] = [
             "fixtures": fixtures,
             "iconCases": iconCases.map { ["actual": $0.0, "expected": $0.1] },
             "gallery": rowGallery.map(\.id),
             "autoLabels": autoLabels,
+            "thinkingTypography": [
+                "body": Double(thinkingScale.body),
+                "lineSpacing": Double(thinkingScale.lineSpacing),
+                "paragraphSpacing": Double(thinkingScale.paragraphSpacing),
+            ],
         ] as [String: Any]
     }
 
@@ -926,6 +947,7 @@ final class CodeProfileAutoRunModel {
         await verifyMessageRowHeight()
         await verifyRowHeights()
         await verifyReadOutputHeight()
+        await verifyGroupThinkingBlock()
         await verifyCollapsedRowHeights()
         await verifyRendererMeasure()
         await verifyRealCollectionFirstFit()
@@ -964,10 +986,16 @@ final class CodeProfileAutoRunModel {
         if !detailGroupCalls.isEmpty {
             stage = .detailGroup
             await wait(600)
+            // The group page starts with the thinking block, then the call
+            // list. The band's lower bound was 0.25, which starts below the
+            // thinking text: a page whose thinking block had not laid out yet
+            // (or a short call list) left the sampled band nearly empty and
+            // failed a correct capture. 0.10 reaches the first paragraph
+            // while `minimumInkPixels` still catches a blank page.
             views["detailGroup"] = capture(
                 "code-detail-group.png",
                 check: CapturePixelCheck(ink: .dark,
-                                         inkBand: 0.25...0.90,
+                                         inkBand: 0.10...0.90,
                                          minimumInkPixels: 200))
         } else {
             failures.append("views: detail group fixture unavailable")
@@ -1159,16 +1187,36 @@ final class CodeProfileAutoRunModel {
         // Layer 1: the span summary page. Three edits to two files must
         // summarize as "Edited 2 files", list all three calls, and every
         // listed call must have input (and one a diff output).
-        let groupCalls = [
-            makeRowCall("detail-group-1", "Edit", kind: .edit,
-                        content: #""input":{"file_path":"/repo/Main.dc.html"},"output":{"lineStat":{"addedLineCount":2,"removedLineCount":1}}"#),
-            makeRowCall("detail-group-2", "Edit", kind: .edit,
-                        content: #""input":{"file_path":"/repo/Main.dc.html"}"#),
-            makeRowCall("detail-group-3", "Edit", kind: .edit,
-                        content: #""input":{"file_path":"/repo/Dark.dc.html"}"#),
-        ]
-        detailGroupCalls = groupCalls.compactMap { $0 }
-        detailGroupThinking = "Inspecting both files before the edit."
+        //
+        // The fixture is a real message group (one settled reasoning row plus
+        // the three tool rows), and the page's thinking text comes from
+        // `CodeGroupThinking` — the same pure mapping the transcript row uses.
+        // A hardcoded string would keep the page green after the row mapping
+        // broke.
+        guard let groupItems = Self.decodeItems(Self.detailGroupJSON) else {
+            failures.append("views: detail group fixture JSON did not decode")
+            return
+        }
+        let groupRows = CodeMessageBuilder.rows(for: groupItems, profile: .claudeCode)
+        let groupBlocks = groupRows.first?.blocks ?? []
+        let groupPlan = CodeGroupThinking.plan(for: groupBlocks)
+        let groupFirstToolBlock = groupBlocks.firstIndex { block in
+            if case .toolCalls = block { return true }
+            return false
+        }
+        check(groupPlan != nil,
+              "views: detail group produced no thinking plan")
+        check(groupPlan?.anchorBlockIndex == groupFirstToolBlock,
+              "views: detail group thinking anchored at"
+                + " \(String(describing: groupPlan?.anchorBlockIndex)), expected"
+                + " the first tool block \(String(describing: groupFirstToolBlock))")
+        check(groupPlan?.text == "Inspecting both files before the edit.",
+              "views: detail group thinking '\(groupPlan?.text ?? "nil")'")
+        detailGroupCalls = groupBlocks.flatMap { block -> [CodeToolCall] in
+            guard case let .toolCalls(segments) = block else { return [] }
+            return segments.flatMap { CodeToolLabels.calls(in: $0) }
+        }
+        detailGroupThinking = groupPlan?.text
         check(detailGroupCalls.count == 3,
               "views: detail group has \(detailGroupCalls.count) calls, expected 3")
         let groupLabel = CodeToolLabels.label(for: detailGroupCalls, cwd: "/repo")
@@ -1414,17 +1462,95 @@ final class CodeProfileAutoRunModel {
             if settled > 1, abs(settled - previous) <= 0.5 { break }
             previous = settled
         }
+        // The height alone cannot tell a drawn body from the b643 blank card
+        // (SwiftUI's `Text` reported the right height and drew nothing). The
+        // Read reader is a `UITextView` (TextKit) that carries the whole
+        // string; require that view in the hosted tree and that it holds every
+        // character. Swapping the reader back to a SwiftUI `Text` removes the
+        // text view and turns this assertion red.
+        let readTextViews = descendantTextViews(in: host.view)
+        let bodyTextView = readTextViews.first { $0.textStorage.length == text.count }
         host.view.removeFromSuperview()
 
         let finite = settled.isFinite
         check(finite && settled > 2_000,
               "readOutput: \(text.count) chars / 298 lines rendered \(settled) pt, expected a drawn body")
+        let readTextViewLengths = readTextViews.map { $0.textStorage.length }
+        check(bodyTextView != nil,
+              "readOutput: no UITextView carries the \(text.count)-char body"
+                + " (text views: \(readTextViewLengths))")
         report["readOutput"] = [
             "characters": text.count,
             "lines": 298,
             "height": Double(settled),
             "finite": finite,
+            "textViews": readTextViews.count,
+            "textViewLengths": readTextViewLengths,
         ] as [String: Any]
+    }
+
+    /// P2-C: the group page's thinking block is asserted on the rendered
+    /// tree, not only on the fixture value. `CodeThinkingMarkdownView` draws
+    /// through `CodeMarkdownTextLeaf`, whose text is a `UITextView`; the call
+    /// rows are SwiftUI `Text`s, so a text view carrying the thinking string
+    /// proves the block was built above the list. Dropping the
+    /// `if let thinkingText` branch (or swapping the leaf for a plain `Text`)
+    /// leaves no such text view and turns this red.
+    private func verifyGroupThinkingBlock() async {
+        guard let window = keyWindow else {
+            failures.append("groupThinking: no key window")
+            return
+        }
+        guard let thinking = detailGroupThinking, !thinking.isEmpty else {
+            failures.append("groupThinking: the detail group fixture produced no thinking text")
+            return
+        }
+        guard !detailGroupCalls.isEmpty else {
+            failures.append("groupThinking: the detail group fixture produced no calls")
+            return
+        }
+        let host = UIHostingController(rootView:
+            CodeToolGroupDetailView(calls: detailGroupCalls,
+                                    thinkingText: thinking,
+                                    cwd: "/repo")
+                .ignoresSafeArea())
+        host.view.backgroundColor = .clear
+        host.view.frame = CGRect(x: 0, y: 0, width: window.bounds.width, height: 700)
+        window.addSubview(host.view)
+        host.view.layoutIfNeeded()
+        // The Markdown leaf builds its text views on the first layout pass
+        // with a real width; give the hosted stack that pass.
+        await wait(300)
+        host.view.layoutIfNeeded()
+        let rendered = descendantTextViews(in: host.view).map { $0.textStorage.string }
+        host.view.removeFromSuperview()
+        // The Markdown parser may keep the paragraph's trailing newline; trim
+        // only whitespace so the assertion still pins the exact text.
+        let matched = rendered.contains {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines) == thinking
+        }
+
+        check(matched,
+              "groupThinking: no UITextView carries '\(thinking)'"
+                + " (rendered \(rendered.count) text views)")
+        report["groupThinking"] = [
+            "expected": thinking,
+            "textViews": rendered.count,
+            "matched": matched,
+        ] as [String: Any]
+    }
+
+    /// Every `UITextView` below `view`. The Code page's TextKit renderers (the
+    /// Read body and the thinking Markdown leaf) are the only text views it
+    /// mounts, so a host with none has fallen back to a non-TextKit renderer.
+    private func descendantTextViews(in view: UIView) -> [UITextView] {
+        var result: [UITextView] = []
+        func walk(_ current: UIView) {
+            if let textView = current as? UITextView { result.append(textView) }
+            for subview in current.subviews { walk(subview) }
+        }
+        walk(view)
+        return result
     }
 
     /// Renders every fixture at every requested width and size, reports each
@@ -2789,6 +2915,29 @@ final class CodeProfileAutoRunModel {
          "source":{"itemId":"detail-read"}}
         """#
     }
+
+    /// Layer 1's group-page fixture: one settled reasoning row and three tool
+    /// rows of one message, exactly the `[thinkingContent, toolCalls]` span
+    /// shape the builder emits. `prepareViews` runs it through
+    /// `CodeMessageBuilder` and `CodeGroupThinking`, so the page's thinking
+    /// text is the transcript row's mapping, not a hardcoded string.
+    private static let detailGroupJSON = #"""
+    [
+      {"id":"dg-r1","sessionId":"gate-group","type":"reasoning","status":"done","orderSeq":1,
+       "content":{"kind":"reasoning","rawText":"Inspecting both files before the edit."},
+       "source":{"itemId":"dg-msg"}},
+      {"id":"dg-t1","sessionId":"gate-group","type":"tool","status":"done","orderSeq":2,
+       "content":{"toolName":"Edit","input":{"file_path":"/repo/Main.dc.html"},
+                  "output":{"lineStat":{"addedLineCount":2,"removedLineCount":1}}},
+       "source":{"nativeMessageId":"dg-msg","blockIndex":0}},
+      {"id":"dg-t2","sessionId":"gate-group","type":"tool","status":"done","orderSeq":3,
+       "content":{"toolName":"Edit","input":{"file_path":"/repo/Main.dc.html"}},
+       "source":{"nativeMessageId":"dg-msg","blockIndex":1}},
+      {"id":"dg-t3","sessionId":"gate-group","type":"tool","status":"done","orderSeq":4,
+       "content":{"toolName":"Edit","input":{"file_path":"/repo/Dark.dc.html"}},
+       "source":{"nativeMessageId":"dg-msg","blockIndex":2}}
+    ]
+    """#
 
     /// A running reasoning row beside a settled body: the persistent block
     /// must not be created from it.

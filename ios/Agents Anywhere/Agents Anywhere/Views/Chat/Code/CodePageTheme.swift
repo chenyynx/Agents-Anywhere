@@ -338,13 +338,15 @@ nonisolated enum CodePageTheme {
         codeBlockPin: markdownCodeBlockSize)
     }
 
-    /// [E] R28 §U 收口三 — the detail `thinkingText` renders through
+    /// [E] R28 §U 收口三 — the thinking detail sheet
+    /// (`CodeThinkingDetailView`) renders through
     /// `ClaudeRichMarkdown.MarkdownText` (`0x101be0ccc`) with 15.0 pt /
     /// weight 400 / lineHeight 21.0, relative `.body`
     /// (`0x100b6a998`; constants `0x100b6ab48` / `0x100b6abc8` /
     /// `0x100b6ac5c`; `.body` GOT `0x10748c858`), ink `text100`/`text300`.
     /// The Code message body keeps its own 17/27.2 preset — a different
-    /// official component.
+    /// official component. The tool group's detail page carries no thinking
+    /// section (pp device report 2026-10-29).
     ///
     /// U for this surface: paragraph spacing, heading sizes and the
     /// inline-code/code-block presets are not decoded; they reuse the Code

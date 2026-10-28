@@ -167,18 +167,12 @@ struct CodeMessageRowView: View {
     /// (EVIDENCE/round19/bubble-layout.md:89). The only separator is the
     /// inter-block gap.
     private func blockStack(_ row: RenderedRow) -> some View {
-        // The official span detail carries the group's thinking text above
-        // its call list (I-high, R28 §U 收口三). `CodeGroupThinking` owns the
-        // mapping (settled reasoning only, joined with a blank line) so the
-        // row and the profile gate cannot diverge: the text is attached to
-        // the first `.toolCalls` block only, and that block passes it to its
-        // first segment (a special segment splits the calls, not the text).
-        let groupThinking = CodeGroupThinking.plan(for: row.blocks)
-        return VStack(alignment: .leading, spacing: CodePageTheme.blockGap) {
-            ForEach(Array(row.blocks.enumerated()), id: \.offset) { index, block in
-                blockView(block,
-                          groupThinkingText: index == groupThinking?.anchorBlockIndex
-                              ? groupThinking?.text : nil)
+        // The tool group's detail page carries the call list only. The group's
+        // thinking stays on its own row and in its own detail sheet; the tool
+        // detail has no thinking section (pp device report 2026-10-29).
+        VStack(alignment: .leading, spacing: CodePageTheme.blockGap) {
+            ForEach(Array(row.blocks.enumerated()), id: \.offset) { _, block in
+                blockView(block)
             }
         }
     }
@@ -229,8 +223,7 @@ struct CodeMessageRowView: View {
     // MARK: - Blocks
 
     @ViewBuilder
-    private func blockView(_ block: CodeMessageRow.Block,
-                           groupThinkingText: String? = nil) -> some View {
+    private func blockView(_ block: CodeMessageRow.Block) -> some View {
         switch block {
         case let .reasoning(id, text, status):
             if status == .done {
@@ -258,13 +251,8 @@ struct CodeMessageRowView: View {
             // settled tasks nor attachment images, so no companions child is
             // built here; the empty-tiles condition and stack spacing stay U.
             VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(segments.enumerated()), id: \.offset) { index, segment in
-                    // The thinking text belongs to the block, not to every
-                    // span a special segment splits off: the first span's
-                    // group page carries it.
-                    toolRow(segment,
-                            groupThinkingText: index == 0
-                                ? groupThinkingText : nil)
+                ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
+                    toolRow(segment)
                 }
             }
 
@@ -282,8 +270,7 @@ struct CodeMessageRowView: View {
         }
     }
 
-    private func toolRow(_ segment: CodeToolSegment,
-                         groupThinkingText: String? = nil) -> some View {
+    private func toolRow(_ segment: CodeToolSegment) -> some View {
         let calls = CodeToolLabels.calls(in: segment)
         let label = CodeToolLabels.label(for: calls, cwd: cwd)
         let failed = calls.filter { $0.status == .failed }.count
@@ -316,8 +303,7 @@ struct CodeMessageRowView: View {
                                     status: status,
                                     failureExtent: failureExtent,
                                     hasDetails: !calls.isEmpty) {
-            if let request = CodeToolDetailRequest(calls: calls,
-                                                   thinkingText: groupThinkingText) {
+            if let request = CodeToolDetailRequest(calls: calls) {
                 onToolDetail(request)
             }
         }
@@ -847,21 +833,18 @@ struct CodeThinkingDetailRequest: Identifiable {
     let text: String
 }
 
-/// One detail request: the tapped segment's whole call list in official order
-/// plus the group's settled thinking text. The official tap opens
-/// `collapsedToolCalls(CollapsedToolCallsGroup)`, a summary list; a row in
-/// that list pushes the single call. The row reports this upward;
-/// `TimelineChatTimelineView` owns the sheet.
+/// One detail request: the tapped segment's whole call list in official order.
+/// The official tap opens `collapsedToolCalls(CollapsedToolCallsGroup)`, a
+/// summary list; a row in that list pushes the single call. The row reports
+/// this upward; `TimelineChatTimelineView` owns the sheet.
 struct CodeToolDetailRequest: Identifiable {
     let id: String
     let calls: [CodeToolCall]
-    let thinkingText: String?
 
-    init?(calls: [CodeToolCall], thinkingText: String? = nil) {
+    init?(calls: [CodeToolCall]) {
         guard let first = calls.first else { return nil }
         id = first.id
         self.calls = calls
-        self.thinkingText = thinkingText
     }
 }
 

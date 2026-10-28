@@ -24,9 +24,12 @@ import Foundation
 /// The sheet-root group page: the span summary plus its call list. Tapping a
 /// row pushes `CodeToolCallDetailView`.
 ///
+/// The page carries the call list only: the group's thinking has its own row
+/// and its own detail sheet, and the tool detail shows no thinking section
+/// (pp device report 2026-10-29 — an earlier I-high reading of a
+/// `RenderedMarkdownView` was wrong for this surface).
+///
 /// Still UNKNOWN on this page (R28 §U 收口三), and deliberately not guessed:
-/// - the `thinkingText` path is I-high (the official leaf Typography is E:
-///   15/400/21 relative `.body`, `text100`/`text300`);
 /// - the list's `PlainListRowInsets{insets: EdgeInsets}` value is U;
 /// - the `TimelineConnector` overlay exists (`0x100fd6b20..0x100fd6c10`,
 ///   static `0x1077ca920/948`) but its width/colour are runtime view/Color
@@ -38,11 +41,6 @@ import Foundation
 ///   value, kept as the stand-in.
 struct CodeToolGroupDetailView: View {
     let calls: [CodeToolCall]
-    /// Settled thinking text that belongs to the group. The official detail
-    /// carries a `thinkingText` rendered above the call list (I-high, R28
-    /// §U 收口三; the leaf Typography for that path is E: 15/400/21 relative
-    /// `.body`, `text100`/`text300`).
-    let thinkingText: String?
     let cwd: String?
 
     @Environment(\.dismiss) private var dismiss
@@ -54,10 +52,6 @@ struct CodeToolGroupDetailView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: CodePageTheme.blockSpacing) {
-                    if let thinkingText, !thinkingText.isEmpty {
-                        CodeThinkingMarkdownView(text: thinkingText)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
                     LazyVStack(spacing: 0) {
                         ForEach(calls) { call in
                             NavigationLink {

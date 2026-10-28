@@ -106,7 +106,6 @@ final class CodeProfileAutoRunModel {
     private(set) var detailCall: CodeToolCall?
     /// The group page fixture: the summary layer plus its call list.
     private(set) var detailGroupCalls: [CodeToolCall] = []
-    private(set) var detailGroupThinking: String?
     /// The collapsed-row gallery rendered by the two dedicated capture
     /// stages (light and dark).
     private(set) var rowGallery: [CodeCollapsedRowFixture] = []
@@ -947,7 +946,6 @@ final class CodeProfileAutoRunModel {
         await verifyMessageRowHeight()
         await verifyRowHeights()
         await verifyReadOutputHeight()
-        await verifyGroupThinkingBlock()
         await verifyCollapsedRowHeights()
         await verifyRendererMeasure()
         await verifyRealCollectionFirstFit()
@@ -1189,34 +1187,20 @@ final class CodeProfileAutoRunModel {
         // listed call must have input (and one a diff output).
         //
         // The fixture is a real message group (one settled reasoning row plus
-        // the three tool rows), and the page's thinking text comes from
-        // `CodeGroupThinking` — the same pure mapping the transcript row uses.
-        // A hardcoded string would keep the page green after the row mapping
-        // broke.
+        // the three tool rows) decoded through `CodeMessageBuilder`, so the
+        // page's calls come from the same builder the transcript uses. The
+        // reasoning row must not leak into the page: the group detail carries
+        // the call list only (pp device report 2026-10-29).
         guard let groupItems = Self.decodeItems(Self.detailGroupJSON) else {
             failures.append("views: detail group fixture JSON did not decode")
             return
         }
         let groupRows = CodeMessageBuilder.rows(for: groupItems, profile: .claudeCode)
         let groupBlocks = groupRows.first?.blocks ?? []
-        let groupPlan = CodeGroupThinking.plan(for: groupBlocks)
-        let groupFirstToolBlock = groupBlocks.firstIndex { block in
-            if case .toolCalls = block { return true }
-            return false
-        }
-        check(groupPlan != nil,
-              "views: detail group produced no thinking plan")
-        check(groupPlan?.anchorBlockIndex == groupFirstToolBlock,
-              "views: detail group thinking anchored at"
-                + " \(String(describing: groupPlan?.anchorBlockIndex)), expected"
-                + " the first tool block \(String(describing: groupFirstToolBlock))")
-        check(groupPlan?.text == "Inspecting both files before the edit.",
-              "views: detail group thinking '\(groupPlan?.text ?? "nil")'")
         detailGroupCalls = groupBlocks.flatMap { block -> [CodeToolCall] in
             guard case let .toolCalls(segments) = block else { return [] }
             return segments.flatMap { CodeToolLabels.calls(in: $0) }
         }
-        detailGroupThinking = groupPlan?.text
         check(detailGroupCalls.count == 3,
               "views: detail group has \(detailGroupCalls.count) calls, expected 3")
         let groupLabel = CodeToolLabels.label(for: detailGroupCalls, cwd: "/repo")
@@ -1486,57 +1470,6 @@ final class CodeProfileAutoRunModel {
             "finite": finite,
             "textViews": readTextViews.count,
             "textViewLengths": readTextViewLengths,
-        ] as [String: Any]
-    }
-
-    /// P2-C: the group page's thinking block is asserted on the rendered
-    /// tree, not only on the fixture value. `CodeThinkingMarkdownView` draws
-    /// through `CodeMarkdownTextLeaf`, whose text is a `UITextView`; the call
-    /// rows are SwiftUI `Text`s, so a text view carrying the thinking string
-    /// proves the block was built above the list. Dropping the
-    /// `if let thinkingText` branch (or swapping the leaf for a plain `Text`)
-    /// leaves no such text view and turns this red.
-    private func verifyGroupThinkingBlock() async {
-        guard let window = keyWindow else {
-            failures.append("groupThinking: no key window")
-            return
-        }
-        guard let thinking = detailGroupThinking, !thinking.isEmpty else {
-            failures.append("groupThinking: the detail group fixture produced no thinking text")
-            return
-        }
-        guard !detailGroupCalls.isEmpty else {
-            failures.append("groupThinking: the detail group fixture produced no calls")
-            return
-        }
-        let host = UIHostingController(rootView:
-            CodeToolGroupDetailView(calls: detailGroupCalls,
-                                    thinkingText: thinking,
-                                    cwd: "/repo")
-                .ignoresSafeArea())
-        host.view.backgroundColor = .clear
-        host.view.frame = CGRect(x: 0, y: 0, width: window.bounds.width, height: 700)
-        window.addSubview(host.view)
-        host.view.layoutIfNeeded()
-        // The Markdown leaf builds its text views on the first layout pass
-        // with a real width; give the hosted stack that pass.
-        await wait(300)
-        host.view.layoutIfNeeded()
-        let rendered = descendantTextViews(in: host.view).map { $0.textStorage.string }
-        host.view.removeFromSuperview()
-        // The Markdown parser may keep the paragraph's trailing newline; trim
-        // only whitespace so the assertion still pins the exact text.
-        let matched = rendered.contains {
-            $0.trimmingCharacters(in: .whitespacesAndNewlines) == thinking
-        }
-
-        check(matched,
-              "groupThinking: no UITextView carries '\(thinking)'"
-                + " (rendered \(rendered.count) text views)")
-        report["groupThinking"] = [
-            "expected": thinking,
-            "textViews": rendered.count,
-            "matched": matched,
         ] as [String: Any]
     }
 
@@ -2919,8 +2852,8 @@ final class CodeProfileAutoRunModel {
     /// Layer 1's group-page fixture: one settled reasoning row and three tool
     /// rows of one message, exactly the `[thinkingContent, toolCalls]` span
     /// shape the builder emits. `prepareViews` runs it through
-    /// `CodeMessageBuilder` and `CodeGroupThinking`, so the page's thinking
-    /// text is the transcript row's mapping, not a hardcoded string.
+    /// `CodeMessageBuilder`; the reasoning row must not reach the page, which
+    /// carries the call list only (pp device report 2026-10-29).
     private static let detailGroupJSON = #"""
     [
       {"id":"dg-r1","sessionId":"gate-group","type":"reasoning","status":"done","orderSeq":1,
@@ -3230,7 +3163,6 @@ struct CodeProfileAutoRunRootView: View {
             case .detailGroup:
                 if !model.detailGroupCalls.isEmpty {
                     CodeToolGroupDetailView(calls: model.detailGroupCalls,
-                                            thinkingText: model.detailGroupThinking,
                                             cwd: "/repo")
                 } else {
                     Color(.systemBackground)

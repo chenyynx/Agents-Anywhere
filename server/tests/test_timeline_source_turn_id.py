@@ -10,7 +10,11 @@ These tests pin the additive contract:
 
 - a source that declares ``turnId`` stores it under ``payload_json.source``;
 - a source that does not declare it stores no ``turnId`` key at all, so old
-  payloads and old decoders stay unchanged.
+  payloads and old decoders stay unchanged;
+- a row written before the server modelled ``turnId`` is rewritten once when
+  a rebuild re-sends it with the new source field. ``contentHash`` covers
+  type/status/role/content only, so without the forced rewrite the no-op fast
+  path would leave the stored payload turn-less forever.
 """
 
 from __future__ import annotations
@@ -114,5 +118,135 @@ async def test_turn_id_is_stored_in_payload_and_legacy_rows_are_unchanged() -> N
         # ``exclude_none=True`` in ``_row_values``: a row whose Runtime does not
         # declare a turn stores no key, exactly like ``nativeMessageId``.
         assert "turnId" not in sources["legacy"]
+    finally:
+        await store.close()
+
+
+async def _stored_item(store: Store, session_id: str, item_id: str) -> Any:
+    item = await store.timeline.read_one(session_id, item_id)
+    assert item is not None
+    return item
+
+
+@pytest.mark.anyio
+async def test_legacy_row_gains_turn_id_on_an_otherwise_identical_write() -> None:
+    """``contentHash`` ignores ``source``; the forced rewrite bridges that.
+
+    A row written before the server modelled ``turnId`` has the same
+    ``contentHash`` when a history rebuild re-sends it with the new source
+    field. Without the forced write the early return would keep the payload
+    turn-less forever (and the session's scheduled turns without a boundary).
+    """
+
+    store, session = await _store_with_session()
+    try:
+        first = await store.upsert_timeline_item(
+            session_id=session.id,
+            item=message_input(session.id, "legacy", turn_id=None, order_seq=1),
+        )
+        assert first.changed is True
+        before = await _stored_item(store, session.id, "legacy")
+        assert before.source.turnId is None
+
+        second = await store.upsert_timeline_item(
+            session_id=session.id,
+            item=message_input(session.id, "legacy", turn_id="turn_1", order_seq=1),
+        )
+        assert second.changed is True
+
+        after = await _stored_item(store, session.id, "legacy")
+        assert after.source.turnId == "turn_1"
+        assert after.revision > before.revision
+        assert after.updatedSeq > before.updatedSeq
+        sources = await _stored_sources(store, session.id)
+        assert sources["legacy"]["turnId"] == "turn_1"
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_repeated_turn_id_write_is_idempotent() -> None:
+    store, session = await _store_with_session()
+    try:
+        await store.upsert_timeline_item(
+            session_id=session.id,
+            item=message_input(session.id, "row", turn_id=None, order_seq=1),
+        )
+        forced = await store.upsert_timeline_item(
+            session_id=session.id,
+            item=message_input(session.id, "row", turn_id="turn_1", order_seq=1),
+        )
+        assert forced.changed is True
+        after_forced = await _stored_item(store, session.id, "row")
+
+        repeat = await store.upsert_timeline_item(
+            session_id=session.id,
+            item=message_input(session.id, "row", turn_id="turn_1", order_seq=1),
+        )
+        assert repeat.changed is False
+
+        after_repeat = await _stored_item(store, session.id, "row")
+        assert after_repeat.revision == after_forced.revision
+        assert after_repeat.updatedSeq == after_forced.updatedSeq
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_write_without_turn_id_keeps_the_old_unchanged_behaviour() -> None:
+    store, session = await _store_with_session()
+    try:
+        first = await store.upsert_timeline_item(
+            session_id=session.id,
+            item=message_input(session.id, "row", turn_id=None, order_seq=1),
+        )
+        assert first.changed is True
+
+        repeat = await store.upsert_timeline_item(
+            session_id=session.id,
+            item=message_input(session.id, "row", turn_id=None, order_seq=1),
+        )
+        assert repeat.changed is False
+
+        # The forced write only fills a missing turn id; it never clears one,
+        # so a later turn-less write is unchanged as before.
+        await store.upsert_timeline_item(
+            session_id=session.id,
+            item=message_input(session.id, "row", turn_id="turn_1", order_seq=1),
+        )
+        turn_less = await store.upsert_timeline_item(
+            session_id=session.id,
+            item=message_input(session.id, "row", turn_id=None, order_seq=1),
+        )
+        assert turn_less.changed is False
+        assert (await _stored_item(store, session.id, "row")).source.turnId == "turn_1"
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_batch_sync_forces_the_turn_id_rewrite() -> None:
+    store, session = await _store_with_session()
+    try:
+        await store.upsert_timeline_item(
+            session_id=session.id,
+            item=message_input(session.id, "row", turn_id=None, order_seq=1),
+        )
+        before = await _stored_item(store, session.id, "row")
+
+        batch = await store.sync_timeline_items(
+            session_id=session.id,
+            items=[message_input(session.id, "row", turn_id="turn_1", order_seq=1)],
+        )
+        assert batch.changed is True
+        after = await _stored_item(store, session.id, "row")
+        assert after.source.turnId == "turn_1"
+        assert after.updatedSeq > before.updatedSeq
+
+        repeat = await store.sync_timeline_items(
+            session_id=session.id,
+            items=[message_input(session.id, "row", turn_id="turn_1", order_seq=1)],
+        )
+        assert repeat.changed is False
     finally:
         await store.close()

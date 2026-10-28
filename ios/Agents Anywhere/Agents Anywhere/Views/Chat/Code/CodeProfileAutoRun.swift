@@ -838,14 +838,14 @@ final class CodeProfileAutoRunModel {
         // pass a concrete icon into the row init, so the leading icon is
         // never omitted. `TimelineStatusGlyph` is a fixed element of the row
         // body; its non-failure branch is the semibold checkmark and the
-        // FailureGlyph branch stays the D6 hook. The caret is a 20x20 icon
-        // box in a 24 pt frame.
+        // FailureGlyph branch is the R-A warning glyph. The caret is a 20x20
+        // icon box in a 24 pt frame.
         check(CodeCollapsedStepsRow.statusGlyphKind(status: .complete,
                                                     failureExtent: nil) == .checkmark,
               "collapsedRows rule: a settled row lost its checkmark branch")
         check(CodeCollapsedStepsRow.statusGlyphKind(status: .failed,
                                                     failureExtent: nil) == .failure,
-              "collapsedRows rule: the D6 failure-glyph hook was removed")
+              "collapsedRows rule: the failure-glyph branch was removed")
         check(CodeCollapsedStepsRow.statusGlyphKind(status: .complete,
                                                     failureExtent: .partial) == .failure,
               "collapsedRows rule: a partial extent lost the failure branch")
@@ -1128,6 +1128,10 @@ final class CodeProfileAutoRunModel {
         guard !didPrepareViews else { return }
         didPrepareViews = true
 
+        // Pure-constant assertions run before the fixtures so a broken
+        // fixture cannot hide a token regression.
+        verifyGroupDetailEvidence()
+
         guard let items = Self.decodeItems(Self.viewFixtureJSON) else {
             failures.append("views: fixture JSON did not decode")
             return
@@ -1226,6 +1230,135 @@ final class CodeProfileAutoRunModel {
             "rows": detailGroupCalls.count,
             "outputs": groupOutputs.map { $0.isEmpty ? "none" : "present" },
         ] as [String: Any]
+    }
+
+    /// The R-A/R-D/R-E/R-F constants the group detail and status glyph now
+    /// draw with. Each value is asserted against its evidence:
+    /// - FailureGlyph: asset name, `16 + 4 × raw` frame, failed/partial sRGB
+    ///   pairs (R-A E4/E5/E6/E7);
+    /// - group chevron `textMuted` (R-F C5/C7) and the collapsed caret's
+    ///   unchanged `text400` (R-F C8);
+    /// - `PlainListRowInsets` `(0, 24, 0, 24)` (R-D §2);
+    /// - connector 2 pt / 24 pt column / 8 pt gap / light+dark ink
+    ///   (R-E C3/C5).
+    private func verifyGroupDetailEvidence() {
+        check(CodePageTheme.failureGlyphAssetName == "anthropicon.warning",
+              "groupDetail glyph: asset '\(CodePageTheme.failureGlyphAssetName)',"
+                + " expected 'anthropicon.warning'")
+        check(UIImage(named: CodePageTheme.failureGlyphAssetName) != nil,
+              "groupDetail glyph: asset"
+                + " '\(CodePageTheme.failureGlyphAssetName)' is not in the bundle")
+        check(CodePageTheme.failureGlyphSize == .medium,
+              "groupDetail glyph: default size U changed from .medium")
+        for size in AnthropiconSize.allCases {
+            let expected = 16 + 4 * CGFloat(size.rawValue)
+            check(CodePageTheme.failureGlyphFrameSide(for: size) == expected,
+                  "groupDetail glyph: frame side for \(size) is"
+                    + " \(CodePageTheme.failureGlyphFrameSide(for: size)),"
+                    + " expected \(expected)")
+        }
+        for (rawSize, expected) in [16, 20, 24, 28, 32].enumerated() {
+            check(CodePageTheme.failureGlyphFrameSide(rawSize: rawSize)
+                    == CGFloat(expected),
+                  "groupDetail glyph: raw \(rawSize) side is"
+                    + " \(CodePageTheme.failureGlyphFrameSide(rawSize: rawSize)),"
+                    + " expected \(expected)")
+        }
+        check(CodePageTheme.failureGlyphFrameSide(for: .small) == 16
+                && CodePageTheme.failureGlyphFrameSide(for: .medium) == 20
+                && CodePageTheme.failureGlyphFrameSide(for: .large) == 24,
+              "groupDetail glyph: the 16/20/24 size table moved")
+        assertSRGB(CodePageTheme.failureGlyphFailedColor,
+                   light: (0.557, 0.149, 0.149),
+                   dark: (0.925, 0.494, 0.494),
+                   alpha: 1, label: "groupDetail glyph failed")
+        assertSRGB(CodePageTheme.failureGlyphPartialColor,
+                   light: (0.451, 0.271, 0),
+                   dark: (0.859, 0.576, 0),
+                   alpha: 1, label: "groupDetail glyph partial")
+
+        check(CodePageTheme.groupListRowInsets == EdgeInsets(top: 0, leading: 24,
+                                                             bottom: 0, trailing: 24),
+              "groupDetail list: insets \(CodePageTheme.groupListRowInsets),"
+                + " expected (0,24,0,24)")
+        assertSRGB(CodePageTheme.textMutedColor,
+                   light: (0.537, 0.529, 0.506),
+                   dark: (0.537, 0.529, 0.506),
+                   alpha: 1, label: "groupDetail chevron textMuted")
+        // R-F C8: the collapsed caret keeps its own token; a shared constant
+        // would silently repaint one of the two surfaces.
+        assertSRGB(CodePageTheme.text400Color,
+                   light: (0.482, 0.475, 0.455),
+                   dark: (0.592, 0.584, 0.553),
+                   alpha: 1, label: "collapsed caret text400")
+
+        check(CodePageTheme.timelineConnectorWidth == 2
+                && CodePageTheme.timelineConnectorColumnWidth == 24
+                && CodePageTheme.timelineConnectorTopGap == 8,
+              "groupDetail connector: geometry"
+                + " \(CodePageTheme.timelineConnectorWidth)/"
+                + "\(CodePageTheme.timelineConnectorColumnWidth)/"
+                + "\(CodePageTheme.timelineConnectorTopGap), expected 2/24/8")
+        assertSRGB(CodePageTheme.timelineConnectorColor,
+                   light: (0.043, 0.043, 0.043),
+                   dark: (1, 1, 1),
+                   alpha: 0.1, label: "groupDetail connector")
+
+        report["groupDetailEvidence"] = [
+            "failureGlyphAsset": CodePageTheme.failureGlyphAssetName,
+            "failureGlyphSize": "\(CodePageTheme.failureGlyphSize)",
+            "failureGlyphFrameSides": AnthropiconSize.allCases.map {
+                Double(CodePageTheme.failureGlyphFrameSide(for: $0))
+            },
+            "rowInsets": [
+                Double(CodePageTheme.groupListRowInsets.top),
+                Double(CodePageTheme.groupListRowInsets.leading),
+                Double(CodePageTheme.groupListRowInsets.bottom),
+                Double(CodePageTheme.groupListRowInsets.trailing),
+            ],
+            "connector": [
+                Double(CodePageTheme.timelineConnectorWidth),
+                Double(CodePageTheme.timelineConnectorColumnWidth),
+                Double(CodePageTheme.timelineConnectorTopGap),
+            ],
+        ] as [String: Any]
+    }
+
+    /// Resolves a `SchemeColor` through its dynamic `UIColor` and compares
+    /// the four components under each appearance. This asserts the colour
+    /// that reaches the screen, not a duplicated literal.
+    private func assertSRGB(_ color: CodePageTheme.SchemeColor,
+                            light: (CGFloat, CGFloat, CGFloat),
+                            dark: (CGFloat, CGFloat, CGFloat),
+                            alpha: CGFloat,
+                            label: String) {
+        let cases: [(String, UIUserInterfaceStyle, (CGFloat, CGFloat, CGFloat))] = [
+            ("light", .light, light),
+            ("dark", .dark, dark),
+        ]
+        for (appearance, style, expected) in cases {
+            let resolved = CodePageTheme.uiColor(color)
+                .resolvedColor(with: UITraitCollection(userInterfaceStyle: style))
+            var red: CGFloat = 0
+            var green: CGFloat = 0
+            var blue: CGFloat = 0
+            var resolvedAlpha: CGFloat = 0
+            guard resolved.getRed(&red, green: &green,
+                                  blue: &blue, alpha: &resolvedAlpha) else {
+                failures.append("\(label) \(appearance): getRed failed")
+                continue
+            }
+            // 1/255 ≈ 0.0039: a colour-space round trip must not turn a
+            // correct token red, while the closest expected pair (failed
+            // dark R 0.925 vs danger00 dark R 0.957) still separates.
+            let tolerance: CGFloat = 0.005
+            check(abs(red - expected.0) <= tolerance
+                    && abs(green - expected.1) <= tolerance
+                    && abs(blue - expected.2) <= tolerance
+                    && abs(resolvedAlpha - alpha) <= tolerance,
+                  "\(label) \(appearance): (\(red), \(green), \(blue),"
+                    + " \(resolvedAlpha)), expected \(expected) @\(alpha)")
+        }
     }
 
     /// The exact height the controller stores before apply must equal the

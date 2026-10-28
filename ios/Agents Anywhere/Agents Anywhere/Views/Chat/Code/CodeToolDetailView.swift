@@ -29,16 +29,18 @@ import Foundation
 /// (pp device report 2026-10-29 — an earlier I-high reading of a
 /// `RenderedMarkdownView` was wrong for this surface).
 ///
-/// Still UNKNOWN on this page (R28 §U 收口三), and deliberately not guessed:
-/// - the list's `PlainListRowInsets{insets: EdgeInsets}` value is U;
-/// - the `TimelineConnector` overlay exists (`0x100fd6b20..0x100fd6c10`,
-///   static `0x1077ca920/948`) but its width/colour are runtime view/Color
-///   values, U — no connector is drawn;
-/// - the group row's chevron reuses `anthropicon.caretRight` at
-///   `Icon.Size.medium` (E, `0x101e8f550`/`0x101e8f578`), gated by
-///   `hasDetails`, but its colour token getter `0x100b4ac5c` has no decoded
-///   name/colour (U); the shared caret's `text400` ink is the collapsed-row
-///   value, kept as the stand-in.
+/// Decoded by R-D/R-E/R-F:
+/// - the container is a `List` + `.listStyle(.plain)` with hidden separators
+///   (R-D §6/§5), row insets `(0, 24, 0, 24)` (R-D §2) and a clear row
+///   background over the page background (R-D §7/§8);
+/// - each call row draws the `TimelineConnector` when it `_continues` and its
+///   icon anchor is present (R-E C3/C7);
+/// - the row's chevron ink is `textMuted` (R-F C5/C7), not the collapsed
+///   row's `text400`.
+///
+/// Still U: the connector's Shape type (R-E C4 — drawn as a square
+/// `Rectangle`) and the official `VerticalAlignment` in its trigger (R-E C7);
+/// only `_continues` + a present anchor are implemented.
 struct CodeToolGroupDetailView: View {
     let calls: [CodeToolCall]
     let cwd: String?
@@ -48,27 +50,38 @@ struct CodeToolGroupDetailView: View {
     @Environment(\.accessibilityDifferentiateWithoutColor)
     private var differentiateWithoutColor
 
+    /// Programmatic path: a `NavigationLink` inside `List` adds the system
+    /// disclosure chevron, which the official row does not have (its own
+    /// caret is the only chevron). A `Button` + `navigationDestination`
+    /// keeps the row artwork exact.
+    @State private var path: [CodeToolCall] = []
+
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: CodePageTheme.blockSpacing) {
-                    LazyVStack(spacing: 0) {
-                        ForEach(calls) { call in
-                            NavigationLink {
-                                CodeToolCallDetailView(call: call)
-                            } label: {
-                                CodeToolGroupCallRow(
-                                    call: call,
-                                    cwd: cwd,
-                                    differentiateWithoutColor: differentiateWithoutColor)
-                            }
-                            .buttonStyle(.plain)
-                        }
+        NavigationStack(path: $path) {
+            List {
+                // `_continues` is true for every call but the last (R-E C7).
+                ForEach(calls) { call in
+                    Button {
+                        path.append(call)
+                    } label: {
+                        CodeToolGroupCallRow(
+                            call: call,
+                            cwd: cwd,
+                            differentiateWithoutColor: differentiateWithoutColor,
+                            continues: call.id != calls.last?.id)
                     }
+                    .buttonStyle(.plain)
+                    .listRowInsets(CodePageTheme.groupListRowInsets)
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
                 }
-                .padding(.horizontal, CodeToolDetailMetrics.contentInset)
-                .padding(.vertical, CodeToolDetailMetrics.verticalInset)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .contentMargins(.vertical, CodeToolDetailMetrics.verticalInset,
+                            for: .scrollContent)
+            .navigationDestination(for: CodeToolCall.self) { call in
+                CodeToolCallDetailView(call: call)
             }
             .background {
                 CodeToolDetailMetrics.pageBackground
@@ -96,18 +109,22 @@ struct CodeToolGroupDetailView: View {
 }
 
 /// One call row inside the group list: category icon + single-call label +
-/// caret. The row box is the decoded 1023 `TimelineRow`: 8 pt vertical
-/// padding and a 16 pt icon/content gap (E). The list container is a
-/// `List`/`PlainListStyle` in the official view with hidden separators (E),
-/// but its `PlainListRowInsets` value is U, so AA keeps the equivalent
-/// VStack geometry rather than introducing unverifiable insets. The
-/// `TimelineConnector` overlay (`0x100fd6b20..0x100fd6c10`) and the caret's
-/// colour token `0x100b4ac5c` are U too (R28 §U 收口三); the shared
-/// `CodeRowCaret`'s `text400` is the collapsed-row stand-in.
+/// caret + connector. The row box is the decoded 1023 `TimelineRow`: 8 pt
+/// vertical padding and a 16 pt icon/content gap (E). The container lives in
+/// `CodeToolGroupDetailView` (`List`, `.plain`, hidden separators, row insets
+/// `(0,24,0,24)` — R-D).
+///
+/// The connector (R-E C3/C7): width 2 pt in a 24 pt column, top = the icon
+/// anchor's maxY + 8 pt, bottom = the row bottom, height clamped at 0. It is
+/// drawn for every call that `_continues` (all but the last) once the icon
+/// anchor exists. Shape type is U (R-E C4) → `Rectangle`, no corner radius.
 struct CodeToolGroupCallRow: View {
     let call: CodeToolCall
     let cwd: String?
     let differentiateWithoutColor: Bool
+    /// The official `TimelineRow._continues` (field[3], R-E C7): true when
+    /// this row is followed by another call in the same group.
+    var continues: Bool = false
 
     @Environment(\.colorScheme) private var colorScheme
     @ScaledMetric(relativeTo: CodeDetailRowHooks.textStyle)
@@ -124,6 +141,8 @@ struct CodeToolGroupCallRow: View {
                     .resolved(for: colorScheme))
                 .frame(width: CodePageTheme.toolRowIconFrameSize,
                        height: CodePageTheme.toolRowIconFrameSize)
+                .anchorPreference(key: CodeIconBoundsPreferenceKey.self,
+                                  value: .bounds) { Optional($0) }
                 .accessibilityHidden(true)
 
             CodeToolLabelText(runs: runs)
@@ -133,10 +152,59 @@ struct CodeToolGroupCallRow: View {
                 .layoutPriority(1)
 
             Spacer(minLength: 0)
-            CodeRowCaret()
+            // R-F C5/C7 — the group row's chevron token is `textMuted`;
+            // the collapsed row keeps the caret's default `text400`.
+            CodeRowCaret(tint: CodePageTheme.textMutedColor)
         }
         .padding(.vertical, CodeDetailRowHooks.verticalPadding)
         .contentShape(Rectangle())
+        .overlayPreferenceValue(CodeIconBoundsPreferenceKey.self) { anchor in
+            GeometryReader { proxy in
+                if continues, let anchor {
+                    let iconMaxY = proxy[anchor].maxY
+                    let top = iconMaxY + CodePageTheme.timelineConnectorTopGap
+                    let height = max(0, proxy.size.height - top)
+                    CodeTimelineConnector(height: height)
+                        .offset(y: top)
+                }
+            }
+            .allowsHitTesting(false)
+        }
+    }
+}
+
+/// Collects the call row's icon anchor so the connector can start at
+/// `iconBounds.maxY + 8` (R-E C3). Official Key is `TimelineIconBounds`
+/// (`0x1066bfe50`); this is the equivalent single-anchor preference.
+private struct CodeIconBoundsPreferenceKey: PreferenceKey {
+    static var defaultValue: Anchor<CGRect>? { nil }
+
+    static func reduce(value: inout Anchor<CGRect>?,
+                       nextValue: () -> Anchor<CGRect>?) {
+        value = value ?? nextValue()
+    }
+}
+
+/// The official `TimelineConnector` (R-E C3/C5).
+///
+/// The official draw is a zero-size Shape filled with a Color; the Shape type
+/// was not decoded (R-E C4), so this uses `Rectangle` with no corner radius.
+/// Geometry comes from the row overlay: 2 pt wide, vertically centered in the
+/// 24 pt icon column, `height` already clamped by the caller.
+private struct CodeTimelineConnector: View {
+    let height: CGFloat
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        Rectangle()
+            .fill(CodePageTheme.timelineConnectorColor
+                .resolved(for: colorScheme))
+            .frame(width: CodePageTheme.timelineConnectorWidth,
+                   height: height)
+            .frame(width: CodePageTheme.timelineConnectorColumnWidth,
+                   alignment: .center)
+            .accessibilityHidden(true)
     }
 }
 
@@ -271,12 +339,12 @@ struct CodeToolCallDetailView: View {
             }
         }
         .padding(.vertical, CodeDetailRowHooks.verticalPadding)
-        // [E] R28 §U 收口二 二-D — `TimelineListRowPlain` hides separators
-        // and clears the row background. These are no-ops unless the row is
-        // hosted in the official `List`; the List container, its
-        // `PlainListRowInsets` value and the `TimelineConnector` overlay's
-        // runtime width/colour remain UNKNOWN (U, R28 §U 收口三), so the
-        // sheet keeps its ScrollView sections and draws no connector.
+        // [E] R28 §U 收口二 二-D / R-D — `TimelineListRowPlain` hides
+        // separators and clears the row background. These are no-ops in this
+        // single-call page (a `ScrollView` section, not a `List` row). The
+        // decoded `PlainListRowInsets` and `TimelineConnector` belong to the
+        // group list only (`CodeToolGroupDetailView`); this page draws no
+        // connector.
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
     }

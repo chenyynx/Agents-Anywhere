@@ -2400,20 +2400,41 @@ final class CodeProfileAutoRunModel {
         }
         let width = cgImage.width
         let height = cgImage.height
-        guard width > 0, height > 0,
-              let data = cgImage.dataProvider?.data,
-              let bytes = CFDataGetBytePtr(data),
-              cgImage.bitsPerPixel >= 32 else {
+        guard width > 0, height > 0 else {
             failures.append("views: \(name) pixel data unavailable")
             return ["error": "no pixel data"]
         }
-        let bytesPerPixel = cgImage.bitsPerPixel / 8
-        // Existing captures use the renderer's BGRA layout.
+        // Redraw into a known 8-bit sRGB buffer. The renderer's own CGImage
+        // may be extended-range/16-bit (the first CI run read magenta garbage
+        // from a uniform #F9F9F7 background), so sampling its raw bytes with
+        // a fixed BGRA stride is not safe. The flipped context keeps buffer
+        // row 0 at the image's top, matching the band coordinates below.
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            failures.append("views: \(name) pixel context unavailable")
+            return ["error": "no pixel context"]
+        }
+        context.translateBy(x: 0, y: CGFloat(height))
+        context.scaleBy(x: 1, y: -1)
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let data = context.data else {
+            failures.append("views: \(name) pixel data unavailable")
+            return ["error": "no pixel data"]
+        }
+        let bytes = data.bindMemory(to: UInt8.self, capacity: height * width * 4)
+        let bytesPerPixel = 4
         func rgb(x: Int, y: Int) -> (Int, Int, Int) {
-            let offset = y * cgImage.bytesPerRow + x * bytesPerPixel
-            return (Int(bytes[offset + 2]),
+            let offset = y * context.bytesPerRow + x * bytesPerPixel
+            return (Int(bytes[offset]),
                     Int(bytes[offset + 1]),
-                    Int(bytes[offset]))
+                    Int(bytes[offset + 2]))
         }
         var result: [String: Any] = [:]
         var passed = true

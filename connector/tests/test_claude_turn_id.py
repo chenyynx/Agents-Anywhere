@@ -1,4 +1,4 @@
-"""One stable turn id across the live turn and the history projection.
+"""One stable turn id across live and history for user text and scheduled turns.
 
 Why this file exists
 --------------------
@@ -9,10 +9,19 @@ two ids, so every replay re-keyed the rows. A scheduled turn (no user
 message at all) had no history seed change either — it inherited the previous
 turn's id and merged across the boundary.
 
+Scope: the two turn kinds that share an anchor on both sides. A native
+COMMAND turn is a known exception, not a regression — the live side mints a
+random opaque id before dispatch (``turns/actions.py``) and the CLI's command
+rows are synthetic chrome the history projection never emits, so there is no
+transcript id both sides can hash; its compaction marker is the whole surface.
+``test_command_history_rows_do_not_seed_a_turn`` and the live command probe
+below pin that exception rather than hide it. Every "a turn" below means one
+of the two anchored kinds.
+
 These tests pin the contract:
 
-* a real turn is seeded by the prompt uuid the connector itself assigns and
-  the SDK replays as the transcript user row's uuid;
+* a real user text turn is seeded by the prompt uuid the connector itself
+  assigns and the SDK replays as the transcript user row's uuid;
 * a user-less turn is seeded by its FIRST assistant message id, which the
   live ``message_start`` frame carries before any partial row is published;
 * the seed is hashed under the AA session id (not the native Claude session
@@ -32,8 +41,14 @@ from typing import Any
 
 from claude_agent_sdk import AssistantMessage, StreamEvent, UserMessage
 
+from test_claude_history_compact import (
+    _CompactHistorySdk,
+    _SyncStateHost,
+    _syncer,
+)
 from test_claude_runtime import (
     _default_sdk,
+    _FakeClaudeClient,
     _FakeHookMatcher,
     _RecordingHost,
     _runtime,
@@ -41,6 +56,7 @@ from test_claude_runtime import (
     _wait_until,
 )
 
+from connector.runtime_protocol import RuntimeAttachment, RuntimeAttachmentContent
 from connector.runtimes.claude.domain.session import ClaudeSession
 from connector.runtimes.claude.history.cursor import (
     HISTORY_PROJECTION_VERSION,
@@ -122,6 +138,23 @@ def _hidden_meta_row(uuid: str, text: str) -> str:
     )
 
 
+def _visible_user_row(uuid: str, text: str) -> str:
+    return json.dumps(
+        {
+            "type": "user",
+            "uuid": uuid,
+            "message": {"role": "user", "content": text},
+        }
+    )
+
+
+def _turn_id_by_text(items: tuple[Any, ...], text: str) -> str:
+    matches = [item.turn_id for item in items if item.content.get("text") == text]
+    assert len(matches) == 1, f"expected one item with text {text!r}, got {matches!r}"
+    assert matches[0] is not None
+    return matches[0]
+
+
 # ---------------------------------------------------------------------------
 # Raw transcript shape
 # ---------------------------------------------------------------------------
@@ -162,6 +195,26 @@ def test_scan_detects_two_consecutive_fired_prompts() -> None:
     )
     scan = scan_raw_transcript(raw)
     assert scan.injected_prompt_rows == {"hidden-1": 1, "hidden-2": 4}
+
+
+def test_visible_user_row_consumes_the_enqueue_before_a_later_hidden_row() -> None:
+    """A real prompt's enqueue belongs to its visible row, not a later hidden one.
+
+    The CLI writes an enqueue before it persists any prompt. A fired scheduled
+    prompt is persisted hidden (``isMeta``); a real user prompt is persisted as
+    a visible row. Only the hidden row marks a turn boundary, so the visible
+    row must consume the queue entry: without the clear, the hidden meta row
+    that follows with the same text would be misread as a fired prompt and
+    start a phantom scheduled turn.
+    """
+
+    raw = (
+        _enqueue_row("X"),
+        _visible_user_row("visible-user-row", "X"),
+        _hidden_meta_row("hidden-meta-row", "X"),
+    )
+    scan = scan_raw_transcript(raw)
+    assert scan.injected_prompt_rows == {}
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +355,69 @@ def test_incremental_window_reuses_the_full_chain_turn_ids() -> None:
     )
     assert [item.turn_id for item in items] == [full_ids["uuid:assistant-two"]]
     assert items[0].turn_id == _history_turn_id(session.session_id, prompt_two)
+
+
+def test_syncer_computes_turn_ids_over_the_full_chain_not_the_window() -> None:
+    """Production mapping: the syncer, not the test, chooses the chain.
+
+    ``_history_turn_ids`` is only as good as the chain the caller hands it.
+    This drives the real ``ClaudeHistorySyncer`` twice over the same transcript:
+    a first sync projects the whole chain, then a cursor makes the next sync a
+    one-message suffix of the SAME turn. The suffix row must keep the id the
+    full import published. If the syncer hashed its incremental window instead
+    of the full visible chain, the suffix row would re-seed on its own row uuid
+    and re-key a turn already on the timeline.
+    """
+
+    asyncio.run(_test_syncer_computes_turn_ids_over_the_full_chain_not_the_window())
+
+
+async def _test_syncer_computes_turn_ids_over_the_full_chain_not_the_window() -> None:
+    prompt_uuid = "55555555-6666-7777-8888-999999999999"
+    user = SimpleNamespace(
+        type="user",
+        uuid=prompt_uuid,
+        message={"role": "user", "content": "go"},
+    )
+    reply_one = SimpleNamespace(
+        type="assistant",
+        uuid="row-reply-one",
+        message={"role": "assistant", "content": "first reply"},
+    )
+    reply_two = SimpleNamespace(
+        type="assistant",
+        uuid="row-reply-two",
+        message={"role": "assistant", "content": "second reply"},
+    )
+    expected = _history_turn_id(SESSION_ID, prompt_uuid)
+
+    # Full-view computation: a first sync has no cursor and projects the chain.
+    full_prepared = await _syncer(
+        host=_SyncStateHost(),
+        sdk=_CompactHistorySdk([user, reply_one, reply_two]),
+    ).prepare_session_timeline_sync(SESSION_ID, EXTERNAL_SESSION_ID)
+    assert full_prepared is not None and full_prepared.snapshot is not None
+    assert full_prepared.snapshot.metadata["rebased"] is True
+    assert _turn_id_by_text(full_prepared.snapshot.items, "second reply") == expected
+
+    # Incremental-window computation: commit a cursor after reply-one, append
+    # reply-two, and sync again. The window is exactly that one message.
+    sdk = _CompactHistorySdk([user, reply_one])
+    syncer = _syncer(host=_SyncStateHost(), sdk=sdk)
+    primed = await syncer.prepare_session_timeline_sync(
+        SESSION_ID, EXTERNAL_SESSION_ID
+    )
+    assert primed is not None and primed.snapshot is not None
+    await primed.commit()
+
+    sdk.messages.append(reply_two)
+    incremental = await syncer.prepare_session_timeline_sync(
+        SESSION_ID, EXTERNAL_SESSION_ID
+    )
+    assert incremental is not None and incremental.snapshot is not None
+    assert incremental.snapshot.metadata["rebased"] is False
+    assert incremental.snapshot.metadata["syncedMessageCount"] == 1
+    assert _turn_id_by_text(incremental.snapshot.items, "second reply") == expected
 
 
 def test_assistant_api_message_id_is_preferred_over_the_row_uuid() -> None:
@@ -503,6 +619,186 @@ def test_live_and_history_scheduled_turn_ids_match_end_to_end() -> None:
             await runtime.stop()
 
     asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# Live/history convergence on real sends
+# ---------------------------------------------------------------------------
+
+
+def test_pure_attachment_prompt_turn_ids_match_live_and_history() -> None:
+    """An attachment-only send already converges without a seed fix.
+
+    The prompt has no user-typed text (``content=""``), and the live side
+    pre-assigns the prompt uuid before dispatch, so the live user item's id is
+    ``hash(prompt uuid)``. History sees the row the CLI persisted, whose
+    content is the connector's injected ``Attached files:`` note — that note is
+    text, so the seed condition (``role == "user" and text``) already selects
+    the same uuid. Unlike a raw attachment block, the note guarantees a
+    text-bearing prompt row, which is why no reader-side widening is needed.
+    """
+
+    asyncio.run(_test_pure_attachment_prompt_turn_ids_match_live_and_history())
+
+
+async def _test_pure_attachment_prompt_turn_ids_match_live_and_history() -> None:
+    session_id = "sess_turn_id_attachment"
+    external_session_id = "native-turn-id-attachment"
+    host = _RecordingHost()
+    host.attachments["file_att"] = RuntimeAttachmentContent(
+        file_id="file_att",
+        name="image.png",
+        media_type="image/png",
+        content=b"x",
+    )
+    client = _FakeClaudeClient(
+        echo_prompt=True,
+        echo_suffix=[
+            SimpleNamespace(
+                type="assistant",
+                uuid="attachment-reply-row",
+                message={"role": "assistant", "content": "done"},
+            ),
+            SimpleNamespace(type="result", session_id=external_session_id),
+        ],
+    )
+
+    def session_messages(**_: Any) -> list[Any]:
+        # The real SDK replays the wire prompt uuid and the exact content the
+        # connector sent (attachments materialized as notes).
+        return [
+            SimpleNamespace(
+                type="user",
+                uuid=client.prompt_uuids[0],
+                message={"role": "user", "content": client.queries[0]},
+            ),
+            SimpleNamespace(
+                type="assistant",
+                uuid="attachment-reply-row",
+                message={"role": "assistant", "content": "done"},
+            ),
+        ]
+
+    sdk = _default_sdk()
+    sdk.get_session_messages = session_messages
+    runtime = _runtime(host=host, client=client, sdk=sdk)
+    try:
+        result = await runtime.start_turn(
+            session_id,
+            external_session_id,
+            "",
+            attachments=(
+                RuntimeAttachment(
+                    file_id="file_att",
+                    name="image.png",
+                    media_type="image/png",
+                ),
+            ),
+        )
+        assert result.ok is True
+        await runtime._sessions[session_id].active_task
+
+        live_users = [
+            item for item in host.timeline_item_upserts if item.role == "user"
+        ]
+        assert len(live_users) == 1
+        # The send really is attachment-only: no typed text, one attachment.
+        assert live_users[0].content.get("text") == ""
+        assert live_users[0].content.get("attachments")
+        expected = _history_turn_id(session_id, client.prompt_uuids[0])
+        assert live_users[0].turn_id == expected
+
+        handled = await runtime.sync_session_timeline(
+            session_id, external_session_id
+        )
+        assert handled is True
+        history_items = host.timeline_syncs[-1]["items"]
+        history_users = [item for item in history_items if item.role == "user"]
+        assert len(history_users) == 1
+        assert history_users[0].turn_id == expected
+        assert history_users[0].content.get("attachments")
+        history_assistants = [
+            item for item in history_items if item.role == "assistant"
+        ]
+        assert history_assistants
+        assert {item.turn_id for item in history_assistants} == {expected}
+        # And the live reply carried the same id, so the replay converges.
+        live_assistants = [
+            item for item in host.timeline_item_upserts if item.role == "assistant"
+        ]
+        assert live_assistants
+        assert {item.turn_id for item in live_assistants} == {expected}
+    finally:
+        await runtime.stop()
+
+
+def test_command_history_rows_do_not_seed_a_turn() -> None:
+    """Command turns are the documented exception to the live/history claim.
+
+    The live side mints a random opaque id before dispatch (a command has no
+    prompt uuid on the wire), and the CLI persists the command as synthetic
+    chrome rows (``<command-name>…``) that the history projection never emits.
+    With no transcript id both sides can hash, history attributes whatever
+    follows the command to the previous user turn. This pins today's behavior;
+    it is not a target to "fix" by inventing an id on one side only.
+    """
+
+    prompt_uuid = "aaaaaaaa-1111-2222-3333-444444444444"
+    messages = (
+        _user(prompt_uuid, "go"),
+        _assistant("assistant-before", "before"),
+        _user("command-row", "<command-name>/compact</command-name>"),
+        _assistant("assistant-after", "after"),
+    )
+    previous_turn = _history_turn_id(SESSION_ID, prompt_uuid)
+    turn_ids = _history_turn_ids(_session(), messages, None)
+    assert turn_ids["uuid:command-row"] == previous_turn
+    assert turn_ids["uuid:assistant-after"] == previous_turn
+
+    items = _history_items_from_messages(_session(), messages)
+    # The command chrome is synthetic: no user bubble, and no turn of its own.
+    assert [item.content.get("text") for item in items if item.role == "user"] == [
+        "go"
+    ]
+    assert {item.turn_id for item in items} == {previous_turn}
+
+
+def test_command_turn_live_id_is_opaque_and_not_repeatable() -> None:
+    """The other half of the exception: live command ids share no anchor.
+
+    Two identical commands in one session get two different random ids, so
+    there is no deterministic value history could have derived.
+    """
+
+    asyncio.run(_test_command_turn_live_id_is_opaque_and_not_repeatable())
+
+
+async def _test_command_turn_live_id_is_opaque_and_not_repeatable() -> None:
+    session_id = "sess_turn_id_command_probe"
+    external_session_id = "native-turn-id-command-probe"
+    client = _FakeClaudeClient(
+        messages=[SimpleNamespace(type="result", session_id=external_session_id)]
+    )
+    runtime = _runtime(host=_RecordingHost(), client=client)
+    try:
+        first = await runtime.execute_command(
+            session_id, "compact", external_session_id
+        )
+        await runtime._sessions[session_id].active_task
+        second = await runtime.execute_command(
+            session_id, "compact", external_session_id
+        )
+        await runtime._sessions[session_id].active_task
+
+        assert first.ok is True and second.ok is True
+        first_id = first.result["turnId"]
+        second_id = second.result["turnId"]
+        assert first_id.startswith("turn_claude_")
+        assert second_id.startswith("turn_claude_")
+        assert first_id != second_id
+        assert client.queries == ["/compact", "/compact"]
+    finally:
+        await runtime.stop()
 
 
 # ---------------------------------------------------------------------------

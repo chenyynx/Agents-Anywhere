@@ -188,6 +188,7 @@
 
 - 官方 1019/1023 工具行/思考行共用 `CollapsedStepsRow`；AA 仍是旧 `CollapsedRowButton` 形态（`CodeCollapsedToolRow`）。
 - V 线按 `round28/visual-spec.md` 重写工具行、思考行、详情列表行；覆盖暗色/动态字号/a11y/资产；UNKNOWN 不落码。
+- **1:1 标准（pp 2026-10-28）**：所有常量取官方精确值，禁止近似；1179×2556@3x 下与官方截图逐状态对照，偏差 >1pt 或颜色通道差 >1 不通过；UNKNOWN 不得用近似值实现。
 - 依赖 R1 规格与 L 的文案数据；code-profile 截图/行高门禁同批。
 
 ---

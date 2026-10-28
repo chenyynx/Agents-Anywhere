@@ -142,6 +142,93 @@ nonisolated enum CodePageTheme {
     /// between the row's glyph and its label.
     static let toolRowSpacing: CGFloat = 6
 
+    /// [E] R-F C5/C7 — the group-detail row's chevron ink is the semantic
+    /// token `textMuted` (`0x100b4ac5c` getter → storage `0x108151c40`;
+    /// palette name `gray400` at `0x108153040`). Both appearance slots are
+    /// written from the same Color (`0x100b36c80`/`0x100b3a388` both read
+    /// `0x108153040`), so light = dark = sRGB (0.537, 0.529, 0.506), alpha
+    /// 1.0. Do not use this for the collapsed row's caret: that one is
+    /// `text400` (`0x100b50c28`, see `text400Color`).
+    static let textMutedColor: SchemeColor = SchemeColor(
+        light: Color(.sRGB, red: 0.537, green: 0.529, blue: 0.506),
+        dark: Color(.sRGB, red: 0.537, green: 0.529, blue: 0.506))
+
+    // MARK: - Timeline status glyph (`FailureGlyph`)
+
+    /// [E] R-A E3/E4 — failed and partial share one `anthropicon.warning`
+    /// icon: `0x100bc75a4` writes `symbolName = "anthropicon.warning"` and the
+    /// asset exists in `ClaudeDesignSystem_ClaudeIcons.bundle/Assets.car`.
+    /// Only the ink (and the a11y key) differs between the two extents.
+    static let failureGlyphAssetName = "anthropicon.warning"
+
+    /// U — R-A §11/U2: the `Icon.Size` that `TimelineStatusGlyph` passes to
+    /// `FailureGlyph` was never decoded (no xref, no disassembly). `.medium`
+    /// is a named placeholder: one line changes every call site once the
+    /// caller is read.
+    static let failureGlyphSize: AnthropiconSize = .medium
+
+    /// [E] R-A E5 — square frame side `16 + 4 × Icon.Size.raw`
+    /// (`0x100d8e6c8` loads 16.0, `0x100d8e6cc` adds `size << 50`;
+    /// `_FrameLayout` gets width = height, `.center`). The official size
+    /// table is raw 0...4 = 16/20/24/28/32 pt; `rawSize` keeps all five
+    /// values assertable even though AA's `AnthropiconSize` stops at 2.
+    static func failureGlyphFrameSide(rawSize: Int) -> CGFloat {
+        16 + 4 * CGFloat(rawSize)
+    }
+
+    static func failureGlyphFrameSide(for size: AnthropiconSize) -> CGFloat {
+        failureGlyphFrameSide(rawSize: size.rawValue)
+    }
+
+    /// [E] R-A E6/E7/E8 — failed ink as `Color(.sRGB, ...)`, opacity 1.0,
+    /// dynamic per appearance: light (0.557, 0.149, 0.149), dark
+    /// (0.925, 0.494, 0.494). The named token is U (R-A §10); these are the
+    /// resolver components, deliberately not `danger00Color` (whose dark
+    /// value differs).
+    static let failureGlyphFailedColor: SchemeColor = SchemeColor(
+        light: Color(.sRGB, red: 0.557, green: 0.149, blue: 0.149),
+        dark: Color(.sRGB, red: 0.925, green: 0.494, blue: 0.494))
+
+    /// [E] R-A E6/E7 — partial ink as `Color(.sRGB, ...)`, opacity 1.0:
+    /// light (0.451, 0.271, 0.000), dark (0.859, 0.576, 0.000).
+    static let failureGlyphPartialColor: SchemeColor = SchemeColor(
+        light: Color(.sRGB, red: 0.451, green: 0.271, blue: 0),
+        dark: Color(.sRGB, red: 0.859, green: 0.576, blue: 0))
+
+    // MARK: - Group detail list
+
+    /// [E] R-D §2 — `PlainListRowInsets` gets
+    /// `EdgeInsets(top: 0, leading: 24, bottom: 0, trailing: 24)`
+    /// (`0x100fd64d0`: `0x105a68200` = 0.0 and `0x105a68238` = 24.0, stored
+    /// as top/leading/bottom/trailing). The page therefore adds no extra
+    /// horizontal padding of its own.
+    static let groupListRowInsets = EdgeInsets(top: 0, leading: 24,
+                                               bottom: 0, trailing: 24)
+
+    /// [E] R-E C3 — `TimelineConnector` line width 2.0 pt
+    /// (`0x100fd7610` → `_FrameLayout.init` at `0x100fd7620`).
+    static let timelineConnectorWidth: CGFloat = 2
+
+    /// [E] R-E C3 — the connector's column is 24.0 pt wide
+    /// (`0x100fd767c` → `_FrameLayout.init`), and the 2 pt line is centered
+    /// inside it; the column is the only horizontal positioning parameter
+    /// (R-E C4: no offset constant).
+    static let timelineConnectorColumnWidth: CGFloat = 24
+
+    /// [E] R-E C3 — the line starts 8.0 pt below the icon bounds' maxY
+    /// (`0x1077ca918`, initialized from `0x105a68218`; applied with
+    /// `fadd d8,d8,d0` at `0x100fd75d4`). Height =
+    /// `max(0, rowHeight − (maxY + 8))` (`0x100fd75e8..0x100fd75f4`).
+    static let timelineConnectorTopGap: CGFloat = 8
+
+    /// [E] R-E C5 — dynamic connector ink: light = sRGB
+    /// (0.043, 0.043, 0.043) at opacity 0.1, dark = white at opacity 0.1
+    /// (`0x100b4aa2c` → init `0x100b41cc4`; light `0x1081526d0`, dark
+    /// `0x1081526d8`). The token name and the Shape type are U (R-E §未解).
+    static let timelineConnectorColor: SchemeColor = SchemeColor(
+        light: Color(.sRGB, red: 0.043, green: 0.043, blue: 0.043, opacity: 0.1),
+        dark: Color(.sRGB, red: 1, green: 1, blue: 1, opacity: 0.1))
+
     // MARK: - Diff indicator (+N / −N)
 
     /// [E] CANONICAL/04-tool-calls.md §6.2 — 4.5 pt; a `ScaledMetric` in the

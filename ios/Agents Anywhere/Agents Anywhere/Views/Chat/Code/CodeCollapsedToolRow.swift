@@ -19,7 +19,9 @@ import UIKit
 // is a fixed tuple element of the row body (not behind a row-level
 // condition); its body is `ConditionalContent<FailureGlyph, Image>` whose
 // non-failure branch is `Image(systemName: "checkmark")` with
-// `.fontWeight(.semibold)` and `accentSecondary100`.
+// `.fontWeight(.semibold)` and `accentSecondary100`. The failure branch is
+// now decoded by R-A: one `anthropicon.warning` asset, frame 16 + 4 ×
+// `Icon.Size.raw`, with separate failed/partial sRGB inks.
 //
 // The only outer padding is `.padding(.vertical, 6)`; the official view
 // carries no `minHeight` and no background/corner radius, so the row's height
@@ -113,7 +115,7 @@ extension CodeToolLabelRun {
 /// - `TimelineStatusGlyph` is a fixed element of the official row body. Its
 ///   non-failure branch is `Image(systemName: "checkmark")` semibold in
 ///   `accentSecondary100`; the `FailureGlyph` branch (failed / partial) is
-///   UNKNOWN artwork (D6) and stays empty until asset/colour/frame are read.
+///   the `anthropicon.warning` asset with the R-A frame and inks.
 struct CodeCollapsedStepsRow: View {
     var icon: String?
     var iconSize: AnthropiconSize = .large
@@ -193,16 +195,16 @@ struct CodeCollapsedStepsRow: View {
     /// glyph (fixed tuple element); the view itself chooses between the
     /// `FailureGlyph` branch and the `checkmark` branch.
     ///
-    /// - `.failed` / any non-nil extent → `FailureGlyph` (D6 hook: its
-    ///   artwork, colour and frame are UNKNOWN — R28 §U 收口三 — so nothing
-    ///   is drawn yet).
+    /// - `.failed` / any non-nil extent → `FailureGlyph` (R-A: shared
+    ///   `anthropicon.warning`, frame `16 + 4 × Icon.Size.raw`, failed and
+    ///   partial inks).
     /// - `.complete` → `checkmark`. The glyph's `ConditionalContent` branch
     ///   predicate itself was not located; the checkmark builder is the
     ///   candidate and the non-failure branch is the only decoded one (R28
     ///   §U 收口三; still U at the predicate level).
-    /// - `.running` → nothing. The running row's exact construction
-    ///   (status/icon/workingMark) is not decoded — R28 §U 收口三 — so no
-    ///   unproven mark is drawn; this is a hook, not a visual claim.
+    /// - `.running` → nothing. R-B C11 leaves the running construction as U
+    ///   (the `TimelineStatusGlyph` init has no visible xref from the
+    ///   collapsed row), so no unproven mark is drawn.
     static func statusGlyphKind(status: CodeToolStatus,
                                 failureExtent: CodeFailureExtent?) -> CodeStatusGlyphKind {
         if status == .failed || failureExtent != nil { return .failure }
@@ -234,18 +236,18 @@ struct CodeCollapsedStepsRow: View {
 
 }
 
-/// The collapsed row's caret: `anthropicon.caretRight` (`0x100bbfb60`) at
+/// The shared row chevron: `anthropicon.caretRight` (`0x100bbfb60`) at
 /// `Icon.Size.medium` (20 x 20 pt icon box, artwork aspect-fitted) inside a
-/// 24 pt tall frame (`0x101e3eaa0`). No rotation; ink is `text400`
-/// (`0x101e3ead0` → `0x100b50c28`).
+/// 24 pt tall frame (`0x101e3eaa0`). No rotation.
 ///
-/// The group-detail list row shares this view (same descriptor, same
-/// `Icon.Size.medium`, gated by `hasDetails`). Its colour token getter is
-/// `0x100b4ac5c`, which is not decoded to a name/colour (U, R28 §U 收口三);
-/// the `text400` ink above is the collapsed row's value used as the stand-in.
-/// Do not treat it as the group row's verified colour, and do not invent a
-/// second one.
+/// The ink differs by surface (R-F C8: two distinct tokens):
+/// - collapsed row caret: `text400` (`0x101e3ead0` → `0x100b50c28`) — the
+///   default `tint`;
+/// - group-detail row chevron: `textMuted` (`0x100b4ac5c` → `0x108151c40`,
+///   R-F C5/C7), passed explicitly by `CodeToolGroupCallRow`.
 struct CodeRowCaret: View {
+    var tint: CodePageTheme.SchemeColor = CodePageTheme.text400Color
+
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -256,8 +258,7 @@ struct CodeRowCaret: View {
         // large 10x18). Stretching to 20 x 20 made the caret a third too
         // tall on device (2026-10-29).
         AnthropiconView(name: "anthropicon.caretRight", size: .medium)
-            .foregroundStyle(CodePageTheme.text400Color
-                .resolved(for: colorScheme))
+            .foregroundStyle(tint.resolved(for: colorScheme))
             .frame(width: CodePageTheme.toolRowCaretSlotSize,
                    height: CodePageTheme.toolRowCaretSlotSize)
             .frame(height: CodePageTheme.toolRowCaretFrameHeight)
@@ -323,25 +324,24 @@ nonisolated enum CodeStatusGlyphKind: Equatable {
     /// `Image(systemName: "checkmark")`, `.fontWeight(.semibold)`,
     /// `accentSecondary100` — E from the 1023 non-failure branch.
     case checkmark
-    /// `FailureGlyph` — artwork, colour and frame still UNKNOWN (D6; R28
-    /// §U 收口三).
+    /// `FailureGlyph` — shared `anthropicon.warning` asset, R-A frame and
+    /// failed/partial inks.
     case failure
     /// Running: the official construction for that state is not decoded
-    /// (R28 §U 收口三).
+    /// (R-B C11, still U).
     case none
 }
 
 /// The official `TimelineStatusGlyph` (`R28 §4.3` + 1023 row construction).
 ///
 /// The view is always present in the row body; this wrapper renders the
-/// decoded non-failure branch (`checkmark` ink) and keeps the `FailureGlyph`
-/// branch as the empty D6 hook.
+/// decoded non-failure branch (`checkmark` ink) and the decoded
+/// `FailureGlyph` branch (R-A).
 ///
-/// Still UNKNOWN (D6, re-closed as U by R28 §U 收口三): the `FailureGlyph`
-/// artwork for `.failed`/`.partial`, its foreground token and its frame size.
-/// Do not substitute a warning symbol or `danger00`. The checkmark's font size
-/// is likewise undecoded; the image renders at its natural semibold size with
-/// no explicit frame.
+/// Still U: which `Icon.Size` the official `TimelineStatusGlyph` passes to
+/// `FailureGlyph` (R-A §11/U2). `CodePageTheme.failureGlyphSize` is the
+/// named placeholder. The checkmark's font size is likewise undecoded; the
+/// image renders at its natural semibold size with no explicit frame.
 struct CodeTimelineStatusGlyph: View {
     let status: CodeToolStatus
     let failureExtent: CodeFailureExtent?
@@ -357,13 +357,43 @@ struct CodeTimelineStatusGlyph: View {
                 .foregroundStyle(CodePageTheme.accentSecondary100Color
                     .resolved(for: colorScheme))
         case .failure:
-            // TODO(D6): FailureGlyph(extent:size:) — asset/glyph, colour and
-            // frame size are UNKNOWN; `0x101e913c0` is the Thumbnail body and
-            // must not be used here.
-            EmptyView()
+            CodeFailureGlyph(extent: failureExtent ?? .failed)
         case .none:
             EmptyView()
         }
+    }
+}
+
+/// The official `ClaudeCoreUI.FailureGlyph` body (R-A E2/E3/E5).
+///
+/// - artwork: `anthropicon.warning` for both extents (`0x100bc75a4`; the
+///   asset lives in `ClaudeDesignSystem_ClaudeIcons.bundle/Assets.car`);
+/// - frame: square with side `16 + 4 × Icon.Size.raw`, `.center`
+///   (`0x100d8e6c8..0x100d8e6f0`);
+/// - ink: failed light (0.557,0.149,0.149) / dark (0.925,0.494,0.494),
+///   partial light (0.451,0.271,0.000) / dark (0.859,0.576,0.000), sRGB,
+///   opacity 1.0 (`0x100b3e7c0`/`0x100b3eaac` → dynamic provider).
+///
+/// The official accessibility label is a `LocalizedStringResource` whose key
+/// differs by extent: failed `something_went_wrong` (`0x106325850`), partial
+/// `some_items_failed` (`0x106335230`). The localised values are U (R-A U5),
+/// so the artwork stays accessibility-hidden as before rather than speaking
+/// a raw key.
+private struct CodeFailureGlyph: View {
+    let extent: CodeFailureExtent
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let ink = extent == .partial
+            ? CodePageTheme.failureGlyphPartialColor
+            : CodePageTheme.failureGlyphFailedColor
+        let side = CodePageTheme.failureGlyphFrameSide(
+            for: CodePageTheme.failureGlyphSize)
+        AnthropiconView(name: CodePageTheme.failureGlyphAssetName,
+                        size: CodePageTheme.failureGlyphSize)
+            .foregroundStyle(ink.resolved(for: colorScheme))
+            .frame(width: side, height: side)
     }
 }
 

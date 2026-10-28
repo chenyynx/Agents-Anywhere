@@ -32,6 +32,13 @@
 | `ios/.../Views/Chat/TimelineCollection/TimelineCollectionController.swift` | `layoutInteractionState` 暴露 `bottomFollowTracksInPlace` |
 | `ios/Tests/ClientCoreTests/TimelineAnchorMoverTests.swift` | 增长目标 ≤1 物理像素滞后；停止后无过冲/尾摆；初始间隙仍由弹簧收敛；reseed 不双移；fly 不跟随平移 |
 
+## 追加：发送路径的第二个弹簧（2026-10-28 真机）
+
+- 现象：pp「气泡落地有时候还在滑」。
+- 根因：`TimelineChatTimelineView` 在 pending / 队列 id 变化时调 `requestBottom(animated: true)`。发送同时收键盘 → 输入框收起走 0.24 s inset 弹簧、offset 正在移动；此刻回底请求看到的间隙常 >1 物理像素 → 再起一个 0.4 s Mover；气泡已经落位，页面还在滑。
+- 修复：删掉这两处显式回底。插入本身是内容变化，贴底页在更新事务内落底；输入框收起由 inset 弹簧带走。官方 Code 页发送同样不发 `sending`/`sent`、placement 恒 `.end`（`CANONICAL/05-layout-scroll.md` §13）。
+- 保留：发完收键盘（pp 确认行为正确）；`responseRevision`（notice 接受）的回底不动。
+
 ## 明确不做（回退）
 
 - **safe-area 自起 0.24 s 弹簧保留原样**。b558 探针实测：输入框展开段 `inherited=0.000s`，安全区 60↔109 没有系统动画事务，

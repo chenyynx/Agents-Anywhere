@@ -146,18 +146,12 @@ struct TimelineChatTimelineView: View {
             .onChange(of: reduceMotion, initial: true) { _, value in
                 bridge.setReduceMotion(value)
             }
-            .onChange(of: model.session.pendingMessages.last?.id) { _, id in
-                // A new pending bubble pulls the page to the bottom exactly as
-                // the SwiftUI timeline did; an approval card keeps it away.
-                if model.isOpeningReady, id != nil, !hasInteractions {
-                    bridge.controller?.requestBottom(animated: true, forced: false)
-                }
-            }
-            .onChange(of: model.session.sendQueue.items.map(\.id)) { _, ids in
-                if model.isOpeningReady, !ids.isEmpty, !hasInteractions {
-                    bridge.controller?.requestBottom(animated: true, forced: false)
-                }
-            }
+            // A pending/queued row needs no explicit return: its insertion is
+            // a content change, and a page waiting at `.end` lands on the new
+            // bottom inside that update (or through the inset spring when the
+            // composer collapses). Asking for an animated return here stacked
+            // a second 0.4 s spring on top of the composer's 0.24 s collapse,
+            // so the bubble was placed while the page still glided.
             .onChange(of: model.responseRevision) { _, _ in
                 if model.isOpeningReady {
                     bridge.controller?.requestBottom(animated: true, forced: false)

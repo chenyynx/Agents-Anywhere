@@ -234,7 +234,7 @@ final class TimelineAnchorDriver {
         // `.easing`), so the in-update answer was skipped and the row was
         // chased over 0.4 s. Deferred one turn because `prepare` must not be
         // re-entered; by then the update's own answer usually landed it.
-        if state.placement == .end, state.motion == .resting {
+        if state.placement == .end, state.motion == .resting, state.hasLanded {
             scheduleContentPlace()
             return
         }
@@ -248,7 +248,8 @@ final class TimelineAnchorDriver {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.contentPlaceScheduled = false
-            guard self.state.placement == .end, self.state.motion == .resting else { return }
+            guard self.state.placement == .end, self.state.motion == .resting,
+                  self.state.hasLanded else { return }
             self.placeDirect()
         }
     }

@@ -399,7 +399,10 @@ struct CodeMessageRowTests {
         #expect(blockDescriptors(rows[0]) == ["reasoning:r1", "toolCalls"])
     }
 
-    @Test func runningReasoningKeepsTheBlockRunning() throws {
+    @Test func runningReasoningStaysOutOfTheSettledBlock() throws {
+        // A running row is the live working line; the persistent block only
+        // carries settled text and must stay visible while another segment is
+        // still streaming.
         let running = try makeItem(id: "r1", order: 1, type: "reasoning", status: "running",
                                    content: ["text": "still"],
                                    source: ["itemId": "msg-1"])
@@ -407,10 +410,12 @@ struct CodeMessageRowTests {
                                 content: ["text": "done"],
                                 source: ["itemId": "msg-1"])
         let rows = CodeMessageBuilder.rows(for: [running, done], profile: .claudeCode)
-        guard case let .reasoning(_, _, status) = rows[0].blocks[0] else {
+        guard case let .reasoning(id, text, status) = rows[0].blocks[0] else {
             Issue.record("expected a reasoning block"); return
         }
-        #expect(status == .running)
+        #expect(id == "r2")
+        #expect(text == "done")
+        #expect(status == .done)
     }
 
     @Test func spanOrderFollowsOrderSeqEvenWhenBlockIndexDisagrees() throws {

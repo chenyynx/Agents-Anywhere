@@ -181,6 +181,7 @@
 - 统一锚点：真实回合 = user prompt uuid；scheduled/无 user 回合 = 首条 assistant 消息 uuid（或代码内等价稳定 id；找不到就停，不自造）。
 - live 改为与 history 相同的摘要算法；history 在 scheduled 回合切 seed；`HISTORY_PROJECTION_VERSION` 5→6。
 - server `TimelineSource.turnId` + schema/manifest/生成类型（additive/optional，不建列、不升版本号——pp 决定）。
+- server 的 unchanged 早退判定补一个窄例外：`contentHash` 不含 source，旧行重投影时若 incoming 已带 `turnId`、存量没有，强制写一次（T2 `b3c7c5b9`）；重复写入仍幂等。首次重投影按 session 懒触发，大量变更行走 `needs_refetch`，不做逐行推送风暴。
 - iOS 读 `source.turnId` 接 planner seam；无值回退 user 行。
 - 测试：连续两个 scheduled 回合（无 user 行）live/history 得到两个不同 turnId；跨窗口不变；旧 cursor 触发重投影。
 

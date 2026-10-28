@@ -68,9 +68,11 @@ nonisolated enum CodePageTheme {
     /// [E] R28 §1.2 — the leading `IconFrame` regular slot is 24 x 24 pt.
     static let toolRowIconFrameSize: CGFloat = 24
 
-    /// [E] R28 U-B.1 — the caret is `Icon.Size.medium` (20 pt) in a
-    /// `.frame(height: 24)`; its drawn artwork extent comes from
-    /// `AnthropiconAssets` (8 x 15 pt at the medium preset).
+    /// [E] R28 U-B.1 + pp device measurement (2026-10-28) — the caret is
+    /// `Icon.Size.medium`, i.e. a **20 x 20 pt icon box** with the artwork
+    /// aspect-fitted inside it, not the 8 x 15 pt drawn extent. The outer
+    /// frame stays 24 pt tall.
+    static let toolRowCaretSlotSize: CGFloat = 20
     static let toolRowCaretFrameHeight: CGFloat = 24
 
     /// The official fonts, bundled from the official IPA's

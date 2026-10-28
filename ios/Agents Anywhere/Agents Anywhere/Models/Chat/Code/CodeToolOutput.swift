@@ -79,10 +79,18 @@ nonisolated enum CodeToolOutput: Hashable {
     case none
 
     /// True when there is nothing to render; the detail page hides its whole
-    /// output section for this case instead of drawing an empty card.
+    /// output section for this case instead of drawing an empty card. A text
+    /// result that is only whitespace is empty too: the card would otherwise
+    /// draw a header over a blank body (the reported Read blank card shape).
     var isEmpty: Bool {
-        if case .none = self { return true }
-        return false
+        switch self {
+        case .none:
+            return true
+        case let .text(text):
+            return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        default:
+            return false
+        }
     }
 
     init(item: V2TimelineItem, kind: CodeToolKind) {

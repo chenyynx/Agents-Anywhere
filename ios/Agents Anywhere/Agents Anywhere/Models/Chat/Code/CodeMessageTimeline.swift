@@ -550,15 +550,19 @@ nonisolated enum CodeMessageBuilder {
     /// open (`0x102fa55b0`; round27 B §1/§3).
     private static func appendReasoningBlock(_ reasoning: [V2TimelineItem],
                                              to blocks: inout [CodeMessageRow.Block]) {
-        let text = reasoning
+        // Only settled reasoning belongs to the persistent `thinkingContent`
+        // block. A running row is the live turn's working line; including it
+        // would flip the merged block to `.running` and hide the entire
+        // settled text while the next segment streams (the `思考过程` row was
+        // observed disappearing and reappearing on 2026-10-28). Official keeps
+        // the live thinking state and the completed block separate.
+        let settledRows = reasoning.filter { $0.status == .done }
+        let text = settledRows
             .map(\.displayText)
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .joined(separator: "\n\n")
-        guard !text.isEmpty, let first = reasoning.first else { return }
-        let settled = reasoning.allSatisfy { $0.status == .done }
-        blocks.append(.reasoning(id: first.id,
-                                 text: text,
-                                 status: settled ? .done : .running))
+        guard !text.isEmpty, let first = settledRows.first else { return }
+        blocks.append(.reasoning(id: first.id, text: text, status: .done))
     }
 
     /// The dedup key for one attachment: the server file id, or the payload

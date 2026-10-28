@@ -848,7 +848,10 @@ struct CodeMessagePlannerTests {
         #expect(spanIDs(in: rows[0].blocks) == [["t1", "t2", "t3"]])
     }
 
-    @Test func aRunningReasoningRowKeepsTheMergedBlockRunning() throws {
+    @Test func aRunningReasoningRowDoesNotHideTheSettledThinkingBlock() throws {
+        // A running row is represented by the live working line; it must not
+        // join the persistent block, or the whole `思考过程` row would flip to
+        // running and disappear while the next segment streams.
         let running = try makeItem(id: "r1", order: 1, type: "reasoning", status: "running",
                                    content: ["text": "still"],
                                    source: ["itemId": "msg-1"])
@@ -857,11 +860,12 @@ struct CodeMessagePlannerTests {
         let laterTool = try makeToolItem(id: "t2", order: 4, message: "msg-2", blockIndex: 0)
         let rows = CodeMessageBuilder.rows(for: [running, tool, done, laterTool],
                                            profile: .claudeCode)
-        guard case let .reasoning(_, text, status) = rows[0].blocks[0] else {
+        guard case let .reasoning(id, text, status) = rows[0].blocks[0] else {
             Issue.record("expected one merged thinking block"); return
         }
-        #expect(text == "still\n\ndone")
-        #expect(status == .running)
+        #expect(id == "r2")
+        #expect(text == "done")
+        #expect(status == .done)
     }
 
     // MARK: - Turn boundaries (source.turnId)

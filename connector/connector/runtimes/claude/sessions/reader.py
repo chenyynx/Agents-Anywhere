@@ -565,6 +565,7 @@ def _history_items_from_messages(
     oracle: ClaudeSubagentOracle | None = None,
     live_task_ids: frozenset[str] = frozenset(),
     window_origin_uuid: str | None = None,
+    turn_ids: Mapping[str, str] | None = None,
 ) -> tuple[RuntimeTimelineItem, ...]:
     """Project one transcript window into timeline items.
 
@@ -582,6 +583,8 @@ def _history_items_from_messages(
     raw_notices = _raw_history_notices(
         messages, raw_scan, window_origin_uuid=window_origin_uuid
     )
+    if turn_ids is None:
+        turn_ids = _history_turn_ids(session, messages, raw_scan)
     # A /compact rewrites the SDK chain: the dispatch of a still-open Agent
     # task can fall out of every message the view still returns, leaving its
     # terminal notice with no task -> card join. The raw transcript keeps the
@@ -592,7 +595,7 @@ def _history_items_from_messages(
     scan_calls: dict[str, ClaudePendingToolCall] = {}
     scan_history: dict[str, tuple[tuple[int, ClaudeTaskEvent], ...]] = {}
     if raw_scan is not None:
-        scan_calls = _raw_scan_calls(session, raw_scan)
+        scan_calls = _raw_scan_calls(session, raw_scan, turn_ids=turn_ids)
         scan_history = _raw_scan_notice_history(raw_scan, scan_calls)
     fold_lookup = tool_call_lookup
     if scan_calls:
@@ -607,22 +610,24 @@ def _history_items_from_messages(
         raw_notices=raw_notices,
         scan_history=scan_history,
         scan_root_ids=frozenset(scan_calls),
+        turn_ids=turn_ids,
     )
     items: list[RuntimeTimelineItem] = []
     matches = client_message_matches or {}
-    turn_seed: str | None = None
-    turn_index = 0
     for index, message in enumerate(messages):
         role = message_role(message)
         text = message_text(message)
         native_id = message_id(message)
         synthetic_control = is_synthetic_control_message(message)
-        if role == "user" and text and not synthetic_control:
-            turn_index += 1
-            turn_seed = native_id or f"{session.external_session_id}:{turn_index}"
-        if turn_seed is None:
-            turn_seed = native_id or f"{session.external_session_id}:initial"
-        turn_id = _history_turn_id(session.external_session_id, turn_seed)
+        turn_id = turn_ids.get(_history_turn_key(message))
+        if turn_id is None:
+            # Unreachable for a message this function was given (the mapping
+            # is built from the same chain), kept as a hard fallback so a
+            # future caller passing a foreign mapping never mints None ids.
+            turn_id = _history_turn_id(
+                session.session_id,
+                _history_user_turn_seed(message) or f"{session.session_id}:initial",
+            )
         items.extend(
             projector.tool_items_for_message(
                 session=session,
@@ -1123,6 +1128,8 @@ class _AgentTaskNotificationFold:
 def _raw_scan_calls(
     session: ClaudeSession,
     scan: RawTranscriptScan,
+    *,
+    turn_ids: Mapping[str, str] | None = None,
 ) -> dict[str, ClaudePendingToolCall]:
     """Rebuild dispatch calls from rows the compacted message view lost.
 
@@ -1143,7 +1150,9 @@ def _raw_scan_calls(
             rows.append(result_row)
     if not rows:
         return {}
-    calls, _ = _history_tool_call_context(session, tuple(rows))
+    calls, _ = _history_tool_call_context(
+        session, tuple(rows), turn_ids=turn_ids
+    )
     return {
         tool_use_id: call
         for tool_use_id, call in calls.items()
@@ -1255,6 +1264,7 @@ def _agent_task_notification_folds(
     raw_notices: tuple[tuple[int, ClaudeTaskEvent], ...] = (),
     scan_history: Mapping[str, tuple[tuple[int, ClaudeTaskEvent], ...]] | None = None,
     scan_root_ids: frozenset[str] = frozenset(),
+    turn_ids: Mapping[str, str] | None = None,
 ) -> dict[int, list[_AgentTaskNotificationFold]]:
     """Resolve transcript terminal/resume events through Agent task-id lineage.
 
@@ -1275,7 +1285,9 @@ def _agent_task_notification_folds(
     """
 
     calls = dict(tool_call_lookup or {})
-    window_calls, _ = _history_tool_call_context(session, messages)
+    window_calls, _ = _history_tool_call_context(
+        session, messages, turn_ids=turn_ids
+    )
     for tool_use_id, call in window_calls.items():
         existing = calls.get(tool_use_id)
         if existing is None or (
@@ -1642,22 +1654,23 @@ def _without_maintenance_messages(messages: tuple[Any, ...]) -> tuple[Any, ...]:
 def _history_tool_call_context(
     session: ClaudeSession,
     messages: tuple[Any, ...],
+    *,
+    turn_ids: Mapping[str, str] | None = None,
 ) -> tuple[dict[str, ClaudePendingToolCall], frozenset[str]]:
     calls: dict[str, ClaudePendingToolCall] = {}
     result_blocks: dict[str, ClaudeToolBlock] = {}
     hidden_tool_use_ids: set[str] = set()
-    turn_seed: str | None = None
-    turn_index = 0
+    if turn_ids is None:
+        # No chain-level mapping (raw-row rebuilds): derive the same ids from
+        # the rows given, which is exactly the pre-v6 behaviour for a full
+        # chain and a best-effort seed for a detached fragment.
+        turn_ids = _history_turn_ids(session, messages, None)
     for message in messages:
         role = message_role(message)
-        text = message_text(message)
-        native_id = message_id(message)
-        if role == "user" and text and not is_synthetic_control_message(message):
-            turn_index += 1
-            turn_seed = native_id or f"{session.external_session_id}:{turn_index}"
-        if turn_seed is None:
-            turn_seed = native_id or f"{session.external_session_id}:initial"
-        turn_id = _history_turn_id(session.external_session_id, turn_seed)
+        turn_id = turn_ids.get(_history_turn_key(message)) or _history_turn_id(
+            session.session_id,
+            _history_user_turn_seed(message) or f"{session.session_id}:initial",
+        )
         # Carried onto the call block so a rebase from this lookup (a window
         # whose tool_use frame falls outside it) rebuilds the same tool rows
         # the full import minted — usage included — instead of stripping it.
@@ -2115,13 +2128,148 @@ def _sdk_session_metadata(session: Any) -> dict[str, Any]:
 
 
 def _history_turn_id(
-    external_session_id: str | None,
+    session_scope: str | None,
     turn_seed: str,
 ) -> str:
+    """The one turn-id format both the live turn and history projection use.
+
+    ``session_scope`` is the AA session id, NOT the external Claude session
+    id. The live side mints a turn before the native session id exists (a new
+    session learns it from its first frame), so hashing the native id would
+    give the first turn of every new session a different id live and in
+    history. The AA id is stable on both sides and is the identity the
+    timeline itself is scoped to.
+    """
+
     digest = hashlib.sha256(
-        f"{external_session_id or 'unknown'}:{turn_seed}".encode()
+        f"{session_scope or 'unknown'}:{turn_seed}".encode()
     ).hexdigest()[:24]
     return f"turn_claude_{digest}"
+
+
+def _history_turn_key(message: Any) -> str:
+    """The key a message is looked up by in a turn-id mapping.
+
+    The transcript row uuid is the identity the CLI persists and replays;
+    ``message_id`` prefers the Anthropic ``message.id`` on assistant rows
+    (shared by every row of one API message), so both id spaces are kept
+    apart rather than compared.
+    """
+
+    if isinstance(message, Mapping):
+        # Raw transcript rows (the post-compact dispatch rebuild) carry their
+        # row uuid here; keying them the same as the SDK view's messages lets
+        # a fold reuse the turn id the full-chain mapping assigned.
+        raw_uuid = message.get("uuid")
+        if isinstance(raw_uuid, str) and raw_uuid:
+            return f"uuid:{raw_uuid}"
+    uuid = getattr(message, "uuid", None)
+    if isinstance(uuid, str) and uuid:
+        return f"uuid:{uuid}"
+    native_id = message_id(message)
+    if isinstance(native_id, str) and native_id:
+        return f"id:{native_id}"
+    return f"obj:{id(message)}"
+
+
+def _history_user_turn_seed(message: Any) -> str | None:
+    """A real user prompt's turn seed: its own transcript row uuid.
+
+    The live connector pre-assigns the wire prompt uuid and the SDK replays
+    it as this row's uuid (verified against a real 2.1.285 transcript,
+    2026-10-28), so this is the same string the live turn hashed.
+    """
+
+    uuid = getattr(message, "uuid", None)
+    if isinstance(uuid, str) and uuid:
+        return uuid
+    return message_id(message)
+
+
+def _history_assistant_turn_anchor(message: Any) -> str | None:
+    """A scheduled (user-less) turn's anchor: its first assistant message id.
+
+    ``message_id`` prefers the Anthropic ``message.id``, which the live
+    ``message_start`` frame carries as ``event.message.id`` before any
+    partial block is published. One API message may be persisted as several
+    rows (thinking / tool_use / text) that all share it. The row uuid is the
+    fallback for a provider that omits the API id.
+    """
+
+    native_id = message_id(message)
+    if isinstance(native_id, str) and native_id:
+        return native_id
+    uuid = getattr(message, "uuid", None)
+    if isinstance(uuid, str) and uuid:
+        return uuid
+    return None
+
+
+def _history_turn_ids(
+    session: ClaudeSession,
+    messages: tuple[Any, ...],
+    scan: RawTranscriptScan | None,
+) -> dict[str, str]:
+    """Assign every message in ``messages`` the turn id its projection carries.
+
+    Computed over the chain the caller passes. The sync path passes the FULL
+    visible chain even when it projects only an incremental window, because a
+    window that starts mid-turn would otherwise re-derive a fresh seed and
+    re-key rows that were already published (v6 requirement: a turn's id may
+    not change across windows).
+
+    A scheduled (user-less) turn starts at the hidden prompt row the CLI
+    persisted for a fired task (``scan.injected_prompt_rows``), and its seed
+    is the FIRST assistant message after that row. That is exactly the frame
+    the live reader mints the turn on (``message_start`` carries the same
+    ``message.id``), so both paths hash the same anchor.
+    """
+
+    boundary_lines = (
+        sorted(set(scan.injected_prompt_rows.values())) if scan is not None else []
+    )
+    line_index = scan.uuid_line_index if scan is not None else {}
+    turn_ids: dict[str, str] = {}
+    turn_seed: str | None = None
+    turn_index = 0
+    pending_scheduled = False
+    boundary_position = 0
+    for message in messages:
+        uuid = getattr(message, "uuid", None)
+        line = (
+            line_index.get(uuid)
+            if isinstance(uuid, str) and uuid and line_index
+            else None
+        )
+        if line is not None:
+            while (
+                boundary_position < len(boundary_lines)
+                and boundary_lines[boundary_position] <= line
+            ):
+                pending_scheduled = True
+                boundary_position += 1
+        role = message_role(message)
+        text = message_text(message)
+        synthetic_control = is_synthetic_control_message(message)
+        if role == "user" and text and not synthetic_control:
+            turn_index += 1
+            turn_seed = _history_user_turn_seed(message) or (
+                f"{session.session_id}:{turn_index}"
+            )
+            pending_scheduled = False
+        elif pending_scheduled and role == "assistant":
+            turn_seed = _history_assistant_turn_anchor(message) or (
+                f"{session.session_id}:scheduled:{line}"
+            )
+            pending_scheduled = False
+        if turn_seed is None:
+            turn_seed = _history_user_turn_seed(message) or (
+                f"{session.session_id}:initial"
+            )
+        turn_ids[_history_turn_key(message)] = _history_turn_id(
+            session.session_id, turn_seed
+        )
+    return turn_ids
 
 
 def _timestamp_from_epoch(value: int | None) -> str | None:

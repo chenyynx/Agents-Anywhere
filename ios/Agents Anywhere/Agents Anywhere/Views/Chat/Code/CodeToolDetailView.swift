@@ -23,6 +23,19 @@ import Foundation
 
 /// The sheet-root group page: the span summary plus its call list. Tapping a
 /// row pushes `CodeToolCallDetailView`.
+///
+/// Still UNKNOWN on this page (R28 §U 收口三), and deliberately not guessed:
+/// - the `thinkingText` path is I-high (the official leaf Typography is E:
+///   15/400/21 relative `.body`, `text100`/`text300`);
+/// - the list's `PlainListRowInsets{insets: EdgeInsets}` value is U;
+/// - the `TimelineConnector` overlay exists (`0x100fd6b20..0x100fd6c10`,
+///   static `0x1077ca920/948`) but its width/colour are runtime view/Color
+///   values, U — no connector is drawn;
+/// - the group row's chevron reuses `anthropicon.caretRight` at
+///   `Icon.Size.medium` (E, `0x101e8f550`/`0x101e8f578`), gated by
+///   `hasDetails`, but its colour token getter `0x100b4ac5c` has no decoded
+///   name/colour (U); the shared caret's `text400` ink is the collapsed-row
+///   value, kept as the stand-in.
 struct CodeToolGroupDetailView: View {
     let calls: [CodeToolCall]
     /// Settled thinking text that belongs to the group. The official detail
@@ -93,7 +106,10 @@ struct CodeToolGroupDetailView: View {
 /// padding and a 16 pt icon/content gap (E). The list container is a
 /// `List`/`PlainListStyle` in the official view with hidden separators (E),
 /// but its `PlainListRowInsets` value is U, so AA keeps the equivalent
-/// VStack geometry rather than introducing unverifiable insets.
+/// VStack geometry rather than introducing unverifiable insets. The
+/// `TimelineConnector` overlay (`0x100fd6b20..0x100fd6c10`) and the caret's
+/// colour token `0x100b4ac5c` are U too (R28 §U 收口三); the shared
+/// `CodeRowCaret`'s `text400` is the collapsed-row stand-in.
 struct CodeToolGroupCallRow: View {
     let call: CodeToolCall
     let cwd: String?
@@ -263,9 +279,10 @@ struct CodeToolCallDetailView: View {
         .padding(.vertical, CodeDetailRowHooks.verticalPadding)
         // [E] R28 §U 收口二 二-D — `TimelineListRowPlain` hides separators
         // and clears the row background. These are no-ops unless the row is
-        // hosted in the official `List`; the List container and its
-        // `PlainListRowInsets` remain UNKNOWN (U), so the sheet keeps its
-        // ScrollView sections.
+        // hosted in the official `List`; the List container, its
+        // `PlainListRowInsets` value and the `TimelineConnector` overlay's
+        // runtime width/colour remain UNKNOWN (U, R28 §U 收口三), so the
+        // sheet keeps its ScrollView sections and draws no connector.
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
     }

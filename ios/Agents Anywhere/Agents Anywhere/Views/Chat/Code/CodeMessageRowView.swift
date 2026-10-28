@@ -168,26 +168,17 @@ struct CodeMessageRowView: View {
     /// inter-block gap.
     private func blockStack(_ row: RenderedRow) -> some View {
         // The official span detail carries the group's thinking text above
-        // its call list (I-high, R28 §U 收口三). The block model keeps
-        // reasoning and toolCalls as siblings, so the reasoning text is
-        // threaded into the first toolCalls block at render time.
-        // Only the first block receives it: one message's thinking precedes
-        // its tool list once, even when a special segment splits the calls.
-        let thinkingText = row.blocks.compactMap { block -> String? in
-            guard case let .reasoning(_, text, status) = block,
-                  status == .done, !text.isEmpty else { return nil }
-            return text
-        }.joined(separator: "\n\n")
-        let firstToolIndex = row.blocks.firstIndex { block in
-            if case .toolCalls = block { return true }
-            return false
-        }
-        let groupThinking = thinkingText.isEmpty ? nil : thinkingText
+        // its call list (I-high, R28 §U 收口三). `CodeGroupThinking` owns the
+        // mapping (settled reasoning only, joined with a blank line) so the
+        // row and the profile gate cannot diverge: the text is attached to
+        // the first `.toolCalls` block only, and that block passes it to its
+        // first segment (a special segment splits the calls, not the text).
+        let groupThinking = CodeGroupThinking.plan(for: row.blocks)
         return VStack(alignment: .leading, spacing: CodePageTheme.blockGap) {
             ForEach(Array(row.blocks.enumerated()), id: \.offset) { index, block in
                 blockView(block,
-                          groupThinkingText: index == firstToolIndex
-                              ? groupThinking : nil)
+                          groupThinkingText: index == groupThinking?.anchorBlockIndex
+                              ? groupThinking?.text : nil)
             }
         }
     }

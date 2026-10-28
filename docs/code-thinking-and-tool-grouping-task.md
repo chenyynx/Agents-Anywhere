@@ -142,6 +142,7 @@
 - `TimelineGrouping.codeGroups` 复用同一 planner；adapter 只做必要接线。
 - runtime 门控：`CodeRuntimeProfile.mergesToolRowsAcrossMessages`（Claude=true；Codex/DSH/generic=false，保持现状）。
 - turn 边界：默认 user 行；预留 seam，后续接 `source.turnId`（T3）。
+- 已知风险：历史窗口 prepend 若把更早的 tool 并入同一 span，span id 会改锚到新的首 tool（`source.itemId` 变化）→ 组身份变化，可能影响滚动/高度。C 线门禁必须覆盖「回合中间加载更早」的窗口替换；若出现跳动，加 adapter 级 identity 复用（按重叠 tool item id 保留旧 id）。
 - **思考合并**：在同一 unit 内跨消息合并多段 reasoning，文本 `"\n\n"` 拼接，放在 tool span 之前（官方 blocks 常见态 `[thinkingContent, toolCalls]`）。
 - **不做**：`toolGroupKey` 契约、服务端重打包；`serverSummary`/`receivedMessages`。
 

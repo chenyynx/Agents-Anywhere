@@ -52,6 +52,7 @@ struct CodeThinkingMarkdownView: View {
         CodeMarkdownTextLeaf(text: text, typography: typography)
     }
 
+    @MainActor
     private var typography: TimelineTypographySnapshot {
         TimelineChatContentAdapter.typography(
             dynamicType: String(describing: dynamicTypeSize),

@@ -249,15 +249,18 @@ struct CodeRowCaret: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        Image("anthropicon.caretRight")
-            .resizable()
-            .scaledToFit()
-            .frame(width: CodePageTheme.toolRowCaretSlotSize,
-                   height: CodePageTheme.toolRowCaretSlotSize)
+        // The artwork is drawn at the official medium extent (8 x 15 pt),
+        // centred in the 20 x 20 icon box, not stretched to the box: the
+        // `Icon` preset sizes the box, the glyph keeps its own extent
+        // (`anthropicon.caretRight` map: small 8x13 / medium 8x15 /
+        // large 10x18). Stretching to 20 x 20 made the caret a third too
+        // tall on device (2026-10-29).
+        AnthropiconView(name: "anthropicon.caretRight", size: .medium)
             .foregroundStyle(CodePageTheme.text400Color
                 .resolved(for: colorScheme))
+            .frame(width: CodePageTheme.toolRowCaretSlotSize,
+                   height: CodePageTheme.toolRowCaretSlotSize)
             .frame(height: CodePageTheme.toolRowCaretFrameHeight)
-            .accessibilityHidden(true)
     }
 }
 

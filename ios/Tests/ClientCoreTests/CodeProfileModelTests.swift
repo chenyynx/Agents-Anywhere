@@ -903,7 +903,7 @@ struct CodeMessagePlannerTests {
         // Old payloads carry no turn id anywhere: the pre-turnId grouping is
         // untouched. Tools merge across messages; a user prompt still splits.
         let first = try makeToolItem(id: "t1", order: 1, message: "msg-1", blockIndex: 0)
-        let second = try makeToolItem(id: "t2", order: 2, message: "msg-2", blockIndex: 0)
+        let second = try makeToolItem(id: "t2", order: 3, message: "msg-2", blockIndex: 0)
         let merged = CodeMessageBuilder.rows(for: [first, second], profile: .claudeCode)
         #expect(merged.count == 1)
         #expect(spanIDs(in: merged[0].blocks) == [["t1", "t2"]])

@@ -118,7 +118,13 @@ nonisolated struct V2TimelineItem: Decodable, Identifiable, Hashable {
         self.raw = raw
         id = try required(.id)
         sessionId = try required(.sessionId)
-        turnId = raw["turnId"]?.stringValue
+        // The turn a row belongs to is declared on the connector's `source`
+        // (`TimelineSource.turn_id` → `source.turnId`); the server persists that
+        // mapping verbatim under `payload_json.source` (server
+        // `agent_server.core.models.TimelineSource.turnId`). Only fall back to
+        // the top-level `turnId` older/local payloads may carry. An empty
+        // string is absent, exactly like the other declared identity strings.
+        turnId = TimelineText.first(raw["source"]?["turnId"], raw["turnId"])
         type = raw["type"]?.stringValue.flatMap(V2TimelineItemType.init(rawValue:)) ?? .unknown
         status = raw["status"]?.stringValue.flatMap(V2TimelineItemStatus.init(rawValue:)) ?? .unknown
         role = raw["role"]?.stringValue.map { V2MessageRole(rawValue: $0) ?? .unknown }

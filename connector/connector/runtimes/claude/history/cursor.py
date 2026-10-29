@@ -23,7 +23,15 @@ from typing import Any
 # terminal verdict closes every derived card id. Sessions whose cursors are
 # already past the stuck frames (the restart-race sessions) must rebuild once
 # to re-close the cards the old fold stranded.
-HISTORY_PROJECTION_VERSION = 5
+#
+# v6 (2026-10-28): one stable turn id across live and history. A turn is now
+# anchored on the real user prompt uuid, and a scheduled/user-less turn on the
+# first assistant message id, both hashed under the AA session id; the seed is
+# computed over the full transcript chain so incremental windows keep the ids
+# the full import published. Every stored v5 cursor must rebuild once so the
+# rows already past it carry `source.turnId` at all (the field was previously
+# random live and window-dependent in history).
+HISTORY_PROJECTION_VERSION = 6
 
 
 @dataclass(frozen=True, slots=True)

@@ -2,52 +2,43 @@ import SwiftUI
 import UIKit
 
 /// The Code page's persistent thinking row: the official
-/// `Block.thinkingContent` → `ThinkingContentRow`.
+/// `Block.thinkingContent` → `CollapsedStepsRow` (R28 §7). It shares the
+/// tool row's component: `anthropicon.extendedThinking` in the 24 pt
+/// `IconFrame` (medium 16×16 artwork, `isFramed = true`), the
+/// `thought_process` label at Anthropic Sans 15/400/21 in `text400`, and the
+/// `caretRight` (medium, frame height 24, `text400`). Status is
+/// `ToolPhase.complete`, `failureExtent` is nil, `hasDetails` is true and
+/// `diffIndicator` is nil — exactly the official init bytes.
 ///
-/// Official structure (round24 `thinking-row-detail-and-style.md`): a
-/// `CollapsedRowButton` with the `anthropicon.extendedThinking` artwork at
-/// the medium preset (16×16 artwork in the 20 pt slot), the fixed
-/// `思考过程` label at 15/400/21, and a `caretRight` at the medium preset.
-/// The icon and caret use the shared `toolRowSecondaryColor`
-/// (#7B7974 light / #97958D dark); the label keeps the default label ink.
-/// The button is a single line (`minHeight 24`, vertical padding 6) and a tap
-/// opens the full-text sheet; the row never expands in place.
+/// The button never expands in place; a tap opens the full-text sheet.
 struct CodeThinkingRow: View {
     let action: () -> Void
-
-    @ScaledMetric(relativeTo: CodePageTheme.toolRowTextStyle)
-    private var lineHeight = CodePageTheme.toolRowLineHeight
 
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: CodePageTheme.toolRowSpacing) {
-                AnthropiconView(name: "anthropicon.extendedThinking", size: .medium)
-                    .foregroundStyle(CodePageTheme.toolRowSecondaryColor
-                        .resolved(for: colorScheme))
-
-                Text(String(localized: "thought_process"))
-                    .font(.custom(CodePageTheme.sansFontName,
-                                  size: CodePageTheme.toolRowFontSize,
-                                  relativeTo: CodePageTheme.toolRowTextStyle))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .layoutPriority(1)
-
-                Spacer(minLength: 0)
-
-                AnthropiconView(name: "anthropicon.caretRight", size: .medium)
-                    .foregroundStyle(CodePageTheme.toolRowSecondaryColor
-                        .resolved(for: colorScheme))
-            }
-            .frame(minHeight: lineHeight, alignment: .leading)
-            .padding(.vertical, CodePageTheme.toolRowButtonPadding)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(String(localized: "thought_process"))
+        CodeCollapsedStepsRow(
+            icon: "anthropicon.extendedThinking",
+            // [E] R28 §7 — the thinking glyph renders at Icon.Size.medium.
+            iconSize: .medium,
+            text: Text(String(localized: "thought_process"))
+                .font(.custom(CodePageTheme.sansFontName,
+                              size: CodePageTheme.toolRowFontSize,
+                              relativeTo: CodePageTheme.toolRowBodyTextStyle))
+                // [E] R28 §7 — non-summary row text is `text400`.
+                .foregroundStyle(CodePageTheme.text400Color
+                    .resolved(for: colorScheme)),
+            status: .complete,
+            failureExtent: nil,
+            hasDetails: true,
+            diffIndicator: nil,
+            workingMark: nil,
+            isTextHidden: false,
+            includesImages: false,
+            voiceControlName: nil,
+            spokenLabel: nil,
+            isRunning: false,
+            action: action)
     }
 }
 

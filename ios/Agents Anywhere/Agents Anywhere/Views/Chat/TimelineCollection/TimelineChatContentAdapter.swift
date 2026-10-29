@@ -54,9 +54,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// Runtime resolved once per refresh from the session metadata; every code
     /// group is built and rendered against this profile.
     private var codeProfile: CodeRuntimeProfile = .generic
-    /// `CodeMessageBuilder` output for each message group, keyed by the group's
-    /// explicit message id. Built once per refresh so `estimateKind` /
-    /// `heightPolicy` do not re-run the builder for every layout pass.
+    /// `CodeMessageBuilder` output for each code group, keyed by the group's
+    /// explicit unit id (a message key or a span's tool-use id). Built once per
+    /// refresh so `estimateKind` / `heightPolicy` do not re-run the builder for
+    /// every layout pass.
     private var codeRowsByGroupID: [String: [CodeMessageRow]] = [:]
     /// The last message group of a live turn. It owns the transcript's single
     /// working status line; every other reasoning-only group is not rendered
@@ -1411,9 +1412,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let notices = model.session.notices.notices
         let visibleNotices = notices.filter { $0.isVisible && !$0.blocks(model.session.id) }
         let interactionTargets = Set(notices.filter(\.isVisible).compactMap(\.timelineTargetID))
-        // W7: the timeline is the Code page. One message = one group, keyed by
-        // the wire's declared message id (`nativeMessageId ?? itemId`), so a
-        // late first row cannot rename an item and drop its height/scroll state.
+        // W7: the timeline is the Code page. One planner unit = one group: a
+        // message row keeps its declared id (`nativeMessageId ?? itemId`), and
+        // a cross-message tool run keeps the first tool's `tool_use` id, so a
+        // later serial call grows the same item instead of renaming it and
+        // dropping its height/scroll state.
         let profile = model.session.metadata.map { CodeRuntimeProfile(meta: $0) } ?? .generic
         let codeGroups = TimelineGrouping.codeGroups(model.timeline.rows,
                                                      profile: profile,

@@ -16,9 +16,7 @@ struct CodeThinkingDetailView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                ChatMarkdownView(text: text,
-                                 isStreaming: false,
-                                 resolvesFileReferences: true)
+                CodeThinkingMarkdownView(text: text)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 16)
@@ -36,6 +34,31 @@ struct CodeThinkingDetailView: View {
             }
         }
         .presentationDetents([.medium, .large])
+    }
+}
+
+/// The Code page's thinking Markdown: the official `MarkdownText` leaf at the
+/// decoded 15/400/21 Typography (relative `.body`, `text100`/`text300` ink),
+/// not the Chat renderer's compact 13 pt. The leaf is the same one the Code
+/// message body uses, so link/selection behaviour is unchanged.
+struct CodeThinkingMarkdownView: View {
+    let text: String
+
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.layoutDirection) private var layoutDirection
+    @Environment(\.legibilityWeight) private var legibilityWeight
+
+    var body: some View {
+        CodeMarkdownTextLeaf(text: text, typography: typography)
+    }
+
+    @MainActor
+    private var typography: TimelineTypographySnapshot {
+        TimelineChatContentAdapter.typography(
+            dynamicType: String(describing: dynamicTypeSize),
+            layoutDirection: layoutDirection == .rightToLeft ? 1 : 0,
+            boldText: legibilityWeight == .bold,
+            scale: CodePageTheme.thinkingMarkdownScale)
     }
 }
 

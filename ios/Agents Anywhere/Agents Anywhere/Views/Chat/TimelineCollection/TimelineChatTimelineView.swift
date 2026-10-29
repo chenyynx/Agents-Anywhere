@@ -197,9 +197,10 @@ struct TimelineChatTimelineView: View {
             .sheet(item: $bridge.codeDetailRequest) { request in
                 switch request {
                 case let .tool(tool):
-                    CodeToolDetailView(call: tool.call,
-                                       followingCalls: tool.following,
-                                       cwd: model.session.metadata?.cwd)
+                    // The official first layer is the span summary list;
+                    // tapping one of its rows pushes the single-call page.
+                    CodeToolGroupDetailView(calls: tool.calls,
+                                            cwd: model.session.metadata?.cwd)
                 case let .thinking(thinking):
                     CodeThinkingDetailView(text: thinking.text)
                 }

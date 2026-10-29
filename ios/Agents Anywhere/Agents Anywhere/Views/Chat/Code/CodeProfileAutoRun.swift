@@ -18,13 +18,66 @@ import UIKit
 // them out of the simulator container):
 //   - code-profile.json       — failures / completed / phase / scenario details
 //   - code-message-row.png    — CodeMessageRowView with a user bubble, a
-//                               running reasoning line and collapsed tool rows
-//   - code-detail.png         — CodeToolDetailView (diff output + following call)
+//                               settled reasoning line and collapsed tool rows
+//   - code-detail.png         — the single-call page: a long Read output
+//                               (the blank-card regression) with real glyphs
+//   - code-detail-group.png   — the span summary page: title + call list
 //   - code-working-mark.png   — the 20 pt working mark beside its status text
+//   - code-collapsed-rows.png — the R28 row gallery (single / multi / failed
+//                               / diff / thinking / pure text)
+//   - code-collapsed-rows-dark.png — the same gallery under dark tokens
 //
 // `completed` is only true in the final write. Every earlier phase writes a
 // checkpoint with `completed: false`, so a crash mid-gate still leaves the last
 // finished phase and its assertions on disk for the CI assertion step.
+
+/// One row in the collapsed-row gallery. `thinking` renders `CodeThinkingRow`
+/// (the same shared component); every other item renders a tool row.
+struct CodeCollapsedRowFixture: Identifiable {
+    enum Kind {
+        case tool
+        case thinking
+    }
+
+    let id: String
+    let kind: Kind
+    let label: CodeToolRowLabel
+    let icon: String?
+    let status: CodeToolStatus
+    let failureExtent: CodeFailureExtent?
+    let hasDetails: Bool
+    var workingMark: WorkingMarkBody? = nil
+
+    /// The row's exact default-size height from the R28 layout: the tallest
+    /// child (24 pt icon/caret slot, 21 pt text line) plus 6 pt padding a
+    /// side. A row with neither a drawn icon nor a caret is the 33 pt
+    /// pure-text case. Every 1023 tool row is built with a concrete icon
+    /// (`0x1033b901c` / `0x1033b8b20`), so any row with an icon measures 36.
+    var expectedDefaultHeight: CGFloat {
+        (icon != nil || hasDetails) ? 36 : 33
+    }
+}
+
+@MainActor
+extension CodeCollapsedRowFixture {
+    /// One gallery row. The root view renders this for the screenshots and
+    /// the height leg hosts the same view, so the capture and the measured
+    /// height cannot diverge.
+    @ViewBuilder
+    func rowView() -> some View {
+        switch kind {
+        case .thinking:
+            CodeThinkingRow {}
+        case .tool:
+            CodeCollapsedToolRow(label: label,
+                                 icon: icon,
+                                 workingMark: workingMark,
+                                 status: status,
+                                 failureExtent: failureExtent,
+                                 hasDetails: hasDetails) {}
+        }
+    }
+}
 
 @MainActor
 @Observable
@@ -38,15 +91,24 @@ final class CodeProfileAutoRunModel {
         case idle
         case messageRow
         case detail
+        case detailGroup
         case workingMark
         case thinkingStatus
         case scrollDown
+        case collapsedRows
+        case collapsedRowsDark
     }
 
     private(set) var stage: Stage = .idle
     private(set) var messageGroup: ChatTimelineGroup?
+    /// The single-call page fixture (a long Read result: the blank-card
+    /// regression).
     private(set) var detailCall: CodeToolCall?
-    private(set) var detailFollowing: [CodeToolCall] = []
+    /// The group page fixture: the summary layer plus its call list.
+    private(set) var detailGroupCalls: [CodeToolCall] = []
+    /// The collapsed-row gallery rendered by the two dedicated capture
+    /// stages (light and dark).
+    private(set) var rowGallery: [CodeCollapsedRowFixture] = []
 
     @ObservationIgnored private var failures: [String] = []
     @ObservationIgnored private var report: [String: Any] = [:]
@@ -72,6 +134,9 @@ final class CodeProfileAutoRunModel {
 
         runToolLabels()
         persist(phase: "toolLabels")
+
+        runCollapsedRowFixtures()
+        persist(phase: "collapsedRows")
 
         await captureViews()
         finish()
@@ -453,7 +518,124 @@ final class CodeProfileAutoRunModel {
                 "matched": matched,
             ] as [String: Any]
         }
+        verifyInputFieldsAndPrettify()
         report["toolOutput"] = outputs
+    }
+
+    /// V8 — the detail page's input field rows and output Prettify control.
+    ///
+    /// R-T §3/§5: a Read input is one field row keyed by the raw JSON key; only
+    /// a value over 262144 UTF-8 code units falls to the code card (strictly
+    /// greater; the official `cmp #0x40000` keeps `<=` on the row path).
+    ///
+    /// R-U §2/§3: the formatter is Foundation's JSONSerialization at options
+    /// 11 (prettyPrinted | sortedKeys | withoutEscapingSlashes), the default
+    /// state is `.raw`, and the toggle is raw -> formatting -> formatted ->
+    /// Show raw -> formatted without losing the formatted text. These checks
+    /// go red when the default becomes prettified, keys stop sorting, or
+    /// slashes regress to `\/`.
+    private func verifyInputFieldsAndPrettify() {
+        let readCall = Self.decodeItem(Self.detailCallJSON(output: "ok"))
+            .map { CodeToolCall(item: $0, kind: .read) }
+        let readFields = readCall.flatMap { CodeToolInputFields.fields(for: $0) } ?? []
+        check(readFields.count == 1 && readFields.first?.key == "file_path",
+              "inputFields: Read fields \(readFields.map(\.key)), expected [file_path]")
+        check(readFields.allSatisfy { !$0.rendersAsCodeBlock },
+              "inputFields: a short Read value fell to a code block")
+        check(readCall.map { CodeToolInputFields.detectsJSON(for: $0) } == true,
+              "inputFields: Read's structured input is not mapped to detectsJSON")
+
+        let limit = CodeToolInputField.codeBlockThreshold
+        let boundaryFields = Self.inputFieldsFixture(
+            value: String(repeating: "x", count: limit))
+        check(boundaryFields.count == 1
+                && boundaryFields.first?.rendersAsCodeBlock == false,
+              "inputFields: exactly \(limit) chars should stay a field row")
+        let overFields = Self.inputFieldsFixture(
+            value: String(repeating: "x", count: limit + 1))
+        check(overFields.count == 1
+                && overFields.first?.rendersAsCodeBlock == true,
+              "inputFields: \(limit + 1) chars should fall to the code block")
+        let multiLineFields = Self.inputFieldsFixture(value: "line one\nline two")
+        check(multiLineFields.count == 1
+                && multiLineFields.first?.rendersAsCodeBlock == true,
+              "inputFields: a short multi-line value stayed a proportional row")
+        check(!Self.inputFieldsFixture(value: "short").isEmpty,
+              "inputFields: the Edit fixture lost its fields")
+
+        let fixture = #"{"b":1,"a":[2,3]}"#
+        let expected = "{\n  \"a\" : [\n    2,\n    3\n  ],\n  \"b\" : 1\n}"
+        let formatted = CodeToolJSON.prettyPrinted(fixture)
+        check(formatted == expected,
+              "prettify: formatted \(formatted ?? "nil"), expected \(expected)")
+        let slashed = #"{"url":"https://example.com/a/b"}"#
+        check(CodeToolJSON.prettyPrinted(slashed)?
+                .contains("https://example.com/a/b") == true,
+              "prettify: slash escaped in \(CodeToolJSON.prettyPrinted(slashed) ?? "nil")")
+        check(CodeToolJSON.prettyPrinted("42") == nil,
+              "prettify: a top-level scalar parsed (FragmentsAllowed crept in)")
+
+        var state = CodeToolPrettify.initial
+        check(state == .raw && state.displayText == nil,
+              "prettify: default state \(state) is not raw")
+        check(state.buttonTitleKey == "Prettify",
+              "prettify: raw button title \(state.buttonTitleKey)")
+        check(CodeToolJSON.showsPrettifyButton(detectsJSON: true,
+                                               text: fixture,
+                                               state: state),
+              "prettify: JSON body with a structured input hides the button")
+        check(!CodeToolJSON.showsPrettifyButton(detectsJSON: false,
+                                                text: fixture,
+                                                state: state),
+              "prettify: non-JSON tool input shows the button")
+        check(!CodeToolJSON.showsPrettifyButton(detectsJSON: true,
+                                                text: "hello",
+                                                state: state),
+              "prettify: a plain-text body shows the button")
+        state.tap()
+        check(state == .formatting,
+              "prettify: tap on raw -> \(state), expected formatting")
+        state.finish(expected)
+        check(state.displayText == expected && state.buttonTitleKey == "Show raw",
+              "prettify: formatted state \(state)")
+        state.tap()
+        check(state.displayText == nil && state.buttonTitleKey == "Prettify",
+              "prettify: show-raw state \(state)")
+        state.tap()
+        check(state.displayText == expected,
+              "prettify: the second Prettify tap lost the cached formatted text")
+        var failed = CodeToolPrettify.formatting
+        failed.finish(nil)
+        check(failed == .failed
+                && !CodeToolJSON.showsPrettifyButton(detectsJSON: true,
+                                                     text: fixture,
+                                                     state: failed),
+              "prettify: failure state \(failed) did not hide the button")
+
+        report["inputFields"] = [
+            "readKeys": readFields.map(\.key),
+            "readCodeBlocks": readFields.filter(\.rendersAsCodeBlock).count,
+            "threshold": limit,
+            "boundaryRow": boundaryFields.first?.rendersAsCodeBlock == false,
+            "overRow": overFields.first?.rendersAsCodeBlock == true,
+        ] as [String: Any]
+        report["prettify"] = [
+            "formatted": formatted ?? "nil",
+            "slashPreserved": CodeToolJSON.prettyPrinted(slashed)?
+                .contains("https://example.com/a/b") == true,
+            "defaultState": "\(CodeToolPrettify.initial)",
+            "toggle": "raw -> formatting -> formatted -> showRaw -> formatted",
+        ] as [String: Any]
+    }
+
+    private static func inputFieldsFixture(value: String) -> [CodeToolInputField] {
+        let json = #"""
+        {"id":"input-limit","sessionId":"gate-input","type":"tool","status":"done","orderSeq":1,
+         "content":{"toolName":"Edit","input":{"payload":\#(jsonString(value))}},
+         "source":{"itemId":"input-limit"}}
+        """#
+        guard let item = decodeItem(json) else { return [] }
+        return CodeToolInputFields.fields(for: CodeToolCall(item: item, kind: .edit)) ?? []
     }
 
     private static func matches(_ output: CodeToolOutput,
@@ -559,6 +741,333 @@ final class CodeProfileAutoRunModel {
                                 "createWriteVerb": createVerb]
     }
 
+    // MARK: - Collapsed row fixtures (R28)
+
+    /// One row fixture's decode helper. Every call is built from the wire so
+    /// the plan (L) owns all label decisions; this leg only asserts the view
+    /// mapping on top of it.
+    private func makeRowCall(_ id: String,
+                             _ name: String,
+                             kind: CodeToolKind,
+                             status: String = "done",
+                             content: String) -> CodeToolCall? {
+        let json = """
+        {"id":"\(id)","sessionId":"gate-rows","type":"tool","status":"\(status)","orderSeq":1,
+         "content":{"toolName":"\(name)",\(content)},
+         "source":{"itemId":"\(id)","nativeMessageId":"gate-rows","blockIndex":0}}
+        """
+        guard let item = Self.decodeItem(json) else {
+            failures.append("collapsedRows: fixture \(id) did not decode")
+            return nil
+        }
+        return CodeToolCall(item: item, kind: kind)
+    }
+
+    /// R28 acceptance fixtures: single call, multiple categories (the cap
+    /// keeps three, failure first), partial failure, whole failure, diff,
+    /// thinking, the SendMessage/session mapping, the empty-summary fallback,
+    /// the official icon table and the row heights. The same fixtures feed
+    /// the two gallery screenshots (light and dark).
+    private func runCollapsedRowFixtures() {
+        let read = makeRowCall("row-read", "Read", kind: .read,
+                               content: #""input":{"file_path":"/repo/Sources/App.swift"}"#)
+        let runningBash = makeRowCall("row-bash-running", "Bash", kind: .bash,
+                                      status: "running",
+                                      content: #""input":{"command":"swift build"}"#)
+        let failedBash = makeRowCall("row-bash-failed", "Bash", kind: .bash,
+                                     status: "failed",
+                                     content: #""input":{"command":"npm test"}"#)
+        let bashA = makeRowCall("row-bash-a", "Bash", kind: .bash,
+                                status: "failed", content: #""input":{"command":"ls"}"#)
+        let bashB = makeRowCall("row-bash-b", "Bash", kind: .bash,
+                                status: "failed", content: #""input":{"command":"pwd"}"#)
+        let edit = makeRowCall("row-edit", "Edit", kind: .edit,
+                               content: #""input":{"file_path":"/repo/B.swift"}"#)
+        let editDiff = makeRowCall(
+            "row-edit-diff", "Edit", kind: .edit,
+            content: #""input":{"file_path":"/repo/validate-email.ts"},"output":{"lineStat":{"addedLineCount":2,"removedLineCount":1}}"#)
+        let task = makeRowCall("row-task", "Task", kind: .task,
+                               content: #""input":{"description":"audit the tests"}"#)
+        let readA = makeRowCall("row-read-a", "Read", kind: .read, status: "failed",
+                                content: #""input":{"file_path":"/repo/A.swift"}"#)
+        let readB = makeRowCall("row-read-b", "Read", kind: .read,
+                                content: #""input":{"file_path":"/repo/B.swift"}"#)
+        // Distinct `content.tool` values keep the span off the shared-target
+        // path (which counts the tool name for `.other` calls) so the plan
+        // emits the official `sessionMessage` summary phrase.
+        let send1 = makeRowCall("row-send-1", "SendMessage", kind: .mcp,
+                                content: #""tool":"alpha","input":{"content":"hey"}"#)
+        let send2 = makeRowCall("row-send-2", "SendMessage", kind: .mcp,
+                                status: "failed",
+                                content: #""tool":"beta","input":{"content":"yo"}"#)
+        let send3 = makeRowCall("row-send-3", "SendMessage", kind: .mcp,
+                                content: #""tool":"gamma","input":{"content":"sup"}"#)
+        let web = makeRowCall("row-web", "WebFetch", kind: .search,
+                              content: #""input":{"url":"https://example.com"}"#)
+        let grep = makeRowCall("row-grep", "Grep", kind: .search,
+                               content: #""input":{"pattern":"needle"}"#)
+        let writeCreate = makeRowCall(
+            "row-write-create", "Write", kind: .write,
+            content: #""input":{"file_path":"/repo/New.swift"},"text":"File created successfully at: /repo/New.swift""#)
+        let writeUpdate = makeRowCall(
+            "row-write-update", "Write", kind: .write,
+            content: #""input":{"file_path":"/repo/Old.swift"},"text":"The file /repo/Old.swift has been updated successfully. (file state is current in your context — no need to Read it back)""#)
+        let emptyLabel = CodeToolLabels.label(for: [], cwd: nil)
+
+        guard let read, let runningBash, let failedBash, let bashA, let bashB,
+              let edit, let editDiff, let task, let readA, let readB,
+              let send1, let send2, let send3, let web, let grep,
+              let writeCreate, let writeUpdate else { return }
+
+        var fixtures: [[String: Any]] = []
+
+        // 1. Single call: verb `text300` + mono target `text100`.
+        let readLabel = CodeToolLabels.label(for: [read], cwd: nil)
+        let readRuns = CodeToolLabels.runs(for: readLabel,
+                                           differentiateWithoutColor: false)
+        let expectedRead = String(localized: "ccr_verb_read")
+            + " " + (readLabel.target ?? "")
+        check(readRuns.map(\.text).joined() == expectedRead,
+              "collapsedRows single: '\(readRuns.map(\.text).joined())', expected '\(expectedRead)'")
+        check(readRuns.count == 2
+                && readRuns[0].role == .primary
+                && readRuns[1].role == .target
+                && readRuns[1].face == .mono,
+              "collapsedRows single: runs \(readRuns)")
+        fixtures.append(["case": "single", "text": expectedRead,
+                         "height": Double(36)])
+
+        // 2. Single failed call: both runs `danger00`; with
+        // differentiateWithoutColor the colour is replaced by the written
+        // suffix and both runs return to their normal roles.
+        let failedLabel = CodeToolLabels.label(for: [failedBash], cwd: nil)
+        let failedRuns = CodeToolLabels.runs(for: failedLabel,
+                                             differentiateWithoutColor: false)
+        check(failedRuns.count == 2
+                && failedRuns.allSatisfy { $0.role == .failure },
+              "collapsedRows failed: runs \(failedRuns)")
+        // Literal expectation, not `visibleText(...)`: that helper is defined
+        // as the same `runs(...).map(\.text).joined()`, so comparing the two
+        // could never fail.
+        let expectedFailedText = String(localized: "ccr_verb_ran") + " npm test"
+        check(failedRuns.map(\.text).joined() == expectedFailedText,
+              "collapsedRows failed: '\(failedRuns.map(\.text).joined())',"
+                + " expected '\(expectedFailedText)'")
+        let failedWords = CodeToolLabels.runs(for: failedLabel,
+                                              differentiateWithoutColor: true)
+        check(failedWords.count == 3
+                && failedWords[0].role == .primary
+                && failedWords[1].role == .target
+                && failedWords[2].text == CodeToolLabels.failedSuffix(1),
+              "collapsedRows failed: differentiate runs \(failedWords)")
+        fixtures.append(["case": "failed",
+                         "text": failedRuns.map(\.text).joined()])
+
+        // 3. Partial failure: a category that did not wholly fail keeps
+        // `text300` and always carries `ccr_summary_failed_count`.
+        let partialLabel = CodeToolLabels.label(for: [readA, readB], cwd: nil)
+        let partialRuns = CodeToolLabels.runs(for: partialLabel,
+                                              differentiateWithoutColor: true)
+        check(partialLabel.phrases.count == 1
+                && partialLabel.phrases.first?.failed == 1
+                && partialLabel.phrases.first?.whole == false,
+              "collapsedRows partial: phrases \(partialLabel.phrases)")
+        check(partialRuns.filter { $0.role == .failure }.isEmpty,
+              "collapsedRows partial: a non-whole category must not paint red")
+        check(partialRuns.last?.text == CodeToolLabels.failedSuffix(1),
+              "collapsedRows partial: missing failed suffix in \(partialRuns)")
+        fixtures.append(["case": "partial",
+                         "text": partialRuns.map(\.text).joined()])
+
+        // 4. Four categories: the plan keeps three, failure first, printed in
+        // first-seen order; the wholly failed category is red and carries no
+        // suffix when colour is allowed.
+        let multiCalls = [read, bashA, bashB, edit, task]
+        let multiLabel = CodeToolLabels.label(for: multiCalls, cwd: nil)
+        let multiRuns = CodeToolLabels.runs(for: multiLabel,
+                                            differentiateWithoutColor: false)
+        let multiText = multiRuns.map(\.text).joined()
+        let taskText = String(localized: "ccr_summary_task_one")
+        check(multiLabel.phrases.count == 3,
+              "collapsedRows multi: \(multiLabel.phrases.count) phrases, expected 3")
+        check(!multiText.localizedCaseInsensitiveContains(taskText),
+              "collapsedRows multi: the dropped task category still rendered (\(multiText))")
+        check(multiRuns.filter { $0.role == .failure }.count == 1,
+              "collapsedRows multi: exactly the two failed commands are red (\(multiRuns))")
+        check(multiRuns.contains { $0.text == CodeToolLabels.phraseSeparator },
+              "collapsedRows multi: missing ', ' separator")
+        fixtures.append(["case": "multi", "text": multiText,
+                         "phrases": multiLabel.phrases.map(\.text)])
+
+        // 5. Diff indicator data. Its own accessibility label text is
+        // UNKNOWN (D8), so no row-level value is synthesised.
+        let diffLabel = CodeToolLabels.label(for: [editDiff], cwd: nil)
+        check(diffLabel.diff == CodeDiffStat(added: 2, removed: 1),
+              "collapsedRows diff: \(String(describing: diffLabel.diff))")
+        fixtures.append(["case": "diff", "text":
+                            CodeToolLabels.runs(for: diffLabel,
+                                                differentiateWithoutColor: false)
+                                .map(\.text).joined()])
+
+        // 6. SendMessage: the official `sessionMessage` summary, not "Used".
+        let sessionLabel = CodeToolLabels.label(for: [send1, send2, send3],
+                                                cwd: nil)
+        let sessionText = sessionLabel.phrases.first?.text ?? ""
+        let expectedSession = String(
+            format: String(localized: "ccr_summary_session_message_other"), 3)
+        check(sessionLabel.phrases.count == 1 && sessionText == expectedSession,
+              "collapsedRows session: '\(sessionText)', expected '\(expectedSession)'")
+        check(!sessionText.localizedCaseInsensitiveContains(
+                String(localized: "ccr_verb_used")),
+              "collapsedRows session: rendered the neutral Used verb (\(sessionText))")
+        let sessionRuns = CodeToolLabels.runs(for: sessionLabel,
+                                              differentiateWithoutColor: true)
+        check(sessionRuns.contains { $0.text == CodeToolLabels.failedSuffix(1) },
+              "collapsedRows session: missing failed suffix \(sessionRuns)")
+
+        // 7. Empty summary falls back to `ccr_collapsed_steps_title`.
+        let emptyRuns = CodeToolLabels.runs(for: emptyLabel,
+                                            differentiateWithoutColor: false)
+        check(emptyRuns.map(\.text).joined()
+                == String(localized: "ccr_collapsed_steps_title"),
+              "collapsedRows empty: '\(emptyRuns.map(\.text).joined())'")
+
+        // 8. The 1023 category → Anthropicon table (R28 §4.1).
+        let iconCases: [(String, String)] = [
+            (CodeToolLabels.anthropicon(for: read), "anthropicon.eye"),
+            (CodeToolLabels.anthropicon(for: edit), "anthropicon.edit"),
+            (CodeToolLabels.anthropicon(for: writeCreate), "anthropicon.fileAdd"),
+            (CodeToolLabels.anthropicon(for: writeUpdate), "anthropicon.edit"),
+            (CodeToolLabels.anthropicon(for: grep), "anthropicon.search"),
+            (CodeToolLabels.anthropicon(for: web), "anthropicon.globe"),
+            (CodeToolLabels.anthropicon(for: task), "anthropicon.agentSimple"),
+            (CodeToolLabels.anthropicon(for: send1), "anthropicon.wrench"),
+            (CodeToolLabels.anthropicon(for: [read, bashA]), "anthropicon.listBullet"),
+            (CodeToolLabels.anthropicon(for: [edit, edit]), "anthropicon.edit"),
+        ]
+        for (actual, expected) in iconCases {
+            check(actual == expected,
+                  "collapsedRows icon: \(actual), expected \(expected)")
+        }
+
+        // 9. Row-shape rules from the 1023 row construction: the tool packer
+        // (`0x1033b901c`) and the summary direct path (`0x1033b8b20`) both
+        // pass a concrete icon into the row init, so the leading icon is
+        // never omitted. `TimelineStatusGlyph` is a fixed element of the row
+        // body; its non-failure branch is the semibold checkmark and the
+        // FailureGlyph branch is the R-A warning glyph. The caret is a 20x20
+        // icon box in a 24 pt frame.
+        // R-S: a settled row without a failure extent draws no glyph at all;
+        // the failure branch is FailureGlyph(small), and a failed row without
+        // an extent falls back to the warning status icon.
+        check(CodeCollapsedStepsRow.statusGlyphKind(status: .complete,
+                                                    failureExtent: nil) == nil,
+              "collapsedRows rule: a settled row drew a status glyph")
+        check(CodeCollapsedStepsRow.statusGlyphKind(status: .running,
+                                                    failureExtent: nil) == nil,
+              "collapsedRows rule: a running row drew a status glyph")
+        check(CodeCollapsedStepsRow.statusGlyphKind(status: .failed,
+                                                    failureExtent: .failed)
+                == .failure(.failed),
+              "collapsedRows rule: the failure-glyph branch was removed")
+        check(CodeCollapsedStepsRow.statusGlyphKind(status: .complete,
+                                                    failureExtent: .partial)
+                == .failure(.partial),
+              "collapsedRows rule: a partial extent lost the failure branch")
+        check(CodeCollapsedStepsRow.statusGlyphKind(status: .failed,
+                                                    failureExtent: nil)
+                == .statusIcon(CodePageTheme.statusWarningIconName),
+              "collapsedRows rule: the failed status icon was removed")
+        check(CodePageTheme.failureGlyphSize == .small,
+              "collapsedRows rule: FailureGlyph size"
+                + " \(CodePageTheme.failureGlyphSize), expected .small")
+        check(CodePageTheme.toolRowCaretSlotSize == 20
+                && CodePageTheme.toolRowCaretFrameHeight == 24,
+              "collapsedRows rule: caret slot \(CodePageTheme.toolRowCaretSlotSize)"
+                + " frame \(CodePageTheme.toolRowCaretFrameHeight), expected 20/24")
+
+        // 10. Gallery: single / multi / running / failed / diff / thinking /
+        // pure text.
+        let runningLabel = CodeToolLabels.label(for: [runningBash], cwd: nil)
+        check(runningLabel.isRunning,
+              "collapsedRows running: the label is not in the running state")
+        rowGallery = [
+            CodeCollapsedRowFixture(id: "g-single", kind: .tool,
+                                    label: readLabel, icon: "anthropicon.eye",
+                                    status: .complete, failureExtent: nil,
+                                    hasDetails: true),
+            CodeCollapsedRowFixture(id: "g-running", kind: .tool,
+                                    label: runningLabel,
+                                    icon: "anthropicon.commandLinePrompt",
+                                    status: .running, failureExtent: nil,
+                                    hasDetails: true),
+            CodeCollapsedRowFixture(id: "g-multi", kind: .tool,
+                                    label: multiLabel, icon: "anthropicon.listBullet",
+                                    status: .complete, failureExtent: .partial,
+                                    hasDetails: true),
+            CodeCollapsedRowFixture(id: "g-failed", kind: .tool,
+                                    label: failedLabel, icon: "anthropicon.commandLinePrompt",
+                                    status: .failed, failureExtent: .failed,
+                                    hasDetails: true),
+            CodeCollapsedRowFixture(id: "g-diff", kind: .tool,
+                                    label: diffLabel, icon: "anthropicon.edit",
+                                    status: .complete, failureExtent: nil,
+                                    hasDetails: true),
+            CodeCollapsedRowFixture(id: "g-thinking", kind: .thinking,
+                                    label: CodeToolRowLabel(verb: "", isRunning: false),
+                                    icon: "anthropicon.extendedThinking",
+                                    status: .complete, failureExtent: nil,
+                                    hasDetails: true),
+            CodeCollapsedRowFixture(id: "g-text", kind: .tool,
+                                    label: emptyLabel, icon: nil,
+                                    status: .complete, failureExtent: nil,
+                                    hasDetails: false),
+        ]
+
+        // D8 is still UNKNOWN: the row has no direct accessibility-label call
+        // (Button automatic label). Record the visible text the automatic
+        // label reads, so a VoiceOver Inspector pass can compare against it.
+        let autoLabels = rowGallery.map { item -> [String: String] in
+            switch item.kind {
+            case .thinking:
+                return ["id": item.id,
+                        "text": String(localized: "thought_process")]
+            case .tool:
+                return ["id": item.id,
+                        "text": CodeToolLabels.visibleText(
+                            for: item.label, differentiateWithoutColor: false)]
+            }
+        }
+
+        // 11. Detail thinking Typography (E, R28 §U 收口三): the thinking
+        // `MarkdownText` leaf is 15.0 / weight 400 / lineHeight 21.0 relative
+        // `.body` (`0x100b6a998`; constants `0x100b6ab48` / `0x100b6abc8` /
+        // `0x100b6ac5c`), paragraph spacing = body size. The line spacing is
+        // the delta over the real face's natural line box, so these pin the
+        // scale while the font swap below cannot silently move it.
+        let thinkingScale = CodePageTheme.thinkingMarkdownScale
+        check(thinkingScale.body == 15,
+              "collapsedRows thinking: body \(thinkingScale.body), expected 15")
+        check(thinkingScale.lineSpacing == 21 - CodePageTheme.toolRowSansFont.lineHeight,
+              "collapsedRows thinking: line spacing \(thinkingScale.lineSpacing),"
+                + " expected 21 − \(CodePageTheme.toolRowSansFont.lineHeight)")
+        check(thinkingScale.paragraphSpacing == 15,
+              "collapsedRows thinking: paragraph spacing"
+                + " \(thinkingScale.paragraphSpacing), expected 15")
+
+        report["collapsedRows"] = [
+            "fixtures": fixtures,
+            "iconCases": iconCases.map { ["actual": $0.0, "expected": $0.1] },
+            "gallery": rowGallery.map(\.id),
+            "autoLabels": autoLabels,
+            "thinkingTypography": [
+                "body": Double(thinkingScale.body),
+                "lineSpacing": Double(thinkingScale.lineSpacing),
+                "paragraphSpacing": Double(thinkingScale.paragraphSpacing),
+            ],
+        ] as [String: Any]
+    }
+
     // MARK: - Views and screenshots
 
     private func captureViews() async {
@@ -566,6 +1075,8 @@ final class CodeProfileAutoRunModel {
         await verifyMessageRowHeight()
         await verifyRowHeights()
         await verifyReadOutputHeight()
+        await verifyPrettifyDefaultRaw()
+        await verifyCollapsedRowHeights()
         await verifyRendererMeasure()
         await verifyRealCollectionFirstFit()
 
@@ -586,12 +1097,39 @@ final class CodeProfileAutoRunModel {
         if detailCall != nil {
             stage = .detail
             await wait(600)
-            views["detail"] = capture("code-detail.png")
+            // The Read body is 298 lines: the middle band must contain real
+            // dark glyphs, not just the card header. This is the pixel check
+            // the height-only assertion could not provide.
+            views["detail"] = capture(
+                "code-detail.png",
+                check: CapturePixelCheck(ink: .dark,
+                                         inkBand: 0.52...0.92,
+                                         minimumInkPixels: 500))
         } else {
             failures.append("views: tool detail fixture unavailable")
         }
         report["views"] = views
         persist(phase: "views.detail")
+
+        if !detailGroupCalls.isEmpty {
+            stage = .detailGroup
+            await wait(600)
+            // The group page starts with the thinking block, then the call
+            // list. The band's lower bound was 0.25, which starts below the
+            // thinking text: a page whose thinking block had not laid out yet
+            // (or a short call list) left the sampled band nearly empty and
+            // failed a correct capture. 0.10 reaches the first paragraph
+            // while `minimumInkPixels` still catches a blank page.
+            views["detailGroup"] = capture(
+                "code-detail-group.png",
+                check: CapturePixelCheck(ink: .dark,
+                                         inkBand: 0.10...0.90,
+                                         minimumInkPixels: 200))
+        } else {
+            failures.append("views: detail group fixture unavailable")
+        }
+        report["views"] = views
+        persist(phase: "views.detailGroup")
 
         stage = .workingMark
         await wait(500)
@@ -620,11 +1158,109 @@ final class CodeProfileAutoRunModel {
             report["views"] = views
             persist(phase: "views.scrollDown")
         }
+
+        // The R28 collapsed-row gallery, once light and once dark. The dark
+        // stage is the same view tree under `.preferredColorScheme(.dark)`,
+        // so a reviewer can diff every token pair on one page.
+        if !rowGallery.isEmpty {
+            stage = .collapsedRows
+            await wait(500)
+            views["collapsedRows"] = capture(
+                "code-collapsed-rows.png",
+                check: CapturePixelCheck(background: .light))
+            report["views"] = views
+            persist(phase: "views.collapsedRows")
+
+            stage = .collapsedRowsDark
+            await wait(500)
+            // Dark tokens must really be dark: the page background is
+            // #151515 and the row ink is the light pair (text100 dark is
+            // (249,249,247)). A background-only swap leaves no bright ink.
+            views["collapsedRowsDark"] = capture(
+                "code-collapsed-rows-dark.png",
+                check: CapturePixelCheck(background: .dark,
+                                         ink: .bright,
+                                         inkBand: 0.25...0.95,
+                                         minimumInkPixels: 300,
+                                         minimumTargetPixels: 50))
+            report["views"] = views
+            persist(phase: "views.collapsedRowsDark")
+        } else {
+            failures.append("views: collapsed-row gallery unavailable")
+        }
+    }
+
+    /// Hosts every gallery fixture at the default and AX3 sizes and asserts
+    /// the R28 heights: 36 pt (24 pt slot + 12 pt padding) with an icon or
+    /// caret, 33 pt (21 pt text line + 12) for pure text. AX3 must be taller
+    /// than default (the row text is `relative(.body)`), never clipped.
+    private func verifyCollapsedRowHeights() async {
+        guard let window = keyWindow else {
+            failures.append("collapsedRows height: no key window")
+            return
+        }
+        guard !rowGallery.isEmpty else {
+            failures.append("collapsedRows height: gallery is empty")
+            return
+        }
+        let width: CGFloat = 361
+        var cases: [[String: Any]] = []
+        for item in rowGallery {
+            let regular = measureCollapsedRow(item, width: width,
+                                              category: .large, window: window)
+            let accessibility = measureCollapsedRow(
+                item, width: width,
+                category: .accessibilityExtraLarge, window: window)
+            let expected = item.expectedDefaultHeight
+            let pass = abs(regular - expected) <= 0.5
+            check(pass, "collapsedRows height \(item.id): \(regular) pt,"
+                    + " expected \(expected)")
+            check(accessibility > regular,
+                  "collapsedRows height \(item.id): AX3 \(accessibility) pt"
+                    + " is not taller than default \(regular) pt")
+            cases.append(["id": item.id,
+                          "expected": Double(expected),
+                          "regular": Double(regular),
+                          "accessibility3": Double(accessibility),
+                          "passed": pass])
+            print("collapsedRowHeight \(item.id) expected=\(expected)"
+                + " regular=\(regular) ax3=\(accessibility) pass=\(pass)")
+        }
+        report["collapsedRowHeights"] = [
+            "width": Double(width),
+            "cases": cases,
+        ] as [String: Any]
+        persist(phase: "views.collapsedRowHeights")
+    }
+
+    private func measureCollapsedRow(_ item: CodeCollapsedRowFixture,
+                                     width: CGFloat,
+                                     category: UIContentSizeCategory,
+                                     window: UIWindow) -> CGFloat {
+        let host = UIHostingController(rootView:
+            AnyView(item.rowView()
+                .frame(width: width)
+                .ignoresSafeArea()))
+        host.view.backgroundColor = .clear
+        host.traitOverrides.preferredContentSizeCategory = category
+        host.view.frame = CGRect(x: 0, y: 0, width: width, height: 120)
+        window.addSubview(host.view)
+        host.view.layoutIfNeeded()
+        let safeTop = host.view.safeAreaInsets.top
+        let safeBottom = host.view.safeAreaInsets.bottom
+        let raw = host.sizeThatFits(
+            in: CGSize(width: width, height: .greatestFiniteMagnitude)).height
+        host.view.removeFromSuperview()
+        return max(0, raw - safeTop - safeBottom)
     }
 
     private func prepareViews() {
         guard !didPrepareViews else { return }
         didPrepareViews = true
+
+        // Pure-constant assertions run before the fixtures so a broken
+        // fixture cannot hide a token regression.
+        verifyGroupDetailEvidence()
 
         guard let items = Self.decodeItems(Self.viewFixtureJSON) else {
             failures.append("views: fixture JSON did not decode")
@@ -638,27 +1274,222 @@ final class CodeProfileAutoRunModel {
         check(builderRows.last?.role == .assistant,
               "views: the second message row is not the assistant row")
 
+        // Settled-only thinking: the persistent fixture carries one done
+        // reasoning block; a running reasoning row must vanish entirely
+        // (the 2026-10-28 regression that made `思考过程` flicker).
+        let persistedReasoning = builderRows.flatMap(\.blocks).filter { block in
+            if case .reasoning = block { return true }
+            return false
+        }
+        check(persistedReasoning.count == 1,
+              "views: \(persistedReasoning.count) persistent reasoning blocks, expected the settled one")
+        if let runningItems = Self.decodeItems(Self.runningReasoningJSON) {
+            let runningRows = CodeMessageBuilder.rows(for: runningItems,
+                                                      profile: .claudeCode)
+            let hasRunningReasoning = runningRows.flatMap(\.blocks).contains { block in
+                if case .reasoning = block { return true }
+                return false
+            }
+            check(!hasRunningReasoning,
+                  "views: a running reasoning row produced a persistent block")
+        } else {
+            failures.append("views: running reasoning fixture did not decode")
+        }
+
         let rows = items.map { ChatTimelineRowModel($0) }
         messageGroup = ChatTimelineGroup(kind: .single, rows: rows,
                                          explicitID: "gate-code-thread")
 
-        guard let detailItem = Self.decodeItem(Self.detailCallJSON) else {
+        // Layer 2: the single-call page, using the long Read output that
+        // rendered as a blank card on the b643 device.
+        let readText = Self.longReadOutputText
+        guard let detailItem = Self.decodeItem(Self.detailCallJSON(output: readText)) else {
             failures.append("views: detail call JSON did not decode")
             return
         }
-        detailCall = CodeToolCall(item: detailItem, kind: .edit)
-        let detailOutput = CodeToolOutput(item: detailItem, kind: .edit)
-        if case let .diff(diff) = detailOutput {
-            check(diff.added == 2 && diff.removed == 1,
-                  "views: detail diff +\(diff.added)/-\(diff.removed), expected +2/-1")
+        detailCall = CodeToolCall(item: detailItem, kind: .read)
+        let detailOutput = CodeToolOutput(item: detailItem, kind: .read)
+        if case let .text(text) = detailOutput {
+            check(text.count == readText.count,
+                  "views: detail Read output \(text.count) chars, expected \(readText.count)")
         } else {
-            failures.append("views: detail call parsed as \(Self.describe(detailOutput)), expected a diff")
+            failures.append("views: detail call parsed as \(Self.describe(detailOutput)), expected text")
         }
-        if let followingItem = Self.decodeItem(Self.followingCallJSON) {
-            detailFollowing = [CodeToolCall(item: followingItem, kind: .bash)]
+
+        // Layer 1: the span summary page. Three edits to two files must
+        // summarize as "Edited 2 files", list all three calls, and every
+        // listed call must have input (and one a diff output).
+        //
+        // The fixture is a real message group (one settled reasoning row plus
+        // the three tool rows) decoded through `CodeMessageBuilder`, so the
+        // page's calls come from the same builder the transcript uses. The
+        // reasoning row must not leak into the page: the group detail carries
+        // the call list only (pp device report 2026-10-29).
+        guard let groupItems = Self.decodeItems(Self.detailGroupJSON) else {
+            failures.append("views: detail group fixture JSON did not decode")
+            return
         }
-        check(!detailFollowing.isEmpty,
-              "views: detail fixture has no following call")
+        let groupRows = CodeMessageBuilder.rows(for: groupItems, profile: .claudeCode)
+        let groupBlocks = groupRows.first?.blocks ?? []
+        detailGroupCalls = groupBlocks.flatMap { block -> [CodeToolCall] in
+            guard case let .toolCalls(segments) = block else { return [] }
+            return segments.flatMap { CodeToolLabels.calls(in: $0) }
+        }
+        check(detailGroupCalls.count == 3,
+              "views: detail group has \(detailGroupCalls.count) calls, expected 3")
+        let groupLabel = CodeToolLabels.label(for: detailGroupCalls, cwd: "/repo")
+        check(groupLabel.phrases.count == 1 && groupLabel.phrases.first?.total == 2,
+              "views: detail group phrases \(groupLabel.phrases), expected one 2-file phrase")
+        let groupTitle = CodeToolLabels.visibleText(
+            for: groupLabel, differentiateWithoutColor: false)
+        let expectedGroupTitle = String(
+            format: String(localized: "ccr_summary_edit_other"), 2)
+        check(groupTitle == expectedGroupTitle,
+              "views: detail group title '\(groupTitle)', expected '\(expectedGroupTitle)'")
+        check(detailGroupCalls.allSatisfy {
+                  CodeToolCallDetailView.inputText(for: $0) != nil
+              },
+              "views: a detail group call has no input for its pushed page")
+        let groupOutputs = detailGroupCalls.map {
+            CodeToolOutput(item: $0.item, kind: $0.kind)
+        }
+        check(groupOutputs.contains { !$0.isEmpty },
+              "views: no detail group call renders output")
+        report["detailGroup"] = [
+            "title": groupTitle,
+            "rows": detailGroupCalls.count,
+            "outputs": groupOutputs.map { $0.isEmpty ? "none" : "present" },
+        ] as [String: Any]
+    }
+
+    /// The R-A/R-D/R-E/R-F constants the group detail and status glyph now
+    /// draw with. Each value is asserted against its evidence:
+    /// - FailureGlyph: asset name, `16 + 4 × raw` frame, failed/partial sRGB
+    ///   pairs (R-A E4/E5/E6/E7);
+    /// - group chevron `textMuted` (R-F C5/C7) and the collapsed caret's
+    ///   unchanged `text400` (R-F C8);
+    /// - `PlainListRowInsets` `(0, 24, 0, 24)` (R-D §2);
+    /// - connector 2 pt / 24 pt column / 8 pt gap / light+dark ink
+    ///   (R-E C3/C5).
+    private func verifyGroupDetailEvidence() {
+        check(CodePageTheme.failureGlyphAssetName == "anthropicon.warning",
+              "groupDetail glyph: asset '\(CodePageTheme.failureGlyphAssetName)',"
+                + " expected 'anthropicon.warning'")
+        check(UIImage(named: CodePageTheme.failureGlyphAssetName) != nil,
+              "groupDetail glyph: asset"
+                + " '\(CodePageTheme.failureGlyphAssetName)' is not in the bundle")
+        check(CodePageTheme.failureGlyphSize == .small,
+              "groupDetail glyph: size \\(CodePageTheme.failureGlyphSize),"
+                + " expected .small (R-S: the body forces size byte 0)")
+        for size in AnthropiconSize.allCases {
+            let expected = 16 + 4 * CGFloat(size.rawValue)
+            check(CodePageTheme.failureGlyphFrameSide(for: size) == expected,
+                  "groupDetail glyph: frame side for \(size) is"
+                    + " \(CodePageTheme.failureGlyphFrameSide(for: size)),"
+                    + " expected \(expected)")
+        }
+        for (rawSize, expected) in [16, 20, 24, 28, 32].enumerated() {
+            check(CodePageTheme.failureGlyphFrameSide(rawSize: rawSize)
+                    == CGFloat(expected),
+                  "groupDetail glyph: raw \(rawSize) side is"
+                    + " \(CodePageTheme.failureGlyphFrameSide(rawSize: rawSize)),"
+                    + " expected \(expected)")
+        }
+        check(CodePageTheme.failureGlyphFrameSide(for: .small) == 16
+                && CodePageTheme.failureGlyphFrameSide(for: .medium) == 20
+                && CodePageTheme.failureGlyphFrameSide(for: .large) == 24,
+              "groupDetail glyph: the 16/20/24 size table moved")
+        assertSRGB(CodePageTheme.failureGlyphFailedColor,
+                   light: (0.557, 0.149, 0.149),
+                   dark: (0.925, 0.494, 0.494),
+                   alpha: 1, label: "groupDetail glyph failed")
+        assertSRGB(CodePageTheme.failureGlyphPartialColor,
+                   light: (0.451, 0.271, 0),
+                   dark: (0.859, 0.576, 0),
+                   alpha: 1, label: "groupDetail glyph partial")
+
+        check(CodePageTheme.groupListRowInsets == EdgeInsets(top: 0, leading: 24,
+                                                             bottom: 0, trailing: 24),
+              "groupDetail list: insets \(CodePageTheme.groupListRowInsets),"
+                + " expected (0,24,0,24)")
+        assertSRGB(CodePageTheme.textMutedColor,
+                   light: (0.537, 0.529, 0.506),
+                   dark: (0.537, 0.529, 0.506),
+                   alpha: 1, label: "groupDetail chevron textMuted")
+        // R-F C8: the collapsed caret keeps its own token; a shared constant
+        // would silently repaint one of the two surfaces.
+        assertSRGB(CodePageTheme.text400Color,
+                   light: (0.482, 0.475, 0.455),
+                   dark: (0.592, 0.584, 0.553),
+                   alpha: 1, label: "collapsed caret text400")
+
+        check(CodePageTheme.timelineConnectorWidth == 2
+                && CodePageTheme.timelineConnectorHeight == 16
+                && CodePageTheme.timelineConnectorColumnWidth == 24,
+              "groupDetail connector: geometry"
+                + " \(CodePageTheme.timelineConnectorWidth)/"
+                + "\(CodePageTheme.timelineConnectorHeight)/"
+                + "\(CodePageTheme.timelineConnectorColumnWidth), expected 2/16/24")
+        assertSRGB(CodePageTheme.timelineConnectorColor,
+                   light: (0.043, 0.043, 0.043),
+                   dark: (1, 1, 1),
+                   alpha: 0.1, label: "groupDetail connector")
+
+        report["groupDetailEvidence"] = [
+            "failureGlyphAsset": CodePageTheme.failureGlyphAssetName,
+            "failureGlyphSize": "\(CodePageTheme.failureGlyphSize)",
+            "failureGlyphFrameSides": AnthropiconSize.allCases.map {
+                Double(CodePageTheme.failureGlyphFrameSide(for: $0))
+            },
+            "rowInsets": [
+                Double(CodePageTheme.groupListRowInsets.top),
+                Double(CodePageTheme.groupListRowInsets.leading),
+                Double(CodePageTheme.groupListRowInsets.bottom),
+                Double(CodePageTheme.groupListRowInsets.trailing),
+            ],
+            "connector": [
+                Double(CodePageTheme.timelineConnectorWidth),
+                Double(CodePageTheme.timelineConnectorHeight),
+                Double(CodePageTheme.timelineConnectorColumnWidth),
+            ],
+        ] as [String: Any]
+    }
+
+    /// Resolves a `SchemeColor` through its dynamic `UIColor` and compares
+    /// the four components under each appearance. This asserts the colour
+    /// that reaches the screen, not a duplicated literal.
+    private func assertSRGB(_ color: CodePageTheme.SchemeColor,
+                            light: (CGFloat, CGFloat, CGFloat),
+                            dark: (CGFloat, CGFloat, CGFloat),
+                            alpha: CGFloat,
+                            label: String) {
+        let cases: [(String, UIUserInterfaceStyle, (CGFloat, CGFloat, CGFloat))] = [
+            ("light", .light, light),
+            ("dark", .dark, dark),
+        ]
+        for (appearance, style, expected) in cases {
+            let resolved = CodePageTheme.uiColor(color)
+                .resolvedColor(with: UITraitCollection(userInterfaceStyle: style))
+            var red: CGFloat = 0
+            var green: CGFloat = 0
+            var blue: CGFloat = 0
+            var resolvedAlpha: CGFloat = 0
+            guard resolved.getRed(&red, green: &green,
+                                  blue: &blue, alpha: &resolvedAlpha) else {
+                failures.append("\(label) \(appearance): getRed failed")
+                continue
+            }
+            // 1/255 ≈ 0.0039: a colour-space round trip must not turn a
+            // correct token red, while the closest expected pair (failed
+            // dark R 0.925 vs danger00 dark R 0.957) still separates.
+            let tolerance: CGFloat = 0.005
+            check(abs(red - expected.0) <= tolerance
+                    && abs(green - expected.1) <= tolerance
+                    && abs(blue - expected.2) <= tolerance
+                    && abs(resolvedAlpha - alpha) <= tolerance,
+                  "\(label) \(appearance): (\(red), \(green), \(blue),"
+                    + " \(resolvedAlpha)), expected \(expected) @\(alpha)")
+        }
     }
 
     /// The exact height the controller stores before apply must equal the
@@ -857,9 +1688,7 @@ final class CodeProfileAutoRunModel {
             failures.append("readOutput: no key window")
             return
         }
-        let rowFormat = #"{"index":%d,"path":"Sources/Feature/F%04d/Generated.swift","status":"ok","message":"row %d of the long read fixture"}"#
-        let text = (1...298).map { String(format: rowFormat, $0, $0, $0) }
-            .joined(separator: "\n")
+        let text = Self.longReadOutputText
         let hostWidth = window.bounds.width
         let host = UIHostingController(rootView:
             CodeToolOutputView(output: .text(text), kind: .read)
@@ -881,17 +1710,125 @@ final class CodeProfileAutoRunModel {
             if settled > 1, abs(settled - previous) <= 0.5 { break }
             previous = settled
         }
+        // The height alone cannot tell a drawn body from the b643 blank card
+        // (SwiftUI's `Text` reported the right height and drew nothing). The
+        // Read reader is a stack of TextKit chunks (R-R Q2: the official body
+        // is `ChunkedPayload` + `LazyVStack`), and a lazy stack only
+        // materialises the viewport, so the rendered tree proves the first
+        // chunk is drawn while the splitter is asserted for lossless coverage
+        // (every character survives, no chunk exceeds the budget). Swapping
+        // the reader back to a SwiftUI `Text` removes the text views and turns
+        // this red.
+        let readTextViews = descendantTextViews(in: host.view)
+        let renderedLength = readTextViews.reduce(0) { $0 + $1.textStorage.length }
+        let renderedText = readTextViews.map { $0.textStorage.string }
+            .joined(separator: "\n")
+        let chunks = CodeFileReadChunks.split(text)
+        let resplit = chunks.joined(separator: "\n")
+        func withoutLineBreaks(_ value: String) -> String {
+            value.replacingOccurrences(of: "\n", with: "")
+        }
+        let lossless = withoutLineBreaks(resplit) == withoutLineBreaks(text)
+        let withinBudget = chunks.allSatisfy {
+            $0.count <= CodeFileReadChunks.maxCharacters
+        }
+        // A lazy stack materialises whichever chunk is in the viewport, not
+        // necessarily the first one; every chunk is a contiguous slice of the
+        // body, so the drawn text must appear verbatim in the source.
+        let drawnChunks = readTextViews.map { $0.textStorage.string }
+            .filter { !$0.isEmpty }
+        let drawnIsBody = !drawnChunks.isEmpty
+            && drawnChunks.allSatisfy { text.contains($0) }
         host.view.removeFromSuperview()
 
         let finite = settled.isFinite
         check(finite && settled > 2_000,
               "readOutput: \(text.count) chars / 298 lines rendered \(settled) pt, expected a drawn body")
+        check(chunks.count > 1 && lossless && withinBudget,
+              "readOutput: \(chunks.count) chunks, lossless \(lossless),"
+                + " within budget \(withinBudget)")
+        let readTextViewLengths = readTextViews.map { $0.textStorage.length }
+        check(drawnIsBody,
+              "readOutput: drawn text is not a slice of the body"
+                + " (text views: \(readTextViewLengths), rendered \(renderedLength) chars)")
         report["readOutput"] = [
             "characters": text.count,
             "lines": 298,
             "height": Double(settled),
             "finite": finite,
+            "textViews": readTextViews.count,
+            "textViewLengths": readTextViewLengths,
         ] as [String: Any]
+    }
+
+    /// V8: the output card must still show the raw JSON before any tap. The
+    /// fixture is one raw line against the formatter's seven, so a card that
+    /// auto-prettifies on appear stops being shorter than its formatted twin.
+    /// Both hosts are the real card at the same width; only the payload text
+    /// differs. A model-level `.raw` assertion cannot catch an on-appear
+    /// format; this measurement can.
+    private func verifyPrettifyDefaultRaw() async {
+        guard let window = keyWindow else {
+            failures.append("prettify default: no key window")
+            return
+        }
+        let fixture = #"{"b":1,"a":[2,3]}"#
+        let formatted = "{\n  \"a\" : [\n    2,\n    3\n  ],\n  \"b\" : 1\n}"
+        let width = window.bounds.width - 2 * 16
+        let rawHeight = await measureCardHeight(code: fixture,
+                                                width: width,
+                                                window: window)
+        let formattedHeight = await measureCardHeight(code: formatted,
+                                                      width: width,
+                                                      window: window)
+        check(rawHeight > 1 && formattedHeight > rawHeight + 40,
+              "prettify default: raw card \(rawHeight) pt, formatted card"
+                + " \(formattedHeight) pt; the card is not showing raw text")
+        report["prettifyDefault"] = [
+            "rawHeight": Double(rawHeight),
+            "formattedHeight": Double(formattedHeight),
+        ] as [String: Any]
+    }
+
+    private func measureCardHeight(code: String,
+                                   width: CGFloat,
+                                   window: UIWindow) async -> CGFloat {
+        let host = UIHostingController(rootView:
+            CodeToolCodeCard(title: "Output", code: code, detectsJSON: true)
+                .frame(width: width, alignment: .leading)
+                // Ask for the card's ideal height: the body's horizontal
+                // ScrollView must report its content's height, not expand.
+                .fixedSize(horizontal: false, vertical: true))
+        host.view.backgroundColor = .clear
+        host.view.frame = CGRect(x: 0, y: 0, width: width, height: 240)
+        window.addSubview(host.view)
+        host.view.layoutIfNeeded()
+
+        let proposed = CGSize(width: width, height: .greatestFiniteMagnitude)
+        var settled: CGFloat = 0
+        var previous: CGFloat = -1
+        for _ in 0..<15 {
+            await wait(100)
+            host.view.layoutIfNeeded()
+            settled = host.sizeThatFits(in: proposed).height
+            if settled > 1, abs(settled - previous) <= 0.5 { break }
+            previous = settled
+        }
+        host.view.removeFromSuperview()
+        return settled
+    }
+
+    /// Every `UITextView` below `view`. The Code page's TextKit renderers (the
+    /// Read body and the thinking Markdown leaf) are the only text views it
+    /// mounts, so a host with none has fallen back to a non-TextKit renderer.
+    private func descendantTextViews(in view: UIView) -> [UITextView] {
+        var result: [UITextView] = []
+        func walk(_ current: UIView) {
+            if let textView = current as? UITextView { result.append(textView) }
+            for subview in current.subviews { walk(subview) }
+        }
+        walk(view)
+        return result
     }
 
     /// Renders every fixture at every requested width and size, reports each
@@ -1779,10 +2716,37 @@ final class CodeProfileAutoRunModel {
                 "contentWidth": Double(width)]
     }
 
+    /// A known-pixel expectation for one capture. The background point is the
+    /// page's 16 pt leading margin; the ink band is a vertical fraction of
+    /// the image that must contain glyph pixels.
+    private struct CapturePixelCheck {
+        enum Background {
+            case light
+            case dark
+        }
+
+        enum Ink {
+            /// Dark glyphs on a light surface (light-mode captures).
+            case dark
+            /// Light glyphs on a dark surface (the dark gallery).
+            case bright
+        }
+
+        var background: Background?
+        var ink: Ink?
+        var inkBand: ClosedRange<CGFloat> = 0.25...0.95
+        var minimumInkPixels: Int = 200
+        /// Dark mode only: the `text100` target run resolves to
+        /// (249,249,247). At least this many pixels must match it ±2 so the
+        /// gallery cannot pass with light-mode tokens on a dark background.
+        var minimumTargetPixels: Int = 0
+    }
+
     /// Captures the app window. The stage view fills it, so the PNG shows the
     /// component at its real width and Dynamic Type, with the same chrome the
     /// simulator run has (status bar, background).
-    private func capture(_ name: String) -> [String: Any] {
+    private func capture(_ name: String,
+                         check: CapturePixelCheck? = nil) -> [String: Any] {
         guard let window = keyWindow, window.bounds.width > 0 else {
             failures.append("views: no key window for \(name)")
             return ["error": "no key window"]
@@ -1810,12 +2774,141 @@ final class CodeProfileAutoRunModel {
         if sampledColors < 2 {
             failures.append("views: \(name) sampled \(sampledColors) colour(s), expected rendered content")
         }
-        return [
+        var detail: [String: Any] = [
             "bytes": data.count,
             "width": Double(image.size.width),
             "height": Double(image.size.height),
             "distinctColors": sampledColors,
-        ] as [String: Any]
+        ]
+        if let check {
+            detail["pixelCheck"] = verifyPixels(image, name: name, check: check)
+        }
+        return detail
+    }
+
+    /// Asserts the capture's known pixels: the page background at the leading
+    /// margin and, when requested, a minimum amount of ink inside a band that
+    /// excludes the navigation bar and header.
+    private func verifyPixels(_ image: UIImage,
+                              name: String,
+                              check: CapturePixelCheck) -> [String: Any] {
+        guard let cgImage = image.cgImage else {
+            failures.append("views: \(name) has no CGImage for the pixel check")
+            return ["error": "no cgImage"]
+        }
+        let width = cgImage.width
+        let height = cgImage.height
+        guard width > 0, height > 0 else {
+            failures.append("views: \(name) pixel data unavailable")
+            return ["error": "no pixel data"]
+        }
+        // Redraw into a known 8-bit sRGB buffer. The renderer's own CGImage
+        // may be extended-range/16-bit (the first CI run read magenta garbage
+        // from a uniform #F9F9F7 background), so sampling its raw bytes with
+        // a fixed BGRA stride is not safe. The flipped context keeps buffer
+        // row 0 at the image's top, matching the band coordinates below.
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            failures.append("views: \(name) pixel context unavailable")
+            return ["error": "no pixel context"]
+        }
+        context.translateBy(x: 0, y: CGFloat(height))
+        context.scaleBy(x: 1, y: -1)
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let data = context.data else {
+            failures.append("views: \(name) pixel data unavailable")
+            return ["error": "no pixel data"]
+        }
+        let bytes = data.bindMemory(to: UInt8.self, capacity: height * width * 4)
+        let bytesPerPixel = 4
+        func rgb(x: Int, y: Int) -> (Int, Int, Int) {
+            let offset = y * context.bytesPerRow + x * bytesPerPixel
+            return (Int(bytes[offset]),
+                    Int(bytes[offset + 1]),
+                    Int(bytes[offset + 2]))
+        }
+        var result: [String: Any] = [:]
+        var passed = true
+
+        if let background = check.background {
+            // 2% of the width is inside the 16 pt outer margin on every
+            // supported phone; mid-height avoids the status bar and home
+            // indicator.
+            let sample = rgb(x: max(0, width / 50), y: height / 2)
+            let expected = background == .light ? (249, 249, 247) : (21, 21, 21)
+            let match = abs(sample.0 - expected.0) <= 2
+                && abs(sample.1 - expected.1) <= 2
+                && abs(sample.2 - expected.2) <= 2
+            result["background"] = [sample.0, sample.1, sample.2]
+            result["backgroundExpected"] = [expected.0, expected.1, expected.2]
+            result["backgroundPassed"] = match
+            if !match {
+                passed = false
+                failures.append(
+                    "views: \(name) background \(sample), expected \(expected) ±2")
+            }
+        }
+
+        if let ink = check.ink {
+            let minY = Int(CGFloat(height) * check.inkBand.lowerBound)
+            let maxY = Int(CGFloat(height) * check.inkBand.upperBound)
+            // Stay inside the card body: the 1 px card border is dark in
+            // light mode and would otherwise satisfy a blank capture.
+            let minX = Int(CGFloat(width) * 0.10)
+            let maxX = Int(CGFloat(width) * 0.90)
+            var count = 0
+            var targetCount = 0
+            var y = minY
+            while y < maxY {
+                var x = minX
+                while x < maxX {
+                    let color = rgb(x: x, y: y)
+                    switch ink {
+                    case .dark:
+                        if color.0 < 96, color.1 < 96, color.2 < 96 { count += 1 }
+                    case .bright:
+                        if color.0 > 235, color.1 > 235, color.2 > 230 { count += 1 }
+                        // text100 dark = (249,249,247).
+                        if abs(color.0 - 249) <= 2,
+                           abs(color.1 - 249) <= 2,
+                           abs(color.2 - 247) <= 2 {
+                            targetCount += 1
+                        }
+                    }
+                    x += 2
+                }
+                y += 2
+            }
+            result["inkPixels"] = count
+            result["inkExpected"] = check.minimumInkPixels
+            result["inkPassed"] = count >= check.minimumInkPixels
+            if count < check.minimumInkPixels {
+                passed = false
+                failures.append(
+                    "views: \(name) has \(count) ink pixels, expected ≥ \(check.minimumInkPixels)")
+            }
+            if check.minimumTargetPixels > 0 {
+                result["targetPixels"] = targetCount
+                result["targetExpected"] = check.minimumTargetPixels
+                result["targetPassed"] = targetCount >= check.minimumTargetPixels
+                if targetCount < check.minimumTargetPixels {
+                    passed = false
+                    failures.append(
+                        "views: \(name) has \(targetCount) text100-dark pixels,"
+                            + " expected ≥ \(check.minimumTargetPixels)")
+                }
+            }
+        }
+
+        result["passed"] = passed
+        return result
     }
 
     /// Distinct colours in the middle band of a downscaled copy. The status bar
@@ -1985,7 +3078,7 @@ final class CodeProfileAutoRunModel {
       {"id":"cl-t7","sessionId":"gate-claude","type":"tool","status":"done","orderSeq":11,
        "content":{"toolName":"SomeFutureTool"},
        "source":{"nativeMessageId":"cl-msg-1","blockIndex":6}},
-      {"id":"cl-r1","sessionId":"gate-claude","type":"reasoning","status":"running","orderSeq":4,
+      {"id":"cl-r1","sessionId":"gate-claude","type":"reasoning","status":"done","orderSeq":4,
        "content":{"kind":"reasoning","rawText":"Checking the package layout."},
        "source":{"itemId":"cl-msg-1"}}
     ]
@@ -2018,7 +3111,7 @@ final class CodeProfileAutoRunModel {
       {"id":"cx-t6","sessionId":"gate-codex","type":"tool","status":"done","orderSeq":10,
        "content":{"toolName":"Workflow"},
        "source":{"nativeMessageId":"cx-msg-1","blockIndex":5}},
-      {"id":"cx-r1","sessionId":"gate-codex","type":"reasoning","status":"running","orderSeq":4,
+      {"id":"cx-r1","sessionId":"gate-codex","type":"reasoning","status":"done","orderSeq":4,
        "content":{"kind":"reasoning","rawText":"Reading the failing test output."},
        "source":{"itemId":"cx-msg-1"}}
     ]
@@ -2050,16 +3143,17 @@ final class CodeProfileAutoRunModel {
       {"id":"dsh-t6","sessionId":"gate-dsh","type":"tool","status":"done","orderSeq":10,
        "content":{"toolName":"ExitPlanMode"},
        "source":{"nativeMessageId":"dsh-msg-1","blockIndex":5}},
-      {"id":"dsh-r1","sessionId":"gate-dsh","type":"reasoning","status":"running","orderSeq":4,
+      {"id":"dsh-r1","sessionId":"gate-dsh","type":"reasoning","status":"done","orderSeq":4,
        "content":{"kind":"reasoning","rawText":"Checking the bridge history projection."},
        "source":{"itemId":"dsh-msg-1"}}
     ]
     """#
 
-    /// The on-screen fixture: a user bubble, a running reasoning item (kept
-    /// out of the message row — the live working row owns that state), a
-    /// Markdown body and a collapsed tool span with a diff badge plus the
-    /// Workflow special card.
+    /// The on-screen fixture: a user bubble, a settled reasoning item (the
+    /// persistent `思考过程` row), a Markdown body and a collapsed tool span
+    /// with a diff badge plus the Workflow special card. A running reasoning
+    /// row belongs to the live working line, not this row — see
+    /// `runningReasoningJSON` for its negative assertion.
     private static let viewFixtureJSON = #"""
     [
       {"id":"v-u1","sessionId":"gate-views","type":"message","status":"done","role":"user","orderSeq":1,
@@ -2081,31 +3175,77 @@ final class CodeProfileAutoRunModel {
       {"id":"v-t4","sessionId":"gate-views","type":"tool","status":"done","orderSeq":6,
        "content":{"toolName":"Workflow"},
        "source":{"nativeMessageId":"gate-msg","blockIndex":3}},
-      {"id":"v-r1","sessionId":"gate-views","type":"reasoning","status":"running","orderSeq":7,
+      {"id":"v-r1","sessionId":"gate-views","type":"reasoning","status":"done","orderSeq":7,
        "content":{"kind":"reasoning","rawText":"Inspecting the test harness."},
        "source":{"itemId":"gate-msg"}}
     ]
     """#
 
-    private static let detailCallJSON = #"""
-    {"id":"detail-edit","sessionId":"gate-detail","type":"tool","status":"done","orderSeq":1,
-     "content":{"toolName":"Edit","input":{"file_path":"/repo/Tests/TimelineTests.swift"},
-       "output":{"kind":"diff","lines":[
-         {"type":"hunk","content":"@@ -1,4 +1,5 @@"},
-         {"type":"normal","content":"let driver = TimelineDriver()","oldLineNumber":1,"newLineNumber":1},
-         {"type":"remove","content":"await driver.start()","oldLineNumber":2},
-         {"type":"add","content":"await driver.waitUntilSettled()","newLineNumber":2},
-         {"type":"add","content":"await driver.assertNoOverlap()","newLineNumber":3},
-         {"type":"normal","content":"await driver.finish()","oldLineNumber":3,"newLineNumber":4}
-       ],"lineStat":{"addedLineCount":2,"removedLineCount":1}}},
-     "source":{"itemId":"detail-edit"}}
+    /// Layer 2's fixture: a Read whose body is the 24K / 298-line result that
+    /// rendered blank on the device. The output string is escaped by
+    /// `JSONSerialization`, so the fixture stays one JSON document.
+    private static func detailCallJSON(output: String) -> String {
+        let outputJSON = jsonString(output)
+        return #"""
+        {"id":"detail-read","sessionId":"gate-detail","type":"tool","status":"done","orderSeq":1,
+         "content":{"toolName":"Read","input":{"file_path":"/repo/Sources/Feature/Generated.swift"},
+           "output":\#(outputJSON)},
+         "source":{"itemId":"detail-read"}}
+        """#
+    }
+
+    /// Layer 1's group-page fixture: one settled reasoning row and three tool
+    /// rows of one message, exactly the `[thinkingContent, toolCalls]` span
+    /// shape the builder emits. `prepareViews` runs it through
+    /// `CodeMessageBuilder`; the reasoning row must not reach the page, which
+    /// carries the call list only (pp device report 2026-10-29).
+    private static let detailGroupJSON = #"""
+    [
+      {"id":"dg-r1","sessionId":"gate-group","type":"reasoning","status":"done","orderSeq":1,
+       "content":{"kind":"reasoning","rawText":"Inspecting both files before the edit."},
+       "source":{"itemId":"dg-msg"}},
+      {"id":"dg-t1","sessionId":"gate-group","type":"tool","status":"done","orderSeq":2,
+       "content":{"toolName":"Edit","input":{"file_path":"/repo/Main.dc.html"},
+                  "output":{"lineStat":{"addedLineCount":2,"removedLineCount":1}}},
+       "source":{"nativeMessageId":"dg-msg","blockIndex":0}},
+      {"id":"dg-t2","sessionId":"gate-group","type":"tool","status":"done","orderSeq":3,
+       "content":{"toolName":"Edit","input":{"file_path":"/repo/Main.dc.html"}},
+       "source":{"nativeMessageId":"dg-msg","blockIndex":1}},
+      {"id":"dg-t3","sessionId":"gate-group","type":"tool","status":"done","orderSeq":4,
+       "content":{"toolName":"Edit","input":{"file_path":"/repo/Dark.dc.html"}},
+       "source":{"nativeMessageId":"dg-msg","blockIndex":2}}
+    ]
     """#
 
-    private static let followingCallJSON = #"""
-    {"id":"detail-following","sessionId":"gate-detail","type":"tool","status":"done","orderSeq":2,
-     "content":{"toolName":"Bash","input":{"command":"swift test --filter TimelineTests"}},
-     "source":{"nativeMessageId":"detail-edit","blockIndex":1}}
+    /// A running reasoning row beside a settled body: the persistent block
+    /// must not be created from it.
+    private static let runningReasoningJSON = #"""
+    [
+      {"id":"run-r1","sessionId":"gate-reasoning","type":"reasoning","status":"running","orderSeq":1,
+       "content":{"kind":"reasoning","rawText":"Still streaming."},
+       "source":{"itemId":"gate-reasoning-msg"}},
+      {"id":"run-m1","sessionId":"gate-reasoning","type":"message","status":"done","role":"assistant","orderSeq":2,
+       "content":{"text":"The settled answer."},
+       "source":{"itemId":"gate-reasoning-msg"}}
+    ]
     """#
+
+    /// The 24K / ~298-line Read result used by both the height leg and the
+    /// rendered detail screenshot.
+    private static var longReadOutputText: String {
+        let rowFormat = #"{"index":%d,"path":"Sources/Feature/F%04d/Generated.swift","status":"ok","message":"row %d of the long read fixture"}"#
+        return (1...298).map { String(format: rowFormat, $0, $0, $0) }
+            .joined(separator: "\n")
+    }
+
+    private static func jsonString(_ value: Any) -> String {
+        guard let data = try? JSONSerialization.data(
+                withJSONObject: value, options: [.fragmentsAllowed]),
+              let text = String(data: data, encoding: .utf8) else {
+            return "null"
+        }
+        return text
+    }
 
     private static let textOutputJSON = #"""
     {"id":"out-text","sessionId":"gate-output","type":"tool","status":"done","orderSeq":1,
@@ -2361,7 +3501,14 @@ struct CodeProfileAutoRunRootView: View {
                 }
             case .detail:
                 if let call = model.detailCall {
-                    CodeToolDetailView(call: call, followingCalls: model.detailFollowing)
+                    CodeToolDetailView(call: call)
+                } else {
+                    Color(.systemBackground)
+                }
+            case .detailGroup:
+                if !model.detailGroupCalls.isEmpty {
+                    CodeToolGroupDetailView(calls: model.detailGroupCalls,
+                                            cwd: "/repo")
                 } else {
                     Color(.systemBackground)
                 }
@@ -2375,12 +3522,41 @@ struct CodeProfileAutoRunRootView: View {
                 } else {
                     Color(.systemBackground)
                 }
+            case .collapsedRows, .collapsedRowsDark:
+                collapsedRowsStage
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Deterministic captures: the gate always renders the light appearance.
-        .preferredColorScheme(.light)
+        // Deterministic captures: every stage is light except the dedicated
+        // dark row gallery, which renders the same tree under dark tokens.
+        .preferredColorScheme(model.stage == .collapsedRowsDark ? .dark : .light)
         .task { await model.run() }
+    }
+
+    /// The R28 acceptance gallery: one row per state, exactly the fixtures
+    /// the height leg hosts. 16 pt margins / page background match the Code
+    /// transcript so the screenshot is comparable with the official one.
+    private var collapsedRowsStage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(model.rowGallery) { item in
+                    item.rowView()
+                }
+            }
+            .padding(.horizontal, CodePageTheme.rowMarginLeading)
+            .padding(.vertical, 20)
+        }
+        // The official Code page background (#F9F9F7 / #151515), so the
+        // gallery's token comparison includes the surface behind the rows.
+        // `preferredColorScheme` alone is a presentation preference and the
+        // app root's own `.preferredColorScheme` can win over it, which left
+        // the b643 dark gallery with dark background but light-mode tokens.
+        // The explicit environment override is what the row views read.
+        .background(model.stage == .collapsedRowsDark
+                    ? CodePageTheme.pageBackgroundColor.dark
+                    : CodePageTheme.pageBackgroundColor.light)
+        .environment(\.colorScheme,
+                     model.stage == .collapsedRowsDark ? .dark : .light)
     }
 
     private func messageStage(_ group: ChatTimelineGroup) -> some View {

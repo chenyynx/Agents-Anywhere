@@ -6,6 +6,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
 from connector.logging import logger
 from connector.runtime_protocol import (
@@ -25,6 +26,7 @@ from connector.runtimes.claude.sdk.events import (
 )
 from connector.runtimes.claude.sdk.stop_affordance import stop_background_tasks
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
+from connector.runtimes.claude.sessions.reader import _history_turn_id
 from connector.runtimes.claude.turns.interactions import ClaudeInteractionController
 from connector.runtimes.claude.turns.lifecycle import ClaudeTurnRunner
 from connector.runtimes.claude.turns.selections import ClaudeSelectionController
@@ -113,9 +115,20 @@ class ClaudeTurnActionHandler:
                     code="claude_turn_already_running",
                     message="Claude runtime already has an active turn for this session",
                 )
-            execution = ClaudeExecution(
-                turn_id=f"turn_claude_{secrets.token_urlsafe(12)}"
-            )
+            # The prompt uuid is the wire identity the SDK replays as the
+            # transcript user row's uuid (verified on 2.1.285). Pre-assigning
+            # it here is what lets the turn id be deterministic BEFORE the
+            # turn starts: the returned `turnId`, every timeline row and the
+            # history projection all hash the same seed. A command turn has
+            # no user row at all, so it keeps the opaque id (its marker is
+            # the whole surface; nothing to converge with history).
+            if command is None:
+                prompt_uuid: str | None = str(uuid4())
+                turn_id = _history_turn_id(session.session_id, prompt_uuid)
+            else:
+                prompt_uuid = None
+                turn_id = f"turn_claude_{secrets.token_urlsafe(12)}"
+            execution = ClaudeExecution(turn_id=turn_id)
             session.execution = execution
             session.selections = effective_selections
             try:
@@ -133,6 +146,7 @@ class ClaudeTurnActionHandler:
                         attachments=attachments,
                         client_message_id=client_message_id,
                         command=command,
+                        prompt_uuid=prompt_uuid,
                     )
                 )
             except BaseException:

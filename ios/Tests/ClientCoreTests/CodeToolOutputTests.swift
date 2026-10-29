@@ -445,6 +445,29 @@ struct CodeToolOutputTests {
         #expect(parsed.count == 300_000)
     }
 
+    /// A Read result is one long whole-file text; the detail page must keep
+    /// every character (the b643 blank card was a renderer failure, not a
+    /// parser one).
+    @Test func longReadOutputIsPreserved() throws {
+        let text = (1...298).map { "row \($0) of the long read fixture" }
+            .joined(separator: "\n")
+        let output = try makeOutput(["output": text], kind: .read)
+        guard case let .text(parsed) = output else {
+            Issue.record("A long Read result must stay text")
+            return
+        }
+        #expect(parsed.count == text.count)
+        #expect(!output.isEmpty)
+    }
+
+    /// The detail page hides a text output whose body has no glyphs; a
+    /// whitespace-only result would otherwise draw a header over a blank card.
+    @Test func whitespaceOnlyTextIsEmpty() throws {
+        let output = try makeOutput(["output": " \n\t "])
+        #expect(output == .text(" \n\t "))
+        #expect(output.isEmpty)
+    }
+
     @Test func typedTextObjectIsNotPrettyPrinted() throws {
         let output = try makeOutput([
             "output": ["kind": "text", "text": "plain text"],

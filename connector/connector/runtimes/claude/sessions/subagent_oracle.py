@@ -946,6 +946,19 @@ class RawTranscriptScan:
     #: line order (D-B, zombie-agent-card §9). Empty for hand-built scans,
     #: which then keep the window gate exactly as it was.
     uuid_line_index: Mapping[str, int] = field(default_factory=dict)
+    #: Hidden user-row uuid -> its 0-based line in ``raw_lines``: the prompt
+    #: rows the CLI persists for turns it injected on its own (a fired
+    #: scheduled task, a /loop wake, ...). A fired prompt is written as a
+    #: ``type=user`` row with ``isMeta=true`` (the SDK message view drops it,
+    #: which is why a scheduled turn looks like "assistant-only" in history),
+    #: and its text is exactly the prompt a preceding ``queue-operation``
+    #: ``enqueue`` row carries. That pair is the signature: it separates a
+    #: fired prompt from the CLI's other hidden user rows (local-command
+    #: caveats, image placeholders, continuation nudges), whose text does not
+    #: match any enqueue. Verified against a real 2.1.285 transcript
+    #: (2026-10-28): fire rows carried no ``origin`` at all, so the enqueue
+    #: content is the only stable discriminator left.
+    injected_prompt_rows: Mapping[str, int] = field(default_factory=dict)
     #: tool_use id -> (dispatch row, its receipt row or ``None``) for every
     #: **verified** dispatch. The SDK message view is the compacted chain, so
     #: after a ``/compact`` the dispatch of a still-open Agent task survives
@@ -958,6 +971,31 @@ class RawTranscriptScan:
     dispatch_records: Mapping[
         str, tuple[Mapping[str, Any], Mapping[str, Any] | None]
     ] = field(default_factory=dict)
+
+
+def _transcript_row_prompt_text(row: Mapping[str, Any]) -> str | None:
+    """The prompt text a transcript row persisted, stripped, or None.
+
+    A fired scheduled prompt is a ``user`` row whose ``message.content`` is
+    the prompt string itself (verified on 2.1.285); a list form is accepted
+    for forward compatibility and joins its text blocks the way the CLI
+    renders them.
+    """
+
+    message = row.get("message")
+    content = message.get("content") if isinstance(message, Mapping) else None
+    if isinstance(content, str):
+        stripped = content.strip()
+        return stripped or None
+    if isinstance(content, list | tuple):
+        parts = [
+            block.get("text")
+            for block in content
+            if isinstance(block, Mapping) and isinstance(block.get("text"), str)
+        ]
+        stripped = "\n".join(parts).strip()
+        return stripped or None
+    return None
 
 
 def scan_raw_transcript(
@@ -1024,6 +1062,13 @@ def scan_raw_transcript(
     # Retained for verified dispatch ids only (see ``dispatch_records``).
     dispatch_rows: dict[str, Mapping[str, Any]] = {}
     result_rows: dict[str, Mapping[str, Any]] = {}
+    injected_prompt_rows: dict[str, int] = {}
+    # Prompts the CLI queued since the last persisted conversation row. A
+    # fired scheduled prompt is enqueued first and persisted right after as
+    # the hidden user row; a real user prompt is enqueued and then persisted
+    # as a visible user row, which clears the buffer. Only the exact-text
+    # pair counts (see ``injected_prompt_rows``).
+    pending_enqueues: list[str] = []
     for line_index, line in enumerate(raw_lines):
         wants_notice = "<task-notification>" in line
         wants_receipt = "agentId:" in line
@@ -1032,6 +1077,7 @@ def scan_raw_transcript(
         wants_resume = "resumedAgentId" in line
         wants_agent_key = '"agentId"' in line
         wants_tool_use = '"tool_use"' in line
+        wants_queue = '"queue-operation"' in line
         # A receipt answers a dispatch by its tool_use id. Once a dispatch has
         # been seen, a later row naming it is worth parsing even when it
         # carries none of the other markers; the substring test keeps this
@@ -1048,6 +1094,7 @@ def scan_raw_transcript(
             or wants_resume
             or wants_agent_key
             or wants_tool_use
+            or wants_queue
             or wants_dispatch_result
         ):
             continue
@@ -1064,6 +1111,30 @@ def scan_raw_transcript(
             # can repeat a row, and the earlier position is the honest order
             # for the window gate (D-B). `setdefault` is the whole rule.
             uuid_line_index.setdefault(row_uuid, line_index)
+        row_type = row.get("type")
+        if row_type == "queue-operation" and row.get("operation") == "enqueue":
+            queued = row.get("content")
+            if isinstance(queued, str) and queued.strip():
+                pending_enqueues.append(queued.strip())
+        elif row_type in {"user", "assistant"}:
+            hidden_prompt = (
+                row_type == "user"
+                and row.get("isMeta") is True
+                and row_uuid is not None
+            )
+            prompt_text = (
+                _transcript_row_prompt_text(row) if hidden_prompt else None
+            )
+            if prompt_text is not None and prompt_text in pending_enqueues:
+                # A prompt the CLI queued for itself and persisted hidden.
+                # The text match is what keeps this off the CLI's other
+                # hidden user rows (continuation nudges, command caveats,
+                # image placeholders), whose text never equals an enqueue.
+                injected_prompt_rows[row_uuid] = line_index
+            # A persisted conversation row closes the queue window either
+            # way: the queued prompt is now the row's own, or it was never a
+            # prompt (a command/notice enqueue).
+            pending_enqueues.clear()
         if wants_tool_use:
             _register_tool_use_names(row, tool_use_names)
         _capture_agent_call_rows(row, dispatch_rows, result_rows)
@@ -1153,6 +1224,7 @@ def scan_raw_transcript(
         },
         verified_dispatch_ids=verified_dispatch_ids,
         uuid_line_index=uuid_line_index,
+        injected_prompt_rows=injected_prompt_rows,
         dispatch_records={
             tool_use_id: (dispatch_rows[tool_use_id], result_rows.get(tool_use_id))
             for tool_use_id in verified_dispatch_ids

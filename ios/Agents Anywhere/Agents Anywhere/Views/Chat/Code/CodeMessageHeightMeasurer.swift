@@ -195,12 +195,21 @@ enum CodeMessageHeightMeasurer {
             nameLineHeight: nameLine, typeLineHeight: typeLine)
     }
 
-    /// The metrics `CodeMessageRowView` actually lays out with. The tool line
-    /// box is a `@ScaledMetric(relativeTo: .footnote)` value, so it must be
-    /// scaled with the row's trait collection instead of using 24 pt.
+    /// The metrics `CodeMessageRowView` actually lays out with.
+    ///
+    /// The 1023 collapsed row has no `minHeight`: its line box is the tallest
+    /// child. The row view pins the label's line box to the 21 pt unscaled
+    /// line height scaled with `.body`; the leading `IconFrame` and the caret
+    /// are fixed 24 pt slots. So the line box is exactly
+    /// `max(24, scaled(21, .body))` — 24 at the default size (36 pt with the
+    /// 6 pt padding) and the scaled text at larger sizes. The mono target
+    /// run's 24 pt line height never exceeds the sans line box at these sizes
+    /// (it is a smaller text style), so it is not a separate term; including
+    /// it would over-measure at XL/XXL and recreate the first-fit correction.
     private static func metrics(traits: UITraitCollection?) -> CodeRowHeightPlan.Metrics {
-        let lineHeight = UIFontMetrics(forTextStyle: .footnote)
-            .scaledValue(for: CodePageTheme.toolRowLineHeight, compatibleWith: traits)
+        let bodyTextLine = UIFontMetrics(forTextStyle: .body)
+            .scaledValue(for: CodePageTheme.toolRowTextLineHeight, compatibleWith: traits)
+        let lineHeight = max(CodePageTheme.toolRowIconFrameSize, bodyTextLine)
         return CodeRowHeightPlan.Metrics(
             blockSpacing: CodePageTheme.blockGap,
             rowSpacing: CodePageTheme.interMessageSpacing,

@@ -1044,6 +1044,12 @@ class PublicSharedSession(BaseModel):
 class TimelineSource(BaseModel):
     runtime: RuntimeName | Literal["platform"]
     sessionId: str | None = None
+    # The Runtime's own turn identity. The connector already declares it on every
+    # row, but this model used to drop it (Pydantic's default ``extra="ignore"``),
+    # leaving clients unable to see a turn boundary that has no user row (a
+    # scheduled turn). Optional and additive: rows from Runtimes that do not
+    # declare it stay unchanged.
+    turnId: str | None = None
     itemId: str | None = None
     itemType: str | None = None
     event: str | None = None

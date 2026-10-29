@@ -26,7 +26,7 @@ struct CodeStepGroupRowView: View {
     /// so the first frame does not jump.
     static var estimatedHeight: CGFloat {
         max(CodePageTheme.toolRowIconFrameSize,
-            UIFontMetrics(forTextStyle: CodePageTheme.toolRowBodyTextStyle)
+            UIFontMetrics(forTextStyle: .body)
                 .scaledValue(for: CodePageTheme.toolRowTextLineHeight))
             + 2 * CodePageTheme.toolRowButtonPadding
             + 2 * CodePageTheme.rowMarginTop

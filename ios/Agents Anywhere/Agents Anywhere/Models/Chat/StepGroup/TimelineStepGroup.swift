@@ -31,10 +31,16 @@ nonisolated enum TimelineStep: Identifiable, Hashable {
         }
     }
 
-    /// Same predicate the rest of the client uses (`V2TimelineItemStatus`'s
-    /// shared `isActive`): `.unknown` proves nothing and must not keep a row
-    /// in the running pose forever.
-    var isRunning: Bool { status.isActive }
+    /// The client-wide `isActive` predicate, spelled out here because this
+    /// enum is `nonisolated` and the shared extension is MainActor-isolated
+    /// under the package's default isolation. `.unknown` proves nothing and
+    /// must not keep a row in the running pose forever.
+    var isRunning: Bool {
+        switch status {
+        case .pending, .running, .waitingApproval: return true
+        case .done, .failed, .cancelled, .interrupted, .hidden, .unknown: return false
+        }
+    }
 
     var thinkingText: String? {
         guard case let .thinking(_, text, _) = self else { return nil }
@@ -51,12 +57,19 @@ nonisolated enum TimelineStep: Identifiable, Hashable {
     /// official summary, which the wire does not carry (pp 2026-10-29); an
     /// empty text yields nil and the view falls back to its running label.
     var liveThinkingLine: String? {
-        guard let thinkingText else { return nil }
-        for line in thinkingText.split(whereSeparator: \.isNewline).reversed() {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if !trimmed.isEmpty { return trimmed }
+        guard let thinkingText, !thinkingText.isEmpty else { return nil }
+        // Scan back from the tail one line at a time: the signature asks for
+        // this on every streaming refresh, so it must not split/allocate the
+        // whole (possibly long) text.
+        var end = thinkingText.endIndex
+        while true {
+            let newline = thinkingText[..<end].lastIndex(of: "\n")
+            let start = newline.map { thinkingText.index(after: $0) } ?? thinkingText.startIndex
+            let line = thinkingText[start..<end].trimmingCharacters(in: .whitespaces)
+            if !line.isEmpty { return line }
+            guard let newline else { return nil }
+            end = newline
         }
-        return nil
     }
 }
 

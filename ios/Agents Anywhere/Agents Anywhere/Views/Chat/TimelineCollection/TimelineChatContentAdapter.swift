@@ -1466,6 +1466,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let codeGroups: [ChatTimelineGroup]
         let chatUnits: [TimelineChatUnit]
         var codeRowsByGroupID: [String: [CodeMessageRow]] = [:]
+        /// The last user prompt's order: every step group after it belongs to
+        /// the turn that is still live. The standalone working row and the
+        /// live mark only ever consider this turn's groups — an old turn's
+        /// summary must never carry the mark.
+        var chatLastUserOrder = Int.min
+        var chatLiveTurnHasSteps = false
         if renderMode == .chat {
             // The chat profile groups chronologically: one step-group row per
             // run of thinking/tool steps, one message row per body run. It
@@ -1475,6 +1481,20 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 items: model.timeline.rows.map(\.value),
                 profile: profile,
                 interactionTargets: interactionTargets)
+            var rowsByID: [String: ChatTimelineRowModel] = [:]
+            for row in model.timeline.rows where rowsByID[row.id] == nil {
+                rowsByID[row.id] = row
+            }
+            for row in model.timeline.rows
+            where row.value.type == .message && row.value.role == .user {
+                chatLastUserOrder = max(chatLastUserOrder, row.value.orderSeq)
+            }
+            chatLiveTurnHasSteps = chatUnits.contains { unit in
+                guard case let .stepGroup(_, rowIDs) = unit,
+                      let firstID = rowIDs.first,
+                      let first = rowsByID[firstID] else { return false }
+                return first.value.orderSeq > chatLastUserOrder
+            }
         } else {
             chatUnits = []
             codeGroups = TimelineGrouping.codeGroups(model.timeline.rows,
@@ -1489,15 +1509,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         }
         // Chat profile (pp 2026-10-29, device observation): the dots never
         // leave the group row while the turn runs — there is no standalone
-        // working row once any step group exists, not even between steps or
-        // before the first body text. Only a turn with no steps at all shows
-        // the standalone row.
-        let chatHasStepGroup = chatUnits.contains {
-            if case .stepGroup = $0 { return true }
-            return false
-        }
+        // working row once the live turn has a step group, not even between
+        // steps or before the first body text. Only a live turn with no steps
+        // yet shows the standalone row.
         let hasWorkingStatus = model.sendingPlaceholder != nil
-            && !(renderMode == .chat && chatHasStepGroup)
+            && !(renderMode == .chat && chatLiveTurnHasSteps)
         // The official mark's pose follows the live turn's last event
         // (`SessionDisplay.liveTurnMark`). Keep the last pose while the row
         // plays its exit, so the exit animates the sprite that was on screen.
@@ -1537,7 +1553,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     let rows = rowIDs.compactMap { rowsByID[$0] }
                     guard !rows.isEmpty else { continue }
                     stepGroupsByID[stepGroup.id] = stepGroup
-                    lastStepGroupID = stepGroup.id
+                    if let first = rows.first, first.value.orderSeq > chatLastUserOrder {
+                        lastStepGroupID = stepGroup.id
+                    }
                     groups.append(ChatTimelineGroup(kind: .tools, rows: rows,
                                                     explicitID: stepGroup.id))
                 case let .message(key, rowIDs):
@@ -1555,9 +1573,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 }
             }
             // The dots stay on the trailing group for the whole live turn
-            // (pp's device observation). A finished turn clears the seat, so
-            // the row settles into its summary without the mark.
-            chatLiveTailGroupID = model.sendingPlaceholder != nil ? lastStepGroupID : nil
+            // (pp's device observation) — but only while that group is the
+            // turn's last unit: once body text or anything else follows it,
+            // the dots leave and the row settles into its summary.
+            let lastUnitIsStepGroup: Bool = {
+                guard let last = chatUnits.last else { return false }
+                if case .stepGroup = last { return true }
+                return false
+            }()
+            chatLiveTailGroupID = (model.sendingPlaceholder != nil && lastUnitIsStepGroup)
+                ? lastStepGroupID : nil
         } else {
             chatLiveTailGroupID = nil
             groups.reserveCapacity(codeGroups.count)

@@ -7,9 +7,6 @@ struct AccountSettingsSheet: View {
     @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.default.rawValue
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
     @AppStorage(ProjectSidebarPreferences.compactSessionListKey) private var compactSessionList = false
-    @AppStorage(OrbSettingsKeys.palette) private var orbPaletteValue = "kimi"
-    @AppStorage(OrbSettingsKeys.customHex) private var orbCustomHexValue = OrbSettingsKeys.encodeCustomHex(["#007CFF", "#00F6FF", "#DFC8F5"])
-    @AppStorage(ReplyPresentation.plainFadeKey) private var plainFade = false
     @AppStorage(TimelineRenderModeSwitch.key)
     private var renderModeRaw = TimelineRenderMode.code.rawValue
     @State private var timelineLastActive: Date?
@@ -65,15 +62,6 @@ struct AccountSettingsSheet: View {
                         SettingsRow(title: String(localized: "Accent color"), symbol: "paintpalette",
                             value: String(localized: AppAccent.resolve(accentValue).title))
                     }
-                    NavigationLink { ThinkingOrbSettingsView() } label: {
-                        SettingsRow(title: String(localized: "Thinking orb"), symbol: "circle.dashed",
-                            value: String(localized: OrbPalette.resolve(id: orbPaletteValue,
-                                customHex: OrbSettingsKeys.decodeCustomHex(orbCustomHexValue)).name))
-                    }
-                    NavigationLink { ChatColorSettingsView() } label: {
-                        SettingsRow(title: String(localized: "聊天文字颜色"), symbol: "textformat",
-                            value: String(localized: "正文与链接"))
-                    }
                     NavigationLink { SettingsLanguageView() } label: {
                         SettingsRow(title: String(localized: "Language"), symbol: "globe", value: SettingsLanguageView.currentLanguage)
                     }
@@ -111,7 +99,6 @@ struct AccountSettingsSheet: View {
                         Text(renderMode.detail)
                     }
                 }
-                revealAnimationSection
                 Section(String(localized: "Workspace")) {
                     NavigationLink { SettingsServerView() } label: {
                         SettingsRow(title: String(localized: "Server"), symbol: "server.rack", value: appState.serverURL?.host)
@@ -182,16 +169,6 @@ struct AccountSettingsSheet: View {
         timelineLastActive = UserDefaults.standard.object(forKey: TimelineCollectionSwitch.lastActiveKey) as? Date
     }
 
-    private var revealAnimationSection: some View {
-        Section {
-            Toggle(isOn: Binding(get: { !plainFade }, set: { plainFade = !$0 })) {
-                Label(String(localized: "Reveal animation"), appSymbol: "sparkles").labelStyle(.titleAndIcon)
-            }
-            .tint(.green)
-        } footer: {
-            Text(String(localized: "Off: new text fades in without the blur and rise."))
-        }
-    }
     private func close() {
         guard !isWorking else { return }
         if drafts.hasChanges { confirmsDiscard = true } else { dismiss() }

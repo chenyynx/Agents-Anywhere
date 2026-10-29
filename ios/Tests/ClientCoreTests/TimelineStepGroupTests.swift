@@ -18,10 +18,14 @@ private func stepItem(id: String, order: Int, type: String = "message",
     return try decode(object)
 }
 
+// The wire gives a reasoning row the enclosing message as its `itemId` and a
+// tool row the same message as `nativeMessageId`; the step grouping keys on
+// that shared message identity, exactly like the Code planner.
 private func thinkingItem(_ id: String, order: Int, text: String = "think",
+                          message: String = "msg-1",
                           turn: String? = "turn-1",
                           status: String = "done") throws -> V2TimelineItem {
-    var source: [String: Any] = ["itemId": id]
+    var source: [String: Any] = ["itemId": message]
     if let turn { source["turnId"] = turn }
     return try stepItem(id: id, order: order, type: "reasoning", status: status,
                         content: ["text": text], source: source)
@@ -29,9 +33,11 @@ private func thinkingItem(_ id: String, order: Int, text: String = "think",
 
 private func toolItem(_ id: String, order: Int, name: String,
                       input: [String: Any] = [:],
+                      message: String = "msg-1",
                       turn: String? = "turn-1",
                       status: String = "done") throws -> V2TimelineItem {
-    var source: [String: Any] = ["itemId": id, "nativeMessageId": "msg-1", "blockIndex": order]
+    var source: [String: Any] = ["itemId": id, "nativeMessageId": message,
+                                 "blockIndex": order]
     if let turn { source["turnId"] = turn }
     return try stepItem(id: id, order: order, type: "tool", status: status,
                         content: ["kind": "tool", "toolName": name, "input": input],
@@ -39,8 +45,9 @@ private func toolItem(_ id: String, order: Int, name: String,
 }
 
 private func bodyItem(_ id: String, order: Int, text: String,
+                      message: String = "msg-body",
                       turn: String? = "turn-1") throws -> V2TimelineItem {
-    var source: [String: Any] = ["itemId": "msg-body"]
+    var source: [String: Any] = ["itemId": message]
     if let turn { source["turnId"] = turn }
     return try stepItem(id: id, order: order, content: ["text": text], source: source)
 }
@@ -69,13 +76,37 @@ struct TimelineStepGroupingTests {
         }
         #expect(rowIDs == ["r1", "t1", "r2", "t2"])
         #expect(group.steps.count == 4)
-        #expect(group.id == "steps:r1")
+        #expect(group.id == "steps:msg-1")
         guard case let .message(key, messageRowIDs) = units[1] else {
             Issue.record("second unit is not a message")
             return
         }
         #expect(messageRowIDs == ["b1"])
         #expect(key == "msg-body")
+    }
+
+    @Test func aNewAssistantMessageStartsANewGroupWithoutText() throws {
+        // Two API messages' steps back to back: the official group is one
+        // message's `steps` block, so the second message gets its own row even
+        // though no body text separates them.
+        let items = [
+            try thinkingItem("r1", order: 1, message: "msg-1"),
+            try toolItem("t1", order: 2, name: "Read", message: "msg-1"),
+            try thinkingItem("r2", order: 3, message: "msg-2"),
+            try toolItem("t2", order: 4, name: "Bash", message: "msg-2"),
+        ]
+        let units = TimelineChatGrouping.units(items: items, profile: .generic,
+                                               interactionTargets: [])
+        #expect(units.count == 2)
+        guard case let .stepGroup(first, firstRows) = units[0],
+              case let .stepGroup(second, secondRows) = units[1] else {
+            Issue.record("expected two step groups")
+            return
+        }
+        #expect(firstRows == ["r1", "t1"])
+        #expect(secondRows == ["r2", "t2"])
+        #expect(first.id == "steps:msg-1")
+        #expect(second.id == "steps:msg-2")
     }
 
     @Test func declaredTurnChangeBreaksTheGroup() throws {

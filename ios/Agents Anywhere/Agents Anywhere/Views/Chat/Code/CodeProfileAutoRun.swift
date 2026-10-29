@@ -1582,32 +1582,39 @@ final class CodeProfileAutoRunModel {
         // The height alone cannot tell a drawn body from the b643 blank card
         // (SwiftUI's `Text` reported the right height and drew nothing). The
         // Read reader is a stack of TextKit chunks (R-R Q2: the official body
-        // is `ChunkedPayload` + `LazyVStack`), so no single text view holds
-        // the whole string: require the text views, that their combined length
-        // covers the body, and that both the first and last line are drawn.
-        // Swapping the reader back to a SwiftUI `Text` removes the text views
-        // and turns this assertion red.
+        // is `ChunkedPayload` + `LazyVStack`), and a lazy stack only
+        // materialises the viewport, so the rendered tree proves the first
+        // chunk is drawn while the splitter is asserted for lossless coverage
+        // (every character survives, no chunk exceeds the budget). Swapping
+        // the reader back to a SwiftUI `Text` removes the text views and turns
+        // this red.
         let readTextViews = descendantTextViews(in: host.view)
         let renderedLength = readTextViews.reduce(0) { $0 + $1.textStorage.length }
         let renderedText = readTextViews.map { $0.textStorage.string }
             .joined(separator: "\n")
-        let lines = text.split(separator: "\n")
-        let firstLine = lines.first.map(String.init) ?? ""
-        let lastLine = lines.last.map(String.init) ?? ""
-        let coversBody = renderedLength >= Int(Double(text.count) * 0.95)
-            && renderedText.contains(firstLine)
-            && renderedText.contains(lastLine)
+        let chunks = CodeFileReadChunks.split(text)
+        let resplit = chunks.joined(separator: "\n")
+        func withoutLineBreaks(_ value: String) -> String {
+            value.replacingOccurrences(of: "\n", with: "")
+        }
+        let lossless = withoutLineBreaks(resplit) == withoutLineBreaks(text)
+        let withinBudget = chunks.allSatisfy {
+            $0.count <= CodeFileReadChunks.maxCharacters
+        }
+        let firstLine = text.split(separator: "\n").first.map(String.init) ?? ""
+        let firstLineDrawn = renderedText.contains(firstLine)
         host.view.removeFromSuperview()
 
         let finite = settled.isFinite
         check(finite && settled > 2_000,
               "readOutput: \(text.count) chars / 298 lines rendered \(settled) pt, expected a drawn body")
+        check(chunks.count > 1 && lossless && withinBudget,
+              "readOutput: \(chunks.count) chunks, lossless \(lossless),"
+                + " within budget \(withinBudget)")
         let readTextViewLengths = readTextViews.map { $0.textStorage.length }
-        check(coversBody,
-              "readOutput: \(readTextViews.count) text views cover \(renderedLength)"
-                + " of \(text.count) chars (first/last line drawn:"
-                + " \(renderedText.contains(firstLine))/\(renderedText.contains(lastLine)))"
-                + " (text views: \(readTextViewLengths))")
+        check(!readTextViews.isEmpty && firstLineDrawn,
+              "readOutput: no drawn first line (text views: \(readTextViewLengths),"
+                + " rendered \(renderedLength) chars)")
         report["readOutput"] = [
             "characters": text.count,
             "lines": 298,

@@ -102,7 +102,12 @@ nonisolated struct TimelinePreferredAttributesDecision: Equatable {
         // change there grows downward without moving the offset. Only a row
         // entirely above the anchor pushes everything the reader sees.
         if cellMaxY <= viewportTop { return .accept(correction: delta) }
-        if isStreaming, isAutoScrollPinning, delta > 0 { return .accept(correction: delta) }
+        // Streaming while pinned is left to the anchor driver as well. The
+        // official streaming catch-up is the 0.4 s ease (`0x1019deecc`);
+        // re-pinning the offset in the same layout frame bypassed the
+        // animator and read as instant jumps once a reply grew past one
+        // screen (2026-10-29). The driver's `.end` placement eases to the new
+        // bottom on every content-height change.
         return .accept
     }
 
@@ -176,9 +181,14 @@ nonisolated struct TimelinePreferredAttributesDecision: Equatable {
         //    layout: the reader's offset does not move. The old rule
         //    compensated every visible row, which threw a growing row off the
         //    top of the screen (the device gate measured 388 pt).
-        // 3. Streaming while pinned to the bottom: grow and re-pin in the same
-        //    frame instead of letting the bottom fall behind.
-        if isStreaming, isAutoScrollPinning, delta > 0 { return .accept(correction: delta) }
+        // 3. Streaming while pinned to the bottom is still left to the anchor
+        //    driver. The official streaming catch-up is the 0.4 s ease
+        //    (`0x1019deecc`); re-pinning the offset in the same layout frame
+        //    bypassed that animator, so a growing tail read as a series of
+        //    instant jumps ("长文没有滚动动画", 2026-10-29). The target stays
+        //    `.end`, so the driver eases to the new bottom on every growth.
+        //    `isStreaming`/`isAutoScrollPinning` remain part of the model's
+        //    input for the browsing/measurement rules above.
         // 4. Everything else, including a partially visible non-streaming row:
         //    height applies, offset waits for the next settled correction.
         return .accept

@@ -40,6 +40,26 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
     final class Coordinator {
         var document: AssistantMarkdownDocument?
         var documentKey = ""
+        /// Bumped whenever the previous document can no longer be extended
+        /// (the text stopped growing at the tail, the typography changed, or a
+        /// plain fallback replaced the parsed document). The stack view rebuilds
+        /// instead of diffing when this changes.
+        var generation = 0
+        var builder: AssistantStreamingDocumentBuilder?
+        /// The typography revision the builder was created with. A change
+        /// rebuilds the builder and clears the memoised block heights.
+        var builderRevision: Int?
+        /// The builder generation the renderer has consumed. The builder bumps
+        /// its own generation when the text stops extending the previous batch.
+        var lastBuilderGeneration = -1
+        /// Bumped for every new document; the stack view uses it as its cheap
+        /// change key instead of comparing the whole reply text.
+        var documentRevision = 0
+        /// The text the current document was built from.
+        var lastParsedText = ""
+        /// Per-leaf height memo. Keys carry the block identity and digest, so
+        /// this cache can never return a height for different content.
+        let heightCache = AssistantMarkdownBlockHeightCache()
     }
 
     /// The adapter's snapshot is the unscaled official Code scale; this leaf
@@ -65,20 +85,83 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
 
     private func document(in coordinator: Coordinator) -> AssistantMarkdownDocument? {
         let metrics = snapshot
-        let key = "\(metrics.revision):\(text)"
-        if coordinator.documentKey == key { return coordinator.document }
-        let parsed = AssistantMarkdownDocumentParser.make(
-            text: text, resolvesFileReferences: true, typography: metrics,
-            codeStyle: CodePageTheme.codeCardStyle(
-                category: dynamicTypeSize.contentSizeCategory))?
-            .applyingCodePageTextColors()
+        let category = dynamicTypeSize.contentSizeCategory
+
+        // The builder holds converted blocks and the ink-mapped attributed
+        // strings; a typography change invalidates all of it.
+        if coordinator.builderRevision != metrics.revision {
+            coordinator.builder = AssistantStreamingDocumentBuilder(
+                codeStyle: CodePageTheme.codeCardStyle(category: category),
+                colorize: { AssistantMarkdownDocument.applyingCodePageTextColors(to: $0) })
+            coordinator.builderRevision = metrics.revision
+            coordinator.heightCache.removeAll()
+            coordinator.generation &+= 1
+            coordinator.lastParsedText = ""
+            coordinator.document = nil
+            coordinator.documentKey = ""
+        }
+
+        guard !text.isEmpty else {
+            coordinator.document = nil
+            coordinator.documentKey = "empty:\(coordinator.generation)"
+            coordinator.lastParsedText = text
+            return nil
+        }
+        if coordinator.lastParsedText == text { return coordinator.document }
+        coordinator.lastParsedText = text
+
+        guard CodeStreamingIncremental.enabled else {
+            return fullDocument(
+                in: coordinator, metrics: metrics,
+                style: CodePageTheme.codeCardStyle(category: category))
+        }
+        guard let builder = coordinator.builder else { return nil }
+        if let streaming = builder.make(text: text, typography: metrics) {
+            // The builder bumps its generation when the text stops extending
+            // the previous batch; propagate it so the stack rebuilds instead
+            // of diffing two unrelated documents.
+            if streaming.generation != coordinator.lastBuilderGeneration {
+                coordinator.lastBuilderGeneration = streaming.generation
+                coordinator.generation &+= 1
+            }
+            return installDocument(streaming.document, in: coordinator)
+        }
         // A block the converter cannot represent must not erase the whole
         // reply. The TextKit path used to return nil here, which rendered a
         // zero-height text block (the `---` bug class). Render the raw text as
         // one plain paragraph instead and keep the rest of the row visible.
-        let document = parsed ?? Self.plainTextDocument(text, typography: metrics)
+        // The builder marks itself rejected; reset it so the next batch retries
+        // from scratch (the pre-incremental path retried on every change and
+        // recovered once the unsupported text was replaced).
+        builder.reset()
+        coordinator.generation &+= 1
+        return installDocument(
+            Self.plainTextDocument(text, typography: metrics), in: coordinator)
+    }
+
+    /// The pre-incremental path: one full parse per text change. Kept behind
+    /// `CodeStreamingIncremental.enabled` so a device regression can fall back
+    /// without reverting the file.
+    private func fullDocument(in coordinator: Coordinator,
+                              metrics: TimelineTypographySnapshot,
+                              style: AssistantCodeCardStyle) -> AssistantMarkdownDocument {
+        let parsed = AssistantMarkdownDocumentParser.make(
+            text: text, resolvesFileReferences: true, typography: metrics,
+            codeStyle: style)?
+            .applyingCodePageTextColors()
+        return installDocument(
+            parsed ?? Self.plainTextDocument(text, typography: metrics),
+            in: coordinator)
+    }
+
+    /// Store a newly built document and give it a cheap change key. The stack
+    /// only needs to know that this is a different document; the block keys
+    /// and digests inside decide what actually gets reused.
+    private func installDocument(_ document: AssistantMarkdownDocument,
+                                 in coordinator: Coordinator) -> AssistantMarkdownDocument {
         coordinator.document = document
-        coordinator.documentKey = key + (parsed == nil ? ":plain" : "")
+        coordinator.documentRevision &+= 1
+        coordinator.documentKey = "d\(coordinator.documentRevision)"
         return document
     }
 
@@ -112,10 +195,14 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: CodeMarkdownTextStackView, context: Context) {
-        let document = document(in: context.coordinator)
+        let coordinator = context.coordinator
+        let document = document(in: coordinator)
         uiView.install(document: document,
-                       key: context.coordinator.documentKey,
-                       displayScale: max(displayScale, 1))
+                       key: coordinator.documentKey,
+                       displayScale: max(displayScale, 1),
+                       generation: coordinator.generation,
+                       cache: coordinator.heightCache,
+                       typographyRevision: coordinator.builderRevision ?? 0)
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize,
@@ -123,11 +210,14 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
                       context: Context) -> CGSize? {
         let width = proposal.width ?? uiView.bounds.width
         guard width > 0, width.isFinite else { return nil }
-        guard let document = document(in: context.coordinator) else {
+        let coordinator = context.coordinator
+        guard let document = document(in: coordinator) else {
             return CGSize(width: width, height: 0)
         }
         let height = ceil(AssistantMarkdownTextLayout.measure(
-            document, width: width, displayScale: max(displayScale, 1)))
+            document, width: width, displayScale: max(displayScale, 1),
+            cache: coordinator.heightCache,
+            typographyRevision: coordinator.builderRevision ?? 0))
         return CGSize(width: width, height: height)
     }
 }
@@ -139,12 +229,27 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
 /// arithmetic.
 final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
     private let stack = UIStackView()
-    private var heightConstraints: [NSLayoutConstraint] = []
+
+    /// One installed block. `key` is the block's stable identity and `digest`
+    /// the content version; together they decide whether the view can be kept.
+    private struct Record {
+        let key: String
+        var kind: String
+        var digest: Int
+        let view: UIView
+        let constraint: NSLayoutConstraint
+    }
+
+    private var records: [Record] = []
     private var document: AssistantMarkdownDocument?
     private var documentKey = ""
     private var displayScale: CGFloat = 2
     private var builtWidth: CGFloat = -1
     private var builtKey = ""
+    private var builtGeneration = -1
+    private var generation = 0
+    private var cache: AssistantMarkdownBlockHeightCache?
+    private var typographyRevision = 0
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -181,10 +286,16 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
 
     /// The latest document. Building happens on the next layout pass, when the
     /// representable has its real width.
-    func install(document: AssistantMarkdownDocument?, key: String, displayScale: CGFloat) {
+    func install(document: AssistantMarkdownDocument?, key: String,
+                 displayScale: CGFloat, generation: Int,
+                 cache: AssistantMarkdownBlockHeightCache?,
+                 typographyRevision: Int) {
         self.document = document
         self.documentKey = key
         self.displayScale = displayScale
+        self.generation = generation
+        self.cache = cache
+        self.typographyRevision = typographyRevision
         setNeedsLayout()
     }
 
@@ -192,10 +303,11 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
         super.layoutSubviews()
         let width = bounds.width
         guard width > 0 else { return }
-        guard abs(width - builtWidth) > 0.5 || documentKey != builtKey else { return }
+        let widthChanged = abs(width - builtWidth) > 0.5
+        guard widthChanged || documentKey != builtKey else { return }
         builtWidth = width
         builtKey = documentKey
-        rebuild(width: width)
+        applyDocument(width: width, widthChanged: widthChanged)
     }
 
     @objc private func handleAncestorLinkTap(_ recognizer: UITapGestureRecognizer) {
@@ -232,127 +344,196 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
         }
     }
 
-    private func rebuild(width: CGFloat) {
-
-        for constraint in heightConstraints { constraint.isActive = false }
-        heightConstraints.removeAll()
-        for view in stack.arrangedSubviews {
-            stack.removeArrangedSubview(view)
-            view.removeFromSuperview()
+    /// Keep the blocks whose identity survived the batch, update only the
+    /// content that changed, and append the new tail. The official cell keeps
+    /// its `MarkdownTextCellRow.leaves` the same way; a full rebuild happens
+    /// only when the document's generation changed (a correction, a typography
+    /// change, or a fallback document without block identities).
+    private func applyDocument(width: CGFloat, widthChanged: Bool) {
+        guard let document else {
+            UIView.performWithoutAnimation { removeRecords(from: 0) }
+            builtGeneration = generation
+            return
         }
-        guard let document else { return }
-        for block in document.blocks {
-            let made = AssistantMarkdownBlockViewFactory.make(
-                block, width: width, displayScale: displayScale,
-                interactiveText: true)
-            // Body text (including list/quote paragraphs) gets system
-            // link/selection interaction. Fenced code owns its copy button and
-            // horizontal scroll; tables keep their own link lift/menu, so
-            // those subtrees stay inert.
-            enableTextInteraction(in: made.view)
-            stack.addArrangedSubview(made.view)
-            let constraint = made.view.heightAnchor.constraint(equalToConstant: made.height)
-            constraint.isActive = true
-            heightConstraints.append(constraint)
+        let blocks = document.blocks
+        let keys = document.blockKeys
+        let digests = document.blockDigests
+        let keyed = keys.count == blocks.count && digests.count == blocks.count
+        guard keyed, CodeStreamingIncremental.enabled,
+              builtGeneration == generation else {
+            rebuild(document, width: width)
+            return
         }
-        // Textual collapses adjacent block margins (max, not sum); the
-        // measurement path uses the same rule, so the stack must too.
-        for index in 1..<max(1, document.blocks.count) {
-            guard stack.arrangedSubviews.indices.contains(index - 1) else { break }
-            stack.setCustomSpacing(
-                AssistantMarkdownTextLayout.topLevelSpacing(after: index - 1, in: document),
-                after: stack.arrangedSubviews[index - 1])
+        #if DEBUG
+        CodePageBuildStats.incrementalUpdates += 1
+        #endif
+
+        UIView.performWithoutAnimation {
+            // Longest prefix whose block identity survived the batch.
+            var keep = min(records.count, blocks.count)
+            var index = 0
+            while index < keep, records[index].key == keys[index] { index += 1 }
+            keep = index
+            removeRecords(from: keep)
+
+            for index in 0..<keep {
+                updateRecord(at: index, block: blocks[index], digest: digests[index],
+                             width: width, widthChanged: widthChanged)
+            }
+            for index in keep..<blocks.count {
+                appendRecord(block: blocks[index], key: keys[index],
+                             digest: digests[index], width: width)
+            }
+            updateSpacing(document: document)
         }
-    }
-}
-
-// MARK: - Official Code text colours
-
-extension AssistantMarkdownDocument {
-    /// Map the Chat ink to the official Code colours: body text
-    /// `#131313`/`#F9F9F7`, inline code `#184F95`/`#6DA7EC`. The official
-    /// theme links use the body colour, and inline code is the only blue.
-    /// Colours never change a height, so the measured and drawn documents
-    /// stay identical.
-    ///
-    /// [E] R19 `typography-inline.md` §1.2/§12 — the target build's headings
-    /// are Anthropic Sans at weight 550, not the 2026-03 Serif face; this
-    /// pass no longer rewrites heading fonts.
-    func applyingCodePageTextColors() -> AssistantMarkdownDocument {
-        AssistantMarkdownDocument(blocks: Self.styledBlocks(blocks),
-                                  blockGroups: blockGroups,
-                                  plainTextLength: plainTextLength,
-                                  blockSpacing: blockSpacing,
-                                  codeRoles: codeRoles)
+        builtGeneration = generation
     }
 
-    private static func styledBlocks(
-        _ blocks: [AssistantMarkdownBlock]
-    ) -> [AssistantMarkdownBlock] {
-        blocks.map { block in
-            switch block {
-            case .text(let text):
-                return .text(AssistantTextBlock(
-                    attributed: Self.recolored(text.attributed),
-                    headingLevel: text.headingLevel))
-            case .list(let list):
-                let items = list.items.map {
-                    AssistantListBlock.Item(marker: $0.marker,
-                                            blocks: styledBlocks($0.blocks))
+    private func rebuild(_ document: AssistantMarkdownDocument, width: CGFloat) {
+        #if DEBUG
+        CodePageBuildStats.fullRebuilds += 1
+        #endif
+        UIView.performWithoutAnimation {
+            removeRecords(from: 0)
+            let keys = document.blockKeys
+            let digests = document.blockDigests
+            let keyed = keys.count == document.blocks.count
+                && digests.count == document.blocks.count
+            for (index, block) in document.blocks.enumerated() {
+                if keyed {
+                    appendRecord(block: block, key: keys[index],
+                                 digest: digests[index], width: width)
+                } else {
+                    // A document without block identities (the plain
+                    // fallback) is rebuilt as a whole on every change.
+                    appendRecord(block: block, key: "unkeyed:\(index)",
+                                 digest: 0, width: width)
                 }
-                return .list(AssistantListBlock(
-                    items: items,
-                    indent: list.indent,
-                    markerGap: list.markerGap,
-                    bulletSize: list.bulletSize,
-                    bulletCenterX: list.bulletCenterX,
-                    itemSpacing: list.itemSpacing,
-                    innerSpacing: list.innerSpacing,
-                    bodySize: list.bodySize,
-                    // The bullet and ordered label are drawn outside the
-                    // attributed text, so they need the same body ink the
-                    // runs receive below.
-                    markerColor: CodePageTheme.markdownTextUIColor))
-            case .quote(let quote):
-                return .quote(AssistantQuoteBlock(
-                    blocks: styledBlocks(quote.blocks),
-                    inset: quote.inset,
-                    barWidth: quote.barWidth,
-                    innerSpacing: quote.innerSpacing,
-                    barColor: quote.barColor))
-            case .table(let table):
-                return .table(AssistantTableBlock(
-                    rows: table.rows.map { row in
-                        row.map { recolored($0) }
-                    },
-                    columnWidths: table.columnWidths,
-                    rowHeights: table.rowHeights,
-                    cellPaddingHorizontal: table.cellPaddingHorizontal,
-                    cellPaddingVertical: table.cellPaddingVertical,
-                    cornerRadius: table.cornerRadius,
-                    headerFillColor: table.headerFillColor,
-                    borderColor: table.borderColor))
-            default:
-                return block
+            }
+            updateSpacing(document: document)
+        }
+        builtGeneration = generation
+    }
+
+    /// One view for a block, with its measured height installed as a required
+    /// constraint. The height comes from the same function the representable's
+    /// `sizeThatFits` sums.
+    private func makeRecord(block: AssistantMarkdownBlock, key: String,
+                            digest: Int, width: CGFloat) -> Record {
+        let made = AssistantMarkdownBlockViewFactory.make(
+            block, width: width, displayScale: displayScale,
+            interactiveText: true)
+        // Body text (including list/quote paragraphs) gets system
+        // link/selection interaction. Fenced code owns its copy button and
+        // horizontal scroll; tables keep their own link lift/menu, so
+        // those subtrees stay inert.
+        enableTextInteraction(in: made.view)
+        let constraint = made.view.heightAnchor.constraint(equalToConstant: made.height)
+        constraint.isActive = true
+        return Record(key: key, kind: block.kindName, digest: digest,
+                      view: made.view, constraint: constraint)
+    }
+
+    private func appendRecord(block: AssistantMarkdownBlock, key: String,
+                              digest: Int, width: CGFloat) {
+        let record = makeRecord(block: block, key: key, digest: digest, width: width)
+        stack.addArrangedSubview(record.view)
+        records.append(record)
+    }
+
+    private func replaceRecord(at index: Int, block: AssistantMarkdownBlock,
+                               key: String, digest: Int, width: CGFloat) {
+        let old = records[index]
+        let record = makeRecord(block: block, key: key, digest: digest, width: width)
+        old.constraint.isActive = false
+        stack.removeArrangedSubview(old.view)
+        old.view.removeFromSuperview()
+        stack.insertArrangedSubview(record.view, at: index)
+        records[index] = record
+    }
+
+    private func removeRecords(from index: Int) {
+        guard index < records.count else { return }
+        for record in records[index...].reversed() {
+            record.constraint.isActive = false
+            stack.removeArrangedSubview(record.view)
+            record.view.removeFromSuperview()
+        }
+        records.removeSubrange(index...)
+    }
+
+    /// Update one block whose identity survived. Text and code views update in
+    /// place; containers (list/quote/table/image/math) are replaced until each
+    /// grows its own incremental path.
+    private func updateRecord(at index: Int, block: AssistantMarkdownBlock,
+                              digest: Int, width: CGFloat, widthChanged: Bool) {
+        let record = records[index]
+        guard record.kind == block.kindName else {
+            replaceRecord(at: index, block: block, key: record.key,
+                          digest: digest, width: width)
+            return
+        }
+        switch block {
+        case .text(let text):
+            guard let view = record.view as? AssistantMarkdownBlockTextView else {
+                replaceRecord(at: index, block: block, key: record.key,
+                              digest: digest, width: width)
+                return
+            }
+            if record.digest != digest {
+                view.attributedText = text.attributed
+            }
+            if record.digest != digest || widthChanged {
+                record.constraint.constant = height(
+                    of: block, key: record.key, digest: digest, width: width)
+            }
+        case .code(let code):
+            guard let view = record.view as? AssistantCodeBlockView else {
+                replaceRecord(at: index, block: block, key: record.key,
+                              digest: digest, width: width)
+                return
+            }
+            if record.digest != digest {
+                record.constraint.constant = view.update(codeBlock: code)
+            }
+        case .divider:
+            break
+        case .list, .quote, .table, .image, .math:
+            if record.digest != digest || widthChanged {
+                replaceRecord(at: index, block: block, key: record.key,
+                              digest: digest, width: width)
+                return
             }
         }
+        records[index].digest = digest
     }
 
-    private static func recolored(_ attributed: NSAttributedString) -> NSAttributedString {
-        let output = NSMutableAttributedString(attributedString: attributed)
-        let full = NSRange(location: 0, length: output.length)
-        output.enumerateAttribute(.font, in: full) { value, range, _ in
-            let font = value as? UIFont
-            let isMono = font?.fontDescriptor.symbolicTraits
-                .contains(.traitMonoSpace) ?? false
-            output.addAttribute(
-                .foregroundColor,
-                value: isMono ? CodePageTheme.inlineCodeTextUIColor
-                              : CodePageTheme.markdownTextUIColor,
-                range: range)
-        }
-        return output
+    private func height(of block: AssistantMarkdownBlock, key: String,
+                        digest: Int, width: CGFloat) -> CGFloat {
+        AssistantMarkdownTextLayout.height(
+            of: block, width: width, displayScale: displayScale,
+            key: key, digest: digest,
+            typographyRevision: typographyRevision, cache: cache)
     }
+
+    /// Textual collapses adjacent block margins (max, not sum); the
+    /// measurement path uses the same rule, so the stack must too.
+    private func updateSpacing(document: AssistantMarkdownDocument) {
+        guard records.count == document.blocks.count else { return }
+        for index in 1..<max(1, document.blocks.count) {
+            guard records.indices.contains(index - 1) else { break }
+            stack.setCustomSpacing(
+                AssistantMarkdownTextLayout.topLevelSpacing(after: index - 1, in: document),
+                after: records[index - 1].view)
+        }
+    }
+
+    #if DEBUG
+    /// Gate probes: the streaming path must keep the same view instances for
+    /// blocks whose keys survive, and only append new ones.
+    var debugBlockViews: [UIView] { records.map(\.view) }
+    var debugRecordKeys: [String] { records.map(\.key) }
+    #endif
 }
 
 nonisolated extension DynamicTypeSize {

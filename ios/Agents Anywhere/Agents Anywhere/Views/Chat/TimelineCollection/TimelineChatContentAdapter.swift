@@ -1181,6 +1181,21 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // Reasoning is drawn as the turn's single working row, not as
             // body text; feeding it through the publisher used to reconfigure
             // the whole Code row every 0.1 s for an invisible string.
+            //
+            // It still goes through the shared presentation flush, though, and
+            // its legacy reveal batch moves `nextBatchAt` one Chat interval
+            // (0.24 s + a frame) forward on every reasoning delta. That gate
+            // paces the *whole* timeline, so the Code page's message text was
+            // published once per 0.26 s (~6 lines at the fast model's rate)
+            // even though its own rows are renderer-owned. Mark reasoning rows
+            // renderer-owned too: the Code page never draws them as reveal
+            // text, so nothing visible loses its animation.
+            for row in group.rows where row.value.isReasoning
+                && !row.rendererOwnedReveal {
+                DispatchQueue.main.async {
+                    row.useRendererOwnedReveal()
+                }
+            }
             for row in group.rows where !row.value.isReasoning
                 && rowsByID[row.id] == nil {
                 rowsByID[row.id] = row

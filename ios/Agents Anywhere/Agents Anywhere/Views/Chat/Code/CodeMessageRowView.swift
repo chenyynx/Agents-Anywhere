@@ -382,14 +382,20 @@ struct CodeThinkingStatusLine: View {
     /// What the row is reporting; the adapter recomputes it as the turn's
     /// events change.
     let phase: CodeWorkingStatusPhase
+    /// True when the row belongs to the chat profile: the status text is the
+    /// neutral localized label painted with the shared shimmer sweep, not the
+    /// Code page's official English verb rotation (pp 2026-10-30).
+    let usesChatWorkingStyle: Bool
     @Environment(\.colorScheme) private var colorScheme
 
     init(isRunning: Bool = true,
          markBody: WorkingMarkBody = .think,
-         phase: CodeWorkingStatusPhase = .working(startedAt: Date())) {
+         phase: CodeWorkingStatusPhase = .working(startedAt: Date()),
+         usesChatWorkingStyle: Bool = false) {
         self.isRunning = isRunning
         self.markBody = markBody
         self.phase = phase
+        self.usesChatWorkingStyle = usesChatWorkingStyle
     }
 
     var body: some View {
@@ -401,10 +407,15 @@ struct CodeThinkingStatusLine: View {
             case .compacting:
                 statusLabel(String(localized: "正在压缩对话…"))
             case let .working(startedAt):
-                // The 1 s tick only lets the phase boundary land on time; the
-                // text changes at 0 / 3 / 7 / 13 … seconds, not every tick.
-                statusTimeline { date in
-                    CodeWorkingStatusText.verb(elapsed: date.timeIntervalSince(startedAt)) + "..."
+                if usesChatWorkingStyle {
+                    statusLabel(Self.processingLabel)
+                } else {
+                    // The 1 s tick only lets the phase boundary land on time;
+                    // the text changes at 0 / 3 / 7 / 13 … seconds, not every
+                    // tick.
+                    statusTimeline { date in
+                        CodeWorkingStatusText.verb(elapsed: date.timeIntervalSince(startedAt)) + "..."
+                    }
                 }
             case let .thinking(startedAt):
                 // Official live tiers are refreshed by the same 1 Hz
@@ -420,6 +431,9 @@ struct CodeThinkingStatusLine: View {
                 statusTimeline { date in
                     if date < endedAt.addingTimeInterval(CodeThinkingText.closedWindow) {
                         return CodeThinkingText.closedText(seconds: seconds)
+                    }
+                    if usesChatWorkingStyle {
+                        return Self.processingLabel
                     }
                     return CodeWorkingStatusText.verb(
                         elapsed: date.timeIntervalSince(fallbackStartedAt)) + "..."
@@ -440,8 +454,15 @@ struct CodeThinkingStatusLine: View {
         }
     }
 
+    /// The neutral status the chat profile shows instead of the English verb
+    /// rotation (pp 2026-10-30).
+    private static var processingLabel: String {
+        String(localized: "正在处理中…")
+    }
+
+    @ViewBuilder
     private func statusLabel(_ text: String) -> some View {
-        Text(verbatim: text)
+        let label = Text(verbatim: text)
             // [E] 15 pt / 400; the official family is the ambient
             // Typography's (R19 tool-row-status.md). AA uses the official
             // proportional face; the text style is [U].
@@ -453,6 +474,16 @@ struct CodeThinkingStatusLine: View {
             // change the row height every second.
             .lineLimit(1)
             .truncationMode(.tail)
+        if usesChatWorkingStyle {
+            // The official live words are `ShimmerView<Text>`
+            // (EVIDENCE/round19/tool-row-status.md:322); the chat profile
+            // runs the same sweep the tool rows use (`CodeCollapsedRowShimmer`,
+            // `CodeCollapsedToolRow.swift:171`), the Code page keeps its plain
+            // label (pp 2026-10-30).
+            label.modifier(CodeCollapsedRowShimmer(active: true))
+        } else {
+            label
+        }
     }
 }
 
@@ -833,6 +864,17 @@ struct CodeThinkingDetailRequest: Identifiable {
     let text: String
 }
 
+/// The chat profile's step-group detail request: the whole group, in order.
+struct CodeStepGroupDetailRequest: Identifiable {
+    let id: String
+    let group: TimelineStepGroup
+
+    init(group: TimelineStepGroup) {
+        id = group.id
+        self.group = group
+    }
+}
+
 /// One detail request: the tapped segment's whole call list in official order.
 /// The official tap opens `collapsedToolCalls(CollapsedToolCallsGroup)`, a
 /// summary list; a row in that list pushes the single call. The row reports
@@ -853,11 +895,13 @@ struct CodeToolDetailRequest: Identifiable {
 enum CodePageDetailRequest: Identifiable {
     case tool(CodeToolDetailRequest)
     case thinking(CodeThinkingDetailRequest)
+    case stepGroup(CodeStepGroupDetailRequest)
 
     var id: String {
         switch self {
         case let .tool(request): return "tool:\(request.id)"
         case let .thinking(request): return "thinking:\(request.id)"
+        case let .stepGroup(request): return "steps:\(request.id)"
         }
     }
 }

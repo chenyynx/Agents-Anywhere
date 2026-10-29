@@ -60,27 +60,27 @@ struct SessionChatView: View, Equatable {
     /// dock does: adding the second initializer inline pushes the enclosing
     /// `Group` past the type checker's budget.
     @ViewBuilder private func timelineView() -> some View {
-        if usesCollectionTimeline {
-            // [E] The official transcript reads its safe area from a
-            // GeometryReader inside the page chrome: the composer bar has
-            // already extended the safe area here, and the ignore below only
-            // removes it from the child's layout. The probe (run 40353074977)
-            // measured this proxy at exactly bar + home indicator + keyboard,
-            // delivered once per change inside the keyboard's animation
-            // transaction. The controller turns it into the official content
-            // inset; the list itself is a full-screen bleed.
-            GeometryReader { proxy in
-                TimelineChatTimelineView(model: model,
-                    onAttachment: openAttachment, onFile: openFile,
-                    onSubAgent: { sheet = .subagents($0, fromCapsule: false) },
-                    safeAreaInsets: proxy.safeAreaInsets)
-                    .ignoresSafeArea([.container, .keyboard], edges: [.top, .bottom])
-            }
-        } else {
-            ChatTimelineView(model: model,
+        // Both rendering modes run on the collection engine (pp 2026-10-29);
+        // the retired SwiftUI Chat container is no longer reachable.
+        // [E] The official transcript reads its safe area from a
+        // GeometryReader inside the page chrome: the composer bar has
+        // already extended the safe area here, and the ignore below only
+        // removes it from the child's layout. The probe (run 40353074977)
+        // measured this proxy at exactly bar + home indicator + keyboard,
+        // delivered once per change inside the keyboard's animation
+        // transaction. The controller turns it into the official content
+        // inset; the list itself is a full-screen bleed.
+        GeometryReader { proxy in
+            TimelineChatTimelineView(model: model,
                 onAttachment: openAttachment, onFile: openFile,
-                onSubAgent: { sheet = .subagents($0, fromCapsule: false) })
-                .ignoresSafeArea(.container, edges: .top)
+                onSubAgent: { sheet = .subagents($0, fromCapsule: false) },
+                safeAreaInsets: proxy.safeAreaInsets,
+                renderMode: renderMode)
+                // The bridge owns one adapter for its lifetime; a mode switch
+                // must rebuild it, exactly like the old switch rebuilt the
+                // branch it replaced.
+                .id(renderModeRaw)
+                .ignoresSafeArea([.container, .keyboard], edges: [.top, .bottom])
         }
     }
 
@@ -148,10 +148,14 @@ struct SessionChatView: View, Equatable {
         }
     }
     @State private var toasts = ChatToastStore()
-    /// Runtime A/B switch for the collection timeline (default off). Flipping
-    /// it rebuilds the branch, so the controller's `hasOpened` state starts
-    /// fresh exactly as the task sheet requires.
-    @AppStorage(TimelineCollectionSwitch.key) private var usesCollectionTimeline = false
+    /// The transcript's rendering mode (pp 2026-10-29): `.chat` renders the
+    /// step-group live row, `.code` keeps the official Code page. Both run on
+    /// the collection engine; only the row presentation differs.
+    @AppStorage(TimelineRenderModeSwitch.key)
+    private var renderModeRaw = TimelineRenderMode.code.rawValue
+    private var renderMode: TimelineRenderMode {
+        TimelineRenderMode(rawValue: renderModeRaw) ?? .code
+    }
     /// The notification-type notices this page should surface as toasts: open
     /// notifications whose identity the user has not already acknowledged. The
     /// acknowledgement record lives on the session (and its archive), so a
@@ -185,10 +189,10 @@ struct SessionChatView: View, Equatable {
         imageLoader = services.attachmentImageLoader
         self.onMenu = onMenu
     }
-    /// The Code profile (collection timeline) uses the official composer
-    /// measurements; Chat keeps the current AA bar.
+    /// The collection engine's composer keeps the official Code measurements
+    /// in both rendering modes; the mode only changes the transcript rows.
     private var composerProfile: ComposerMetricsProfile {
-        usesCollectionTimeline ? .code : .chat(bodyLineHeight: bodyLineHeight)
+        .code
     }
     private var controls: ChatControlMetrics {
         .init(bodyLineHeight: bodyLineHeight, profile: composerProfile)
@@ -196,7 +200,7 @@ struct SessionChatView: View, Equatable {
     /// Default hint, mid-turn queue hint, or the takeover gate.
     private var composerPlaceholder: String {
         if requiresTakeover { return String(localized: "请先接管") }
-        if usesCollectionTimeline, model.isComposerStreaming,
+        if model.isComposerStreaming,
            session.composer.isFocused, !session.composer.hasContent {
             return String(localized: "排队至本轮结束后…")
         }

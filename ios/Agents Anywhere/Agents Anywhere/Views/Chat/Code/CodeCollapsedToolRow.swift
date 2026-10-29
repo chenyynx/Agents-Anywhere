@@ -132,6 +132,10 @@ struct CodeCollapsedStepsRow: View {
     var hasDetails: Bool
     var diffIndicator: CodeDiffStat?
     var workingMark: WorkingMarkBody?
+    /// A caller-supplied leading view that replaces both the category icon
+    /// and the frame-less mark skeleton. The chat profile's live step row
+    /// passes the real animated `WorkingMarkView` here (pp 2026-10-29).
+    var leadingOverride: AnyView?
     var isTextHidden: Bool = false
     /// D10 (R28 §U 收口二 二-E): the official `ToolRowCompanions` container
     /// draws settled rows first and `AttachmentTiles` second, and skips the
@@ -221,7 +225,9 @@ struct CodeCollapsedStepsRow: View {
     /// thinking row and large for tool category icons.
     @ViewBuilder
     private var leadingSlot: some View {
-        if let workingMark {
+        if let leadingOverride {
+            leadingOverride
+        } else if let workingMark {
             // The official first slot is `ConditionalContent<IconFrame,
             // WorkingMarkSlot + ZStack<WorkingMarkView>>`: a seated mark
             // replaces the category icon. D2/D3: only the 20×20 content box
@@ -462,7 +468,7 @@ struct CodeCollapsedToolRow: View {
 /// D5 UNKNOWN: the official static scan found no `accessibilityReduceMotion`
 /// read in `ShimmerOverlay`/`WorkingMark`; whether the animation stops under
 /// Reduce Motion is unverified. Do not add a gating branch until measured.
-private struct CodeCollapsedRowShimmer: ViewModifier {
+struct CodeCollapsedRowShimmer: ViewModifier {
     let active: Bool
 
     private static let period: Double = 2.0

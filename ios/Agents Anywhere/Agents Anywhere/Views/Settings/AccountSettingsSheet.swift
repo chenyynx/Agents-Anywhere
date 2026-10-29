@@ -7,11 +7,13 @@ struct AccountSettingsSheet: View {
     @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.default.rawValue
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
     @AppStorage(ProjectSidebarPreferences.compactSessionListKey) private var compactSessionList = false
-    @AppStorage(OrbSettingsKeys.palette) private var orbPaletteValue = "kimi"
-    @AppStorage(OrbSettingsKeys.customHex) private var orbCustomHexValue = OrbSettingsKeys.encodeCustomHex(["#007CFF", "#00F6FF", "#DFC8F5"])
-    @AppStorage(ReplyPresentation.plainFadeKey) private var plainFade = false
-    @AppStorage(TimelineCollectionSwitch.key) private var usesCollectionTimeline = false
+    @AppStorage(TimelineRenderModeSwitch.key)
+    private var renderModeRaw = TimelineRenderMode.code.rawValue
     @State private var timelineLastActive: Date?
+
+    private var renderMode: TimelineRenderMode {
+        TimelineRenderMode(rawValue: renderModeRaw) ?? .code
+    }
     @State private var confirmsSignOut = false
     @State private var signOutError: String?
     @State private var toasts = ChatToastStore()
@@ -60,15 +62,6 @@ struct AccountSettingsSheet: View {
                         SettingsRow(title: String(localized: "Accent color"), symbol: "paintpalette",
                             value: String(localized: AppAccent.resolve(accentValue).title))
                     }
-                    NavigationLink { ThinkingOrbSettingsView() } label: {
-                        SettingsRow(title: String(localized: "Thinking orb"), symbol: "circle.dashed",
-                            value: String(localized: OrbPalette.resolve(id: orbPaletteValue,
-                                customHex: OrbSettingsKeys.decodeCustomHex(orbCustomHexValue)).name))
-                    }
-                    NavigationLink { ChatColorSettingsView() } label: {
-                        SettingsRow(title: String(localized: "聊天文字颜色"), symbol: "textformat",
-                            value: String(localized: "正文与链接"))
-                    }
                     NavigationLink { SettingsLanguageView() } label: {
                         SettingsRow(title: String(localized: "Language"), symbol: "globe", value: SettingsLanguageView.currentLanguage)
                     }
@@ -87,23 +80,25 @@ struct AccountSettingsSheet: View {
                     .disabled(!showsSessionList)
                 }
                 Section {
-                    Toggle(isOn: $usesCollectionTimeline) {
-                        Label(String(localized: "会话时间线（实验）"), appSymbol: "rectangle.stack")
-                            .labelStyle(.titleAndIcon)
-                    }
-                    .tint(.green)
-                } footer: {
-                    if usesCollectionTimeline {
-                        if let timelineLastActive {
-                            Text(String(localized: "上次生效：\(timelineLastActive.formatted(date: .abbreviated, time: .shortened))"))
-                        } else {
-                            Text(String(localized: "打开一个会话后回到这里确认新容器已生效。"))
+                    NavigationLink {
+                        TimelineRenderModeSettingsView()
+                    } label: {
+                        HStack {
+                            Label(String(localized: "渲染方式"), appSymbol: "rectangle.stack")
+                                .labelStyle(.titleAndIcon)
+                            Spacer()
+                            Text(renderMode.title)
+                                .foregroundStyle(.secondary)
                         }
+                    }
+                } footer: {
+                    if let timelineLastActive {
+                        Text(renderMode.detail + "\n"
+                            + String(localized: "上次生效：\(timelineLastActive.formatted(date: .abbreviated, time: .shortened))"))
                     } else {
-                        Text(String(localized: "当前使用旧滚动容器。"))
+                        Text(renderMode.detail)
                     }
                 }
-                revealAnimationSection
                 Section(String(localized: "Workspace")) {
                     NavigationLink { SettingsServerView() } label: {
                         SettingsRow(title: String(localized: "Server"), symbol: "server.rack", value: appState.serverURL?.host)
@@ -131,15 +126,11 @@ struct AccountSettingsSheet: View {
             }
             .listStyle(.insetGrouped)
             .onAppear { refreshTimelineMarker() }
-            .onChange(of: usesCollectionTimeline) { _, enabled in
-                // A new switch-on cycle must not inherit an old build's
-                // timestamp: clear it so the next session proves this run.
-                if enabled {
-                    UserDefaults.standard.removeObject(forKey: TimelineCollectionSwitch.lastActiveKey)
-                    timelineLastActive = nil
-                } else {
-                    refreshTimelineMarker()
-                }
+            .onChange(of: renderModeRaw) { _, _ in
+                // A mode change must not inherit the previous run's timestamp:
+                // clear it so the next session proves this mode ran.
+                UserDefaults.standard.removeObject(forKey: TimelineCollectionSwitch.lastActiveKey)
+                timelineLastActive = nil
             }
             .navigationTitle(String(localized: "Settings")).navigationBarTitleDisplayMode(.inline)
             .toolbar { SheetCloseToolbar(disabled: isWorking, action: close) }
@@ -178,16 +169,6 @@ struct AccountSettingsSheet: View {
         timelineLastActive = UserDefaults.standard.object(forKey: TimelineCollectionSwitch.lastActiveKey) as? Date
     }
 
-    private var revealAnimationSection: some View {
-        Section {
-            Toggle(isOn: Binding(get: { !plainFade }, set: { plainFade = !$0 })) {
-                Label(String(localized: "Reveal animation"), appSymbol: "sparkles").labelStyle(.titleAndIcon)
-            }
-            .tint(.green)
-        } footer: {
-            Text(String(localized: "Off: new text fades in without the blur and rise."))
-        }
-    }
     private func close() {
         guard !isWorking else { return }
         if drafts.hasChanges { confirmsDiscard = true } else { dismiss() }

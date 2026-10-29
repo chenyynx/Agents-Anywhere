@@ -39,16 +39,26 @@ struct CodeWorkingStatusRow: View {
     /// verbs); the adapter recomputes it from the turn's events.
     let phase: CodeWorkingStatusPhase
 
+    /// True in the chat profile: the English verb rotation becomes the
+    /// neutral localized status, painted with the shared shimmer sweep
+    /// (pp 2026-10-30). The Code page keeps the official rotation.
+    let usesChatWorkingStyle: Bool
+
     init(isRunning: Bool = true,
          markBody: WorkingMarkBody = .think,
-         phase: CodeWorkingStatusPhase = .working(startedAt: Date())) {
+         phase: CodeWorkingStatusPhase = .working(startedAt: Date()),
+         usesChatWorkingStyle: Bool = false) {
         self.isRunning = isRunning
         self.markBody = markBody
         self.phase = phase
+        self.usesChatWorkingStyle = usesChatWorkingStyle
     }
 
     var body: some View {
-        CodeThinkingStatusLine(isRunning: isRunning, markBody: markBody, phase: phase)
+        CodeThinkingStatusLine(isRunning: isRunning,
+                               markBody: markBody,
+                               phase: phase,
+                               usesChatWorkingStyle: usesChatWorkingStyle)
             .padding(.vertical, CodePageTheme.segmentVerticalPadding)
             .padding(.vertical, CodePageTheme.rowMarginTop)
             .frame(maxWidth: .infinity, alignment: .leading)

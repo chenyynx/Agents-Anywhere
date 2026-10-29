@@ -35,11 +35,13 @@ struct TimelineChatTimelineView: View {
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void,
          onFile: @escaping (String) -> Void,
          onSubAgent: @escaping (String) -> Void,
-         safeAreaInsets: EdgeInsets = EdgeInsets()) {
+         safeAreaInsets: EdgeInsets = EdgeInsets(),
+         renderMode: TimelineRenderMode = .code) {
         self.model = model
         self.safeAreaInsets = safeAreaInsets
         _bridge = StateObject(wrappedValue: TimelineChatBridge(model: model,
-            onAttachment: onAttachment, onFile: onFile, onSubAgent: onSubAgent))
+            onAttachment: onAttachment, onFile: onFile, onSubAgent: onSubAgent,
+            renderMode: renderMode))
     }
 
     private var hasInteractions: Bool {
@@ -203,6 +205,10 @@ struct TimelineChatTimelineView: View {
                                             cwd: model.session.metadata?.cwd)
                 case let .thinking(thinking):
                     CodeThinkingDetailView(text: thinking.text)
+                case let .stepGroup(stepGroup):
+                    CodeStepGroupDetailView(group: stepGroup.group,
+                                            cwd: model.session.metadata?.cwd,
+                                            liveGroups: bridge.adapter.liveStepGroups)
                 }
             }
             // Probe builds add a floating diagnostics button; other builds
@@ -253,10 +259,12 @@ final class TimelineChatBridge: ObservableObject {
     init(model: SessionChatModel,
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void,
          onFile: @escaping (String) -> Void,
-         onSubAgent: @escaping (String) -> Void) {
+         onSubAgent: @escaping (String) -> Void,
+         renderMode: TimelineRenderMode = .code) {
         self.model = model
         let adapter = TimelineChatContentAdapter(model: model, onAttachment: onAttachment,
-                                                 onFile: onFile, onSubAgent: onSubAgent)
+                                                 onFile: onFile, onSubAgent: onSubAgent,
+                                                 renderMode: renderMode)
         self.adapter = adapter
         // The adapter owns the row views; the page owns the presentation.
         adapter.onCodeToolDetail = { [weak self] request in
@@ -264,6 +272,9 @@ final class TimelineChatBridge: ObservableObject {
         }
         adapter.onCodeThinkingDetail = { [weak self] request in
             self?.codeDetailRequest = .thinking(request)
+        }
+        adapter.onCodeStepGroupDetail = { [weak self] request in
+            self?.codeDetailRequest = .stepGroup(request)
         }
     }
 

@@ -1260,8 +1260,9 @@ final class CodeProfileAutoRunModel {
         check(UIImage(named: CodePageTheme.failureGlyphAssetName) != nil,
               "groupDetail glyph: asset"
                 + " '\(CodePageTheme.failureGlyphAssetName)' is not in the bundle")
-        check(CodePageTheme.failureGlyphSize == .medium,
-              "groupDetail glyph: default size U changed from .medium")
+        check(CodePageTheme.failureGlyphSize == .small,
+              "groupDetail glyph: size \\(CodePageTheme.failureGlyphSize),"
+                + " expected .small (R-S: the body forces size byte 0)")
         for size in AnthropiconSize.allCases {
             let expected = 16 + 4 * CGFloat(size.rawValue)
             check(CodePageTheme.failureGlyphFrameSide(for: size) == expected,

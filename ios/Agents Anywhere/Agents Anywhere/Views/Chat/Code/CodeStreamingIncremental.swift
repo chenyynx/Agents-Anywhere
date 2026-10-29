@@ -14,7 +14,21 @@ import Foundation
 /// cannot key stably is discovered.
 @MainActor
 enum CodeStreamingIncremental {
-    static var enabled = true
+    private static let defaultsKey = "CodeStreamingIncremental.enabled"
+
+    /// Defaults to the incremental path. A device can flip the switch without
+    /// a rebuild (`defaults write <bundle-id> CodeStreamingIncremental.enabled
+    /// -bool NO`), which restores the previous full-parse/full-rebuild path.
+    static var enabled: Bool {
+        get {
+            guard let value = UserDefaults.standard.object(
+                forKey: defaultsKey) as? Bool else { return true }
+            return value
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: defaultsKey)
+        }
+    }
 }
 
 #if DEBUG

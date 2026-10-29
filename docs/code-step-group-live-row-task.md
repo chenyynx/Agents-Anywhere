@@ -92,3 +92,18 @@
 - **Phase 2**：独立工作行的落座规则细化（跟随官方 §4.1，含 awaitsUser / opensReply 边距）。
 - **Phase 3**：验收通过后删除旧 Chat 容器文件。
 - 每阶段单独出包验收。
+
+## 9. 状态补充（2026-10-30 已提交）
+
+- 详情页：行间竖线（与 Code 页 `CodeTimelineConnector` 同一实现）；打开后实时更新（`TimelineLiveStepGroups` 发布 adapter 每次刷新算出的分组），新步骤在尾部插入并滚到最新；点进的思考详情页流式更新（路由带步骤 id，实时取文本，点开时的快照兜底）。
+- 工作状态行：chat profile 显示「正在处理中…」并挂工具行同款扫光（`CodeCollapsedRowShimmer`）；Code 页保持英文轮换与原视觉。
+- 设置：删除「文字浮现」「思考球」「聊天文字颜色（比例方案/字号/颜色）」三个老 Chat 设置项及其设置页；底层键与模型保留，老渲染面维持默认。
+
+## 10. 待办（pp 2026-10-30）
+
+**先把 SubAgent 胶囊按官方样式重做，然后删除老 Chat 遗留。** 前置与顺序：
+
+1. SubAgent 面板不再使用 `ChatMarkdownView`（当前 `ios/Agents Anywhere/Agents Anywhere/Views/Chat/SubAgentPanelSheet.swift:510` 仍在用）。
+2. 欢迎页（`NewSessionWelcomeView`）与公告（`AnnouncementSheet`）改用 Code 渲染面后，`StreamingGlyphReveal` / `GlyphRevealLedger` / `ReplyPresentation` 的浮现参数可删。
+3. 交互 target 行目前仍走 `SessionTimelineGroupView`（adapter 的 `.group` 兜底），先换渲染面。
+4. 最后删除：`ChatTimelineView`、`SessionTimelineGroupView`/`SessionTimelineEventView`、`ChatMarkdownView`、`ChatMetrics`/`ChatTypeSettings`/`ChatColorSettings`/`ChatColorStore`、思考球（`ThinkingOrbView`/`OrbEngine`/`OrbSettingsKeys` 及相关单测）。每项删除前 grep 确认无引用。

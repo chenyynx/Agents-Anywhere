@@ -222,8 +222,12 @@ enum CodeMessageHeightMeasurer {
             return estimatedAssistantTextHeight(text, width: width, typography: typography)
         }
         let scale = traits?.displayScale ?? 2
+        // The same per-block memo the leaf uses. The document's block keys and
+        // digests make a false hit impossible; the typography revision is part
+        // of the key, so a Dynamic Type change cannot reuse an old height.
         return ceil(AssistantMarkdownTextLayout.measure(
-            document, width: width, displayScale: scale))
+            document, width: width, displayScale: scale,
+            cache: .shared, typographyRevision: typography.revision))
     }
 
     /// The streaming fallback. No 20% cushion: the Code estimate is assembled

@@ -12,6 +12,9 @@ enum AssistantMarkdownBlockViewFactory {
                      width: CGFloat,
                      displayScale: CGFloat,
                      interactiveText: Bool = false) -> (view: UIView, height: CGFloat) {
+        #if DEBUG
+        CodePageBuildStats.blockViewCreations += 1
+        #endif
         let height = AssistantMarkdownTextLayout.height(
             of: block, width: width, displayScale: displayScale)
         switch block {
@@ -343,9 +346,9 @@ final class AssistantQuoteBlockView: UIView {
 /// horizontally scrolling code body. Long lines never wrap, so the block's
 /// height is the code's intrinsic line stack plus the card chrome.
 final class AssistantCodeBlockView: UIView {
-    private let codeBlock: AssistantCodeBlock
+    private var codeBlock: AssistantCodeBlock
     private let displayScale: CGFloat
-    private let textSize: CGSize
+    private var textSize: CGSize
     private let header = UIView()
     private let languageLabel = UILabel()
     private let divider = UIView()
@@ -354,6 +357,21 @@ final class AssistantCodeBlockView: UIView {
     private let copyIcon = UIImageView()
     private let expandIcon = UIImageView()
     private var highlightTask: Task<Void, Never>?
+    /// True while a tokenize request is running. A second request would only
+    /// queue behind the JavaScriptCore actor, so the card coalesces them and
+    /// re-runs once with the latest source when the current request finishes.
+    private var highlightInFlight = false
+    private var highlightDirty = false
+    /// The token stream currently painted, plus the source and character
+    /// length it covers. A growing code block usually extends the token
+    /// stream at its tail, so the next result can replace only the tail
+    /// instead of rebuilding the whole attributed string.
+    private var appliedTokens: [CodeHighlightToken] = []
+    private var appliedTokenLength = 0
+    private var highlightedSource = ""
+    /// Bumped for every highlight request; an async result from an older
+    /// request is dropped instead of overwriting the current text.
+    private var highlightGeneration = 0
     private var copyResetWorkItem: DispatchWorkItem?
 
     init(codeBlock: AssistantCodeBlock, width: CGFloat, displayScale: CGFloat) {
@@ -392,12 +410,7 @@ final class AssistantCodeBlockView: UIView {
         languageLabel.textColor = codeBlock.titleColor
             ?? ChatTextUIColors.codeHeaderLabel
         languageLabel.lineBreakMode = .byTruncatingTail
-        // [E] The title is the fence info string **as written** (no
-        // lowercasing); a fence with no language shows the localised "Code"
-        // (R19 code-card-highlighting.md).
-        languageLabel.text = codeBlock.language?.isEmpty == false
-            ? codeBlock.language
-            : String(localized: "代码")
+        updateLanguageLabel()
         header.addSubview(languageLabel)
 
         configureIcon(copyIcon, symbol: "document.on.document")
@@ -432,24 +445,170 @@ final class AssistantCodeBlockView: UIView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// Apply a new version of this code block in place and return the card's
+    /// new height — the same number `AssistantMarkdownTextLayout.height(of:)`
+    /// reports for the block, so the stack's constraint and the representable's
+    /// sum stay one arithmetic.
+    ///
+    /// A growing block appends only the new tail to the text storage; the
+    /// highlight pass then repaints from the first changed token. A rewritten
+    /// block (a correction) reloads the whole body and resets the horizontal
+    /// offset.
+    @discardableResult
+    func update(codeBlock: AssistantCodeBlock) -> CGFloat {
+        let previousString = self.codeBlock.code.string
+        let previousLanguage = self.codeBlock.language
+        let previousLength = (previousString as NSString).length
+        self.codeBlock = codeBlock
+        let newString = codeBlock.code.string
+        let newNSString = newString as NSString
+        var appended = false
+        if newNSString.hasPrefix(previousString) {
+            if codeBlock.code.length > 0,
+               let baseAttributes = codeBlock.code.attributes(
+                    at: 0, effectiveRange: nil) as? [NSAttributedString.Key: Any] {
+                let tail = NSRange(
+                    location: previousLength,
+                    length: newNSString.length - previousLength)
+                codeView.textStorage.insert(
+                    NSAttributedString(string: newNSString.substring(with: tail),
+                                       attributes: baseAttributes),
+                    at: previousLength)
+                appended = true
+            }
+        }
+        if !appended {
+            codeView.attributedText = codeBlock.code
+            scrollView.setContentOffset(.zero, animated: false)
+            appliedTokens = []
+            appliedTokenLength = 0
+            highlightedSource = ""
+        }
+        if previousLanguage != codeBlock.language {
+            appliedTokens = []
+            appliedTokenLength = 0
+            highlightedSource = ""
+            updateLanguageLabel()
+        }
+        textSize = AssistantMarkdownTextLayout.intrinsicSize(
+            of: codeBlock.code, displayScale: displayScale)
+        startHighlighting()
+        setNeedsLayout()
+        return AssistantMarkdownTextLayout.height(
+            of: .code(codeBlock), width: max(bounds.width, 1),
+            displayScale: displayScale)
+    }
+
+    private func updateLanguageLabel() {
+        // [E] The title is the fence info string **as written** (no
+        // lowercasing); a fence with no language shows the localised "Code"
+        // (R19 code-card-highlighting.md).
+        languageLabel.text = codeBlock.language?.isEmpty == false
+            ? codeBlock.language
+            : String(localized: "代码")
+    }
+
     /// The legacy renderer gets syntax colours from Textual's view layer. The
     /// TextKit path has no `StructuredText` view, so it asks the same Prism
     /// tokenizer for the token stream and applies the same AA palette.
+    ///
+    /// Phase 1 keeps Prism as the token source: the tokenizer has no resumable
+    /// state, so a partial restart point inside a multi-line string/comment
+    /// cannot be proven without the grammar. The application of the stream is
+    /// incremental (prefix tokens are kept, only the changed tail is painted).
+    /// Phase 2 replaces this call with the official PegEngine's resumable
+    /// session behind `CodeHighlightEngine`.
     private func startHighlighting() {
-        guard let language = codeBlock.language, !language.isEmpty else { return }
-        let plain = codeBlock.code
-        let source = plain.string
+        highlightGeneration &+= 1
+        let generation = highlightGeneration
+        let source = codeBlock.code.string
+        let language = codeBlock.language
+        guard let language, !language.isEmpty else {
+            // No language: the card shows the plain attributed code. The
+            // prefix-append path already left exactly these characters in the
+            // text view, so reloading would throw away the layout for nothing.
+            if codeView.textStorage.string != codeBlock.code.string {
+                codeView.attributedText = codeBlock.code
+            }
+            appliedTokens = []
+            appliedTokenLength = 0
+            highlightedSource = ""
+            highlightDirty = false
+            return
+        }
+        // One tokenize at a time: the JavaScriptCore actor serializes calls, so
+        // starting one per tick would only build a queue the screen never sees.
+        guard !highlightInFlight else {
+            highlightDirty = true
+            return
+        }
+        highlightInFlight = true
         highlightTask = Task { @MainActor [weak self] in
-            let tokens = await SyntaxHighlighting.tokenize(
-                code: source, language: language)
-            guard let self, !Task.isCancelled,
-                  tokens.map(\.content).joined() == source else { return }
-            self.codeView.attributedText = Self.highlighted(
-                tokens: tokens, base: plain)
+            let tokens = await PrismCodeHighlightEngine().tokenize(
+                source, language: language)
+            guard let self else { return }
+            self.highlightInFlight = false
+            if !Task.isCancelled,
+               generation == self.highlightGeneration,
+               self.codeBlock.code.string == source,
+               tokens.map(\.content).joined() == source {
+                self.apply(tokens: tokens, base: self.codeBlock.code)
+            }
+            if self.highlightDirty {
+                self.highlightDirty = false
+                self.startHighlighting()
+            }
         }
     }
 
-    private static func highlighted(tokens: [SyntaxHighlightToken],
+    /// Paint `tokens` over `base`. When the previous stream is a prefix of the
+    /// new one, only the tokens after the common prefix are rebuilt; a growing
+    /// code block therefore touches O(new text) characters per tick.
+    private func apply(tokens: [CodeHighlightToken], base: NSAttributedString) {
+        guard base.length > 0,
+              let baseAttributes = base.attributes(
+                at: 0, effectiveRange: nil) as? [NSAttributedString.Key: Any] else {
+            codeView.attributedText = base
+            appliedTokens = []
+            appliedTokenLength = 0
+            highlightedSource = base.string
+            return
+        }
+        var common = 0
+        let limit = min(tokens.count, appliedTokens.count)
+        while common < limit, tokens[common] == appliedTokens[common] { common += 1 }
+        let canAppend = !appliedTokens.isEmpty
+            && common == appliedTokens.count
+            && appliedTokenLength <= codeView.textStorage.length
+        if canAppend {
+            let tail = NSMutableAttributedString()
+            for token in tokens[common...] {
+                var attributes = baseAttributes
+                if let color = Self.color(for: token.scope) {
+                    attributes[.foregroundColor] = color
+                }
+                tail.append(NSAttributedString(
+                    string: token.content, attributes: attributes))
+            }
+            let remaining = NSRange(
+                location: appliedTokenLength,
+                length: codeView.textStorage.length - appliedTokenLength)
+            codeView.textStorage.replaceCharacters(in: remaining, with: tail)
+            #if DEBUG
+            CodePageBuildStats.highlightIncrementalApplies += 1
+            #endif
+        } else {
+            codeView.attributedText = Self.highlighted(tokens: tokens, base: base)
+        }
+        appliedTokens = tokens
+        appliedTokenLength = codeView.textStorage.length
+        highlightedSource = base.string
+        #if DEBUG
+        CodePageBuildStats.highlightApplies += 1
+        #endif
+    }
+
+    private static func highlighted(tokens: [CodeHighlightToken],
                                     base: NSAttributedString) -> NSAttributedString {
         guard base.length > 0,
               let baseAttributes = base.attributes(
@@ -459,7 +618,7 @@ final class AssistantCodeBlockView: UIView {
         let result = NSMutableAttributedString()
         for token in tokens {
             var attributes = baseAttributes
-            if let color = color(for: token.type) {
+            if let color = color(for: token.scope) {
                 attributes[.foregroundColor] = color
             }
             // [E] The official tokenizer adds only a foreground colour per
@@ -474,6 +633,12 @@ final class AssistantCodeBlockView: UIView {
     /// The official highlight.js theme mapping (R19 code-card-highlighting.md,
     /// switch table `0x104230070`). A token that is not listed keeps the base
     /// `#383A42` / `#ABB2BF`.
+    private static func color(for scope: String) -> UIColor? {
+        // `TokenType` is a non-failable raw-value struct; an unknown scope
+        // simply reaches the switch's default and keeps the base ink.
+        color(for: StructuredText.HighlighterTheme.TokenType(rawValue: scope))
+    }
+
     private static func color(
         for type: StructuredText.HighlighterTheme.TokenType
     ) -> UIColor? {
@@ -627,7 +792,17 @@ final class AssistantCodeBlockView: UIView {
         return rendered.withRenderingMode(.alwaysTemplate)
     }
 
-    deinit { copyResetWorkItem?.cancel() }
+    deinit {
+        copyResetWorkItem?.cancel()
+        highlightTask?.cancel()
+    }
+
+    #if DEBUG
+    /// Gate probes: the streaming path must reuse this text view and see the
+    /// appended body without recreating the card.
+    var debugCodeView: AssistantMarkdownBlockTextView { codeView }
+    var debugCodeText: String { codeView.textStorage.string }
+    #endif
 
     override func layoutSubviews() {
         super.layoutSubviews()

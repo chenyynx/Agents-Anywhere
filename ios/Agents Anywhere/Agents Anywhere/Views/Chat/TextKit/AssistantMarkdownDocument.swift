@@ -26,6 +26,16 @@ struct AssistantMarkdownDocument {
     /// The resolved official Code-page roles (heading line heights, inline-code
     /// size, list indent). `nil` keeps the Chat scheme unchanged.
     var codeRoles: CodePageMarkdownRoles? = nil
+    /// Stable identity of each top-level block, in document order:
+    /// `"<snapshot id>:<block index>"`. A block keeps its key while its
+    /// snapshot id and position survive a streaming batch, so the renderer can
+    /// reuse the view instead of rebuilding the stack. Empty for documents
+    /// built outside the snapshot pipeline (the incremental path then falls
+    /// back to a full rebuild rather than guessing identities).
+    var blockKeys: [String] = []
+    /// Content version of each top-level block: the snapshot's digest. A block
+    /// with an unchanged key and digest does not need to be measured again.
+    var blockDigests: [Int] = []
 
     /// Recursive kind census. The gate asserts the fixture really produced the
     /// structures it claims to exercise, not just a paragraph that happened to
@@ -434,6 +444,8 @@ enum AssistantMarkdownDocumentParser {
               !snapshots.isEmpty else { return nil }
         var parsedBlocks: [AssistantMarkdownBlock] = []
         var blockGroups: [Int] = []
+        var blockKeys: [String] = []
+        var blockDigests: [Int] = []
         for snapshot in snapshots {
             guard let converted = convert(snapshot: snapshot, typography: typography,
                                           codeStyle: codeStyle) else {
@@ -444,12 +456,18 @@ enum AssistantMarkdownDocumentParser {
             parsedBlocks.append(contentsOf: converted.blocks)
             blockGroups.append(contentsOf:
                 repeatElement(converted.id, count: converted.blocks.count))
+            for index in converted.blocks.indices {
+                blockKeys.append("\(converted.id):\(index)")
+                blockDigests.append(converted.digest)
+            }
         }
         return AssistantMarkdownDocument(
             blocks: parsedBlocks, blockGroups: blockGroups,
             plainTextLength: text.count,
             blockSpacing: codeStyle.markdownBlockSpacing,
-            codeRoles: typography.codeMarkdownRoles)
+            codeRoles: typography.codeMarkdownRoles,
+            blockKeys: blockKeys,
+            blockDigests: blockDigests)
     }
 
     /// The exact pipeline `ChatMarkdownView` runs for a complete document.
@@ -1340,6 +1358,12 @@ struct AssistantStreamingDocument {
 /// synchronous contract instead of adding async document delivery.
 @MainActor
 final class AssistantStreamingDocumentBuilder {
+    private let codeStyle: AssistantCodeCardStyle
+    private let resolvesFileReferences: Bool
+    /// Ink mapping applied to each block once, when that block is converted.
+    /// The Code page passes its official text colours here; Chat passes nil
+    /// and keeps the parser's own attributes.
+    private let colorize: ((AssistantMarkdownBlock) -> AssistantMarkdownBlock)?
     private var state = MarkdownParseState()
     private var stable: [AssistantMarkdownDocumentParser.ConvertedSnapshot] = []
     private var lastText = ""
@@ -1349,6 +1373,14 @@ final class AssistantStreamingDocumentBuilder {
     /// current batch are not promoted until the next one.
     private var promotedSnapshotCount = 0
     private var promotedPrefixText = ""
+
+    init(codeStyle: AssistantCodeCardStyle = .chat,
+         resolvesFileReferences: Bool = true,
+         colorize: ((AssistantMarkdownBlock) -> AssistantMarkdownBlock)? = nil) {
+        self.codeStyle = codeStyle
+        self.resolvesFileReferences = resolvesFileReferences
+        self.colorize = colorize
+    }
 
     func reset() {
         state = MarkdownParseState()
@@ -1369,15 +1401,14 @@ final class AssistantStreamingDocumentBuilder {
         // in this batch is still in the tail and still reveals letter by letter.
         let renderedSnapshotCount = min(promotedSnapshotCount, stable.count)
         let renderedPrefixText = promotedPrefixText
-        guard let parsed = try? Self.parseIncremental(text: text, state: state) else {
+        guard let parsed = try? parseIncremental(text: text, state: state) else {
             isRejected = true
             return nil
         }
         state = parsed.state
 
         for snapshot in parsed.completed {
-            guard let converted = AssistantMarkdownDocumentParser.convert(
-                snapshot: snapshot, typography: typography) else {
+            guard let converted = convert(snapshot: snapshot, typography: typography) else {
                 isRejected = true
                 return nil
             }
@@ -1386,8 +1417,7 @@ final class AssistantStreamingDocumentBuilder {
         var tailConverted: [AssistantMarkdownDocumentParser.ConvertedSnapshot] = []
         tailConverted.reserveCapacity(parsed.tailSnapshots.count)
         for snapshot in parsed.tailSnapshots {
-            guard let converted = AssistantMarkdownDocumentParser.convert(
-                snapshot: snapshot, typography: typography) else {
+            guard let converted = convert(snapshot: snapshot, typography: typography) else {
                 isRejected = true
                 return nil
             }
@@ -1399,6 +1429,8 @@ final class AssistantStreamingDocumentBuilder {
         var blocks: [AssistantMarkdownBlock] = []
         var groups: [Int] = []
         var ids: [AssistantBlockID] = []
+        var keys: [String] = []
+        var digests: [Int] = []
         var renderedStableBlocks = 0
         for snapshot in stable.prefix(renderedSnapshotCount) {
             renderedStableBlocks += snapshot.blocks.count
@@ -1409,6 +1441,8 @@ final class AssistantStreamingDocumentBuilder {
                     blocks.append(block)
                     groups.append(snapshot.id)
                     ids.append(AssistantBlockID(snapshot: snapshot.id, index: index))
+                    keys.append("\(snapshot.id):\(index)")
+                    digests.append(snapshot.digest)
                 }
             }
         }
@@ -1427,12 +1461,31 @@ final class AssistantStreamingDocumentBuilder {
         return AssistantStreamingDocument(
             document: AssistantMarkdownDocument(
                 blocks: blocks, blockGroups: groups,
-                plainTextLength: text.count),
+                plainTextLength: text.count,
+                blockSpacing: codeStyle.markdownBlockSpacing,
+                codeRoles: typography.codeMarkdownRoles,
+                blockKeys: keys, blockDigests: digests),
             blockIDs: ids,
             stableBlockIDs: Array(ids.prefix(renderedStableBlocks)),
             stableBlockCount: renderedStableBlocks,
             tailText: tailText,
             generation: generation)
+    }
+
+    /// Convert one snapshot with this builder's card style and ink mapping.
+    private func convert(snapshot: MarkdownBlockSnapshot,
+                         typography: TimelineTypographySnapshot)
+        -> AssistantMarkdownDocumentParser.ConvertedSnapshot? {
+        #if DEBUG
+        CodePageBuildStats.convertCalls += 1
+        #endif
+        guard let converted = AssistantMarkdownDocumentParser.convert(
+            snapshot: snapshot, typography: typography,
+            codeStyle: codeStyle) else { return nil }
+        guard let colorize else { return converted }
+        return AssistantMarkdownDocumentParser.ConvertedSnapshot(
+            id: converted.id, digest: converted.digest,
+            blocks: converted.blocks.map(colorize))
     }
 
     private struct ParseResult {
@@ -1444,8 +1497,8 @@ final class AssistantStreamingDocumentBuilder {
 
     /// Same boundary rule as `ChatMarkdownView.parse`: completed text is parsed
     /// once into state, the open tail is parsed per batch.
-    private static func parseIncremental(text: String,
-                                         state: MarkdownParseState) throws -> ParseResult {
+    private func parseIncremental(text: String,
+                                  state: MarkdownParseState) throws -> ParseResult {
         var state = state
         let consumed = state.prefixEnd(text)
         let split = MarkdownStreamSplit.safeSplitIndex(in: text)
@@ -1453,9 +1506,12 @@ final class AssistantStreamingDocumentBuilder {
 
         var completed: [MarkdownBlockSnapshot] = []
         if let split, split > consumed {
+            #if DEBUG
+            CodePageBuildStats.parseBlocksCalls += 1
+            #endif
             let raw = try AssistantMarkdownDocumentParser.parseBlocks(
                 text: String(text[consumed..<split]),
-                resolvesFileReferences: true)
+                resolvesFileReferences: resolvesFileReferences)
             completed = raw.enumerated().map { offset, snapshot in
                 MarkdownBlockSnapshot(id: state.nextID + offset,
                                       content: snapshot.content)
@@ -1470,8 +1526,11 @@ final class AssistantStreamingDocumentBuilder {
         if tail.isEmpty {
             tailSnapshots = []
         } else {
+            #if DEBUG
+            CodePageBuildStats.parseBlocksCalls += 1
+            #endif
             let raw = try AssistantMarkdownDocumentParser.parseBlocks(
-                text: tail, resolvesFileReferences: true)
+                text: tail, resolvesFileReferences: resolvesFileReferences)
             tailSnapshots = raw.enumerated().map { offset, snapshot in
                 MarkdownBlockSnapshot(id: state.nextID + offset,
                                       content: snapshot.content)
@@ -1479,6 +1538,106 @@ final class AssistantStreamingDocumentBuilder {
         }
         return ParseResult(state: state, completed: completed,
                            tail: tail, tailSnapshots: tailSnapshots)
+    }
+}
+
+// MARK: - Official Code text colours
+
+extension AssistantMarkdownDocument {
+    /// Map the Chat ink to the official Code colours: body text
+    /// `#131313`/`#F9F9F7`, inline code `#184F95`/`#6DA7EC`. The official
+    /// theme links use the body colour, and inline code is the only blue.
+    /// Colours never change a height, so the measured and drawn documents
+    /// stay identical.
+    ///
+    /// [E] R19 `typography-inline.md` §1.2/§12 — the target build's headings
+    /// are Anthropic Sans at weight 550, not the 2026-03 Serif face; this
+    /// pass no longer rewrites heading fonts.
+    func applyingCodePageTextColors() -> AssistantMarkdownDocument {
+        AssistantMarkdownDocument(blocks: Self.styledBlocks(blocks),
+                                  blockGroups: blockGroups,
+                                  plainTextLength: plainTextLength,
+                                  blockSpacing: blockSpacing,
+                                  codeRoles: codeRoles,
+                                  blockKeys: blockKeys,
+                                  blockDigests: blockDigests)
+    }
+
+    /// The same ink mapping for one block. The streaming builder colors only
+    /// the blocks it just converted, so a batch does not copy the settled
+    /// document's attributed strings again.
+    static func applyingCodePageTextColors(
+        to block: AssistantMarkdownBlock
+    ) -> AssistantMarkdownBlock {
+        styledBlocks([block]).first ?? block
+    }
+
+    private static func styledBlocks(
+        _ blocks: [AssistantMarkdownBlock]
+    ) -> [AssistantMarkdownBlock] {
+        blocks.map { block in
+            switch block {
+            case .text(let text):
+                return .text(AssistantTextBlock(
+                    attributed: Self.recolored(text.attributed),
+                    headingLevel: text.headingLevel))
+            case .list(let list):
+                let items = list.items.map {
+                    AssistantListBlock.Item(marker: $0.marker,
+                                            blocks: styledBlocks($0.blocks))
+                }
+                return .list(AssistantListBlock(
+                    items: items,
+                    indent: list.indent,
+                    markerGap: list.markerGap,
+                    bulletSize: list.bulletSize,
+                    bulletCenterX: list.bulletCenterX,
+                    itemSpacing: list.itemSpacing,
+                    innerSpacing: list.innerSpacing,
+                    bodySize: list.bodySize,
+                    // The bullet and ordered label are drawn outside the
+                    // attributed text, so they need the same body ink the
+                    // runs receive below.
+                    markerColor: CodePageTheme.markdownTextUIColor))
+            case .quote(let quote):
+                return .quote(AssistantQuoteBlock(
+                    blocks: styledBlocks(quote.blocks),
+                    inset: quote.inset,
+                    barWidth: quote.barWidth,
+                    innerSpacing: quote.innerSpacing,
+                    barColor: quote.barColor))
+            case .table(let table):
+                return .table(AssistantTableBlock(
+                    rows: table.rows.map { row in
+                        row.map { recolored($0) }
+                    },
+                    columnWidths: table.columnWidths,
+                    rowHeights: table.rowHeights,
+                    cellPaddingHorizontal: table.cellPaddingHorizontal,
+                    cellPaddingVertical: table.cellPaddingVertical,
+                    cornerRadius: table.cornerRadius,
+                    headerFillColor: table.headerFillColor,
+                    borderColor: table.borderColor))
+            default:
+                return block
+            }
+        }
+    }
+
+    private static func recolored(_ attributed: NSAttributedString) -> NSAttributedString {
+        let output = NSMutableAttributedString(attributedString: attributed)
+        let full = NSRange(location: 0, length: output.length)
+        output.enumerateAttribute(.font, in: full) { value, range, _ in
+            let font = value as? UIFont
+            let isMono = font?.fontDescriptor.symbolicTraits
+                .contains(.traitMonoSpace) ?? false
+            output.addAttribute(
+                .foregroundColor,
+                value: isMono ? CodePageTheme.inlineCodeTextUIColor
+                              : CodePageTheme.markdownTextUIColor,
+                range: range)
+        }
+        return output
     }
 }
 #endif

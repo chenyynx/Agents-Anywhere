@@ -255,18 +255,132 @@ enum AssistantMarkdownTextLayout {
     static func measure(_ document: AssistantMarkdownDocument,
                         width: CGFloat,
                         displayScale: CGFloat) -> CGFloat {
+        measure(document, width: width, displayScale: displayScale,
+                cache: nil, typographyRevision: 0)
+    }
+
+    /// The same sum with per-block memoisation. A streaming tick reparses only
+    /// the open tail, so every settled block keeps its key and digest and hits
+    /// the cache; only the tail block runs TextKit again.
+    static func measure(_ document: AssistantMarkdownDocument,
+                        width: CGFloat,
+                        displayScale: CGFloat,
+                        cache: AssistantMarkdownBlockHeightCache?,
+                        typographyRevision: Int = 0) -> CGFloat {
+        let keyed = document.blockKeys.count == document.blocks.count
+            && document.blockDigests.count == document.blocks.count
         var total: CGFloat = 0
         for (index, block) in document.blocks.enumerated() {
             if index > 0 { total += topLevelSpacing(after: index - 1, in: document) }
-            total += height(of: block, width: width, displayScale: displayScale)
+            if keyed {
+                total += height(of: block, width: width, displayScale: displayScale,
+                                key: document.blockKeys[index],
+                                digest: document.blockDigests[index],
+                                typographyRevision: typographyRevision,
+                                cache: cache)
+            } else {
+                total += height(of: block, width: width, displayScale: displayScale)
+            }
         }
         return total
+    }
+
+    /// Height of one keyed block, memoised when a cache is supplied. The key
+    /// carries the content digest, width bucket, display scale and typography
+    /// revision, so no caller can inherit a height from a different layout.
+    static func height(of block: AssistantMarkdownBlock,
+                       width: CGFloat,
+                       displayScale: CGFloat,
+                       key: String?,
+                       digest: Int,
+                       typographyRevision: Int,
+                       cache: AssistantMarkdownBlockHeightCache?) -> CGFloat {
+        guard let key, let cache else {
+            return height(of: block, width: width, displayScale: displayScale)
+        }
+        return cache.height(
+            blockKey: key, digest: digest, width: width,
+            displayScale: displayScale,
+            typographyRevision: typographyRevision
+        ) {
+            height(of: block, width: width, displayScale: displayScale)
+        }
     }
 
     private static func roundUp(_ value: CGFloat, scale: CGFloat) -> CGFloat {
         guard value.isFinite, value > 0 else { return 0 }
         let s = scale > 0 && scale.isFinite ? scale : 1
         return ceil(value * s) / s
+    }
+}
+
+/// Per-block height memo for the streaming text path. The official leaf caches
+/// its block heights by block identity; this cache is keyed by the same
+/// identity plus every input that can change a height, so a hit is only
+/// possible when the answer would be identical.
+///
+/// Eviction is FIFO at a fixed ceiling: a long reply has a few hundred blocks
+/// at most, and the cache is already reset by the leaf when typography or the
+/// document generation changes.
+@MainActor
+final class AssistantMarkdownBlockHeightCache {
+    /// One cache for the measurer and the leaf. False hits are impossible
+    /// because the key carries the content digest; duplicate entries for two
+    /// replies are only wasted slots, not wrong heights.
+    static let shared = AssistantMarkdownBlockHeightCache()
+
+    private struct Key: Hashable {
+        let block: String
+        let digest: Int
+        let width: CGFloat
+        let displayScale: CGFloat
+        let typographyRevision: Int
+    }
+
+    private var storage: [Key: CGFloat] = [:]
+    private var order: [Key] = []
+    private let limit: Int
+
+    init(limit: Int = 512) {
+        self.limit = max(1, limit)
+    }
+
+    var count: Int { storage.count }
+
+    func height(blockKey: String, digest: Int, width: CGFloat,
+                displayScale: CGFloat, typographyRevision: Int,
+                compute: () -> CGFloat) -> CGFloat {
+        let key = Key(block: blockKey, digest: digest,
+                      width: TimelineHeightKey.quantize(width),
+                      displayScale: Self.quantizeScale(displayScale),
+                      typographyRevision: typographyRevision)
+        if let cached = storage[key] {
+            #if DEBUG
+            CodePageBuildStats.heightCacheHits += 1
+            #endif
+            return cached
+        }
+        #if DEBUG
+        CodePageBuildStats.heightCacheMisses += 1
+        #endif
+        let value = compute()
+        storage[key] = value
+        order.append(key)
+        if order.count > limit {
+            let evicted = order.removeFirst()
+            storage.removeValue(forKey: evicted)
+        }
+        return value
+    }
+
+    func removeAll() {
+        storage.removeAll(keepingCapacity: true)
+        order.removeAll(keepingCapacity: true)
+    }
+
+    private static func quantizeScale(_ scale: CGFloat) -> CGFloat {
+        guard scale.isFinite, scale > 0 else { return 1 }
+        return max(1, (scale * 2).rounded() / 2)
     }
 }
 
@@ -289,6 +403,9 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
 
     init(interactive: Bool = false) {
         super.init(frame: .zero, textContainer: nil)
+        #if DEBUG
+        CodePageBuildStats.textViewCreations += 1
+        #endif
         isEditable = false
         isScrollEnabled = false
         isSelectable = interactive

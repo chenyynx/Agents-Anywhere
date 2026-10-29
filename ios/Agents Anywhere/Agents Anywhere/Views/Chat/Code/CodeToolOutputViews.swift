@@ -2,7 +2,8 @@ import SwiftUI
 import UIKit
 
 // The Code page's five tool-output renderers (`CANONICAL/04-tool-calls.md`
-// §5.2). The five-case model and its wire parser live in
+// §5.2), plus the tool-detail input section and the card chrome/controls they
+// share. The five-case model and its wire parser live in
 // `Models/Chat/Code/CodeToolOutput.swift` (ClientCore, no SwiftUI); this file
 // only switches on the parsed result and draws it.
 //
@@ -30,6 +31,11 @@ private func codeOutputMonoFont(_ size: CGFloat) -> Font {
 struct CodeToolOutputView: View {
     let output: CodeToolOutput
     var kind: CodeToolKind = .other
+    /// AA's `detectsJSON` mapping (R-U §1: the official bit is a static
+    /// property of the tool-input case; AA maps it to "the input is a
+    /// structured JSON object"). The Prettify button still requires the
+    /// body itself to sniff as JSON (R-U §1/E3).
+    var detectsJSON: Bool = false
 
     var body: some View {
         switch output {
@@ -43,9 +49,11 @@ struct CodeToolOutputView: View {
             if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 EmptyView()
             } else if kind == .read {
-                CodeFileReadOutputView(text: text)
+                CodeFileReadOutputView(text: text, detectsJSON: detectsJSON)
             } else {
-                CodeToolCodeCard(title: String(localized: "Output"), code: text)
+                CodeToolCodeCard(title: String(localized: "Output"),
+                                  code: text,
+                                  detectsJSON: detectsJSON)
             }
         case let .todos(todos):
             CodeToolTodosOutputView(todos: todos)
@@ -78,47 +86,49 @@ struct CodeToolOutputView: View {
 /// string, reports its own fitting height, and keeps the copy path working.
 private struct CodeFileReadOutputView: View {
     let text: String
-    private let chunks: [String]
+    let detectsJSON: Bool
+    /// Sniffed once at init: the body can be a whole file, and a body
+    /// re-evaluation must not re-trim it.
+    private let sniffsAsJSON: Bool
+    @State private var chunks: [String]
+    @State private var prettify: CodeToolPrettify = .initial
 
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.displayScale) private var displayScale
-    @ScaledMetric(relativeTo: .caption) private var titleFontSize =
-        CodeToolCardMetrics.titleFontSize
-    @ScaledMetric(relativeTo: .caption) private var headerHeight =
-        CodeToolCardMetrics.headerHeight
-
-    init(text: String) {
+    init(text: String, detectsJSON: Bool = false) {
         self.text = text
-        chunks = CodeFileReadChunks.split(text)
+        self.detectsJSON = detectsJSON
+        sniffsAsJSON = CodeToolJSON.sniffsAsJSON(text)
+        _chunks = State(initialValue: CodeFileReadChunks.split(text))
     }
 
-    private var surface: Color {
-        CodeToolCardMetrics.surface.resolved(for: colorScheme)
+    private var displayText: String {
+        prettify.displayText ?? text
     }
 
-    private var border: Color {
-        CodeToolCardMetrics.border.resolved(for: colorScheme)
+    private var showsPrettify: Bool {
+        CodeToolJSON.showsPrettifyButton(detectsJSON: detectsJSON,
+                                         sniffsAsJSON: sniffsAsJSON,
+                                         state: prettify)
+    }
+
+    private var prettifyTitle: String {
+        prettify.buttonTitleKey == "Show raw"
+            ? String(localized: "Show raw")
+            : String(localized: "Prettify")
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                Text(String(localized: "Output"))
-                    .font(codeOutputMonoFont(titleFontSize))
-                    .foregroundStyle(.secondary)
-                    .frame(minHeight: CodeToolCardMetrics.titleLineHeight)
-                    .lineLimit(1)
-                Spacer(minLength: 8)
+            CodeToolCardHeader(title: String(localized: "Output")) {
+                if showsPrettify {
+                    CodeToolPrettifyButton(title: prettifyTitle,
+                                           isBusy: prettify.isFormatting,
+                                           action: tapPrettify)
+                }
                 CodeToolCopyButton(text: { text },
                                    label: String(localized: "复制代码"),
                                    size: 44)
             }
-            .padding(.horizontal, CodeToolCardMetrics.headerHorizontalPadding)
-            .frame(height: headerHeight)
-
-            Rectangle()
-                .fill(border)
-                .frame(height: 1 / displayScale)
+            CodeToolCardDivider()
 
             // The official renderer keeps every line (R-R Q3: the only
             // truncation is the tool output limit, reported by the tool, not
@@ -134,14 +144,31 @@ private struct CodeFileReadOutputView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(CodeToolCardMetrics.contentInset)
         }
-        .background(surface)
-        .clipShape(RoundedRectangle(cornerRadius: CodeToolCardMetrics.cornerRadius,
-                                    style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: CodeToolCardMetrics.cornerRadius,
-                             style: .continuous)
-                .stroke(border, lineWidth: 1 / displayScale)
-                .allowsHitTesting(false)
+        .codeToolCardChrome()
+        .onChange(of: text) { _, newText in
+            prettify = .initial
+            chunks = CodeFileReadChunks.split(newText)
+        }
+    }
+
+    /// R-U §3: raw -> formatting while the async conversion runs; later taps
+    /// only flip `showing`, so the formatted result is never recomputed.
+    private func tapPrettify() {
+        let wasRaw: Bool
+        if case .raw = prettify { wasRaw = true } else { wasRaw = false }
+        prettify.tap()
+        guard wasRaw else {
+            chunks = CodeFileReadChunks.split(displayText)
+            return
+        }
+        let source = text
+        Task { @MainActor in
+            let formatted = await Task.detached(priority: .userInitiated) {
+                CodeToolJSON.prettyPrinted(source)
+            }.value
+            guard case .formatting = prettify else { return }
+            prettify.finish(formatted)
+            chunks = CodeFileReadChunks.split(displayText)
         }
     }
 }
@@ -278,47 +305,59 @@ private enum CodeFileReadTextMetrics {
 /// monospaced block that scrolls horizontally; the page scrolls vertically, so
 /// this view does not nest a second vertical scroller.
 ///
+/// `title == nil` draws the body without a header (the input field-row branch
+/// of R-T §3: `CodeBlockContent` inside the Input section carries no section
+/// title of its own).
+///
 /// The rendered prefix is capped at 200 000 characters, the same guard
 /// `TimelineCodePanel` uses (`Views/Chat/SessionTimelineEventView.swift:327`);
 /// copying always takes the full string.
 struct CodeToolCodeCard: View {
-    let title: String
+    let title: String?
     let code: String
+    /// AA's `detectsJSON` mapping (R-U §1). The Prettify button also requires
+    /// the body to sniff as JSON and the state not to be `.failed` (R-U §3).
+    let detectsJSON: Bool
+    /// Sniffed once at init so a body re-evaluation never re-trims the payload.
+    private let sniffsAsJSON: Bool
 
-    /// Cached at init and refreshed only when `code` changes, so a body
-    /// re-evaluation never re-slices a 200 000-character string.
+    /// Cached at init and refreshed only when the visible text changes, so a
+    /// body re-evaluation never re-slices a 200 000-character string.
     @State private var displayCode: String
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.displayScale) private var displayScale
-    @ScaledMetric(relativeTo: .footnote) private var codeFontSize =
-        CodeToolCardMetrics.codeFontSize
-    @ScaledMetric(relativeTo: .caption) private var titleFontSize =
-        CodeToolCardMetrics.titleFontSize
-    @ScaledMetric(relativeTo: .caption) private var headerHeight =
-        CodeToolCardMetrics.headerHeight
+    @State private var prettify: CodeToolPrettify = .initial
 
-    init(title: String, code: String) {
+    init(title: String?, code: String, detectsJSON: Bool = false) {
         self.title = title
         self.code = code
+        self.detectsJSON = detectsJSON
+        sniffsAsJSON = CodeToolJSON.sniffsAsJSON(code)
         _displayCode = State(initialValue: String(code.prefix(CodeToolCardMetrics.previewLimit)))
     }
 
-    private var surface: Color {
-        CodeToolCardMetrics.surface.resolved(for: colorScheme)
+    private var visibleText: String {
+        prettify.displayText ?? code
     }
 
-    private var border: Color {
-        CodeToolCardMetrics.border.resolved(for: colorScheme)
+    private var showsPrettify: Bool {
+        CodeToolJSON.showsPrettifyButton(detectsJSON: detectsJSON,
+                                         sniffsAsJSON: sniffsAsJSON,
+                                         state: prettify)
+    }
+
+    private var prettifyTitle: String {
+        prettify.buttonTitleKey == "Show raw"
+            ? String(localized: "Show raw")
+            : String(localized: "Prettify")
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
-            Rectangle()
-                .fill(border)
-                .frame(height: 1 / displayScale)
-            codeBody
-            if code.count > CodeToolCardMetrics.previewLimit {
+            if let title {
+                header(title)
+                CodeToolCardDivider()
+            }
+            CodeToolCodeBody(code: displayCode)
+            if visibleText.count > CodeToolCardMetrics.previewLimit {
                 Text(String(localized: "预览已截断，复制可获取完整内容"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -326,48 +365,141 @@ struct CodeToolCodeCard: View {
                     .padding(.bottom, 12)
             }
         }
-        .background(surface)
-        .clipShape(RoundedRectangle(cornerRadius: CodeToolCardMetrics.cornerRadius,
-                                    style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: CodeToolCardMetrics.cornerRadius,
-                             style: .continuous)
-                .stroke(border, lineWidth: 1 / displayScale)
-                .allowsHitTesting(false)
-        }
+        .codeToolCardChrome()
         .onChange(of: code) { _, newCode in
+            prettify = .initial
             displayCode = String(newCode.prefix(CodeToolCardMetrics.previewLimit))
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 8) {
-            Text(verbatim: title)
-                .font(codeOutputMonoFont(titleFontSize))
-                .foregroundStyle(.secondary)
-                .frame(minHeight: CodeToolCardMetrics.titleLineHeight)
-                .lineLimit(1)
-            Spacer(minLength: 8)
+    private func header(_ title: String) -> some View {
+        CodeToolCardHeader(title: title) {
+            if showsPrettify {
+                CodeToolPrettifyButton(title: prettifyTitle,
+                                       isBusy: prettify.isFormatting,
+                                       action: tapPrettify)
+            }
             CodeToolCopyButton(text: { code },
                                label: String(localized: "复制代码"),
                                size: 44)
         }
-        .padding(.horizontal, CodeToolCardMetrics.headerHorizontalPadding)
-        .frame(height: headerHeight)
     }
 
-    private var codeBody: some View {
-        ScrollView(.horizontal) {
-            Text(verbatim: displayCode)
-                .font(codeOutputMonoFont(codeFontSize))
-                .lineSpacing(CodeToolCardMetrics.codeLineSpacing)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: true, vertical: false)
-                .padding(CodeToolCardMetrics.contentInset)
+    /// R-U §3: raw -> formatting while the async conversion runs; later taps
+    /// only flip `showing`, so the formatted result is never recomputed.
+    private func tapPrettify() {
+        let wasRaw: Bool
+        if case .raw = prettify { wasRaw = true } else { wasRaw = false }
+        prettify.tap()
+        guard wasRaw else {
+            refreshDisplayCode()
+            return
+        }
+        let source = code
+        Task { @MainActor in
+            let formatted = await Task.detached(priority: .userInitiated) {
+                CodeToolJSON.prettyPrinted(source)
+            }.value
+            guard case .formatting = prettify else { return }
+            prettify.finish(formatted)
+            refreshDisplayCode()
+        }
+    }
+
+    private func refreshDisplayCode() {
+        displayCode = String(visibleText.prefix(CodeToolCardMetrics.previewLimit))
+    }
+}
+
+// MARK: - Input section (official `InputFieldRows`)
+
+/// The official Input section (R-T §3/§5): a section header carrying the copy
+/// control, then one `LabeledContent` row per top-level input key. A value
+/// longer than 262144 UTF-8 code units falls back to the existing code card
+/// (`CodeBlockContent` in the official row); the value's JSON tag is ignored.
+///
+/// Typography is still open in the reports (R-Q U2, R-T U3), so the label uses
+/// the Code page's caption/secondary pair and the value its 15 pt proportional
+/// body token; both call sites are marked `[U]`.
+struct CodeToolInputSection: View {
+    private let rawText: String?
+    private let fields: [CodeToolInputField]?
+
+    init(call: CodeToolCall) {
+        rawText = CodeToolInputFields.rawText(for: call)
+        fields = CodeToolInputFields.fields(for: call)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            CodeToolCardHeader(title: String(localized: "Input")) {
+                if let rawText {
+                    CodeToolCopyButton(text: { rawText },
+                                       label: String(localized: "复制代码"),
+                                       size: 44)
+                }
+            }
+            CodeToolCardDivider()
+            if let fields {
+                fieldRows(fields)
+            } else if let rawText {
+                // Non-object input: the pre-field-row code card is retained.
+                CodeToolCodeBody(code: rawText)
+            }
+        }
+        .codeToolCardChrome()
+    }
+
+    private func fieldRows(_ fields: [CodeToolInputField]) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(fields.enumerated()), id: \.element.id) { index, field in
+                if index > 0 {
+                    // R-T U2: the official optional `ClaudeDivider` insertion
+                    // condition is not decoded; one hairline between rows
+                    // reuses the card's border token.
+                    CodeToolCardDivider()
+                        .padding(.leading, CodeToolCardMetrics.contentInset)
+                }
+                if field.rendersAsCodeBlock {
+                    CodeToolCodeCard(title: nil, code: field.value)
+                } else {
+                    LabeledContent {
+                        Text(verbatim: field.value)
+                    } label: {
+                        Text(verbatim: field.key)
+                    }
+                }
+            }
+        }
+        // R-T §4: the whole `InputFieldRows` stack carries the official
+        // `StackedLabeledContentStyle`; each row is a `LabeledContent`.
+        .labeledContentStyle(CodeStackedLabeledContentStyle())
+        .textSelection(.enabled)
+    }
+}
+
+/// The official stacked field row: the raw key above the value, both
+/// proportional. R-Q U2 / R-T U3 leave the typography and padding open, so
+/// the label uses the Code page's caption/secondary pair, the value its 15 pt
+/// body token, and the row the detail row's 8 pt vertical padding.
+private struct CodeStackedLabeledContentStyle: LabeledContentStyle {
+    @ScaledMetric(relativeTo: .body) private var valueFontSize =
+        CodePageTheme.toolRowFontSize
+
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading,
+               spacing: CodeToolCardMetrics.fieldLabelGap) {
+            configuration.label
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            configuration.content
+                .font(.system(size: valueFontSize))
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .scrollIndicators(.hidden)
-        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+        .padding(.horizontal, CodeToolCardMetrics.contentInset)
+        .padding(.vertical, CodeToolCardMetrics.fieldRowVerticalPadding)
     }
 }
 
@@ -732,6 +864,123 @@ private struct CodeToolApprovedPlanOutputView: View {
 
 // MARK: - Shared pieces
 
+/// The card chrome every detail card draws: surface, 24 pt continuous corners
+/// and a 1 physical-pixel border (`CodeToolCardMetrics` V64/V65/V66).
+private struct CodeToolCardChrome: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.displayScale) private var displayScale
+
+    func body(content: Content) -> some View {
+        content
+            .background(CodeToolCardMetrics.surface.resolved(for: colorScheme))
+            .clipShape(RoundedRectangle(cornerRadius: CodeToolCardMetrics.cornerRadius,
+                                        style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: CodeToolCardMetrics.cornerRadius,
+                                 style: .continuous)
+                    .stroke(CodeToolCardMetrics.border.resolved(for: colorScheme),
+                            lineWidth: 1 / displayScale)
+                    .allowsHitTesting(false)
+            }
+    }
+}
+
+private extension View {
+    func codeToolCardChrome() -> some View {
+        modifier(CodeToolCardChrome())
+    }
+}
+
+/// The header shared by the code card, the Read reader and the Input section:
+/// monoAux 13 title at the card's 44 pt header height, with the caller's
+/// trailing controls.
+private struct CodeToolCardHeader<Trailing: View>: View {
+    let title: String
+    @ViewBuilder let trailing: () -> Trailing
+
+    @ScaledMetric(relativeTo: .caption) private var titleFontSize =
+        CodeToolCardMetrics.titleFontSize
+    @ScaledMetric(relativeTo: .caption) private var headerHeight =
+        CodeToolCardMetrics.headerHeight
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(verbatim: title)
+                .font(codeOutputMonoFont(titleFontSize))
+                .foregroundStyle(.secondary)
+                .frame(minHeight: CodeToolCardMetrics.titleLineHeight)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            trailing()
+        }
+        .padding(.horizontal, CodeToolCardMetrics.headerHorizontalPadding)
+        .frame(height: headerHeight)
+    }
+}
+
+/// One physical-pixel card divider.
+private struct CodeToolCardDivider: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.displayScale) private var displayScale
+
+    var body: some View {
+        Rectangle()
+            .fill(CodeToolCardMetrics.border.resolved(for: colorScheme))
+            .frame(height: 1 / displayScale)
+    }
+}
+
+/// The monospaced, horizontally scrolling body shared by the output card and a
+/// >262144-character input field. The page scrolls vertically, so this view
+/// does not nest a second vertical scroller.
+private struct CodeToolCodeBody: View {
+    let code: String
+
+    @ScaledMetric(relativeTo: .footnote) private var codeFontSize =
+        CodeToolCardMetrics.codeFontSize
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            Text(verbatim: code)
+                .font(codeOutputMonoFont(codeFontSize))
+                .lineSpacing(CodeToolCardMetrics.codeLineSpacing)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(CodeToolCardMetrics.contentInset)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .scrollIndicators(.hidden)
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+    }
+}
+
+/// The Prettify / Show raw control (R-U §3). The text is the monoAux 13 header
+/// face; the official capsule chrome (`ClaudeInlineButtonStyle`, R-Q Q3) is
+/// still `[U]`, so only the position, face and 44 pt tap target are drawn.
+private struct CodeToolPrettifyButton: View {
+    let title: String
+    let isBusy: Bool
+    let action: () -> Void
+
+    @ScaledMetric(relativeTo: .caption) private var fontSize =
+        CodeToolCardMetrics.titleFontSize
+    @ScaledMetric(relativeTo: .caption) private var headerHeight =
+        CodeToolCardMetrics.headerHeight
+
+    var body: some View {
+        Button(action: action) {
+            Text(verbatim: title)
+                .font(codeOutputMonoFont(fontSize))
+                .foregroundStyle(.secondary)
+                .frame(height: headerHeight)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isBusy)
+        .accessibilityLabel(Text(verbatim: title))
+    }
+}
+
 /// The copy control shared by the code card, the diff header and the list
 /// section headers. Same 2-second confirmation `TimelineCodePanel` and
 /// `ChatMarkdownCodeBlock` use.
@@ -813,7 +1062,7 @@ private enum CodeToolCardMetrics {
     // MARK: Code card (official `CodeBlockContent`)
 
     /// [E] V61 / CANONICAL/06-visuals-assets.md §3.3 — header height 44 pt
-    /// base; both card views scale it with `@ScaledMetric`.
+    /// base; `CodeToolCardHeader` scales it with `@ScaledMetric`.
     static let headerHeight: CGFloat = 44
 
     /// [E] V62 / tokens.json `codeCard.title.typography` — 13 pt.
@@ -863,6 +1112,16 @@ private enum CodeToolCardMetrics {
     /// characters; copy still takes the full value). Reused here so a huge
     /// tool result cannot stall layout.
     static let previewLimit = 200_000
+
+    // MARK: Input field rows
+
+    /// [U] R-Q U2 / R-T U3 — the official `StackedLabeledContentStyle` gap is
+    /// not decoded; 2 pt separates the caption label from its value.
+    static let fieldLabelGap: CGFloat = 2
+
+    /// [U] R-T U3 — the field row's vertical padding is not decoded; 8 pt
+    /// reuses the Code detail row's padding.
+    static let fieldRowVerticalPadding: CGFloat = 8
 
     // MARK: Diff (official `DiffView` / `PagedDiffRows`)
 

@@ -518,7 +518,120 @@ final class CodeProfileAutoRunModel {
                 "matched": matched,
             ] as [String: Any]
         }
+        verifyInputFieldsAndPrettify()
         report["toolOutput"] = outputs
+    }
+
+    /// V8 — the detail page's input field rows and output Prettify control.
+    ///
+    /// R-T §3/§5: a Read input is one field row keyed by the raw JSON key; only
+    /// a value over 262144 UTF-8 code units falls to the code card (strictly
+    /// greater; the official `cmp #0x40000` keeps `<=` on the row path).
+    ///
+    /// R-U §2/§3: the formatter is Foundation's JSONSerialization at options
+    /// 11 (prettyPrinted | sortedKeys | withoutEscapingSlashes), the default
+    /// state is `.raw`, and the toggle is raw -> formatting -> formatted ->
+    /// Show raw -> formatted without losing the formatted text. These checks
+    /// go red when the default becomes prettified, keys stop sorting, or
+    /// slashes regress to `\/`.
+    private func verifyInputFieldsAndPrettify() {
+        let readCall = Self.decodeItem(Self.detailCallJSON(output: "ok"))
+            .map { CodeToolCall(item: $0, kind: .read) }
+        let readFields = readCall.flatMap { CodeToolInputFields.fields(for: $0) } ?? []
+        check(readFields.count == 1 && readFields.first?.key == "file_path",
+              "inputFields: Read fields \(readFields.map(\.key)), expected [file_path]")
+        check(readFields.allSatisfy { !$0.rendersAsCodeBlock },
+              "inputFields: a short Read value fell to a code block")
+        check(readCall.map { CodeToolInputFields.detectsJSON(for: $0) } == true,
+              "inputFields: Read's structured input is not mapped to detectsJSON")
+
+        let limit = CodeToolInputField.codeBlockThreshold
+        let boundaryFields = Self.inputFieldsFixture(
+            value: String(repeating: "x", count: limit))
+        check(boundaryFields.count == 1
+                && boundaryFields.first?.rendersAsCodeBlock == false,
+              "inputFields: exactly \(limit) chars should stay a field row")
+        let overFields = Self.inputFieldsFixture(
+            value: String(repeating: "x", count: limit + 1))
+        check(overFields.count == 1
+                && overFields.first?.rendersAsCodeBlock == true,
+              "inputFields: \(limit + 1) chars should fall to the code block")
+        check(!Self.inputFieldsFixture(value: "short").isEmpty,
+              "inputFields: the Edit fixture lost its fields")
+
+        let fixture = #"{"b":1,"a":[2,3]}"#
+        let expected = "{\n  \"a\" : [\n    2,\n    3\n  ],\n  \"b\" : 1\n}"
+        let formatted = CodeToolJSON.prettyPrinted(fixture)
+        check(formatted == expected,
+              "prettify: formatted \(formatted ?? "nil"), expected \(expected)")
+        let slashed = #"{"url":"https://example.com/a/b"}"#
+        check(CodeToolJSON.prettyPrinted(slashed)?
+                .contains("https://example.com/a/b") == true,
+              "prettify: slash escaped in \(CodeToolJSON.prettyPrinted(slashed) ?? "nil")")
+        check(CodeToolJSON.prettyPrinted("42") == nil,
+              "prettify: a top-level scalar parsed (FragmentsAllowed crept in)")
+
+        var state = CodeToolPrettify.initial
+        check(state == .raw && state.displayText == nil,
+              "prettify: default state \(state) is not raw")
+        check(state.buttonTitleKey == "Prettify",
+              "prettify: raw button title \(state.buttonTitleKey)")
+        check(CodeToolJSON.showsPrettifyButton(detectsJSON: true,
+                                               text: fixture,
+                                               state: state),
+              "prettify: JSON body with a structured input hides the button")
+        check(!CodeToolJSON.showsPrettifyButton(detectsJSON: false,
+                                                text: fixture,
+                                                state: state),
+              "prettify: non-JSON tool input shows the button")
+        check(!CodeToolJSON.showsPrettifyButton(detectsJSON: true,
+                                                text: "hello",
+                                                state: state),
+              "prettify: a plain-text body shows the button")
+        state.tap()
+        check(state == .formatting,
+              "prettify: tap on raw -> \(state), expected formatting")
+        state.finish(expected)
+        check(state.displayText == expected && state.buttonTitleKey == "Show raw",
+              "prettify: formatted state \(state)")
+        state.tap()
+        check(state.displayText == nil && state.buttonTitleKey == "Prettify",
+              "prettify: show-raw state \(state)")
+        state.tap()
+        check(state.displayText == expected,
+              "prettify: the second Prettify tap lost the cached formatted text")
+        var failed = CodeToolPrettify.formatting
+        failed.finish(nil)
+        check(failed == .failed
+                && !CodeToolJSON.showsPrettifyButton(detectsJSON: true,
+                                                     text: fixture,
+                                                     state: failed),
+              "prettify: failure state \(failed) did not hide the button")
+
+        report["inputFields"] = [
+            "readKeys": readFields.map(\.key),
+            "readCodeBlocks": readFields.filter(\.rendersAsCodeBlock).count,
+            "threshold": limit,
+            "boundaryRow": boundaryFields.first?.rendersAsCodeBlock == false,
+            "overRow": overFields.first?.rendersAsCodeBlock == true,
+        ] as [String: Any]
+        report["prettify"] = [
+            "formatted": formatted ?? "nil",
+            "slashPreserved": CodeToolJSON.prettyPrinted(slashed)?
+                .contains("https://example.com/a/b") == true,
+            "defaultState": "\(CodeToolPrettify.initial)",
+            "toggle": "raw -> formatting -> formatted -> showRaw -> formatted",
+        ] as [String: Any]
+    }
+
+    private static func inputFieldsFixture(value: String) -> [CodeToolInputField] {
+        let json = #"""
+        {"id":"input-limit","sessionId":"gate-input","type":"tool","status":"done","orderSeq":1,
+         "content":{"toolName":"Edit","input":{"payload":\#(jsonString(value))}},
+         "source":{"itemId":"input-limit"}}
+        """#
+        guard let item = decodeItem(json) else { return [] }
+        return CodeToolInputFields.fields(for: CodeToolCall(item: item, kind: .edit)) ?? []
     }
 
     private static func matches(_ output: CodeToolOutput,
@@ -958,6 +1071,7 @@ final class CodeProfileAutoRunModel {
         await verifyMessageRowHeight()
         await verifyRowHeights()
         await verifyReadOutputHeight()
+        await verifyPrettifyDefaultRaw()
         await verifyCollapsedRowHeights()
         await verifyRendererMeasure()
         await verifyRealCollectionFirstFit()
@@ -1641,6 +1755,63 @@ final class CodeProfileAutoRunModel {
             "textViews": readTextViews.count,
             "textViewLengths": readTextViewLengths,
         ] as [String: Any]
+    }
+
+    /// V8: the output card must still show the raw JSON before any tap. The
+    /// fixture is one raw line against the formatter's seven, so a card that
+    /// auto-prettifies on appear stops being shorter than its formatted twin.
+    /// Both hosts are the real card at the same width; only the payload text
+    /// differs. A model-level `.raw` assertion cannot catch an on-appear
+    /// format; this measurement can.
+    private func verifyPrettifyDefaultRaw() async {
+        guard let window = keyWindow else {
+            failures.append("prettify default: no key window")
+            return
+        }
+        let fixture = #"{"b":1,"a":[2,3]}"#
+        let formatted = "{\n  \"a\" : [\n    2,\n    3\n  ],\n  \"b\" : 1\n}"
+        let width = window.bounds.width - 2 * 16
+        let rawHeight = await measureCardHeight(code: fixture,
+                                                width: width,
+                                                window: window)
+        let formattedHeight = await measureCardHeight(code: formatted,
+                                                      width: width,
+                                                      window: window)
+        check(rawHeight > 1 && formattedHeight > rawHeight + 40,
+              "prettify default: raw card \(rawHeight) pt, formatted card"
+                + " \(formattedHeight) pt; the card is not showing raw text")
+        report["prettifyDefault"] = [
+            "rawHeight": Double(rawHeight),
+            "formattedHeight": Double(formattedHeight),
+        ] as [String: Any]
+    }
+
+    private func measureCardHeight(code: String,
+                                   width: CGFloat,
+                                   window: UIWindow) async -> CGFloat {
+        let host = UIHostingController(rootView:
+            CodeToolCodeCard(title: "Output", code: code, detectsJSON: true)
+                .frame(width: width, alignment: .leading)
+                // Ask for the card's ideal height: the body's horizontal
+                // ScrollView must report its content's height, not expand.
+                .fixedSize(horizontal: false, vertical: true))
+        host.view.backgroundColor = .clear
+        host.view.frame = CGRect(x: 0, y: 0, width: width, height: 240)
+        window.addSubview(host.view)
+        host.view.layoutIfNeeded()
+
+        let proposed = CGSize(width: width, height: .greatestFiniteMagnitude)
+        var settled: CGFloat = 0
+        var previous: CGFloat = -1
+        for _ in 0..<15 {
+            await wait(100)
+            host.view.layoutIfNeeded()
+            settled = host.sizeThatFits(in: proposed).height
+            if settled > 1, abs(settled - previous) <= 0.5 { break }
+            previous = settled
+        }
+        host.view.removeFromSuperview()
+        return settled
     }
 
     /// Every `UITextView` below `view`. The Code page's TextKit renderers (the

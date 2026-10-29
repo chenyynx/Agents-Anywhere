@@ -461,7 +461,21 @@ struct CodeToolInputSection: View {
                         .padding(.leading, CodeToolCardMetrics.contentInset)
                 }
                 if field.rendersAsCodeBlock {
-                    CodeToolCodeCard(title: nil, code: field.value)
+                    // The value keeps its label and draws through the
+                    // chrome-less code body: the input section already owns a
+                    // card, and the old code card drew a second rounded
+                    // surface inside it (device report 2026-10-29).
+                    VStack(alignment: .leading,
+                           spacing: CodeToolCardMetrics.fieldLabelGap) {
+                        Text(verbatim: field.key)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal,
+                                     CodeToolCardMetrics.contentInset)
+                        CodeToolCodeBody(code: field.value)
+                    }
+                    .padding(.vertical,
+                             CodeToolCardMetrics.fieldRowVerticalPadding)
                 } else {
                     LabeledContent {
                         Text(verbatim: field.value)

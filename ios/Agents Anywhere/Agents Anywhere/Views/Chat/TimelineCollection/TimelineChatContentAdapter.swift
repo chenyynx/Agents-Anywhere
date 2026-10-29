@@ -64,6 +64,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// The chat profile's step groups, keyed by the id their item carries.
     /// Empty in `.code` mode.
     private var stepGroupsByID: [String: TimelineStepGroup] = [:]
+    /// The same step groups, published for the detail sheet: a sheet that is
+    /// already open must keep updating while the turn streams (pp 2026-10-30).
+    let liveStepGroups = TimelineLiveStepGroups()
     /// The chat profile's trailing step group while its turn is live. The
     /// working mark seats on this row (pp 2026-10-29: the dots always lead the
     /// last group, never a separate row below it).
@@ -1083,7 +1086,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // (CANONICAL/20-working-mark.md §6). The flag goes through an
             // observable box so the mounted `WorkingMarkView` is updated in
             // place; a reconfigure would recreate it already exited.
-            return AnyView(WorkingStatusRowHost(state: workingStatusExitState))
+            return AnyView(WorkingStatusRowHost(state: workingStatusExitState,
+                                                usesChatWorkingStyle: renderMode == .chat))
         case .group(let id):
             guard let group = groupsByID[id] else { return AnyView(EmptyView()) }
             // The chat profile's step-group row: one line that follows the
@@ -1664,6 +1668,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         self.codeProfile = profile
         self.codeRowsByGroupID = codeRowsByGroupID
         self.stepGroupsByID = stepGroupsByID
+        liveStepGroups.publish(stepGroupsByID)
         codeHeightCache = codeHeightCache.filter { codeRowsByGroupID[$0.key] != nil }
         // The cache is keyed by `TimelineListItem.itemID` ("g:<group id>");
         // `groupsByID` is keyed by the bare group id. Strip the prefix or the
@@ -2387,15 +2392,37 @@ private final class WorkingStatusExitState {
     var phase: CodeWorkingStatusPhase = .working(startedAt: Date())
 }
 
+/// The chat profile's step groups, shared with the step-group detail sheet.
+///
+/// The adapter recomputes the groups on every stream flush; publishing the
+/// same dictionary through this observable box lets a presented sheet keep
+/// updating — a running step turns into a settled one and newly emitted calls
+/// append at the tail, the way the official StepSheet grows while the turn
+/// runs (pp 2026-10-30). The tapped snapshot stays the fallback for a group
+/// that has left the timeline window.
+@MainActor @Observable
+final class TimelineLiveStepGroups {
+    private(set) var groups: [String: TimelineStepGroup] = [:]
+
+    func publish(_ groups: [String: TimelineStepGroup]) {
+        guard groups != self.groups else { return }
+        self.groups = groups
+    }
+}
+
 /// The cell's root for `.workingStatus`. Keeping this view mounted and
 /// toggling the observable delivers `isRunning = false` without a reconfigure.
 private struct WorkingStatusRowHost: View {
     let state: WorkingStatusExitState
+    /// The chat profile replaces the Code page's English verb rotation with
+    /// the neutral localized status, shimmered (pp 2026-10-30).
+    let usesChatWorkingStyle: Bool
 
     var body: some View {
         CodeWorkingStatusRow(isRunning: state.isRunning,
                              markBody: state.markBody,
-                             phase: state.phase)
+                             phase: state.phase,
+                             usesChatWorkingStyle: usesChatWorkingStyle)
     }
 }
 

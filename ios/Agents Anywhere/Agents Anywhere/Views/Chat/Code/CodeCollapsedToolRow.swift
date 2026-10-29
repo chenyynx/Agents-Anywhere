@@ -468,7 +468,7 @@ struct CodeCollapsedToolRow: View {
 /// D5 UNKNOWN: the official static scan found no `accessibilityReduceMotion`
 /// read in `ShimmerOverlay`/`WorkingMark`; whether the animation stops under
 /// Reduce Motion is unverified. Do not add a gating branch until measured.
-private struct CodeCollapsedRowShimmer: ViewModifier {
+struct CodeCollapsedRowShimmer: ViewModifier {
     let active: Bool
 
     private static let period: Double = 2.0

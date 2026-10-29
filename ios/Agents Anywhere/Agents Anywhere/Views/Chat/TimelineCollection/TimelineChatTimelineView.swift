@@ -207,7 +207,8 @@ struct TimelineChatTimelineView: View {
                     CodeThinkingDetailView(text: thinking.text)
                 case let .stepGroup(stepGroup):
                     CodeStepGroupDetailView(group: stepGroup.group,
-                                            cwd: model.session.metadata?.cwd)
+                                            cwd: model.session.metadata?.cwd,
+                                            liveGroups: bridge.adapter.liveStepGroups)
                 }
             }
             // Probe builds add a floating diagnostics button; other builds

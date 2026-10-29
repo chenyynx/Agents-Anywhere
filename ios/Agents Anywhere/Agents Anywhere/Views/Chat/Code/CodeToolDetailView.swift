@@ -170,7 +170,7 @@ struct CodeToolGroupCallRow: View {
 /// the icon, height `max(0, rowHeight − (iconMaxY + 8))`) collapses to zero
 /// on the single-line rows this page draws, which is why only this capsule is
 /// visible between calls.
-private struct CodeTimelineConnector: View {
+struct CodeTimelineConnector: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {

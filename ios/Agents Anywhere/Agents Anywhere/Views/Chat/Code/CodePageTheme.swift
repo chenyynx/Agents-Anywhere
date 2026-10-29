@@ -425,19 +425,20 @@ nonisolated enum CodePageTheme {
         codeBlockPin: markdownCodeBlockSize)
     }
 
-    /// [E] R28 §U 收口三 — the thinking detail sheet
-    /// (`CodeThinkingDetailView`) renders through
-    /// `ClaudeRichMarkdown.MarkdownText` (`0x101be0ccc`) with 15.0 pt /
-    /// weight 400 / lineHeight 21.0, relative `.body`
-    /// (`0x100b6a998`; constants `0x100b6ab48` / `0x100b6abc8` /
-    /// `0x100b6ac5c`; `.body` GOT `0x10748c858`), ink `text100`/`text300`.
-    /// The Code message body keeps its own 17/27.2 preset — a different
-    /// official component. The tool group's detail page carries no thinking
-    /// section (pp device report 2026-10-29).
+    /// The thinking detail sheet keeps the **15 / 400 / 21** preset by
+    /// product decision (2026-10-29).
+    ///
+    /// The decompiled evidence points the other way: `MarkdownTextRenderer`
+    /// (`init 0x101b0a1b8`, Fonts builder `0x101b0a588`) takes its prose
+    /// fonts from `theme.regularStyle`, whose default is
+    /// **17.0 / 400 / 27.2** — the same preset the Code message body uses.
+    /// The 15/21 values come from the global Typography (`0x100b6a998`),
+    /// which is not in that renderer's font pipeline. The current value is
+    /// therefore a deliberate deviation, recorded here so a later evidence
+    /// pass does not silently "fix" it back.
     ///
     /// U for this surface: paragraph spacing, heading sizes and the
-    /// inline-code/code-block presets are not decoded; they reuse the Code
-    /// page ratios, while body size and line height are the decoded values.
+    /// inline-code/code-block presets reuse the Code page ratios.
     static var toolRowSansFont: UIFont {
         MarkdownFontFactory.font(name: sansFontName,
                                  size: toolRowFontSize, weight: 400)

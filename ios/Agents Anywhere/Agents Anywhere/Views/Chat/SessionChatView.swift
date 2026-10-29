@@ -76,6 +76,10 @@ struct SessionChatView: View, Equatable {
                 onSubAgent: { sheet = .subagents($0, fromCapsule: false) },
                 safeAreaInsets: proxy.safeAreaInsets,
                 renderMode: renderMode)
+                // The bridge owns one adapter for its lifetime; a mode switch
+                // must rebuild it, exactly like the old switch rebuilt the
+                // branch it replaced.
+                .id(renderModeRaw)
                 .ignoresSafeArea([.container, .keyboard], edges: [.top, .bottom])
         }
     }

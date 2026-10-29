@@ -449,7 +449,9 @@ final class CodeProfileAutoRunModel {
 
         let characters = Array(full)
         let tickCount = 100
-        let chunk = max(1, characters.count / tickCount)
+        // Ceil-divide so the stream covers the text in at most `tickCount`
+        // ticks instead of one short remainder tick.
+        let chunk = max(1, (characters.count + tickCount - 1) / tickCount)
         var offset = 0
         var ticks = 0
         var finalDocument: AssistantMarkdownDocument?
@@ -509,8 +511,8 @@ final class CodeProfileAutoRunModel {
         check(abs(incrementalHeight - directHeight) <= 0.5,
               "streamingIncremental: incremental \(incrementalHeight) pt, full \(directHeight) pt")
 
-        check(ticks == tickCount,
-              "streamingIncremental: \(ticks) ticks, expected \(tickCount)")
+        check(ticks <= tickCount,
+              "streamingIncremental: \(ticks) ticks, expected at most \(tickCount)")
         check(CodePageBuildStats.parseBlocksCalls <= ticks * 2 + 2,
               "streamingIncremental: \(CodePageBuildStats.parseBlocksCalls) parse calls for \(ticks) ticks")
         check(CodePageBuildStats.convertCalls <= ticks * 3 + direct.blocks.count,
@@ -544,13 +546,13 @@ final class CodeProfileAutoRunModel {
             computations += 1
             return 43
         }
+        check(first == 42 && second == 42 && computations == 1,
+              "streamingIncremental: cache hit returned \(first)/\(second) after \(computations) compute(s)")
         let third = probe.height(blockKey: "probe", digest: 2, width: 300,
                                  displayScale: 2, typographyRevision: 7) {
             computations += 1
             return 44
         }
-        check(first == 42 && second == 42 && computations == 1,
-              "streamingIncremental: cache hit returned \(first)/\(second) after \(computations) compute(s)")
         check(third == 44 && computations == 2,
               "streamingIncremental: digest change did not invalidate the cache")
 

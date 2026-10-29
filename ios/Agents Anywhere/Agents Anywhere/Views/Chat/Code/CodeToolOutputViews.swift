@@ -800,14 +800,19 @@ private enum CodeToolCardMetrics {
         dark: Color(.sRGB, red: 0.882, green: 0.878, blue: 0.851, opacity: 0.3))
 
     /// [E] V63 — monospaced body 15 pt; the 24 pt line height is realised as
-    /// the derived `codeLineSpacing` below, so no separate unused token stays.
+    /// the derived `codeLineSpacing` below.
     static let codeFontSize: CGFloat = 15
+    /// [E] V63 — unscaled line height 24 pt.
+    static let codeLineHeight: CGFloat = 24
 
-    /// [I] Derived from the [E] 24 pt line height against SF Mono's ~17.9 pt
-    /// line box (~6.1 pt of leading). The renderer now draws the official
-    /// JetBrains Mono face; this font-only pass keeps the value unchanged, so
-    /// the line box is not re-derived against the official face here.
-    static let codeLineSpacing: CGFloat = 6
+    /// [E] V63 + R28 §2.2 — line spacing is
+    /// `lineHeight − the face's natural line box`, the rule the Markdown code
+    /// block already uses. The card draws the official JetBrains Mono face
+    /// (~19.8 pt box at 15 pt), so the leading is ≈4.2 pt, not the 6 pt that
+    /// SF Mono's 17.9 pt box implied before the face swap.
+    static var codeLineSpacing: CGFloat {
+        max(0, codeLineHeight - CodePageTheme.markdownMonoFont.lineHeight)
+    }
 
     /// Existing `TimelineCodePanel` guard (rendered prefix capped at 200 000
     /// characters; copy still takes the full value). Reused here so a huge

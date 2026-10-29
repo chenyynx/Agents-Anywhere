@@ -71,6 +71,7 @@ struct CodeStepGroupDetailView: View {
         case let .thinking(_, text, status):
             CodeCollapsedStepsRow(
                 icon: status.isActive ? nil : "anthropicon.extendedThinking",
+                iconSize: .medium,
                 text: thinkingRowText(text),
                 status: status.isActive ? .running
                     : (status.isFailure ? .failed : .complete),

@@ -71,6 +71,7 @@ struct CodeStepGroupRowView: View {
         } else {
             CodeCollapsedStepsRow(
                 icon: summaryIcon,
+                iconSize: group.toolCalls.isEmpty ? .medium : .large,
                 text: summaryText,
                 status: group.hasFailure ? .failed : .complete,
                 failureExtent: nil,

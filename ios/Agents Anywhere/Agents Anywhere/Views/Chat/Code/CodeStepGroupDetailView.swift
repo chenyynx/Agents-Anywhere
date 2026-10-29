@@ -136,6 +136,7 @@ struct CodeStepGroupDetailView: View {
                         ? .mark(CodeWorkingMarkPose.body(forToolName: call.name))
                         : .icon(CodeToolLabels.anthropicon(for: call), .large),
                     text: CodeToolLabelRun.styledText(runs, scheme: colorScheme),
+                    diff: label.diff,
                     shimmers: call.status == .running)
             }
             .buttonStyle(.plain)
@@ -166,6 +167,9 @@ private struct CodeStepDetailRow: View {
 
     let leading: Leading
     let text: Text
+    /// The `+N −N` pill the transcript row shows for edits; the group sheet
+    /// keeps it next to the label (pp 2026-10-30).
+    var diff: CodeDiffStat? = nil
     let shimmers: Bool
 
     @Environment(\.colorScheme) private var colorScheme
@@ -182,6 +186,10 @@ private struct CodeStepDetailRow: View {
                 .frame(minHeight: textLineHeight, alignment: .leading)
                 .layoutPriority(1)
                 .modifier(CodeCollapsedRowShimmer(active: shimmers))
+
+            if let diff, diff.hasCounts {
+                CodeDiffIndicator(stat: diff)
+            }
 
             Spacer(minLength: 0)
             CodeRowCaret(tint: CodePageTheme.textMutedColor)

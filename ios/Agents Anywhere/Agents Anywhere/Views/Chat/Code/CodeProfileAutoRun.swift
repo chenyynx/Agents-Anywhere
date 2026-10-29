@@ -515,6 +515,11 @@ final class CodeProfileAutoRunModel {
               "streamingIncremental: \(ticks) ticks, expected at most \(tickCount)")
         check(CodePageBuildStats.parseBlocksCalls <= ticks * 2 + 2,
               "streamingIncremental: \(CodePageBuildStats.parseBlocksCalls) parse calls for \(ticks) ticks")
+        // Call count alone cannot distinguish "reparse the tail" from
+        // "reparse the whole reply"; the parsed character total can. A full
+        // reparse every tick would hand over `characters.count * ticks` chars.
+        check(CodePageBuildStats.parseBlocksCharacters <= characters.count * ticks / 4,
+              "streamingIncremental: parsed \(CodePageBuildStats.parseBlocksCharacters) chars for \(characters.count) chars over \(ticks) ticks")
         check(CodePageBuildStats.convertCalls <= ticks * 3 + direct.blocks.count,
               "streamingIncremental: \(CodePageBuildStats.convertCalls) convert calls for \(ticks) ticks")
         check(CodePageBuildStats.fullRebuilds == 1,
@@ -579,6 +584,7 @@ final class CodeProfileAutoRunModel {
             "characters": characters.count,
             "blocks": finalDocument.blocks.count,
             "parseBlocksCalls": CodePageBuildStats.parseBlocksCalls,
+            "parseBlocksCharacters": CodePageBuildStats.parseBlocksCharacters,
             "convertCalls": CodePageBuildStats.convertCalls,
             "blockViewCreations": CodePageBuildStats.blockViewCreations,
             "textViewCreations": CodePageBuildStats.textViewCreations,

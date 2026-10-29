@@ -39,6 +39,9 @@ enum CodeStreamingIncremental {
 @MainActor
 enum CodePageBuildStats {
     static var parseBlocksCalls = 0
+    /// Characters handed to `parseBlocks`, so a gate can prove a tick parses
+    /// the open tail instead of the whole reply (call count alone cannot).
+    static var parseBlocksCharacters = 0
     static var convertCalls = 0
     static var blockViewCreations = 0
     static var textViewCreations = 0
@@ -51,6 +54,7 @@ enum CodePageBuildStats {
 
     static func reset() {
         parseBlocksCalls = 0
+        parseBlocksCharacters = 0
         convertCalls = 0
         blockViewCreations = 0
         textViewCreations = 0
@@ -65,6 +69,7 @@ enum CodePageBuildStats {
     static var snapshot: [String: Int] {
         [
             "parseBlocksCalls": parseBlocksCalls,
+            "parseBlocksCharacters": parseBlocksCharacters,
             "convertCalls": convertCalls,
             "blockViewCreations": blockViewCreations,
             "textViewCreations": textViewCreations,

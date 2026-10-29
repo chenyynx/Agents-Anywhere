@@ -1506,11 +1506,13 @@ final class AssistantStreamingDocumentBuilder {
 
         var completed: [MarkdownBlockSnapshot] = []
         if let split, split > consumed {
+            let segment = String(text[consumed..<split])
             #if DEBUG
             CodePageBuildStats.parseBlocksCalls += 1
+            CodePageBuildStats.parseBlocksCharacters += segment.count
             #endif
             let raw = try AssistantMarkdownDocumentParser.parseBlocks(
-                text: String(text[consumed..<split]),
+                text: segment,
                 resolvesFileReferences: resolvesFileReferences)
             completed = raw.enumerated().map { offset, snapshot in
                 MarkdownBlockSnapshot(id: state.nextID + offset,
@@ -1528,6 +1530,7 @@ final class AssistantStreamingDocumentBuilder {
         } else {
             #if DEBUG
             CodePageBuildStats.parseBlocksCalls += 1
+            CodePageBuildStats.parseBlocksCharacters += tail.count
             #endif
             let raw = try AssistantMarkdownDocumentParser.parseBlocks(
                 text: tail, resolvesFileReferences: resolvesFileReferences)

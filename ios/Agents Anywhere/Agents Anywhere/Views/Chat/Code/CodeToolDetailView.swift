@@ -396,7 +396,7 @@ struct CodeToolDetailView: View {
 /// connector. `textSize`/`textStyle` below are the only decoded Code text
 /// preset (the collapsed row's 15/400/21), used as the placeholder so one
 /// probe replaces this block.
-private enum CodeDetailRowHooks {
+enum CodeDetailRowHooks {
     /// [E] 1023 `TimelineRow` — the content HStack spacing is 16 pt
     /// (`0x100fd6958` → `0x100b60408`).
     static let iconSpacing: CGFloat = 16

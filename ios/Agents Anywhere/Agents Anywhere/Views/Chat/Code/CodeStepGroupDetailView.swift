@@ -51,7 +51,7 @@ struct CodeStepGroupDetailView: View {
                                 CodeTimelineConnector()
                             }
                         }
-                        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+                        .listRowInsets(CodePageTheme.groupListRowInsets)
                         .listRowSeparator(.hidden)
                         .listRowBackground(Color.clear)
                     }
@@ -113,53 +113,32 @@ struct CodeStepGroupDetailView: View {
     private func row(for step: TimelineStep) -> some View {
         switch step {
         case let .thinking(id, text, status):
-            CodeCollapsedStepsRow(
-                icon: status.isActive ? nil : "anthropicon.extendedThinking",
-                iconSize: .medium,
-                text: thinkingRowText(text),
-                status: status.isActive ? .running
-                    : (status.isFailure ? .failed : .complete),
-                failureExtent: nil,
-                hasDetails: true,
-                diffIndicator: nil,
-                workingMark: nil,
-                leadingOverride: status.isActive
-                    ? AnyView(WorkingMarkView(body: .think, isRunning: true)
-                        .frame(width: CodePageTheme.toolRowIconFrameSize,
-                               height: CodePageTheme.toolRowIconFrameSize))
-                    : nil,
-                isTextHidden: false,
-                includesImages: false,
-                voiceControlName: nil,
-                spokenLabel: nil,
-                isRunning: status.isActive,
-                action: { path.append(.thinking(id: id, fallback: text)) })
+            Button {
+                path.append(.thinking(id: id, fallback: text))
+            } label: {
+                CodeStepDetailRow(
+                    leading: status.isActive
+                        ? .mark(.think)
+                        : .icon("anthropicon.extendedThinking", .medium),
+                    text: thinkingRowText(text),
+                    shimmers: status.isActive)
+            }
+            .buttonStyle(.plain)
         case let .tool(call):
             let label = CodeToolLabels.label(for: [call], cwd: cwd)
             let runs = CodeToolLabels.runs(for: label,
                                            differentiateWithoutColor: differentiateWithoutColor)
-            CodeCollapsedStepsRow(
-                icon: call.status == .running
-                    ? nil : CodeToolLabels.anthropicon(for: call),
-                text: CodeToolLabelRun.styledText(runs, scheme: colorScheme),
-                status: call.status,
-                failureExtent: call.status == .failed ? .failed : nil,
-                hasDetails: true,
-                diffIndicator: label.diff,
-                workingMark: nil,
-                leadingOverride: call.status == .running
-                    ? AnyView(WorkingMarkView(
-                        body: CodeWorkingMarkPose.body(forToolName: call.name),
-                        isRunning: true)
-                        .frame(width: CodePageTheme.toolRowIconFrameSize,
-                               height: CodePageTheme.toolRowIconFrameSize))
-                    : nil,
-                isTextHidden: false,
-                includesImages: false,
-                voiceControlName: nil,
-                spokenLabel: nil,
-                isRunning: call.status == .running,
-                action: { path.append(.tool(call)) })
+            Button {
+                path.append(.tool(call))
+            } label: {
+                CodeStepDetailRow(
+                    leading: call.status == .running
+                        ? .mark(CodeWorkingMarkPose.body(forToolName: call.name))
+                        : .icon(CodeToolLabels.anthropicon(for: call), .large),
+                    text: CodeToolLabelRun.styledText(runs, scheme: colorScheme),
+                    shimmers: call.status == .running)
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -171,5 +150,59 @@ struct CodeStepGroupDetailView: View {
                           size: CodePageTheme.toolRowFontSize,
                           relativeTo: CodePageTheme.toolRowBodyTextStyle))
             .foregroundStyle(CodePageTheme.text400Color.resolved(for: colorScheme))
+    }
+}
+
+/// One ordered step row, laid out with the Code page group sheet's decoded
+/// metrics (`CodeDetailRowHooks`: 16 pt icon/content gap, 8 pt vertical
+/// padding, `textMuted` chevron) so the chat sheet's rhythm matches the Code
+/// page's tool detail (pp 2026-10-30). A running step swaps the icon for the
+/// working mark and keeps the tool rows' shimmer on its label.
+private struct CodeStepDetailRow: View {
+    enum Leading {
+        case icon(String, AnthropiconSize)
+        case mark(WorkingMarkBody)
+    }
+
+    let leading: Leading
+    let text: Text
+    let shimmers: Bool
+
+    @Environment(\.colorScheme) private var colorScheme
+    @ScaledMetric(relativeTo: CodeDetailRowHooks.textStyle)
+    private var textLineHeight = CodePageTheme.toolRowTextLineHeight
+
+    var body: some View {
+        HStack(alignment: .center, spacing: CodeDetailRowHooks.iconSpacing) {
+            leadingView
+
+            text
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(minHeight: textLineHeight, alignment: .leading)
+                .layoutPriority(1)
+                .modifier(CodeCollapsedRowShimmer(active: shimmers))
+
+            Spacer(minLength: 0)
+            CodeRowCaret(tint: CodePageTheme.textMutedColor)
+        }
+        .padding(.vertical, CodeDetailRowHooks.verticalPadding)
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private var leadingView: some View {
+        switch leading {
+        case let .icon(name, size):
+            AnthropiconView(name: name, size: size)
+                .foregroundStyle(CodePageTheme.text500Color.resolved(for: colorScheme))
+                .frame(width: CodePageTheme.toolRowIconFrameSize,
+                       height: CodePageTheme.toolRowIconFrameSize)
+                .accessibilityHidden(true)
+        case let .mark(body):
+            WorkingMarkView(body: body, isRunning: true)
+                .frame(width: CodePageTheme.toolRowIconFrameSize,
+                       height: CodePageTheme.toolRowIconFrameSize)
+        }
     }
 }

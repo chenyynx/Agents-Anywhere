@@ -206,6 +206,10 @@ struct CodeToolCallDetailView: View {
 
     private let output: CodeToolOutput
     private let inputText: String?
+    /// AA's mapping of the official `detectsJSON` bit (R-U §1): the call's
+    /// input is a structured JSON object. The output card still needs the
+    /// body to sniff as JSON before it offers Prettify (R-U §1/E3).
+    private let detectsJSON: Bool
 
     @Environment(\.colorScheme) private var colorScheme
     /// The D9 placeholder line box (see `CodeDetailRowHooks`).
@@ -218,6 +222,7 @@ struct CodeToolCallDetailView: View {
         self.footnote = footnote
         output = CodeToolOutput(item: call.item, kind: call.kind)
         inputText = Self.inputText(for: call)
+        detectsJSON = CodeToolInputFields.detectsJSON(for: call)
     }
 
     var body: some View {
@@ -245,12 +250,15 @@ struct CodeToolCallDetailView: View {
 
     // MARK: - Sections (official order)
 
-    /// `ToolCallDetailSections`: row identity plus the input area.
+    /// `ToolCallDetailSections`: row identity plus the input area. The input
+    /// is rendered as the official `InputFieldRows` (R-T §3/§5): one
+    /// `LabeledContent` row per top-level input key, with the section title
+    /// and copy control kept in its header.
     private var detailSection: some View {
         VStack(alignment: .leading, spacing: CodePageTheme.blockSpacing) {
             summaryRow
-            if let inputText {
-                CodeToolCodeCard(title: String(localized: "Input"), code: inputText)
+            if inputText != nil {
+                CodeToolInputSection(call: call)
             }
         }
     }
@@ -260,7 +268,9 @@ struct CodeToolCallDetailView: View {
     /// "Output" header.
     @ViewBuilder private var outputSection: some View {
         if !output.isEmpty {
-            CodeToolOutputView(output: output, kind: call.kind)
+            CodeToolOutputView(output: output,
+                               kind: call.kind,
+                               detectsJSON: detectsJSON)
         }
     }
 
@@ -336,17 +346,11 @@ struct CodeToolCallDetailView: View {
     // MARK: - Wire reads
 
     /// The input area reads the call's raw input; `arguments` is Codex's alias.
-    /// An absent or empty object hides the card (official `showsInput`).
-    /// Internal so the gate can assert a group row's pushed page has input.
+    /// An absent or empty object hides the section (official `showsInput`).
+    /// The field-row mapping lives in `CodeToolInputFields` so the gate and the
+    /// view share one rule; this accessor remains the section's presence test.
     static func inputText(for call: CodeToolCall) -> String? {
-        let content = call.item.raw["content"] ?? .object([:])
-        guard let input = content["input"] ?? content["arguments"],
-              input != .null else { return nil }
-        if case let .object(fields) = input, fields.isEmpty { return nil }
-        if case let .array(items) = input, items.isEmpty { return nil }
-        if let text = input.stringValue { return text.isEmpty ? nil : text }
-        let json = input.formattedJSON
-        return json.isEmpty ? nil : json
+        CodeToolInputFields.rawText(for: call)
     }
 
 }

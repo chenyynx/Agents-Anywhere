@@ -14,7 +14,10 @@ These tests pin the additive contract:
 - a row written before the server modelled ``turnId`` is rewritten once when
   a rebuild re-sends it with the new source field. ``contentHash`` covers
   type/status/role/content only, so without the forced rewrite the no-op fast
-  path would leave the stored payload turn-less forever.
+  path would leave the stored payload turn-less forever;
+- a row whose declared ``turnId`` changes is rewritten as well: the older
+  connector's window-derived history id is not stable, and freezing the first
+  one would publish a false turn boundary.
 """
 
 from __future__ import annotations
@@ -220,6 +223,63 @@ async def test_write_without_turn_id_keeps_the_old_unchanged_behaviour() -> None
         )
         assert turn_less.changed is False
         assert (await _stored_item(store, session.id, "row")).source.turnId == "turn_1"
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_a_changed_turn_id_rewrites_the_row() -> None:
+    """A different declared id is a real change, not a no-op.
+
+    The older connector derives history turn ids from the sync window, so the
+    same turn can arrive with a new id on the next sync. Freezing the first one
+    would put a false turn boundary in the payload and split the client's row
+    grouping. The write must therefore replace the stored id, and then settle
+    (a repeat of the same id stays a no-op).
+    """
+
+    store, session = await _store_with_session()
+    try:
+        await store.upsert_timeline_item(
+            session_id=session.id,
+            item=message_input(session.id, "row", turn_id="turn_OLD", order_seq=1),
+        )
+        changed = await store.upsert_timeline_item(
+            session_id=session.id,
+            item=message_input(session.id, "row", turn_id="turn_NEW", order_seq=1),
+        )
+        assert changed.changed is True
+        assert (await _stored_item(store, session.id, "row")).source.turnId == "turn_NEW"
+
+        repeat = await store.upsert_timeline_item(
+            session_id=session.id,
+            item=message_input(session.id, "row", turn_id="turn_NEW", order_seq=1),
+        )
+        assert repeat.changed is False
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_batch_sync_replaces_a_changed_turn_id() -> None:
+    store, session = await _store_with_session()
+    try:
+        await store.upsert_timeline_item(
+            session_id=session.id,
+            item=message_input(session.id, "row", turn_id="turn_OLD", order_seq=1),
+        )
+        batch = await store.sync_timeline_items(
+            session_id=session.id,
+            items=[message_input(session.id, "row", turn_id="turn_NEW", order_seq=1)],
+        )
+        assert batch.changed is True
+        assert (await _stored_item(store, session.id, "row")).source.turnId == "turn_NEW"
+
+        repeat = await store.sync_timeline_items(
+            session_id=session.id,
+            items=[message_input(session.id, "row", turn_id="turn_NEW", order_seq=1)],
+        )
+        assert repeat.changed is False
     finally:
         await store.close()
 

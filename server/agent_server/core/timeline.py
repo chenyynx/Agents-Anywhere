@@ -37,9 +37,13 @@ def timeline_item_state_is_unchanged(
     # ``contentHash`` covers type/status/role/content only, never ``source``.
     # A history rebuild that now declares ``turnId`` on an otherwise identical
     # row would look unchanged, so the stored payload would never gain the turn
-    # boundary. Force exactly that one rewrite: every other source field keeps
-    # the old contentHash-only behaviour.
-    if incoming.source.turnId and not existing.source.turnId:
+    # boundary. Force that rewrite whenever the declared id differs: filling a
+    # missing id, and also replacing a different one. The second case is the
+    # older connector's window-derived history id — it is not stable across
+    # sync windows, and freezing the first one would split a turn at a false
+    # boundary on the client. A turn-less write still never clears a stored id,
+    # and every other source field keeps the old contentHash-only behaviour.
+    if incoming.source.turnId and incoming.source.turnId != existing.source.turnId:
         return False
     return True
 

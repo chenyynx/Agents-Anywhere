@@ -556,6 +556,10 @@ final class CodeProfileAutoRunModel {
         check(overFields.count == 1
                 && overFields.first?.rendersAsCodeBlock == true,
               "inputFields: \(limit + 1) chars should fall to the code block")
+        let multiLineFields = Self.inputFieldsFixture(value: "line one\nline two")
+        check(multiLineFields.count == 1
+                && multiLineFields.first?.rendersAsCodeBlock == true,
+              "inputFields: a short multi-line value stayed a proportional row")
         check(!Self.inputFieldsFixture(value: "short").isEmpty,
               "inputFields: the Edit fixture lost its fields")
 

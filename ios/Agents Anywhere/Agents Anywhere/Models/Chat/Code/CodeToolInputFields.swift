@@ -29,9 +29,17 @@ nonisolated struct CodeToolInputField: Hashable, Identifiable {
 
     /// The official comparison reads the String's `countAndFlags` low bits —
     /// the UTF-8 code-unit count — so the threshold is on `utf8.count`.
-    /// Strictly greater than 262144 falls to the code block.
+    /// Strictly greater than 262144 falls to the code block (R-T §3, E).
+    ///
+    /// A multi-line value also renders as a code block: R-Q Q1 read that
+    /// branch as "multi-line / structured payload → `CodeBlockContent`",
+    /// and rendering code (Edit's `old_string`/`new_string`) in the row's
+    /// proportional font wraps into an unreadable ragged block on device
+    /// (2026-10-29). R-T's instruction-level reading of `InputFieldRow` only
+    /// saw the length gate, so this line is [I] until R-Z2 settles the Edit
+    /// path; it never affects single-line values.
     var rendersAsCodeBlock: Bool {
-        value.utf8.count > Self.codeBlockThreshold
+        value.utf8.count > Self.codeBlockThreshold || value.contains("\n")
     }
 }
 

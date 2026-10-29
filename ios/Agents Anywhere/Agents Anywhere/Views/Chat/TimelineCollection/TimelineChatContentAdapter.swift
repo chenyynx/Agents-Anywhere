@@ -1535,11 +1535,17 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // (CANONICAL/20-working-mark.md §6), then leaves on its own refresh.
         if hasWorkingStatus {
             cancelWorkingStatusExit()
+        } else if renderMode == .chat {
+            // The chat profile moves the one mark onto the step group's row in
+            // the same update; keeping the old row mounted for its 0.4 s exit
+            // would draw two marks at once.
+            cancelWorkingStatusExit()
         } else if lastHasWorkingStatus, !workingStatusIsExiting {
             beginWorkingStatusExit()
         }
         lastHasWorkingStatus = hasWorkingStatus
-        let showsWorkingStatus = hasWorkingStatus || workingStatusIsExiting
+        let showsWorkingStatus = hasWorkingStatus
+            || (renderMode != .chat && workingStatusIsExiting)
         var groups: [ChatTimelineGroup] = []
         var stepGroupsByID: [String: TimelineStepGroup] = [:]
         if renderMode == .chat {

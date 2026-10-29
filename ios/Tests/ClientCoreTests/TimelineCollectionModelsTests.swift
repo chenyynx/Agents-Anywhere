@@ -436,14 +436,19 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         #expect(decision.correction == nil)
     }
 
-    @Test func pendingMeasurementWhileStreamingAndPinnedStaysAtTheBottom() {
+    @Test func pendingMeasurementWhileStreamingAndPinnedLeavesTheEaseToTheDriver() {
+        // The official streaming catch-up is the 0.4 s ease in the anchor
+        // driver. A same-frame re-pin bypassed it and read as instant jumps
+        // once a reply grew past one screen (2026-10-29), so the height lands
+        // without moving the offset; the `.end` placement follows it.
         let decision = TimelinePreferredAttributesDecision.pendingMeasurement(
             delta: 40, cellMaxY: 900, viewportTop: 600,
             isStreaming: true, isAutoScrollPinning: true,
             isTracking: false, isDecelerating: false,
             keyboardTransition: false, suppressContentOffsetAdjustment: false,
             hasCachedHeight: true)
-        #expect(decision.correction == 40)
+        #expect(decision.height == .accept)
+        #expect(decision.correction == nil)
     }
 
     @Test func browsingParksEveryHeightChange() {
@@ -496,8 +501,10 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         //    offset change. The previous rule compensated it and threw the
         //    row off the top of the screen.
         #expect(run(minY: 700, maxY: 900).correction == nil)
-        // 2b. Visible but streaming, pinned, growth.
-        #expect(run(minY: 700, maxY: 900, streaming: true, pinning: true).correction == 30)
+        // 2b. Visible but streaming, pinned, growth: the anchor driver's
+        //     0.4 s ease follows; the layout must not re-pin in the same
+        //     frame (that bypassed the animator).
+        #expect(run(minY: 700, maxY: 900, streaming: true, pinning: true).correction == nil)
         // 3. Streaming without pinning: no offset.
         #expect(run(minY: 700, maxY: 900, streaming: true, pinning: false).correction == nil)
         // 4. Partially visible non-streaming: corrected on the next settled frame.

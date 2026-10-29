@@ -187,12 +187,17 @@ private struct CodeStepDetailRow: View {
                 .layoutPriority(1)
                 .modifier(CodeCollapsedRowShimmer(active: shimmers))
 
-            if let diff, diff.hasCounts {
-                CodeDiffIndicator(stat: diff)
-            }
-
+            // The label owns the whole middle stretch: the +N −N pill and the
+            // chevron sit as a trailing cluster, so a file name keeps more
+            // characters before it truncates (pp 2026-10-30). The chevron's
+            // trailing position does not move.
             Spacer(minLength: 0)
-            CodeRowCaret(tint: CodePageTheme.textMutedColor)
+            HStack(spacing: 8) {
+                if let diff, diff.hasCounts {
+                    CodeDiffIndicator(stat: diff)
+                }
+                CodeRowCaret(tint: CodePageTheme.textMutedColor)
+            }
         }
         .padding(.vertical, CodeDetailRowHooks.verticalPadding)
         .contentShape(Rectangle())

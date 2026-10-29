@@ -206,26 +206,18 @@ nonisolated enum TimelineChatGrouping {
                       interactionTargets: Set<String>) -> [TimelineChatUnit] {
         var units: [TimelineChatUnit] = []
         var stepItems: [V2TimelineItem] = []
-        /// The assistant message the open step run belongs to. The official
-        /// group is one message's `steps` block, so a new message must start a
-        /// new row even when no text sits between its steps.
-        var stepKey: String?
         var messageKey: String?
         var messageRows: [V2TimelineItem] = []
         var consumed: Set<String> = []
         var currentTurnID: V2TurnID?
 
         func flushSteps() {
-            guard !stepItems.isEmpty else {
-                stepKey = nil
-                return
-            }
+            guard !stepItems.isEmpty else { return }
             let steps = stepItems.map { step(for: $0, profile: profile) }
             let firstID = stepItems.first.map(spanID) ?? steps.first?.id ?? "steps"
             units.append(.stepGroup(TimelineStepGroup(id: "steps:\(firstID)", steps: steps),
                                     rowIDs: stepItems.map(\.id)))
             stepItems.removeAll()
-            stepKey = nil
         }
 
         func flushMessage() {
@@ -259,10 +251,6 @@ nonisolated enum TimelineChatGrouping {
 
             if isReasoning(item) || isToolRow(item) {
                 flushMessage()
-                if let key = CodeMessageBuilder.groupKey(for: item) {
-                    if let stepKey, stepKey != key { flushSteps() }
-                    stepKey = key
-                }
                 stepItems.append(item)
                 continue
             }

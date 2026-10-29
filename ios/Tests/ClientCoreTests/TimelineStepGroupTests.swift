@@ -85,10 +85,10 @@ struct TimelineStepGroupingTests {
         #expect(key == "msg-body")
     }
 
-    @Test func aNewAssistantMessageStartsANewGroupWithoutText() throws {
-        // Two API messages' steps back to back: the official group is one
-        // message's `steps` block, so the second message gets its own row even
-        // though no body text separates them.
+    @Test func stepsAcrossAssistantMessagesStayOneGroupUntilText() throws {
+        // One turn, two API assistant messages back to back: pp's model keeps
+        // one live row for the whole step run — the row must not settle into a
+        // summary between messages. Body text (or a turn boundary) ends it.
         let items = [
             try thinkingItem("r1", order: 1, message: "msg-1"),
             try toolItem("t1", order: 2, name: "Read", message: "msg-1"),
@@ -97,16 +97,13 @@ struct TimelineStepGroupingTests {
         ]
         let units = TimelineChatGrouping.units(items: items, profile: .generic,
                                                interactionTargets: [])
-        #expect(units.count == 2)
-        guard case let .stepGroup(first, firstRows) = units[0],
-              case let .stepGroup(second, secondRows) = units[1] else {
-            Issue.record("expected two step groups")
+        #expect(units.count == 1)
+        guard case let .stepGroup(group, rowIDs) = units[0] else {
+            Issue.record("expected one step group")
             return
         }
-        #expect(firstRows == ["r1", "t1"])
-        #expect(secondRows == ["r2", "t2"])
-        #expect(first.id == "steps:msg-1")
-        #expect(second.id == "steps:msg-2")
+        #expect(rowIDs == ["r1", "t1", "r2", "t2"])
+        #expect(group.id == "steps:msg-1")
     }
 
     @Test func declaredTurnChangeBreaksTheGroup() throws {

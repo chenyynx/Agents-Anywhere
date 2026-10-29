@@ -30,6 +30,15 @@
 - 汇总行文案用现有 13 类工具统计：「思考 N 次 · 读取 X 个文件 · 运行 Y 个命令 · 编辑 Z 个文件 · …」（`CodeToolLabelPlan` 的分类与本地化）。
 - 思考详情页沿用 `CodeThinkingDetailView`（markdown）。
 
+## 3.1 两套渲染方式（pp 2026-10-29 追加）
+
+- 设置项从「会话时间线（实验）」开关改为**渲染方式选择**：`聊天` / `代码`，不是 on/off。
+- `代码` = 现在 beta 的 Code 页渲染，**一行不动**。
+- `聊天` = 本任务单的新样式（步骤组实时行 + 汇总行）。
+- 存储用 enum（`chat` / `code`），老 Bool key 做一次性迁移：原开着 → `code`，原关着 → `chat`，升级后行为不突变。
+- 默认 `code`（pp 当前使用的形态）。
+- 旧 Chat 容器（`ChatTimelineView` / `SessionTimelineEventView` 那套）**不再作为可选项**：Phase 1 先停止引用（保留文件以便回退），验收通过后统一删除。
+
 ## 4. 行为规格（AA 版）
 
 一个"步骤组" = 一条 assistant 消息块内连续的思考/工具步骤（沿 wire 的 `orderSeq` + `blockIndex`；正文 `text` 断组、回合边界断组）。
@@ -48,6 +57,7 @@
 
 | 模块 | 文件 | 改动 |
 |---|---|---|
+| 渲染方式 | `ios/Agents Anywhere/Agents Anywhere/Views/Chat/TimelineCollection/TimelineCollectionSwitch.swift`、`SessionChatView.swift`、`NewSessionView.swift`、`Views/Settings/AccountSettingsSheet.swift` | 开关改成 enum `chat`/`code` 选择器；老 Bool 迁移；`SessionChatView` 恒走 collection，按 enum 选 profile；设置文案改为「渲染方式」 |
 | 行模型 | `ios/Agents Anywhere/Agents Anywhere/Models/Chat/Code/CodeMessageTimeline.swift` | 组单位保留逐步骤（不再合并思考文本）；行种类新增 `.stepsGroup`（含有序 `Step` 列表 + 运行状态）；`appendReasoningBlock` 的 `"\n\n"` 合并删除 |
 | 分组 | `ios/Agents Anywhere/Agents Anywhere/Models/Chat/TimelineGrouping.swift` | `codeGroups` 按新单位产出；组 id 用组内第一个稳定 id，组增长时不改名 |
 | 组行视图 | `ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeStepGroupRow.swift`（新） | 运行态单行（mark + 当前步骤预览）；完成态汇总行；整行可点 |
@@ -77,6 +87,7 @@
 
 ## 8. 分阶段
 
-- **Phase 1**：组行（运行态单行预览 + 完成态汇总）+ 详情页 + 门禁重写。
+- **Phase 1**：渲染方式选择器（含旧开关迁移）+ chat profile 的组行（运行态单行预览 + 完成态汇总）+ 详情页 + 门禁重写；旧 Chat 容器停止引用但保留文件。
 - **Phase 2**：独立工作行的落座规则细化（跟随官方 §4.1，含 awaitsUser / opensReply 边距）。
+- **Phase 3**：验收通过后删除旧 Chat 容器文件。
 - 每阶段单独出包验收。

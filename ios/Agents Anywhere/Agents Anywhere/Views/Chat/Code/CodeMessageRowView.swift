@@ -833,6 +833,17 @@ struct CodeThinkingDetailRequest: Identifiable {
     let text: String
 }
 
+/// The chat profile's step-group detail request: the whole group, in order.
+struct CodeStepGroupDetailRequest: Identifiable {
+    let id: String
+    let group: TimelineStepGroup
+
+    init(group: TimelineStepGroup) {
+        id = group.id
+        self.group = group
+    }
+}
+
 /// One detail request: the tapped segment's whole call list in official order.
 /// The official tap opens `collapsedToolCalls(CollapsedToolCallsGroup)`, a
 /// summary list; a row in that list pushes the single call. The row reports
@@ -853,11 +864,13 @@ struct CodeToolDetailRequest: Identifiable {
 enum CodePageDetailRequest: Identifiable {
     case tool(CodeToolDetailRequest)
     case thinking(CodeThinkingDetailRequest)
+    case stepGroup(CodeStepGroupDetailRequest)
 
     var id: String {
         switch self {
         case let .tool(request): return "tool:\(request.id)"
         case let .thinking(request): return "thinking:\(request.id)"
+        case let .stepGroup(request): return "steps:\(request.id)"
         }
     }
 }

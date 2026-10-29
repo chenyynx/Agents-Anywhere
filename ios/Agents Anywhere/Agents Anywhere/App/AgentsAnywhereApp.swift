@@ -8,6 +8,9 @@ struct AgentsAnywhereApp: App {
 
     init() {
         AppFontRegistry.registerBundledFonts()
+        // One-time migration of the retired collection-timeline Bool into the
+        // render-mode enum, before any view reads the mode.
+        TimelineRenderModeSwitch.migrateIfNeeded()
     }
 
     var body: some Scene {

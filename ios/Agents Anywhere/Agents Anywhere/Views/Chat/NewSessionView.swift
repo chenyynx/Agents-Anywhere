@@ -18,11 +18,12 @@ struct NewSessionView: View, Equatable {
     @Environment(AppState.self) private var appState
     @State private var confirmsRetry = false
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
-    @AppStorage(TimelineCollectionSwitch.key) private var usesCollectionTimeline = false
     @ScaledMetric(relativeTo: .body) private var bodyLineHeight: CGFloat = 22
 
+    /// The collection engine's composer keeps the official Code measurements
+    /// in both rendering modes (pp 2026-10-29).
     private var composerProfile: ComposerMetricsProfile {
-        usesCollectionTimeline ? .code : .chat(bodyLineHeight: bodyLineHeight)
+        .code
     }
     private var controls: ChatControlMetrics {
         .init(bodyLineHeight: bodyLineHeight, profile: composerProfile)

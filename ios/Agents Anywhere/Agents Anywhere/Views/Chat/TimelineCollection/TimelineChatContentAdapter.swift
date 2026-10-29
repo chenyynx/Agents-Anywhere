@@ -31,6 +31,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     var onCodeToolDetail: ((CodeToolDetailRequest) -> Void)?
     /// A settled `思考过程` row's tap; same page-level sheet as a tool detail.
     var onCodeThinkingDetail: ((CodeThinkingDetailRequest) -> Void)?
+    /// The chat profile's step-group row tap; same page-level sheet.
+    var onCodeStepGroupDetail: ((CodeStepGroupDetailRequest) -> Void)?
 
     /// The representable marks the list stale once per SwiftUI update; reading
     /// the generation rebuilds the maps, and every later `item(at:)` /
@@ -59,6 +61,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// refresh so `estimateKind` / `heightPolicy` do not re-run the builder for
     /// every layout pass.
     private var codeRowsByGroupID: [String: [CodeMessageRow]] = [:]
+    /// The chat profile's step groups, keyed by the id their item carries.
+    /// Empty in `.code` mode.
+    private var stepGroupsByID: [String: TimelineStepGroup] = [:]
+    /// The selected rendering profile (pp 2026-10-29). `.code` keeps the
+    /// official Code page; `.chat` renders one step-group live row.
+    let renderMode: TimelineRenderMode
     /// The last message group of a live turn. It owns the transcript's single
     /// working status line; every other reasoning-only group is not rendered
     /// (device report 2026-10-23: two "Computing…" lines plus the tail orb).
@@ -152,11 +160,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     init(model: SessionChatModel,
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void,
          onFile: @escaping (String) -> Void,
-         onSubAgent: @escaping (String) -> Void) {
+         onSubAgent: @escaping (String) -> Void,
+         renderMode: TimelineRenderMode = .code) {
         self.model = model
         self.onAttachment = onAttachment
         self.onFile = onFile
         self.onSubAgent = onSubAgent
+        self.renderMode = renderMode
         typography = Self.currentTypography()
         codeTypography = Self.currentTypography(scale: CodePageTheme.markdownScale)
         refresh()
@@ -303,6 +313,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 }))
         case .group(let id):
             guard let group = groupsByID[id] else { return .row }
+            // The chat profile's step-group row is always one line; its live
+            // text changes but never its height.
+            if stepGroupsByID[id] != nil {
+                return .fixed(CodeStepGroupRowView.estimatedHeight)
+            }
             // A Code message group has no folds: its estimate is the message's
             // body text plus one line per collapsed tool row (W7 §3.6 / §6).
             if group.explicitID != nil {
@@ -1067,6 +1082,15 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             return AnyView(WorkingStatusRowHost(state: workingStatusExitState))
         case .group(let id):
             guard let group = groupsByID[id] else { return AnyView(EmptyView()) }
+            // The chat profile's step-group row: one line that follows the
+            // group's current step while it runs and settles into the counts
+            // summary.
+            if let stepGroup = stepGroupsByID[id] {
+                let cwd = model.session.metadata?.cwd
+                return AnyView(CodeStepGroupRowView(group: stepGroup, cwd: cwd) { [weak self] in
+                    self?.onCodeStepGroupDetail?(CodeStepGroupDetailRequest(group: stepGroup))
+                })
+            }
             // A message group (declared message id) renders through the Code
             // row; a single-row group is either an interaction target or a row
             // with no message key and keeps the existing renderer.
@@ -1433,21 +1457,43 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // later serial call grows the same item instead of renaming it and
         // dropping its height/scroll state.
         let profile = model.session.metadata.map { CodeRuntimeProfile(meta: $0) } ?? .generic
-        let codeGroups = TimelineGrouping.codeGroups(model.timeline.rows,
+        let codeGroups: [ChatTimelineGroup]
+        let chatUnits: [TimelineChatUnit]
+        var codeRowsByGroupID: [String: [CodeMessageRow]] = [:]
+        if renderMode == .chat {
+            // The chat profile groups chronologically: one step-group row per
+            // run of thinking/tool steps, one message row per body run. It
+            // never merges across messages the way the Code planner does.
+            codeGroups = []
+            chatUnits = TimelineChatGrouping.units(
+                items: model.timeline.rows.map(\.value),
+                profile: profile,
+                interactionTargets: interactionTargets)
+        } else {
+            chatUnits = []
+            codeGroups = TimelineGrouping.codeGroups(model.timeline.rows,
                                                      profile: profile,
                                                      interactionTargets: interactionTargets)
-        var codeRowsByGroupID: [String: [CodeMessageRow]] = [:]
-        for group in codeGroups {
-            guard let explicitID = group.explicitID else { continue }
-            let rows = CodeMessageBuilder.rows(for: group.rows.map(\.value), profile: profile)
-            guard !rows.isEmpty else { continue }
-            codeRowsByGroupID[explicitID] = rows
+            for group in codeGroups {
+                guard let explicitID = group.explicitID else { continue }
+                let rows = CodeMessageBuilder.rows(for: group.rows.map(\.value), profile: profile)
+                guard !rows.isEmpty else { continue }
+                codeRowsByGroupID[explicitID] = rows
+            }
         }
         // The working status is its own transcript row (the official
         // `CodeThinkingView` shape). It no longer lives inside the last
         // message, so a reasoning-only group is never kept alive by it and
         // the status line cannot re-key a message group.
+        // Official Chat (round29 addendum §J): while a step group is open the
+        // dots sit on that group's row, so the standalone working row is not
+        // drawn. It returns once the group settles.
+        let chatStepsRunning = chatUnits.contains {
+            if case let .stepGroup(group, _) = $0 { return group.isRunning }
+            return false
+        }
         let hasWorkingStatus = model.sendingPlaceholder != nil
+            && !(renderMode == .chat && chatStepsRunning)
         // The official mark's pose follows the live turn's last event
         // (`SessionDisplay.liveTurnMark`). Keep the last pose while the row
         // plays its exit, so the exit animates the sprite that was on screen.
@@ -1475,33 +1521,62 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         lastHasWorkingStatus = hasWorkingStatus
         let showsWorkingStatus = hasWorkingStatus || workingStatusIsExiting
         var groups: [ChatTimelineGroup] = []
-        groups.reserveCapacity(codeGroups.count)
-        for group in codeGroups {
-            guard let explicitID = group.explicitID else {
-                groups.append(group)
-                continue
-            }
-            guard let rows = codeRowsByGroupID[explicitID] else { continue }
-            let hasVisibleBlock = rows.contains { row in
-                row.blocks.contains { block in
-                    switch block {
-                    case let .reasoning(_, text, status):
-                        return status == .done
-                            && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    case let .text(_, text):
-                        // An empty text block renders nothing; it must not
-                        // keep a group (or a 44 pt estimate) alive.
-                        return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    case .toolCalls, .other, .attachments:
-                        return true
-                    }
+        var stepGroupsByID: [String: TimelineStepGroup] = [:]
+        if renderMode == .chat {
+            var rowsByID: [String: ChatTimelineRowModel] = [:]
+            for row in model.timeline.rows where rowsByID[row.id] == nil { rowsByID[row.id] = row }
+            groups.reserveCapacity(chatUnits.count)
+            for unit in chatUnits {
+                switch unit {
+                case let .stepGroup(stepGroup, rowIDs):
+                    let rows = rowIDs.compactMap { rowsByID[$0] }
+                    guard !rows.isEmpty else { continue }
+                    stepGroupsByID[stepGroup.id] = stepGroup
+                    groups.append(ChatTimelineGroup(kind: .tools, rows: rows,
+                                                    explicitID: stepGroup.id))
+                case let .message(key, rowIDs):
+                    let rows = rowIDs.compactMap { rowsByID[$0] }
+                    guard !rows.isEmpty else { continue }
+                    let rowsBuilt = CodeMessageBuilder.rows(for: rows.map(\.value),
+                                                            profile: profile)
+                    guard !rowsBuilt.isEmpty else { continue }
+                    codeRowsByGroupID[key] = rowsBuilt
+                    groups.append(ChatTimelineGroup(kind: .single, rows: rows,
+                                                    explicitID: key))
+                case let .standalone(rowID):
+                    guard let row = rowsByID[rowID] else { continue }
+                    groups.append(ChatTimelineGroup(kind: .single, rows: [row]))
                 }
             }
-            // `codeGroups` already drops a message whose only rows are calls
-            // the runtime skips; this guard keeps a message whose only block
-            // is reasoning (or no visible block) from becoming an empty item.
-            guard hasVisibleBlock else { continue }
-            groups.append(group)
+        } else {
+            groups.reserveCapacity(codeGroups.count)
+            for group in codeGroups {
+                guard let explicitID = group.explicitID else {
+                    groups.append(group)
+                    continue
+                }
+                guard let rows = codeRowsByGroupID[explicitID] else { continue }
+                let hasVisibleBlock = rows.contains { row in
+                    row.blocks.contains { block in
+                        switch block {
+                        case let .reasoning(_, text, status):
+                            return status == .done
+                                && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        case let .text(_, text):
+                            // An empty text block renders nothing; it must not
+                            // keep a group (or a 44 pt estimate) alive.
+                            return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        case .toolCalls, .other, .attachments:
+                            return true
+                        }
+                    }
+                }
+                // `codeGroups` already drops a message whose only rows are calls
+                // the runtime skips; this guard keeps a message whose only block
+                // is reasoning (or no visible block) from becoming an empty item.
+                guard hasVisibleBlock else { continue }
+                groups.append(group)
+            }
         }
         let timelineRowIDs = Set(model.timeline.rows.map(\.id))
         let tailNotices = SessionNoticeRouting.tailNotices(notices, sessionID: model.session.id,
@@ -1546,6 +1621,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         self.groupsByID = groupsByID
         self.codeProfile = profile
         self.codeRowsByGroupID = codeRowsByGroupID
+        self.stepGroupsByID = stepGroupsByID
         codeHeightCache = codeHeightCache.filter { codeRowsByGroupID[$0.key] != nil }
         // The cache is keyed by `TimelineListItem.itemID` ("g:<group id>");
         // `groupsByID` is keyed by the bare group id. Strip the prefix or the
@@ -1787,6 +1863,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     }
 
     private func groupSignature(_ group: ChatTimelineGroup) -> TimelineGroupContentSignature {
+        // The chat profile's step row draws the live step's text, so its
+        // signature follows the drawn line (not the wire revision, which the
+        // Code path deliberately avoids hashing per frame).
+        if let stepGroup = stepGroupsByID[group.id] {
+            return stepGroupSignature(stepGroup)
+        }
         // The Code row renders only its rows and those rows' attachments. The
         // generic signature also hashes the turn action, suppression and
         // inline notices; none of them reach `CodeMessageRowView`, and hashing
@@ -1904,6 +1986,51 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 hasNewerItems: model.session.hasNewerItems,
                 hasPendingUserMessage: !model.session.hasNewerItems
                     && (!model.timeline.pendingMessages.isEmpty || !model.session.pendingMessages.isEmpty)))
+    }
+
+    /// The chat profile's step-group signature: the drawn live line while it
+    /// runs, the settled counts once it stops. Hashing the drawn line (not the
+    /// full thinking text) keeps the per-refresh cost on the tail only.
+    private func stepGroupSignature(_ group: TimelineStepGroup) -> TimelineGroupContentSignature {
+        var rows: [TimelineRowContentSignature] = []
+        if let live = group.liveStep, group.isRunning {
+            var hasher = TimelineStableHasher()
+            hasher.combine(live.id)
+            hasher.combine(live.status.rawValue)
+            switch live {
+            case .thinking:
+                hasher.combine(live.liveThinkingLine ?? "")
+            case let .tool(call):
+                hasher.combine(call.name)
+                hasher.combine(call.status == .running ? 1 : 0)
+            }
+            rows.append(TimelineRowContentSignature(id: live.id,
+                                                    revision: hasher.revision,
+                                                    updatedSeq: 0))
+        }
+        let summary = TimelineStepSummarizer.summary(steps: group.steps,
+                                                     cwd: model.session.metadata?.cwd)
+        var settled = TimelineStableHasher()
+        settled.combine(group.steps.count)
+        settled.combine(group.hasFailure ? 1 : 0)
+        settled.combine(summary.thinkingCount)
+        settled.combine(summary.readFiles)
+        settled.combine(summary.ranCommands)
+        settled.combine(summary.editedFiles)
+        settled.combine(summary.toolCount)
+        rows.append(TimelineRowContentSignature(id: group.id + ":settled",
+                                                revision: settled.revision,
+                                                updatedSeq: 0))
+        return TimelineGroupContentSignature(
+            rows: rows,
+            disclosureExpanded: false,
+            expandedRowIDs: [],
+            revealingRowIDs: [],
+            inlineNotices: [],
+            attachments: [],
+            turnAction: nil,
+            turnSuppression: TimelineTurnSuppression(
+                isRunning: false, hasNewerItems: false, hasPendingUserMessage: false))
     }
 
     /// Signature component of a live row: it changes only when the publisher's

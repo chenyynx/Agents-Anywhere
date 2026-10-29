@@ -161,11 +161,15 @@ nonisolated enum CodePageTheme {
     /// Only the ink (and the a11y key) differs between the two extents.
     static let failureGlyphAssetName = "anthropicon.warning"
 
-    /// U — R-A §11/U2: the `Icon.Size` that `TimelineStatusGlyph` passes to
-    /// `FailureGlyph` was never decoded (no xref, no disassembly). `.medium`
-    /// is a named placeholder: one line changes every call site once the
-    /// caller is read.
-    static let failureGlyphSize: AnthropiconSize = .medium
+    /// [E] R-S §1 — `TimelineStatusGlyph.body` forces the size byte to 0 when
+    /// it builds `FailureGlyph` (`0x101e8e660 strb wzr,[x19,#1]`), i.e.
+    /// `Icon.Size.small`; the frame is therefore `16 + 4 × 0 = 16 x 16`.
+    static let failureGlyphSize: AnthropiconSize = .small
+
+    /// [E] R-S §4 — the non-failure status icon for `failed` is
+    /// `anthropicon.warning` (`0x100bc75a4`), the same artwork as
+    /// `FailureGlyph`; waiting/interrupted/denied use `clock`/`stopCircle`.
+    static let statusWarningIconName = "anthropicon.warning"
 
     /// [E] R-A E5 — square frame side `16 + 4 × Icon.Size.raw`
     /// (`0x100d8e6c8` loads 16.0, `0x100d8e6cc` adds `size << 50`;

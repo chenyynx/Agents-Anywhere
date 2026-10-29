@@ -840,18 +840,30 @@ final class CodeProfileAutoRunModel {
         // body; its non-failure branch is the semibold checkmark and the
         // FailureGlyph branch is the R-A warning glyph. The caret is a 20x20
         // icon box in a 24 pt frame.
+        // R-S: a settled row without a failure extent draws no glyph at all;
+        // the failure branch is FailureGlyph(small), and a failed row without
+        // an extent falls back to the warning status icon.
         check(CodeCollapsedStepsRow.statusGlyphKind(status: .complete,
-                                                    failureExtent: nil) == .checkmark,
-              "collapsedRows rule: a settled row lost its checkmark branch")
+                                                    failureExtent: nil) == nil,
+              "collapsedRows rule: a settled row drew a status glyph")
+        check(CodeCollapsedStepsRow.statusGlyphKind(status: .running,
+                                                    failureExtent: nil) == nil,
+              "collapsedRows rule: a running row drew a status glyph")
         check(CodeCollapsedStepsRow.statusGlyphKind(status: .failed,
-                                                    failureExtent: nil) == .failure,
+                                                    failureExtent: .failed)
+                == .failure(.failed),
               "collapsedRows rule: the failure-glyph branch was removed")
         check(CodeCollapsedStepsRow.statusGlyphKind(status: .complete,
-                                                    failureExtent: .partial) == .failure,
+                                                    failureExtent: .partial)
+                == .failure(.partial),
               "collapsedRows rule: a partial extent lost the failure branch")
-        check(CodeCollapsedStepsRow.statusGlyphKind(status: .running,
-                                                    failureExtent: nil) == .none,
-              "collapsedRows rule: a running row drew an unproven glyph")
+        check(CodeCollapsedStepsRow.statusGlyphKind(status: .failed,
+                                                    failureExtent: nil)
+                == .statusIcon(CodePageTheme.statusWarningIconName),
+              "collapsedRows rule: the failed status icon was removed")
+        check(CodePageTheme.failureGlyphSize == .small,
+              "collapsedRows rule: FailureGlyph size"
+                + " \(CodePageTheme.failureGlyphSize), expected .small")
         check(CodePageTheme.toolRowCaretSlotSize == 20
                 && CodePageTheme.toolRowCaretFrameHeight == 24,
               "collapsedRows rule: caret slot \(CodePageTheme.toolRowCaretSlotSize)"

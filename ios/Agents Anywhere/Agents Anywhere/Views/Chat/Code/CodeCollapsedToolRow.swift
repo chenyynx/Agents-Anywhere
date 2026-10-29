@@ -17,9 +17,13 @@ import UIKit
 // (`0x101e3dbd8`), so a settled row keeps its category icon; the slot only
 // swaps to the working mark while a mark is seated. And `TimelineStatusGlyph`
 // is a fixed tuple element of the row body (not behind a row-level
-// condition); its body is `ConditionalContent<FailureGlyph, Image>` whose
-// non-failure branch is `Image(systemName: "checkmark")` with
-// `.fontWeight(.semibold)` and `accentSecondary100`. The failure branch is
+// condition); its body is `ConditionalContent<FailureGlyph, StatusIcon?>`
+// (R-S): the failure branch draws `FailureGlyph` at `.small` (16 x 16) when
+// the row carries a `failureExtent` and is settled, while the other branch
+// picks a status icon — nil for running/complete/unreadable, `clock` for
+// waiting, `warning` for failed, `stopCircle` for interrupted/denied. There
+// is no checkmark in this view (the `checkmark` builder R1 found belongs to
+// a different surface). The failure branch is
 // now decoded by R-A: one `anthropicon.warning` asset, frame 16 + 4 ×
 // `Icon.Size.raw`, with separate failed/partial sRGB inks.
 //
@@ -112,10 +116,11 @@ extension CodeToolLabelRun {
 ///   content box and the 30 fps cadence are decoded (D2/D3), so the slot
 ///   renders a frame-less skeleton instead of the retired 1019 artwork. AA
 ///   passes nil because no decoded predicate maps a live pose to the mark yet.
-/// - `TimelineStatusGlyph` is a fixed element of the official row body. Its
-///   non-failure branch is `Image(systemName: "checkmark")` semibold in
-///   `accentSecondary100`; the `FailureGlyph` branch (failed / partial) is
-///   the `anthropicon.warning` asset with the R-A frame and inks.
+/// - `TimelineStatusGlyph` is a fixed element of the official row body (R-S).
+///   Its failure branch is `FailureGlyph(extent:size: .small)` — the
+///   `anthropicon.warning` asset at 16 x 16 with the R-A extent inks — and its
+///   other branch is a status icon (`clock` / `warning` / `stopCircle`, or
+///   nil for running/complete/unreadable), not a checkmark.
 struct CodeCollapsedStepsRow: View {
     var icon: String?
     var iconSize: AnthropiconSize = .large
@@ -191,25 +196,24 @@ struct CodeCollapsedStepsRow: View {
                                                 voiceControlName: voiceControlName))
     }
 
-    /// 1023 `TimelineStatusGlyph` branch. The row body always carries the
-    /// glyph (fixed tuple element); the view itself chooses between the
-    /// `FailureGlyph` branch and the `checkmark` branch.
+    /// 1023 `TimelineStatusGlyph` branch (R-S, closed at instruction level).
     ///
-    /// - `.failed` / any non-nil extent → `FailureGlyph` (R-A: shared
-    ///   `anthropicon.warning`, frame `16 + 4 × Icon.Size.raw`, failed and
-    ///   partial inks).
-    /// - `.complete` → `checkmark`. The glyph's `ConditionalContent` branch
-    ///   predicate itself was not located; the checkmark builder is the
-    ///   candidate and the non-failure branch is the only decoded one (R28
-    ///   §U 收口三; still U at the predicate level).
-    /// - `.running` → nothing. R-B C11 leaves the running construction as U
-    ///   (the `TimelineStatusGlyph` init has no visible xref from the
-    ///   collapsed row), so no unproven mark is drawn.
+    /// - `failureExtent != nil && status` settled (raw >= 2, i.e. not
+    ///   running/waiting) → `FailureGlyph` (`0x101e8e658..0x101e8e674`; the
+    ///   size byte is forced to 0 = `.small`, so the frame is 16 x 16).
+    /// - otherwise a status icon, never a checkmark (`0x101e8e390`, 7-way
+    ///   jump table `0x105b88070`): running/complete/unreadable → nil,
+    ///   waiting → `anthropicon.clock`, failed → `anthropicon.warning`,
+    ///   interrupted/denied → `anthropicon.stopCircle`.
     static func statusGlyphKind(status: CodeToolStatus,
-                                failureExtent: CodeFailureExtent?) -> CodeStatusGlyphKind {
-        if status == .failed || failureExtent != nil { return .failure }
-        if status == .complete { return .checkmark }
-        return .none
+                                failureExtent: CodeFailureExtent?) -> CodeStatusGlyphKind? {
+        if status != .running, let failureExtent {
+            return .failure(failureExtent)
+        }
+        if status == .failed {
+            return .statusIcon(CodePageTheme.statusWarningIconName)
+        }
+        return nil
     }
 
     /// [E] R28 §1.2 — `IconFrame` regular 24×24; the glyph inside keeps its
@@ -316,32 +320,22 @@ private struct CodeCollapsedRowAccessibility: ViewModifier {
 }
 
 /// Which branch of the official `TimelineStatusGlyph`
-/// (`ConditionalContent<FailureGlyph, Image>`) a row takes.
-///
-/// The branch predicate is not located (U, R28 §U 收口三); the non-failure
-/// `Image` construction is E, so `.checkmark` is the evidenced candidate.
+/// (`ConditionalContent<FailureGlyph, StatusIcon?>`) a row takes (R-S).
 nonisolated enum CodeStatusGlyphKind: Equatable {
-    /// `Image(systemName: "checkmark")`, `.fontWeight(.semibold)`,
-    /// `accentSecondary100` — E from the 1023 non-failure branch.
-    case checkmark
-    /// `FailureGlyph` — shared `anthropicon.warning` asset, R-A frame and
-    /// failed/partial inks.
-    case failure
-    /// Running: the official construction for that state is not decoded
-    /// (R-B C11, still U).
-    case none
+    /// `ClaudeCoreUI.FailureGlyph(extent:size: .small)` — 16 x 16, extent ink.
+    case failure(CodeFailureExtent)
+    /// The non-failure status icon, drawn at `Icon.Size.small`
+    /// (`anthropicon.clock` / `anthropicon.warning` /
+    /// `anthropicon.stopCircle`); AA reaches the warning case only.
+    case statusIcon(String)
 }
 
 /// The official `TimelineStatusGlyph` (`R28 §4.3` + 1023 row construction).
 ///
-/// The view is always present in the row body; this wrapper renders the
-/// decoded non-failure branch (`checkmark` ink) and the decoded
-/// `FailureGlyph` branch (R-A).
-///
-/// Still U: which `Icon.Size` the official `TimelineStatusGlyph` passes to
-/// `FailureGlyph` (R-A §11/U2). `CodePageTheme.failureGlyphSize` is the
-/// named placeholder. The checkmark's font size is likewise undecoded; the
-/// image renders at its natural semibold size with no explicit frame.
+/// The view is always present in the row body; this wrapper renders the two
+/// decoded branches (R-S): `FailureGlyph` at `.small` and the status icon.
+/// The status icon's tint is not decoded (U) — the row's `text500` icon ink
+/// is kept as the stand-in.
 struct CodeTimelineStatusGlyph: View {
     let status: CodeToolStatus
     let failureExtent: CodeFailureExtent?
@@ -351,14 +345,15 @@ struct CodeTimelineStatusGlyph: View {
     var body: some View {
         switch CodeCollapsedStepsRow.statusGlyphKind(status: status,
                                                      failureExtent: failureExtent) {
-        case .checkmark:
-            Image(systemName: "checkmark")
-                .fontWeight(.semibold)
-                .foregroundStyle(CodePageTheme.accentSecondary100Color
+        case let .failure(extent):
+            CodeFailureGlyph(extent: extent)
+        case let .statusIcon(name):
+            // The official status icon keeps its `.small` artwork extent;
+            // this branch's tint is U, so the row's icon ink stands in.
+            AnthropiconView(name: name, size: .small)
+                .foregroundStyle(CodePageTheme.text500Color
                     .resolved(for: colorScheme))
-        case .failure:
-            CodeFailureGlyph(extent: failureExtent ?? .failed)
-        case .none:
+        case nil:
             EmptyView()
         }
     }

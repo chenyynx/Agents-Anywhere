@@ -78,7 +78,7 @@ struct CodeToolOutputView: View {
 /// string, reports its own fitting height, and keeps the copy path working.
 private struct CodeFileReadOutputView: View {
     let text: String
-    private let displayText: String
+    private let chunks: [String]
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.displayScale) private var displayScale
@@ -89,7 +89,7 @@ private struct CodeFileReadOutputView: View {
 
     init(text: String) {
         self.text = text
-        displayText = String(text.prefix(CodeToolCardMetrics.previewLimit))
+        chunks = CodeFileReadChunks.split(text)
     }
 
     private var surface: Color {
@@ -120,17 +120,19 @@ private struct CodeFileReadOutputView: View {
                 .fill(border)
                 .frame(height: 1 / displayScale)
 
-            CodeFileReadText(text: displayText)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(CodeToolCardMetrics.contentInset)
-
-            if text.count > CodeToolCardMetrics.previewLimit {
-                Text(String(localized: "预览已截断，复制可获取完整内容"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, CodeToolCardMetrics.contentInset)
-                    .padding(.bottom, 12)
+            // The official renderer keeps every line (R-R Q3: the only
+            // truncation is the tool output limit, reported by the tool, not
+            // the client) and feeds TextKit many small documents through
+            // `ChunkedPayload` + `LazyVStack` (R-R Q2). One unbounded
+            // `UITextView` stops drawing long bodies — the blank card on
+            // device, 2026-10-29 — so the body is chunked the same way.
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(chunks.indices, id: \.self) { index in
+                    CodeFileReadText(text: chunks[index])
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(CodeToolCardMetrics.contentInset)
         }
         .background(surface)
         .clipShape(RoundedRectangle(cornerRadius: CodeToolCardMetrics.cornerRadius,
@@ -141,6 +143,49 @@ private struct CodeFileReadOutputView: View {
                 .stroke(border, lineWidth: 1 / displayScale)
                 .allowsHitTesting(false)
         }
+    }
+}
+
+/// Splits a Read body into TextKit-sized chunks.
+///
+/// The official `ChunkedPayload` carries `chunks: [String]` and draws them in
+/// a `LazyVStack<ForEach<Range<Int>>>` (R-R Q2); the chunk size is not part of
+/// the decoded evidence, so this picks a size that keeps one `UITextView`
+/// small enough to lay out reliably. Boundaries prefer newlines; a single line
+/// longer than the budget (a base64 blob, one minified JSON line) is split by
+/// characters so it cannot stall a chunk. No text is dropped.
+enum CodeFileReadChunks {
+    static let maxCharacters = 8_000
+
+    static func split(_ text: String, limit: Int = maxCharacters) -> [String] {
+        guard !text.isEmpty else { return [] }
+        guard text.count > limit else { return [text] }
+        var chunks: [String] = []
+        var current = ""
+        func flush() {
+            if !current.isEmpty { chunks.append(current); current = "" }
+        }
+        for (index, line) in text.split(separator: "\n",
+                                        omittingEmptySubsequences: false).enumerated() {
+            var piece = String(line)
+            while piece.count > limit {
+                flush()
+                let cut = piece.index(piece.startIndex, offsetBy: limit)
+                chunks.append(String(piece[piece.startIndex..<cut]))
+                piece = String(piece[cut...])
+            }
+            // The first stored line of a chunk starts clean; the line break is
+            // the chunk boundary itself.
+            let addition = (index == 0 || current.isEmpty) ? piece : "\n" + piece
+            if current.count + addition.count > limit {
+                flush()
+                current = piece
+            } else {
+                current += addition
+            }
+        }
+        flush()
+        return chunks
     }
 }
 

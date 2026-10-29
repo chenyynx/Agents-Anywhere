@@ -67,6 +67,9 @@ final class CodeProfileAutoRunModel {
         runStreaming()
         persist(phase: "streaming")
 
+        runStreamingIncremental()
+        persist(phase: "streamingIncremental")
+
         runToolOutput()
         persist(phase: "toolOutput")
 
@@ -413,6 +416,191 @@ final class CodeProfileAutoRunModel {
         var publisher = CodeStreamingPublisher()
         _ = publisher.receive(delta: "seed ", at: 0)
         return publisher
+    }
+
+    // MARK: - Streaming incremental (Phase 1)
+
+    /// Phase 1's promises, checked against the same pipeline the Code leaf
+    /// runs: a 100-tick stream ends at the exact full-parse document, a tick
+    /// parses only the open tail, and settled block views are reused instead
+    /// of rebuilt.
+    private func runStreamingIncremental() {
+        let typography = TimelineChatContentAdapter.typography(
+            dynamicType: String(describing: DynamicTypeSize.large),
+            layoutDirection: 0, boldText: false,
+            scale: CodePageTheme.markdownScale)
+            .resolvedForCodePage(category: .large)
+        let style = CodePageTheme.codeCardStyle(category: .large)
+        let paragraphs = (1...24).map { index in
+            "Paragraph \(index) carries enough words to wrap at least once on a "
+                + "phone-width column, with **bold** and `inline code`."
+        }
+        let codeLines = (1...40).map { "let value\($0) = \($0)" }
+        let full = paragraphs.joined(separator: "\n\n")
+            + "\n\n```swift\n" + codeLines.joined(separator: "\n") + "\n```\n"
+
+        CodePageBuildStats.reset()
+        let builder = AssistantStreamingDocumentBuilder(
+            codeStyle: style,
+            colorize: { AssistantMarkdownDocument.applyingCodePageTextColors(to: $0) })
+        let cache = AssistantMarkdownBlockHeightCache(limit: 512)
+        let stackView = CodeMarkdownTextStackView()
+        stackView.frame = CGRect(x: 0, y: 0, width: 361, height: 100)
+
+        let characters = Array(full)
+        let tickCount = 100
+        let chunk = max(1, characters.count / tickCount)
+        var offset = 0
+        var ticks = 0
+        var finalDocument: AssistantMarkdownDocument?
+        var midpointViews: [ObjectIdentifier] = []
+        var midpointKeys: [String] = []
+        while offset < characters.count {
+            offset = min(characters.count, offset + chunk)
+            ticks += 1
+            let text = String(characters[0..<offset])
+            guard let streaming = builder.make(text: text, typography: typography) else {
+                failures.append("streamingIncremental: builder rejected the long fixture at tick \(ticks)")
+                return
+            }
+            finalDocument = streaming.document
+            stackView.install(document: streaming.document,
+                              key: "tick-\(ticks)",
+                              displayScale: 2,
+                              generation: streaming.generation,
+                              cache: cache,
+                              typographyRevision: typography.revision)
+            let height = AssistantMarkdownTextLayout.measure(
+                streaming.document, width: 361, displayScale: 2,
+                cache: cache, typographyRevision: typography.revision)
+            stackView.frame.size.height = max(1, ceil(height))
+            stackView.layoutIfNeeded()
+            if ticks == tickCount / 2 {
+                midpointViews = stackView.debugBlockViews.map { ObjectIdentifier($0) }
+                midpointKeys = stackView.debugRecordKeys
+            }
+        }
+
+        guard let finalDocument,
+              let direct = AssistantMarkdownDocumentParser.make(
+                text: full, resolvesFileReferences: true,
+                typography: typography, codeStyle: style)?
+                .applyingCodePageTextColors() else {
+            failures.append("streamingIncremental: the full parse failed")
+            return
+        }
+        check(finalDocument.blocks.count == direct.blocks.count,
+              "streamingIncremental: \(finalDocument.blocks.count) blocks, expected \(direct.blocks.count)")
+        let kinds = finalDocument.blocks.map(\.kindName)
+        let directKinds = direct.blocks.map(\.kindName)
+        check(kinds == directKinds,
+              "streamingIncremental: kinds \(kinds), expected \(directKinds)")
+        check(finalDocument.blockKeys.count == finalDocument.blocks.count
+                && Set(finalDocument.blockKeys).count == finalDocument.blockKeys.count,
+              "streamingIncremental: block keys are missing or duplicated")
+        check(finalDocument.blockSpacing == direct.blockSpacing
+                && finalDocument.codeRoles == direct.codeRoles,
+              "streamingIncremental: document style differs from the full parse")
+        let incrementalHeight = AssistantMarkdownTextLayout.measure(
+            finalDocument, width: 361, displayScale: 2,
+            cache: cache, typographyRevision: typography.revision)
+        let directHeight = AssistantMarkdownTextLayout.measure(
+            direct, width: 361, displayScale: 2)
+        check(abs(incrementalHeight - directHeight) <= 0.5,
+              "streamingIncremental: incremental \(incrementalHeight) pt, full \(directHeight) pt")
+
+        check(ticks == tickCount,
+              "streamingIncremental: \(ticks) ticks, expected \(tickCount)")
+        check(CodePageBuildStats.parseBlocksCalls <= ticks * 2 + 2,
+              "streamingIncremental: \(CodePageBuildStats.parseBlocksCalls) parse calls for \(ticks) ticks")
+        check(CodePageBuildStats.convertCalls <= ticks * 3 + direct.blocks.count,
+              "streamingIncremental: \(CodePageBuildStats.convertCalls) convert calls for \(ticks) ticks")
+        check(CodePageBuildStats.fullRebuilds == 1,
+              "streamingIncremental: \(CodePageBuildStats.fullRebuilds) full rebuilds, expected 1")
+        check(CodePageBuildStats.textViewCreations <= direct.blocks.count + 4,
+              "streamingIncremental: \(CodePageBuildStats.textViewCreations) text views for \(direct.blocks.count) blocks")
+
+        let endKeys = stackView.debugRecordKeys
+        let endViews = stackView.debugBlockViews.map { ObjectIdentifier($0) }
+        var reused = 0
+        for (index, key) in midpointKeys.enumerated() {
+            guard let at = endKeys.firstIndex(of: key) else { continue }
+            if endViews[at] == midpointViews[index] { reused += 1 }
+        }
+        check(midpointKeys.isEmpty || reused == midpointKeys.count,
+              "streamingIncremental: reused \(reused)/\(midpointKeys.count) settled block views")
+
+        // Cache contract: a hit returns the first value; any part of the key
+        // changing forces a new computation.
+        let probe = AssistantMarkdownBlockHeightCache(limit: 4)
+        var computations = 0
+        let first = probe.height(blockKey: "probe", digest: 1, width: 300,
+                                 displayScale: 2, typographyRevision: 7) {
+            computations += 1
+            return 42
+        }
+        let second = probe.height(blockKey: "probe", digest: 1, width: 300.2,
+                                  displayScale: 2, typographyRevision: 7) {
+            computations += 1
+            return 43
+        }
+        let third = probe.height(blockKey: "probe", digest: 2, width: 300,
+                                 displayScale: 2, typographyRevision: 7) {
+            computations += 1
+            return 44
+        }
+        check(first == 42 && second == 42 && computations == 1,
+              "streamingIncremental: cache hit returned \(first)/\(second) after \(computations) compute(s)")
+        check(third == 44 && computations == 2,
+              "streamingIncremental: digest change did not invalidate the cache")
+
+        // Code card: a growing fenced block keeps its view and appends text.
+        if let firstCode = Self.firstCodeBlock(
+                in: "```swift\nlet a = 1\n```", typography: typography, style: style),
+           let secondCode = Self.firstCodeBlock(
+                in: "```swift\nlet a = 1\nlet b = 2\n```", typography: typography, style: style) {
+            let view = AssistantCodeBlockView(
+                codeBlock: firstCode, width: 361, displayScale: 2)
+            let identity = ObjectIdentifier(view.debugCodeView)
+            let cardHeight = view.update(codeBlock: secondCode)
+            check(ObjectIdentifier(view.debugCodeView) == identity,
+                  "streamingIncremental: the code card recreated its text view")
+            check(view.debugCodeText == secondCode.code.string,
+                  "streamingIncremental: the code card did not append the new tail")
+            check(cardHeight > 0, "streamingIncremental: updated code card has no height")
+        } else {
+            failures.append("streamingIncremental: code fixture did not parse")
+        }
+
+        report["streamingIncremental"] = [
+            "ticks": ticks,
+            "characters": characters.count,
+            "blocks": finalDocument.blocks.count,
+            "parseBlocksCalls": CodePageBuildStats.parseBlocksCalls,
+            "convertCalls": CodePageBuildStats.convertCalls,
+            "blockViewCreations": CodePageBuildStats.blockViewCreations,
+            "textViewCreations": CodePageBuildStats.textViewCreations,
+            "fullRebuilds": CodePageBuildStats.fullRebuilds,
+            "incrementalUpdates": CodePageBuildStats.incrementalUpdates,
+            "heightCacheHits": CodePageBuildStats.heightCacheHits,
+            "heightCacheMisses": CodePageBuildStats.heightCacheMisses,
+            "reusedMidpointViews": reused,
+            "midpointViews": midpointKeys.count,
+            "incrementalHeight": Double(incrementalHeight),
+            "fullHeight": Double(directHeight),
+        ] as [String: Any]
+    }
+
+    private static func firstCodeBlock(in text: String,
+                                       typography: TimelineTypographySnapshot,
+                                       style: AssistantCodeCardStyle) -> AssistantCodeBlock? {
+        guard let document = AssistantMarkdownDocumentParser.make(
+            text: text, resolvesFileReferences: false,
+            typography: typography, codeStyle: style) else { return nil }
+        for block in document.blocks {
+            if case .code(let code) = block { return code }
+        }
+        return nil
     }
 
     // MARK: - Tool output (W4)

@@ -1601,8 +1601,13 @@ final class CodeProfileAutoRunModel {
         let withinBudget = chunks.allSatisfy {
             $0.count <= CodeFileReadChunks.maxCharacters
         }
-        let firstLine = text.split(separator: "\n").first.map(String.init) ?? ""
-        let firstLineDrawn = renderedText.contains(firstLine)
+        // A lazy stack materialises whichever chunk is in the viewport, not
+        // necessarily the first one; every chunk is a contiguous slice of the
+        // body, so the drawn text must appear verbatim in the source.
+        let drawnChunks = readTextViews.map { $0.textStorage.string }
+            .filter { !$0.isEmpty }
+        let drawnIsBody = !drawnChunks.isEmpty
+            && drawnChunks.allSatisfy { text.contains($0) }
         host.view.removeFromSuperview()
 
         let finite = settled.isFinite
@@ -1612,9 +1617,9 @@ final class CodeProfileAutoRunModel {
               "readOutput: \(chunks.count) chunks, lossless \(lossless),"
                 + " within budget \(withinBudget)")
         let readTextViewLengths = readTextViews.map { $0.textStorage.length }
-        check(!readTextViews.isEmpty && firstLineDrawn,
-              "readOutput: no drawn first line (text views: \(readTextViewLengths),"
-                + " rendered \(renderedLength) chars)")
+        check(drawnIsBody,
+              "readOutput: drawn text is not a slice of the body"
+                + " (text views: \(readTextViewLengths), rendered \(renderedLength) chars)")
         report["readOutput"] = [
             "characters": text.count,
             "lines": 298,

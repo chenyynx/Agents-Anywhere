@@ -1293,12 +1293,12 @@ final class CodeProfileAutoRunModel {
                    alpha: 1, label: "collapsed caret text400")
 
         check(CodePageTheme.timelineConnectorWidth == 2
-                && CodePageTheme.timelineConnectorColumnWidth == 24
-                && CodePageTheme.timelineConnectorTopGap == 8,
+                && CodePageTheme.timelineConnectorHeight == 16
+                && CodePageTheme.timelineConnectorColumnWidth == 24,
               "groupDetail connector: geometry"
                 + " \(CodePageTheme.timelineConnectorWidth)/"
-                + "\(CodePageTheme.timelineConnectorColumnWidth)/"
-                + "\(CodePageTheme.timelineConnectorTopGap), expected 2/24/8")
+                + "\(CodePageTheme.timelineConnectorHeight)/"
+                + "\(CodePageTheme.timelineConnectorColumnWidth), expected 2/16/24")
         assertSRGB(CodePageTheme.timelineConnectorColor,
                    light: (0.043, 0.043, 0.043),
                    dark: (1, 1, 1),
@@ -1318,8 +1318,8 @@ final class CodeProfileAutoRunModel {
             ],
             "connector": [
                 Double(CodePageTheme.timelineConnectorWidth),
+                Double(CodePageTheme.timelineConnectorHeight),
                 Double(CodePageTheme.timelineConnectorColumnWidth),
-                Double(CodePageTheme.timelineConnectorTopGap),
             ],
         ] as [String: Any]
     }

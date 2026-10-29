@@ -33,8 +33,9 @@ import Foundation
 /// - the container is a `List` + `.listStyle(.plain)` with hidden separators
 ///   (R-D §6/§5), row insets `(0, 24, 0, 24)` (R-D §2) and a clear row
 ///   background over the page background (R-D §7/§8);
-/// - each call row draws the `TimelineConnector` when it `_continues` and its
-///   icon anchor is present (R-E C3/C7);
+/// - the list cell is `VStack(spacing: 0)` of the row and, after every row but
+///   the last, the inter-row `TimelineConnector`: a 2 × 16 pt `Capsule` in the
+///   24 pt icon column (R-P Q1/Q2/Q5);
 /// - the row's chevron ink is `textMuted` (R-F C5/C7), not the collapsed
 ///   row's `text400`.
 ///
@@ -59,18 +60,25 @@ struct CodeToolGroupDetailView: View {
     var body: some View {
         NavigationStack(path: $path) {
             List {
-                // `_continues` is true for every call but the last (R-E C7).
+                // The official cell is `VStack(spacing: 0)` of the row and an
+                // optional inter-row `TimelineConnector`; `TimelineList`
+                // inserts it after every row whose id differs from the last
+                // one (R-P Q1/Q5).
                 ForEach(calls) { call in
-                    Button {
-                        path.append(call)
-                    } label: {
-                        CodeToolGroupCallRow(
-                            call: call,
-                            cwd: cwd,
-                            differentiateWithoutColor: differentiateWithoutColor,
-                            continues: call.id != calls.last?.id)
+                    VStack(spacing: 0) {
+                        Button {
+                            path.append(call)
+                        } label: {
+                            CodeToolGroupCallRow(
+                                call: call,
+                                cwd: cwd,
+                                differentiateWithoutColor: differentiateWithoutColor)
+                        }
+                        .buttonStyle(.plain)
+                        if call.id != calls.last?.id {
+                            CodeTimelineConnector()
+                        }
                     }
-                    .buttonStyle(.plain)
                     .listRowInsets(CodePageTheme.groupListRowInsets)
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
@@ -109,22 +117,17 @@ struct CodeToolGroupDetailView: View {
 }
 
 /// One call row inside the group list: category icon + single-call label +
-/// caret + connector. The row box is the decoded 1023 `TimelineRow`: 8 pt
-/// vertical padding and a 16 pt icon/content gap (E). The container lives in
+/// caret. The row box is the decoded 1023 `TimelineRow`: 8 pt vertical
+/// padding and a 16 pt icon/content gap (E). The container lives in
 /// `CodeToolGroupDetailView` (`List`, `.plain`, hidden separators, row insets
 /// `(0,24,0,24)` — R-D).
 ///
-/// The connector (R-E C3/C7): width 2 pt in a 24 pt column, top = the icon
-/// anchor's maxY + 8 pt, bottom = the row bottom, height clamped at 0. It is
-/// drawn for every call that `_continues` (all but the last) once the icon
-/// anchor exists. Shape type is U (R-E C4) → `Rectangle`, no corner radius.
+/// The visible line between rows is the sibling `CodeTimelineConnector` the
+/// list cell inserts, not a row overlay (R-P Q1).
 struct CodeToolGroupCallRow: View {
     let call: CodeToolCall
     let cwd: String?
     let differentiateWithoutColor: Bool
-    /// The official `TimelineRow._continues` (field[3], R-E C7): true when
-    /// this row is followed by another call in the same group.
-    var continues: Bool = false
 
     @Environment(\.colorScheme) private var colorScheme
     @ScaledMetric(relativeTo: CodeDetailRowHooks.textStyle)
@@ -141,8 +144,6 @@ struct CodeToolGroupCallRow: View {
                     .resolved(for: colorScheme))
                 .frame(width: CodePageTheme.toolRowIconFrameSize,
                        height: CodePageTheme.toolRowIconFrameSize)
-                .anchorPreference(key: CodeIconBoundsPreferenceKey.self,
-                                  value: .bounds) { Optional($0) }
                 .accessibilityHidden(true)
 
             CodeToolLabelText(runs: runs)
@@ -158,52 +159,28 @@ struct CodeToolGroupCallRow: View {
         }
         .padding(.vertical, CodeDetailRowHooks.verticalPadding)
         .contentShape(Rectangle())
-        .overlayPreferenceValue(CodeIconBoundsPreferenceKey.self) { anchor in
-            GeometryReader { proxy in
-                if continues, let anchor {
-                    let iconMaxY = proxy[anchor].maxY
-                    let top = iconMaxY + CodePageTheme.timelineConnectorTopGap
-                    let height = max(0, proxy.size.height - top)
-                    CodeTimelineConnector(height: height)
-                        .offset(y: top)
-                }
-            }
-            .allowsHitTesting(false)
-        }
     }
 }
 
-/// Collects the call row's icon anchor so the connector can start at
-/// `iconBounds.maxY + 8` (R-E C3). Official Key is `TimelineIconBounds`
-/// (`0x1066bfe50`); this is the equivalent single-anchor preference.
-private struct CodeIconBoundsPreferenceKey: PreferenceKey {
-    static var defaultValue: Anchor<CGRect>? { nil }
-
-    static func reduce(value: inout Anchor<CGRect>?,
-                       nextValue: () -> Anchor<CGRect>?) {
-        value = value ?? nextValue()
-    }
-}
-
-/// The official `TimelineConnector` (R-E C3/C5).
+/// The official inter-row `TimelineConnector` (R-P Q2/Q3/Q4).
 ///
-/// The official draw is a zero-size Shape filled with a Color; the Shape type
-/// was not decoded (R-E C4), so this uses `Rectangle` with no corner radius.
-/// Geometry comes from the row overlay: 2 pt wide, vertically centered in the
-/// 24 pt icon column, `height` already clamped by the caller.
+/// A **Capsule 2 × 16 pt** centred in the row's 24 pt icon column and
+/// leading-aligned in the cell; light ink is black at 4.3% with 0.1 opacity,
+/// dark is white at 0.1. The sister line inside a row (Rectangle, anchored to
+/// the icon, height `max(0, rowHeight − (iconMaxY + 8))`) collapses to zero
+/// on the single-line rows this page draws, which is why only this capsule is
+/// visible between calls.
 private struct CodeTimelineConnector: View {
-    let height: CGFloat
-
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        Rectangle()
+        Capsule()
             .fill(CodePageTheme.timelineConnectorColor
                 .resolved(for: colorScheme))
             .frame(width: CodePageTheme.timelineConnectorWidth,
-                   height: height)
-            .frame(width: CodePageTheme.timelineConnectorColumnWidth,
-                   alignment: .center)
+                   height: CodePageTheme.timelineConnectorHeight)
+            .frame(width: CodePageTheme.timelineConnectorColumnWidth)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityHidden(true)
     }
 }

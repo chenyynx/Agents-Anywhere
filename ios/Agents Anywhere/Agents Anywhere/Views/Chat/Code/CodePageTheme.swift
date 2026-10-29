@@ -209,17 +209,19 @@ nonisolated enum CodePageTheme {
     /// (`0x100fd7610` → `_FrameLayout.init` at `0x100fd7620`).
     static let timelineConnectorWidth: CGFloat = 2
 
+    /// [E] R-P Q2 — the inter-row connector is a **Capsule 2 × 16 pt**
+    /// (`_FrameLayout(2, 16)` at `0x100fd7900`/`0x100fd7910`, constants
+    /// `0x4000000000000000` / `0x4030000000000000`), centred in the 24 pt
+    /// column, then leading-aligned in the cell. This is the visible line
+    /// between rows; the row-internal overlay line is a different shape
+    /// (Rectangle) with a height that collapses to 0 on single-line rows.
+    static let timelineConnectorHeight: CGFloat = 16
+
     /// [E] R-E C3 — the connector's column is 24.0 pt wide
     /// (`0x100fd767c` → `_FrameLayout.init`), and the 2 pt line is centered
     /// inside it; the column is the only horizontal positioning parameter
     /// (R-E C4: no offset constant).
     static let timelineConnectorColumnWidth: CGFloat = 24
-
-    /// [E] R-E C3 — the line starts 8.0 pt below the icon bounds' maxY
-    /// (`0x1077ca918`, initialized from `0x105a68218`; applied with
-    /// `fadd d8,d8,d0` at `0x100fd75d4`). Height =
-    /// `max(0, rowHeight − (maxY + 8))` (`0x100fd75e8..0x100fd75f4`).
-    static let timelineConnectorTopGap: CGFloat = 8
 
     /// [E] R-E C5 — dynamic connector ink: light = sRGB
     /// (0.043, 0.043, 0.043) at opacity 0.1, dark = white at opacity 0.1

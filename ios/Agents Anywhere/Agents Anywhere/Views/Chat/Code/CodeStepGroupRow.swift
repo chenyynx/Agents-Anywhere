@@ -15,6 +15,10 @@ import UIKit
 struct CodeStepGroupRowView: View {
     let group: TimelineStepGroup
     let cwd: String?
+    /// The turn is still live and this is its trailing group. The dots sit on
+    /// this row for the whole live turn — including between steps, before any
+    /// body text (pp 2026-10-29 device observation).
+    let isLiveTail: Bool
     let onTap: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
@@ -37,9 +41,15 @@ struct CodeStepGroupRowView: View {
             .padding(.vertical, CodePageTheme.rowMarginTop)
     }
 
+    /// The live pose: the mark plus the current step's one-line text. It
+    /// covers both a running step and the gap between steps while the turn is
+    /// still live (`isLiveTail`), so the dots never hop to a separate row
+    /// before the reply body.
+    private var showsMark: Bool { isLiveTail || group.isRunning }
+
     @ViewBuilder
     private var row: some View {
-        if let live = group.liveStep, group.isRunning {
+        if showsMark, let live = group.liveStep {
             CodeCollapsedStepsRow(
                 icon: nil,
                 text: liveText(for: live),

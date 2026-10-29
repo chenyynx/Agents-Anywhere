@@ -64,6 +64,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// The chat profile's step groups, keyed by the id their item carries.
     /// Empty in `.code` mode.
     private var stepGroupsByID: [String: TimelineStepGroup] = [:]
+    /// The chat profile's trailing step group while its turn is live. The
+    /// working mark seats on this row (pp 2026-10-29: the dots always lead the
+    /// last group, never a separate row below it).
+    private var chatLiveTailGroupID: String?
     /// The selected rendering profile (pp 2026-10-29). `.code` keeps the
     /// official Code page; `.chat` renders one step-group live row.
     let renderMode: TimelineRenderMode
@@ -1087,7 +1091,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // summary.
             if let stepGroup = stepGroupsByID[id] {
                 let cwd = model.session.metadata?.cwd
-                return AnyView(CodeStepGroupRowView(group: stepGroup, cwd: cwd) { [weak self] in
+                let isLiveTail = id == chatLiveTailGroupID
+                return AnyView(CodeStepGroupRowView(group: stepGroup, cwd: cwd,
+                                                    isLiveTail: isLiveTail) { [weak self] in
                     self?.onCodeStepGroupDetail?(CodeStepGroupDetailRequest(group: stepGroup))
                 })
             }
@@ -1481,19 +1487,17 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 codeRowsByGroupID[explicitID] = rows
             }
         }
-        // The working status is its own transcript row (the official
-        // `CodeThinkingView` shape). It no longer lives inside the last
-        // message, so a reasoning-only group is never kept alive by it and
-        // the status line cannot re-key a message group.
-        // Official Chat (round29 addendum §J): while a step group is open the
-        // dots sit on that group's row, so the standalone working row is not
-        // drawn. It returns once the group settles.
-        let chatStepsRunning = chatUnits.contains {
-            if case let .stepGroup(group, _) = $0 { return group.isRunning }
+        // Chat profile (pp 2026-10-29, device observation): the dots never
+        // leave the group row while the turn runs — there is no standalone
+        // working row once any step group exists, not even between steps or
+        // before the first body text. Only a turn with no steps at all shows
+        // the standalone row.
+        let chatHasStepGroup = chatUnits.contains {
+            if case .stepGroup = $0 { return true }
             return false
         }
         let hasWorkingStatus = model.sendingPlaceholder != nil
-            && !(renderMode == .chat && chatStepsRunning)
+            && !(renderMode == .chat && chatHasStepGroup)
         // The official mark's pose follows the live turn's last event
         // (`SessionDisplay.liveTurnMark`). Keep the last pose while the row
         // plays its exit, so the exit animates the sprite that was on screen.
@@ -1526,12 +1530,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             var rowsByID: [String: ChatTimelineRowModel] = [:]
             for row in model.timeline.rows where rowsByID[row.id] == nil { rowsByID[row.id] = row }
             groups.reserveCapacity(chatUnits.count)
+            var lastStepGroupID: String?
             for unit in chatUnits {
                 switch unit {
                 case let .stepGroup(stepGroup, rowIDs):
                     let rows = rowIDs.compactMap { rowsByID[$0] }
                     guard !rows.isEmpty else { continue }
                     stepGroupsByID[stepGroup.id] = stepGroup
+                    lastStepGroupID = stepGroup.id
                     groups.append(ChatTimelineGroup(kind: .tools, rows: rows,
                                                     explicitID: stepGroup.id))
                 case let .message(key, rowIDs):
@@ -1548,7 +1554,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     groups.append(ChatTimelineGroup(kind: .single, rows: [row]))
                 }
             }
+            // The dots stay on the trailing group for the whole live turn
+            // (pp's device observation). A finished turn clears the seat, so
+            // the row settles into its summary without the mark.
+            chatLiveTailGroupID = model.sendingPlaceholder != nil ? lastStepGroupID : nil
         } else {
+            chatLiveTailGroupID = nil
             groups.reserveCapacity(codeGroups.count)
             for group in codeGroups {
                 guard let explicitID = group.explicitID else {
@@ -1993,7 +2004,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// full thinking text) keeps the per-refresh cost on the tail only.
     private func stepGroupSignature(_ group: TimelineStepGroup) -> TimelineGroupContentSignature {
         var rows: [TimelineRowContentSignature] = []
-        if let live = group.liveStep, group.isRunning {
+        // The trailing group keeps the live pose (mark + current step text)
+        // for the whole live turn, even between steps; the signature must
+        // follow that drawn state, not only the running steps.
+        let isLiveTail = group.id == chatLiveTailGroupID
+        if let live = group.liveStep, group.isRunning || isLiveTail {
             var hasher = TimelineStableHasher()
             hasher.combine(live.id)
             hasher.combine(live.status.rawValue)

@@ -8,7 +8,7 @@ import Foundation
 ///   counts summary. See `TimelineStepGroup`.
 /// - `.code`: the official Code page replica (message rows, merged
 ///   `thinkingContent`, collapsed tool spans). Unchanged by this mode's work.
-enum TimelineRenderMode: String, CaseIterable, Identifiable {
+nonisolated enum TimelineRenderMode: String, CaseIterable, Identifiable {
     case chat
     case code
 

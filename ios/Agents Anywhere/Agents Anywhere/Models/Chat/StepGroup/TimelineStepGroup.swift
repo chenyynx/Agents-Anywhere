@@ -65,7 +65,8 @@ nonisolated enum TimelineStep: Identifiable, Hashable {
         while true {
             let newline = thinkingText[..<end].lastIndex(of: "\n")
             let start = newline.map { thinkingText.index(after: $0) } ?? thinkingText.startIndex
-            let line = thinkingText[start..<end].trimmingCharacters(in: .whitespaces)
+            let line = String(thinkingText[start..<end])
+                .trimmingCharacters(in: .whitespaces)
             if !line.isEmpty { return line }
             guard let newline else { return nil }
             end = newline

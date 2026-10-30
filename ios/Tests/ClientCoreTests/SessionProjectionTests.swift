@@ -187,7 +187,8 @@ import Testing
             .map { try decode($0, as: V2TimelineItem.self) }
         projection.applyLatest(V2SessionTimelinePage(sessionId: "session", items: local,
             nextSeq: 4, hasMore: true, serverTime: nil), hasNewerAfterApply: true)
-        #expect(projection.data.items.map(\.id) == ["3", "4"])
+        // The local page updates the newest side; the older loaded row stays.
+        #expect(projection.data.items.map(\.id) == ["2", "3", "4"])
         #expect(projection.data.hasNewerItems)
         projection.applyLatest(V2SessionTimelinePage(sessionId: "session", items: seed,
             nextSeq: 4, hasMore: true, serverTime: nil))

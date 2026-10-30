@@ -258,21 +258,18 @@ final class TimelineCollectionController: UIViewController {
     /// into an automatic latest read; require the reader to leave bottom and
     /// come back (or tap the latest prompt) first.
     private var latestAutoLoadNeedsNewBottomVisit = false
-    private var olderAutoLoadArmed = true
-    /// The opening asked for the bottom and has not landed there yet. While
-    /// this is set the near-top trigger must not page history: a cold open
-    /// presents an empty window at the top for a few frames, and a history
-    /// read started there overrides the opening's bottom placement.
-    private var openingBottomPending = false
+    /// The paging/return guards as pure state (testable in `swift test`).
+    /// `TimelinePagingPolicy` owns the near-top latch, the opening gate, the
+    /// reader-intent generation and the armed bottom return; the controller
+    /// only feeds it viewport facts and gestures.
+    private var pagingPolicy = TimelinePagingPolicy()
     private var openingBottomDeadline: Task<Void, Never>?
-    /// Monotonic counter of reader-driven position changes (drag, status-bar
-    /// top, history paging). A bottom return armed by a request must not land
-    /// after the reader moved on their own: the load-latest intent can outlive
-    /// the gesture that started it (device report 2026-10-31 02:54: the reader
-    /// scrolled to the top, the armed return fired on the window replacement
-    /// and jumped +31,005 pt to the bottom).
-    private var readerIntentGeneration = 0
-    private var windowReturnGeneration = -1
+    private var olderAutoLoadArmed: Bool {
+        get { pagingPolicy.olderArmed }
+        set { if newValue { pagingPolicy.readerMoved() } else { pagingPolicy.didAutoLoadOlder() } }
+    }
+    private var openingBottomPending: Bool { pagingPolicy.openingBottomPending }
+    private var readerIntentGeneration: Int { pagingPolicy.readerIntentGeneration }
     /// How close to the top edge starts an automatic older page. This is a
     /// reading threshold, not a pull threshold: a full screen of history is
     /// still reachable before the next page starts.
@@ -855,12 +852,17 @@ final class TimelineCollectionController: UIViewController {
         guard collectionView != nil, !navigationSuspended else { return }
         // A gesture that began after the request always wins, and so does any
         // reader-driven move — including the status-bar scroll-to-top, which
-        // is neither tracking nor decelerating.
+        // is neither tracking nor decelerating. The policy voids the armed
+        // return when the reader moved since it was armed.
         guard windowReplacementReturn,
-              windowReturnGeneration == readerIntentGeneration,
               !phase.userIsScrolling,
               collectionView?.isTracking != true,
               collectionView?.isDecelerating != true else {
+            windowReplacementReturn = false
+            pagingPolicy.disarmBottomReturn()
+            return
+        }
+        guard pagingPolicy.resolveBottomReturn() else {
             windowReplacementReturn = false
             return
         }
@@ -876,7 +878,7 @@ final class TimelineCollectionController: UIViewController {
         pendingGestureBottomRequest = nil
         // The deferred request must not fire after the reader moved on their
         // own (e.g. dragged up to the top while the request was queued).
-        guard request.generation == readerIntentGeneration else { return }
+        guard request.generation == pagingPolicy.readerIntentGeneration else { return }
         requestBottom(animated: request.animated, forced: request.forced)
     }
 
@@ -1955,7 +1957,9 @@ final class TimelineCollectionController: UIViewController {
         guard TimelineHistoryAnchorMode.enabled else { return }
         // Asking for older rows is reader intent: an armed bottom return from
         // an earlier load-latest must not fire while the reader is in history.
-        readerIntentGeneration &+= 1
+        // Only the generation moves; the near-top latch stays gesture-owned
+        // so a quiet settle cannot restart auto-paging.
+        pagingPolicy.noteHistoryPaging()
         // A page can arrive inside the previous page's 600 ms settle window.
         // Ending the settle below cancels its task, so the owed placement
         // correction would never run and the reading row would drift up by
@@ -2212,18 +2216,22 @@ final class TimelineCollectionController: UIViewController {
         // read and replaces the opening's bottom landing (device report
         // 2026-10-31 03:10: the app opened at the top, paged history, and only
         // reached the newest rows 3.7 s later — "回来在页面中间").
-        guard !openingBottomPending else { return }
+        guard !pagingPolicy.openingBottomPending else { return }
         let nearTop = viewport.offsetY + viewport.topInset <= Self.olderAutoLoadThreshold
         guard nearTop else {
-            olderAutoLoadArmed = true
+            // The viewport moved off the top: the latch re-arms on its own
+            // (no intent bump, so a layout change cannot void a bottom
+            // return).
+            pagingPolicy.noteViewportLeftTop()
             return
         }
         // A list shorter than the viewport is already showing both edges; let
         // the prompt/pull own that case instead of auto-loading every page.
-        guard viewport.contentHeight > viewport.visibleHeight + 1 else { return }
-        guard !navigationSuspended, canLoadOlder, !isHistoryPrependActive,
-              olderAutoLoadArmed else { return }
-        olderAutoLoadArmed = false
+        let contentIsTaller = viewport.contentHeight > viewport.visibleHeight + 1
+        guard contentIsTaller else { return }
+        guard !navigationSuspended, canLoadOlder, !isHistoryPrependActive else { return }
+        guard pagingPolicy.mayAutoLoadOlder(contentIsTallerThanViewport: true) else { return }
+        pagingPolicy.didAutoLoadOlder()
         probeHistory("auto-older fire top=\(viewport.offsetY + viewport.topInset) "
             + "contentH=\(viewport.contentHeight) visH=\(viewport.visibleHeight)")
         onNeedsOlder?()
@@ -2279,13 +2287,13 @@ final class TimelineCollectionController: UIViewController {
         // window apply can land at any time during a slow `loadLatest` await.
         // The post-await `requestBottom` re-arms with the bounded lifetime.
         windowReplacementReturn = true
-        windowReturnGeneration = readerIntentGeneration
+        pagingPolicy.armBottomReturn()
         windowReturnToken &+= 1
     }
 
     private func armWindowReplacementReturn() {
         windowReplacementReturn = true
-        windowReturnGeneration = readerIntentGeneration
+        pagingPolicy.armBottomReturn()
         windowReturnToken &+= 1
         let token = windowReturnToken
         Task { @MainActor [weak self] in
@@ -2315,7 +2323,7 @@ final class TimelineCollectionController: UIViewController {
             pendingGestureBottomRequest = (
                 animated,
                 forced || (pendingGestureBottomRequest?.forced ?? false),
-                readerIntentGeneration)
+                pagingPolicy.readerIntentGeneration)
             return
         }
         if forced { armWindowReplacementReturn() }
@@ -2352,12 +2360,12 @@ final class TimelineCollectionController: UIViewController {
         // Hold the near-top trigger until this landing is observed (or the
         // bounded fallback expires): the first frames show an empty window at
         // the top, and paging history there would replace the landing.
-        openingBottomPending = true
+        pagingPolicy.beginOpening()
         openingBottomDeadline?.cancel()
         openingBottomDeadline = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled else { return }
-            self?.openingBottomPending = false
+            self?.pagingPolicy.openingFallbackExpired()
         }
         anchorDriver?.requestEnd(animated: false)
     }
@@ -2372,12 +2380,13 @@ final class TimelineCollectionController: UIViewController {
     /// gate at t=0.01, the restored window then sat at the top and paged
     /// history at t=0.14, whose prepend jumped the offset +6,530).
     private func noteOpeningBottomSettled(_ viewport: TimelineViewport) {
-        guard openingBottomPending,
-              viewport.contentHeight > 0,
-              viewport.contentHeight > viewport.visibleHeight + 1,
-              viewport.measuredAtBottom,
+        guard pagingPolicy.openingBottomPending,
               !historyPaging, !historyAnchorSettling else { return }
-        openingBottomPending = false
+        let wasPending = pagingPolicy.openingBottomPending
+        pagingPolicy.noteLanding(
+            contentIsTallerThanViewport: viewport.contentHeight > viewport.visibleHeight + 1,
+            atBottom: viewport.measuredAtBottom)
+        guard wasPending, !pagingPolicy.openingBottomPending else { return }
         openingBottomDeadline?.cancel()
         openingBottomDeadline = nil
     }
@@ -2929,15 +2938,11 @@ extension TimelineCollectionController: UICollectionViewDelegate {
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         guard !navigationSuspended else { return }
-        // The reader's finger owns the position, even mid-opening.
-        readerIntentGeneration &+= 1
-        // Each new gesture restores one shot of the near-top trigger. The
-        // latch used to re-arm only after the viewport sat 320 pt below the
-        // top, so a page that landed on the top edge killed auto-paging until
-        // the reader scrolled away and back (device report 2026-10-31 02:24,
-        // 5 auto fires then dead). One page per gesture, never a parked loop.
-        olderAutoLoadArmed = true
-        openingBottomPending = false
+        // The reader's finger owns the position, even mid-opening. Each new
+        // gesture restores one shot of the near-top trigger and counts as a
+        // reader-intent change; the policy owns both so deleting either guard
+        // turns a `TimelinePagingPolicyTests` case red.
+        pagingPolicy.readerMoved()
         openingBottomDeadline?.cancel()
         openingBottomDeadline = nil
         if historyAnchorSettling { endHistoryAnchorSettling() }
@@ -3033,8 +3038,9 @@ extension TimelineCollectionController: UICollectionViewDelegate {
             onPhaseChanged?(transition)
         }
         // The status-bar tap is reader intent: it invalidates any armed bottom
-        // return and ends the opening claim in the bridge.
-        readerIntentGeneration &+= 1
+        // return, re-arms one near-top shot and ends the opening claim in the
+        // bridge.
+        pagingPolicy.readerMoved()
         onReaderScrollToTop?()
         // Official interception (`0x101a3cb14 → 0x101a3d838`): UIKit's own
         // scroll-to-top is refused; the anchor model owns the motion.

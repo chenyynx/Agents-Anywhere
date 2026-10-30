@@ -288,6 +288,18 @@ CREATE TABLE IF NOT EXISTS schema_state (
 **验收**
 - 有一份可复现的基线数字；后续每阶段的同夹具数字与基线对比。
 
+**P0 结果（CI run `41006146070`，attempt 2 绿）**
+
+| 行数 | save | restore | projection | present | open |
+|---:|---:|---:|---:|---:|---:|
+| 500* | 3598.7ms | 1092.8ms | 5.8ms | 5.5ms | 1439.2ms |
+| 1000 | 44.6ms | 82.1ms | 20.5ms | 12.6ms | 176.9ms |
+| 2000 | 85.8ms | 163.2ms | 37.8ms | 24.1ms | 202.6ms |
+| 5000 | 243.2ms | 339.2ms | 71.5ms | 73.3ms | 358.6ms |
+
+\* 500 行是第一次迭代，含进程冷启动/首次编码器初始化的固定成本，不作为稳态；1000+ 行近似线性（restore ≈ 0.068ms/行，projection ≈ 0.014ms/行）。
+第一次 run 因已知 flake `ModelSwitchRecoveryTests.stopStaysReachableWhenADeadProjectionSaysItCannotInterrupt` 失败，rerun 同 job 后绿；未改代码（与交接单 §4 的 flaky 条目一致）。
+
 ### P1 · DB + 影子双写（读仍走 JSON）
 
 **做什么**

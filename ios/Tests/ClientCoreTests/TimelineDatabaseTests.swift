@@ -37,7 +37,8 @@ import Testing
         defer { try? database.close() }
         try database.replace(try snapshot(count: 10))
 
-        let read = try #require(try database.read(sessionID: "session", limit: 3))
+        let fetched = try database.read(sessionID: "session", limit: 3)
+        let read = try #require(fetched)
         #expect(read.rows.map(\.orderSeq) == [8, 9, 10])
         #expect(read.meta.cursor == "seq:10")
         #expect(read.meta.hasOlderItems)

@@ -30,7 +30,8 @@ import Testing
         #expect(try database.rowIDs(sessionID: "session") == expectedIDs)
         #expect(try database.rowCount(sessionID: "session") == archive.items.count)
 
-        let read = try #require(try database.read(sessionID: "session", limit: 100))
+        let fetched = try database.read(sessionID: "session", limit: 100)
+        let read = try #require(fetched)
         let state = try #require(read.meta.stateBlob)
         let decoded = try JSONDecoder().decode(V2SessionArchive.self, from: state)
         #expect(decoded.items.isEmpty)

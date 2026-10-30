@@ -11,7 +11,7 @@ struct SubAgentRoundButton: View {
     let state: SubAgentCapsuleState
     let onOpen: () -> Void
     private let diameter: CGFloat = 40
-    private let badgeSize: CGFloat = 16
+    private let badgeSize: CGFloat = 14
 
     var body: some View {
         Button(action: onOpen) {
@@ -72,7 +72,7 @@ struct SubAgentCapsuleSlot: View {
     }
 }
 
-/// §A3: the one stop control the SubAgent surfaces share — the panel header
+/// §A3: the one stop control the SubAgent surfaces share — the list row
 /// and the Agent card's timeline fold. It is the composer's official stop
 /// affordance at row scale: same symbol, same primary-control colors, same
 /// disabled wash. One control carries one `SubAgentTask`, so its button is

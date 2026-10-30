@@ -9,7 +9,8 @@ import UIKit
 /// circular entry always lands on one capsule row per active SubAgent, even
 /// when only one is running, and tapping a row pushes that card's detail.
 /// A finished card leaves the list (the entry itself is active-only) and stays
-/// reachable from its timeline tool row, which opens entry B directly.
+/// visible as its timeline tool row; the current main timeline does not expose
+/// a panel entry from that row.
 ///
 /// Everything renders from the presented rows, so the panel restores after a
 /// relaunch and follows live updates exactly like the timeline does. A
@@ -110,10 +111,12 @@ struct SubAgentPanelSheet: View {
                 }
             }
             .toolbar {
-                // Pushed pages keep the system Back on the leading edge; the
-                // sheet's close control moves to the trailing edge.
-                ToolbarItem(placement: .topBarTrailing) {
-                    SheetCloseButton { dismiss() }
+                // Root pages use the app-standard leading X; a pushed detail
+                // keeps the system Back on the same edge and adds no X.
+                if path.isEmpty {
+                    ToolbarItem(placement: .topBarLeading) {
+                        SheetCloseButton { dismiss() }
+                    }
                 }
             }
         }
@@ -199,10 +202,14 @@ struct SubAgentPanelSheet: View {
             deviceName: deviceName, fallbackRuntimeName: fallbackRuntimeName))
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
+            // The pushed page is the one whose activity the store must show,
+            // even after a rapid double push/pop leaves a lower page on top.
+            selection = card.id
             activateActivity(cardID: card.id)
             publishLiveStepGroups(card)
         }
         .task(id: card.id) {
+            selection = card.id
             activateActivity(cardID: card.id)
             publishLiveStepGroups(card)
         }
@@ -235,7 +242,8 @@ struct SubAgentPanelSheet: View {
                             .font(.custom(CodePageTheme.sansFontName, size: 17,
                                           relativeTo: .body).weight(.semibold))
                             .foregroundStyle(CodePageTheme.userBubbleText.resolved(for: colorScheme))
-                            .frame(maxWidth: .infinity)
+                            .lineLimit(1)
+                            .padding(.horizontal, 24)
                             .padding(.vertical, 12)
                             .frame(minHeight: 44)
                             .background(CodePageTheme.userBubbleFill.resolved(for: colorScheme),
@@ -267,7 +275,13 @@ struct SubAgentPanelSheet: View {
     /// ids — not the row contents — drive the merge: a streaming token updates
     /// the live row model in place, and the panel renders that model anyway.
     private var activityWindowRowSignature: [String] {
-        let lineage = activity.lineageIDs
+        // A main-only window uses the store's lineage; a normal window (or an
+        // old server/archive that ignored the main-only flag) has to derive it
+        // from the selected card so live step detail still updates.
+        var lineage = activity.lineageIDs
+        if lineage.isEmpty, let card = selectedCard {
+            lineage = SubAgentProgress.lineageIDs(of: card, in: window)
+        }
         guard !lineage.isEmpty else { return [] }
         var signature: [String] = []
         for row in chat.timeline.rows {
@@ -291,7 +305,7 @@ struct SubAgentPanelSheet: View {
     }
 
     /// The fixed stats line (§3.3): pinned below the header, never scrolls with
-    /// the body, follows the selected tab and freezes when the card closes.
+    /// the body, follows the card and freezes when it closes.
     /// Redesigned as a status badge plus trimmed metrics: the phase word wears
     /// its own color on a wash of that color, the numbers stay neutral gray so
     /// the row scans as one glanceable state + one line of numbers.
@@ -537,6 +551,9 @@ struct SubAgentPanelSheet: View {
                     CodeStepGroupRowView(group: group,
                                          cwd: chat.session.metadata?.cwd,
                                          isLiveTail: group.id == lastStepGroupID) {
+                        // Publish once before opening so the sheet never shows
+                        // an older map than the tapped snapshot.
+                        publishLiveStepGroups(card)
                         stepGroupDetail = CodeStepGroupDetailRequest(
                             group: group, startsAtBottom: group.id == lastStepGroupID)
                     }
@@ -621,7 +638,9 @@ struct SubAgentPanelSheet: View {
         // `activityItems` (not `window`) is the body actually rendered above: a
         // main-only window carries no child rows, so reading `window` here
         // would miss the reply the on-demand read did load and render it twice.
-        if let summary = SubAgentProgress.finalOutputSummary(of: card, in: activityItems),
+        if let summary = SubAgentProgress.finalOutputSummary(
+            of: card, in: activityItems,
+            lineage: activity.lineageIDs.isEmpty ? nil : activity.lineageIDs),
            !card.phase.isActive {
             VStack(alignment: .leading, spacing: 8) {
                 sectionLabel(String(localized: "最终输出"))

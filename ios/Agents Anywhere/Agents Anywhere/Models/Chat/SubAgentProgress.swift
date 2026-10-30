@@ -352,10 +352,11 @@ enum SubAgentProgress {
     /// duplicate). Comparison trims surrounding whitespace because the
     /// connector strips the tag while the projected row may keep a trailing
     /// newline.
-    static func finalOutputSummary(of card: SubAgentCard, in items: [V2TimelineItem]) -> String? {
+    static func finalOutputSummary(of card: SubAgentCard, in items: [V2TimelineItem],
+                                   lineage: Set<String>? = nil) -> String? {
         guard let summary = card.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
               !summary.isEmpty else { return nil }
-        let alreadyShown = activityRows(of: card, in: items).contains {
+        let alreadyShown = activityRows(of: card, in: items, lineage: lineage).contains {
             $0.displayText.trimmingCharacters(in: .whitespacesAndNewlines) == summary
         }
         return alreadyShown ? nil : summary

@@ -33,7 +33,7 @@
 - `SubAgentCapsule`：36pt 玻璃长条，图标 + 标题 + chevron，作为 composer dock 第一行、水平居中（`Views/Chat/SubAgentCapsule.swift`；`SessionChatView.swift:92-95`）。
 - `SubAgentPanelSheet`：NavigationStack sheet；`statsRow`（phase 徽章 + tokens/耗时）+ chip strip（多卡切换）+ prompt 段 + 活动列表（`SessionTimelineRow`，旧 Chat 行）+ 最终输出；停止控件在 stats 行尾部（`Views/Chat/SubAgentPanelSheet.swift`）。
 - 胶囊显隐：顶层活跃卡（`running/starting`）才显示；卡片结束即退场（`SubAgentProgress.capsuleState`）。
-- 工具调用行仍可从主时间线打开面板（entry B，`fromCapsule: false`）。
+- 主时间线的工具调用行仍显示该 agent 调用；**当前主时间线不提供从工具行打开面板的入口**（entry B 路由保留，但只有旧 Chat 容器/兜底会调用）。这是既有缺口，本单不扩范围。
 
 ---
 
@@ -56,7 +56,7 @@
 - 失败（最新一批）：玻璃/图标红色 tint（沿用现有 `SubAgentPalette.failure`）。
 - 多个运行中：右上角小数字角标（14pt 圆，数字 9pt semibold），显示运行中数量。
 - 多个且有失败：红色 tint + 数字角标。
-- 完成后：按钮消失（与现在一致）；已完成的子代理仍从主时间线的工具调用行打开详情。
+- 完成后：按钮消失（与现在一致）；已完成的子代理仍作为工具调用行留在时间线（当前不能从该行打开面板，见 §3.0）。
 
 **可访问性**
 - label「子代理运行中」；value = 标题 + phase（沿用 `SubAgentCapsuleState.accessibilityText`）；hint「查看详情」；identifier `chat.subagent.roundButton`。
@@ -130,7 +130,7 @@
 - `Views/Chat/SubAgentCapsule.swift`：保留 `SubAgentCapsuleState` 计算；`SubAgentCapsule` 改为 `SubAgentRoundButton`（圆形玻璃）或新增文件；`SubAgentCapsuleSlot` 改为右对齐单按钮。
 - `Views/Chat/SessionChatView.swift`：
   - `composerDockArea` 第一行改为 `HStack { Spacer(); SubAgentRoundButton(...) }`；
-  - sheet 路由：`.subagentsList`（圆形按钮）与 `.subagents(cardID)`（工具行）；列表内 push 详情由面板内部处理。
+  - sheet 路由：圆形按钮进入 list-first；列表行经 `NavigationStack(path:)` push 详情；工具行 entry B 路由保留（当前主时间线不调用）。
 
 ### 4.2 面板
 

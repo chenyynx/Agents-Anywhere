@@ -122,8 +122,9 @@ Semantic error and availability colors remain separate from the primary color.
   running SubAgents carry a count badge. Visibility is data-driven — the
   presented Agent call cards, never scroll or keyboard state — so it stays up
   through the keyboard and disappears once every SubAgent closed. A finished
-  SubAgent remains readable from its timeline tool row. Tapping the button
-  always opens the SubAgent list first, even when only one is running.
+  SubAgent remains visible as its timeline tool row; the current main timeline
+  does not open the panel from that row. Tapping the button always opens the
+  SubAgent list first, even when only one is running.
 - A new vertical gesture cancels automatic navigation immediately. After idle,
   a 64 ms settlement reconciles native phase and visibility callbacks before
   granting auto-follow; stopping nearby remains reading mode. This never holds
@@ -205,7 +206,8 @@ Semantic error and availability colors remain separate from the primary color.
 - The SubAgent panel (medium/large sheet) opens from the circular entry or from
   an Agent call card. The entry's list page shows one large rounded capsule row
   per active SubAgent in dispatch order — official agent asset, title, the live
-  「正在运行 <tool>」 line, and the existing telemetry metrics. A card with one
+  「正在运行 <tool>」 line (or the phase word when no tool is known), and the
+  existing telemetry metrics. A card with one
   live task also gets the compact stop control on the row; a multi-task card is
   stopped from its detail page. Tapping a row pushes the detail with the system
   Back button. The detail keeps the stats strip, draws the dispatch prompt in

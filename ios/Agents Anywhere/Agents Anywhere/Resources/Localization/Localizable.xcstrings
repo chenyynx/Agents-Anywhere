@@ -346,7 +346,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%lld agents running"
+            "value" : "Agents running: %lld"
           }
         },
         "zh-Hans" : {

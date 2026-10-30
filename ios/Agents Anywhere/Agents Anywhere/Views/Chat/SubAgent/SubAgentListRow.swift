@@ -72,7 +72,7 @@ struct SubAgentListRow: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(card.taskName)
-        .accessibilityValue(card.phase.word)
+        .accessibilityValue("\(subtitle)，\(SubAgentProgress.statsAccessibilityLabel(for: card))")
         .accessibilityHint(String(localized: "查看详情"))
         .background(CodePageTheme.userBubbleFill.resolved(for: colorScheme),
                     in: RoundedRectangle(cornerRadius: 24, style: .continuous))

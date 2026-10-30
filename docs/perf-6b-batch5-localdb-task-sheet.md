@@ -23,7 +23,25 @@
 | P2 读切 DB | ✅ 绿 | run `41009632468`（test + build） |
 | P3a 磁盘翻页 | ✅ 绿 | run `41011391791`（test + build） |
 | P3b 缓存上限 + 设置 | ✅ 绿 | run `41015260898`（test + build，应用默认开启）；包 **b705** `cf0f82f` |
-| P4 不裁窗 + 300 + 200 | ✅ 绿 | run `41017006975`（test + build）；包 **b707** `720192d`（语义变更） |
+| P4 不裁窗 + 300 + 200 | ✅ 绿 | 审查修复后 run `41021372619`（test + build）；包 **b711** `a105e82`（语义变更 + 审查修复） |
+
+### 0.2 独立审查（2026-10-30）
+
+两路 reviewer（正确性 / 测试与缓存设置）已跑完；P1/P2 已修并加回归：
+
+- **P1 行库镜像窗口**：save 从整替换改为 upsert，窗口外的已见行不再被删；补 `upsertKeepsRowsOutsideTheCurrentWindow`。
+- **P1 登出竞态**：`V2LocalStore` 的 `valid` 守卫覆盖 save/restore/开库；补 `closedStoreRefusesLateWrites`。
+- **清缓存空窗口**：DB `has_older` 列覆盖回归档；清/裁剪后保留 `hasOlderItems=true`，在线重开会补最新页。
+- **main-only 窗口**：本地 `loadOlder`/`loadLatest` 页携带 `excludesAgentChildren`。
+- **pinned 漏同步**：侧栏 pin 与远端 dashboard pin 变化都写 `session_meta.pinned`。
+- **flag-off**：JSON 回退不再谎报 `localOlderAvailable`；关闭行库时清除缓存仍能删 legacy JSON。
+- **回滚**：清/裁剪后写 **state-only JSON**（`state-` 前缀），草稿/待发/队列可被 flag-off 路径读到；内容 JSON 删除，防止行复活。
+- **DB 落后**：JSON mtime 比 DB 最近保存新时回落 JSON。
+- **缓存统计**：LRU 在打开时刷新；只统计有内容的会话；legacy JSON 计入用量；新库 `auto_vacuum=FULL` + `synchronous=NORMAL`。
+
+**最终验证**：run `41021372619`（b711）`test` + `build` 全绿；包见 §5.5。
+
+**残留（不阻塞 P3/P4 真机验收）**：`timeline-autorun` 的 localdb/pinned/clear 场景尚未加；旧库 `auto_vacuum` 需一次性 VACUUM；「不限制」的 4GB 安全线可能低于显式 5GB 选项；1000 行 presentation window 未做 benchmark；`TimelineSnapshot.cacheBytes` 已成为写入路径的死字段；`limitToLatest` 仅测试使用。
 
 ---
 
@@ -195,7 +213,7 @@ CREATE TABLE IF NOT EXISTS schema_state (
 ### 3.4 翻页路径
 
 1. `loadOlder(sessionId:limit:)` 不再第一步 `requireNetwork()`。
-2. **`loadLatest` 同样本地优先**（对称）：当前 `loadLatest` 是纯网络（`V2SessionRepository.swift:345`）；内存窗口在翻历史时按 `prefix(1000)` 保留最旧、把最新挤出并置 `hasNewerItems`（`V2SessionProjection.swift:278-280`），如果只做 `loadOlder` 磁盘优先，上滑超过 1000 后下滑会重新联网。`loadLatest` 改为：磁盘有更新的行 → 直接合并；没有 → 网络。
+2. **`loadLatest` 离线时本地优先，在线仍走网络**：内存窗口在翻历史时按 `prefix(1000)` 保留最旧、把最新挤出并置 `hasNewerItems`（`V2SessionProjection.swift:278-280`）。磁盘页可能落后于 live cursor；在线用本地页会把滑动期间被丢的行和 `hasNewerItems` 一起清掉。因此只在离线时用磁盘 latest 页，在线以网络页为权威。`loadLatest` 的本地页会带上 `excludesAgentChildren`，避免把 main-only 窗口翻成普通窗口。
 3. 先查磁盘：
    `SELECT payload FROM timeline_items WHERE session_id=? AND order_seq < ? ORDER BY order_seq DESC LIMIT ?`
    （按当前窗口首行的 `orderSeq`；结果反转后 `applyHistory`）
@@ -501,10 +519,9 @@ CREATE TABLE IF NOT EXISTS schema_state (
 9. pinned 会话在缓存超限时不被清；「不限制」超安全线时只裁未 pinned。
 
 **测试包（unsigned，需自行签名）**
-- P3（缓存设置 + 磁盘翻页，应用默认开启）：b**705** `cf0f82f`
-  `https://github.com/chenyynx/Agents-Anywhere/releases/download/ipa-feat-local-timeline-store/AgentsAnywhere-feat-local-timeline-store-b705-cf0f82f.ipa`
-- P4（不裁窗 + 300/200 + 缓存设置）：b**707** `720192d`
-  `https://github.com/chenyynx/Agents-Anywhere/releases/download/ipa-feat-local-timeline-store/AgentsAnywhere-feat-local-timeline-store-b707-720192d.ipa`
+- **最终包（P3+P4 + 审查修复）：b711 `a105e82`**
+  `https://github.com/chenyynx/Agents-Anywhere/releases/download/ipa-feat-local-timeline-store/AgentsAnywhere-feat-local-timeline-store-b711-a105e82.ipa`
+- 早期 b705（P3）/ b707（P4）早于审查修复，**不要用**；b710 因 PRAGMA 只读连接错误没有产出包。
 
 ---
 

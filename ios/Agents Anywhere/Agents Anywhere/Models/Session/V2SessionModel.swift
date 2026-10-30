@@ -188,6 +188,10 @@ final class V2SessionModel: Identifiable {
     /// than the view-scoped toast store.
     private(set) var acknowledgedNotifications = V2NotificationAcknowledgements()
     private(set) var hasOlderItems = false
+    /// Whether the local row store still holds rows older than the window.
+    /// `hasOlderItems` is the server's flag; the pager loads when either is true.
+    private(set) var localOlderAvailable = false
+    var canLoadOlder: Bool { hasOlderItems || localOlderAvailable }
     private(set) var hasNewerItems = false
     /// Whether the window was read from a server that excluded SubAgent child
     /// rows (`excludeAgentChildren`). The SubAgent panel reads it: a card's own
@@ -604,6 +608,9 @@ final class V2SessionModel: Identifiable {
         runtime.update(data, connection: connection)
         notices.update(runtime.notices, sessionID: id)
         if hasOlderItems != (data?.hasOlderItems ?? false) { hasOlderItems = data?.hasOlderItems ?? false }
+        if localOlderAvailable != (data?.localOlderAvailable ?? false) {
+            localOlderAvailable = data?.localOlderAvailable ?? false
+        }
         if hasNewerItems != (data?.hasNewerItems ?? false) { hasNewerItems = data?.hasNewerItems ?? false }
         if windowExcludesAgentChildren != (data?.windowExcludesAgentChildren ?? false) {
             windowExcludesAgentChildren = data?.windowExcludesAgentChildren ?? false

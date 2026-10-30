@@ -324,21 +324,49 @@ final class V2SessionRepository {
     }
 
     func loadOlder(sessionId: V2SessionID, limit: Int = 100) async throws -> V2SessionData {
-        try requireNetwork()
         _ = try await load(sessionId: sessionId)
         let entry = entry(for: sessionId)
         if let task = entry.historyTask { return try await task.value }
         guard let data = entry.projection?.data,
-              data.hasOlderItems, let before = data.items.first?.orderSeq else {
+              data.canLoadOlder, let before = data.items.first?.orderSeq else {
             return entry.projection!.data
         }
         let version = entry.readVersion
         let task = Task { [self] in
             defer { if entry.readVersion == version { entry.historyTask = nil } }
+            // Disk first: a seen page must not pay the network again. The
+            // server flag stays untouched; localOlderAvailable carries the
+            // disk's own boundary.
+            if let localStore,
+               let local = await localStore.olderRows(sessionID: sessionId,
+                                                      beforeOrderSeq: before, limit: limit),
+               !local.items.isEmpty {
+                try requireCurrent(entry, version: version)
+                let page = V2SessionTimelinePage(
+                    sessionId: sessionId, items: local.items,
+                    nextSeq: entry.projection?.sequence ?? 0,
+                    hasMore: data.hasOlderItems, serverTime: nil)
+                entry.projection?.applyHistory(page)
+                entry.projection?.setLocalOlderAvailable(local.hasMore)
+                emit(entry)
+                return entry.projection!.data
+            }
+            guard data.hasOlderItems else {
+                entry.projection?.setLocalOlderAvailable(false)
+                emit(entry)
+                return entry.projection!.data
+            }
+            try requireNetwork()
             let page = try await detail.loadOlderItems(sessionId: sessionId, beforeOrderSeq: before,
                 limit: limit, excludeAgentChildren: true)
             try requireCurrent(entry, version: version)
             entry.projection?.applyHistory(page)
+            if let localStore,
+               let first = entry.projection?.data.items.first?.orderSeq {
+                let hasMoreLocal = await localStore.hasOlderRows(sessionID: sessionId,
+                                                                 beforeOrderSeq: first)
+                entry.projection?.setLocalOlderAvailable(hasMoreLocal)
+            }
             emit(entry)
             return entry.projection!.data
         }
@@ -347,13 +375,32 @@ final class V2SessionRepository {
     }
 
     func loadLatest(sessionId: V2SessionID, limit: Int = 100) async throws -> V2SessionData {
-        try requireNetwork()
         _ = try await load(sessionId: sessionId)
         let entry = entry(for: sessionId)
         entry.readVersion += 1
         entry.historyTask?.cancel()
         entry.historyTask = nil
         let version = entry.readVersion
+        // Disk first when the sliding window dropped newer rows into the row
+        // store. If the store cannot prove it has rows beyond the current
+        // window, fall through to the network read.
+        if let localStore,
+           let local = await localStore.latestRows(sessionID: sessionId, limit: limit),
+           let newest = local.items.last?.orderSeq,
+           let end = entry.projection?.data.items.last?.orderSeq,
+           newest > end {
+            try requireCurrent(entry, version: version)
+            let page = V2SessionTimelinePage(
+                sessionId: sessionId, items: local.items,
+                nextSeq: entry.projection?.sequence ?? 0,
+                hasMore: entry.projection?.data.hasOlderItems ?? false,
+                serverTime: nil)
+            entry.projection?.applyLatest(page)
+            entry.projection?.setLocalOlderAvailable(local.hasMore)
+            emit(entry)
+            return entry.projection!.data
+        }
+        try requireNetwork()
         let page = try await detail.latestItems(sessionId: sessionId, limit: limit, excludeAgentChildren: true)
         try requireCurrent(entry, version: version)
         entry.projection?.applyLatest(page)

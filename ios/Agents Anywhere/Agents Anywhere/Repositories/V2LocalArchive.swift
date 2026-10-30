@@ -181,6 +181,13 @@ nonisolated struct V2SessionRestore {
     let localHasOlderRows: Bool
 }
 
+/// A page read from the local row store. `hasMore` means the store holds
+/// another row on the same side of this page.
+nonisolated struct V2LocalTimelinePage {
+    let items: [V2TimelineItem]
+    let hasMore: Bool
+}
+
 extension ChatAttachment {
     func archived() -> Self {
         // Uploaded bytes are retrievable by fileId. Keep the small thumbnail and

@@ -35,12 +35,7 @@ actor V2LocalStore {
            let stored = try? database.read(sessionID: id, limit: max(1, window)),
            let state = stored.meta.stateBlob,
            let archive = try? JSONDecoder().decode(V2SessionArchive.self, from: state) {
-            let items = stored.rows.compactMap { row -> V2TimelineItem? in
-                guard let raw = try? JSONDecoder().decode(JSONValue.self, from: row.payload) else {
-                    return nil
-                }
-                return try? V2TimelineItem(json: raw)
-            }
+            let items = decodeRows(stored.rows)
             let activity = (archive.subAgentActivity ?? [:]).mapValues { values in
                 values.compactMap { try? V2TimelineItem(json: $0) }
             }
@@ -71,6 +66,55 @@ actor V2LocalStore {
             subAgentActivity: activity,
             localHasOlderRows: archive.items.count > max(1, window))
     }
+    /// Older rows for the paging path. `nil` means the row store is not
+    /// available; an empty page means the store has no older row.
+    func olderRows(sessionID: String, beforeOrderSeq: Int, limit: Int) -> V2LocalTimelinePage? {
+        guard let database = timelineStore(),
+              let rows = try? database.olderRows(sessionID: sessionID,
+                                                 beforeOrderSeq: beforeOrderSeq,
+                                                 limit: max(1, limit) + 1) else { return nil }
+        // `rows` is ascending and carries one extra oldest row when more
+        // history exists; keep the newest `limit` rows and drop that probe.
+        let bounded = Array(rows.suffix(max(1, limit)))
+        return V2LocalTimelinePage(items: decodeRows(bounded), hasMore: rows.count > limit)
+    }
+
+    /// Newer rows for `loadLatest`: the newest page plus whether the store
+    /// still holds older rows beside it.
+    func latestRows(sessionID: String, limit: Int) -> V2LocalTimelinePage? {
+        guard let database = timelineStore(),
+              let rows = try? database.latestRows(sessionID: sessionID, limit: max(1, limit)) else {
+            return nil
+        }
+        let items = decodeRows(rows)
+        let hasMore: Bool
+        if let first = items.first?.orderSeq {
+            hasMore = (try? database.hasOlderRows(sessionID: sessionID,
+                                                  beforeOrderSeq: first)) ?? false
+        } else {
+            hasMore = false
+        }
+        return V2LocalTimelinePage(items: items, hasMore: hasMore)
+    }
+
+    func hasOlderRows(sessionID: String, beforeOrderSeq: Int) -> Bool {
+        guard let database = timelineStore(),
+              let value = try? database.hasOlderRows(sessionID: sessionID,
+                                                     beforeOrderSeq: beforeOrderSeq) else {
+            return false
+        }
+        return value
+    }
+
+    private func decodeRows(_ rows: [TimelineRow]) -> [V2TimelineItem] {
+        rows.compactMap { row in
+            guard let raw = try? JSONDecoder().decode(JSONValue.self, from: row.payload) else {
+                return nil
+            }
+            return try? V2TimelineItem(json: raw)
+        }
+    }
+
     func saveDashboard(_ value: V2DashboardArchive) { write(value, key: "dashboard") }
     func saveSession(_ value: V2SessionArchive) {
         guard !removedSessions.contains(value.session.id) else { return }

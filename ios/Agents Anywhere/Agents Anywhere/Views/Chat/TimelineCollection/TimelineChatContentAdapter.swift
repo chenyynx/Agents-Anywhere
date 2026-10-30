@@ -1070,7 +1070,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         switch item {
         case .olderPrompt:
             return AnyView(TimelineCollectionOlderPromptRow(
-                hasOlderItems: model.session.hasOlderItems,
+                hasOlderItems: model.session.canLoadOlder,
                 isLoading: isLoadingOlder || isLoadingLatest,
                 pullReady: olderPullReady,
                 onLoad: { [weak self] in self?.onLoadOlder?() }))
@@ -1630,7 +1630,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                                                           timelineRowIDs: timelineRowIDs)
         let pending = model.timeline.pendingMessages
         let identity = TimelineItemIdentity.build(
-            hasOlderPrompt: model.session.hasOlderItems || keepsOlderPrompt,
+            hasOlderPrompt: model.session.canLoadOlder || keepsOlderPrompt,
             groupIDs: groups.map(\.id),
             hasWorkingStatus: showsWorkingStatus,
             noticeIDs: tailNotices.map(\.id),
@@ -1854,7 +1854,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         switch item {
         case .olderPrompt:
             return .olderPrompt(pullReady: olderPullReady, isLoading: isLoadingOlder,
-                                keepsPrompt: keepsOlderPrompt, hasOlderItems: model.session.hasOlderItems)
+                                keepsPrompt: keepsOlderPrompt, hasOlderItems: model.session.canLoadOlder)
         case .latestPrompt:
             return .latestPrompt(pullReady: latestPullReady, isLoading: isLoadingLatest,
                                  hasNewerItems: model.session.hasNewerItems)

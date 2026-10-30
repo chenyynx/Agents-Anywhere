@@ -163,6 +163,39 @@ nonisolated final class TimelineDatabase {
         }
     }
 
+    func olderRows(sessionID: String, beforeOrderSeq: Int, limit: Int) throws -> [TimelineRow] {
+        try pool.read { db in
+            Array(try Row.fetchAll(db, sql: """
+                SELECT item_id, order_seq, updated_seq, payload
+                FROM timeline_items
+                WHERE session_id = ? AND order_seq < ?
+                ORDER BY order_seq DESC, item_id DESC
+                LIMIT ?
+                """, arguments: [sessionID, beforeOrderSeq, max(1, limit)])
+                .map(Self.timelineRow)
+                .reversed())
+        }
+    }
+
+    func latestRows(sessionID: String, limit: Int) throws -> [TimelineRow] {
+        try pool.read { db in
+            Array(try Row.fetchAll(db, sql: """
+                SELECT item_id, order_seq, updated_seq, payload
+                FROM timeline_items
+                WHERE session_id = ?
+                ORDER BY order_seq DESC, item_id DESC
+                LIMIT ?
+                """, arguments: [sessionID, max(1, limit)])
+                .map(Self.timelineRow)
+                .reversed())
+        }
+    }
+
+    private static func timelineRow(_ row: Row) -> TimelineRow {
+        TimelineRow(id: row["item_id"], orderSeq: row["order_seq"],
+                    updatedSeq: row["updated_seq"], payload: row["payload"])
+    }
+
     /// True when the store holds at least one row older than `beforeOrderSeq`.
     /// The window read only returns the newest rows; this is the cheap
     /// `EXISTS` query the paging path uses to know whether to read disk next.

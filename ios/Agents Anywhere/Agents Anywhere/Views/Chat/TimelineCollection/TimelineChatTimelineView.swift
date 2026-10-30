@@ -102,6 +102,7 @@ struct TimelineChatTimelineView: View {
         let phase = self.turnPhase
         let _ = model.session.hasNewerItems
         let _ = model.session.hasOlderItems
+        let _ = model.session.localOlderAvailable
         let _ = model.session.isLoadingHistory
         let _ = model.session.metadata?.cwd
 
@@ -166,6 +167,9 @@ struct TimelineChatTimelineView: View {
                 bridge.controller?.setInteractionPresented(presented)
             }
             .onChange(of: model.session.hasOlderItems, initial: true) { _, _ in
+                bridge.updateHistoryAvailability()
+            }
+            .onChange(of: model.session.localOlderAvailable, initial: true) { _, _ in
                 bridge.updateHistoryAvailability()
             }
             .onChange(of: model.session.hasNewerItems, initial: true) { _, _ in
@@ -307,7 +311,7 @@ final class TimelineChatBridge: ObservableObject {
     /// The prompt/pull gates read the session's page flags, not a copy that
     /// goes stale after a request.
     func updateHistoryAvailability() {
-        controller?.canLoadOlder = model.session.isValid && model.session.hasOlderItems
+        controller?.canLoadOlder = model.session.isValid && model.session.canLoadOlder
             && !model.session.isLoadingHistory && !isLoadingOlder
         controller?.canLoadLatest = model.session.isValid && model.session.hasNewerItems
             && !model.session.isLoadingHistory && !isLoadingLatest
@@ -315,7 +319,7 @@ final class TimelineChatBridge: ObservableObject {
 
     private func loadOlder() {
         guard !navigationSuspended, model.session.isValid,
-              model.session.hasOlderItems, !model.session.isLoadingHistory,
+              model.session.canLoadOlder, !model.session.isLoadingHistory,
               !isLoadingOlder, let controller else { return }
         // Capture the row under the viewport top and the current first row
         // before the request. The adapter installs the absolute prepend

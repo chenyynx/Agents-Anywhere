@@ -52,7 +52,7 @@ struct SessionChatView: View, Equatable {
     /// the multi-way conjunction inside a builder pushes the type checker past
     /// its budget (it timed out once).
     private var showsEmptyState: Bool {
-        model.isOpeningReady && model.timeline.rows.isEmpty && !model.session.hasOlderItems
+        model.isOpeningReady && model.timeline.rows.isEmpty && !model.session.canLoadOlder
             && model.timeline.pendingMessages.isEmpty && model.session.sendQueue.isEmpty
     }
 

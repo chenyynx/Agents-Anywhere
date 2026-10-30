@@ -210,6 +210,134 @@ nonisolated final class TimelineDatabase {
         }
     }
 
+    func cacheUsage() throws -> LocalCacheUsage {
+        try pool.read { db in
+            let bytes = try Int64.fetchOne(db, sql: """
+                SELECT COALESCE(SUM(cache_bytes), 0) FROM session_meta
+                """) ?? 0
+            let sessions = try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM session_meta
+                """) ?? 0
+            return LocalCacheUsage(bytes: bytes, sessions: sessions)
+        }
+    }
+
+    /// Enforces the per-session row cap, then evicts unpinned sessions from
+    /// least-recently-used to most recent until the byte budget fits. Returns
+    /// the session IDs whose rows were evicted so the caller can remove their
+    /// legacy JSON cache too.
+    func trim(to limitBytes: Int64) throws -> [String] {
+        try pool.write { db in
+            let sessions = try Row.fetchAll(db, sql: "SELECT session_id, pinned FROM session_meta")
+            for row in sessions {
+                let pinned: Bool = row["pinned"]
+                guard !pinned else { continue }
+                let id: String = row["session_id"]
+                let count = try Int.fetchOne(db, sql: """
+                    SELECT COUNT(*) FROM timeline_items WHERE session_id = ?
+                    """, arguments: [id]) ?? 0
+                guard count > 5000 else { continue }
+                try db.execute(sql: """
+                    DELETE FROM timeline_items
+                    WHERE session_id = ? AND item_id IN (
+                        SELECT item_id FROM timeline_items
+                        WHERE session_id = ? ORDER BY order_seq ASC, item_id ASC LIMIT ?
+                    )
+                    """, arguments: [id, id, count - 5000])
+                try Self.updateCacheBytes(db, sessionID: id)
+            }
+
+            var total = try Int64.fetchOne(db, sql: """
+                SELECT COALESCE(SUM(cache_bytes), 0) FROM session_meta
+                """) ?? 0
+            guard total > limitBytes else { return [] }
+            let candidates = try Row.fetchAll(db, sql: """
+                SELECT session_id, cache_bytes FROM session_meta
+                WHERE pinned = 0 AND cache_bytes > 0
+                ORDER BY last_access ASC
+                """)
+            var evicted: [String] = []
+            for row in candidates {
+                guard total > limitBytes else { break }
+                let id: String = row["session_id"]
+                let bytes: Int64 = row["cache_bytes"]
+                try Self.stripCacheableState(db, sessionID: id)
+                try db.execute(sql: "DELETE FROM timeline_items WHERE session_id = ?",
+                               arguments: [id])
+                try db.execute(sql: "UPDATE session_meta SET cache_bytes = 0 WHERE session_id = ?",
+                               arguments: [id])
+                total -= bytes
+                evicted.append(id)
+            }
+            return evicted
+        }
+    }
+
+    /// Drops cached rows, activity and previews while keeping drafts, queued
+    /// messages and notification state. Returns the cleared session IDs.
+    func clearCache(keepingPinned: Bool) throws -> [String] {
+        try pool.write { db in
+            let sql = keepingPinned
+                ? "SELECT session_id, state_blob FROM session_meta WHERE pinned = 0"
+                : "SELECT session_id, state_blob FROM session_meta"
+            let rows = try Row.fetchAll(db, sql: sql)
+            var cleared: [String] = []
+            for row in rows {
+                let id: String = row["session_id"]
+                try Self.stripCacheableState(db, sessionID: id)
+                try db.execute(sql: """
+                    UPDATE session_meta SET cache_bytes = 0 WHERE session_id = ?
+                    """, arguments: [id])
+                try db.execute(sql: "DELETE FROM timeline_items WHERE session_id = ?",
+                               arguments: [id])
+                cleared.append(id)
+            }
+            return cleared
+        }
+    }
+
+    /// Removes the cacheable halves of the state blob (SubAgent activity and
+    /// attachment previews) while keeping drafts, queued messages and
+    /// notification state.
+    private static func stripCacheableState(_ db: Database, sessionID: String) throws {
+        guard let state = try Data.fetchOne(db, sql: """
+            SELECT state_blob FROM session_meta WHERE session_id = ?
+            """, arguments: [sessionID]),
+              var archive = try? JSONDecoder().decode(V2SessionArchive.self, from: state) else {
+            return
+        }
+        archive.subAgentActivity = nil
+        archive.previews = nil
+        guard let stripped = try? JSONEncoder().encode(archive) else { return }
+        try db.execute(sql: """
+            UPDATE session_meta SET state_blob = ? WHERE session_id = ?
+            """, arguments: [stripped, sessionID])
+    }
+
+    private static func updateCacheBytes(_ db: Database, sessionID: String) throws {
+        let payload = try Int64.fetchOne(db, sql: """
+            SELECT COALESCE(SUM(length(payload)), 0) FROM timeline_items
+            WHERE session_id = ?
+            """, arguments: [sessionID]) ?? 0
+        var extra: Int64 = 0
+        if let state = try Data.fetchOne(db, sql: """
+            SELECT state_blob FROM session_meta WHERE session_id = ?
+            """, arguments: [sessionID]),
+           let archive = try? JSONDecoder().decode(V2SessionArchive.self, from: state) {
+            if let activity = archive.subAgentActivity,
+               let bytes = try? JSONEncoder().encode(activity) {
+                extra += Int64(bytes.count)
+            }
+            if let previews = archive.previews,
+               let bytes = try? JSONEncoder().encode(previews) {
+                extra += Int64(bytes.count)
+            }
+        }
+        try db.execute(sql: """
+            UPDATE session_meta SET cache_bytes = ? WHERE session_id = ?
+            """, arguments: [payload + extra, sessionID])
+    }
+
     func rowCount(sessionID: String) throws -> Int {
         try pool.read { db in
             try Int.fetchOne(db, sql: """

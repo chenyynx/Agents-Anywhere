@@ -162,6 +162,14 @@ extension V2SessionArchive {
             cacheBytes += payload.count
         }
         let stateBlob = (try? JSONEncoder().encode(withoutItems())) ?? Data()
+        if let activity = subAgentActivity,
+           let bytes = try? JSONEncoder().encode(activity) {
+            cacheBytes += bytes.count
+        }
+        if let previews,
+           let bytes = try? JSONEncoder().encode(previews) {
+            cacheBytes += bytes.count
+        }
         return TimelineSnapshot(sessionID: session.id, cursor: cursor,
                                 hasOlderItems: hasOlderItems, hasNewerItems: hasNewerItems,
                                 excludesAgentChildren: excludesAgentChildren ?? false,

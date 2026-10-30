@@ -13,6 +13,7 @@ actor V2LocalStore {
     private let timelineDatabaseEnabled: Bool
     private var timelineDatabase: TimelineDatabase?
     private var didOpenTimelineDatabase = false
+    private var lastTrimCheck = Date.distantPast
     private static let log = Logger(subsystem: "agents.anywhere", category: "timeline-store")
 
     init(directory: URL, maximumSessions: Int = 8,
@@ -97,6 +98,66 @@ actor V2LocalStore {
         return V2LocalTimelinePage(items: items, hasMore: hasMore)
     }
 
+    func cacheUsage() -> LocalCacheUsage {
+        guard let database = timelineStore(),
+              let usage = try? database.cacheUsage() else {
+            return LocalCacheUsage(bytes: 0, sessions: 0)
+        }
+        return usage
+    }
+
+    /// Trims the row store to `limitBytes` and removes the legacy JSON cache of
+    /// every evicted session so it cannot resurrect the rows on the next open.
+    @discardableResult
+    func trimCache(to limitBytes: Int64) -> [String] {
+        guard let database = timelineStore(),
+              let evicted = try? database.trim(to: limitBytes) else { return [] }
+        for id in evicted {
+            try? FileManager.default.removeItem(at: url(sessionKey(id)))
+        }
+        return evicted
+    }
+
+    @discardableResult
+    func clearCache(keepingPinned: Bool = true) -> LocalCacheUsage {
+        guard let database = timelineStore() else {
+            return LocalCacheUsage(bytes: 0, sessions: 0)
+        }
+        let cleared = (try? database.clearCache(keepingPinned: keepingPinned)) ?? []
+        for id in cleared {
+            try? FileManager.default.removeItem(at: url(sessionKey(id)))
+        }
+        return cacheUsage()
+    }
+
+    /// Apply the current user setting now (Settings changed the limit) and
+    /// return the resulting usage. `unlimited` resolves against free disk.
+    func enforceCacheLimit() -> LocalCacheUsage {
+        let limit = LocalCachePolicy.effectiveLimit(freeBytes: Self.freeDiskBytes())
+        trimCache(to: limit)
+        return cacheUsage()
+    }
+
+    /// Cheap, throttled budget check after a save. The user-facing setting is
+    /// read here; `unlimited` still resolves to the device safety line.
+    func trimIfNeeded() {
+        guard let database = timelineStore() else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastTrimCheck) >= 30 else { return }
+        lastTrimCheck = now
+        let limit = LocalCachePolicy.effectiveLimit(freeBytes: Self.freeDiskBytes())
+        let evicted = (try? database.trim(to: limit)) ?? []
+        for id in evicted {
+            try? FileManager.default.removeItem(at: url(sessionKey(id)))
+        }
+    }
+
+    private static func freeDiskBytes() -> Int64? {
+        try? URL(fileURLWithPath: NSHomeDirectory())
+            .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+            .volumeAvailableCapacityForImportantUsage
+    }
+
     func hasOlderRows(sessionID: String, beforeOrderSeq: Int) -> Bool {
         guard let database = timelineStore(),
               let value = try? database.hasOlderRows(sessionID: sessionID,
@@ -139,6 +200,7 @@ actor V2LocalStore {
         if let database = timelineStore() {
             do { try database.replace(value.timelineSnapshot()) }
             catch { Self.log.error("timeline shadow write failed: \(String(describing: error), privacy: .public)") }
+            trimIfNeeded()
         }
         savesSinceTrim += 1
         if isNew || savesSinceTrim >= 20 { trim(); savesSinceTrim = 0 }

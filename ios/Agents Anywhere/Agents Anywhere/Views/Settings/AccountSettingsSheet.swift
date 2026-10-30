@@ -9,6 +9,8 @@ struct AccountSettingsSheet: View {
     @AppStorage(ProjectSidebarPreferences.compactSessionListKey) private var compactSessionList = false
     @AppStorage(TimelineRenderModeSwitch.key)
     private var renderModeRaw = TimelineRenderMode.code.rawValue
+    @AppStorage(LocalCachePolicy.key)
+    private var cacheLimitRaw = LocalCacheLimit.defaultValue.rawValue
     @State private var timelineLastActive: Date?
 
     private var renderMode: TimelineRenderMode {
@@ -64,6 +66,10 @@ struct AccountSettingsSheet: View {
                     }
                     NavigationLink { SettingsLanguageView() } label: {
                         SettingsRow(title: String(localized: "Language"), symbol: "globe", value: SettingsLanguageView.currentLanguage)
+                    }
+                    NavigationLink { CacheSettingsView() } label: {
+                        SettingsRow(title: String(localized: "Cache"), symbol: "internaldrive",
+                                    value: (LocalCacheLimit(rawValue: cacheLimitRaw) ?? .defaultValue).title)
                     }
                     Toggle(isOn: Binding(
                         get: { !showsSessionList },

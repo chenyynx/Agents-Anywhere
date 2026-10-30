@@ -62,6 +62,53 @@ import Testing
         #expect(try reopened.rowCount(sessionID: "session") == 5)
     }
 
+    private func cacheSnapshot(sessionID: String, pinned: Bool,
+                               lastAccess: Double, cacheBytes: Int64) -> TimelineSnapshot {
+        TimelineSnapshot(
+            sessionID: sessionID, cursor: "seq:1", hasOlderItems: false,
+            hasNewerItems: false, excludesAgentChildren: false, pinned: pinned,
+            lastAccess: lastAccess, cacheBytes: cacheBytes,
+            stateBlob: Data("state".utf8),
+            rows: [TimelineRow(id: "item-\(sessionID)", orderSeq: 1, updatedSeq: 1,
+                               payload: Data("payload".utf8))])
+    }
+
+    @Test func trimEvictsLeastRecentlyUsedUnpinnedSessions() throws {
+        let path = temporaryPath()
+        let database = try TimelineDatabase(path: path.path)
+        defer { try? database.close() }
+        try database.replace(cacheSnapshot(sessionID: "old", pinned: false,
+                                           lastAccess: 1, cacheBytes: 100))
+        try database.replace(cacheSnapshot(sessionID: "pinned", pinned: true,
+                                           lastAccess: 0, cacheBytes: 100))
+        try database.replace(cacheSnapshot(sessionID: "new", pinned: false,
+                                           lastAccess: 3, cacheBytes: 100))
+        #expect(try database.cacheUsage() == LocalCacheUsage(bytes: 300, sessions: 3))
+
+        let evicted = try database.trim(to: 150)
+        #expect(evicted == ["old", "new"])
+        #expect(try database.cacheUsage().bytes == 100)
+        #expect(try database.rowCount(sessionID: "pinned") == 1)
+        #expect(try database.rowCount(sessionID: "old") == 0)
+        #expect(try database.rowCount(sessionID: "new") == 0)
+    }
+
+    @Test func clearCacheKeepsPinnedRowsAndSessionMeta() throws {
+        let path = temporaryPath()
+        let database = try TimelineDatabase(path: path.path)
+        defer { try? database.close() }
+        try database.replace(cacheSnapshot(sessionID: "free", pinned: false,
+                                           lastAccess: 2, cacheBytes: 100))
+        try database.replace(cacheSnapshot(sessionID: "pinned", pinned: true,
+                                           lastAccess: 1, cacheBytes: 100))
+
+        let cleared = try database.clearCache(keepingPinned: true)
+        #expect(cleared == ["free"])
+        #expect(try database.rowCount(sessionID: "free") == 0)
+        #expect(try database.rowCount(sessionID: "pinned") == 1)
+        #expect(try database.read(sessionID: "free", limit: 10) != nil)
+    }
+
     @Test func hasOlderRowsUsesTheOrderSeqBoundary() throws {
         let path = temporaryPath()
         let database = try TimelineDatabase(path: path.path)

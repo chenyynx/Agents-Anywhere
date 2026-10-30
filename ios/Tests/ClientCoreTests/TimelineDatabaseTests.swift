@@ -26,7 +26,7 @@ import Testing
             excludesAgentChildren: false,
             pinned: false,
             lastAccess: 1_000,
-            cacheBytes: rows.reduce(0) { $0 + $1.payload.count },
+            cacheBytes: Int64(rows.reduce(0) { $0 + $1.payload.count }),
             stateBlob: Data("state".utf8),
             rows: rows)
     }

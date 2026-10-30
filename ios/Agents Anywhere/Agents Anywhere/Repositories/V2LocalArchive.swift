@@ -153,22 +153,22 @@ extension V2SessionArchive {
     nonisolated func timelineSnapshot(now: Date = Date()) -> TimelineSnapshot {
         var rows: [TimelineRow] = []
         rows.reserveCapacity(items.count)
-        var cacheBytes = 0
+        var cacheBytes: Int64 = 0
         for raw in items {
             guard let item = try? V2TimelineItem(json: raw),
                   let payload = try? JSONEncoder().encode(raw) else { continue }
             rows.append(TimelineRow(id: item.id, orderSeq: item.orderSeq,
                                     updatedSeq: item.updatedSeq, payload: payload))
-            cacheBytes += payload.count
+            cacheBytes += Int64(payload.count)
         }
         let stateBlob = (try? JSONEncoder().encode(withoutItems())) ?? Data()
         if let activity = subAgentActivity,
            let bytes = try? JSONEncoder().encode(activity) {
-            cacheBytes += bytes.count
+            cacheBytes += Int64(bytes.count)
         }
         if let previews,
            let bytes = try? JSONEncoder().encode(previews) {
-            cacheBytes += bytes.count
+            cacheBytes += Int64(bytes.count)
         }
         return TimelineSnapshot(sessionID: session.id, cursor: cursor,
                                 hasOlderItems: hasOlderItems, hasNewerItems: hasNewerItems,

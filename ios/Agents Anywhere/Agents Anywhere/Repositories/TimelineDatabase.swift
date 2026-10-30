@@ -21,7 +21,7 @@ nonisolated struct TimelineSnapshot: Sendable {
     let excludesAgentChildren: Bool
     let pinned: Bool
     let lastAccess: Double
-    let cacheBytes: Int
+    let cacheBytes: Int64
     let stateBlob: Data
     let rows: [TimelineRow]
 }

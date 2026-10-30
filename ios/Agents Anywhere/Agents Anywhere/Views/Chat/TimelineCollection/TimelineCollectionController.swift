@@ -477,7 +477,12 @@ final class TimelineCollectionController: UIViewController {
         // before the view joins the window and becomes the home indicator
         // afterwards, so the inset must be re-derived here or the page keeps
         // an extra 34 pt below the composer. `applyInsets` is idempotent.
-        anchorDriver?.updateSafeAreaInsets(safeAreaInsets)
+        // The last published viewport is the pre-change one: it tells the
+        // driver whether the page was resting on the bottom before a
+        // keyboard/composer transition.
+        anchorDriver?.updateSafeAreaInsets(
+            safeAreaInsets,
+            wasAtBottom: lastPublishedViewport.measuredAtBottom)
         handleContainerHeightChange()
     }
 

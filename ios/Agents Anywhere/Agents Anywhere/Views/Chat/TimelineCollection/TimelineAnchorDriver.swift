@@ -56,6 +56,10 @@ final class TimelineAnchorDriver {
     /// single offset source. Content-height events re-resolve it directly
     /// instead of starting the normal growth Mover.
     private var isHistoryPaging = false
+    /// The viewport was at the bottom before the inset change now being
+    /// applied. Consumed by `applyInsets` so a keyboard/composer transition
+    /// keeps the bottom follow even if another update lost the placement.
+    private var adoptEndOnNextInsetChange = false
 #if DEBUG
     /// Gate counter: how many Mover motions actually started.
     private(set) var debugMoveStarts = 0
@@ -144,8 +148,14 @@ final class TimelineAnchorDriver {
     /// `.smooth(duration: 0.24)` (fix `499b3e3f`, device-verified on b559).
     /// A shrink moves the offset before the inset so UIKit cannot clamp it
     /// against the old maximum.
-    func updateSafeAreaInsets(_ insets: UIEdgeInsets) {
+    /// `wasAtBottom` is the viewport's geometric verdict *before* this inset
+    /// change. A reader resting on the bottom keeps following the new bottom
+    /// even if a layout update flipped the placement to `.reading` during the
+    /// transition (keyboard show/hide; device reports 2026-10-31 06:26 and
+    /// 06:44).
+    func updateSafeAreaInsets(_ insets: UIEdgeInsets, wasAtBottom: Bool = false) {
         pageInsets = insets
+        adoptEndOnNextInsetChange = wasAtBottom
         applyInsets()
     }
 
@@ -160,6 +170,8 @@ final class TimelineAnchorDriver {
 
     private func applyInsets() {
         guard let view = scrollView else { return }
+        let adoptEnd = adoptEndOnNextInsetChange
+        adoptEndOnNextInsetChange = false
         let viewInsets = view.safeAreaInsets
         let target = UIEdgeInsets(top: max(pageInsets.top - viewInsets.top, 0),
                                   left: max(pageInsets.left - viewInsets.left, 0),
@@ -184,23 +196,16 @@ final class TimelineAnchorDriver {
 #endif
         var following = state.placement == .end
             && state.motion != .dragging && state.motion != .coasting
-        // A bottom inset shrink (keyboard hide, composer collapse) reveals
-        // content below the page. A reader resting on the old bottom must
-        // keep following it even if a layout update flipped the placement to
-        // `.reading` during the transition (device report 2026-10-31 06:26:
-        // the page stayed mid-air after the keyboard collapsed). Compare the
-        // offset with the bottom target under the *old* insets, with the
-        // official one-pixel tolerance.
-        if !following, target.bottom < current.bottom - 0.5 {
-            let oldTop = current.top + viewInsets.top
-            let oldBottom = current.bottom + viewInsets.bottom
-            let oldDestination = bottomTarget(topInset: oldTop, bottomInset: oldBottom)
-            let pixel = TimelineSpringFollow.pixel(
-                displayScale: view.traitCollection.displayScale)
-            if abs(view.contentOffset.y - oldDestination) <= pixel {
-                state.placement = .end
-                following = true
-            }
+        // A bottom inset change (keyboard show/hide, composer growth) moves
+        // the bottom target. When the viewport was resting on the bottom
+        // before the change (`adoptEnd`, taken from the pre-change viewport),
+        // keep following it even if another update flipped the placement to
+        // `.reading` during the transition (device reports 2026-10-31 06:26
+        // and 06:44: the page stayed mid-air after the keyboard collapsed,
+        // and the keyboard rise moved the page 302 pt late in two steps).
+        if !following, adoptEnd, abs(target.bottom - current.bottom) > 0.5 {
+            state.placement = .end
+            following = true
         }
         if !following {
             let offset = view.contentOffset

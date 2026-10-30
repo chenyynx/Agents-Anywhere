@@ -183,20 +183,10 @@ nonisolated enum TimelineAnchorReducer {
             }
 
         case .contentChanged:
-            // The official target follows a growing `.end` automatically. A
-            // reading placement is re-resolved after every rowsApplied /
-            // rowMeasured: a prepended page keeps its estimated heights for a
-            // while, and each later correction above the anchor must move the
-            // offset with it or the visible text drifts. Only a resting
-            // reader is adjusted; a drag or an in-flight explicit motion owns
-            // the offset until it ends.
-            switch next.placement {
-            case .end:
+            // The official target follows a growing `.end` automatically; a
+            // reading anchor must not move.
+            if next.placement == .end {
                 action = .move
-            case .reading:
-                if next.motion == .resting { action = .placeDirect }
-            case .row:
-                break
             }
 
         case .safeAreaChanged:

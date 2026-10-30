@@ -1036,6 +1036,14 @@ final class TimelineCollectionController: UIViewController {
     private static let minimumPlausibleHeight: CGFloat = 8
     private static let pendingMeasurementAttempts = 6
     private static let pendingMeasurementInterval = Duration.milliseconds(150)
+    /// Rows farther than this above the viewport are left on their estimates.
+    /// A history page inserts hundreds of unmeasured rows above the reading
+    /// anchor; measuring each one offscreen rewrites the page's total height
+    /// (one full layout pass per row) although none of them can be seen. The
+    /// official transcript keeps such rows guessed until they enter the
+    /// window. When the reader scrolls up, the drag-end pass measures the
+    /// rows that came within this margin.
+    private static let pendingMeasurementPrefetchMargin: CGFloat = 600
     /// Visible-cell settle passes. Textual parses Markdown off the main actor,
     /// so the cell's real height can arrive well after the first layout. The
     /// later passes cover a long reply on a busy main thread; a later scroll
@@ -1229,6 +1237,15 @@ final class TimelineCollectionController: UIViewController {
         let pending = layout.pendingMeasurements
         guard !pending.isEmpty, columnWidth > 0 else { return }
         let width = columnWidth
+        let viewportTop = viewport.offsetY + viewport.topInset
+        // A history page's whole new prefix sits above the reading anchor.
+        // Skip every row that is entirely above the viewport for that pass;
+        // the prefetch margin applies to ordinary settles, where measuring a
+        // row just above the top keeps the next scroll smooth.
+        let prefetchMargin = historyPaging
+            ? 0
+            : max(Self.pendingMeasurementPrefetchMargin, viewport.visibleHeight * 1.5)
+        let skipAbove = viewportTop - prefetchMargin
         pendingMeasurementTask = Task { @MainActor [weak self] in
 #if AA_TIMELINE_PROBE
             let probeStart = CACurrentMediaTime()
@@ -1249,6 +1266,16 @@ final class TimelineCollectionController: UIViewController {
             for item in pending {
                 guard let self, !Task.isCancelled, self.currentItems.contains(item) else { return }
                 guard let content = self.content else { return }
+                // A page inserted above the reader leaves hundreds of rows
+                // unmeasured. Measuring them offscreen is invisible work and
+                // moves the page's estimated height one row at a time.
+                if let attributes = self.layout.attributes(for: item.itemID),
+                   attributes.frame.maxY < skipAbove {
+#if AA_TIMELINE_PROBE
+                    probeSkipped += 1
+#endif
+                    continue
+                }
                 // Hosted-contract rows are measured by their cell the first
                 // time it materializes; there is nothing to do offscreen.
                 if content.usesCellReportedHeight(for: item) {

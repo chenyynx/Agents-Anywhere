@@ -98,8 +98,9 @@ import Testing
         projection.applyLatest(V2SessionTimelinePage(sessionId: "session", items: try recent.map { try decode($0) }, nextSeq: 11, hasMore: true, serverTime: nil))
         // Returning to the newest edge resolves the newer side but keeps the
         // history the reader already loaded (pp 2026-10-31: a full history
-        // must not collapse to the latest page).
-        #expect(projection.data.items.map(\.id) == ["1", "2", "3", "4"])
+        // must not collapse to the latest page). The idle ceiling (3 here)
+        // still bounds the window, so only the oldest loaded row is trimmed.
+        #expect(projection.data.items.map(\.id) == ["2", "3", "4"])
         #expect(!projection.data.hasNewerItems)
     }
 

@@ -187,10 +187,12 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         #expect(model.isOpeningReady && model.openingError == nil)
         #expect(model.openingRefreshCompleted)
         gate.release()
-        // The late refresh replaces the window without a second presentation
-        // path and clears the newer prompt.
+        // The late refresh updates the newest side without a second
+        // presentation path and clears the newer prompt. It keeps the rows the
+        // opening already presented (row 1), so the refresh cannot remove a
+        // row the reader already saw.
         try await eventually { repo.cached(sessionId: "session")?.hasNewerItems == false }
-        #expect(repo.cached(sessionId: "session")?.items.map(\.id) == ["reply-2", "reply-3"])
+        #expect(repo.cached(sessionId: "session")?.items.map(\.id) == ["reply-1", "reply-2", "reply-3"])
     }
 
     /// R-a guard — the early presentation uses the same opening window as the

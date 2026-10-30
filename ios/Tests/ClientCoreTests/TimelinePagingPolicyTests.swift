@@ -32,10 +32,12 @@ import Testing
     @Test func aBottomReturnArmedBeforeAReaderMoveIsVoided() {
         var policy = TimelinePagingPolicy()
         policy.armBottomReturn()
-        #expect(policy.resolveBottomReturn())
+        var resolve = policy.resolveBottomReturn()
+        #expect(resolve)
         policy.armBottomReturn()
         policy.readerMoved()
-        #expect(!policy.resolveBottomReturn())
+        resolve = policy.resolveBottomReturn()
+        #expect(!resolve)
     }
 
     @Test func anUnarmedReturnCannotLand() {

@@ -63,6 +63,12 @@ final class TimelineCollectionController: UIViewController {
     /// above the anchor moves the visible row (device: 115.7 pt).
     private var historyAnchorSettling = false
     private var historySettleTask: Task<Void, Never>?
+    /// The reader-intent generation and the anchor's content-space origin when
+    /// the settle window opened. The settle only corrects a late measurement,
+    /// so it needs both: a newer generation means the reader moved on their
+    /// own; an unchanged anchor frame means no measurement moved it.
+    private var historySettleGeneration = 0
+    private var historySettleAnchorStartY: CGFloat = .nan
     private var historyPageArriving = false
     private var historyInitialFirstRowID: String?
     private var historyPageFirstRowID: String?
@@ -2100,6 +2106,9 @@ final class TimelineCollectionController: UIViewController {
     private func beginHistoryAnchorSettling() {
         guard historyAnchorRowID != nil else { return }
         historyAnchorSettling = true
+        historySettleGeneration = readerIntentGeneration
+        historySettleAnchorStartY = historyAnchorItemID
+            .flatMap { layout.attributes(for: $0)?.frame.minY } ?? .nan
         probeHistory("settle begin row=\(historyAnchorRowID ?? "-") "
             + "into=\(historyAnchorOffsetIntoRow) contentH=\(layout.contentHeight)")
         historySettleTask?.cancel()
@@ -2110,6 +2119,24 @@ final class TimelineCollectionController: UIViewController {
                 try? await Task.sleep(for: .milliseconds(200))
                 guard !Task.isCancelled, let self, self.historyAnchorSettling else { return }
                 if self.isUserScrolling { continue }
+                // The settle window compensates late height changes above the
+                // anchor. The reader moving on their own invalidates it, and
+                // with no change to the anchor's own frame there is nothing to
+                // compensate: re-resolving a stale anchor then pulled the
+                // reader from the top back down ~290 pt on every auto page
+                // (device report 2026-10-31 03:46, contentH unchanged).
+                guard self.readerIntentGeneration == self.historySettleGeneration else {
+                    self.endHistoryAnchorSettling()
+                    return
+                }
+                if let startY = self.historyAnchorItemID.flatMap({
+                       self.layout.attributes(for: $0)?.frame.minY
+                   }),
+                   startY.isFinite, self.historySettleAnchorStartY.isFinite,
+                   abs(startY - self.historySettleAnchorStartY) <= 0.5 {
+                    self.endHistoryAnchorSettling()
+                    return
+                }
                 self.enforceSettledHistoryPlacement()
                 self.endHistoryAnchorSettling()
                 return

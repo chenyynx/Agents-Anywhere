@@ -35,6 +35,19 @@ import Testing
         #expect(TimelineTurnActions.build(groups: other, suppressLatest: false).isEmpty)
     }
 
+    /// A divider row (the compaction boundary) is not a reply host. Hosting
+    /// the footer on it made a 91 pt jump when the next step group arrived
+    /// (device probe 2026-10-31 05:40: the divider fell 121 → 30).
+    @Test func aTurnDividerNeverHostsTheFooter() throws {
+        let rows = try [row("user", role: "user", text: "Question"),
+                        row("reply", text: "Answer"),
+                        row("compact", type: "marker", role: "system", text: "")]
+        let groups = TimelineGrouping.groups(rows, interactionTargets: [])
+        let actions = TimelineTurnActions.build(groups: groups, suppressLatest: false)
+        #expect(actions["reply"]?.copyText == "Answer")
+        #expect(actions["compact"] == nil)
+    }
+
     @Test func pendingUserMessageKeepsThePreviousReplyActionsThroughItsEcho() throws {
         let rows = try [row("user", role: "user"), row("reply", text: "Completed answer")]
         let before = TimelineGrouping.groups(rows, interactionTargets: [])

@@ -378,6 +378,11 @@ final class TimelineChatBridge: ObservableObject {
         // The visible row, not the oldest row: the projection must keep the
         // reader's place while it trims the far-old and far-new edges.
         let anchorOrderSeq = adapter.orderSeq(forRowID: anchor)
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteHistory(
+            "bridge loadOlder anchor=\(anchor) order=\(anchorOrderSeq.map { String($0) } ?? "-") "
+            + "beforeFirst=\(before) items=\(controller.items.count)")
+#endif
         // Official-style history paging: the anchor driver keeps the reading
         // placement; the adapter does not install a one-shot firstRowID target.
         controller.beginHistoryPaging(anchorRowID: anchor)

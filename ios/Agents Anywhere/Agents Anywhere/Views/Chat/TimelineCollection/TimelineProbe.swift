@@ -114,11 +114,20 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         let changedKeySample: [String]
     }
 
+    /// A named step in the history-paging path. These are the only records
+    /// that say *why* a prepend moved the reader: request, driver placement,
+    /// arriving page, apply decision, and the offset the apply committed.
+    struct HistoryEvent {
+        let at: TimeInterval
+        let text: String
+    }
+
     @Published private(set) var revision = 0
     private(set) var counters: [String: Int] = [:]
     private(set) var changes: [HeightChange] = []
     private(set) var issues: [Issue] = []
     private(set) var applies: [ApplyRecord] = []
+    private(set) var historyEvents: [HistoryEvent] = []
     /// The last content sample per item, for the content-mismatch check.
     /// A row whose text changed but whose height did not is a content bug the
     /// height probes cannot see.
@@ -159,6 +168,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     private static let maxChanges = 160
     private static let maxIssues = 100
     private static let maxApplies = 24
+    private static let maxHistoryEvents = 240
 
     // MARK: - Lifecycle
 
@@ -202,6 +212,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         changes.removeAll()
         issues.removeAll()
         applies.removeAll()
+        historyEvents.removeAll()
         lastHeights.removeAll()
         lastRecorded.removeAll()
         lastWriter.removeAll()
@@ -322,6 +333,17 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         counters["applyCount", default: 0] += 1
         counters["applyMsTotal", default: 0] += ms
         counters["applyMsMax", default: 0] = max(counters["applyMsMax"] ?? 0, ms)
+    }
+
+    /// Free-form history-paging step. The controller and adapter write one
+    /// line at every decision point, so the report shows the order of events
+    /// instead of only the final offset jump.
+    func noteHistory(_ text: String) {
+        historyEvents.append(HistoryEvent(at: CACurrentMediaTime(), text: text))
+        if historyEvents.count > Self.maxHistoryEvents {
+            historyEvents.removeFirst(historyEvents.count - Self.maxHistoryEvents)
+        }
+        revision &+= 1
     }
 
     func noteHeightChange(itemID: String, item: TimelineListItem?,
@@ -921,6 +943,11 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                 + "anim=\(apply.animating ? 1 : 0) contentH=\(f(apply.contentHeight)) "
                 + "off=\(f(apply.offset)) visible=\(apply.visibleCount) estimates=\(apply.estimateRows) "
                 + "keys=\(apply.changedKeyCount)[\(keys)]")
+        }
+
+        lines.append("--- HISTORY (oldest first) ---")
+        for event in historyEvents {
+            lines.append("H t=\(elapsed(event.at)) \(event.text)")
         }
 
         lines.append("--- ISSUES (newest last) ---")

@@ -261,6 +261,11 @@ final class TimelineAnchorDriver {
         guard let view = scrollView else { return }
         guard case .reading = state.placement else { return }
         guard let target = state.placement.target(in: geometry()) else { return }
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteHistory(
+            "driver enforce target=\(target) pos=\(view.contentOffset.y) "
+            + "delta=\(target - view.contentOffset.y)")
+#endif
         stopMover()
         if state.motion != .resting { state.motion = .resting }
         writeOffset(target)

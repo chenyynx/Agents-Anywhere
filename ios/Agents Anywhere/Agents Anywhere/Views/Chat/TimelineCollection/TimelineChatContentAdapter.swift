@@ -1466,6 +1466,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         guard !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
+#if AA_TIMELINE_PROBE
+        let probeRefreshStart = CACurrentMediaTime()
+        let probeHadHistoryRequest = pendingHistoryRequest != nil
+#endif
 
         // Capture the prepend origin before any map is replaced. A history
         // page can merge the anchor's group; after the merge, the old row no
@@ -1768,6 +1772,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             } else if contentChanged, let first = identity.items.first,
                       rowIDs(in: first).first != request.beforeFirstRowID {
                 pendingHistoryRequest = nil
+#if AA_TIMELINE_PROBE
+                TimelineProbeStore.shared.noteHistory(
+                    "adapter page detected ms=\(Int(((CACurrentMediaTime() - probeRefreshStart) * 1000).rounded())) "
+                    + "n=\(identity.items.count) first=\(rowIDs(in: first).first ?? "-") "
+                    + "oldFirst=\(request.beforeFirstRowID) hist=\(controller?.historyPaging == true ? 1 : 0)")
+#endif
                 if controller?.historyPaging == true {
                     // v2: the driver owns the reading anchor; the apply only
                     // needs to know that this snapshot carries the page.
@@ -1784,6 +1794,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             lastEntries = entries
             generation &+= 1
         }
+#if AA_TIMELINE_PROBE
+        if probeHadHistoryRequest || controller?.historyPaging == true {
+            TimelineProbeStore.shared.noteHistory(
+                "adapter refresh ms=\(Int(((CACurrentMediaTime() - probeRefreshStart) * 1000).rounded())) "
+                + "changed=\(contentChanged ? 1 : 0) n=\(identity.items.count) "
+                + "first=\(identity.items.first.flatMap { rowIDs(in: $0).first } ?? "-") "
+                + "hist=\(controller?.historyPaging == true ? 1 : 0) "
+                + "pending=\(pendingHistoryRequest != nil ? 1 : 0)")
+        }
+#endif
 #if DEBUG
         if identity.hasDuplicates {
             // Data defect: the first occurrence renders. One line, ids only.

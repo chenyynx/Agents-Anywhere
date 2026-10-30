@@ -48,6 +48,10 @@ final class TimelineCollectionController: UIViewController {
     /// carries the prepended page, so an unrelated streaming apply cannot end
     /// the mode early.
     private(set) var historyPaging = false
+    /// The item the driver pinned for the in-flight history page. The probe
+    /// re-reads its screen position before/after each apply so a jump is
+    /// attributed to the row the reader was actually looking at.
+    private var historyAnchorItemID: String?
     private var historyPageArriving = false
     private var historyInitialFirstRowID: String?
     private var historyPageFirstRowID: String?
@@ -173,6 +177,15 @@ final class TimelineCollectionController: UIViewController {
     private var reduceMotion = false
     private var didMarkActivation = false
     private static let log = Logger(subsystem: "agents.anywhere", category: "timeline")
+
+    /// Probe-only timeline history trace. The parameter is an autoclosure so
+    /// shipping builds do not pay for string interpolation, and the probe
+    /// store is never referenced outside `AA_TIMELINE_PROBE`.
+    private func probeHistory(_ text: @autoclosure () -> String) {
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteHistory(text())
+#endif
+    }
 
     /// Pull inputs. C5 sets these from the real prompt visibility and session
     /// flags; the C3 gate drives them directly.
@@ -491,6 +504,21 @@ final class TimelineCollectionController: UIViewController {
                 && currentFirstRowID != historyInitialFirstRowID
         }
         let applyingHistoryPage = historyPaging && isHistoryPage
+#if AA_TIMELINE_PROBE
+        let probeAnchorID = historyAnchorItemID
+        let probeOffsetBefore = collectionView.contentOffset.y
+        let probeAnchorYBefore = probeAnchorID
+            .flatMap { layout.attributes(for: $0) }
+            .map { $0.frame.minY - probeOffsetBefore } ?? -1
+        TimelineProbeStore.shared.noteHistory(
+            "apply-begin hist=\(historyPaging ? 1 : 0) arriving=\(historyPageArriving ? 1 : 0) "
+            + "pageFirst=\(historyPageFirstRowID ?? "-") initialFirst=\(historyInitialFirstRowID ?? "-") "
+            + "firstRow=\(currentFirstRowID ?? "-") "
+            + "oldFirstRow=\(oldItems.first.flatMap { content.rowIDs(in: $0).first } ?? "-") "
+            + "oldN=\(oldItems.count) newN=\(items.count) applying=\(applyingHistoryPage ? 1 : 0) "
+            + "off=\(probeOffsetBefore) contentH=\(layout.contentHeight) "
+            + "anchor=\(probeAnchorID ?? "-") anchorY=\(probeAnchorYBefore)")
+#endif
         let windowReplaced = !items.isEmpty
             && (oldFirstDynamic.map { !items.contains($0) } ?? true)
         // Parked heights belong to the window that is leaving; their rows and
@@ -555,6 +583,9 @@ final class TimelineCollectionController: UIViewController {
                 toMeasure.append(item)
             }
         }
+#if AA_TIMELINE_PROBE
+        let probeMeasureStart = CACurrentMediaTime()
+#endif
         if !applyingHistoryPage {
             // The history page's new rows are offscreen above the reading
             // anchor; let the layout's estimates place them and let cells
@@ -564,6 +595,9 @@ final class TimelineCollectionController: UIViewController {
         }
 #if AA_TIMELINE_PROBE
         TimelineProbeStore.shared.noteMeasureDuration(CACurrentMediaTime() - probeApplyStart)
+        TimelineProbeStore.shared.noteHistory(
+            "apply-measure skipped=\(applyingHistoryPage ? 1 : 0) n=\(toMeasure.count) "
+            + "ms=\(Int(((CACurrentMediaTime() - probeMeasureStart) * 1000).rounded()))")
 #endif
         // Recompute the prepend target from the heights this apply will use.
         if let projection = insertionProjection,
@@ -598,6 +632,18 @@ final class TimelineCollectionController: UIViewController {
             TimelineProbeStore.shared.noteApplyDuration(CACurrentMediaTime() - probeApplyStart)
 #endif
             self.isPerformingSnapshot = false
+#if AA_TIMELINE_PROBE
+            let probeOffsetAfter = self.collectionView.contentOffset.y
+            let probeAnchorYAfter = probeAnchorID
+                .flatMap { self.layout.attributes(for: $0) }
+                .map { $0.frame.minY - probeOffsetAfter } ?? -1
+            TimelineProbeStore.shared.noteHistory(
+                "apply-end applying=\(applyingHistoryPage ? 1 : 0) "
+                + "off=\(probeOffsetBefore)->\(probeOffsetAfter) "
+                + "d=\(probeOffsetAfter - probeOffsetBefore) "
+                + "anchor=\(probeAnchorID ?? "-") anchorY=\(probeAnchorYBefore)->\(probeAnchorYAfter) "
+                + "contentH=\(self.layout.contentHeight)")
+#endif
             if resolveWindowBottom { self.resolveWindowReplacementBottom() }
             self.onApplyCompleted?()
             self.schedulePendingMeasurements()
@@ -1750,19 +1796,28 @@ final class TimelineCollectionController: UIViewController {
         historyPagingTimeout?.cancel()
         historyPaging = true
         historyPageArriving = false
+        historyAnchorItemID = nil
         historyInitialFirstRowID = currentItems.first.flatMap {
             content?.rowIDs(in: $0).first
         }
         historyPageFirstRowID = nil
+        let top = collectionView.contentOffset.y + collectionView.adjustedContentInset.top
         if let anchorRowID,
            let item = content?.item(containingRow: anchorRowID),
            let attributes = layout.attributes(for: item.itemID) {
-            let top = collectionView.contentOffset.y + collectionView.adjustedContentInset.top
+            historyAnchorItemID = item.itemID
             anchorDriver?.beginHistoryPaging(
                 anchorID: item.itemID,
                 offsetIntoRow: top - attributes.frame.minY)
+            probeHistory("begin reqRow=\(anchorRowID) item=\(item.itemID) "
+                + "rowY=\(attributes.frame.minY) into=\(top - attributes.frame.minY) "
+                + "off=\(collectionView.contentOffset.y) inset=\(collectionView.adjustedContentInset.top) "
+                + "contentH=\(layout.contentHeight) items=\(currentItems.count)")
         } else {
             anchorDriver?.beginHistoryPaging()
+            probeHistory("begin unresolved reqRow=\(anchorRowID ?? "-") "
+                + "off=\(collectionView.contentOffset.y) contentH=\(layout.contentHeight) "
+                + "items=\(currentItems.count)")
         }
         // A page that never changes content would otherwise pin this mode.
         historyPagingTimeout = Task { @MainActor [weak self] in
@@ -1779,8 +1834,17 @@ final class TimelineCollectionController: UIViewController {
         historyInitialFirstRowID = nil
         historyPageFirstRowID = nil
         guard historyPaging else { return }
+        if let anchorID = historyAnchorItemID,
+           let attributes = layout.attributes(for: anchorID) {
+            probeHistory("end item=\(anchorID) screenY=\(attributes.frame.minY - collectionView.contentOffset.y) "
+                + "off=\(collectionView.contentOffset.y) contentH=\(layout.contentHeight)")
+        } else {
+            probeHistory("end item=\(historyAnchorItemID ?? "-") gone off=\(collectionView.contentOffset.y) "
+                + "contentH=\(layout.contentHeight)")
+        }
         anchorDriver?.endHistoryPaging()
         historyPaging = false
+        historyAnchorItemID = nil
     }
 
     /// The adapter's prepend snapshot is the one that carries the page. The
@@ -1791,6 +1855,10 @@ final class TimelineCollectionController: UIViewController {
         guard historyPaging else { return }
         historyPageArriving = true
         historyPageFirstRowID = firstRowID
+        probeHistory("arriving pageFirst=\(firstRowID ?? "-") "
+            + "initialFirst=\(historyInitialFirstRowID ?? "-") "
+            + "currentFirst=\(currentItems.first.flatMap { content?.rowIDs(in: $0).first } ?? "-") "
+            + "items=\(currentItems.count) contentH=\(layout.contentHeight)")
     }
 
     private func maybeAutoLoadOlder(_ viewport: TimelineViewport) {
@@ -1806,6 +1874,8 @@ final class TimelineCollectionController: UIViewController {
         guard !navigationSuspended, canLoadOlder, !isHistoryPrependActive,
               olderAutoLoadArmed else { return }
         olderAutoLoadArmed = false
+        probeHistory("auto-older fire top=\(viewport.offsetY + viewport.topInset) "
+            + "contentH=\(viewport.contentHeight) visH=\(viewport.visibleHeight)")
         onNeedsOlder?()
     }
 
@@ -1821,6 +1891,8 @@ final class TimelineCollectionController: UIViewController {
         // the newest side. One trigger per bottom episode: a failed load waits
         // for a fresh leave-and-return (or the visible latest prompt).
         latestAutoLoadArmed = false
+        probeHistory("auto-latest fire off=\(viewport.offsetY) "
+            + "contentH=\(viewport.contentHeight) visH=\(viewport.visibleHeight)")
         onNeedsLatest?()
     }
 
@@ -2160,6 +2232,8 @@ final class TimelineCollectionController: UIViewController {
             // Official-style path: the anchor driver already holds the
             // reading placement and resolves the new offset from the updated
             // layout. No projected one-shot target is installed.
+            probeHistory("request v2 anchor=\(anchorRowID) n=\(newItems.count) "
+                + "first=\(newItems.first.flatMap { content?.rowIDs(in: $0).first } ?? "-")")
             noteHistoryPageArriving(firstRowID: newItems.first.flatMap {
                 content?.rowIDs(in: $0).first
             })

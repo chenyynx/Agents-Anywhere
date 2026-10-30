@@ -227,7 +227,11 @@ final class TimelineCollectionController: UIViewController {
         // ask for the same soft edge the top uses.
         collectionView.bottomEdgeEffect.style = .soft
         collectionView.alwaysBounceVertical = true
-        collectionView.showsVerticalScrollIndicator = false
+        // Keep the system's vertical indicator. The page is full-bleed and the
+        // collection owns the whole right edge; hiding it left long timelines
+        // with no scroll-position affordance (pp 2026-10-30).
+        collectionView.showsVerticalScrollIndicator = true
+        collectionView.indicatorStyle = .default
         // [E] CANONICAL/05-layout-scroll.md §5 — the official surface uses
         // `keyboardDismissMode = .interactiveWithAccessory` (raw 4,
         // `0x101a3b344`), not the plain interactive mode.

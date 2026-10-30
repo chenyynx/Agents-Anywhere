@@ -67,6 +67,11 @@ struct CodeStepGroupDetailView: View {
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
+                // Open on the newest step: a live group keeps growing at the
+                // tail, so the reader should land where the work is happening
+                // instead of the top of the list (pp 2026-10-30). Appends keep
+                // following the tail through the `onChange` scroll below.
+                .defaultScrollAnchor(.bottom)
                 // The official StepSheet grows downward while the turn runs: a
                 // newly emitted call slides in at the tail (pp 2026-10-30).
                 // Only the count is animated; streaming text redraws in place.

@@ -24,7 +24,10 @@
 | P3a 磁盘翻页 | ✅ 绿 | run `41011391791`（test + build） |
 | P3b 缓存上限 + 设置 | ✅ 绿 | run `41015260898`（test + build，应用默认开启）；包 **b705** `cf0f82f` |
 | P4 不裁窗 + 300 + 200 | ✅ 绿 | 审查修复后 run `41021372619`（test + build）；包 **b711** `a105e82`（语义变更 + 审查修复） |
-| P5 视口窗口 | ✅ test + build + sim gates | 核心 `daa75511` + 开屏门禁 `df9d630b` + 顺序修复 `0112f7d5`；run `41027837892` 绿，gates run `41027710507` 绿（timeline-autorun + code-profile）；包 **b716** `0112f7d` |
+| P5 视口窗口 | ✅ test + build + sim gates | 核心 `daa75511` + 开屏门禁 `df9d630b` + 顺序修复 `0112f7d5`；run `41027837892` 绿，gates run `41030087102` 绿（timeline-autorun + code-profile）；包 **b716** `0112f7d` |
+| P5.1 本地优先 latest | ✅ test + build + sim gates | 提交 `1991ad41` + 精简查询 `0eca737e` + 系统滚动条 `8511e082`；run `41033566471` 被取消，最终 `a6d368b` run `41034651764` 绿；gates `41033974181` 绿；包 **b725** `a6d368b` |
+| P5.2 自动上滑 + 历史页性能 | ✅ gates | 提交 `9e76056b`（锚点）、`abab62de`（自动上滑）、`76011248`（只测锚点前缀）；run `41042045717` test+build 绿；gates `41042393157` 绿；包 **b727** `7601124` |
+| P5.3 官方式阅读锚点 | ⏳ CI | 提交 `e0dc5fe2`；run `41048344429` test+build，gates `41048444634`；包待产出 |
 
 ### 0.2 独立审查（2026-10-30）
 
@@ -73,6 +76,68 @@ P4.1 的 `suffix(1500/2000)` 只是把窗口加大，仍是一端锚定；pp 决
 - 深度历史期间掉到窗口外的新 live 行目前只在 latest 页恢复；离线时若 latest 页尚未落盘，可能缺少这几行，列为后续 P5.1（live tail sidecar）。
 - adapter 仍为整个 1000 行窗口建 groups/codeRows；P5 不改变这一 O(n) 成本，benchmark 只量投影合并。
 - P5 包产出后需真机验收：翻 3 页不跳、回底部不重载、流式中翻历史、离线翻已见页。
+
+### 0.4 P5.1 本地优先 latest（2026-10-30）
+
+**动机**：查成熟实现后确认，Signal 的 `MessageLoader` 用 `canLoadOlder/canLoadNewer` + `loadNewest/loadOlder/loadAround`，回底时 `scrollToBottomOfConversation` 若 `canLoadNewerItems` 就 `loadAndScrollToNewestItems`；它的最新页从本地 DB（`DBReadTransaction`）取，不先等网络。Telegram 用 44 条窗口 + `anchorIndex` + `stationaryItemRange`；Matrix 用 `TimelineFocusKind::Live/Event/Thread` 分离实时与事件聚焦时间线。结论：**回底可以“加载”，但应读本地库；不需要最新尾窗 sidecar。**
+
+**实现**（提交 `1991ad41`）：
+
+- `V2LocalTimelinePage` 增加 `cursor` 与 `hasNewerRows`（来自 `session_meta.cursor` / `has_newer`）。
+- `V2SessionRepository.loadLatest` 不再只在离线走本地：只要本地最新页比当前窗口末端新，就先 `applyLatest` 并立即返回；`cursor` 落后或 `hasNewerRows` 为真时，`applyLatest(hasNewerAfterApply:)` 保留 `hasNewerItems`。
+- 不完整的本地页启动 `latestRefreshTask` 后台网络校准；成功清 `hasNewerItems`，失败保留本地内容与 newer prompt。
+- 离开底部或开始 `loadOlder` 时取消后台校准；手动 latest 返回仍带 newer 时抑制底部自动 latest，避免同一次读反复触发。
+
+**测试**：
+
+- `LocalPageCacheTests.onlineLatestUsesTheLocalPageBeforeTheNetwork`：在线回底 0 网络，直接 451...600。
+- `LocalPageCacheTests.aStaleLocalLatestPageReconcilesInTheBackground`：本地页立即上屏且 `hasNewerItems` 保留，后台网络页落盘后清除。
+- `SessionProjectionTests.localLatestCanKeepTheNewerFlagUntilTheNetworkConfirms`：投影标志不被本地页提前清掉。
+
+**顺带修复**：`TimelineCollectionController` 与旧 `ChatTimelineView` 都显式隐藏了系统垂直滚动条；已恢复（`8511e082`），长会话右侧重新有系统滚动位置指示。
+
+### 0.5 P5.2 自动上滑 + 历史页性能（2026-10-30）
+
+**现象**：仍要手动点/下拉加载历史；加载 300–400 条时掉帧；加载后跳到新页面顶部。
+
+**根因与修复**：
+
+- **手动加载**：接近顶部 320pt 内自动加载一页，一次一页；失败/加载中不按帧重试。`onNeedsOlder` 由 controller 触发，bridge 走现有 `loadOlder` 锚点路径（`abab62de`）。
+- **跳顶**：`TimelineChatContentAdapter.rowIDs(in: .olderPrompt)` 为了首行检查把 prompt 别名成第一条时间线行；锚点投影也用了这个别名，导致锚点匹配到 y=0 的 prompt。新增 `anchorRowIDs`/`TimelineHistoryAnchorRows`，prompt 不参与锚点匹配；C1 单测锁定（`9e76056b`）。
+- **加载掉帧**：`beginHistoryRequest` 同步测量**整个新窗口**，包括锚点下面几百行已有高度的旧行。改为只测量「新顶部 → 锚点」前缀；锚点下方沿用旧高度，apply 后的测量仍覆盖变更/缺失行（`76011248`）。
+- 历史前插未结算时，自动 latest / 开屏回底都被抑制，避免 transient viewport 把页面拉到底。
+
+**验证**：run `41042045717` test + build 绿；包 **b727** `7601124`；gates `41042393157` 绿。真机仍反馈跳顶，故有 P5.3。
+
+### 0.6 P5.3 官方式阅读锚点（2026-10-30）
+
+**复核官方**：`TranscriptList` 用 `Rows.starts` 前缀和 + `Placement.reading(RowID, offsetIntoRow)`；每次 rowsApplied/rowMeasured 重新解析 `starts[idx] + offsetIntoRow - topInset`，没有 `firstRowID` 一次性目标；新页只估算，未测行后补。证据：`part-z-textkit-height.md:33-39/134-145/218`、`layout-scroll.md:162-163`。
+
+**真正根因**：AA 的 `TimelineCollectionController.anchor(at:)` 把 **`.olderPrompt` 本身**当作阅读锚点。新历史页插在 prompt **下面**，prompt 位置不变，所以页面看起来跳到新页顶部。之前 P5.2 只修了 projected target 的 prompt 别名，没修 driver 的 reading anchor。
+
+**实现**（提交 `e0dc5fe2`）：
+
+- `TimelineHistoryAnchorRows.isAnchorable`：`.olderPrompt`/`.latestPrompt`/`.tail` 不参与阅读锚点；`anchor(at:)` 跳过它们。
+- 历史 paging 改走 `TimelineAnchorDriver` 的持久 `reading(itemID, offsetIntoRow)`：`beginHistoryPaging`/`enforceReadingPlacement`/`endHistoryPaging`。
+- v2 不再安装 `TimelineInsertionOwed` 一次性目标；apply 完成用当前 layout 重算 offset。
+- 历史页 apply 跳过同步 `measureSynchronously`，新页先用估算，cell 可见时实测（官方 arriving/guessed 同构）。
+- 旧路径保留在 `TimelineHistoryAnchorV2.enabled` 开关后（默认 true）。
+- `TimelineAutoRun` 新增 v2 prepend 场景：前插 100 行后断言 anchor screenY 不变且 historyPaging 结束。
+
+**验证**：run `41048344429` test 绿；gates `41048444634` 抓到 `prepend reading anchor: anchor moved 157pt`（driver 锚到视口下的另一行），`daa76d6b` 把 driver placement 钉到 bridge 请求的可见行后，gate 仍报 **314pt**。
+
+**最终根因（gate `41051051073` / `41058392289`）**：prompt 锚点只是第一层。历史页插入后，`schedulePendingMeasurements` 会把新页**视口上方**几百行未测行逐行离屏实测；每测一行都改写页面高度并触发一次全量 `prepare`，锚点行随之一行一行漂移。下一次普通 apply 还会把整页从未测集合重新同步测量一遍。gate 的 314pt 正是这些离屏测量累计出来的。
+
+**最终修复**：
+
+- 历史页的异步测量 pass：跳过所有完全在视口上方的行（`cebe4ae6`）；普通 settle 保留 600pt 预取，滚上去时再测。
+- 普通 apply 的同步测量：同一规则跳过视口上方行（`4d2f004b`），避免一次流式 tick 重新测量整页。
+- 不采用「全局 `contentChanged` 重解析 reading placement」：gate 的 async-markdown 场景会把视口下方行带偏 124pt，已回退。
+- 探针日志（`c4625dcb`、`8b911b98`、`1cddfbe0`、`9440c6aa`）：请求/锚点/apply 前后、pending 测量数量与耗时、底边切换、`loadLatest`、离屏高度变化计数，全部只在 `AA_TIMELINE_PROBE` 构建里编译。
+
+**验证**：run `41058392289` attempt 1 test/build/code-profile 绿，timeline-autorun 仅 `tail flap` 红；同 run attempt 2 重跑全绿（`tail flap` 为时序 flake）。`prependReadingAnchor` delta 0、`historyPaging=false`。包 **b736** `4d2f004` **探针版**：`AgentsAnywhere-feat-local-timeline-store-b736-4d2f004-probe.ipa`。
+
+**真机待验**：300–400 条历史加载无掉帧；上滑自动加载；加载后页面不跳；流式中翻历史不位移；探针报告回传。
 
 ---
 

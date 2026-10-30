@@ -6,11 +6,11 @@
 ## 1. 当前状态
 
 - 分支：`feat/local-timeline-store`
-- 代码 head：`137cc887`（窗口修复）；文档 head：`1b737bd4`（本交接）；上一笔 `248cd9b5`（latest 守卫 + 回顶全距离）
+- 代码 head：`137cc887`（窗口修复）；文档 head：`0c380267`（含本交接与任务单）；上一笔 `248cd9b5`（latest 守卫 + 回顶全距离）
 - 工作区：应无未提交改动（交接时确认）
-- b744 CI：run `41090668183`，`test` 正在跑；`build/probe + timeline-autorun + code-profile` 待跑
-- 预期包（build 成功后确认）：
-  `https://github.com/chenyynx/Agents-Anywhere/releases/download/ipa-feat-local-timeline-store/AgentsAnywhere-feat-local-timeline-store-b744-137cc88-probe.ipa`
+- b744 第一次 run `41090668183` 在 test 阶段被取消；现在跑的是 rerun `41094489805`，head `0c380267`，`test` 进行中
+- 预期包：release 资产名含 `0c38026`（run number 以 GitHub 实际为准），build 成功后从
+  `https://github.com/chenyynx/Agents-Anywhere/releases/tag/ipa-feat-local-timeline-store` 取 `.ipa`
 - 探针说明：左边缘两个按钮「探针」「锚点日志」；「锚点日志」的复制内容包含完整 `=== TIMELINE PROBE ===`
 
 ## 2. 这轮已经改了什么
@@ -85,7 +85,7 @@
 
 ```
 继续 AA iOS Code 页时间线修复。仓库 /home/ubuntu/aa-wt-attachments，分支 feat/local-timeline-store，交接文档 docs/handoff-code-timeline-20261031.md，任务单 docs/perf-6b-batch5-localdb-task-sheet.md。
-当前 head 137cc887，b744 CI run 41090668183；先确认 build 与包，不要重做已完成的窗口/锚点/长消息转附件。
+当前代码 head 137cc887，文档 head 0c380267；b744 rerun CI run 41094489805；先确认 build 与包，不要重做已完成的窗口/锚点/长消息转附件。
 等待 pp 用 b744 探针复测；报告在 /home/ubuntu/.agents-anywhere-moonveil/attachments/sess_ZrF0RZMxna0J7g/ 的最新 long-message-*.txt，直接读文件，不要让 pp 贴长文。
 下一步优先：1) latest 提示改官方 following/新消息胶囊；2) 1.5s apply/stale cell/巨型行（保持正文完整显示）；3) connector event loop stalls。改前先读代码和日志，不盲改、不叠补丁。
 ```

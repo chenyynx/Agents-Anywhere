@@ -122,3 +122,24 @@
 
 **未覆盖**
 - 超过 `maximumItems`（1000）的窗口回到最新仍会裁到 1000（内存上限，见 `applyWindow` 的 latest 规则）；本次不放大上限。
+
+## R9 键盘收起后页面悬在半空（2026-10-31 06:26 真机反馈，回归）
+
+**现象 / 证据**
+- 截图：键盘收起后，最新内容停在键盘上方约一个键盘高度处，下方整块空白，页面不跟随到底。
+- 发生条件："有时候"——键盘交互式收起（拖拽/布局更新）与流式 apply 同时发生时。
+
+**根因**
+- 键盘/输入条 inset 收缩时，`TimelineAnchorDriver.applyInsets` 只在 `state.placement == .end` 时跟随新底；键盘交互式收起期间的滚动/布局事件会把 placement 改成 `.reading`（`readerLifted/coastingEnded` 的 atEnd 在动画中间计算），于是收缩不再跟随。
+- f911dc97 的可见 cell 重绑在普通 50ms 同步里也会 `reconfigureItems`，并在 apply completion 里强制 layout；落在 inset 动画事务里会改 offset、让驱动采到 `.reading`，放大该问题。
+
+**修法**
+- `applyInsets`：底部 inset 收缩且视口在收缩前停在旧底（`bottomTarget(oldInsets)`，官方一像素容差）时，即使 placement 是 `.reading` 也改为 `.end` 并跟随新底；正在拖动/滑行时不抢。
+- 可见 cell 重绑收窄：普通同步不再 reconfigure（恢复原契约）；结构性 apply 的强制重绑只在 placement != .end（阅读/历史态）执行，`.end` 跟随态跳过。
+
+**验证**
+- CI run 772（head `1e7678c9`）test + build 绿，包 `b772`。
+- 真机复测：底部状态下点空白/拖拽收起键盘、发送后收起键盘，最新行应贴着输入条；历史翻页后的空白带在阅读态仍应被重绑修复。
+
+**未覆盖**
+- 旋转/分屏等其它 bottom inset 收缩走同一跟随规则（停在旧底时跟随，符合预期）；`.end` 状态下的结构性 cell 重绑被跳过，极端情况下底部的错配 cell 仍可能短暂存在，留待视频/探针复现后再设计不干扰 inset 动画的延迟重绑。

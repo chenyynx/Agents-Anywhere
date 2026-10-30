@@ -41,7 +41,7 @@ struct CacheSettingsView: View {
                 Text(String(localized: "Cached message rows, SubAgent activity and attachment previews."))
             }
 
-            Section(String(localized: "Cache limit")) {
+            Section("Cache limit") {
                 ForEach(LocalCacheLimit.allCases) { option in
                     Button {
                         choose(option)

@@ -6,7 +6,7 @@
 ## 1. 当前状态
 
 - 分支：`feat/local-timeline-store`
-- 最新提交：`137cc887`（窗口修复）；上一笔 `248cd9b5`（latest 守卫 + 回顶全距离）
+- 代码 head：`137cc887`（窗口修复）；文档 head：`1b737bd4`（本交接）；上一笔 `248cd9b5`（latest 守卫 + 回顶全距离）
 - 工作区：应无未提交改动（交接时确认）
 - b744 CI：run `41090668183`，`test` 正在跑；`build/probe + timeline-autorun + code-profile` 待跑
 - 预期包（build 成功后确认）：

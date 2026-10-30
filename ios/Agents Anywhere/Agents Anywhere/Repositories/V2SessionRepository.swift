@@ -332,6 +332,10 @@ final class V2SessionRepository {
         let pageLimit = limit ?? policy.networkPageSize
         _ = try await load(sessionId: sessionId)
         let entry = entry(for: sessionId)
+        // Browsing history supersedes a background latest reconcile: the
+        // replacement must not land while the reader is moving away.
+        entry.latestRefreshTask?.cancel()
+        entry.latestRefreshTask = nil
         if let task = entry.historyTask { return try await task.value }
         guard let data = entry.projection?.data,
               data.canLoadOlder, let before = data.items.first?.orderSeq else {
@@ -396,26 +400,34 @@ final class V2SessionRepository {
         entry.readVersion += 1
         entry.historyTask?.cancel()
         entry.historyTask = nil
+        entry.latestRefreshTask?.cancel()
+        entry.latestRefreshTask = nil
         let version = entry.readVersion
-        // Offline only: a local latest page can lag the live cursor. Online
-        // reads the authoritative latest page so a slid window cannot lose
-        // rows and then clear hasNewerItems.
-        if network.availability == .offline,
-           let localStore,
+        // Local first, online included: a return-to-bottom must not wait for
+        // the network when the row store already holds the newest page. The
+        // local page is applied immediately; if its saved cursor is behind the
+        // live projection (or it says its tail is incomplete), a background
+        // network read reconciles it without blocking the return.
+        if let localStore,
            let local = await localStore.latestRows(sessionID: sessionId, limit: pageLimit),
            let newest = local.items.last?.orderSeq,
            let end = entry.projection?.data.items.last?.orderSeq,
            newest > end {
             try requireCurrent(entry, version: version)
+            let localIsCurrent = !local.hasNewerRows
+                && V2SessionProjection.sequence(local.cursor) >= (entry.projection?.sequence ?? 0)
             let page = V2SessionTimelinePage(
                 sessionId: sessionId, items: local.items,
                 nextSeq: local.items.map(\.updatedSeq).max() ?? 0,
                 hasMore: entry.projection?.data.hasOlderItems ?? false,
                 serverTime: nil,
                 excludesAgentChildren: entry.projection?.data.windowExcludesAgentChildren ?? false)
-            entry.projection?.applyLatest(page)
+            entry.projection?.applyLatest(page, hasNewerAfterApply: !localIsCurrent)
             entry.projection?.setLocalOlderAvailable(local.hasMore)
             emit(entry)
+            if !localIsCurrent {
+                startLatestReconcile(entry, limit: pageLimit, version: version)
+            }
             return entry.projection!.data
         }
         try requireNetwork()
@@ -424,6 +436,38 @@ final class V2SessionRepository {
         entry.projection?.applyLatest(page)
         emit(entry)
         return entry.projection!.data
+    }
+
+    /// A local latest page is on screen; the network read updates it in the
+    /// background. A failure keeps the local content and the newer prompt.
+    private func startLatestReconcile(_ entry: Entry, limit: Int, version: Int) {
+        guard network.availability != .offline else { return }
+        entry.latestRefreshTask?.cancel()
+        entry.latestRefreshTask = Task { @MainActor [weak self, weak entry] in
+            guard let self, let entry else { return }
+            defer {
+                if entry.readVersion == version { entry.latestRefreshTask = nil }
+            }
+            do {
+                let page = try await self.detail.latestItems(
+                    sessionId: entry.id, limit: limit, excludeAgentChildren: true)
+                try self.requireCurrent(entry, version: version)
+                entry.projection?.applyLatest(page)
+                self.emit(entry)
+            } catch {
+                // The local page is already displayed. Keep `hasNewerItems`
+                // set so the prompt remains available; the next connection
+                // recovery will reconcile the same rows.
+            }
+        }
+    }
+
+    /// The reader left the bottom before a local-first latest page finished
+    /// reconciling; its replacement must not land under a history reader.
+    func cancelLatestReconcile(sessionId: V2SessionID) {
+        guard let entry = entries[sessionId] else { return }
+        entry.latestRefreshTask?.cancel()
+        entry.latestRefreshTask = nil
     }
 
     /// One SubAgent card's child rows (C3) for a main-only window. Kept out of
@@ -754,6 +798,8 @@ final class V2SessionRepository {
         entry.readVersion += 1
         entry.historyTask?.cancel()
         entry.historyTask = nil
+        entry.latestRefreshTask?.cancel()
+        entry.latestRefreshTask = nil
         let version = entry.readVersion
         let task = Task { [self] in
             defer {
@@ -1360,6 +1406,8 @@ final class V2SessionRepository {
         entry.recoveryEpoch = UUID()
         entry.recoveryTask?.cancel()
         entry.recoveryTask = nil
+        entry.latestRefreshTask?.cancel()
+        entry.latestRefreshTask = nil
         entry.connection = .inactive
         // A stopped or disconnected entry cannot carry a live prediction: the
         // optimistic turn end belongs to the connection lifecycle that proved
@@ -1375,6 +1423,7 @@ final class V2SessionRepository {
         stop(entry)
         entry.loadTask?.cancel()
         entry.historyTask?.cancel()
+        entry.latestRefreshTask?.cancel()
         for observer in entry.observers.values { observer.finish() }
         entry.observers.removeAll()
         entry.model.invalidate()
@@ -1383,8 +1432,8 @@ final class V2SessionRepository {
     private func evict(protecting protected: Entry? = nil) {
         let candidates = entries.values.filter {
             $0 !== protected && $0.observers.isEmpty && $0.loadTask == nil && $0.catalogTask == nil
-                && $0.historyTask == nil && $0.recoveryTask == nil && $0.followUpReconcileTask == nil
-                && !$0.model.hasLocalWork
+                && $0.historyTask == nil && $0.latestRefreshTask == nil && $0.recoveryTask == nil
+                && $0.followUpReconcileTask == nil && !$0.model.hasLocalWork
         }
             .sorted { $0.lastAccess < $1.lastAccess }
         for entry in candidates where entries.count > max(1, policy.maximumSessions) {
@@ -1417,6 +1466,10 @@ private final class Entry {
     var observers: [UUID: AsyncStream<V2SessionObservation>.Continuation] = [:]
     var loadTask: Task<V2SessionData, Error>?
     var historyTask: Task<V2SessionData, Error>?
+    /// A local-first latest page was applied and a network read is reconciling
+    /// it in the background. Kept separate from `historyTask` so the instant
+    /// local return does not make the caller wait on the network.
+    var latestRefreshTask: Task<Void, Never>?
     var catalogTask: Task<V2SessionCatalogs, Error>?
     /// Single-flight recovery round. It returns its outcome instead of
     /// throwing, so joining callers can choose to surface or ignore failure.

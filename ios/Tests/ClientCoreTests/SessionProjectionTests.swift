@@ -151,6 +151,23 @@ import Testing
         #expect(!projection.data.hasNewerItems)
     }
 
+    @Test func localLatestCanKeepTheNewerFlagUntilTheNetworkConfirms() throws {
+        let seed = try [itemObject(id: "2", order: 2, seq: 2), itemObject(id: "3", order: 3, seq: 3),
+                        itemObject(id: "4", order: 4, seq: 4)].map { try decode($0, as: V2TimelineItem.self) }
+        var projection = V2SessionProjection(snapshot: try snapshot(items: [
+            try itemObject(id: "2", order: 2, seq: 2), try itemObject(id: "3", order: 3, seq: 3),
+            try itemObject(id: "4", order: 4, seq: 4)]), maximumItems: 3)
+        let local = try [itemObject(id: "3", order: 3, seq: 3), itemObject(id: "4", order: 4, seq: 4)]
+            .map { try decode($0, as: V2TimelineItem.self) }
+        projection.applyLatest(V2SessionTimelinePage(sessionId: "session", items: local,
+            nextSeq: 4, hasMore: true, serverTime: nil), hasNewerAfterApply: true)
+        #expect(projection.data.items.map(\.id) == ["3", "4"])
+        #expect(projection.data.hasNewerItems)
+        projection.applyLatest(V2SessionTimelinePage(sessionId: "session", items: seed,
+            nextSeq: 4, hasMore: true, serverTime: nil))
+        #expect(!projection.data.hasNewerItems)
+    }
+
     @Test func lateLatestPagePreservesNewerSocketChanges() throws {
         var projection = V2SessionProjection(snapshot: try snapshot(), maximumItems: 3)
         try projection.apply(event("timeline.item_updated", seq: 11, payload: ["item": itemObject(revision: 2, seq: 11)]))

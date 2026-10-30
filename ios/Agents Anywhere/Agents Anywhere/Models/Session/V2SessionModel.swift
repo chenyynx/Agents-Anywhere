@@ -485,6 +485,12 @@ final class V2SessionModel: Identifiable {
         repository?.followLatest(sessionId: id)
     }
 
+    /// The reader left the bottom while a local-first latest page was still
+    /// reconciling; do not replace the window under a history reader.
+    func cancelLatestReconcile() {
+        repository?.cancelLatestReconcile(sessionId: id)
+    }
+
     func loadLatest() async {
         guard let repository, isValid, !isLoadingHistory else { return }
         isLoadingHistory = true

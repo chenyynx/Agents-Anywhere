@@ -334,6 +334,7 @@ final class TimelineChatBridge: ObservableObject {
             && !model.session.isLoadingHistory && !isLoadingOlder
         controller?.canLoadLatest = model.session.isValid && model.session.hasNewerItems
             && !model.session.isLoadingHistory && !isLoadingLatest
+        if !model.session.hasNewerItems { controller?.rearmLatestAutoLoad() }
         // A window flag can arrive while the viewport is already resting at
         // the bottom; no scroll will fire to re-run the auto-latest check.
         controller?.requestLatestIfAtBottom()
@@ -346,7 +347,13 @@ final class TimelineChatBridge: ObservableObject {
         let atBottom = viewport.measuredAtBottom
         guard atBottom != wasAtBottom else { return }
         wasAtBottom = atBottom
-        if atBottom { model.session.followLatest() }
+        if atBottom {
+            model.session.followLatest()
+        } else {
+            // A local-first latest page may still be reconciling; a reader
+            // moving into history must not have the window replaced.
+            model.session.cancelLatestReconcile()
+        }
     }
 
     private func loadOlder() {
@@ -397,6 +404,12 @@ final class TimelineChatBridge: ObservableObject {
             guard let self else { return }
             await self.model.session.loadLatest()
             self.isLoadingLatest = false
+            // A stale local-first page intentionally keeps `hasNewerItems`
+            // until its background reconcile lands. Do not let the bottom
+            // trigger immediately start the same read again.
+            if self.model.session.hasNewerItems {
+                self.controller?.suppressLatestAutoLoad()
+            }
             self.updateHistoryAvailability()
             // A viewport-triggered load must not yank a reader who scrolled
             // into history while it was in flight. A manual latest request

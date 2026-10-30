@@ -190,10 +190,21 @@ nonisolated struct V2SessionRestore {
 }
 
 /// A page read from the local row store. `hasMore` means the store holds
-/// another row on the same side of this page.
+/// another row on the same side of this page. `cursor` is the session cursor
+/// captured by the last save; `hasNewerRows` is the saved window's own
+/// `hasNewerItems` flag (rows known to be missing from the newest side).
 nonisolated struct V2LocalTimelinePage {
     let items: [V2TimelineItem]
     let hasMore: Bool
+    var cursor: String = ""
+    var hasNewerRows = false
+
+    init(items: [V2TimelineItem], hasMore: Bool, cursor: String = "", hasNewerRows: Bool = false) {
+        self.items = items
+        self.hasMore = hasMore
+        self.cursor = cursor
+        self.hasNewerRows = hasNewerRows
+    }
 }
 
 extension ChatAttachment {

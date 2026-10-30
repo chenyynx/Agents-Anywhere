@@ -221,7 +221,11 @@ struct V2SessionProjection {
         data.localOlderAvailable = value
     }
 
-    mutating func applyLatest(_ page: V2SessionTimelinePage) {
+    /// `hasNewerAfterApply` is for a local-first page that is known to be
+    /// behind the live cursor. Replacing the window must not claim the newest
+    /// side is complete until the authoritative page lands.
+    mutating func applyLatest(_ page: V2SessionTimelinePage,
+                              hasNewerAfterApply: Bool = false) {
         guard page.sessionId == data.session.id else { return }
         // A GET can finish after newer socket frames. Its high watermark bounds
         // the window it may replace, but never acknowledges the event cursor.
@@ -232,6 +236,7 @@ struct V2SessionProjection {
         // mode (the panel's loaded gate reads it).
         data.windowExcludesAgentChildren = page.excludesAgentChildren
         _ = merge(newer, history: false)
+        if hasNewerAfterApply { data.hasNewerItems = true }
     }
 
     private mutating func replaceTimeline(_ items: [V2TimelineItem], hasMore: Bool) {

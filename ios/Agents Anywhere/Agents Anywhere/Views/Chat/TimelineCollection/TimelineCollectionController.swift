@@ -1667,6 +1667,13 @@ final class TimelineCollectionController: UIViewController {
         latestAutoLoadArmed = true
     }
 
+    /// A latest read just finished with the newer edge still incomplete (a
+    /// stale local-first page). Do not immediately start the same read again
+    /// from the bottom trigger; the background reconcile owns it now.
+    func suppressLatestAutoLoad() {
+        latestAutoLoadArmed = false
+    }
+
     private func maybeAutoLoadLatest(_ viewport: TimelineViewport) {
         guard viewport.isMeasured else { return }
         guard viewport.measuredAtBottom else {

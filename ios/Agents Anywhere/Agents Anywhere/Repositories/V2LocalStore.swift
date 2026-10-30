@@ -108,10 +108,10 @@ actor V2LocalStore {
     /// still holds older rows beside it.
     func latestRows(sessionID: String, limit: Int) -> V2LocalTimelinePage? {
         guard let database = timelineStore(),
-              let rows = try? database.latestRows(sessionID: sessionID, limit: max(1, limit)) else {
+              let stored = try? database.read(sessionID: sessionID, limit: max(1, limit)) else {
             return nil
         }
-        let items = decodeRows(rows)
+        let items = decodeRows(stored.rows)
         let hasMore: Bool
         if let first = items.first?.orderSeq {
             hasMore = (try? database.hasOlderRows(sessionID: sessionID,
@@ -119,7 +119,8 @@ actor V2LocalStore {
         } else {
             hasMore = false
         }
-        return V2LocalTimelinePage(items: items, hasMore: hasMore)
+        return V2LocalTimelinePage(items: items, hasMore: hasMore,
+            cursor: stored.meta.cursor, hasNewerRows: stored.meta.hasNewerItems)
     }
 
     func cacheUsage() -> LocalCacheUsage {

@@ -43,30 +43,24 @@ struct CodeStepGroupDetailView: View {
         NavigationStack(path: $path) {
             ScrollViewReader { proxy in
                 List {
-                    // One list row per element: a step cell and its inter-row
-                    // connector are separate rows. Bundling the connector into
-                    // the step's own cell made the previously-last cell grow
-                    // when a step was appended, and List could hold the old
-                    // height until a later layout pass (pp: the last rows'
-                    // spacing looked wrong, then healed by itself).
-                    ForEach(detailRows) { detailRow in
-                        switch detailRow {
-                        case let .step(step):
+                    ForEach(liveGroup.steps) { step in
+                        // The connector rides in the step's own cell and is
+                        // always laid out — only its ink is hidden on the last
+                        // step. A cell that gains a connector when a new step
+                        // arrives could hold a stale height until a later
+                        // layout pass (pp: the last rows' spacing looked wrong,
+                        // then healed by itself); a constant-height cell cannot.
+                        // A standalone List row is not an option: List inflates
+                        // the 16 pt connector with its default row height (pp
+                        // 2026-10-30).
+                        VStack(spacing: 0) {
                             row(for: step)
-                                .listRowInsets(CodePageTheme.groupListRowInsets)
-                                .listRowSeparator(.hidden)
-                                .listRowBackground(Color.clear)
-                        case .connector:
-                            // The Code page's group sheet draws the 2 × 16 pt
-                            // `TimelineConnector` between rows, centred in the
-                            // 24 pt icon column (`CodeToolGroupDetailView`); the
-                            // chat sheet lists the same ordered steps, so it
-                            // carries the same connector.
                             CodeTimelineConnector()
-                                .listRowInsets(CodePageTheme.groupListRowInsets)
-                                .listRowSeparator(.hidden)
-                                .listRowBackground(Color.clear)
+                                .opacity(step.id == liveGroup.steps.last?.id ? 0 : 1)
                         }
+                        .listRowInsets(CodePageTheme.groupListRowInsets)
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
                     }
                 }
                 .listStyle(.plain)
@@ -115,34 +109,6 @@ struct CodeStepGroupDetailView: View {
             }
         }
         .presentationDetents([.medium, .large])
-    }
-
-    /// The sheet's flat row list: each step followed by its connector (except
-    /// after the last step). Separate cells keep every existing row's height
-    /// constant when a new step arrives at the tail.
-    private enum DetailRow: Identifiable {
-        case step(TimelineStep)
-        case connector(id: String)
-
-        var id: String {
-            switch self {
-            case let .step(step): step.id
-            case let .connector(id): id
-            }
-        }
-    }
-
-    private var detailRows: [DetailRow] {
-        let steps = liveGroup.steps
-        var rows: [DetailRow] = []
-        rows.reserveCapacity(max(0, steps.count * 2 - 1))
-        for (index, step) in steps.enumerated() {
-            rows.append(.step(step))
-            if index < steps.count - 1 {
-                rows.append(.connector(id: "connector:" + steps[index + 1].id))
-            }
-        }
-        return rows
     }
 
     private var title: String {

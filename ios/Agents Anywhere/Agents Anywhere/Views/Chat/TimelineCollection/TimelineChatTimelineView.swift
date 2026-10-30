@@ -222,18 +222,19 @@ struct TimelineChatTimelineView: View {
                                             startsAtBottom: stepGroup.startsAtBottom)
                 }
             }
-            // Probe builds add a floating diagnostics button; other builds
-            // compile the call site to `self` (TimelineProbe.swift).
-            .timelineProbeOverlay(controller: bridge.controller,
-                                  adapter: bridge.adapter,
-                                  ready: bridge.controllerAttached)
 #if AA_TIMELINE_PROBE
-            // Copies the C3 inset log (proxy value, inherited animation
-            // duration, offset before/after) without a screen recording. The
-            // list ignores the safe area, so the pill sits on the leading
-            // edge at mid-height — inside the reachable area on every device.
+            // Both probe entry points sit on the leading edge at mid-height:
+            // the top-trailing corner belongs to the status bar / navigation
+            // chrome on a real device and cannot be tapped. Stacking them
+            // keeps the timeline report and the C3 inset log reachable.
             .overlay(alignment: .leading) {
-                AnchorProbeLogOverlay().padding(.leading, 8)
+                VStack(alignment: .leading, spacing: 8) {
+                    TimelineProbeOverlay(controller: bridge.controller,
+                                         adapter: bridge.adapter,
+                                         controllerReady: bridge.controllerAttached)
+                    AnchorProbeLogOverlay()
+                }
+                .padding(.leading, 8)
             }
 #endif
     }

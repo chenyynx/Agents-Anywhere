@@ -58,7 +58,10 @@ nonisolated enum LocalCachePolicy {
 
     static func formatted(_ bytes: Int64) -> String {
         let formatter = ByteCountFormatter()
-        formatter.countStyle = .file
+        // The limits are binary sizes (256 MiB, 512 MiB, 1 GiB, ...); decimal
+        // `.file` units rendered them as 268.4 MB / 536.9 MB / 1.07 GB, so the
+        // fixed choices looked arbitrary. Binary keeps 256 MB / 512 MB / 1 GB.
+        formatter.countStyle = .binary
         formatter.allowedUnits = [.useMB, .useGB]
         formatter.zeroPadsFractionDigits = false
         return formatter.string(fromByteCount: bytes)

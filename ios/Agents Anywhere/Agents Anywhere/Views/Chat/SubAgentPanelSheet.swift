@@ -217,7 +217,8 @@ struct SubAgentPanelSheet: View {
                         Text(tasks.count > 1
                              ? "\(String(localized: "停止")) \(task.label ?? String(localized: "智能体"))"
                              : String(localized: "停止智能体"))
-                            .font(.system(size: 17, weight: .semibold))
+                            .font(.custom(CodePageTheme.sansFontName, size: 17,
+                                          relativeTo: .body).weight(.semibold))
                             .foregroundStyle(CodePageTheme.userBubbleText.resolved(for: colorScheme))
                             .frame(maxWidth: .infinity)
                             .frame(height: 44)
@@ -418,7 +419,7 @@ struct SubAgentPanelSheet: View {
             let foldable = prompt.count > Self.promptFoldThreshold
             VStack(alignment: .leading, spacing: 6) {
                 Text(prompt)
-                    .font(.system(size: 17))
+                    .font(.custom(CodePageTheme.sansFontName, size: 17, relativeTo: .body))
                     .lineSpacing(CodePageTheme.userBubbleLineSpacing)
                     .foregroundStyle(CodePageTheme.userBubbleText.resolved(for: colorScheme))
                     .lineLimit(foldable && !showsFullPrompt ? Self.collapsedPromptLimit : nil)

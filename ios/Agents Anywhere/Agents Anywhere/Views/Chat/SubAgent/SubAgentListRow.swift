@@ -32,12 +32,14 @@ struct SubAgentListRow: View {
 
                     VStack(alignment: .leading, spacing: 4) {
                         Text(card.taskName)
-                            .font(.system(size: 17, weight: .semibold))
+                            .font(.custom(CodePageTheme.sansFontName, size: 17,
+                                          relativeTo: .body).weight(.semibold))
                             .foregroundStyle(CodePageTheme.userBubbleText.resolved(for: colorScheme))
                             .lineLimit(1)
                             .truncationMode(.tail)
                         Text(subtitle)
-                            .font(.system(size: 15))
+                            .font(.custom(CodePageTheme.sansFontName, size: 15,
+                                          relativeTo: .subheadline))
                             .foregroundStyle(CodePageTheme.text400Color.resolved(for: colorScheme))
                             .lineLimit(1)
                             .truncationMode(.tail)
@@ -48,7 +50,8 @@ struct SubAgentListRow: View {
                                         AppSymbol(metric.symbol, size: 11)
                                             .foregroundStyle(.tertiary)
                                         Text(metric.value)
-                                            .font(.system(size: 13))
+                                            .font(.custom(CodePageTheme.sansFontName, size: 13,
+                                                          relativeTo: .footnote))
                                             .foregroundStyle(.secondary)
                                             .monospacedDigit()
                                             .lineLimit(1)

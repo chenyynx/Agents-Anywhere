@@ -52,6 +52,11 @@ final class TimelineCollectionController: UIViewController {
     /// re-reads its screen position before/after each apply so a jump is
     /// attributed to the row the reader was actually looking at.
     private var historyAnchorItemID: String?
+    /// The stable reading key. A history page can regroup the whole window,
+    /// which changes the anchor item's id even though its rows are still
+    /// present; the row id is what survives that regrouping.
+    private var historyAnchorRowID: String?
+    private var historyAnchorOffsetIntoRow: CGFloat = 0
     private var historyPageArriving = false
     private var historyInitialFirstRowID: String?
     private var historyPageFirstRowID: String?
@@ -684,8 +689,11 @@ final class TimelineCollectionController: UIViewController {
             self.scheduleVisibleCellSettle()
             self.scheduleVisibleCellFrameSync()
             if applyingHistoryPage {
-                // Official-style: resolve the reader's row against the new
-                // prefix sums once the page's snapshot is committed.
+                // Commit the page's layout before resolving the row: the old
+                // anchor item has already left the window, and the new item's
+                // frame only exists after this pass.
+                self.collectionView.layoutIfNeeded()
+                self.reanchorHistoryPageIfNeeded()
                 self.anchorDriver?.enforceReadingPlacement()
                 self.endHistoryPaging()
             }
@@ -1868,6 +1876,8 @@ final class TimelineCollectionController: UIViewController {
         historyPaging = true
         historyPageArriving = false
         historyAnchorItemID = nil
+        historyAnchorRowID = anchorRowID
+        historyAnchorOffsetIntoRow = 0
         historyInitialFirstRowID = currentItems.first.flatMap {
             content?.rowIDs(in: $0).first
         }
@@ -1877,11 +1887,12 @@ final class TimelineCollectionController: UIViewController {
            let item = content?.item(containingRow: anchorRowID),
            let attributes = layout.attributes(for: item.itemID) {
             historyAnchorItemID = item.itemID
+            historyAnchorOffsetIntoRow = top - attributes.frame.minY
             anchorDriver?.beginHistoryPaging(
                 anchorID: item.itemID,
-                offsetIntoRow: top - attributes.frame.minY)
+                offsetIntoRow: historyAnchorOffsetIntoRow)
             probeHistory("begin reqRow=\(anchorRowID) item=\(item.itemID) "
-                + "rowY=\(attributes.frame.minY) into=\(top - attributes.frame.minY) "
+                + "rowY=\(attributes.frame.minY) into=\(historyAnchorOffsetIntoRow) "
                 + "off=\(collectionView.contentOffset.y) inset=\(collectionView.adjustedContentInset.top) "
                 + "contentH=\(layout.contentHeight) items=\(currentItems.count)")
         } else {
@@ -1896,6 +1907,26 @@ final class TimelineCollectionController: UIViewController {
             guard !Task.isCancelled, let self, self.historyPaging else { return }
             self.endHistoryPaging()
         }
+    }
+
+    /// A history page regroups the whole window, so the anchor item's id can
+    /// change even though its rows are still present. Rebind the driver to
+    /// the item that now contains the reader's row before resolving the
+    /// target; keeping the same `offsetIntoRow` preserves the old item top's
+    /// screen position.
+    private func reanchorHistoryPageIfNeeded() {
+        guard historyPaging, let rowID = historyAnchorRowID, let content else { return }
+        guard let item = content.item(containingRow: rowID) else {
+            probeHistory("reanchor row=\(rowID) not-in-window")
+            return
+        }
+        guard item.itemID != historyAnchorItemID else { return }
+        let old = historyAnchorItemID ?? "-"
+        historyAnchorItemID = item.itemID
+        anchorDriver?.beginHistoryPaging(anchorID: item.itemID,
+                                         offsetIntoRow: historyAnchorOffsetIntoRow)
+        probeHistory("reanchor row=\(rowID) old=\(old) new=\(item.itemID) "
+            + "into=\(historyAnchorOffsetIntoRow) contentH=\(layout.contentHeight)")
     }
 
     func endHistoryPaging() {
@@ -1916,6 +1947,8 @@ final class TimelineCollectionController: UIViewController {
         anchorDriver?.endHistoryPaging()
         historyPaging = false
         historyAnchorItemID = nil
+        historyAnchorRowID = nil
+        historyAnchorOffsetIntoRow = 0
     }
 
     /// The adapter's prepend snapshot is the one that carries the page. The
@@ -2509,6 +2542,7 @@ extension TimelineCollectionController: TimelineListLayoutHost {
         if !didStartAnchorDriver {
             startAnchorDriverIfNeeded()
         } else {
+            if historyPaging { reanchorHistoryPageIfNeeded() }
             anchorDriver?.contentChanged()
         }
         onContentHeightChanged?(height)

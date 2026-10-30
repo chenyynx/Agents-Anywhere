@@ -424,6 +424,7 @@ final class TimelineChatBridge: ObservableObject {
             "bridge loadLatest auto=\(auto ? 1 : 0) off=\(controller?.collectionView.contentOffset.y ?? -1) "
             + "items=\(controller?.items.count ?? 0)")
 #endif
+        if !auto { controller?.allowLatestAfterHistoryGesture() }
         isLoadingLatest = true
         adapter.historyLoadDirection = .latest
         updateHistoryAvailability()

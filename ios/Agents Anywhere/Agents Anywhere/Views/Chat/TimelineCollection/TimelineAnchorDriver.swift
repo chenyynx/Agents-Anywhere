@@ -38,6 +38,10 @@ final class TimelineAnchorDriver {
     /// The next `.move` was requested by content growth, so a fresh motion
     /// uses the short content spring instead of the 0.4 s catch-up ease.
     private var pendingContentMove = false
+    /// A user-requested scroll-to-top must show the whole distance. The
+    /// official long-jump path pre-places one viewport short, which reads as
+    /// an instant jump when the list is tens of thousands of points tall.
+    private var fullDistanceMotion = false
     /// The running motion was started by content growth (not by an explicit
     /// scroll request), so continuous growth keeps the plain ease follow.
     private var moverIsContent = false
@@ -384,7 +388,8 @@ final class TimelineAnchorDriver {
     }
 
     func requestStart() {
-        guard let first = inputs.firstRowID() else { return }
+        guard let first = inputs.firstRowID(), state.motion != .dragging else { return }
+        fullDistanceMotion = true
         perform(.askedForStart(id: first))
     }
 
@@ -460,6 +465,8 @@ final class TimelineAnchorDriver {
         // later explicit request must not inherit it.
         let contentMove = pendingContentMove
         pendingContentMove = false
+        let fullDistance = fullDistanceMotion
+        fullDistanceMotion = false
         guard let view = scrollView else { return }
         guard let target = state.placement.target(in: geometry()) else {
             repairPlacement()
@@ -520,8 +527,13 @@ final class TimelineAnchorDriver {
             // mistake the placement jump for content growth.
             stopMover()
         }
-        let preplaced = TimelineSpringFollow.preplacedOffset(
-            target: target, current: current, visibleHeight: visible)
+        // A scroll-to-top keeps the full distance so the reader can see the
+        // whole list travel. Every other long jump keeps the official
+        // one-viewport pre-placement.
+        let preplaced = fullDistance
+            ? current
+            : TimelineSpringFollow.preplacedOffset(
+                target: target, current: current, visibleHeight: visible)
         if abs(preplaced - current) >= pixel {
             writeOffset(preplaced)
         }

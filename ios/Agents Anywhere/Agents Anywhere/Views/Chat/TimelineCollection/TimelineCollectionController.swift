@@ -244,6 +244,11 @@ final class TimelineCollectionController: UIViewController {
     /// the viewport dip out of bottom and re-arms the trigger, so the same
     /// read (and its spinner) starts again before the reconcile lands.
     private var latestAutoLoadSuppressed = false
+    /// A history page can leave the window shorter than the viewport, which
+    /// reads as "at bottom" immediately after the prepend. Do not turn that
+    /// into an automatic latest read; require the reader to leave bottom and
+    /// come back (or tap the latest prompt) first.
+    private var latestAutoLoadNeedsNewBottomVisit = false
     private var olderAutoLoadArmed = true
     /// How close to the top edge starts an automatic older page. This is a
     /// reading threshold, not a pull threshold: a full screen of history is
@@ -1868,7 +1873,25 @@ final class TimelineCollectionController: UIViewController {
     /// read yet (the opening path was still in flight).
     func rearmLatestAutoLoad() {
         latestAutoLoadSuppressed = false
+        latestAutoLoadNeedsNewBottomVisit = false
         latestAutoLoadArmed = true
+    }
+
+    /// A history page is about to change the window. The reader asked for
+    /// older rows, not for a latest replacement; a short page will make the
+    /// viewport look "at bottom" but must not auto-load latest.
+    func requireNewBottomVisitForLatest() {
+        latestAutoLoadNeedsNewBottomVisit = true
+        latestAutoLoadSuppressed = true
+        latestAutoLoadArmed = false
+    }
+
+    /// The reader explicitly tapped the latest prompt; that is a real request
+    /// and overrides the post-history guard.
+    func allowLatestAfterHistoryGesture() {
+        latestAutoLoadNeedsNewBottomVisit = false
+        latestAutoLoadSuppressed = false
+        latestAutoLoadArmed = false
     }
 
     /// A latest read just finished with the newer edge still incomplete (a
@@ -1892,6 +1915,7 @@ final class TimelineCollectionController: UIViewController {
     func beginHistoryPaging(anchorRowID: String? = nil) {
         guard TimelineHistoryAnchorMode.enabled else { return }
         endHistoryAnchorSettling()
+        requireNewBottomVisitForLatest()
         historyPagingTimeout?.cancel()
         historyPaging = true
         historyPageArriving = false
@@ -2090,6 +2114,15 @@ final class TimelineCollectionController: UIViewController {
 
     private func maybeAutoLoadLatest(_ viewport: TimelineViewport) {
         guard viewport.isMeasured else { return }
+        if latestAutoLoadNeedsNewBottomVisit {
+            // Only a real gesture that leaves the bottom counts as a new
+            // visit. A short history page or a content-height change may
+            // report "at bottom" without the reader asking for newer rows.
+            guard !viewport.measuredAtBottom, isUserScrolling else { return }
+            latestAutoLoadNeedsNewBottomVisit = false
+            latestAutoLoadSuppressed = false
+            latestAutoLoadArmed = true
+        }
         guard viewport.measuredAtBottom else {
             // A content-height change can dip the viewport out of bottom
             // without the reader moving. Only a real gesture clears the

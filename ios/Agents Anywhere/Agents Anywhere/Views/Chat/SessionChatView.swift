@@ -89,11 +89,13 @@ struct SessionChatView: View, Equatable {
     /// (the chain has timed it out more than once).
     private func composerDockArea(maximumEditorHeight: CGFloat) -> some View {
         VStack(spacing: 0) {
-            // B (pp 2026-10-06): the SubAgent capsule is the dock's
-            // first row — it takes its own space above the composer
-            // instead of floating over the timeline's last row.
+            // pp 2026-10-30: the SubAgent entry is a circular glass button
+            // on the trailing edge of the dock's first row, not the old
+            // centered capsule.
             SubAgentCapsuleSlot(model: model, onOpen: { sheet = .subagents($0, fromCapsule: true) })
-                .traceChatLayout("subagent-capsule")
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.horizontal, ChatControlMetrics.collapsedHorizontalInset)
+                .traceChatLayout("subagent-round-button")
             SessionInteractionDock(chat: model,
                 onShowAll: { expandedNoticeID = $0; sheet = .notices })
                 .traceChatLayout("interaction-dock")

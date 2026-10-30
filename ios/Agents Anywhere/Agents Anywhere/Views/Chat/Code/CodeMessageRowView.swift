@@ -868,10 +868,15 @@ struct CodeThinkingDetailRequest: Identifiable {
 struct CodeStepGroupDetailRequest: Identifiable {
     let id: String
     let group: TimelineStepGroup
+    /// True when the row is the live turn's trailing group: the sheet opens on
+    /// the newest step and follows the tail. A settled group opens at the top
+    /// (pp 2026-10-30).
+    let startsAtBottom: Bool
 
-    init(group: TimelineStepGroup) {
+    init(group: TimelineStepGroup, startsAtBottom: Bool = false) {
         id = group.id
         self.group = group
+        self.startsAtBottom = startsAtBottom
     }
 }
 

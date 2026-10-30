@@ -15,6 +15,10 @@ struct CodeStepGroupDetailView: View {
     /// place and newly emitted calls append at the tail (pp 2026-10-30). The
     /// snapshot is the fallback once the group leaves the timeline window.
     var liveGroups: TimelineLiveStepGroups? = nil
+    /// True when the tapped row is the live turn's trailing group: the sheet
+    /// opens on the newest step and follows the tail. A settled group opens at
+    /// the top (pp 2026-10-30).
+    var startsAtBottom: Bool = false
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
@@ -67,18 +71,19 @@ struct CodeStepGroupDetailView: View {
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
-                // Open on the newest step: a live group keeps growing at the
-                // tail, so the reader should land where the work is happening
-                // instead of the top of the list (pp 2026-10-30). Appends keep
-                // following the tail through the `onChange` scroll below.
-                .defaultScrollAnchor(.bottom)
+                // Only a live group opens on its newest step: it keeps growing
+                // at the tail, so the reader should land where the work is
+                // happening; a settled group opens at the top (pp 2026-10-30).
+                // Appends keep following the tail through the scroll below.
+                .defaultScrollAnchor(startsAtBottom ? .bottom : nil)
                 // The official StepSheet grows downward while the turn runs: a
                 // newly emitted call slides in at the tail (pp 2026-10-30).
                 // Only the count is animated; streaming text redraws in place.
                 .animation(reduceMotion ? nil : .easeInOut(duration: 0.2),
                            value: liveGroup.steps.count)
                 .onChange(of: liveGroup.steps.count) { _, _ in
-                    guard let lastID = liveGroup.steps.last?.id else { return }
+                    guard startsAtBottom,
+                          let lastID = liveGroup.steps.last?.id else { return }
                     withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
                         proxy.scrollTo(lastID, anchor: .bottom)
                     }

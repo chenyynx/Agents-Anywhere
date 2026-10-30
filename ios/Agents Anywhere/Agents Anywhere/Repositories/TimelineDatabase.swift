@@ -47,10 +47,14 @@ nonisolated final class TimelineDatabase {
         var configuration = Configuration()
         configuration.prepareDatabase { db in
             try db.execute(sql: "PRAGMA busy_timeout = 1000")
-            try db.execute(sql: "PRAGMA synchronous = NORMAL")
-            // New databases reclaim deleted rows instead of growing forever;
-            // databases created before this pragma need a one-time VACUUM.
-            try db.execute(sql: "PRAGMA auto_vacuum = FULL")
+            // DatabasePool prepares reader connections too; these pragmas are
+            // writable-connection only and fail with SQLITE_READONLY otherwise.
+            if !db.configuration.readonly {
+                try db.execute(sql: "PRAGMA synchronous = NORMAL")
+                // New databases reclaim deleted rows instead of growing
+                // forever; databases created before this need one VACUUM.
+                try db.execute(sql: "PRAGMA auto_vacuum = FULL")
+            }
         }
         pool = try DatabasePool(path: path, configuration: configuration)
         try Self.migrator.migrate(pool)

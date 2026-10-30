@@ -1,10 +1,10 @@
-# Code + Chat：SubAgent 会话卡（官方 ChildSessionCard）任务单
+# 子代理入口与面板：圆形玻璃 + 胶囊列表 + 对话详情（AA 魔改版）
 
-> 级别：**L**（两个渲染 profile、分组模型、视觉组件、行高）
+> 级别：**L**（入口 + 面板两个面，视觉重做 + 详情渲染面替换）
 > 基线：`feat/code-profile-beta @ bae413aa`（2026-10-30）
-> 分支：`feat/subagent-session-card`（本任务单所在分支）
-> 官方依据：Claude iOS **1.261023.20** 静态反编译；报告 `/home/ubuntu/aa-test/sbx-re-harvest/reports-subagent/R-SA1.md`、`R-SA4.md`（辅助证据，不在仓库内）
-> pp 2026-10-30 定：**Code + Chat 一起做**；Chat 现有 Agent 卡/胶囊按官方样式重做，之后再做老 Chat 遗留清理（清理另开单）
+> 分支：`feat/subagent-session-card`
+> pp 2026-10-30 定：**不对齐官方 ChildSessionCard**；视觉全部用 Claude 官方资产（图标/字体/颜色/思考与工具行），布局按本单魔改。
+> 参考图：`/home/ubuntu/.agents-anywhere-moonveil/attachments/sess_4Dkq5-AjhKdM7A/file_Yks099C4i7nfrQn-Photo-3F574DAF.png`（列表）、`file_Yh3zGKsJKSoAd2gi-Photo-2A88A9EC.png`（详情）
 
 ---
 
@@ -12,299 +12,191 @@
 
 ### 1.1 目标
 
-1. Code 与 Chat 两个 profile 的**顶层 Agent 调用**（connector `content.kind == "agent_call"`）渲染为官方 `ChildSessionCard` 形态的独立卡片，不再混在普通工具行/步骤组里。
-2. 卡片整卡可点，打开现有 `SubAgentPanelSheet`（AA 的子代理详情面）。
-3. Chat 的悬浮 SubAgent 胶囊按同一视觉重做（形态见 §7 待定项）。
-4. 为步骤组任务单 §10「删除老 Chat 遗留」提供统一渲染面；本单不删旧容器。
+1. **悬浮入口**：现有长条玻璃胶囊 → **圆形液态玻璃按钮**，位置移到输入框上方**靠右**；去掉文字与 chevron，只留官方资产图标。
+2. **点开永远先出列表**：即使只有一个子代理，也先显示图 1 的胶囊列表。
+3. **列表页**：每个子代理一个大圆角胶囊行（圆形官方图标 + 标题 + 状态副标题），多个往下排。
+4. **详情页**：点某一行 → 图 2 的对话式内容（提示词气泡 + 正文 + 思考结果行 + 工具行 + 底部停止）。
+5. **保留现有功能**：stats（tokens/耗时/工具数）、多任务停止控件、运行中实时更新、失败状态、点击工具行进入的详情。
+6. Code + Chat 两个 profile 共用同一套入口与面板。
 
 ### 1.2 非目标
 
+- 不参照官方 `ChildSessionCard` 的卡片布局、圆角、阴影、状态 glyph（前一轮已撤）。
 - 不改 connector / server wire；不新增字段。
-- 不做官方 `PullRequestCountPills`（AA 的 agent_call 没有 PR 数据）。
-- 不做官方 `ThreadSessionCardContext.childSession/prRows` 的跨会话加载；AA 用现有面板。
-- 不做卡内展开、停止按钮、描边/`ToolCallCardShell`（官方都没有）。
-- 不删除 `ChatTimelineView` / `SessionTimelineGroupView` / 思考球等旧 Chat 遗留（§10 独立任务）。
+- 不删除旧 Chat 容器（步骤组任务单 §10 另开单）。
+- 不改主时间线里 `agent_call` 工具行本身的渲染（Code 页保持现状）。
 
 ---
 
-## 2. 官方证据（1023 build）
+## 2. 现状（基线 `bae413aa`）
 
-### 2.1 类型链
-
-`ToolCallSegment.threadSessionCard`（tag 3）→ `InlineThreadSessionCard` → `ChildSessionCard`。
-
-- `ToolCallSegment` 6 例：`brief=0, workflow=1, writingDraft=2, threadSessionCard=3, span=4, artifactCard=5`；fieldmd `0x1069752b0`，case3 名字指针 `0x10683a680`。
-- 1023 构造点：`0x1034524b0` 内 `0x103452b28..0x103452b34`（`mov w2,#3` + `swift_storeEnumTagMultiPayload`）。
-- `InlineThreadSessionCard`（dump 110404）：
-  ```swift
-  struct InlineThreadSessionCard {
-      let task: DispatchTaskInfo
-      var _context: Environment<ThreadSessionCardContext>
-  }
-  ```
-  size `0x99`/stride `0xA0`；Body = `ChildSessionCard` + `.task(id: task.sessionId, priority: .userInitiated)`（witness `0x1034a0d48` → `0x1034a0378`）。
-- `ChildSessionCard`（dump 108537）：
-  ```swift
-  struct ChildSessionCard {
-      let title: String
-      let status: ActivityStatus
-      let prStateCounts: [PullRequestState: Int]
-      let updatedAt: Date?
-      let onTap: () -> Void
-  }
-  ```
-- `ThreadSessionCardContext`（dump 110395）：`childSession`、`prRows`、`onShown`、`onTap` 四个按 `SessionTag` 的回调；size 64。
-- `ActivityStatus`（dump 20301）：`needsInput=0, working=1, failed=2, unread=3, idle=4`。
-
-### 2.2 卡片视觉（R-SA4 C1–C4，地址可复查）
-
-```
-Button(action: onTap) {
-    VStack(alignment: .leading, spacing: 8) {
-        SessionCardTitleRow(title, updatedAt, status)
-        PullRequestCountPills(prStateCounts)   // 空字典不渲染
-    }
-    .padding(.all, 16)
-    .background(
-        RoundedRectangle(cornerRadius: 24, style: .continuous)
-            .fill(surface3)
-            .shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 2)
-    )
-    .contentShape(Rectangle())
-}
-.buttonStyle(.plain)
-.accessibilityInputLabels([Text(title)])
-```
-
-- 圆角 24 / continuous：`0x105a68270 = 24.0`，`0x10748b248 = continuous`（`0x1032db4d4`）。
-- 内边距 16：`0x105a68228 = 16.0`（`0x1032db200`）。
-- VStack 间距 8：`0x105a68218 = 8.0`。
-- 背景色 `surface3`：light `#FFFFFF`，dark `#201F1F`（`0x108151bc8`）。
-- 阴影：`black.opacity(0.1)`、radius 2、x 0、y 2（`0x105a68290 = [0.1, 2.0, 2.0]`）。
-- 无描边、无 `ToolCallCardShell`、无展开区域；整卡 = 一个 PlainButtonStyle Button。
-- 外层 transcript 的 `segmentVerticalPadding = 4 pt` 由段容器施加，不进入卡片内部。
-
-### 2.3 标题行（R-SA4 C5–C7）
-
-```
-HStack(spacing: 8) {
-    ActivityStatusGlyph(status, size: 0)          // 16 x 16
-    VStack(alignment: .leading, spacing: 4) {
-        Text(title)
-            .font(ClaudeFonts.Typography 15 / weight 400 / lineHeight 21, relative)
-            .foregroundStyle(textPrimary)          // light #0B0B0B / dark #F0EFEC
-        Text(statusText + optionalRelativeTime)
-            .font(ClaudeFonts.Typography 13 / weight 400 / lineHeight 18.2, relative)
-            .foregroundStyle(textSecondary)        // light #52514E / dark #C3C2B7
-            .lineLimit(1)
-    }
-}
-```
-
-- 标题/副标题容器间距 4；glyph 与文本间距 8（R-SA4 C5：`0x100b5beb0 = 4.0`、`0x10313aa04 = 8.0`）。
-- 副标题 = 状态文案 +（有 `updatedAt` 时）短相对时间，同一 Text 流（`0x100d2f39c`；`ShortRelativeFormatStyle` `0x100f80c00`）。
-- 状态文案（ClaudeCoreUI `row_status_*`）：
-  | status | key | EN | ZH |
-  |---|---|---|---|
-  | needsInput | `row_status_needs_input` | Waiting for you | 等待您的操作 |
-  | working | `row_status_working` | Working | 处理中 |
-  | failed | `row_status_failed` | Stopped | 已停止 |
-  | unread | `row_status_unread` | New | 有新内容 |
-  | idle | — | （无文案） | — |
-- 状态图标 16×16（size=0；`0x100d2e650`）：
-  - working → `RotatingSpinnerIcon`，`textSecondary`；
-  - failed → `anthropicon.warning`，`textSecondary`（官方失败态是低饱和，不是红色）；
-  - idle → `textDisabled`（token 名 U6，推断）；
-  - needsInput/unread → `UnreadDot`/占位（AA 不使用）。
-- 标题来源：childSession.title → task.title → 「Untitled thread / 无标题讨论串」（`2c67.code_project_thread_untitled`）。
-- 相对时间分隔符 U4（未解出字面量）；AA 用 `" · "`（官方已有 `working_row_segment_separator`）。
-
-### 2.4 点击 / 生命周期（R-SA1 §4、R-SA3 §1）
-
-- 整卡点击 → `context.onTap(task.sessionId)`；无展开、无就地详情。
-- `.task(id: task.sessionId)`（userInitiated）加载 childSession / PR rows；`onShown(sessionId)` 在 task 体内（U1）。
-- AA 无 childSession 跨会话加载：点击直接打开 `SubAgentPanelSheet`。
-
-### 2.5 与 AA 的关系（诚实标注）
-
-- 官方这张卡是 **child session / thread session 卡**，数据源是 `DispatchTaskInfo`（dispatch/线程派发），不是 AA 的 `agent_call` 字段。
-- AA 的 `agent_call` 同样是“子代理子会话”，因此本单把它**映射**到同一张官方卡；这是产品映射，不是声称官方 `Task` 调用逐字节等价于 `threadSessionCard`。
+- `SubAgentCapsule`：36pt 玻璃长条，图标 + 标题 + chevron，作为 composer dock 第一行、水平居中（`Views/Chat/SubAgentCapsule.swift`；`SessionChatView.swift:92-95`）。
+- `SubAgentPanelSheet`：NavigationStack sheet；`statsRow`（phase 徽章 + tokens/耗时）+ chip strip（多卡切换）+ prompt 段 + 活动列表（`SessionTimelineRow`，旧 Chat 行）+ 最终输出；停止控件在 stats 行尾部（`Views/Chat/SubAgentPanelSheet.swift`）。
+- 胶囊显隐：顶层活跃卡（`running/starting`）才显示；卡片结束即退场（`SubAgentProgress.capsuleState`）。
+- 工具调用行仍可从主时间线打开面板（entry B，`fromCapsule: false`）。
 
 ---
 
-## 3. AA 现状（基线 `bae413aa`）
+## 3. 目标设计
 
-### 3.1 数据
+### 3.1 悬浮圆形按钮
 
-- `agent_call` 由 connector 铸造：`toolName == "Agent"` → `AgentCallToolContent{title, description, agentType, prompt, runInBackground, parentItemId, agentId, targetIds, agents, usage}`（`connector/runtime_protocol/timeline.py:211`、`connector/runtimes/claude/timeline/agent_calls.py`）。
-- `SubAgentCard` 已有：`taskName/agentType/prompt/phase/toolCalls/tokens/usage/summary/parentItemID/liveTasks/updatedAt`（`Models/Chat/SubAgentProgress.swift:99`）。
-- 子代理子行（`parentItemId != nil`）不进主时间线。
+**位置**
+- 仍在 composer dock 内，作为 composer 上方第一行；改为 **HStack + Spacer + 按钮**，右对齐。
+- 视觉圆 40×40，点击区 44×44；距屏幕右缘 16pt（与 composer 右侧内边距对齐）。
+- 不悬浮覆盖时间线；占用自己一行（和现在一样），键盘弹起随 dock 上移。
 
-### 3.2 Code profile
+**材质与图标**
+- `.glassEffect(.regular.interactive(), in: .circle)`（液态玻璃；沿用现有 iOS 26 API）。
+- 图标：**官方 `anthropicon.agent`**（从官方 1023 IPA 提取；见 §5）。图标 20×20，居中。
+- 无文字、无 chevron。
 
-- 顶层 agent_call 已从 span 拆出：`isAgentCardWithoutBlockIndex` → `.span(items:[item])`（`Models/Chat/Code/CodeMessageTimeline.swift:299-306,453-457`）。
-- 渲染仍是普通折叠工具行：`CodeMessageRowView.toolRow` → `CodeCollapsedToolRow`，文案「Ran an agent」（`CodeToolLabelPlan.swift:172,467`）。
-- 行高由 `CodeRowHeightPlan` 计算（`Models/Chat/Code/CodeRowHeightPlan.swift`）。
+**状态**
+- 运行中（1 个）：玻璃圆 + 官方 agent 图标（静态；不加自定义动画）。
+- 失败（最新一批）：玻璃/图标红色 tint（沿用现有 `SubAgentPalette.failure`）。
+- 多个运行中：右上角小数字角标（14pt 圆，数字 9pt semibold），显示运行中数量。
+- 多个且有失败：红色 tint + 数字角标。
+- 完成后：按钮消失（与现在一致）；已完成的子代理仍从主时间线的工具调用行打开详情。
 
-### 3.3 Chat profile
+**可访问性**
+- label「子代理运行中，N 个」；hint「查看子代理」；identifier `chat.subagent.roundButton`。
 
-- 顶层 agent_call 目前**被吞进步骤组**：`TimelineStepGroup` 把所有 tool 行放进 `stepItems`（`Models/Chat/StepGroup/TimelineStepGroup.swift:247-251`），只在 `isSubAgentChild` 时跳过。
-- 因此 Chat profile 没有独立的 Agent 卡；用户可见面 = 悬浮胶囊 + 面板。
-- 旧 `SessionTimelineEventView` 的 Agent 卡只在 `ChatTimelineView`（已无调用点）和 adapter 的 standalone 兜底里；**当前不是 live 路径**。
+### 3.2 列表页（点圆形按钮后）
 
-### 3.4 官方行为差异
+**容器**：沿用 `SubAgentPanelSheet` 的 sheet + NavigationStack；入口态 `.list`。
 
-- 官方 `threadSessionCard` 是独立段（flush span），不并入工具组；AA Chat 的步骤组把它当普通工具步骤 → 行为差异，本单修正。
-- 官方卡 = child session 卡（状态 glyph + 标题 + 状态/时间副标题），不是「工具行 + 查看详情」。
+**布局**
+- 导航标题：「N 个智能体正在运行」（N = 当前活跃卡数；0 时显示「子代理」空态）。
+- 内容：`ScrollView` + `LazyVStack(spacing: 12)`，水平内边距 20，顶部 12。
+- 每卡一行 `SubAgentListRow`：
+  - 容器：大圆角矩形，圆角 24，填充官方 `userBubble` 底色（light `#F0EFEC` / dark `#2C2C2A`），内边距 16。
+  - 左侧：40×40 圆形底 + 20pt 官方 agent 图标；图标/底随 phase 变色（运行中 textSecondary，失败 danger，完成 textDisabled）。
+  - 中间：标题 17pt semibold `textPrimary`，1 行截断；副标题 15pt `textSecondary`：`phase.word` +（有 `lastToolName` 时）「 · 正在运行 `<tool>`」；第三行 stats 13pt `textSecondary`：「N 次工具 · X tokens · Ys」（沿用现有 `SubAgentProgress.metrics` 的格式化）。
+  - 右侧：若该卡**恰好 1 个活跃 task** → 26pt 圆形停止按钮（官方 stop 图标）；多 task → 不显示行内停止（进详情逐个停）；已完成 → 无停止。
+  - 整行可点 → push 详情页；行内停止按钮独立命中，不触发进入详情。
+- 行高随 Dynamic Type；不固定。
 
----
+**行为**
+- 列表只显示活跃卡（与胶囊一致）；打开期间某卡完成 → 该行退场；详情页若开着，内容保留可读（现有语义）。
+- 空态：没有活跃卡时显示一行「当前没有运行中的子代理」。
 
-## 4. 设计
+### 3.3 详情页（点列表行 / 工具调用行）
 
-### 4.1 共用组件
+**容器**：同一 sheet 的 NavigationStack push；导航标题 = 子代理标题；返回回到列表（从圆形按钮进入时）或无返回（从工具行直接进入时，保留 sheet 关闭按钮）。
 
-新增 `Views/Chat/SubAgent/SubAgentSessionCardView.swift`：
+**布局（自上而下）**
+1. **stats 行**：13pt `textSecondary`，一行：「N 次工具 · X tokens · Ys」+ phase 词（运行中/已停止/已完成）；保留现有功能，不再使用旧 statsRow 的徽章样式。
+2. **对话内容**（`ScrollView`，水平内边距 20）：
+   - 提示词气泡：官方 user bubble 底色、圆角 24、内边距 16、正文 17/27.2 `textPrimary`；长提示词超过 300 字可折叠（沿用现有阈值）。
+   - 助手内容：把子代理活动行交给 **Code 页的官方渲染组件**：
+     - 正文：`CodeMarkdownTextLeaf` / `CodeMessageRowView` 的 text block；
+     - 思考：`CodeThinkingRow`（「思考结果 >」/「思考了 X」）；
+     - 工具：`CodeCollapsedToolRow`（官方图标 + 文案 + 状态 glyph），点击进入 `CodeToolDetailView`；
+     - 文件变更/diff：沿用 Code 页 file change/diff 行。
+   - 渲染方式：把 `activityRows` 组成一个 `ChatTimelineGroup`（`kind: .single`）交给 `CodeMessageRowView`，由 `CodeMessageBuilder` 统一分组，避免自写第二套行模型。
+   - 实时更新：activity store 的 live rows 继续驱动；流式中正文/思考跟随（沿用现有 activity 更新）。
+   - 最终输出：沿用 `finalOutputSummary` 规则，避免与活动流重复。
+3. **底部停止**：
+   - 固定在 sheet 底部安全区上方，居中；不随滚动。
+   - 0 个活跃 task：不显示。
+   - 1 个活跃 task：一枚 44pt 高胶囊「停止智能体」，底色 `userBubble`，文字 17 semibold `textPrimary`。
+   - 多个活跃 task：每个 task 一枚胶囊，纵向排列，文字「停止 <label>」（label 沿用 `SubAgentTask.label`）；点哪枚停哪个（保持“一控件一任务”）。
+   - stopping 中禁用并显示「正在停止…」。
 
-```swift
-struct SubAgentSessionCardView: View {
-    let card: SubAgentCard
-    let onTap: () -> Void
-}
-```
+**从工具调用行进入**
+- 直接 push 该卡的详情页（不经过列表），导航标题 = 该卡标题；无返回列表（关闭 sheet 即可）。
+- 已完成卡同样可读；底部无停止。
 
-- 视觉严格按 §2.2–2.3：surface3 白/深底、圆角 24、padding 16、VStack 8、标题 15/21、副标题 13/18.2、glyph 16。
-- 标题：`card.taskName`（非空；已有 “Agent” 兜底）。
-- 副标题：状态词 +（`updatedAt` 非 nil 时）短相对时间，`lineLimit(1)`。
-- PR pills 不渲染。
-- 整卡 Button，`PlainButtonStyle`，`contentShape(Rectangle)`；a11y label = 标题 + 状态词，hint = 查看详情，identifier `chat.subagent.card`。
-- 不用 `glassEffect`、不加描边、不放入口箭头。
+### 3.4 图标 / 字体 / 颜色
 
-### 4.2 状态映射（AA → 官方视觉）
-
-| SubAgentPhase | 状态词 | 图标 | 副标题 |
-|---|---|---|---|
-| `.running` | 处理中 | 旋转 spinner | 处理中 [· 时间] |
-| `.starting` | 处理中 | 旋转 spinner | 处理中 [· 时间] |
-| `.completed` | （无） | idle/禁用色 | [时间]（无状态词；无时间则不显示副标题） |
-| `.failed` | 已停止 | `anthropicon.warning`（textSecondary） | 已停止 [· 时间] |
-| `.interrupted` | 已停止 | `anthropicon.warning`（textSecondary） | 已停止 [· 时间] |
-| `.unknown` | （无） | idle/禁用色 | [时间] |
-
-- 官方失败态不是红色：warning 图标 + textSecondary；AA 照官方，不用 danger 红。
-- `updatedAt`：`SubAgentCard.updatedAt`（item updatedAt）→ `ShortRelativeFormatStyle` 等价实现（AA 自写短格式；U3）。
-- 若 `updatedAt` 为 nil：running 仍显示状态词；completed/unknown 无副标题，只剩标题行。
-
-### 4.3 Code profile 接线
-
-- `CodeMessageRowView.toolRow(_:)`：当 `calls.count == 1` 且 `SubAgentProgress.card(calls[0].item)?.isTopLevel == true` → 渲染 `SubAgentSessionCardView`，不再走 `CodeCollapsedToolRow`。
-- `CodeMessageRowView` 增加 `onSubAgent: (String) -> Void`；由 `TimelineChatContentAdapter.rowView` 传入（adapter 已有 `onSubAgent`）。
-- 规划器：把 `isAgentCardWithoutBlockIndex` 放宽为「任何顶层 agent_call」`SubAgentProgress.isAgentCall(item) && parentItemID == nil`（Codex/DSH 的 agent_call 可能带 blockIndex；统一按 kind 识别，附测试）。
-- 行高：`CodeRowHeightPlan` 新增 `.agentCard(...)`，见 §6。
-- 卡外层垂直留白：官方 `segmentVerticalPadding = 4pt`；在 Code 行里用 4pt 上下留白（进入高度公式），Chat 行沿用 collection 行距、不重复加。
-
-### 4.4 Chat profile 接线
-
-- `TimelineChatGrouping.units`：遇到顶层 agent_call 时 `flushAll()` + `units.append(.standalone(rowID: item.id))`（与官方 flush span 语义一致），并 `continue`。
-- `TimelineChatContentAdapter`：在 `.group` 分支的 stepGroup/explicitID 判断之前，若 group 是「单行、顶层 agent_call」→ 渲染 `SubAgentSessionCardView`（点击 → `onSubAgent(row.id)`）。
-- 步骤组汇总不再计入 agent 调用；`TimelineStepGroupTests` 更新（agent 卡单独成 unit、不参与 stepGroup）。
-- 不再走 `SessionTimelineGroupView` 的旧 Agent 行。
-
-### 4.5 胶囊（§7 待 pp 定）
-
-- 方案 A（推荐）：保留胶囊，改成同一张卡的紧凑形态（16pt 状态 glyph + 标题；surface3/圆角 24 或胶囊形态按视觉验收）；点击打开面板。
-- 方案 B：移除胶囊，仅保留时间线内卡（运行中卡滚出视口后不可见）。
-- 方案 C：胶囊保持现状。
-
-### 4.6 停止控件（§7 待 pp 定）
-
-- 官方卡没有停止按钮。
-- 推荐：卡本体严格官方；停止只在 `SubAgentPanelSheet` 内（面板已有）。不移到卡上。
+- 图标：官方资产（`anthropicon.agent` 优先；详见 §5）。
+- 字体：`AnthropicSansMobileVariable-TextRegular` / `JetBrainsMono-Regular`（AA 已注册）。
+- 颜色：`CodePageTheme` 既有官方 token：
+  - `textPrimary` light `#0B0B0B` / dark `#F0EFEC`
+  - `textSecondary` light `#52514E` / dark `#C3C2B7`
+  - `textDisabled`（U：官方 token 未逐字解出；先用 secondary 的 0.6 alpha）
+  - `userBubble` light `#F0EFEC` / dark `#2C2C2A`
+  - `danger00` light `#8E2626` / dark `#F4ABAB`（现有）
+  - 页面背景 `#F9F9F7` / `#151515`
+- 圆角：列表行 24；提示词气泡 24；停止胶囊 22。
+- 不新增第三方依赖。
 
 ---
 
-## 5. 状态与边界
+## 4. 接线点 / 文件
 
-- 顶层 vs 嵌套：只渲染 `parentItemID == nil` 的卡；嵌套子行留在面板。
-- 多个运行中子代理：每个 agent_call 一张卡；胶囊计数不变。
-- 标题缺失：`SubAgentCard.taskName` 已有 “Agent” 兜底；空标题按官方「Untitled thread」处理（AA 可沿用 “Agent”）。
-- 失败/中断：warning 图标 + 「已停止」，不用红色。
-- Dynamic Type：标题/副标题按官方 relative 字体缩放；卡高随之变化（Code 行高需实测）。
-- 深色模式：surface3/textPrimary/textSecondary 两套值见 §2。
-- Reduce Motion：spinner 静态化（按系统 Reduce Motion 关旋转）。
-- 状态词/时间均为 a11y 文本；整卡 a11y element。
-- 运行中卡频繁更新 `updatedAt` 时，相对时间刷新节流（避免每帧重绘）。
+### 4.1 入口
 
----
+- `Views/Chat/SubAgentCapsule.swift`：保留 `SubAgentCapsuleState` 计算；`SubAgentCapsule` 改为 `SubAgentRoundButton`（圆形玻璃）或新增文件；`SubAgentCapsuleSlot` 改为右对齐单按钮。
+- `Views/Chat/SessionChatView.swift`：
+  - `composerDockArea` 第一行改为 `HStack { Spacer(); SubAgentRoundButton(...) }`；
+  - sheet 路由：`.subagentsList`（圆形按钮）与 `.subagents(cardID)`（工具行）；列表内 push 详情由面板内部处理。
 
-## 6. 行高
+### 4.2 面板
 
-官方卡高度：
+- `Views/Chat/SubAgentPanelSheet.swift`：
+  - 入口态 `.list` / `.card(id)`；
+  - 列表页 `SubAgentListPage`（新）；
+  - 详情页 `SubAgentDetailPage`（新）替换现有 body；
+  - stats/stop 逻辑复用 `SubAgentProgress.metrics`、`SubAgentProgress.stopTasks`、`chat.stopSubagent`、`chat.stoppingSubagentTaskIDs`；
+  - 活动行渲染改为 `ChatTimelineGroup` + `CodeMessageRowView`。
+- 新增：
+  - `Views/Chat/SubAgent/SubAgentRoundButton.swift`
+  - `Views/Chat/SubAgent/SubAgentListPage.swift`
+  - `Views/Chat/SubAgent/SubAgentDetailPage.swift`
+  - `Views/Chat/SubAgent/SubAgentListRow.swift`
+  - `Views/Chat/SubAgent/SubAgentPromptBubble.swift`
+- 主题：`CodePageTheme` 增加 `textPrimary/textSecondary/textDisabled/userBubble` 的 Accessor（已有 `text100/text300` 等，按需映射，避免重复）。
 
-```
-cardHeight = 16*2
-           + max(16, titleLine + (hasSubtitle ? 4 + subtitleLine : 0))
-```
+### 4.3 数据
 
-- `titleLine = UIFontMetrics(.body).scaledValue(for: 21)`
-- `subtitleLine = UIFontMetrics(.footnote).scaledValue(for: 18.2)`
-- 外层再 + 4pt 上下 segment padding（Code 行）。
-- `CodeRowHeightPlan.Block` 新增 `.agentCard(hasSubtitle: Bool)`；`CodeMessageHeightMeasurer` 用同一公式。
-- 估算与实渲误差 ≤2 pt；大字号/无副标题两个用例进 `CodeRowHeightPlanTests`。
-- Chat：hosted cell 自测，无需公式。
-
----
-
-## 7. 待 pp 决定
-
-1. **胶囊**：A 紧凑卡（推荐）/ B 移除 / C 不动。
-2. **停止控件**：卡上不放（推荐）/ 卡上保留。
-3. **已完成卡**：完成后常驻时间线（推荐，官方是 child session 入口）/ 完成后隐藏。
-4. **旧 Chat 清理**：本单只做卡；§10 四项（面板去 ChatMarkdownView、欢迎/公告换渲染面、交互 target 行、删旧容器）另开单（推荐）。
+- 不新增 wire 字段；全部读 `SubAgentCard` / `SubAgentProgress` / `SubAgentActivityStore`。
+- 列表顺序：现有 `sessionCards` 的 dispatch 顺序（orderSeq）。
+- 活跃卡集合：现有 `activeCards`。
 
 ---
 
-## 8. 实施阶段（每阶段可单独回滚）
+## 5. 官方图标提取（anthropicon.agent）
 
-- **P1 共用卡 + Code 接线**：新组件、Code 规划器放宽、Code 行高、`onSubAgent` 透传、单测 + 门禁截图。
-- **P2 Chat 接线**：步骤组提取 agent_call、adapter 单行卡、汇总/测试更新。
-- **P3 胶囊重做**（按 §7 决定）：紧凑卡形态或移除。
-- P1/P2 各自一个提交；P3 单独提交。
-
----
-
-## 9. 测试与验收
-
-### 9.1 单测
-
-- `SubAgentSessionCardTests`（新）：状态映射、状态词、副标题组合、空时间、失败态颜色。
-- `TimelineStepGroupTests`：顶层 agent_call 独立成 standalone；不再进入 stepGroup；混排顺序。
-- `CodeMessageTimelineTests`：顶层 agent_call 单独 unit（含 Codex/DSH 带 blockIndex 的行）。
-- `CodeRowHeightPlanTests`：有/无副标题、大字号、卡高公式。
-
-### 9.2 门禁
-
-- `code-profile`：新增卡截图（light/dark、running/completed/failed）；高度断言（估算 vs 实渲 ≤2pt）。
-- `timeline-autorun`：两 profile 的滚动/锚定；卡行不破坏手势期高度不变量。
-- 现有 Code 行/步骤组门禁全绿。
-
-### 9.3 真机（pp）
-
-- Code/Chat × 运行中/完成/失败 × 深色/大字号；点击进面板；胶囊点击；滚动锚定；Reduce Motion；流式中更新。
+- 来源：官方 1023 IPA `Payload/Claude.app/ClaudeDesignSystem_ClaudeIcons.bundle/Assets.car`。
+- 现有 `EVIDENCE/anthropicon-map.tsv` 给出 `agent` 的资产名与 rendition offsets；需要 BOMStore + LZFSE 解析（本地已有 `lzfse` Python 模块；Assets.car 已复制到 `/home/ubuntu/aa-test/claude-ios-re/assets/ClaudeIcons-1023.car`）。
+- 交付：`anthropicon.agent.imageset`（SVG 优先；取不到 SVG 时取 300% PNG rendition，保持官方像素）。
+- 兜底：若解析失败，先用 AA 已有 `anthropicon.agentSimple`（同属官方资产）落地，并在汇报中标注；不得用自绘图标冒充官方。
+- 新增资产后运行 `AnthropiconAssets.table` 校验（与现有 21 个资产同一注册表）。
 
 ---
 
-## 10. 回滚 / 兼容
+## 6. 实施阶段
 
-- 纯 iOS 视觉/分组改动，无 wire/服务端变化。
-- 每阶段独立提交；出问题可单独 revert P2/P3。
-- 旧 Chat 视图暂不删除，保留回退。
+- **P1 入口**：圆形玻璃按钮 + 右对齐 + 状态/角标 + 无文字；胶囊显隐逻辑不变。
+- **P2 列表页**：sheet 路由改为 list-first；列表行 + 行内单任务停止 + stats。
+- **P3 详情页**：对话式渲染（Code 组件）+ 顶部 stats + 底部停止；工具行点击进详情。
+- **P4 图标**：官方 `anthropicon.agent` 提取与接入（可与 P1 并行；失败则 fallback 并汇报）。
+- 每阶段一个提交，均可单独回滚。
 
 ---
 
-## 11. 顺带发现（不在本单修）
+## 7. 测试 / 门禁
 
-- `SessionTimelineEventView` 的 Agent 分支与 `onSubAgent` 在卡落地后成为死路径；§10 清理时删。
-- `isAgentCardWithoutBlockIndex` 只看 Claude 的“无 blockIndex”形状；本单统一按 `kind == agent_call` 识别。
-- `TimelineStepGroup.isSubAgentChild` 用 `parentItemId` 跳过子行，行为正确，保留。
-- 官方 `ThreadSessionCardContext.onShown` 的调用时机未闭合（R-SA1 U1）；AA 不需要。
-- 官方 `textDisabled` token 与相对时间分隔符未逐字解出（R-SA4 U4/U6）。
+- 单测：
+  - `SubAgentRoundButtonStateTests`：可见性/计数/失败 tint（提取自现有 capsuleState）。
+  - `SubAgentListModelTests`：活跃卡排序、行内停止仅单任务、stats 文案。
+  - `SubAgentDetailModelTests`：activity → ChatTimelineGroup 的顺序/过滤；prompt 折叠阈值；最终输出去重。
+  - 现有 `SubAgentProgressTests` / `CapsuleActivityWindowTests` 保持绿。
+- 门禁：
+  - `code-profile`：新增列表页/详情页截图（light/dark、运行中/失败/完成）。
+  - `timeline-autorun`：入口不改变时间线滚动与高度不变量。
+- 真机（pp）：
+  - 圆形按钮位置/尺寸/玻璃手感；键盘弹起随动。
+  - 单个/多个子代理列表；行内停止；详情对话滚动/流式；底部停止；完成后退场；工具行回看。
+  - 深色/大字号/Reduce Motion。
+
+---
+
+## 8. 待确认 / 风险
+
+- `textDisabled` 官方 token 未逐字解出（前一轮 R-SA4 U6）；先用 0.6 alpha 近似，真机再校。
+- `anthropicon.agent` 的 SVG 可能只能取到 PNG rendition；优先官方像素，不冒充自绘。
+- 详情页把 `SessionTimelineRow` 换成 Code 组件后，旧 Chat 行的 `onFile`/附件预览路径需要接到 Code 组件的 `onAttachment`/`onFile`；逐项对照。
+- 列表行“当前活动”副标题依赖 `SubAgentTask.lastToolName`；无该字段时只显示 phase 词。
+- 旧 Chat 容器清理仍按步骤组任务单 §10 另开单，本单不动。

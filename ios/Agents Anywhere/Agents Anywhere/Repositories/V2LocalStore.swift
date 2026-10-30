@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Serial, bounded disk I/O off the main actor. Account invalidation closes this
 /// handle before deleting it, so an in-flight save cannot recreate signed-out data.
@@ -9,8 +10,17 @@ actor V2LocalStore {
     private var removedSessions: Set<String> = []
     private var savesSinceTrim = 0
     private let maximumSessions: Int
+    private let timelineDatabaseEnabled: Bool
+    private var timelineDatabase: TimelineDatabase?
+    private var didOpenTimelineDatabase = false
+    private static let log = Logger(subsystem: "agents.anywhere", category: "timeline-store")
 
-    init(directory: URL, maximumSessions: Int = 8) { self.directory = directory; self.maximumSessions = maximumSessions }
+    init(directory: URL, maximumSessions: Int = 8,
+         timelineDatabaseEnabled: Bool = LocalTimelineStore.enabled) {
+        self.directory = directory
+        self.maximumSessions = maximumSessions
+        self.timelineDatabaseEnabled = timelineDatabaseEnabled
+    }
     func dashboard() -> V2DashboardArchive? { read("dashboard", as: V2DashboardArchive.self) }
     func session(_ id: String) -> V2SessionArchive? { read(sessionKey(id), as: V2SessionArchive.self) }
     /// Decodes the archived timeline here, off the main actor; a malformed item
@@ -44,13 +54,47 @@ actor V2LocalStore {
         // new file or a byte-limit check needs the directory scan.
         let isNew = !FileManager.default.fileExists(atPath: url(key).path)
         write(value, key: key)
+        // P1 shadow write: the JSON archive stays authoritative, the row store
+        // is an exact mirror. A database failure must never block the JSON
+        // path (offline cache, drafts and the send path all depend on it).
+        if let database = timelineStore() {
+            do { try database.replace(value.timelineSnapshot()) }
+            catch { Self.log.error("timeline shadow write failed: \(String(describing: error), privacy: .public)") }
+        }
         savesSinceTrim += 1
         if isNew || savesSinceTrim >= 20 { trim(); savesSinceTrim = 0 }
     }
-    func removeSession(_ id: String) { removedSessions.insert(id); try? FileManager.default.removeItem(at: url(sessionKey(id))) }
+    func removeSession(_ id: String) {
+        removedSessions.insert(id)
+        try? FileManager.default.removeItem(at: url(sessionKey(id)))
+        if let database = timelineStore() {
+            do { try database.removeSession(id) }
+            catch { Self.log.error("timeline shadow delete failed: \(String(describing: error), privacy: .public)") }
+        }
+    }
     func close(removing: Bool) {
         valid = false
+        do { try timelineDatabase?.close() }
+        catch { Self.log.error("timeline database close failed: \(String(describing: error), privacy: .public)") }
+        timelineDatabase = nil
+        didOpenTimelineDatabase = false
         if removing { try? FileManager.default.removeItem(at: directory) }
+    }
+    /// Opens the row store lazily from the actor, never from the main actor.
+    private func timelineStore() -> TimelineDatabase? {
+        if !didOpenTimelineDatabase {
+            didOpenTimelineDatabase = true
+            guard timelineDatabaseEnabled else { return nil }
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                timelineDatabase = try TimelineDatabase(
+                    path: directory.appendingPathComponent("timeline.sqlite").path)
+            } catch {
+                timelineDatabase = nil
+                Self.log.error("timeline database open failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+        return timelineDatabase
     }
     private func read<Value: Codable>(_ key: String, as: Value.Type) -> Value? {
         guard valid else { return nil }

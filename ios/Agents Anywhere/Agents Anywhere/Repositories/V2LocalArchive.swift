@@ -39,7 +39,7 @@ nonisolated struct V2SessionArchive: Codable {
         var superseded: [String]? = nil
     }
     let session: V2SessionMeta
-    let items: [JSONValue]
+    var items: [JSONValue]
     let cursor: String
     let hasOlderItems: Bool
     let hasNewerItems: Bool
@@ -134,6 +134,40 @@ nonisolated struct V2SessionArchive: Codable {
             catalogs: [:], eventCursor: cursor, serverTime: "",
             excludesAgentChildren: excludesAgentChildren ?? false)
         return V2SessionProjection(archive: snapshot, hasNewerItems: hasNewerItems, maximumItems: maximumItems, now: now)
+    }
+}
+
+extension V2SessionArchive {
+    /// The archive without its timeline rows. This is the value the row store
+    /// keeps beside `timeline_items`; user work (draft/pending/queue) must
+    /// survive even when cached rows are evicted.
+    nonisolated func withoutItems() -> V2SessionArchive {
+        var copy = self
+        copy.items = []
+        return copy
+    }
+
+    /// A P1 shadow snapshot: every row is decoded lossily so one malformed row
+    /// cannot fail the whole session. `cacheBytes` counts timeline payload only;
+    /// previews/activity accounting arrives with the cache limit in P3.
+    nonisolated func timelineSnapshot(now: Date = Date()) -> TimelineSnapshot {
+        var rows: [TimelineRow] = []
+        rows.reserveCapacity(items.count)
+        var cacheBytes = 0
+        for raw in items {
+            guard let item = try? V2TimelineItem(json: raw),
+                  let payload = try? JSONEncoder().encode(raw) else { continue }
+            rows.append(TimelineRow(id: item.id, orderSeq: item.orderSeq,
+                                    updatedSeq: item.updatedSeq, payload: payload))
+            cacheBytes += payload.count
+        }
+        let stateBlob = (try? JSONEncoder().encode(withoutItems())) ?? Data()
+        return TimelineSnapshot(sessionID: session.id, cursor: cursor,
+                                hasOlderItems: hasOlderItems, hasNewerItems: hasNewerItems,
+                                excludesAgentChildren: excludesAgentChildren ?? false,
+                                pinned: session.pinned,
+                                lastAccess: now.timeIntervalSince1970,
+                                cacheBytes: cacheBytes, stateBlob: stateBlob, rows: rows)
     }
 }
 

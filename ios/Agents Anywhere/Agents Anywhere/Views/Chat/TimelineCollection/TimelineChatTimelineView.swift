@@ -309,6 +309,7 @@ final class TimelineChatBridge: ObservableObject {
         controller.onBottomArrived = { [weak self] in self?.openingArrived() }
         controller.onLoadOlder = { [weak self] in self?.loadOlder() }
         controller.onLoadLatest = { [weak self] in self?.loadLatest() }
+        controller.onReaderScrollToTop = { [weak self] in self?.readerDidTakeOver() }
         controller.onNeedsOlder = { [weak self] in self?.loadOlder() }
         controller.onNeedsLatest = { [weak self] in
             // The opening path owns its own latest fetch; a viewport trigger

@@ -94,7 +94,7 @@ struct SessionChatView: View, Equatable {
             // centered capsule.
             SubAgentCapsuleSlot(model: model, onOpen: { sheet = .subagents($0, fromCapsule: true) })
                 .frame(maxWidth: .infinity, alignment: .trailing)
-                .padding(.horizontal, ChatControlMetrics.collapsedHorizontalInset)
+                .padding(.horizontal, controls.horizontalInset(expanded: session.composer.isExpanded))
                 .traceChatLayout("subagent-round-button")
             SessionInteractionDock(chat: model,
                 onShowAll: { expandedNoticeID = $0; sheet = .notices })

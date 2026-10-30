@@ -146,3 +146,28 @@ struct CodeMessageTimelineTests {
         #expect(attachmentBlock(rows[0].blocks, at: 0)?.clientMessageID == "client-1")
     }
 }
+
+@Suite("Code child rows for the sub-agent panel")
+struct CodeMessageChildRowTests {
+    /// A sub-agent child body row: the connector attributes it to the Agent
+    /// card with `content.parentItemId`, which the main timeline filters out.
+    private func childText() throws -> V2TimelineItem {
+        try decode([
+            "id": "c1", "sessionId": "session", "type": "message",
+            "status": "done", "role": "assistant",
+            "content": ["text": "child body", "parentItemId": "card-1"],
+            "source": ["itemId": "child-msg-1"],
+            "orderSeq": 1, "revision": 1, "updatedSeq": 1, "contentHash": "c1",
+        ])
+    }
+
+    @Test func childRowsRequireThePanelOptIn() throws {
+        let child = try childText()
+        #expect(CodeMessageBuilder.rows(for: [child], profile: .generic).isEmpty)
+
+        let rows = CodeMessageBuilder.rows(for: [child], profile: .generic,
+                                           includeSubAgentChildren: true)
+        #expect(rows.count == 1)
+        #expect(rows.first?.blocks.map(descriptor) == ["text:c1"])
+    }
+}

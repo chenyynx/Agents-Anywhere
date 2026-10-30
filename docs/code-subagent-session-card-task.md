@@ -43,12 +43,12 @@
 
 **位置**
 - 仍在 composer dock 内，作为 composer 上方第一行；改为 **HStack + Spacer + 按钮**，右对齐。
-- 视觉圆 40×40，点击区 44×44；距屏幕右缘 16pt（与 composer 右侧内边距对齐）。
+- 视觉圆 40×40，点击区 44×44；右侧内边距与 composer 同步（`controls.horizontalInset(expanded:)`，收拢 18 / 展开 9）。
 - 不悬浮覆盖时间线；占用自己一行（和现在一样），键盘弹起随 dock 上移。
 
 **材质与图标**
 - `.glassEffect(.regular.interactive(), in: .circle)`（液态玻璃；沿用现有 iOS 26 API）。
-- 图标：**官方 `anthropicon.agent`**（从官方 1023 IPA 提取；见 §5）。图标 20×20，居中。
+- 图标：**官方 `anthropicon.agent`**（从官方 1023 IPA 提取；见 §5）。按官方 `.large` 美术尺寸 18×19 绘制，居中。
 - 无文字、无 chevron。
 
 **状态**
@@ -59,7 +59,7 @@
 - 完成后：按钮消失（与现在一致）；已完成的子代理仍从主时间线的工具调用行打开详情。
 
 **可访问性**
-- label「子代理运行中，N 个」；hint「查看子代理」；identifier `chat.subagent.roundButton`。
+- label「子代理运行中」；value = 标题 + phase（沿用 `SubAgentCapsuleState.accessibilityText`）；hint「查看详情」；identifier `chat.subagent.roundButton`。
 
 ### 3.2 列表页（点圆形按钮后）
 
@@ -70,9 +70,9 @@
 - 内容：`ScrollView` + `LazyVStack(spacing: 12)`，水平内边距 20，顶部 12。
 - 每卡一行 `SubAgentListRow`：
   - 容器：大圆角矩形，圆角 24，填充官方 `userBubble` 底色（light `#F0EFEC` / dark `#2C2C2A`），内边距 16。
-  - 左侧：40×40 圆形底 + 20pt 官方 agent 图标；图标/底随 phase 变色（运行中 textSecondary，失败 danger，完成 textDisabled）。
-  - 中间：标题 17pt semibold `textPrimary`，1 行截断；副标题 15pt `textSecondary`：`phase.word` +（有 `lastToolName` 时）「 · 正在运行 `<tool>`」；第三行 stats 13pt `textSecondary`：「N 次工具 · X tokens · Ys」（沿用现有 `SubAgentProgress.metrics` 的格式化）。
-  - 右侧：若该卡**恰好 1 个活跃 task** → 26pt 圆形停止按钮（官方 stop 图标）；多 task → 不显示行内停止（进详情逐个停）；已完成 → 无停止。
+  - 左侧：40×40 圆形底 + 官方 agent 图标（`.large` 18×19）；图标/底随 phase 变色（`SubAgentPalette.phase`）。
+  - 中间：标题 17pt semibold `textPrimary`，1 行截断；副标题 15pt `textSecondary`：有 `lastToolName` 时「正在运行 `<tool>`」，否则 `phase.word`；第三行 stats 用现有 metrics 的 glyph+数字（锤子/时钟/上下箭头，13pt）。
+  - 右侧：若该卡**恰好 1 个活跃 task** → 26pt 圆形停止按钮（44pt 命中区）；多 task → 不显示行内停止（进详情逐个停）；已完成 → 无停止。
   - 整行可点 → push 详情页；行内停止按钮独立命中，不触发进入详情。
 - 行高随 Dynamic Type；不固定。
 
@@ -85,7 +85,7 @@
 **容器**：同一 sheet 的 NavigationStack push；导航标题 = 子代理标题；返回回到列表（从圆形按钮进入时）或无返回（从工具行直接进入时，保留 sheet 关闭按钮）。
 
 **布局（自上而下）**
-1. **stats 行**：13pt `textSecondary`，一行：「N 次工具 · X tokens · Ys」+ phase 词（运行中/已停止/已完成）；保留现有功能，不再使用旧 statsRow 的徽章样式。
+1. **stats 行**：沿用现有 `statsRow`（phase 徽章 + 锤子/时钟/箭头 metrics），固定在详情顶部，不随内容滚动；保留现有功能与样式。
 2. **对话内容**（`ScrollView`，水平内边距 20）：
    - 提示词气泡：官方 user bubble 底色、圆角 24、内边距 16、正文 17/27.2 `textPrimary`；长提示词超过 300 字可折叠（沿用现有阈值）。
    - 助手内容：**按现 Chat 页（渲染方式=聊天）的样式**渲染，不切 Code 页组件：
@@ -93,7 +93,7 @@
      - 连续思考/工具 → `CodeStepGroupRowView`（行首三点 + 运行中实时文案 / 结束汇总）；
      - 正文 → `CodeMessageRowView`（chat profile 的消息行）；
      - 其他单行 → 现有 `SessionTimelineRow` 兜底；
-     - 点步骤组 → 复用 `CodeStepGroupDetailView`（按顺序列出步骤；现有 chat 页同款）。
+     - 点步骤组 → 复用 `CodeStepGroupDetailView`（按顺序列出步骤；传入 `liveGroups`，运行中继续追加/更新）。
    - 实时更新：activity store 的 live rows 继续驱动；流式中正文/步骤组实时跟随；最后一个单位是步骤组且卡仍在运行时，`isLiveTail` 与主 Chat 页同规则。
    - 最终输出：沿用 `finalOutputSummary` 规则，避免与活动流重复。
 3. **底部停止**：
@@ -104,7 +104,7 @@
    - stopping 中禁用并显示「正在停止…」。
 
 **从工具调用行进入**
-- 直接 push 该卡的详情页（不经过列表），导航标题 = 该卡标题；无返回列表（关闭 sheet 即可）。
+- 直接显示该卡详情（作为 sheet 的根视图，不经过列表），导航标题 = 该卡标题；无返回列表（关闭 sheet 即可）。
 - 已完成卡同样可读；底部无停止。
 
 ### 3.4 图标 / 字体 / 颜色

@@ -78,13 +78,15 @@ struct SubAgentListRow: View {
                                     isStopping: stoppingTaskIDs.contains(task.taskID)) {
                     onStop(task.taskID)
                 }
+                .frame(minWidth: 44, minHeight: 44)
                 .padding(.trailing, 12)
             }
         }
     }
 
-    /// The phase word plus the live entry's last tool. The entry's data is the
-    /// same one the capsule and panel read; no new wire field.
+    /// 「正在运行 <last tool>」 while a task is live, else the phase word. The
+    /// entry's data is the same one the capsule and panel read; no new wire
+    /// field.
     private var subtitle: String {
         if card.phase.isActive, let tool = card.liveTasks.first?.lastToolName, !tool.isEmpty {
             return String(localized: "正在运行 \(tool)")

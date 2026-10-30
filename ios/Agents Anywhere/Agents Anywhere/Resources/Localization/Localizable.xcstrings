@@ -340,6 +340,23 @@
         }
       }
     },
+    "%lld 个智能体正在运行": {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld agents running"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 个智能体正在运行"
+          }
+        }
+      }
+    },
     "%lld 个问题": {
       "extractionState": "manual",
       "localizations": {
@@ -9996,6 +10013,23 @@
         }
       }
     },
+    "停止": {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stop"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停止"
+          }
+        }
+      }
+    },
     "停止子代理": {
       "extractionState": "manual",
       "localizations": {
@@ -10009,6 +10043,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "停止子代理"
+          }
+        }
+      }
+    },
+    "子代理": {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sub-agent"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "子代理"
           }
         }
       }
@@ -10047,6 +10098,23 @@
         }
       }
     },
+    "智能体": {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agent"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "智能体"
+          }
+        }
+      }
+    },
     "暂无子代理": {
       "extractionState": "manual",
       "localizations": {
@@ -10060,6 +10128,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "暂无子代理"
+          }
+        }
+      }
+    },
+    "停止智能体": {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stop agent"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停止智能体"
           }
         }
       }
@@ -12296,6 +12381,23 @@
         }
       }
     },
+    "当前没有运行中的子代理": {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No sub-agents are running."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前没有运行中的子代理"
+          }
+        }
+      }
+    },
     "当前活动会话将移到归档列表，可从归档中恢复。": {
       "extractionState": "manual",
       "localizations": {
@@ -13867,6 +13969,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在压缩对话…"
+          }
+        }
+      }
+    },
+    "正在运行 %@": {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Running %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在运行 %@"
           }
         }
       }

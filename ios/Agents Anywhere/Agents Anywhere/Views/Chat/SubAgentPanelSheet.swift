@@ -33,8 +33,12 @@ struct SubAgentPanelSheet: View {
     @State private var selection: String?
     @State private var showsFullPrompt = false
     /// The list-first entry (pp 2026-10-30): the circular glass button always
-    /// lands on the capsule-row list, even for a single running SubAgent.
-    @State private var showsList: Bool
+    /// lands on the capsule-row list, even for a single running SubAgent; a
+    /// row pushes the detail with the system back button.
+    @State private var path: [String] = []
+    /// The live step-group map handed to the step sheet, so a running child
+    /// group keeps appending steps while the sheet is open.
+    @State private var liveStepGroups = TimelineLiveStepGroups()
     /// A tapped step group pushes the same detail sheet the chat timeline uses.
     @State private var stepGroupDetail: CodeStepGroupDetailRequest?
     /// C3: the on-demand child-row source. It lives on the session model so
@@ -59,7 +63,6 @@ struct SubAgentPanelSheet: View {
         // The requested card wins; otherwise the opening rule (newest active /
         // newest, applied in `selectedCard`) whenever it is nil or gone.
         _selection = State(initialValue: initialCardID)
-        _showsList = State(initialValue: opensFromCapsule)
     }
 
     private var window: [V2TimelineItem] { chat.timeline.rows.map(\.value) }
@@ -89,9 +92,9 @@ struct SubAgentPanelSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Group {
-                if opensFromCapsule && showsList {
+                if opensFromCapsule {
                     listPage
                 } else if let card = selectedCard {
                     detailPage(card)
@@ -99,14 +102,32 @@ struct SubAgentPanelSheet: View {
                     SubAgentPanelEmptyState()
                 }
             }
-            .toolbar { SheetCloseToolbar { dismiss() } }
+            .navigationDestination(for: String.self) { id in
+                if let card = sessionCards.first(where: { $0.id == id }) {
+                    detailPage(card)
+                } else {
+                    SubAgentPanelEmptyState()
+                }
+            }
+            .toolbar {
+                // Pushed pages keep the system Back on the leading edge; the
+                // sheet's close control moves to the trailing edge.
+                ToolbarItem(placement: .topBarTrailing) {
+                    SheetCloseButton { dismiss() }
+                }
+            }
         }
         .appSheetPresentation(.compact)
         .sheet(item: $stepGroupDetail) { request in
             CodeStepGroupDetailView(group: request.group,
                                     cwd: chat.session.metadata?.cwd,
+                                    liveGroups: liveStepGroups,
                                     startsAtBottom: request.startsAtBottom)
         }
+        // One refresh window per sheet presentation, as before; moving between
+        // the list and a detail card must not refetch the same activity.
+        .onAppear { activity.beginPresentation() }
+        .onDisappear { activity.cancel() }
     }
 
     // MARK: - List
@@ -129,7 +150,7 @@ struct SubAgentPanelSheet: View {
                             onTap: {
                                 selection = card.id
                                 showsFullPrompt = false
-                                showsList = false
+                                path.append(card.id)
                             },
                             onStop: { taskID in
                                 Task { await chat.stopSubagent(taskID: taskID) }
@@ -177,29 +198,20 @@ struct SubAgentPanelSheet: View {
         .navigationSubtitle(SessionHeaderSubtitle.text(metadata: chat.session.metadata,
             deviceName: deviceName, fallbackRuntimeName: fallbackRuntimeName))
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            if opensFromCapsule {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        showsList = true
-                    } label: {
-                        AppSymbol("chevron.left", size: 16)
-                    }
-                    .accessibilityLabel(String(localized: "返回列表"))
-                }
-            }
-        }
         .onAppear {
-            activity.beginPresentation()
             activateActivity(cardID: card.id)
+            publishLiveStepGroups(card)
         }
-        .task(id: card.id) { activateActivity(cardID: card.id) }
+        .task(id: card.id) {
+            activateActivity(cardID: card.id)
+            publishLiveStepGroups(card)
+        }
         // Live child rows reach the panel through the window; push them into
         // the store only when their identity/version set changes.
         .onChange(of: activityWindowRowSignature, initial: true) { _, _ in
             activity.updateWindow(childRows: liveActivityChildRows)
+            publishLiveStepGroups(card)
         }
-        .onDisappear { activity.cancel() }
     }
 
     /// The bottom stop affordance (pp 2026-10-30): one capsule per live task,
@@ -211,12 +223,15 @@ struct SubAgentPanelSheet: View {
         if !tasks.isEmpty {
             VStack(spacing: 8) {
                 ForEach(tasks) { task in
+                    let isStopping = chat.stoppingSubagentTaskIDs.contains(task.taskID)
                     Button {
                         Task { await chat.stopSubagent(taskID: task.taskID) }
                     } label: {
-                        Text(tasks.count > 1
-                             ? "\(String(localized: "停止")) \(task.label ?? String(localized: "智能体"))"
-                             : String(localized: "停止智能体"))
+                        Text(isStopping
+                             ? String(localized: "正在停止…")
+                             : tasks.count > 1
+                                ? "\(String(localized: "停止")) \(task.label ?? String(localized: "智能体"))"
+                                : String(localized: "停止智能体"))
                             .font(.custom(CodePageTheme.sansFontName, size: 17,
                                           relativeTo: .body).weight(.semibold))
                             .foregroundStyle(CodePageTheme.userBubbleText.resolved(for: colorScheme))
@@ -224,9 +239,10 @@ struct SubAgentPanelSheet: View {
                             .frame(height: 44)
                             .background(CodePageTheme.userBubbleFill.resolved(for: colorScheme),
                                         in: .capsule)
+                            .opacity(isStopping ? 0.42 : 1)
                     }
                     .buttonStyle(.plain)
-                    .disabled(chat.stoppingSubagentTaskIDs.contains(task.taskID))
+                    .disabled(isStopping)
                     .accessibilityIdentifier("chat.subagent.stop.\(task.taskID)")
                 }
             }
@@ -523,16 +539,18 @@ struct SubAgentPanelSheet: View {
                         stepGroupDetail = CodeStepGroupDetailRequest(
                             group: group, startsAtBottom: group.id == lastStepGroupID)
                     }
-                case let .message(_, rowIDs):
-                    // The chat page's body rows read through the same Chat row
-                    // view the panel always used; only the grouping (and the
-                    // step-group row) comes from the chat profile.
-                    ForEach(rowIDs.compactMap { rowsByID[$0] }) { row in
-                        SessionTimelineRow(row: row, chat: chat,
-                                           onAttachment: onAttachment,
-                                           cwd: chat.session.metadata?.cwd,
-                                           disclosures: chat.disclosures,
-                                           onFile: onFile, onSubAgent: nil)
+                case let .message(key, rowIDs):
+                    // The chat page's body rows are Code rows too; opt the
+                    // builder into the child rows the main timeline hides.
+                    let groupRows = rowIDs.compactMap { rowsByID[$0] }
+                    if !groupRows.isEmpty {
+                        CodeMessageRowView(
+                            group: ChatTimelineGroup(kind: .single, rows: groupRows,
+                                                     explicitID: key),
+                            profile: profile,
+                            includesSubAgentChildren: true,
+                            cwd: chat.session.metadata?.cwd,
+                            onAttachment: onAttachment)
                     }
                 case let .standalone(rowID):
                     if let row = rowsByID[rowID] {
@@ -545,6 +563,22 @@ struct SubAgentPanelSheet: View {
                 }
             }
         }
+    }
+
+    /// The step sheet reads this map while it is open: a running child group
+    /// settles and appends steps without closing/reopening the sheet. The
+    /// snapshot passed at tap time remains the fallback once the group leaves
+    /// the window.
+    private func publishLiveStepGroups(_ card: SubAgentCard) {
+        let profile = chat.session.metadata.map { CodeRuntimeProfile(meta: $0) } ?? .generic
+        let rows = activityRows(of: card, in: activityItems)
+        let units = TimelineChatGrouping.units(items: rows.map(\.value),
+                                               profile: profile,
+                                               interactionTargets: [],
+                                               excludesSubAgentChildren: false)
+        var groups: [String: TimelineStepGroup] = [:]
+        for case let .stepGroup(group, _) in units { groups[group.id] = group }
+        liveStepGroups.publish(groups)
     }
 
     private func hasActivityStatus(rows: [ChatTimelineRowModel]) -> Bool {
@@ -626,7 +660,7 @@ private struct SubAgentPanelEmptyState: View {
     var body: some View {
         VStack {
             Spacer(minLength: 0)
-            Text(String(localized: "暂无子代理"))
+            Text(String(localized: "当前没有运行中的子代理"))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             Spacer(minLength: 0)

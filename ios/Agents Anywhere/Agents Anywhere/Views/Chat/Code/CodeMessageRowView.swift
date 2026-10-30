@@ -37,6 +37,9 @@ nonisolated struct CodeStreamingText: Equatable {
 struct CodeMessageRowView: View {
     let group: ChatTimelineGroup
     let profile: CodeRuntimeProfile
+    /// The SubAgent panel renders the child rows the main timeline hides;
+    /// every timeline caller keeps the default.
+    var includesSubAgentChildren: Bool = false
     /// The session's working directory, used to shorten paths in tool labels.
     var cwd: String?
     /// The paced streaming snapshot while this message's body is still growing.
@@ -77,6 +80,7 @@ struct CodeMessageRowView: View {
 
     init(group: ChatTimelineGroup,
          profile: CodeRuntimeProfile,
+         includesSubAgentChildren: Bool = false,
          cwd: String? = nil,
          streaming: CodeStreamingText? = nil,
          preparedBlocks: [String: [MarkdownBlockSnapshot]]? = nil,
@@ -100,6 +104,7 @@ struct CodeMessageRowView: View {
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void = { _, _ in }) {
         self.group = group
         self.profile = profile
+        self.includesSubAgentChildren = includesSubAgentChildren
         self.cwd = cwd
         self.streaming = streaming
         self.preparedBlocks = preparedBlocks
@@ -338,7 +343,8 @@ struct CodeMessageRowView: View {
     }
 
     private var renderRows: [RenderedRow] {
-        CodeMessageBuilder.rows(for: group.rows.map(\.value), profile: profile)
+        CodeMessageBuilder.rows(for: group.rows.map(\.value), profile: profile,
+                                includeSubAgentChildren: includesSubAgentChildren)
             .compactMap { row in
                 let blocks = row.blocks.filter { block in
                     switch block {

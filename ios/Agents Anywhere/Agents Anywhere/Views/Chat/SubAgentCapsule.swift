@@ -5,8 +5,8 @@ import SwiftUI
 /// Visibility and state stay data-driven from `SubAgentCapsuleState` — the
 /// button disappears with the last active card, and a finished SubAgent stays
 /// readable from its timeline tool row. The icon is the official
-/// `anthropicon.agentsSimple` asset; a failure tints the glass and icon red,
-/// and several running SubAgents carry a small count badge.
+/// `anthropicon.agent` asset; a failure tints the glass and icon red, and
+/// several running SubAgents carry a small count badge.
 struct SubAgentRoundButton: View {
     let state: SubAgentCapsuleState
     let onOpen: () -> Void

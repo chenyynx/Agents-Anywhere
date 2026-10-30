@@ -116,17 +116,14 @@ Semantic error and availability colors remain separate from the primary color.
   above the footer and hides during tracking,
   dragging, deceleration and programmatic scrolling. An interrupted request that
   did not reach its target leaves the pill available instead of endlessly retrying.
-- A running SubAgent shows a tinted glass capsule in the same bottom stack, above
-  the return pill: one running task shows its name, several show “N 个 SubAgent”,
-  and a failed or interrupted SubAgent reds the whole capsule until a newer
-  SubAgent is dispatched — the newest batch's failures only, never older ones
-  still sitting in the scrollback. Visibility is data-driven — the presented
-  Agent call cards, never
-  scroll or keyboard state — so it stays up through the keyboard and hides once
-  every SubAgent closed. The return pill keeps its existing keyboard-windowed
-  hiding, and the stack animates its own slot change on the keyboard event's
-  duration and curve so neither capsule jumps while it settles. Tapping the
-  capsule opens the SubAgent panel on the first running tab.
+- A running SubAgent shows a circular liquid-glass button on the composer
+  dock's trailing edge, above the input: the official `anthropicon.agent`
+  asset only, no label. A failure tints the glass and icon red; several
+  running SubAgents carry a count badge. Visibility is data-driven — the
+  presented Agent call cards, never scroll or keyboard state — so it stays up
+  through the keyboard and disappears once every SubAgent closed. A finished
+  SubAgent remains readable from its timeline tool row. Tapping the button
+  always opens the SubAgent list first, even when only one is running.
 - A new vertical gesture cancels automatic navigation immediately. After idle,
   a 64 ms settlement reconciles native phase and visibility callbacks before
   granting auto-follow; stopping nearby remains reading mode. This never holds
@@ -205,17 +202,20 @@ Semantic error and availability colors remain separate from the primary color.
   streaming updates. Items targeted by active notices
   remain individually visible. Hidden items, turn markers, duplicate diff
   artifacts and Claude's interruption/no-response sentinels are filtered like Web.
-- The SubAgent panel (medium/large sheet) opens from the capsule or from an
-  Agent call card and lists one tab per SubAgent in dispatch order (status dot,
-  task name in the title, non-default type badge); completion never reorders
-  them, and the title and fixed stats line — status · tool count · duration ·
-  tokens, missing counters omitted — follow the selected tab while the body
-  scrolls under them. The body shows the dispatch prompt (long prompts fold),
-  the card's live tool rows, its thinking rows and, once closed, the
-  subagent's final reply; tool and thinking rows reuse the timeline's own
-  expanded styles. Everything reads the persisted timeline items, so a relaunch
-  or another device restores the panel, and a finished SubAgent stays
-  reviewable. SubAgent text never enters the turn's Copy/Share reply.
+- The SubAgent panel (medium/large sheet) opens from the circular entry or from
+  an Agent call card. The entry's list page shows one large rounded capsule row
+  per active SubAgent in dispatch order — official agent asset, title, the live
+  「正在运行 <tool>」 line, and the existing telemetry metrics. A card with one
+  live task also gets the compact stop control on the row; a multi-task card is
+  stopped from its detail page. Tapping a row pushes the detail with the system
+  Back button. The detail keeps the stats strip, draws the dispatch prompt in
+  the official user bubble (long prompts fold), and renders the child activity
+  through the current Chat page's grouping — step-group rows for
+  thinking/tool runs and chat body rows for text. A bottom per-task stop
+  capsule shows 「正在停止…」 while a stop is in flight. Everything reads the
+  persisted timeline items, so a relaunch or another device restores the panel,
+  and a finished SubAgent stays reviewable. SubAgent text never enters the
+  turn's Copy/Share reply.
 - Expanded groups align with the timeline without an extra leading inset. Copy
   and Share appear once after each completed reply turn, following Web's grouping
   between user messages. Copy/Share collect that turn's assistant text fragments;

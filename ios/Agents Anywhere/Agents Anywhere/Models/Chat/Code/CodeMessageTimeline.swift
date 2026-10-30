@@ -128,13 +128,16 @@ nonisolated enum CodeMessageBuilder {
     static func units(for items: [V2TimelineItem],
                       profile: CodeRuntimeProfile,
                       interactionTargets: Set<String> = [],
-                      isTurnBoundary: ((V2TimelineItem) -> Bool)? = nil) -> [CodeMessageUnit] {
+                      isTurnBoundary: ((V2TimelineItem) -> Bool)? = nil,
+                      includeSubAgentChildren: Bool = false) -> [CodeMessageUnit] {
         guard profile.mergesToolRowsAcrossMessages else {
-            return legacyUnits(items, interactionTargets: interactionTargets)
+            return legacyUnits(items, interactionTargets: interactionTargets,
+                               includeSubAgentChildren: includeSubAgentChildren)
         }
         return mergedUnits(items, profile: profile,
                            interactionTargets: interactionTargets,
-                           isTurnBoundary: isTurnBoundary ?? isUserTurnBoundary)
+                           isTurnBoundary: isTurnBoundary ?? isUserTurnBoundary,
+                           includeSubAgentChildren: includeSubAgentChildren)
     }
 
     /// Timeline rows → Code rows.
@@ -143,8 +146,10 @@ nonisolated enum CodeMessageBuilder {
     /// first tool's `tool_use` id, so a new serial call grows the same row
     /// instead of inserting a new top-level item.
     static func rows(for items: [V2TimelineItem],
-                     profile: CodeRuntimeProfile) -> [CodeMessageRow] {
-        units(for: items, profile: profile).compactMap { unit -> CodeMessageRow? in
+                     profile: CodeRuntimeProfile,
+                     includeSubAgentChildren: Bool = false) -> [CodeMessageRow] {
+        units(for: items, profile: profile,
+              includeSubAgentChildren: includeSubAgentChildren).compactMap { unit -> CodeMessageRow? in
             switch unit {
             case let .message(key, items):
                 return messageRow(id: key, items: items, profile: profile)
@@ -174,7 +179,8 @@ nonisolated enum CodeMessageBuilder {
     private static func mergedUnits(_ items: [V2TimelineItem],
                                     profile: CodeRuntimeProfile,
                                     interactionTargets: Set<String>,
-                                    isTurnBoundary: (V2TimelineItem) -> Bool) -> [CodeMessageUnit] {
+                                    isTurnBoundary: (V2TimelineItem) -> Bool,
+                                    includeSubAgentChildren: Bool) -> [CodeMessageUnit] {
         var units: [CodeMessageUnit] = []
         var messageIndexByKey: [String: Int] = [:]
         var target: MergeTarget?
@@ -278,8 +284,9 @@ nonisolated enum CodeMessageBuilder {
                 continue
             }
             // Sub-agent child rows stay in the panel, not the main timeline.
-            // A child row never breaks a run (it is not rendered here).
-            if isChild { continue }
+            // A child row never breaks a run; the panel opts in to render
+            // them with the same builder.
+            if !includeSubAgentChildren, isChild { continue }
 
             if isToolRow(item) {
                 // `ExitPlanMode` and an answered `AskUserQuestion` are pulled
@@ -400,7 +407,8 @@ nonisolated enum CodeMessageBuilder {
     /// The pre-round27 grouping: one message key = one row, first-seen key
     /// order. Codex/DSH/generic keep this until their own engine is read.
     private static func legacyUnits(_ items: [V2TimelineItem],
-                                    interactionTargets: Set<String>) -> [CodeMessageUnit] {
+                                    interactionTargets: Set<String>,
+                                    includeSubAgentChildren: Bool) -> [CodeMessageUnit] {
         var order: [LegacySlot] = []
         var seen: Set<LegacySlot> = []
         var consumed: Set<String> = []
@@ -415,7 +423,7 @@ nonisolated enum CodeMessageBuilder {
                 if seen.insert(slot).inserted { order.append(slot) }
                 continue
             }
-            if isSubAgentChild(item) { continue }
+            if !includeSubAgentChildren, isSubAgentChild(item) { continue }
             if isStackable(item), let key = groupKey(for: item) {
                 let slot = LegacySlot.message(key)
                 if seen.insert(slot).inserted { order.append(slot) }

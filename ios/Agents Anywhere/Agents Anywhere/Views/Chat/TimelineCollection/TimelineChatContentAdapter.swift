@@ -3,6 +3,14 @@ import UIKit
 import QuartzCore
 import Observation
 
+/// Which edge the single `isLoadingHistory` flag belongs to. The two prompt
+/// rows must not both show a spinner: an older-page read while the reader is
+/// at the bottom would otherwise claim "loading newer records".
+enum TimelineHistoryLoadDirection {
+    case older
+    case latest
+}
+
 /// Adapts one `SessionChatModel` projection to the collection timeline.
 ///
 /// The SwiftUI timeline's body built groups, notices, pending bubbles and the
@@ -140,6 +148,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private var latestPullReady = false
     private var isLoadingOlder = false
     private var isLoadingLatest = false
+    /// Set by the bridge for the in-flight history read. `refresh` uses it to
+    /// decide which prompt owns the shared model flag.
+    var historyLoadDirection: TimelineHistoryLoadDirection?
     private var keepsOlderPrompt = false
     var onLoadOlder: (() -> Void)?
     var onLoadLatest: (() -> Void)?
@@ -1477,8 +1488,20 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let pendingHistoryOrigin = pendingHistoryRequest.flatMap { request in
             controller?.historyLayout(anchorRowID: request.anchorRowID, edge: request.edge)
         }
-        isLoadingOlder = model.session.isLoadingHistory
-        isLoadingLatest = model.session.isLoadingHistory
+        let loadingHistory = model.session.isLoadingHistory
+        switch historyLoadDirection {
+        case .some(.older):
+            isLoadingOlder = loadingHistory
+            isLoadingLatest = false
+        case .some(.latest):
+            isLoadingOlder = false
+            isLoadingLatest = loadingHistory
+        case .none:
+            // Fallback for paths that did not declare a direction: keep the
+            // old both-edges behaviour rather than hiding a real spinner.
+            isLoadingOlder = loadingHistory
+            isLoadingLatest = loadingHistory
+        }
         let notices = model.session.notices.notices
         let visibleNotices = notices.filter { $0.isVisible && !$0.blocks(model.session.id) }
         let interactionTargets = Set(notices.filter(\.isVisible).compactMap(\.timelineTargetID))

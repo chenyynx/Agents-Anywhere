@@ -394,6 +394,7 @@ final class TimelineChatBridge: ObservableObject {
         // placement; the adapter does not install a one-shot firstRowID target.
         controller.beginHistoryPaging(anchorRowID: anchor)
         isLoadingOlder = true
+        adapter.historyLoadDirection = .older
         historyGeneration &+= 1
         adapter.pendingHistoryRequest = .init(generation: historyGeneration,
             anchorRowID: anchor, beforeFirstRowID: before, edge: .top,
@@ -402,7 +403,14 @@ final class TimelineChatBridge: ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.model.session.loadOlder(anchorOrderSeq: anchorOrderSeq)
+            self.adapter.historyLoadDirection = nil
             self.isLoadingOlder = false
+#if AA_TIMELINE_PROBE
+            TimelineProbeStore.shared.noteHistory(
+                "bridge loadOlder done off=\(self.controller?.collectionView.contentOffset.y ?? -1) "
+                + "items=\(self.controller?.items.count ?? 0) "
+                + "newer=\(self.model.session.hasNewerItems ? 1 : 0)")
+#endif
             self.updateHistoryAvailability()
         }
     }
@@ -417,6 +425,7 @@ final class TimelineChatBridge: ObservableObject {
             + "items=\(controller?.items.count ?? 0)")
 #endif
         isLoadingLatest = true
+        adapter.historyLoadDirection = .latest
         updateHistoryAvailability()
         // The newer window can replace every row before the post-await return
         // runs; record the return intent first so the apply can re-resolve the
@@ -425,7 +434,15 @@ final class TimelineChatBridge: ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.model.session.loadLatest()
+            self.adapter.historyLoadDirection = nil
             self.isLoadingLatest = false
+#if AA_TIMELINE_PROBE
+            TimelineProbeStore.shared.noteHistory(
+                "bridge loadLatest done auto=\(auto ? 1 : 0) "
+                + "off=\(self.controller?.collectionView.contentOffset.y ?? -1) "
+                + "items=\(self.controller?.items.count ?? 0) "
+                + "newer=\(self.model.session.hasNewerItems ? 1 : 0)")
+#endif
             // A stale local-first page intentionally keeps `hasNewerItems`
             // until its background reconcile lands. Do not let the bottom
             // trigger immediately start the same read again.

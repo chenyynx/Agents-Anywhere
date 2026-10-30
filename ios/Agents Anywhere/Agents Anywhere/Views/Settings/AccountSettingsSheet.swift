@@ -84,7 +84,7 @@ struct AccountSettingsSheet: View {
                         TimelineRenderModeSettingsView()
                     } label: {
                         HStack {
-                            Label(String(localized: "渲染方式"), appSymbol: "rectangle.stack")
+                            Label(String(localized: "步骤展示"), appSymbol: "rectangle.stack")
                                 .labelStyle(.titleAndIcon)
                             Spacer()
                             Text(renderMode.title)

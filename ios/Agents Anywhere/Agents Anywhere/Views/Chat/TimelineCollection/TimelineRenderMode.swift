@@ -14,19 +14,22 @@ nonisolated enum TimelineRenderMode: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// The user-facing names describe what the transcript does to the
+    /// thinking/tool steps, not which page they came from (pp 2026-10-30):
+    /// `.chat` shows every step as it happens, `.code` merges them.
     var title: String {
         switch self {
-        case .chat: return String(localized: "聊天")
-        case .code: return String(localized: "代码")
+        case .chat: return String(localized: "分步")
+        case .code: return String(localized: "合并")
         }
     }
 
     var detail: String {
         switch self {
         case .chat:
-            return String(localized: "思考与工具调用按步骤逐行展示，实时更新")
+            return String(localized: "思考与工具调用按发生顺序逐步显示，实时更新，结束后汇总成一行")
         case .code:
-            return String(localized: "官方 Code 页样式，合并展示思考与工具调用")
+            return String(localized: "思考合并为一段「思考过程」，工具调用按类别归组")
         }
     }
 }

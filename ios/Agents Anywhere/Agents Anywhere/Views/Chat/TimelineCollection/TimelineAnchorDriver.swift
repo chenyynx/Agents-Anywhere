@@ -182,8 +182,26 @@ final class TimelineAnchorDriver {
                 offsetBefore: offsetBefore, offsetAfter: view.contentOffset)
         }
 #endif
-        let following = state.placement == .end
+        var following = state.placement == .end
             && state.motion != .dragging && state.motion != .coasting
+        // A bottom inset shrink (keyboard hide, composer collapse) reveals
+        // content below the page. A reader resting on the old bottom must
+        // keep following it even if a layout update flipped the placement to
+        // `.reading` during the transition (device report 2026-10-31 06:26:
+        // the page stayed mid-air after the keyboard collapsed). Compare the
+        // offset with the bottom target under the *old* insets, with the
+        // official one-pixel tolerance.
+        if !following, target.bottom < current.bottom - 0.5 {
+            let oldTop = current.top + viewInsets.top
+            let oldBottom = current.bottom + viewInsets.bottom
+            let oldDestination = bottomTarget(topInset: oldTop, bottomInset: oldBottom)
+            let pixel = TimelineSpringFollow.pixel(
+                displayScale: view.traitCollection.displayScale)
+            if abs(view.contentOffset.y - oldDestination) <= pixel {
+                state.placement = .end
+                following = true
+            }
+        }
         if !following {
             let offset = view.contentOffset
             isApplying = true

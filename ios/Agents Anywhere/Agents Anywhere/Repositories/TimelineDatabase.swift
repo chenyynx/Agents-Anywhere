@@ -238,7 +238,7 @@ nonisolated final class TimelineDatabase {
             guard let state = try Data.fetchOne(db, sql: """
                 SELECT state_blob FROM session_meta WHERE session_id = ?
                 """, arguments: [sessionID]),
-                  let archive = try? JSONDecoder().decode(V2SessionArchive.self, from: state) else {
+                  var archive = try? JSONDecoder().decode(V2SessionArchive.self, from: state) else {
                 return nil
             }
             // The rows are gone; an online open must fetch the latest page

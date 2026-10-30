@@ -20,23 +20,18 @@ struct SubAgentListRow: View {
     /// accessibility-size control never overlaps the title.
     @ScaledMetric(relativeTo: .footnote) private var stopReserve: CGFloat = 44
 
-    private var phaseColor: Color { SubAgentPalette.phase(card.phase) }
-
     var body: some View {
         Button(action: onTap) {
             HStack(alignment: .center, spacing: 14) {
-                ZStack {
-                    Circle().fill(phaseColor.opacity(0.14))
-                    AnthropiconView(name: "anthropicon.agent", size: .large)
-                        .foregroundStyle(phaseColor)
-                }
-                .frame(width: 40, height: 40)
+                AnthropiconView(name: "anthropicon.agent", size: .large)
+                    .foregroundStyle(CodePageTheme.text100Color.resolved(for: colorScheme))
+                    .frame(width: 40, height: 40)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(card.taskName)
                         .font(.custom(CodePageTheme.sansFontName, size: 17,
                                       relativeTo: .body).weight(.semibold))
-                        .foregroundStyle(CodePageTheme.userBubbleText.resolved(for: colorScheme))
+                        .foregroundStyle(CodePageTheme.text100Color.resolved(for: colorScheme))
                         .lineLimit(1)
                         .truncationMode(.tail)
                     Text(subtitle)
@@ -74,8 +69,12 @@ struct SubAgentListRow: View {
         .accessibilityLabel(card.taskName)
         .accessibilityValue(accessibilityValueText)
         .accessibilityHint(String(localized: "查看详情"))
-        .background(CodePageTheme.userBubbleFill.resolved(for: colorScheme),
-                    in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        // The official tool-detail card: the same surface fill, 8 pt corners
+        // and elevation the Code page uses for its DetailSection cards — not
+        // the 24 pt user-bubble material.
+        .background(Color(uiColor: CodePageTheme.codeCardFillUIColor),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .shadow(color: .black.opacity(0.05), radius: 2, x: 0, y: 1)
         .overlay(alignment: .trailing) {
             if stopTasks.count == 1, let task = stopTasks.first {
                 SubAgentStopControl(task: task, showsName: false,

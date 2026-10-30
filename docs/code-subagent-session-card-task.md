@@ -69,10 +69,10 @@
 - 导航标题：「N 个智能体正在运行」（N = 当前活跃卡数；0 时显示「子代理」空态）。
 - 内容：`ScrollView` + `LazyVStack(spacing: 12)`，水平内边距 20，顶部 12。
 - 每卡一行 `SubAgentListRow`：
-  - 容器：大圆角矩形，圆角 24，填充官方 `userBubble` 底色（light `#F0EFEC` / dark `#2C2C2A`），内边距 16。
-  - 左侧：40×40 圆形底 + 官方 agent 图标（`.large` 18×19）；图标/底随 phase 变色（`SubAgentPalette.phase`）。
-  - 中间：标题 17pt semibold `textPrimary`，1 行截断；副标题 15pt `textSecondary`：有 `lastToolName` 时「正在运行 `<tool>`」，否则 `phase.word`；第三行 stats 用现有 metrics 的 glyph+数字（锤子/时钟/上下箭头，13pt）。
-  - 右侧：若该卡**恰好 1 个活跃 task** → 26pt 圆形停止按钮（44pt 命中区）；多 task → 不显示行内停止（进详情逐个停）；已完成 → 无停止。
+  - 容器：**官方工具详情卡材质**——`surface3` 白/深灰（light `#FFFFFF` / dark `#201F1F`），**圆角 8**，`Elevation{0.05, 2, 1}`（黑 5% + 半径 2 + y 1），内边距 16。**不用用户气泡的 `#F0EFEC`/24pt**。
+  - 左侧：40×40 框 + 官方 agent 图标（`.large` 18×19），图标用 `textPrimary`；**不加蓝色 phase 圆底**。
+  - 中间：标题 17pt semibold `textPrimary`，1 行截断；副标题 15pt `text300`（浅色对比度 ≥4.5:1）：有 `lastToolName` 时「正在运行 `<tool>`」，否则 `phase.word`；第三行 stats 用现有 metrics 的 glyph+数字（13pt，中性灰）。
+  - 右侧：若该卡**恰好 1 个活跃 task** → 26pt 圆形停止按钮（44pt 命中区）；**中性 surface 填充 + 0.3 描边 + primary 图标**，不用 accent 蓝；多 task → 不显示行内停止（进详情逐个停）；已完成 → 无停止。
   - 整行可点 → push 详情页；行内停止按钮独立命中，不触发进入详情。
 - 行高随 Dynamic Type；不固定。
 
@@ -85,7 +85,7 @@
 **容器**：同一 sheet 的 NavigationStack push；导航标题 = 子代理标题；系统 Back 返回列表。entry B（工具行）路由保留，但当前主时间线不调用；若从该路由进入，则作为 sheet 根视图显示该卡详情并保留关闭按钮。
 
 **布局（自上而下）**
-1. **stats 行**：沿用现有 `statsRow`（phase 徽章 + 锤子/时钟/箭头 metrics），固定在详情顶部，不随内容滚动；保留现有功能与样式。
+1. **stats 行**：沿用现有 `statsRow` 的功能，但 phase 徽章改中性灰（失败才红），配锤子/时钟/箭头 metrics；固定在详情顶部，不随内容滚动。页面底色用 Code 页 `#F9F9F7 / #151515`。
 2. **对话内容**（`ScrollView`，水平内边距 20）：
    - 提示词气泡：官方 user bubble 底色、圆角 24、内边距 16、正文 17/27.2 `textPrimary`；长提示词超过 300 字可折叠（沿用现有阈值）。
    - 助手内容：**按现 Chat 页（渲染方式=聊天）的样式**渲染，不切 Code 页组件：
@@ -99,7 +99,7 @@
 3. **底部停止**：
    - 固定在 sheet 底部安全区上方，居中；不随滚动。
    - 0 个活跃 task：不显示。
-   - 1 个活跃 task：一枚 44pt 高胶囊「停止智能体」，底色 `userBubble`，文字 17 semibold `textPrimary`。
+   - 1 个活跃 task：一枚 44pt 高胶囊「停止智能体」，**中性 surface 底 + 0.3 描边**，文字 17 semibold `textPrimary`，hug 文本居中。
    - 多个活跃 task：每个 task 一枚胶囊，纵向排列，文字「停止 <label>」（label 沿用 `SubAgentTask.label`）；点哪枚停哪个（保持“一控件一任务”）。
    - stopping 中禁用并显示「正在停止…」。
 
@@ -114,11 +114,12 @@
 - 颜色：`CodePageTheme` 既有官方 token：
   - `textPrimary` light `#0B0B0B` / dark `#F0EFEC`
   - `textSecondary` light `#52514E` / dark `#C3C2B7`
-  - `textDisabled`（U：官方 token 未逐字解出；先用 secondary 的 0.6 alpha）
-  - `userBubble` light `#F0EFEC` / dark `#2C2C2A`
-  - `danger00` light `#8E2626` / dark `#F4ABAB`（现有）
+  - **工具卡 surface（surface3 / codeCardFill）** light `#FFFFFF` / dark `#201F1F`，描边 `codeCardBorder` 0.3 alpha
+  - 卡片 elevation：黑 5% + 半径 2 + y 1
+  - `userBubble` light `#F0EFEC` / dark `#2C2C2A`（**只用于提示词气泡**）
+  - `danger00` light `#8E2626` / dark `#F4ABAB`（仅失败语义）
   - 页面背景 `#F9F9F7` / `#151515`
-- 圆角：列表行 24；提示词气泡 24；停止胶囊 22。
+- 圆角：工具卡/列表行 **8**；提示词气泡 24；停止胶囊用 `Capsule()`。
 - 不新增第三方依赖。
 
 ---

@@ -30,9 +30,11 @@ struct SubAgentRoundButton: View {
                     if state.runningCount > 1 {
                         Text("\(state.runningCount)")
                             .font(.system(size: 9, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(state.hasFailure
+                                             ? Color.white
+                                             : Color(uiColor: .systemBackground))
                             .frame(width: badgeSize, height: badgeSize)
-                            .background(state.hasFailure ? SubAgentPalette.failure : SubAgentPalette.running,
+                            .background(state.hasFailure ? SubAgentPalette.failure : Color.primary,
                                         in: .circle)
                             .offset(x: 3, y: -3)
                     }
@@ -89,8 +91,6 @@ struct SubAgentStopControl: View {
     let action: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @ScaledMetric(relativeTo: .footnote) private var diameter: CGFloat = 26
-    @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.default.rawValue
-    private var accent: AppAccent { AppAccent.resolve(accentValue) }
 
     var body: some View {
         HStack(spacing: 4) {
@@ -103,9 +103,14 @@ struct SubAgentStopControl: View {
             }
             Button(action: action) {
                 AppSymbol("stop.fill", size: 12)
-                    .foregroundStyle(AppTheme.accentForeground(accent, colorScheme))
+                    .foregroundStyle(CodePageTheme.text100Color.resolved(for: colorScheme))
                     .frame(width: diameter, height: diameter)
-                    .background(AppTheme.accentBackground(accent, colorScheme).opacity(isStopping ? 0.42 : 1), in: Circle())
+                    .background(Color(uiColor: CodePageTheme.codeCardFillUIColor)
+                        .opacity(isStopping ? 0.42 : 1), in: Circle())
+                    .overlay {
+                        Circle().stroke(Color(uiColor: CodePageTheme.codeCardBorderUIColor),
+                                        lineWidth: 0.5)
+                    }
                     .frame(minWidth: 44, minHeight: 44)
                     .contentShape(Rectangle())
             }

@@ -204,19 +204,20 @@ Semantic error and availability colors remain separate from the primary color.
   remain individually visible. Hidden items, turn markers, duplicate diff
   artifacts and Claude's interruption/no-response sentinels are filtered like Web.
 - The SubAgent panel (medium/large sheet) opens from the circular entry. The
-  entry's list page shows one large rounded capsule row
-  per active SubAgent in dispatch order — official agent asset, title, the live
+  entry's list page shows one official tool-detail surface card per active
+  SubAgent in dispatch order — `surface3` white/dark fill, 8 pt corners, the
+  0.05/2/1 elevation, the official agent asset, title, the live
   「正在运行 <tool>」 line (or the phase word when no tool is known), and the
-  existing telemetry metrics. A card with one
-  live task also gets the compact stop control on the row; a multi-task card is
-  stopped from its detail page. Tapping a row pushes the detail with the system
-  Back button. The detail keeps the stats strip, draws the dispatch prompt in
-  the official user bubble (long prompts fold), and renders the child activity
-  through the current Chat page's grouping — step-group rows for
-  thinking/tool runs and chat body rows for text. A bottom per-task stop
-  capsule shows 「正在停止…」 while a stop is in flight. Everything reads the
-  persisted timeline items, so a relaunch or another device restores the panel,
-  and a finished SubAgent stays reviewable. SubAgent text never enters the
+  existing telemetry metrics. A card with one live task also gets the compact
+  neutral stop control on the row; a multi-task card is stopped from its detail
+  page. Tapping a row pushes the detail with the system Back button. The detail
+  uses the Code page background, keeps the stats strip (neutral phase badge,
+  failure red only), draws the dispatch prompt in the official user bubble
+  (long prompts fold), and renders the child activity through the current Chat
+  page's grouping — step-group rows for thinking/tool runs and chat body rows
+  for text. A bottom per-task neutral stop capsule shows 「正在停止…」 while a
+  stop is in flight. Everything reads the persisted timeline items, so a
+  relaunch or another device restores the panel. SubAgent text never enters the
   turn's Copy/Share reply.
 - Expanded groups align with the timeline without an extra leading inset. Copy
   and Share appear once after each completed reply turn, following Web's grouping

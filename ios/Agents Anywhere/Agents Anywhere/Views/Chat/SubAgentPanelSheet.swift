@@ -168,6 +168,8 @@ struct SubAgentPanelSheet: View {
                          ? String(localized: "子代理")
                          : String(localized: "\(cards.count) 个智能体正在运行"))
         .navigationBarTitleDisplayMode(.inline)
+        .background(CodePageTheme.pageBackgroundColor.resolved(for: colorScheme)
+            .ignoresSafeArea())
         .overlay {
             if cards.isEmpty { SubAgentPanelEmptyState() }
         }
@@ -201,6 +203,8 @@ struct SubAgentPanelSheet: View {
         .navigationSubtitle(SessionHeaderSubtitle.text(metadata: chat.session.metadata,
             deviceName: deviceName, fallbackRuntimeName: fallbackRuntimeName))
         .navigationBarTitleDisplayMode(.inline)
+        .background(CodePageTheme.pageBackgroundColor.resolved(for: colorScheme)
+            .ignoresSafeArea())
         .onAppear {
             // The pushed page is the one whose activity the store must show,
             // even after a rapid double push/pop leaves a lower page on top.
@@ -241,13 +245,17 @@ struct SubAgentPanelSheet: View {
                                 : String(localized: "停止智能体"))
                             .font(.custom(CodePageTheme.sansFontName, size: 17,
                                           relativeTo: .body).weight(.semibold))
-                            .foregroundStyle(CodePageTheme.userBubbleText.resolved(for: colorScheme))
+                            .foregroundStyle(CodePageTheme.text100Color.resolved(for: colorScheme))
                             .lineLimit(1)
                             .padding(.horizontal, 24)
                             .padding(.vertical, 12)
                             .frame(minHeight: 44)
-                            .background(CodePageTheme.userBubbleFill.resolved(for: colorScheme),
+                            .background(Color(uiColor: CodePageTheme.codeCardFillUIColor),
                                         in: .capsule)
+                            .overlay {
+                                Capsule().stroke(Color(uiColor: CodePageTheme.codeCardBorderUIColor),
+                                                 lineWidth: 0.5)
+                            }
                             .opacity(isStopping ? 0.42 : 1)
                     }
                     .buttonStyle(.plain)
@@ -324,7 +332,11 @@ struct SubAgentPanelSheet: View {
     }
 
     private func statsContent(_ card: SubAgentCard, now: Date?) -> some View {
-        let phaseColor = SubAgentPalette.phase(card.phase)
+        let isFailure = card.phase.isFailure
+        let phaseColor = isFailure ? SubAgentPalette.failure : Color.secondary
+        let phaseText = isFailure
+            ? SubAgentPalette.failure
+            : CodePageTheme.text400Color.resolved(for: colorScheme)
         let metrics = SubAgentProgress.metrics(for: card, now: now)
         return HStack(spacing: 8) {
             HStack(spacing: 8) {
@@ -332,12 +344,12 @@ struct SubAgentPanelSheet: View {
                     Circle().fill(phaseColor).frame(width: 6, height: 6)
                     Text(card.phase.word)
                         .font(.footnote.weight(.medium))
-                        .foregroundStyle(phaseColor)
+                        .foregroundStyle(phaseText)
                         .lineLimit(1)
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
-                .background(phaseColor.opacity(Self.badgeFillOpacity(colorScheme)), in: .capsule)
+                .background(Color(uiColor: .secondarySystemBackground), in: .capsule)
                 if !metrics.isEmpty {
                     // One telemetry strip: glyph + number pairs (⚒ 100  ◷
                     // 37:48  ↑ 380k  ↓ 12k) — pp, 2026-10-21.
@@ -370,12 +382,6 @@ struct SubAgentPanelSheet: View {
         .padding(.horizontal, 20)
         .padding(.top, 8)
         .padding(.bottom, 6)
-    }
-
-    /// Light mode: a 12% wash reads as a chip on white. Dark mode needs more of
-    /// the same color or the chip dissolves into the black background.
-    private static func badgeFillOpacity(_ scheme: ColorScheme) -> Double {
-        scheme == .dark ? 0.20 : 0.12
     }
 
     // MARK: Body

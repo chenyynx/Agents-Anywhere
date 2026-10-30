@@ -1929,7 +1929,7 @@ final class TimelineCollectionController: UIViewController {
         // the page's height on every page (b750 report: viewport pinned at
         // the top through four consecutive pages, offset never moved).
         if historyAnchorSettling {
-            anchorDriver?.enforceReadingPlacement()
+            enforceSettledHistoryPlacement()
         }
         endHistoryAnchorSettling()
         requireNewBottomVisitForLatest()
@@ -2077,11 +2077,48 @@ final class TimelineCollectionController: UIViewController {
             + "into=\(historyAnchorOffsetIntoRow) contentH=\(layout.contentHeight)")
         historySettleTask?.cancel()
         historySettleTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(600))
-            guard !Task.isCancelled, let self, self.historyAnchorSettling else { return }
-            self.anchorDriver?.enforceReadingPlacement()
-            self.endHistoryAnchorSettling()
+            // A gesture at the moment of correction owns the viewport; wait
+            // for it to finish (bounded) instead of fighting the finger.
+            for _ in 0..<15 {
+                try? await Task.sleep(for: .milliseconds(200))
+                guard !Task.isCancelled, let self, self.historyAnchorSettling else { return }
+                if self.isUserScrolling { continue }
+                self.enforceSettledHistoryPlacement()
+                self.endHistoryAnchorSettling()
+                return
+            }
+            self?.endHistoryAnchorSettling()
         }
+    }
+
+    /// Enforce the page's reading anchor, not the driver's live placement.
+    ///
+    /// The apply path rebinds through `reanchorHistoryPageIfNeeded()` before
+    /// every enforcement; the settle task used to trust the driver state.
+    /// Gestures and UIKit scroll events during the request rewrite that state
+    /// from the viewport, and at the top edge `anchor(at:)` names the window's
+    /// *first* item — after the prepend that item's row is the top of the
+    /// newly loaded page. The settle then wrote the apply's own correction
+    /// (4160/7048/7125) back to -97, which also re-armed the near-top
+    /// auto-load latch and looped (b750 report 2026-10-31 02:24).
+    private func enforceSettledHistoryPlacement() {
+        guard let itemID = historyAnchorItemID else {
+            anchorDriver?.enforceReadingPlacement()
+            return
+        }
+        // The settle correction repairs late height changes at the page's
+        // anchor. A reader who has already moved more than a viewport away
+        // owns their position; the apply-time correction is the one that
+        // lands large drift, never this quiet-window pass.
+        if let attributes = layout.attributes(for: itemID) {
+            let target = attributes.frame.minY + historyAnchorOffsetIntoRow
+                - collectionView.adjustedContentInset.top
+            let drift = abs(collectionView.contentOffset.y - target)
+            if drift > max(viewport.visibleHeight, 2_000) { return }
+        }
+        anchorDriver?.beginHistoryPaging(anchorID: itemID,
+                                         offsetIntoRow: historyAnchorOffsetIntoRow)
+        anchorDriver?.endHistoryPaging()   // enforces, then clears its flag
     }
 
     private func endHistoryAnchorSettling() {

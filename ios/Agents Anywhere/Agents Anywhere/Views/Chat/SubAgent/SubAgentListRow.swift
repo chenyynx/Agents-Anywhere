@@ -25,7 +25,7 @@ struct SubAgentListRow: View {
                 HStack(alignment: .center, spacing: 14) {
                     ZStack {
                         Circle().fill(phaseColor.opacity(0.14))
-                        AnthropiconView(name: "anthropicon.agentSimple", size: .large)
+                        AnthropiconView(name: "anthropicon.agent", size: .large)
                             .foregroundStyle(phaseColor)
                     }
                     .frame(width: 40, height: 40)

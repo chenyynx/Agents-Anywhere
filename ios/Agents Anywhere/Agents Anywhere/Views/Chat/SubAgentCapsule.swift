@@ -23,7 +23,7 @@ struct SubAgentRoundButton: View {
                              : .regular.interactive(),
                              in: .circle)
                 .overlay {
-                    AnthropiconView(name: "anthropicon.agentsSimple", size: .large)
+                    AnthropiconView(name: "anthropicon.agent", size: .large)
                         .foregroundStyle(state.hasFailure ? SubAgentPalette.failure : Color.primary)
                 }
                 .overlay(alignment: .topTrailing) {

@@ -53,6 +53,7 @@ nonisolated enum AnthropiconAssets {
         "anthropicon.speaker": [size(15, 15), size(17, 17), size(20, 20)],
         "anthropicon.thumbsUp": [size(13, 14), size(15, 16), size(17, 19)],
         "anthropicon.thumbsDown": [size(13, 14), size(15, 16), size(17, 19)],
+        "anthropicon.agent": [size(13, 14), size(15, 16), size(18, 19)],
         "anthropicon.agentsSimple": [size(15, 12), size(17, 13), size(20, 15)],
         "anthropicon.codeBlock": [size(15, 12), size(17, 13), size(20, 16)],
         "anthropicon.commandLinePrompt": [size(11, 10), size(12, 11), size(14, 13)],

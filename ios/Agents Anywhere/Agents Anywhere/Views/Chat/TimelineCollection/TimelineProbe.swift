@@ -343,7 +343,9 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         if historyEvents.count > Self.maxHistoryEvents {
             historyEvents.removeFirst(historyEvents.count - Self.maxHistoryEvents)
         }
-        revision &+= 1
+        // No `revision` bump: the overlay does not show history lines, and
+        // publishing during a height correction would make the probe itself
+        // participate in the jank it is measuring.
     }
 
     func noteHeightChange(itemID: String, item: TimelineListItem?,

@@ -212,9 +212,16 @@ nonisolated final class TimelineDatabase {
         }
     }
 
-    func latestRows(sessionID: String, limit: Int) throws -> [TimelineRow] {
+    /// Newest rows plus the two metadata fields the local-first latest path
+    /// needs. Deliberately does not read `state_blob`: a return-to-bottom must
+    /// not decode drafts/previews just to decide whether the page is current.
+    func latestRows(sessionID: String, limit: Int) throws
+        -> (cursor: String, hasNewerItems: Bool, rows: [TimelineRow])? {
         try pool.read { db in
-            Array(try Row.fetchAll(db, sql: """
+            guard let meta = try Row.fetchOne(db, sql: """
+                SELECT cursor, has_newer FROM session_meta WHERE session_id = ?
+                """, arguments: [sessionID]) else { return nil }
+            let rows = try Row.fetchAll(db, sql: """
                 SELECT item_id, order_seq, updated_seq, payload
                 FROM timeline_items
                 WHERE session_id = ?
@@ -222,7 +229,9 @@ nonisolated final class TimelineDatabase {
                 LIMIT ?
                 """, arguments: [sessionID, max(1, limit)])
                 .map(Self.timelineRow)
-                .reversed())
+                .reversed()
+            return (cursor: meta["cursor"], hasNewerItems: meta["has_newer"],
+                    rows: Array(rows))
         }
     }
 

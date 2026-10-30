@@ -384,6 +384,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         if view.isDecelerating { counters["changesDecelerating", default: 0] += 1 }
         let attributes = controller.layout.attributes(for: itemID)
         let visible = attributes.map { view.indexPathsForVisibleItems.contains($0.indexPath) } ?? false
+        if !visible { counters["heightChangesOffscreen", default: 0] += 1 }
         let change = HeightChange(at: CACurrentMediaTime(), itemID: itemID,
                                   itemDescription: describe(item), old: old, new: new,
                                   source: source, tier: facts.tier,

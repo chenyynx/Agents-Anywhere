@@ -1229,6 +1229,19 @@ final class TimelineCollectionController: UIViewController {
         guard !pending.isEmpty, columnWidth > 0 else { return }
         let width = columnWidth
         pendingMeasurementTask = Task { @MainActor [weak self] in
+#if AA_TIMELINE_PROBE
+            let probeStart = CACurrentMediaTime()
+            var probeMeasured = 0
+            var probeSkipped = 0
+            var probeScrolled = 0
+            TimelineProbeStore.shared.noteHistory("pending-measure start n=\(pending.count)")
+            defer {
+                TimelineProbeStore.shared.noteHistory(
+                    "pending-measure end n=\(pending.count) measured=\(probeMeasured) "
+                    + "skipped=\(probeSkipped) scrolled=\(probeScrolled) "
+                    + "ms=\(Int(((CACurrentMediaTime() - probeStart) * 1000).rounded()))")
+            }
+#endif
             if let self, let hosted = self.measurer as? TimelineHostingHeightMeasurer {
                 hosted.updateTraitOverrides(from: self.traitCollection)
             }
@@ -1237,11 +1250,19 @@ final class TimelineCollectionController: UIViewController {
                 guard let content = self.content else { return }
                 // Hosted-contract rows are measured by their cell the first
                 // time it materializes; there is nothing to do offscreen.
-                if content.usesCellReportedHeight(for: item) { continue }
+                if content.usesCellReportedHeight(for: item) {
+#if AA_TIMELINE_PROBE
+                    probeSkipped += 1
+#endif
+                    continue
+                }
                 // Parsing Markdown is main-thread work. A pending Code group
                 // measured under a drag is the scroll jank the device reported
                 // on 2026-10-23; the scroll-end callbacks start a fresh pass.
                 if self.collectionView.isTracking || self.collectionView.isDecelerating {
+#if AA_TIMELINE_PROBE
+                    probeScrolled += 1
+#endif
                     return
                 }
                 // A Code group's height comes from its own structural
@@ -1254,6 +1275,9 @@ final class TimelineCollectionController: UIViewController {
                     self.layout.applyMeasuredHeight(
                         exact, for: item.itemID,
                         key: content.heightKey(for: item, width: width))
+#if AA_TIMELINE_PROBE
+                    probeMeasured += 1
+#endif
                     // One row per runloop turn; the next parse must not stack
                     // behind this one inside a single frame.
                     await Task.yield()
@@ -1262,7 +1286,12 @@ final class TimelineCollectionController: UIViewController {
                 // Async Markdown is settled by the visible cell, not by this
                 // hostless loop; retrying an offscreen pass would only burn
                 // main-thread layout for the same 2pt answer.
-                guard content.measurementContent(for: item) == .plainText else { continue }
+                guard content.measurementContent(for: item) == .plainText else {
+#if AA_TIMELINE_PROBE
+                    probeSkipped += 1
+#endif
+                    continue
+                }
                 let key = content.heightKey(for: item, width: width)
                 // Retry briefly; a visible cell's async Markdown is settled by
                 // the visible-cell passes instead of this offscreen loop.
@@ -1270,6 +1299,9 @@ final class TimelineCollectionController: UIViewController {
                     if let height = self.measuredHeight(for: item, width: width) {
                         self.measurementPipeline.complete(item.itemID)
                         self.layout.applyMeasuredHeight(height, for: item.itemID, key: key)
+#if AA_TIMELINE_PROBE
+                        probeMeasured += 1
+#endif
                         break
                     }
                     if attempt < Self.pendingMeasurementAttempts - 1 {

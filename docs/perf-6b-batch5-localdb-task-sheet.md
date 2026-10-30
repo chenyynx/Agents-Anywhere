@@ -22,8 +22,8 @@
 | P1 DB + 影子双写 | ✅ 绿 | run `41008278301` attempt 2（test + build） |
 | P2 读切 DB | ✅ 绿 | run `41009632468`（test + build） |
 | P3a 磁盘翻页 | ✅ 绿 | run `41011391791`（test + build） |
-| P3b 缓存上限 + 设置 | ✅ 绿 | run `41015260898`（test + build，应用默认开启） |
-| P4 不裁窗 + 300 + 200 | 🔄 CI 中 | `3dcd9ff5`（语义变更） |
+| P3b 缓存上限 + 设置 | ✅ 绿 | run `41015260898`（test + build，应用默认开启）；包 **b705** `cf0f82f` |
+| P4 不裁窗 + 300 + 200 | ✅ 绿 | run `41017006975`（test + build）；包 **b707** `720192d`（语义变更） |
 
 ---
 
@@ -499,6 +499,12 @@ CREATE TABLE IF NOT EXISTS schema_state (
 7. Dynamic Type / 深色模式：窗口与行高不破。
 8. 设置 → 缓存：用量显示正确；切 512MB/1GB/不限制 后按新值裁剪；清除缓存后草稿/待发/固定会话仍在。
 9. pinned 会话在缓存超限时不被清；「不限制」超安全线时只裁未 pinned。
+
+**测试包（unsigned，需自行签名）**
+- P3（缓存设置 + 磁盘翻页，应用默认开启）：b**705** `cf0f82f`
+  `https://github.com/chenyynx/Agents-Anywhere/releases/download/ipa-feat-local-timeline-store/AgentsAnywhere-feat-local-timeline-store-b705-cf0f82f.ipa`
+- P4（不裁窗 + 300/200 + 缓存设置）：b**707** `720192d`
+  `https://github.com/chenyynx/Agents-Anywhere/releases/download/ipa-feat-local-timeline-store/AgentsAnywhere-feat-local-timeline-store-b707-720192d.ipa`
 
 ---
 

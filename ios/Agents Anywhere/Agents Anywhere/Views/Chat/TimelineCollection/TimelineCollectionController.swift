@@ -2364,8 +2364,18 @@ final class TimelineCollectionController: UIViewController {
 
     /// The opening's bottom landing was observed; the near-top trigger may
     /// page history again.
+    ///
+    /// "At the bottom" of an empty or sub-viewport window proves nothing: the
+    /// first frames of a cold open sit at the bottom of zero content, and
+    /// releasing the gate there re-opened the near-top trigger before the real
+    /// landing (device report 2026-10-31 03:55: the empty bottom cleared the
+    /// gate at t=0.01, the restored window then sat at the top and paged
+    /// history at t=0.14, whose prepend jumped the offset +6,530).
     private func noteOpeningBottomSettled(_ viewport: TimelineViewport) {
-        guard openingBottomPending, viewport.measuredAtBottom,
+        guard openingBottomPending,
+              viewport.contentHeight > 0,
+              viewport.contentHeight > viewport.visibleHeight + 1,
+              viewport.measuredAtBottom,
               !historyPaging, !historyAnchorSettling else { return }
         openingBottomPending = false
         openingBottomDeadline?.cancel()

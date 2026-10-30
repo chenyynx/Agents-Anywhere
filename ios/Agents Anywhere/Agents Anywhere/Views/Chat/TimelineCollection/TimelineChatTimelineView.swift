@@ -368,7 +368,13 @@ final class TimelineChatBridge: ObservableObject {
     private func loadOlder() {
         guard !navigationSuspended, model.session.isValid,
               model.session.canLoadOlder, !model.session.isLoadingHistory,
-              !isLoadingOlder, let controller else { return }
+              !isLoadingOlder, let controller else {
+            // The one-shot near-top trigger already disarmed when it fired;
+            // no read started, so nothing will move the viewport off the top
+            // to re-arm it. Restore it or the reader must tap the prompt.
+            self.controller?.rearmOlderAutoLoad()
+            return
+        }
         // Capture the row under the viewport top and the current first row
         // before the request. The adapter installs the absolute prepend
         // target on the refresh that brings the new page, before the
@@ -381,14 +387,19 @@ final class TimelineChatBridge: ObservableObject {
         // back to the bottom.
         readerDidTakeOver()
         guard let anchor = controller.visibleAnchorRowID(),
-              let before = adapter.firstRowID else { return }
+              let before = adapter.firstRowID else {
+            controller.rearmOlderAutoLoad()
+            return
+        }
         // The visible row, not the oldest row: the projection must keep the
         // reader's place while it trims the far-old and far-new edges.
         let anchorOrderSeq = adapter.orderSeq(forRowID: anchor)
 #if AA_TIMELINE_PROBE
         TimelineProbeStore.shared.noteHistory(
             "bridge loadOlder anchor=\(anchor) order=\(anchorOrderSeq.map { String($0) } ?? "-") "
-            + "beforeFirst=\(before) items=\(controller.items.count)")
+            + "beforeFirst=\(before) items=\(controller.items.count) "
+            + "older=\(model.session.hasOlderItems ? 1 : 0) "
+            + "local=\(model.session.localOlderAvailable ? 1 : 0)")
 #endif
         // Official-style history paging: the anchor driver keeps the reading
         // placement; the adapter does not install a one-shot firstRowID target.
@@ -409,7 +420,9 @@ final class TimelineChatBridge: ObservableObject {
             TimelineProbeStore.shared.noteHistory(
                 "bridge loadOlder done off=\(self.controller?.collectionView.contentOffset.y ?? -1) "
                 + "items=\(self.controller?.items.count ?? 0) "
-                + "newer=\(self.model.session.hasNewerItems ? 1 : 0)")
+                + "newer=\(self.model.session.hasNewerItems ? 1 : 0) "
+                + "older=\(self.model.session.hasOlderItems ? 1 : 0) "
+                + "local=\(self.model.session.localOlderAvailable ? 1 : 0)")
 #endif
             self.updateHistoryAvailability()
         }

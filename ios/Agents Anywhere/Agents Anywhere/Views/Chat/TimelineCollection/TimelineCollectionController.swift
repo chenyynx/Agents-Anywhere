@@ -1869,6 +1869,15 @@ final class TimelineCollectionController: UIViewController {
         maybeAutoLoadLatest(viewport)
     }
 
+    /// The top trigger is one-shot: it disarms when it fires and only re-arms
+    /// once a viewport sits more than the near-top margin below the top. If
+    /// the bridge rejects the request before a read starts, nothing moves the
+    /// viewport, so the latch would stay disarmed and the reader would have to
+    /// tap the prompt. The bridge calls this on its early-exit guards.
+    func rearmOlderAutoLoad() {
+        olderAutoLoadArmed = true
+    }
+
     /// Re-arms the one-shot bottom trigger when the bridge could not start the
     /// read yet (the opening path was still in flight).
     func rearmLatestAutoLoad() {
@@ -1914,6 +1923,14 @@ final class TimelineCollectionController: UIViewController {
     /// the page arrives, which marks `historyPageArriving`.
     func beginHistoryPaging(anchorRowID: String? = nil) {
         guard TimelineHistoryAnchorMode.enabled else { return }
+        // A page can arrive inside the previous page's 600 ms settle window.
+        // Ending the settle below cancels its task, so the owed placement
+        // correction would never run and the reading row would drift up by
+        // the page's height on every page (b750 report: viewport pinned at
+        // the top through four consecutive pages, offset never moved).
+        if historyAnchorSettling {
+            anchorDriver?.enforceReadingPlacement()
+        }
         endHistoryAnchorSettling()
         requireNewBottomVisitForLatest()
         historyPagingTimeout?.cancel()

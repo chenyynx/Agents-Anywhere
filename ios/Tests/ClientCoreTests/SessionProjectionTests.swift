@@ -96,8 +96,32 @@ import Testing
         #expect(projection.data.items.map(\.id) == ["1", "2", "3", "4"])
         #expect(projection.data.hasNewerItems)
         projection.applyLatest(V2SessionTimelinePage(sessionId: "session", items: try recent.map { try decode($0) }, nextSeq: 11, hasMore: true, serverTime: nil))
-        #expect(projection.data.items.map(\.id) == ["3", "4"])
+        // Returning to the newest edge resolves the newer side but keeps the
+        // history the reader already loaded (pp 2026-10-31: a full history
+        // must not collapse to the latest page).
+        #expect(projection.data.items.map(\.id) == ["1", "2", "3", "4"])
         #expect(!projection.data.hasNewerItems)
+    }
+
+    /// The local-first latest page and the network reconcile both arrive as
+    /// pages smaller than the loaded window. Neither may replace that window:
+    /// the reader who loaded the whole history keeps it after a return to the
+    /// newest edge.
+    @Test func aLatestPageKeepsTheHistoryTheReaderAlreadyLoaded() throws {
+        let all = try (1...12).map { try itemObject(id: "item-\($0)", order: $0) }
+        var projection = V2SessionProjection(snapshot: try snapshot(items: all), maximumItems: 1000)
+        let local = try (10...12).map {
+            try decode(itemObject(id: "item-\($0)", order: $0), as: V2TimelineItem.self)
+        }
+        projection.applyLatest(V2SessionTimelinePage(sessionId: "session", items: local,
+            nextSeq: 12, hasMore: true, serverTime: nil))
+        #expect(projection.data.items.map(\.orderSeq) == Array(1...12))
+        let network = try (7...12).map {
+            try decode(itemObject(id: "item-\($0)", order: $0), as: V2TimelineItem.self)
+        }
+        projection.applyLatest(V2SessionTimelinePage(sessionId: "session", items: network,
+            nextSeq: 12, hasMore: true, serverTime: nil))
+        #expect(projection.data.items.map(\.orderSeq) == Array(1...12))
     }
 
     @Test func historyWindowKeepsTheVisibleAnchorAndTheNewestTail() throws {

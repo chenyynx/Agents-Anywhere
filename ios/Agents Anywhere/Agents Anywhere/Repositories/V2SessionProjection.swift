@@ -231,9 +231,33 @@ struct V2SessionProjection {
         // the window it may replace, but never acknowledges the event cursor.
         let newer = data.items.filter { $0.updatedSeq > page.nextSeq }
         windowAnchor = nil
-        replaceTimeline(page.items, hasMore: page.hasMore)
-        // This page now builds the window, so it also owns the window's read
-        // mode (the panel's loaded gate reads it).
+        // A latest page updates the newest side. It must not drop older rows
+        // the reader already loaded: the local-first page can be tiny (the
+        // 06:12 device report collapsed a full history to its 5-row local
+        // page, then to the 200-row network page). Merge when the page
+        // overlaps the held window; a disjoint page replaces it so a gap can
+        // never leave history paging anchored on an unreachable older row.
+        let windowFirst = data.items.first?.orderSeq
+        let windowLast = data.items.last?.orderSeq
+        let pageFirst = page.items.first?.orderSeq
+        let pageLast = page.items.last?.orderSeq
+        let overlaps: Bool
+        if let windowFirst, let windowLast, let pageFirst, let pageLast {
+            overlaps = pageFirst <= windowLast && pageLast >= windowFirst
+        } else {
+            overlaps = false
+        }
+        if overlaps {
+            // A latest page is server-selected, like a history page: the
+            // newest-edge guards must not reject its newer rows.
+            data.hasNewerItems = false
+            let trim = merge(page.items, history: true)
+            data.hasOlderItems = data.hasOlderItems || page.hasMore || trim.droppedOlder
+        } else {
+            replaceTimeline(page.items, hasMore: page.hasMore)
+        }
+        // This page now defines the window's read mode (the panel's loaded
+        // gate reads it).
         data.windowExcludesAgentChildren = page.excludesAgentChildren
         _ = merge(newer, history: false)
         if hasNewerAfterApply { data.hasNewerItems = true }

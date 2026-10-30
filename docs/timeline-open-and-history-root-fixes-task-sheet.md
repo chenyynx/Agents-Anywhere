@@ -99,3 +99,26 @@
 - CI test + build（Views 不进 test target，看 build job）。
 - 真机：翻历史触发顶部 prompt 增删，页面不得出现空白带；probe 应出现 `cell reconcile` 且不再有对应 `staleCell/fitMismatch`。
 - 未覆盖：t=2.88 历史页 apply 后 offset 从 6833.67 掉到 -97（锚点被顶到窗口顶部）——同一报告的第二个独立问题，见 R8，不在本修复里混改。
+
+## R8 回到最新时整窗被最新页替换（2026-10-31 06:12 报告，"加载了全量消息又自动缩减窗口"）
+
+**证据（b764 探针，`long-message-20261031-061439.txt`）**
+- t=385.17：`offsetJump -48227.7`，offset 48114.7→-113，contentH 48865→334（约 5 行）——读者在已加载的历史底部，窗口被一次 latest 应用缩成 5 行；随后 loadOlder 又把窗口补回（28→68）。
+- 计数器：`applies=2384`、`applyCount=2384`（7 分钟持续更新）；用户描述“全量消息→自动缩到 200 多”。
+- 机制：`V2SessionRepository.loadLatest` 先应用本地 latest 页（可能只有 5 行），再后台对账网络页（约 200 行）；两步都走 `V2SessionProjection.applyLatest`，而 `applyLatest` 用 `replaceTimeline(page.items)` 整窗替换，丢掉了读者已加载的旧行。
+
+**根因**
+- `applyLatest` 把 latest 页当作“整窗定义”，而不是“更新最新侧”；本地优先页/网络对账页都比已加载窗口小，替换即缩窗。
+
+**修法**
+- `applyLatest` 先判断 latest 页与当前窗口是否重叠（`pageFirst <= windowLast && pageLast >= windowFirst`）：
+  - 重叠：以 server-selected 语义 merge（`history: true`）进现有窗口，清 `hasNewerItems` 后合并页外 socket 行；保留旧行（内存上限仍由 `maximumItems`/`applyWindow` 约束）。
+  - 不重叠/空页：保持原 `replaceTimeline`，避免留下无法回填的中间空洞。
+- `hasOlderItems` 保留旧值再并上页的 `hasMore` 与 trim 结果。
+
+**测试**
+- 修改 `boundedHistoryWindowAndReturningToLatest`：回到最新后保留 `["1","2","3","4"]`，仅清 newer 标记。
+- 新增 `aLatestPageKeepsTheHistoryTheReaderAlreadyLoaded`：12 行窗口，本地 3 行页 + 网络 6 行页，窗口必须仍是 1…12（旧实现会缩到 3/6 行）。
+
+**未覆盖**
+- 超过 `maximumItems`（1000）的窗口回到最新仍会裁到 1000（内存上限，见 `applyWindow` 的 latest 规则）；本次不放大上限。

@@ -348,6 +348,12 @@ final class TimelineChatBridge: ObservableObject {
     func viewportChanged(_ viewport: TimelineViewport) {
         let atBottom = viewport.measuredAtBottom
         guard atBottom != wasAtBottom else { return }
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteHistory(
+            "bridge viewport bottom=\(wasAtBottom ? 1 : 0)->\(atBottom ? 1 : 0) "
+            + "off=\(viewport.offsetY) contentH=\(viewport.contentHeight) "
+            + "visH=\(viewport.visibleHeight) inset=\(viewport.topInset)")
+#endif
         wasAtBottom = atBottom
         if atBottom {
             model.session.followLatest()
@@ -404,6 +410,11 @@ final class TimelineChatBridge: ObservableObject {
         guard !navigationSuspended, model.session.isValid,
               model.session.hasNewerItems, !model.session.isLoadingHistory,
               !isLoadingLatest else { return }
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteHistory(
+            "bridge loadLatest auto=\(auto ? 1 : 0) off=\(controller?.collectionView.contentOffset.y ?? -1) "
+            + "items=\(controller?.items.count ?? 0)")
+#endif
         isLoadingLatest = true
         updateHistoryAvailability()
         // The newer window can replace every row before the post-await return

@@ -262,9 +262,13 @@ final class TimelineAnchorDriver {
         guard case .reading = state.placement else { return }
         guard let target = state.placement.target(in: geometry()) else { return }
 #if AA_TIMELINE_PROBE
-        TimelineProbeStore.shared.noteHistory(
-            "driver enforce target=\(target) pos=\(view.contentOffset.y) "
-            + "delta=\(target - view.contentOffset.y)")
+        // Only an actual write is interesting; a no-op resolution would
+        // otherwise flood the ring during a page's estimate settlement.
+        if abs(target - view.contentOffset.y) > 0.5 {
+            TimelineProbeStore.shared.noteHistory(
+                "driver enforce target=\(target) pos=\(view.contentOffset.y) "
+                + "delta=\(target - view.contentOffset.y)")
+        }
 #endif
         stopMover()
         if state.motion != .resting { state.motion = .resting }

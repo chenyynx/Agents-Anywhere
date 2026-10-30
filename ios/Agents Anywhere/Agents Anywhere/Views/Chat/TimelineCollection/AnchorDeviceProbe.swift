@@ -65,12 +65,19 @@ final class AnchorDeviceProbe: NSObject {
     }
 
     var report: String {
-        lines.isEmpty ? "（还没有记录：先在 Code 会话里点几次输入框）" : lines.joined(separator: "\n")
+        let anchor = lines.isEmpty
+            ? "（还没有记录：先在 Code 会话里点几次输入框）"
+            : lines.joined(separator: "\n")
+        // The product-side pill is the one users find first. Append the
+        // structured timeline report here as well, so a copy from either
+        // probe includes the history request/apply sequence.
+        return anchor + "\n\n=== TIMELINE PROBE ===\n" + TimelineProbeStore.shared.report()
     }
 
     func clear() {
         lines.removeAll()
         started = CACurrentMediaTime()
+        TimelineProbeStore.shared.reset()
     }
 
     private func append(_ line: String) {

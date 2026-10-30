@@ -260,7 +260,14 @@ final class TimelineAnchorDriver {
     func enforceReadingPlacement() {
         guard let view = scrollView else { return }
         guard case .reading = state.placement else { return }
-        guard let target = state.placement.target(in: geometry()) else { return }
+        guard let target = state.placement.target(in: geometry()) else {
+#if AA_TIMELINE_PROBE
+            TimelineProbeStore.shared.noteHistory(
+                "driver enforce target=nil pos=\(view.contentOffset.y) "
+                + "placement=\(state.placement)")
+#endif
+            return
+        }
 #if AA_TIMELINE_PROBE
         // Only a write during the paging path is worth a line: a no-op
         // resolution, or the post-apply reducer's own corrections, would

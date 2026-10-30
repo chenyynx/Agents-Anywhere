@@ -42,7 +42,8 @@ import Testing
 
     @Test func anUnarmedReturnCannotLand() {
         var policy = TimelinePagingPolicy()
-        #expect(!policy.resolveBottomReturn())
+        let resolve = policy.resolveBottomReturn()
+        #expect(!resolve)
     }
 
     @Test func aReaderMoveClearsTheOpeningGate() {

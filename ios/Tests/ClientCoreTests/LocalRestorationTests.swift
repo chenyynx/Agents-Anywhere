@@ -51,7 +51,7 @@ import Testing
         #expect(chat.headerStatus == .networkOffline)
         restored.reset(); await store.close(removing: true)
     }
-    @Test func openingLargeDiskCacheOfflineStillStartsWithOnePage() async throws {
+    @Test func openingLargeDiskCacheOfflineKeepsTheWindow() async throws {
         let url = location(); defer { try? FileManager.default.removeItem(at: url) }
         let store = V2LocalStore(directory: url)
         let http = TestHTTPTransport()
@@ -65,8 +65,9 @@ import Testing
         let restored = repo(http, local: store)
         restored.updateConnectivity(.init(availability: .offline))
         let opening = try await restored.open(sessionId: "session")
-        #expect(opening.items.map(\.orderSeq) == Array(201...300))
-        #expect(opening.hasOlderItems && !opening.hasNewerItems && http.calls.isEmpty)
+        #expect(opening.items.map(\.orderSeq) == Array(1...300))
+        #expect(!opening.hasOlderItems && !opening.localOlderAvailable
+            && !opening.hasNewerItems && http.calls.isEmpty)
         #expect(restored.session(id: "session").draft == "Keep my draft")
         restored.reset(); first.reset(); await store.close(removing: true)
     }
@@ -75,7 +76,7 @@ import Testing
         let store = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
         let http = TestHTTPTransport()
         let first = repo(http, local: store)
-        let data = V2SessionData(snapshot: try snapshot(items: (1...300).map {
+        let data = V2SessionData(snapshot: try snapshot(items: (1...500).map {
             try itemObject(id: "item-\($0)", order: $0)
         }))
         let session = first.session(id: "session")
@@ -88,7 +89,7 @@ import Testing
         let restored = repo(http, local: reopenedStore)
         restored.updateConnectivity(.init(availability: .offline))
         let opening = try await restored.open(sessionId: "session")
-        #expect(opening.items.map(\.orderSeq) == Array(201...300))
+        #expect(opening.items.map(\.orderSeq) == Array(201...500))
         #expect(opening.localOlderAvailable && opening.canLoadOlder)
         #expect(restored.session(id: "session").draft == "db draft")
         #expect(http.calls.isEmpty)
@@ -99,7 +100,7 @@ import Testing
         let url = location(); defer { try? FileManager.default.removeItem(at: url) }
         let store = V2LocalStore(directory: url, timelineDatabaseEnabled: false)
         let first = repo(TestHTTPTransport(), local: store)
-        let data = V2SessionData(snapshot: try snapshot(items: (1...120).map {
+        let data = V2SessionData(snapshot: try snapshot(items: (1...400).map {
             try itemObject(id: "item-\($0)", order: $0)
         }))
         await store.saveSession(V2SessionArchive(data: data, model: first.session(id: "session")))
@@ -112,14 +113,14 @@ import Testing
         let restored = repo(http, local: reopened)
         restored.updateConnectivity(.init(availability: .offline))
         let opening = try await restored.open(sessionId: "session")
-        #expect(opening.items.map(\.orderSeq) == Array(21...120))
+        #expect(opening.items.map(\.orderSeq) == Array(101...400))
         #expect(opening.localOlderAvailable)
         #expect(http.calls.isEmpty)
         restored.reset(); await reopened.close(removing: false)
 
         let database = try TimelineDatabase(path: databasePath(url))
         defer { try? database.close() }
-        #expect(try database.rowCount(sessionID: "session") == 120)
+        #expect(try database.rowCount(sessionID: "session") == 400)
     }
 
     @Test func corruptionEvictionAndSignedOutWritesDoNotTrapTheReader() async throws {

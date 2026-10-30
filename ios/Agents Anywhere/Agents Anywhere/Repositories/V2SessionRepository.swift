@@ -3,13 +3,14 @@ import Foundation
 nonisolated struct V2SessionCachePolicy {
     /// Sessions resident at once, sized to the recently active working set so
     /// returning to a session after a background or app switch is served from
-    /// cache instead of the network. The local store's per-file (64MB) and
-    /// total (128MB) budgets plus the LRU eviction below still bound disk use.
+    /// cache instead of the network. Disk use is bounded by the user's cache
+    /// limit (`LocalCachePolicy`) and the row store's per-session cap.
     var maximumSessions = 20
     var maximumTimelineItems = 1000
-    /// Rows read from the local store when a session opens. P2 keeps the
-    /// current 100-row behavior; P4 raises it to 300 with the no-trim change.
-    var openingWindow = 100
+    /// Rows read from the local store when a session opens.
+    var openingWindow = 300
+    /// One history/latest page, aligned with the official Code events page.
+    var networkPageSize = 200
     var catalogLifetime: TimeInterval = 30
 }
 
@@ -196,9 +197,8 @@ final class V2SessionRepository {
         entry.readVersion += 1
         entry.historyTask?.cancel()
         entry.historyTask = nil
-        // Trim before a possible latest-page request so an offline fallback
-        // also stays bounded and cannot remount the entire cached history.
-        if entry.projection?.limitToLatest(100) == true { emit(entry) }
+        // Opening keeps the restored window: the row store and the in-memory
+        // cap already bound it, and a trim here was what re-loaded history.
         let window = entry.projection?.data
         // A cached window can hold only SubAgent child rows: the server used
         // to return them inside the latest page, and L2.1 drops all of them
@@ -208,7 +208,7 @@ final class V2SessionRepository {
         let windowHoldsNoMainRow = window?.items.contains { SubAgentProgress.parentItemID($0) == nil } == false
         if window?.hasNewerItems == true
             || (network.availability != .offline && window?.hasOlderItems == true && windowHoldsNoMainRow) {
-            return try await loadLatest(sessionId: sessionId, limit: 100)
+            return try await loadLatest(sessionId: sessionId, limit: policy.networkPageSize)
         }
         return entry.projection!.data
     }
@@ -323,7 +323,8 @@ final class V2SessionRepository {
         return try await hydrate(entry)
     }
 
-    func loadOlder(sessionId: V2SessionID, limit: Int = 100) async throws -> V2SessionData {
+    func loadOlder(sessionId: V2SessionID, limit: Int? = nil) async throws -> V2SessionData {
+        let pageLimit = limit ?? policy.networkPageSize
         _ = try await load(sessionId: sessionId)
         let entry = entry(for: sessionId)
         if let task = entry.historyTask { return try await task.value }
@@ -339,7 +340,7 @@ final class V2SessionRepository {
             // disk's own boundary.
             if let localStore,
                let local = await localStore.olderRows(sessionID: sessionId,
-                                                      beforeOrderSeq: before, limit: limit),
+                                                      beforeOrderSeq: before, limit: pageLimit),
                !local.items.isEmpty {
                 try requireCurrent(entry, version: version)
                 let page = V2SessionTimelinePage(
@@ -358,7 +359,7 @@ final class V2SessionRepository {
             }
             try requireNetwork()
             let page = try await detail.loadOlderItems(sessionId: sessionId, beforeOrderSeq: before,
-                limit: limit, excludeAgentChildren: true)
+                limit: pageLimit, excludeAgentChildren: true)
             try requireCurrent(entry, version: version)
             entry.projection?.applyHistory(page)
             if let localStore,
@@ -374,7 +375,8 @@ final class V2SessionRepository {
         return try await task.value
     }
 
-    func loadLatest(sessionId: V2SessionID, limit: Int = 100) async throws -> V2SessionData {
+    func loadLatest(sessionId: V2SessionID, limit: Int? = nil) async throws -> V2SessionData {
+        let pageLimit = limit ?? policy.networkPageSize
         _ = try await load(sessionId: sessionId)
         let entry = entry(for: sessionId)
         entry.readVersion += 1
@@ -385,7 +387,7 @@ final class V2SessionRepository {
         // store. If the store cannot prove it has rows beyond the current
         // window, fall through to the network read.
         if let localStore,
-           let local = await localStore.latestRows(sessionID: sessionId, limit: limit),
+           let local = await localStore.latestRows(sessionID: sessionId, limit: pageLimit),
            let newest = local.items.last?.orderSeq,
            let end = entry.projection?.data.items.last?.orderSeq,
            newest > end {
@@ -401,7 +403,7 @@ final class V2SessionRepository {
             return entry.projection!.data
         }
         try requireNetwork()
-        let page = try await detail.latestItems(sessionId: sessionId, limit: limit, excludeAgentChildren: true)
+        let page = try await detail.latestItems(sessionId: sessionId, limit: pageLimit, excludeAgentChildren: true)
         try requireCurrent(entry, version: version)
         entry.projection?.applyLatest(page)
         emit(entry)

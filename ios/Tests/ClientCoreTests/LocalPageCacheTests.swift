@@ -21,22 +21,22 @@ import Testing
 
     @Test func olderPagesComeFromDiskWithoutNetwork() async throws {
         let url = location(); defer { try? FileManager.default.removeItem(at: url) }
-        try await seed(V2LocalStore(directory: url, timelineDatabaseEnabled: true), count: 300)
+        try await seed(V2LocalStore(directory: url, timelineDatabaseEnabled: true), count: 600)
 
         let http = TestHTTPTransport()
         let store = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
         let repo = repository(transport: http, localStore: store)
         repo.updateConnectivity(.init(availability: .offline))
         let opening = try await repo.open(sessionId: "session")
-        #expect(opening.items.map(\.orderSeq) == Array(201...300))
+        #expect(opening.items.map(\.orderSeq) == Array(301...600))
         #expect(opening.localOlderAvailable && opening.canLoadOlder)
 
         let first = try await repo.loadOlder(sessionId: "session")
-        #expect(first.items.map(\.orderSeq) == Array(101...300))
+        #expect(first.items.map(\.orderSeq) == Array(101...600))
         #expect(first.localOlderAvailable && first.canLoadOlder)
 
         let second = try await repo.loadOlder(sessionId: "session")
-        #expect(second.items.map(\.orderSeq) == Array(1...300))
+        #expect(second.items.map(\.orderSeq) == Array(1...600))
         #expect(!second.localOlderAvailable && !second.canLoadOlder)
         #expect(http.calls.isEmpty)
 
@@ -45,7 +45,7 @@ import Testing
 
     @Test func latestPagesComeFromDiskAfterTheWindowSlides() async throws {
         let url = location(); defer { try? FileManager.default.removeItem(at: url) }
-        try await seed(V2LocalStore(directory: url, timelineDatabaseEnabled: true), count: 300)
+        try await seed(V2LocalStore(directory: url, timelineDatabaseEnabled: true), count: 600)
 
         let http = TestHTTPTransport()
         let store = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
@@ -56,11 +56,11 @@ import Testing
         _ = try await repo.open(sessionId: "session")
 
         let older = try await repo.loadOlder(sessionId: "session")
-        #expect(older.items.map(\.orderSeq) == Array(101...250))
+        #expect(older.items.map(\.orderSeq) == Array(251...400))
         #expect(older.hasNewerItems)
 
         let latest = try await repo.loadLatest(sessionId: "session")
-        #expect(latest.items.map(\.orderSeq) == Array(201...300))
+        #expect(latest.items.map(\.orderSeq) == Array(401...600))
         #expect(!latest.hasNewerItems)
         #expect(latest.localOlderAvailable)
         #expect(http.calls.isEmpty)

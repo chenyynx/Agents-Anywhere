@@ -62,10 +62,14 @@ actor V2LocalStore {
             do { try database.replace(archive.timelineSnapshot()) }
             catch { Self.log.error("timeline lazy import failed: \(String(describing: error), privacy: .public)") }
         }
+        // The JSON archive is the older store: bound its opening read the same
+        // way the row store bounds a database read.
+        let windowed = max(1, window)
+        let items = archive.items.compactMap { try? V2TimelineItem(json: $0) }
         return V2SessionRestore(archive: archive,
-            items: archive.items.compactMap { try? V2TimelineItem(json: $0) },
+            items: Array(items.suffix(windowed)),
             subAgentActivity: activity,
-            localHasOlderRows: archive.items.count > max(1, window))
+            localHasOlderRows: items.count > windowed)
     }
     /// Older rows for the paging path. `nil` means the row store is not
     /// available; an empty page means the store has no older row.

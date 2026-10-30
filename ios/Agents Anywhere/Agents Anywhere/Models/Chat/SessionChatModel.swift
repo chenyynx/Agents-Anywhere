@@ -5,6 +5,8 @@ import Observation
 final class SessionChatModel {
     let session: V2SessionModel
     let timeline = SessionTimelinePresentation()
+    /// The same opening window `V2SessionCachePolicy` reads from disk.
+    private static let openingWindow = 300
     let settings = ConversationSettings()
     let disclosures = TimelineDisclosureState()
     var takeoverError: String?
@@ -256,10 +258,11 @@ final class SessionChatModel {
         }
         openingError = nil
         // A memory-cached visit presents before any network read so the page is
-        // usable immediately (D3). The window is trimmed exactly like open()
-        // trims it, so the later refresh cannot remove rows the reader sees.
+        // usable immediately (D3). Present the same opening window the store
+        // reads, so the later refresh cannot remove rows the reader sees.
         if session.isValid, let cached = repository.cached(sessionId: session.id) {
-            timeline.presentOpening(Array(cached.items.suffix(100)), pendingMessages: session.pendingMessages)
+            timeline.presentOpening(Array(cached.items.suffix(Self.openingWindow)),
+                                    pendingMessages: session.pendingMessages)
             isOpeningPrepared = true
         }
         do {

@@ -190,12 +190,10 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         #expect(model.isOpeningReady && model.openingError == nil)
     }
 
-    /// R-a guard — the early window is trimmed exactly like `open()` trims the
-    /// projection: when the cached visit holds more than one page, the reader
-    /// sees the newest 100 rows, so a later refresh can never remove a row
-    /// that was already presented. Dropping `.suffix(100)` in
-    /// `prepareOpening` presents the untrimmed cache and turns this red.
-    @Test func cachedOpeningPresentsTheTrimmedWindowWhileTheRefreshIsBlocked() async throws {
+    /// R-a guard — the early presentation uses the same opening window as the
+    /// store. With no opening trim, the cached visit keeps its whole window,
+    /// so a later refresh cannot remove a row the reader already saw.
+    @Test func cachedOpeningPresentsTheCachedWindowWhileTheRefreshIsBlocked() async throws {
         let http = TestHTTPTransport()
         let gate = TestGate()
         var latestStarted = false
@@ -226,8 +224,8 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         defer { gate.release(); opening.cancel() }
         try await eventually { latestStarted }
         // The refresh is still blocked in the network. The cached window was
-        // presented before it, trimmed to the newest 100 rows.
-        #expect(model.timeline.rows.map(\.id) == (21...120).map { "reply-\($0)" })
+        // presented before it, without an opening trim.
+        #expect(model.timeline.rows.map(\.id) == (1...120).map { "reply-\($0)" })
         gate.release()
         await opening.value
         #expect(model.isOpeningReady && model.openingError == nil)

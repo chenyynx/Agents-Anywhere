@@ -81,7 +81,7 @@ struct SubAgentListRow: View {
     /// same one the capsule and panel read; no new wire field.
     private var subtitle: String {
         if card.phase.isActive, let tool = card.liveTasks.first?.lastToolName, !tool.isEmpty {
-            return "\(card.phase.word) · \(tool)"
+            return String(localized: "正在运行 \(tool)")
         }
         return card.phase.word
     }

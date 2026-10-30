@@ -63,7 +63,9 @@ permissions:
 jobs:
   test:
     runs-on: macos-26
-    timeout-minutes: 45
+    # diag: shortened so a hung `swift test` times out normally (timeout
+    # keeps the job log; a force-cancelled step never uploads one).
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
 

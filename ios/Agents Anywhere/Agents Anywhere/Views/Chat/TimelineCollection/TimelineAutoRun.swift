@@ -2529,6 +2529,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         let before = controller.screenY(for: anchorItem) ?? 0
         let offsetBefore = controller.collectionView.contentOffset.y
         let contentHeightBefore = controller.collectionView.contentSize.height
+        let stateBefore = controller.debugAnchorState
         controller.beginHistoryPaging(anchorRowID: anchorRow)
         guard controller.historyPaging else {
             failures.append("prepend reading anchor: history paging disabled")
@@ -2557,6 +2558,8 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             "contentHeightBefore": contentHeightBefore,
             "contentHeightAfter": controller.collectionView.contentSize.height,
             "historyPaging": controller.historyPaging,
+            "stateBefore": stateBefore,
+            "stateAfter": controller.debugAnchorState,
         ] as [String: Any]
     }
 

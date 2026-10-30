@@ -447,6 +447,7 @@ final class TimelineCollectionController: UIViewController {
                     cell.onContentHeightReport = nil
                 }
                 cell.configure(content.rowView(for: item),
+                               itemID: item.itemID,
                                policy: content.heightPolicy(for: item),
                                isMeasured: isMeasured,
                                reportsContentHeight: reportsContentHeight,
@@ -736,6 +737,15 @@ final class TimelineCollectionController: UIViewController {
             self.publishViewport()
             if self.layout.insertionOwedIsSettled {
                 self.insertionProjection = nil
+            }
+            // A structural snapshot (window replacement, prompt/trim count
+            // change) can move visible cells across index paths. Reconcile
+            // them in this update, before the next frame: the deferred
+            // 50 ms pass skips hosted rows and cannot repair a cell that
+            // renders the previous item's content in the wrong frame.
+            if windowReplaced || items.count != oldItems.count {
+                self.collectionView.layoutIfNeeded()
+                self.syncVisibleCellFrames(forceHosted: true, layoutNow: true)
             }
             self.performPendingSnapshotUpdate()
         }
@@ -1785,28 +1795,67 @@ final class TimelineCollectionController: UIViewController {
         }
     }
 
-    private func syncVisibleCellFrames() {
+    /// `forceHosted` runs right after a structural window change. UIKit can
+    /// move a hosted cell to another index path without rebinding it there;
+    /// the cell keeps the previous item's content and frame, and its 53 pt of
+    /// content sits in a 1821 pt frame — most of the viewport blank (device
+    /// probe 2026-10-31 05:56: a window trim at 18.23 left frameH=1821,
+    /// fit=53, visible=1). Hosted rows normally own their frames through
+    /// height reports, so only this forced pass checks them; a cell whose
+    /// configured item does not match its index path is reconfigured.
+    private func syncVisibleCellFrames(forceHosted: Bool = false,
+                                       layoutNow: Bool = false) {
         guard isViewLoaded, !navigationSuspended, !isPerformingSnapshot,
               phase.phase != .animating, !collectionView.isTracking,
               !collectionView.isDecelerating else { return }
         var stale: [IndexPath] = []
+        var wrongContent: [IndexPath] = []
         for indexPath in collectionView.indexPathsForVisibleItems {
-            // Hosted-contract rows invalidate their own row and the rows below
-            // when a height lands; a frame-sync pass here would race it.
             guard currentItems.indices.contains(indexPath.item) else { continue }
-            if let content,
-               content.usesCellReportedHeight(for: currentItems[indexPath.item]) { continue }
+            let item = currentItems[indexPath.item]
             guard let cell = collectionView.cellForItem(at: indexPath),
                   let attributes = layout.layoutAttributesForItem(at: indexPath) else { continue }
+            let contentMismatch: Bool
+            if let hosting = cell as? TimelineHostingCell,
+               hosting.itemID != item.itemID {
+                // A nil id is a visible cell whose configuration never ran;
+                // it draws nothing, which is exactly the blank this repairs.
+                wrongContent.append(indexPath)
+                contentMismatch = true
+            } else {
+                contentMismatch = false
+            }
+            // Hosted-contract rows invalidate their own row and the rows below
+            // when a height lands; a frame-sync pass here would race it. A
+            // content mismatch is not a height report, so it is checked even
+            // without the forced pass.
+            if !forceHosted, !contentMismatch, let content,
+               content.usesCellReportedHeight(for: item) { continue }
             if abs(cell.frame.minY - attributes.frame.minY) > 0.5
                 || abs(cell.frame.height - attributes.frame.height) > 0.5 {
                 stale.append(indexPath)
             }
         }
-        guard !stale.isEmpty else { return }
+#if AA_TIMELINE_PROBE
+        if !wrongContent.isEmpty || (forceHosted && !stale.isEmpty) {
+            TimelineProbeStore.shared.noteHistory(
+                "cell reconcile rebind=\(wrongContent.count) frame=\(stale.count) "
+                + "force=\(forceHosted ? 1 : 0)")
+        }
+#endif
+        if !wrongContent.isEmpty {
+            UIView.performWithoutAnimation {
+                collectionView.reconfigureItems(at: wrongContent)
+            }
+        }
+        guard !stale.isEmpty else {
+            if layoutNow { collectionView.layoutIfNeeded() }
+            return
+        }
         let context = UICollectionViewLayoutInvalidationContext()
         context.invalidateItems(at: stale)
         collectionView.collectionViewLayout.invalidateLayout(with: context)
+        if layoutNow { collectionView.layoutIfNeeded() }
     }
 
     // MARK: - Viewport and bottom

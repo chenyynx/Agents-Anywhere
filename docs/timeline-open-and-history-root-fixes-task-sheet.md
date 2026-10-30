@@ -77,3 +77,25 @@
 - CI test + build（Views 不在 test target，必须看 build job）。
 - 真机：打开"最后事件是压缩分隔行 + 稍后 step group"的会话，分隔行高度不得变化，页脚应位于最后一条回复下。
 - 未覆盖：开屏 179 行 apply 的 258ms 主线程尖峰（步骤 7）；窗口替换瞬间的屏外 staleCell（步骤 5 证据包）。
+
+## R7 加载历史后可见 cell 错配 → 大片空白（2026-10-31 05:56 报告）
+
+**证据（b764 探针，`long-message-20261031-060408.txt`）**
+- t=18.23 apply：`items 239→238`、`changed=0`（顶部 prompt 行被移除，整窗索引平移）。
+- t=18.24 `[staleCell]` + `[fitMismatch]`：可见 cell `g:090732b8…` `frameH=1821 fit=53`（1768pt 空白），另一 cell `g:msg_e6ead750…` `frameH=44 fit=1821`——两个 cell 的内容/行高互换；`visible=1`，`maxStaleDelta=1777`。
+- 现有 `syncVisibleCellFrames` 在 50ms 后才跑，且对 `usesCellReportedHeight` 的 hosted 行直接 `continue`，所以这条 1768pt 空白带没被修；下一次 apply（t=18.40）才恢复。用户看到的就是“加载页面空白”。
+- 同报告的 ±30k/47k 位移不是缺陷：21.95 与 24.43 的落点 56836 精确等于 `57481 − 645`（右下角回底按钮的 one-viewport pre-place），20.4–21.3 是 `askedForStart` 的整距弹簧；均为显式滚动请求。
+
+**根因**
+- 结构性快照（窗口替换 / prompt 行增删）会改变全部 index path；UIKit 可能把 cell 移到新 index path 但没有重新绑定内容。`TimelineHostingCell` 没有记录自己配置的是哪个 item，controller 的可见校正又跳过 hosted 行，于是 cell 以旧内容 + 旧 frame 留在屏幕上，短行内容被拉进 1821pt 的 frame，剩余区域全空。
+
+**修法**
+- `TimelineHostingCell` 记录 `itemID`（configure 时写入，reuse 清空）。
+- `syncVisibleCellFrames(forceHosted:layoutNow:)`：可见 cell 的 `itemID` 与当前 item 不符（含 nil）→ `reconfigureItems` 重新绑定；force 模式下同时检查 hosted 行 frame，失配即 invalidate 并同步 `layoutIfNeeded`。
+- 结构性 apply（`windowReplaced || items.count != oldItems.count`）在 apply completion 内立即 `layoutIfNeeded` + 强制 reconcile，不再等 50ms。
+- 探针新增 `cell reconcile rebind=N frame=N force=N` 一行（H 区），下次真机报告可直接验证。
+
+**验证（待做）**
+- CI test + build（Views 不进 test target，看 build job）。
+- 真机：翻历史触发顶部 prompt 增删，页面不得出现空白带；probe 应出现 `cell reconcile` 且不再有对应 `staleCell/fitMismatch`。
+- 未覆盖：t=2.88 历史页 apply 后 offset 从 6833.67 掉到 -97（锚点被顶到窗口顶部）——同一报告的第二个独立问题，见 R8，不在本修复里混改。

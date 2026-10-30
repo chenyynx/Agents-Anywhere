@@ -36,6 +36,13 @@ final class TimelineHostingCell: UICollectionViewCell {
     /// content has completed its own layout pass; the layout writes it as the
     /// row's first measurement.
     private var seededHeight: CGFloat?
+    /// The item this cell was last configured for. The controller's visible
+    /// reconcile uses it to catch a cell that UIKit moved across index paths
+    /// without rebinding: a cell still hosting the previous item draws that
+    /// item's content into the new item's frame (device probe 2026-10-31
+    /// 05:56: a 53 pt row's cell stretched to 1821 pt → most of the screen
+    /// blank).
+    private(set) var itemID: String?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -50,9 +57,10 @@ final class TimelineHostingCell: UICollectionViewCell {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func configure(_ view: AnyView, policy: TimelineRowHeightPolicy,
+    func configure(_ view: AnyView, itemID: String, policy: TimelineRowHeightPolicy,
                    isMeasured: Bool, reportsContentHeight: Bool,
                    seededHeight: CGFloat? = nil) {
+        self.itemID = itemID
         self.policy = policy
         self.isMeasured = isMeasured
         // `configurationToken` and the seed share one lifetime: a later
@@ -108,6 +116,7 @@ final class TimelineHostingCell: UICollectionViewCell {
         super.prepareForReuse()
         configurationToken &+= 1
         contentConfiguration = nil
+        itemID = nil
         policy = .measured
         isMeasured = false
         seededHeight = nil

@@ -467,7 +467,7 @@ final class TimelineChatBridge: ObservableObject {
             zeroProgressContinuations = 0
             return
         }
-        guard zeroProgressContinuations < Self.zeroProgressContinuationsLimit else {
+        guard zeroProgressContinuations < Self.zeroProgressContinuationLimit else {
             zeroProgressContinuations = 0
             return
         }

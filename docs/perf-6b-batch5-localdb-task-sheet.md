@@ -14,6 +14,17 @@
 「**磁盘行级缓存 + 打开恢复有界窗口 + 上滑先读磁盘**」，
 根治症状 1/2/3，同时不增加内存上限、不改视觉。
 
+### 0.1 实施状态（2026-10-30）
+
+| 阶段 | 状态 | 证据 |
+|---|---|---|
+| P0 基线 | ✅ 绿 | run `41006146070` attempt 2（首次为已知 flake） |
+| P1 DB + 影子双写 | ✅ 绿 | run `41008278301` attempt 2（test + build） |
+| P2 读切 DB | ✅ 绿 | run `41009632468`（test + build） |
+| P3a 磁盘翻页 | ✅ 绿 | run `41011391791`（test + build） |
+| P3b 缓存上限 + 设置 | ✅ 绿 | run `41015260898`（test + build，应用默认开启） |
+| P4 不裁窗 + 300 + 200 | 🔄 CI 中 | `3dcd9ff5`（语义变更） |
+
 ---
 
 ## 1. 目标 / 非目标
@@ -94,10 +105,13 @@
 
 - `ios/Tests/ClientCoreTests/SessionRepositoryTests.swift:8`
   `openingStartsWithOnePageAndExplicitHistoryAccumulatesAgain`
+  → P4 改为 `openingKeepsTheAccumulatedWindowAndExplicitHistoryStopsAtTheStart`
 - `ios/Tests/ClientCoreTests/LocalRestorationTests.swift:51`
   `openingLargeDiskCacheOfflineStillStartsWithOnePage`
+  → P4 改为 `openingLargeDiskCacheOfflineKeepsTheWindow`
 - `ios/Tests/ClientCoreTests/OpeningFastPathTests.swift:198`
   `cachedOpeningPresentsTheTrimmedWindowWhileTheRefreshIsBlocked`
+  → P4 改为 `cachedOpeningPresentsTheCachedWindowWhileTheRefreshIsBlocked`
 
 这三条是**产品规则**不是随手写的测试；本单要改它们，提交信息必须写明「语义变更」。
 
@@ -330,6 +344,7 @@ CREATE TABLE IF NOT EXISTS schema_state (
 1. `restoreCachedSession` 改为读 DB：meta + 最新 100 行（与现状一致；P4 再切 300）；建 projection。
 2. `state_blob` 恢复所有非 timeline 状态（draft/pending/queued/previews/通知/子代理活动）。
 3. 新增 `localOlderAvailable` / `canLoadOlder`；`hasOlderItems` 语义不变。
+   - 迁移实现采用**惰性导入**：首次 restore 命中 JSON 归档时顺手写入 DB，不做启动全量扫描；启动路径零新增阻塞。迁移幂等，失败回落 JSON。
 4. 首屏 presentation：P2 保持现状 `suffix(100)`（与打开的 100 一致）；P4 窗口切 300 时再对齐，避免 P2 出现 100→300 二次重建。
 
 **生产文件（6）**
@@ -350,6 +365,8 @@ CREATE TABLE IF NOT EXISTS schema_state (
 - 首帧不倒退（`OpeningFastPathTests` 现有 instant-opening 语义不破）。
 
 ### P3 · 磁盘翻页（上滑不联网）
+
+> 实施拆两笔提交：**P3a** 磁盘翻页（`loadOlder`/`loadLatest` + UI `canLoadOlder`）；**P3b** 缓存上限/设置页。两笔都过 CI 后才算 P3 完成。
 
 **做什么**
 1. `loadOlder` 与 `loadLatest` 都本地优先：磁盘有 → 合并返回；磁盘没有 → 网络。
@@ -442,11 +459,11 @@ CREATE TABLE IF NOT EXISTS schema_state (
 ### 5.2 修改既有测试（语义变更，逐条写明）
 
 - `SessionRepositoryTests.openingStartsWithOnePageAndExplicitHistoryAccumulatesAgain`
-  → 改为「二次打开保留磁盘窗口；显式历史继续累加」。
+  → `openingKeepsTheAccumulatedWindowAndExplicitHistoryStopsAtTheStart`：二次打开保留 300 条窗口；显式历史到开头后不再联网。
 - `LocalRestorationTests.openingLargeDiskCacheOfflineStillStartsWithOnePage`
-  → 改为「离线打开读有界窗口（W）；上滑从磁盘继续」。
+  → `openingLargeDiskCacheOfflineKeepsTheWindow`：离线打开保留 1...300（W=300）。
 - `OpeningFastPathTests.cachedOpeningPresentsTheTrimmedWindowWhileTheRefreshIsBlocked`
-  → 改为「缓存窗口直接上屏；打开后不二次重建」。
+  → `cachedOpeningPresentsTheCachedWindowWhileTheRefreshIsBlocked`：缓存 1...120 直接上屏，无裁窗。
 
 ### 5.3 门禁
 

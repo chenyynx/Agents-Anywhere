@@ -567,6 +567,13 @@ final class TimelineCollectionController: UIViewController {
         // new frame with the old font.
         var toMeasure: [TimelineListItem] = []
         var reconfigure = changed
+        // Same offscreen rule as the async settle pass: a row far above the
+        // reader keeps its estimate until it can be seen. Without this, the
+        // next ordinary apply (a stream tick) synchronously measures every
+        // unmeasured row of the history page it just prepended.
+        let measurementTop = viewport.offsetY + viewport.topInset
+        let measurementSkipAbove = measurementTop
+            - max(Self.pendingMeasurementPrefetchMargin, viewport.visibleHeight * 1.5)
         for item in items {
             let key = content.heightKey(for: item, width: columnWidth)
             if layout.heights.currentKey(for: item.itemID) != key {
@@ -581,6 +588,10 @@ final class TimelineCollectionController: UIViewController {
                 reconfigure.insert(item)
             }
             if changed.contains(item) || !layout.heights.hasMeasuredOrPrecalcHeight(for: key) {
+                if let attributes = layout.attributes(for: item.itemID),
+                   attributes.frame.maxY < measurementSkipAbove {
+                    continue
+                }
                 toMeasure.append(item)
             }
         }

@@ -11,6 +11,13 @@ import Testing
         #expect(LocalCacheLimit.allCases.count == 6)
     }
 
+    @Test func anUnknownStoredValueFallsBackToTheDefault() {
+        let previous = LocalCachePolicy.current
+        defer { LocalCachePolicy.set(previous) }
+        UserDefaults.standard.set(999, forKey: LocalCachePolicy.key)
+        #expect(LocalCachePolicy.current == .defaultValue)
+    }
+
     @Test func effectiveLimitPrefersTheUserChoiceThenTheDeviceSafetyLine() {
         let previous = LocalCachePolicy.current
         defer { LocalCachePolicy.set(previous) }

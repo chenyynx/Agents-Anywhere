@@ -10,8 +10,9 @@ func decode<Value: Decodable>(_ object: [String: Any], as: Value.Type = Value.se
     try JSONDecoder().decode(Value.self, from: JSONSerialization.data(withJSONObject: object))
 }
 
-func snapshot(id: String = "session", items: [[String: Any]]? = nil, hasMore: Bool = false) throws -> V2SessionSnapshot {
+func snapshot(id: String = "session", items: [[String: Any]]? = nil, hasMore: Bool = false, excludesAgentChildren: Bool? = nil) throws -> V2SessionSnapshot {
     var object = try fixtureObject("snapshot")
+    if let excludesAgentChildren { object["excludesAgentChildren"] = excludesAgentChildren }
     var meta = object["session"] as! [String: Any]; meta["id"] = id; object["session"] = meta
     var state = object["state"] as! [String: Any]; state["sessionId"] = id; object["state"] = state
     var timeline = object["timeline"] as! [String: Any]

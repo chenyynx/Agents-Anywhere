@@ -27,6 +27,27 @@ import Testing
         await store.close(removing: true)
     }
 
+    @Test func pinnedSessionsSurviveTheBudgetTrim() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aa-cache-pin-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
+        let probe = repository(transport: TestHTTPTransport())
+        let data = V2SessionData(snapshot: try snapshot(items: (1...5).map {
+            try itemObject(id: "item-\($0)", order: $0)
+        }))
+        await store.saveSession(V2SessionArchive(data: data, model: probe.session(id: "session")))
+        await store.updatePinned(["session": true])
+
+        let evicted = await store.trimCache(to: 0)
+        #expect(evicted.isEmpty)
+        let restored = await store.restoreSession("session")
+        #expect(restored?.items.count == 5)
+
+        probe.reset()
+        await store.close(removing: true)
+    }
+
     @Test func trimKeepsTheStateJSONForEvictedSessions() async throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("aa-cache-trim-\(UUID().uuidString)", isDirectory: true)

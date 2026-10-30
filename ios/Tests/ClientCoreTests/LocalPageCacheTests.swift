@@ -8,12 +8,13 @@ import Testing
             .appendingPathComponent("aa-page-cache-\(UUID().uuidString)", isDirectory: true)
     }
 
-    private func seed(_ store: V2LocalStore, count: Int, hasMore: Bool = false) async throws {
+    private func seed(_ store: V2LocalStore, count: Int, hasMore: Bool = false,
+                     excludesAgentChildren: Bool? = nil) async throws {
         let http = TestHTTPTransport()
         let probe = repository(transport: http, localStore: store)
         let data = V2SessionData(snapshot: try snapshot(items: (1...count).map {
             try itemObject(id: "item-\($0)", order: $0, seq: $0)
-        }, hasMore: hasMore))
+        }, hasMore: hasMore, excludesAgentChildren: excludesAgentChildren))
         await store.saveSession(V2SessionArchive(data: data, model: probe.session(id: "session")))
         probe.reset()
         await store.close(removing: false)
@@ -63,6 +64,26 @@ import Testing
         #expect(latest.items.map(\.orderSeq) == Array(451...600))
         #expect(!latest.hasNewerItems)
         #expect(latest.localOlderAvailable)
+        #expect(http.calls.isEmpty)
+
+        repo.reset(); await store.close(removing: true)
+    }
+
+    @Test func localLatestPreservesTheMainOnlyWindowFlag() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        try await seed(V2LocalStore(directory: url, timelineDatabaseEnabled: true),
+                       count: 600, excludesAgentChildren: true)
+
+        let http = TestHTTPTransport()
+        let store = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
+        var policy = V2SessionCachePolicy()
+        policy.maximumTimelineItems = 150
+        let repo = repository(transport: http, policy: policy, localStore: store)
+        repo.updateConnectivity(.init(availability: .offline))
+        _ = try await repo.open(sessionId: "session")
+        _ = try await repo.loadOlder(sessionId: "session")
+        _ = try await repo.loadLatest(sessionId: "session")
+        #expect(repo.cached(sessionId: "session")?.windowExcludesAgentChildren == true)
         #expect(http.calls.isEmpty)
 
         repo.reset(); await store.close(removing: true)

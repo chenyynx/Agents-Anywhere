@@ -113,6 +113,27 @@ import Testing
         #expect(try database.read(sessionID: "free", limit: 10) != nil)
     }
 
+    private func rowSnapshot(updatedSeq: Int, payload: String) -> TimelineSnapshot {
+        TimelineSnapshot(
+            sessionID: "session", cursor: "seq:1", hasOlderItems: false,
+            hasNewerItems: false, excludesAgentChildren: false, pinned: false,
+            lastAccess: 1, cacheBytes: 0, stateBlob: Data("state".utf8),
+            rows: [TimelineRow(id: "item", orderSeq: 1, updatedSeq: updatedSeq,
+                               payload: Data(payload.utf8))])
+    }
+
+    @Test func upsertDoesNotOverwriteANewerRow() throws {
+        let path = temporaryPath()
+        let database = try TimelineDatabase(path: path.path)
+        defer { try? database.close() }
+        try database.replace(rowSnapshot(updatedSeq: 5, payload: "new"))
+        try database.upsert(rowSnapshot(updatedSeq: 3, payload: "old"))
+        let fetched = try database.read(sessionID: "session", limit: 10)
+        let row = try #require(fetched?.rows.first)
+        #expect(row.updatedSeq == 5)
+        #expect(row.payload == Data("new".utf8))
+    }
+
     @Test func upsertKeepsRowsOutsideTheCurrentWindow() throws {
         let path = temporaryPath()
         let database = try TimelineDatabase(path: path.path)

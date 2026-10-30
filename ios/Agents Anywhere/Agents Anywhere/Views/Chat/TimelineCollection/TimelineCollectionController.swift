@@ -1987,6 +1987,18 @@ final class TimelineCollectionController: UIViewController {
             edge: edge, y: edge == .top ? attributes.frame.minY : attributes.frame.maxY)
     }
 
+    /// The part of a prepended list the anchor projection actually reads:
+    /// everything from the new top through the anchor item. Everything below
+    /// keeps the height it had in the old window.
+    private func measurePrefix(upTo anchorRowID: String,
+                               in items: [TimelineListItem]) -> [TimelineListItem] {
+        guard let content,
+              let index = items.firstIndex(where: {
+                  content.anchorRowIDs(in: $0).contains(anchorRowID)
+              }) else { return items }
+        return Array(items.prefix(index + 1))
+    }
+
     /// Where the anchor will sit after `items` is laid out, using the cache's
     /// current heights. The new page was measured synchronously just before
     /// this call, so the value is the same one the post-apply layout produces.
@@ -2040,7 +2052,14 @@ final class TimelineCollectionController: UIViewController {
         // Loading older is a browsing action. Stop any programmatic motion;
         // the reading placement then absorbs the prepend by construction.
         stopBottomAnimation()
-        measureSynchronously(newItems, width: columnWidth)
+        // The projected anchor only needs the heights from the new top down
+        // to the anchor. Measuring the entire window here made a 300-row
+        // history page a synchronous offscreen-hosting pass over every row
+        // below it as well (device report 2026-10-30: loading history dropped
+        // frames). Rows below the anchor already have heights from the
+        // previous window; the post-apply measurement still covers any gap.
+        measureSynchronously(measurePrefix(upTo: anchorRowID, in: newItems),
+                             width: columnWidth)
         guard let projected = projectedHistoryLayout(items: newItems,
                                                      anchorRowID: anchorRowID, edge: edge) else { return nil }
         let position = TimelineHistoryPosition(id: generation, layout: origin,

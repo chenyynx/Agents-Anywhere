@@ -139,6 +139,25 @@ P4.1 的 `suffix(1500/2000)` 只是把窗口加大，仍是一端锚定；pp 决
 
 **真机待验**：300–400 条历史加载无掉帧；上滑自动加载；加载后页面不跳；流式中翻历史不位移；探针报告回传。
 
+### 0.7 b741/b742 真机探针与越界钳制（2026-10-30）
+
+**b741 真机（23:02 报告）**：自动转附件已生效（63,408 bytes 的探针日志以 `long-message-20261030-230218.txt` 文件卡发出）；历史页 `reanchor` 多次把新 group 的 `screenY` 保持在 193pt，row-id 重绑有效。但报告抓到新的坏状态：
+
+- `offset=-4612`、`contentH=102992`、`visible=0`（页面停在内容上方空白）。
+- 历史请求从 `off=-57129`、`into=-57096` 开始；重绑后仍沿用该越界偏移，driver 目标 `-4878/-4612`。
+- `g:steps:msg_8a1d3386` 的 cell 高 **46,393pt**，布局只给 46pt（`stale delta=46,347`）——这是超长助手回复造成的巨型行。
+- `applyMsMax=1146`、`slowFrames=260`、`frameRateHitches=53`、`maxStaleDelta=46,347`。
+
+**b742 修复（`694898bb`）**：
+
+- `beginHistoryPaging`：先把视口 top clamp 到 `[0, contentHeight]`；请求锚点越界或视口原本越界时，改用钳制后视口下的行。
+- `reanchorHistoryPageIfNeeded`：存储的 `offsetIntoRow` 超出「一屏 + 2000pt」范围时不再硬套，改用当前视口重新锚定（`reanchor reset`）。
+- `TimelineAnchorDriver.writeOffset`：所有 target clamp 到真实可滚范围 + 一屏余量（`driver clamp`），陈旧 placement 不能把列表写成空白。
+
+**长消息策略**：用户选择「保持正文完整显示」，因此只对**用户发送/排队**的长消息自动转 `.txt`（阈值 12,000 字或 300 行，`LongMessageAttachmentPolicy`）；助手/对方长回复不转文件。
+
+**验证**：run `41074350543`（b741）与 `41077927151`（b742）test/build/timeline-autorun/code-profile 全绿；包 **b742** `694898b` 探针版。**仍待修**：巨型行（46k）的 cell 布局/复用与 1.1s apply；connector `event loop stalled drift_ms=3–4.5s`（独立性能项）。
+
 ---
 
 ## 1. 目标 / 非目标

@@ -203,8 +203,8 @@ Semantic error and availability colors remain separate from the primary color.
   streaming updates. Items targeted by active notices
   remain individually visible. Hidden items, turn markers, duplicate diff
   artifacts and Claude's interruption/no-response sentinels are filtered like Web.
-- The SubAgent panel (medium/large sheet) opens from the circular entry or from
-  an Agent call card. The entry's list page shows one large rounded capsule row
+- The SubAgent panel (medium/large sheet) opens from the circular entry. The
+  entry's list page shows one large rounded capsule row
   per active SubAgent in dispatch order — official agent asset, title, the live
   「正在运行 <tool>」 line (or the phase word when no tool is known), and the
   existing telemetry metrics. A card with one

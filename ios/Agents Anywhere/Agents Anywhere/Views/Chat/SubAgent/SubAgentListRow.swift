@@ -72,7 +72,7 @@ struct SubAgentListRow: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(card.taskName)
-        .accessibilityValue("\(subtitle)，\(SubAgentProgress.statsAccessibilityLabel(for: card))")
+        .accessibilityValue(accessibilityValueText)
         .accessibilityHint(String(localized: "查看详情"))
         .background(CodePageTheme.userBubbleFill.resolved(for: colorScheme),
                     in: RoundedRectangle(cornerRadius: 24, style: .continuous))
@@ -96,6 +96,14 @@ struct SubAgentListRow: View {
             return String(localized: "正在运行 \(tool)")
         }
         return card.phase.word
+    }
+
+    /// The spoken value: the live tool line (when it adds something beyond
+    /// the phase) plus the stored telemetry. The stats label already starts
+    /// with the phase word, so a bare phase is not repeated.
+    private var accessibilityValueText: String {
+        let stats = SubAgentProgress.statsAccessibilityLabel(for: card)
+        return subtitle == card.phase.word ? stats : "\(subtitle)，\(stats)"
     }
 
     private var metrics: [SubAgentProgress.SubAgentMetric] {

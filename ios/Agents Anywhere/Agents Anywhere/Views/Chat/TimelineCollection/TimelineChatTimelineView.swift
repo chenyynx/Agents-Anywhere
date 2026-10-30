@@ -144,6 +144,11 @@ struct TimelineChatTimelineView: View {
             .onChange(of: model.isOpeningReady, initial: true) { _, ready in
                 if ready { bridge.beginOpening() }
             }
+            .onChange(of: model.openingRefreshCompleted) { _, _ in
+                // A cached window can be on screen before `open()` returns;
+                // re-check the latest edge once the opening read is done.
+                bridge.updateHistoryAvailability()
+            }
             .onChange(of: navigationIsSuspended, initial: true) { _, suspended in
                 bridge.setNavigationSuspended(suspended)
             }
@@ -307,7 +312,7 @@ final class TimelineChatBridge: ObservableObject {
             // The opening path owns its own latest fetch; a viewport trigger
             // must wait until the page is ready or the two reads race.
             guard let self else { return }
-            guard self.model.isOpeningReady else {
+            guard self.model.openingRefreshCompleted else {
                 self.controller?.rearmLatestAutoLoad()
                 return
             }

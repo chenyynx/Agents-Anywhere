@@ -183,6 +183,7 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         // the refresh.
         #expect(model.timeline.rows.map(\.id) == ["reply-1", "reply-2"])
         #expect(model.isOpeningReady && model.openingError == nil)
+        #expect(!model.openingRefreshCompleted)
         #expect(!model.openingPositionSettled)
         gate.release()
         await opening.value
@@ -190,6 +191,7 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         // rebuilding or duplicating rows.
         #expect(model.timeline.rows.map(\.id) == ["reply-2", "reply-3"])
         #expect(model.isOpeningReady && model.openingError == nil)
+        #expect(model.openingRefreshCompleted)
     }
 
     /// R-a guard — the early presentation uses the same opening window as the

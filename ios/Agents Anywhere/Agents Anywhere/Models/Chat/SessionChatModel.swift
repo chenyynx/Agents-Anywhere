@@ -34,6 +34,10 @@ final class SessionChatModel {
     private(set) var blockedSendTick = 0
     var settingsError: String?
     private(set) var isOpeningPrepared = false
+    /// The opening refresh (`repository.open`) finished, successfully or not.
+    /// A cached window can be ready for display before that read returns; the
+    /// viewport's automatic latest load must wait for it or the two reads race.
+    private(set) var openingRefreshCompleted = false
     var isOpeningReady: Bool { isOpeningPrepared && timeline.hasPresentedSnapshot }
     /// The first opening return landed (or its bounded fallback expired). The
     /// cold-load mask waits for it so the reader never sees the top of the
@@ -256,6 +260,7 @@ final class SessionChatModel {
             isOpeningPrepared = false
             openingPositionSettled = false
         }
+        openingRefreshCompleted = false
         openingError = nil
         // A memory-cached visit presents before any network read so the page is
         // usable immediately (D3). Present the same opening window the store
@@ -273,6 +278,7 @@ final class SessionChatModel {
             guard !Task.isCancelled else { return }
             openingError = error.localizedDescription
         }
+        openingRefreshCompleted = true
         guard session.isValid, !Task.isCancelled else { return }
         if let data = repository.cached(sessionId: session.id) {
             timeline.presentOpening(data.items, pendingMessages: session.pendingMessages)

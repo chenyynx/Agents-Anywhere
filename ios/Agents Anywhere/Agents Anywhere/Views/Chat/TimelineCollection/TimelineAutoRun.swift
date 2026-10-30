@@ -321,6 +321,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await codeHostedHeight(); persist(phase: "codeHostedHeight")
         await firstFitSeed(); persist(phase: "firstFitSeed")
         await streamingSeed(); persist(phase: "streamingSeed")
+        await prependReadingAnchor(); persist(phase: "prependReadingAnchor")
         writeReport()
     }
 
@@ -2469,35 +2470,6 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         let settled = position.isReadyToFinish
         if !settled { failures.append("prepend: history request did not settle") }
 
-        // Official-style v2 path: no projected firstRowID target. The
-        // controller's reading anchor must keep the same row on screen when
-        // the next page is inserted with estimated heights.
-        UserDefaults.standard.set(true, forKey: TimelineHistoryAnchorMode.defaultsKey)
-        let readingBefore = controller.screenY(for: anchorItem) ?? 0
-        controller.beginHistoryPaging()
-        if controller.historyPaging {
-            let pageItems = prependPlain(100)
-            let pageFirstRow = pageItems.first.flatMap {
-                controller.content?.rowIDs(in: $0).first
-            }
-            controller.noteHistoryPageArriving(firstRowID: pageFirstRow)
-            controller.reloadFromContent()
-            await wait(450)
-            let readingAfter = controller.screenY(for: anchorItem) ?? 0
-            let readingDelta = abs(readingAfter - readingBefore)
-            if readingDelta > 0.5 {
-                failures.append("prepend reading anchor: anchor moved \(readingDelta)pt")
-            }
-            if controller.historyPaging {
-                failures.append("prepend reading anchor: paging mode did not finish")
-            }
-            report["prependReadingAnchor"] = [
-                "before": readingBefore, "after": readingAfter,
-                "delta": readingDelta,
-                "historyPaging": controller.historyPaging,
-            ] as [String: Any]
-        }
-
         // Absolute target idempotence and generation cancellation, through the
         // real layout entry point.
         var doubleQuerySame = false
@@ -2535,6 +2507,50 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                                                   "anchor": controller.debugAnchorState,
                                                   "mover": controller.debugMoverRunning,
                                                   "owed": controller.layout.debugInsertionOwed] as [String: Any]]
+    }
+
+    /// Official-style v2 path, isolated at the end of the run because it adds
+    /// fixture rows. The controller's reading anchor must keep the same row on
+    /// screen when a page is inserted with estimated heights, without the old
+    /// firstRowID target.
+    private func prependReadingAnchor() async {
+        guard let controller else { return }
+        UserDefaults.standard.set(true, forKey: TimelineHistoryAnchorMode.defaultsKey)
+        let offset = controller.collectionView.contentOffset.y
+        guard let anchor = controller.anchor(at: offset) else {
+            failures.append("prepend reading anchor: no anchor")
+            return
+        }
+        guard let anchorItem = controller.items.first(where: { $0.itemID == anchor.id }),
+              let anchorRow = controller.content?.rowIDs(in: anchorItem).first else {
+            failures.append("prepend reading anchor: anchor item not found")
+            return
+        }
+        let before = controller.screenY(for: anchorItem) ?? 0
+        controller.beginHistoryPaging(anchorRowID: anchorRow)
+        guard controller.historyPaging else {
+            failures.append("prepend reading anchor: history paging disabled")
+            return
+        }
+        let pageItems = prependPlain(100)
+        let pageFirstRow = pageItems.first.flatMap {
+            controller.content?.rowIDs(in: $0).first
+        }
+        controller.noteHistoryPageArriving(firstRowID: pageFirstRow)
+        controller.reloadFromContent()
+        await wait(450)
+        let after = controller.screenY(for: anchorItem) ?? 0
+        let delta = abs(after - before)
+        if delta > 0.5 {
+            failures.append("prepend reading anchor: anchor moved \(delta)pt")
+        }
+        if controller.historyPaging {
+            failures.append("prepend reading anchor: paging mode did not finish")
+        }
+        report["prependReadingAnchor"] = [
+            "before": before, "after": after, "delta": delta,
+            "historyPaging": controller.historyPaging,
+        ] as [String: Any]
     }
 
     /// Device report (6a18aa3): tapping "load older" jumped elsewhere instead

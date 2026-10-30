@@ -240,9 +240,17 @@ final class TimelineAnchorDriver {
     /// the single placement and stop any remaining motion; the page's height
     /// changes then re-resolve that placement directly (official
     /// `Placement.reading(RowID, offsetIntoRow)`).
-    func beginHistoryPaging() {
+    func beginHistoryPaging(anchorID: String? = nil, offsetIntoRow: CGFloat = 0) {
         isHistoryPaging = true
-        adoptReadingPlacement()
+        if let anchorID {
+            stopMover()
+            if state.motion == .easing || state.motion == .flying {
+                state.motion = .resting
+            }
+            state.placement = .reading(id: anchorID, offsetIntoRow: offsetIntoRow)
+        } else {
+            adoptReadingPlacement()
+        }
     }
 
     /// Recompute the reading anchor from the current layout and write it

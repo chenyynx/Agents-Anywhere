@@ -1745,7 +1745,7 @@ final class TimelineCollectionController: UIViewController {
     /// Start the official-style history paging mode. The bridge calls this
     /// before the page request; the adapter calls `beginHistoryRequest` when
     /// the page arrives, which marks `historyPageArriving`.
-    func beginHistoryPaging() {
+    func beginHistoryPaging(anchorRowID: String? = nil) {
         guard TimelineHistoryAnchorMode.enabled else { return }
         historyPagingTimeout?.cancel()
         historyPaging = true
@@ -1754,7 +1754,16 @@ final class TimelineCollectionController: UIViewController {
             content?.rowIDs(in: $0).first
         }
         historyPageFirstRowID = nil
-        anchorDriver?.beginHistoryPaging()
+        if let anchorRowID,
+           let item = content?.item(containingRow: anchorRowID),
+           let attributes = layout.attributes(for: item.itemID) {
+            let top = collectionView.contentOffset.y + collectionView.adjustedContentInset.top
+            anchorDriver?.beginHistoryPaging(
+                anchorID: item.itemID,
+                offsetIntoRow: top - attributes.frame.minY)
+        } else {
+            anchorDriver?.beginHistoryPaging()
+        }
         // A page that never changes content would otherwise pin this mode.
         historyPagingTimeout = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(15))

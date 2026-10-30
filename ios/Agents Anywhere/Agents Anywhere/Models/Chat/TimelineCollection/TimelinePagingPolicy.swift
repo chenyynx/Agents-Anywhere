@@ -7,7 +7,7 @@ import Foundation
 /// (viewport, reader actions, page completions) and asks it before firing.
 /// The controller still owns the gesture/geometry; this type only owns the
 /// guards that previously scattered across five closures.
-struct TimelinePagingPolicy: Equatable, Sendable {
+nonisolated struct TimelinePagingPolicy: Equatable, Sendable {
     /// The near-top auto-load latch: one shot per reader gesture.
     private(set) var olderArmed = true
     /// Opening holds the top-edge trigger until the bottom is observed.

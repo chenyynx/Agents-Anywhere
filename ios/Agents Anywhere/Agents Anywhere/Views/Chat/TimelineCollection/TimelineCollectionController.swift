@@ -219,7 +219,7 @@ final class TimelineCollectionController: UIViewController {
     /// reaching the bottom of a history window starts one latest page. Both
     /// are one-shot per edge so a failed page cannot spin on every frame.
     var onNeedsOlder: (() -> Void)? {
-        didSet { if onNeedsOlder != nil { olderAutoLoadArmed = true } }
+        didSet { if onNeedsOlder != nil { pagingPolicy.noteViewportLeftTop() } }
     }
     var onNeedsLatest: (() -> Void)? {
         didSet { if onNeedsLatest != nil { latestAutoLoadArmed = true } }
@@ -264,11 +264,6 @@ final class TimelineCollectionController: UIViewController {
     /// only feeds it viewport facts and gestures.
     private var pagingPolicy = TimelinePagingPolicy()
     private var openingBottomDeadline: Task<Void, Never>?
-    private var olderAutoLoadArmed: Bool {
-        get { pagingPolicy.olderArmed }
-        set { if newValue { pagingPolicy.readerMoved() } else { pagingPolicy.didAutoLoadOlder() } }
-    }
-    private var openingBottomPending: Bool { pagingPolicy.openingBottomPending }
     private var readerIntentGeneration: Int { pagingPolicy.readerIntentGeneration }
     /// How close to the top edge starts an automatic older page. This is a
     /// reading threshold, not a pull threshold: a full screen of history is
@@ -1907,7 +1902,10 @@ final class TimelineCollectionController: UIViewController {
     /// viewport, so the latch would stay disarmed and the reader would have to
     /// tap the prompt. The bridge calls this on its early-exit guards.
     func rearmOlderAutoLoad() {
-        olderAutoLoadArmed = true
+        // Re-arm only the shot: no intent bump (nothing was requested and
+        // refused), no opening-gate release (the opening still owns the
+        // position).
+        pagingPolicy.noteViewportLeftTop()
     }
 
     /// Re-arms the one-shot bottom trigger when the bridge could not start the

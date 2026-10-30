@@ -74,7 +74,7 @@ import Testing
             lastAccess: lastAccess, cacheBytes: cacheBytes,
             stateBlob: Data("state".utf8),
             rows: [TimelineRow(id: "item-\(sessionID)", orderSeq: 1, updatedSeq: 1,
-                               payload: Data("payload".utf8))])
+                               payload: Data(repeating: 0x78, count: 100))])
     }
 
     @Test func trimEvictsLeastRecentlyUsedUnpinnedSessions() throws {

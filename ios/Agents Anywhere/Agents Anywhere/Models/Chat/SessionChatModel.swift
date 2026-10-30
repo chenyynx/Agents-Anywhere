@@ -6,7 +6,7 @@ final class SessionChatModel {
     let session: V2SessionModel
     let timeline = SessionTimelinePresentation()
     /// The same opening window `V2SessionCachePolicy` reads from disk.
-    private static let openingWindow = 300
+    private static let openingWindow = V2SessionCachePolicy.defaultOpeningWindow
     let settings = ConversationSettings()
     let disclosures = TimelineDisclosureState()
     var takeoverError: String?

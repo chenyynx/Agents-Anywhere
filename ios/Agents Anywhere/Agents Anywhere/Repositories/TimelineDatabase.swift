@@ -32,6 +32,7 @@ nonisolated struct TimelineMeta: Sendable {
     let hasNewerItems: Bool
     let excludesAgentChildren: Bool
     let pinned: Bool
+    let lastAccess: Double
     let stateBlob: Data?
 }
 
@@ -46,6 +47,10 @@ nonisolated final class TimelineDatabase {
         var configuration = Configuration()
         configuration.prepareDatabase { db in
             try db.execute(sql: "PRAGMA busy_timeout = 1000")
+            try db.execute(sql: "PRAGMA synchronous = NORMAL")
+            // New databases reclaim deleted rows instead of growing forever;
+            // databases created before this pragma need a one-time VACUUM.
+            try db.execute(sql: "PRAGMA auto_vacuum = FULL")
         }
         pool = try DatabasePool(path: path, configuration: configuration)
         try Self.migrator.migrate(pool)
@@ -162,7 +167,7 @@ nonisolated final class TimelineDatabase {
         try pool.read { db in
             guard let metaRow = try Row.fetchOne(db, sql: """
                 SELECT cursor, has_older, has_newer, excludes_agent_children,
-                       pinned, state_blob
+                       pinned, last_access, state_blob
                 FROM session_meta WHERE session_id = ?
                 """, arguments: [sessionID]) else { return nil }
             let meta = TimelineMeta(
@@ -171,6 +176,7 @@ nonisolated final class TimelineDatabase {
                 hasNewerItems: metaRow["has_newer"],
                 excludesAgentChildren: metaRow["excludes_agent_children"],
                 pinned: metaRow["pinned"],
+                lastAccess: metaRow["last_access"],
                 stateBlob: metaRow["state_blob"])
             let rows = try Row.fetchAll(db, sql: """
                 SELECT item_id, order_seq, updated_seq, payload
@@ -224,6 +230,29 @@ nonisolated final class TimelineDatabase {
     /// True when the store holds at least one row older than `beforeOrderSeq`.
     /// The window read only returns the newest rows; this is the cheap
     /// `EXISTS` query the paging path uses to know whether to read disk next.
+    /// The state-only archive (draft/pending/queue/notifications) for a
+    /// session whose cached rows were cleared. Used to keep the JSON rollback
+    /// path useful after a cache clear/eviction.
+    func stateArchive(sessionID: String) throws -> V2SessionArchive? {
+        try pool.read { db in
+            guard let state = try Data.fetchOne(db, sql: """
+                SELECT state_blob FROM session_meta WHERE session_id = ?
+                """, arguments: [sessionID]),
+                  let archive = try? JSONDecoder().decode(V2SessionArchive.self, from: state) else {
+                return nil
+            }
+            return archive
+        }
+    }
+
+    func touch(sessionID: String, at timestamp: Double) throws {
+        try pool.write { db in
+            try db.execute(sql: """
+                UPDATE session_meta SET last_access = ? WHERE session_id = ?
+                """, arguments: [timestamp, sessionID])
+        }
+    }
+
     func hasOlderRows(sessionID: String, beforeOrderSeq: Int) throws -> Bool {
         try pool.read { db in
             try Bool.fetchOne(db, sql: """
@@ -241,7 +270,7 @@ nonisolated final class TimelineDatabase {
                 SELECT COALESCE(SUM(cache_bytes), 0) FROM session_meta
                 """) ?? 0
             let sessions = try Int.fetchOne(db, sql: """
-                SELECT COUNT(*) FROM session_meta
+                SELECT COUNT(*) FROM session_meta WHERE cache_bytes > 0
                 """) ?? 0
             return LocalCacheUsage(bytes: bytes, sessions: sessions)
         }
@@ -289,8 +318,13 @@ nonisolated final class TimelineDatabase {
                 try Self.stripCacheableState(db, sessionID: id)
                 try db.execute(sql: "DELETE FROM timeline_items WHERE session_id = ?",
                                arguments: [id])
-                try db.execute(sql: "UPDATE session_meta SET cache_bytes = 0 WHERE session_id = ?",
-                               arguments: [id])
+                // Keep the meta (drafts/queue) but flag that the window is no
+                // longer complete, so an online open re-reads the latest page
+                // instead of presenting an empty timeline.
+                try db.execute(sql: """
+                    UPDATE session_meta SET cache_bytes = 0, has_older = 1
+                    WHERE session_id = ?
+                    """, arguments: [id])
                 total -= bytes
                 evicted.append(id)
             }
@@ -311,7 +345,8 @@ nonisolated final class TimelineDatabase {
                 let id: String = row["session_id"]
                 try Self.stripCacheableState(db, sessionID: id)
                 try db.execute(sql: """
-                    UPDATE session_meta SET cache_bytes = 0 WHERE session_id = ?
+                    UPDATE session_meta SET cache_bytes = 0, has_older = 1
+                    WHERE session_id = ?
                     """, arguments: [id])
                 try db.execute(sql: "DELETE FROM timeline_items WHERE session_id = ?",
                                arguments: [id])

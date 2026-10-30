@@ -26,7 +26,7 @@ import Testing
         await store.close(removing: true)
     }
 
-    @Test func trimRemovesTheLegacyJSONOfEvictedSessions() async throws {
+    @Test func trimKeepsTheStateJSONForEvictedSessions() async throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("aa-cache-trim-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: url) }
@@ -42,7 +42,14 @@ import Testing
         let evicted = await store.trimCache(to: 0)
         #expect(Set(evicted) == Set(["a", "b"]))
         let files = try FileManager.default.contentsOfDirectory(atPath: url.path)
-        #expect(!files.contains { $0.hasPrefix("session-") })
+        let sessionFiles = files.filter { $0.hasPrefix("session-") }
+        #expect(sessionFiles.count == 2)
+        for file in sessionFiles {
+            let data = try Data(contentsOf: url.appendingPathComponent(file))
+            let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let value = try #require(object["value"] as? [String: Any])
+            #expect((value["items"] as? [Any])?.isEmpty == true)
+        }
         let usage = await store.cacheUsage()
         #expect(usage.bytes == 0)
 

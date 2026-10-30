@@ -123,6 +123,48 @@ import Testing
         #expect(try database.rowCount(sessionID: "session") == 400)
     }
 
+    @Test func newerJSONBeatsAStaleDatabaseRow() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        let store = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
+        let probe = repository(transport: TestHTTPTransport())
+        let data = V2SessionData(snapshot: try snapshot(items: (1...5).map {
+            try itemObject(id: "item-\($0)", order: $0)
+        }))
+        let session = probe.session(id: "session")
+        session.draft = "old"
+        await store.saveSession(V2SessionArchive(data: data, model: session))
+        await store.close(removing: false)
+
+        session.draft = "new"
+        let jsonOnly = V2LocalStore(directory: url, timelineDatabaseEnabled: false)
+        await jsonOnly.saveSession(V2SessionArchive(data: data, model: session))
+        await jsonOnly.close(removing: false)
+        let jsonFile = try #require(try FileManager.default.contentsOfDirectory(
+            at: url, includingPropertiesForKeys: nil)
+            .first { $0.lastPathComponent.hasPrefix("session-") })
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(30)],
+            ofItemAtPath: jsonFile.path)
+
+        let reopened = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
+        let restored = await reopened.restoreSession("session")
+        #expect(restored?.archive.draft == "new")
+        await reopened.close(removing: true)
+        probe.reset()
+    }
+
+    @Test func closedStoreRefusesLateWrites() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        let store = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
+        let probe = repository(transport: TestHTTPTransport())
+        let data = V2SessionData(snapshot: try snapshot(items: [try itemObject()]))
+        let archive = V2SessionArchive(data: data, model: probe.session(id: "session"))
+        await store.close(removing: true)
+        await store.saveSession(archive)
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        probe.reset()
+    }
+
     @Test func corruptionEvictionAndSignedOutWritesDoNotTrapTheReader() async throws {
         let url = location(); defer { try? FileManager.default.removeItem(at: url) }
         let store = V2LocalStore(directory: url, maximumSessions: 1)

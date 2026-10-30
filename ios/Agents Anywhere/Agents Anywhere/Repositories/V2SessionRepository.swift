@@ -7,8 +7,9 @@ nonisolated struct V2SessionCachePolicy {
     /// limit (`LocalCachePolicy`) and the row store's per-session cap.
     var maximumSessions = 20
     var maximumTimelineItems = 1000
+    static let defaultOpeningWindow = 300
     /// Rows read from the local store when a session opens.
-    var openingWindow = 300
+    var openingWindow = Self.defaultOpeningWindow
     /// One history/latest page, aligned with the official Code events page.
     var networkPageSize = 200
     var catalogLifetime: TimeInterval = 30
@@ -346,7 +347,9 @@ final class V2SessionRepository {
                 let page = V2SessionTimelinePage(
                     sessionId: sessionId, items: local.items,
                     nextSeq: entry.projection?.sequence ?? 0,
-                    hasMore: data.hasOlderItems, serverTime: nil)
+                    hasMore: data.hasOlderItems,
+                    serverTime: nil,
+                    excludesAgentChildren: data.windowExcludesAgentChildren)
                 entry.projection?.applyHistory(page)
                 entry.projection?.setLocalOlderAvailable(local.hasMore)
                 emit(entry)
@@ -383,10 +386,11 @@ final class V2SessionRepository {
         entry.historyTask?.cancel()
         entry.historyTask = nil
         let version = entry.readVersion
-        // Disk first when the sliding window dropped newer rows into the row
-        // store. If the store cannot prove it has rows beyond the current
-        // window, fall through to the network read.
-        if let localStore,
+        // Offline only: a local latest page can lag the live cursor. Online
+        // reads the authoritative latest page so a slid window cannot lose
+        // rows and then clear hasNewerItems.
+        if network.availability == .offline,
+           let localStore,
            let local = await localStore.latestRows(sessionID: sessionId, limit: pageLimit),
            let newest = local.items.last?.orderSeq,
            let end = entry.projection?.data.items.last?.orderSeq,
@@ -396,7 +400,8 @@ final class V2SessionRepository {
                 sessionId: sessionId, items: local.items,
                 nextSeq: local.items.map(\.updatedSeq).max() ?? 0,
                 hasMore: entry.projection?.data.hasOlderItems ?? false,
-                serverTime: nil)
+                serverTime: nil,
+                excludesAgentChildren: entry.projection?.data.windowExcludesAgentChildren ?? false)
             entry.projection?.applyLatest(page)
             entry.projection?.setLocalOlderAvailable(local.hasMore)
             emit(entry)

@@ -83,54 +83,79 @@ nonisolated final class TimelineDatabase {
         return migrator
     }
 
-    /// P1 shadow write: replace the session wholesale so the database is an
-    /// exact mirror of the JSON archive. P2 adds the row-level diff.
+    /// Full replacement. Used for migrations/tests only; normal saves must
+    /// upsert, because a slid in-memory window does not mean the rows outside
+    /// it were deleted.
     func replace(_ snapshot: TimelineSnapshot) throws {
         try pool.write { db in
             try db.execute(sql: "DELETE FROM timeline_items WHERE session_id = ?",
                            arguments: [snapshot.sessionID])
-            for row in snapshot.rows {
-                try db.execute(sql: """
-                    INSERT INTO timeline_items
-                        (session_id, item_id, order_seq, updated_seq, payload)
-                    VALUES
-                        (:sessionID, :itemID, :orderSeq, :updatedSeq, :payload)
-                    """, arguments: [
-                        "sessionID": snapshot.sessionID,
-                        "itemID": row.id,
-                        "orderSeq": row.orderSeq,
-                        "updatedSeq": row.updatedSeq,
-                        "payload": row.payload,
-                    ])
-            }
+            try Self.upsertRows(db, snapshot)
+            try Self.upsertMeta(db, snapshot)
+            try Self.updateCacheBytes(db, sessionID: snapshot.sessionID)
+        }
+    }
+
+    /// Normal save: upsert the window's rows and metadata without deleting
+    /// rows that are merely outside the current in-memory window.
+    func upsert(_ snapshot: TimelineSnapshot) throws {
+        try pool.write { db in
+            try Self.upsertRows(db, snapshot)
+            try Self.upsertMeta(db, snapshot)
+            try Self.updateCacheBytes(db, sessionID: snapshot.sessionID)
+        }
+    }
+
+    private static func upsertRows(_ db: Database, _ snapshot: TimelineSnapshot) throws {
+        for row in snapshot.rows {
             try db.execute(sql: """
-                INSERT INTO session_meta
-                    (session_id, cursor, has_older, has_newer,
-                     excludes_agent_children, last_access, pinned, cache_bytes, state_blob)
+                INSERT INTO timeline_items
+                    (session_id, item_id, order_seq, updated_seq, payload)
                 VALUES
-                    (:sessionID, :cursor, :hasOlder, :hasNewer,
-                     :excludesAgentChildren, :lastAccess, :pinned, :cacheBytes, :stateBlob)
-                ON CONFLICT(session_id) DO UPDATE SET
-                    cursor = excluded.cursor,
-                    has_older = excluded.has_older,
-                    has_newer = excluded.has_newer,
-                    excludes_agent_children = excluded.excludes_agent_children,
-                    last_access = excluded.last_access,
-                    pinned = excluded.pinned,
-                    cache_bytes = excluded.cache_bytes,
-                    state_blob = excluded.state_blob
+                    (:sessionID, :itemID, :orderSeq, :updatedSeq, :payload)
+                ON CONFLICT(session_id, item_id) DO UPDATE SET
+                    order_seq = excluded.order_seq,
+                    updated_seq = excluded.updated_seq,
+                    payload = excluded.payload
+                WHERE excluded.updated_seq >= timeline_items.updated_seq
                 """, arguments: [
                     "sessionID": snapshot.sessionID,
-                    "cursor": snapshot.cursor,
-                    "hasOlder": snapshot.hasOlderItems,
-                    "hasNewer": snapshot.hasNewerItems,
-                    "excludesAgentChildren": snapshot.excludesAgentChildren,
-                    "lastAccess": snapshot.lastAccess,
-                    "pinned": snapshot.pinned,
-                    "cacheBytes": snapshot.cacheBytes,
-                    "stateBlob": snapshot.stateBlob,
+                    "itemID": row.id,
+                    "orderSeq": row.orderSeq,
+                    "updatedSeq": row.updatedSeq,
+                    "payload": row.payload,
                 ])
         }
+    }
+
+    private static func upsertMeta(_ db: Database, _ snapshot: TimelineSnapshot) throws {
+        try db.execute(sql: """
+            INSERT INTO session_meta
+                (session_id, cursor, has_older, has_newer,
+                 excludes_agent_children, last_access, pinned, cache_bytes, state_blob)
+            VALUES
+                (:sessionID, :cursor, :hasOlder, :hasNewer,
+                 :excludesAgentChildren, :lastAccess, :pinned, :cacheBytes, :stateBlob)
+            ON CONFLICT(session_id) DO UPDATE SET
+                cursor = excluded.cursor,
+                has_older = excluded.has_older,
+                has_newer = excluded.has_newer,
+                excludes_agent_children = excluded.excludes_agent_children,
+                last_access = excluded.last_access,
+                pinned = excluded.pinned,
+                cache_bytes = excluded.cache_bytes,
+                state_blob = excluded.state_blob
+            """, arguments: [
+                "sessionID": snapshot.sessionID,
+                "cursor": snapshot.cursor,
+                "hasOlder": snapshot.hasOlderItems,
+                "hasNewer": snapshot.hasNewerItems,
+                "excludesAgentChildren": snapshot.excludesAgentChildren,
+                "lastAccess": snapshot.lastAccess,
+                "pinned": snapshot.pinned,
+                "cacheBytes": snapshot.cacheBytes,
+                "stateBlob": snapshot.stateBlob,
+            ])
     }
 
     func read(sessionID: String, limit: Int) throws -> (meta: TimelineMeta, rows: [TimelineRow])? {

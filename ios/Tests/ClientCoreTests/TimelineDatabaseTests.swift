@@ -10,7 +10,11 @@ import Testing
     }
 
     private func snapshot(count: Int, sessionID: String = "session") throws -> TimelineSnapshot {
-        let rows = try (1...count).map { index in
+        try snapshot(indices: Array(1...count), sessionID: sessionID)
+    }
+
+    private func snapshot(indices: [Int], sessionID: String = "session") throws -> TimelineSnapshot {
+        let rows = try indices.map { index in
             TimelineRow(
                 id: "item-\(index)",
                 orderSeq: index,
@@ -107,6 +111,17 @@ import Testing
         #expect(try database.rowCount(sessionID: "free") == 0)
         #expect(try database.rowCount(sessionID: "pinned") == 1)
         #expect(try database.read(sessionID: "free", limit: 10) != nil)
+    }
+
+    @Test func upsertKeepsRowsOutsideTheCurrentWindow() throws {
+        let path = temporaryPath()
+        let database = try TimelineDatabase(path: path.path)
+        defer { try? database.close() }
+        try database.replace(try snapshot(count: 300))
+        try database.upsert(try snapshot(indices: Array(201...300)))
+        #expect(try database.rowCount(sessionID: "session") == 300)
+        #expect(try database.hasOlderRows(sessionID: "session", beforeOrderSeq: 201))
+        #expect(try database.rowIDs(sessionID: "session").first == "item-1")
     }
 
     @Test func hasOlderRowsUsesTheOrderSeqBoundary() throws {

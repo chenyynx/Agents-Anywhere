@@ -59,7 +59,7 @@ actor V2LocalStore {
         // existed is imported on its first open, then the next open reads the
         // database. No startup scan and no extra blocking on the launch path.
         if let database = timelineStore() {
-            do { try database.replace(archive.timelineSnapshot()) }
+            do { try database.upsert(archive.timelineSnapshot()) }
             catch { Self.log.error("timeline lazy import failed: \(String(describing: error), privacy: .public)") }
         }
         // The JSON archive is the older store: bound its opening read the same
@@ -202,7 +202,7 @@ actor V2LocalStore {
         // is an exact mirror. A database failure must never block the JSON
         // path (offline cache, drafts and the send path all depend on it).
         if let database = timelineStore() {
-            do { try database.replace(value.timelineSnapshot()) }
+            do { try database.upsert(value.timelineSnapshot()) }
             catch { Self.log.error("timeline shadow write failed: \(String(describing: error), privacy: .public)") }
             trimIfNeeded()
         }

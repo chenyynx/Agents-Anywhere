@@ -36,10 +36,13 @@ struct SubAgentPanelSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
-    @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.default.rawValue
-    private var accent: AppAccent { AppAccent.resolve(accentValue) }
     @State private var selection: String?
     @State private var showsFullPrompt = false
+    /// The list-first entry (pp 2026-10-30): the circular glass button always
+    /// lands on the capsule-row list, even for a single running SubAgent.
+    @State private var showsList: Bool
+    /// A tapped step group pushes the same detail sheet the chat timeline uses.
+    @State private var stepGroupDetail: CodeStepGroupDetailRequest?
     /// C3: the on-demand child-row source. It lives on the session model so
     /// its per-card cache outlives the sheet and feeds the local archive; this
     /// view only drives activation and cancellation.
@@ -62,6 +65,7 @@ struct SubAgentPanelSheet: View {
         // The requested card wins; otherwise the opening rule (newest active /
         // newest, applied in `selectedCard`) whenever it is nil or gone.
         _selection = State(initialValue: initialCardID)
+        _showsList = State(initialValue: opensFromCapsule)
     }
 
     private var window: [V2TimelineItem] { chat.timeline.rows.map(\.value) }
@@ -92,63 +96,155 @@ struct SubAgentPanelSheet: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                if let card = selectedCard {
-                    // §3.3 order: the fixed stats line sits directly below the
-                    // title/subtitle; the chip strip (entry A) follows, above
-                    // the body.
-                    statsRow(card)
-                    if opensFromCapsule { tabStrip(selectedID: card.id) }
-                    ScrollView {
-                        sections(card)
-                            // Switching chips swaps the whole body in place, and
-                            // the markdown block views are reused by block
-                            // position while their reserved height only ever
-                            // grows. Without an identity of its own the body
-                            // keeps the previous card's heights, so a long block
-                            // leaves a blank gap in a short one (pp, device,
-                            // 2026-10-05).
-                            .id(card.id)
-                            .padding(.horizontal, 20)
-                            .padding(.top, 4)
-                            .padding(.bottom, 24)
-                    }
+            Group {
+                if opensFromCapsule && showsList {
+                    listPage
+                } else if let card = selectedCard {
+                    detailPage(card)
                 } else {
                     SubAgentPanelEmptyState()
                 }
             }
-            .navigationTitle(selectedCard?.taskName ?? String(localized: "Agent"))
-            .navigationSubtitle(SessionHeaderSubtitle.text(metadata: chat.session.metadata,
-                deviceName: deviceName, fallbackRuntimeName: fallbackRuntimeName))
-            .navigationBarTitleDisplayMode(.inline)
             .toolbar { SheetCloseToolbar { dismiss() } }
         }
         .appSheetPresentation(.compact)
-        .onChange(of: selection) { _, _ in showsFullPrompt = false }
-        // Every presentation starts a refresh window: rows restored from the
-        // archive (or read by an earlier presentation) show immediately but
-        // are fetched again online. Activation runs from both hooks so the
-        // order SwiftUI picks between them cannot leave a stale first card.
+        .sheet(item: $stepGroupDetail) { request in
+            CodeStepGroupDetailView(group: request.group,
+                                    cwd: chat.session.metadata?.cwd,
+                                    startsAtBottom: request.startsAtBottom)
+        }
+    }
+
+    // MARK: - List
+
+    /// The list-first page (pp 2026-10-30): the circular glass button always
+    /// lands here, even with one running SubAgent. Active cards only, in
+    /// dispatch order; a finished card leaves the list and stays reachable from
+    /// its timeline tool row.
+    private var listPage: some View {
+        let cards = activeCards
+        return ScrollView {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                LazyVStack(spacing: 12) {
+                    ForEach(cards) { card in
+                        SubAgentListRow(
+                            card: card,
+                            now: card.phase.isActive ? context.date : nil,
+                            stopTasks: rowStopTasks(for: card),
+                            stoppingTaskIDs: chat.stoppingSubagentTaskIDs,
+                            onTap: {
+                                selection = card.id
+                                showsFullPrompt = false
+                                showsList = false
+                            },
+                            onStop: { taskID in
+                                Task { await chat.stopSubagent(taskID: taskID) }
+                            })
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+            }
+        }
+        .navigationTitle(cards.isEmpty
+                         ? String(localized: "子代理")
+                         : String(localized: "\(cards.count) 个智能体正在运行"))
+        .navigationBarTitleDisplayMode(.inline)
+        .overlay {
+            if cards.isEmpty { SubAgentPanelEmptyState() }
+        }
+    }
+
+    /// Only a card with exactly one live task gets the row-level stop; a
+    /// multi-task card stops from its detail page, one control per task.
+    private func rowStopTasks(for card: SubAgentCard) -> [SubAgentTask] {
+        let tasks = SubAgentProgress.stopTasks(for: card,
+                                               capabilities: chat.session.runtime.capabilities)
+        return tasks.count == 1 ? tasks : []
+    }
+
+    // MARK: - Detail
+
+    private func detailPage(_ card: SubAgentCard) -> some View {
+        VStack(spacing: 0) {
+            statsRow(card)
+            ScrollView {
+                sections(card)
+                    // A card switch must not reuse the previous card's
+                    // markdown heights by block position.
+                    .id(card.id)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 4)
+                    .padding(.bottom, 24)
+            }
+            stopBar(card)
+        }
+        .navigationTitle(card.taskName)
+        .navigationSubtitle(SessionHeaderSubtitle.text(metadata: chat.session.metadata,
+            deviceName: deviceName, fallbackRuntimeName: fallbackRuntimeName))
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if opensFromCapsule {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showsList = true
+                    } label: {
+                        AppSymbol("chevron.left", size: 16)
+                    }
+                    .accessibilityLabel(String(localized: "返回列表"))
+                }
+            }
+        }
         .onAppear {
             activity.beginPresentation()
-            activateActivity()
+            activateActivity(cardID: card.id)
         }
-        .task(id: selectedCard?.id) { activateActivity() }
+        .task(id: card.id) { activateActivity(cardID: card.id) }
         // Live child rows reach the panel through the window; push them into
-        // the store only when their identity/version set changes, so the merge
-        // stays out of the body. The `updatedSeq` component is what lets a
-        // status/content change (not just an id arriving) refresh the merged
-        // copy that decides which rows the panel renders.
+        // the store only when their identity/version set changes.
         .onChange(of: activityWindowRowSignature, initial: true) { _, _ in
             activity.updateWindow(childRows: liveActivityChildRows)
         }
         .onDisappear { activity.cancel() }
     }
 
+    /// The bottom stop affordance (pp 2026-10-30): one capsule per live task,
+    /// fixed above the safe area. A single task keeps the bare 「停止智能体」;
+    /// a multi-task card names each control with its task label.
+    @ViewBuilder private func stopBar(_ card: SubAgentCard) -> some View {
+        let tasks = SubAgentProgress.stopTasks(for: card,
+                                               capabilities: chat.session.runtime.capabilities)
+        if !tasks.isEmpty {
+            VStack(spacing: 8) {
+                ForEach(tasks) { task in
+                    Button {
+                        Task { await chat.stopSubagent(taskID: task.taskID) }
+                    } label: {
+                        Text(tasks.count > 1
+                             ? String(localized: "停止 \(task.label ?? String(localized: "智能体"))")
+                             : String(localized: "停止智能体"))
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(CodePageTheme.userBubbleText.resolved(for: colorScheme))
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 44)
+                            .background(CodePageTheme.userBubbleFill.resolved(for: colorScheme),
+                                        in: .capsule)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(chat.stoppingSubagentTaskIDs.contains(task.taskID))
+                    .accessibilityIdentifier("chat.subagent.stop.\(task.taskID)")
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 8)
+        }
+    }
+
     /// Only a main-only window needs the on-demand read; a normal one already
     /// carries the child rows in `chat.timeline.rows`.
-    private func activateActivity() {
-        guard chat.session.windowExcludesAgentChildren, let card = selectedCard else { return }
+    private func activateActivity(cardID: String) {
+        guard chat.session.windowExcludesAgentChildren,
+              let card = sessionCards.first(where: { $0.id == cardID }) else { return }
         activity.activate(cardID: card.id,
             lineageIDs: SubAgentProgress.lineageIDs(of: card, in: window))
         // The lineage just changed; hand over this card's live rows at once.
@@ -180,50 +276,6 @@ struct SubAgentPanelSheet: View {
             guard case .agents(let parent) = row.structure.groupKind, lineage.contains(parent) else { return nil }
             return row.value
         }
-    }
-
-    // MARK: Header controls
-
-    /// The chip strip (entry A): every active card in the session, the selected
-    /// one included. A chip exits with its card — 结束退场 — on the next
-    /// redraw, so the strip never shows a second copy of the same dispatch.
-    private func tabStrip(selectedID: String) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(activeCards) { card in
-                    Button { selection = card.id } label: {
-                        HStack(spacing: 6) {
-                            Circle().fill(SubAgentPalette.phase(card.phase)).frame(width: 7, height: 7)
-                            Text(card.taskName)
-                                .font(.footnote.weight(.medium))
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                                .frame(maxWidth: 200, alignment: .leading)
-                            if let badge = card.badge {
-                                Text(badge).font(.caption2)
-                                    .padding(.horizontal, 5).padding(.vertical, 1)
-                                    .background(.quaternary, in: .capsule)
-                            }
-                        }
-                        .foregroundStyle(card.id == selectedID
-                            ? AppTheme.accentForeground(accent, colorScheme)
-                            : AppTheme.primaryText(colorScheme))
-                        .padding(.horizontal, 12).frame(height: 32)
-                        .background(card.id == selectedID
-                            ? AppTheme.accentBackground(accent, colorScheme)
-                            : AppTheme.groupedFill(colorScheme), in: .capsule)
-                        .frame(minHeight: 44)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(card.taskName)
-                    .accessibilityValue(card.phase.word)
-                    .accessibilityAddTraits(card.id == selectedID ? .isSelected : [])
-                }
-            }
-            .padding(.horizontal, 20)
-        }
-        .padding(.top, 4)
     }
 
     /// The fixed stats line (§3.3): pinned below the header, never scrolls with
@@ -288,28 +340,10 @@ struct SubAgentPanelSheet: View {
             // the element while a user is still on it.
             .accessibilityLabel(SubAgentProgress.statsAccessibilityLabel(for: card))
             Spacer(minLength: 0)
-            stopControls(for: card)
         }
         .padding(.horizontal, 20)
         .padding(.top, 8)
         .padding(.bottom, 6)
-    }
-
-    /// §A3: the selected card's live-task stop controls, trailing the header.
-    /// 门控不渲染: nothing without the usable `session.subagent_control`
-    /// capability, nothing for a card without live tasks; otherwise one
-    /// control per live task, each bound to exactly one task id (including
-    /// nested tasks, G3 — the projection reads every live `agents` entry).
-    @ViewBuilder private func stopControls(for card: SubAgentCard) -> some View {
-        let tasks = SubAgentProgress.stopTasks(for: card, capabilities: chat.session.runtime.capabilities)
-        if !tasks.isEmpty {
-            ForEach(tasks) { task in
-                SubAgentStopControl(task: task, showsName: tasks.count > 1,
-                    isStopping: chat.stoppingSubagentTaskIDs.contains(task.taskID)) {
-                    Task { await chat.stopSubagent(taskID: task.taskID) }
-                }
-            }
-        }
     }
 
     /// Light mode: a 12% wash reads as a chip on white. Dark mode needs more of
@@ -388,40 +422,42 @@ struct SubAgentPanelSheet: View {
     @ViewBuilder private func promptSection(_ card: SubAgentCard) -> some View {
         if let prompt = card.prompt, !prompt.isEmpty {
             let foldable = prompt.count > Self.promptFoldThreshold
-            VStack(alignment: .leading, spacing: 8) {
-                sectionLabel(String(localized: "提示词"))
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(prompt)
-                        .font(.callout)
-                        .lineLimit(foldable && !showsFullPrompt ? Self.collapsedPromptLimit : nil)
-                        .textSelection(.enabled)
-                    if foldable {
-                        Button(showsFullPrompt ? String(localized: "收起") : String(localized: "展开")) {
-                            withAnimation(.easeInOut(duration: 0.18)) { showsFullPrompt.toggle() }
-                        }
-                        .font(.footnote.weight(.medium))
-                        .frame(minHeight: 32)
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.tint)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(prompt)
+                    .font(.system(size: 17))
+                    .lineSpacing(CodePageTheme.userBubbleLineSpacing)
+                    .foregroundStyle(CodePageTheme.userBubbleText.resolved(for: colorScheme))
+                    .lineLimit(foldable && !showsFullPrompt ? Self.collapsedPromptLimit : nil)
+                    .textSelection(.enabled)
+                if foldable {
+                    Button(showsFullPrompt ? String(localized: "收起") : String(localized: "展开")) {
+                        withAnimation(.easeInOut(duration: 0.18)) { showsFullPrompt.toggle() }
                     }
+                    .font(.footnote.weight(.medium))
+                    .frame(minHeight: 32)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.tint)
                 }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(uiColor: .secondarySystemBackground), in: .rect(cornerRadius: 14))
             }
+            .padding(.horizontal, CodePageTheme.userBubbleHorizontalPadding)
+            .padding(.vertical, CodePageTheme.userBubbleVerticalPadding)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(CodePageTheme.userBubbleFill.resolved(for: colorScheme),
+                        in: RoundedRectangle(cornerRadius: CodePageTheme.userBubbleCornerRadius,
+                                             style: .continuous))
         }
     }
 
     /// The card's activity as one chronological list (pp 2026-10-05): tool
     /// calls, reasoning and the subagent's text rows interleaved in the order
-    /// the connector published them, the way the main chat reads. The
-    /// per-kind 「工具调用」/「深度思考」 section headers are deliberately
-    /// gone; prompt and final output stay at the ends. Which rows qualify is
+    /// the connector published them. pp 2026-10-30: the list renders through
+    /// the current Chat page's grouping — `TimelineChatGrouping` step groups
+    /// for reasoning/tool runs, chat message rows for body text — instead of
+    /// the Code page components. Which rows qualify is
     /// `SubAgentProgress.activityRows` — its lineage merge means a resume-alias
     /// card shows the original dispatch card's rows — through the same
     /// `isVisibleInChat` gate the chat applies, so hidden rows and empty
-    /// reasoning never enter the panel; the row component itself is unchanged
-    /// and gets no `onSubAgent` (v1 renders one nested layer).
+    /// reasoning never enter the panel.
     @ViewBuilder private func activitySection(_ card: SubAgentCard, in items: [V2TimelineItem]) -> some View {
         let rows = activityRows(of: card, in: items)
         // An empty, settled read renders nothing here (the not-loaded notice
@@ -452,16 +488,62 @@ struct SubAgentPanelSheet: View {
                     EmptyView()
                 }
                 if !rows.isEmpty {
-                    // Lazy: after a few pages this list can hold hundreds of
-                    // rows, and eagerly building every row makes the sheet's
-                    // first layout (and every body tick) pay for all of them.
-                    // It stays above the final-output section, both inside the
-                    // ScrollView.
-                    LazyVStack(alignment: .leading, spacing: 2) {
-                        ForEach(rows) { row in
-                            SessionTimelineRow(row: row, chat: chat, onAttachment: onAttachment,
-                                cwd: chat.session.metadata?.cwd, disclosures: chat.disclosures, onFile: onFile)
-                        }
+                    // pp 2026-10-30: the activity follows the current Chat
+                    // page — TimelineChatGrouping units, the step-group row for
+                    // thinking/tool runs, and the chat message row for body
+                    // text. The step sheet is the same one the chat timeline
+                    // opens. Lazy: after a few pages this list can hold
+                    // hundreds of rows.
+                    chatTranscript(rows, card: card)
+                }
+            }
+        }
+    }
+
+    /// The child transcript through the chat profile's own grouping: step
+    /// groups for runs of reasoning/tool rows, message rows for body text, and
+    /// the old row view only for a standalone fallback. `isLiveTail` matches
+    /// the chat page's rule — only the active card's trailing step group keeps
+    /// the dots.
+    @ViewBuilder private func chatTranscript(_ rows: [ChatTimelineRowModel],
+                                             card: SubAgentCard) -> some View {
+        let profile = chat.session.metadata.map { CodeRuntimeProfile(meta: $0) } ?? .generic
+        let units = TimelineChatGrouping.units(items: rows.map(\.value),
+                                               profile: profile,
+                                               interactionTargets: [])
+        let rowsByID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+        let lastStepGroupID: String? = {
+            guard card.phase.isActive, let last = units.last else { return nil }
+            if case let .stepGroup(group, _) = last { return group.id }
+            return nil
+        }()
+        LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(units) { unit in
+                switch unit {
+                case let .stepGroup(group, _):
+                    CodeStepGroupRowView(group: group,
+                                         cwd: chat.session.metadata?.cwd,
+                                         isLiveTail: group.id == lastStepGroupID) {
+                        stepGroupDetail = CodeStepGroupDetailRequest(
+                            group: group, startsAtBottom: group.id == lastStepGroupID)
+                    }
+                case let .message(key, rowIDs):
+                    let groupRows = rowIDs.compactMap { rowsByID[$0] }
+                    if !groupRows.isEmpty {
+                        CodeMessageRowView(
+                            group: ChatTimelineGroup(kind: .single, rows: groupRows,
+                                                     explicitID: key),
+                            profile: profile,
+                            cwd: chat.session.metadata?.cwd,
+                            onAttachment: onAttachment)
+                    }
+                case let .standalone(rowID):
+                    if let row = rowsByID[rowID] {
+                        SessionTimelineRow(row: row, chat: chat,
+                                           onAttachment: onAttachment,
+                                           cwd: chat.session.metadata?.cwd,
+                                           disclosures: chat.disclosures,
+                                           onFile: onFile, onSubAgent: nil)
                     }
                 }
             }

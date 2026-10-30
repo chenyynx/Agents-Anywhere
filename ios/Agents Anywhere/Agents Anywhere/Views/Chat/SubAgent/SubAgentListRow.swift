@@ -1,0 +1,92 @@
+import SwiftUI
+
+/// One SubAgent entry on the list page that opens from the circular glass
+/// button. The row is AA's own layout: a large rounded card with the official
+/// agent asset, the card's title, the live phase (plus its last tool), and the
+/// existing telemetry metrics. A card with exactly one live task gets the
+/// compact stop control on the trailing edge; a multi-task card is stopped
+/// from its detail page so every control still names one task.
+struct SubAgentListRow: View {
+    let card: SubAgentCard
+    let now: Date?
+    /// Empty unless this card has exactly one live task (the row-level stop).
+    let stopTasks: [SubAgentTask]
+    let stoppingTaskIDs: Set<String>
+    let onTap: () -> Void
+    let onStop: (String) -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var phaseColor: Color { SubAgentPalette.phase(card.phase) }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 14) {
+            Button(action: onTap) {
+                HStack(alignment: .center, spacing: 14) {
+                    ZStack {
+                        Circle().fill(phaseColor.opacity(0.14))
+                        AnthropiconView(name: "anthropicon.agentSimple", size: .large)
+                            .foregroundStyle(phaseColor)
+                    }
+                    .frame(width: 40, height: 40)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(card.taskName)
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(CodePageTheme.userBubbleText.resolved(for: colorScheme))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Text(subtitle)
+                            .font(.system(size: 15))
+                            .foregroundStyle(CodePageTheme.text400Color.resolved(for: colorScheme))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        if !metrics.isEmpty {
+                            HStack(spacing: 10) {
+                                ForEach(Array(metrics.enumerated()), id: \.offset) { _, metric in
+                                    HStack(spacing: 3) {
+                                        AppSymbol(metric.symbol, size: 11)
+                                            .foregroundStyle(.tertiary)
+                                        Text(metric.value)
+                                            .font(.system(size: 13))
+                                            .foregroundStyle(.secondary)
+                                            .monospacedDigit()
+                                            .lineLimit(1)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(String(localized: "\(card.taskName)，\(card.phase.word)"))
+            .accessibilityHint(String(localized: "查看详情"))
+
+            if stopTasks.count == 1, let task = stopTasks.first {
+                SubAgentStopControl(task: task, showsName: false,
+                                    isStopping: stoppingTaskIDs.contains(task.taskID)) {
+                    onStop(task.taskID)
+                }
+            }
+        }
+        .padding(16)
+        .background(CodePageTheme.userBubbleFill.resolved(for: colorScheme),
+                    in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+    }
+
+    /// The phase word plus the live entry's last tool. The entry's data is the
+    /// same one the capsule and panel read; no new wire field.
+    private var subtitle: String {
+        if card.phase.isActive, let tool = card.liveTasks.first?.lastToolName, !tool.isEmpty {
+            return "\(card.phase.word) · \(tool)"
+        }
+        return card.phase.word
+    }
+
+    private var metrics: [SubAgentProgress.SubAgentMetric] {
+        SubAgentProgress.metrics(for: card, now: now)
+    }
+}

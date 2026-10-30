@@ -140,13 +140,9 @@
   - 详情页 `SubAgentDetailPage`（新）替换现有 body；
   - stats/stop 逻辑复用 `SubAgentProgress.metrics`、`SubAgentProgress.stopTasks`、`chat.stopSubagent`、`chat.stoppingSubagentTaskIDs`；
   - 活动行按现 Chat 页渲染：`TimelineChatGrouping` + `CodeStepGroupRowView` / chat 消息行，不做第二套模型。
-- 新增：
-  - `Views/Chat/SubAgent/SubAgentRoundButton.swift`
-  - `Views/Chat/SubAgent/SubAgentListPage.swift`
-  - `Views/Chat/SubAgent/SubAgentDetailPage.swift`
-  - `Views/Chat/SubAgent/SubAgentListRow.swift`
-  - `Views/Chat/SubAgent/SubAgentPromptBubble.swift`
-  - `Views/Chat/SubAgent/SubAgentChatTranscriptView.swift`（聊天 profile 的步骤组/消息行）
+- 新增：`Views/Chat/SubAgent/SubAgentListRow.swift`（列表行）
+- 入口按钮 `SubAgentRoundButton` 落在 `SubAgentCapsule.swift`
+- 列表页/详情页落在 `SubAgentPanelSheet.swift` 的 `listPage` / `detailPage`；活动转录 `chatTranscript` 同文件
 - 主题：`CodePageTheme` 增加 `textPrimary/textSecondary/textDisabled/userBubble` 的 Accessor（已有 `text100/text300` 等，按需映射，避免重复）。
 
 ### 4.3 数据

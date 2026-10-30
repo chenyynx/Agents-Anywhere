@@ -7,6 +7,9 @@ nonisolated struct V2SessionCachePolicy {
     /// total (128MB) budgets plus the LRU eviction below still bound disk use.
     var maximumSessions = 20
     var maximumTimelineItems = 1000
+    /// Rows read from the local store when a session opens. P2 keeps the
+    /// current 100-row behavior; P4 raises it to 300 with the no-trim change.
+    var openingWindow = 100
     var catalogLifetime: TimeInterval = 30
 }
 
@@ -237,7 +240,7 @@ final class V2SessionRepository {
         let entry = entry(for: id)
         guard entry.projection == nil, !entry.hasReadLocal else { return }
         if entry.localReadTask == nil {
-            entry.localReadTask = Task { await localStore.restoreSession(id) }
+            entry.localReadTask = Task { await localStore.restoreSession(id, window: policy.openingWindow) }
         }
         let signpost = PerfSignpost.begin("session.restore")
         defer { PerfSignpost.end("session.restore", signpost) }
@@ -249,6 +252,7 @@ final class V2SessionRepository {
         guard let projection = try? archive.projection(items: saved.items,
                                                        maximumItems: policy.maximumTimelineItems, now: now) else { return }
         entry.projection = projection
+        entry.projection?.setLocalOlderAvailable(saved.localHasOlderRows)
         // A failure that outlived the process is still on record: the ring is
         // restored beside the projection it belongs to.
         entry.recoveryDiagnostics = archive.recoveryDiagnostics ?? []

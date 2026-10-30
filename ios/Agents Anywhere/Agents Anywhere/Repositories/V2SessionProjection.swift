@@ -168,6 +168,12 @@ struct V2SessionProjection {
         return true
     }
 
+    /// The local store, not the server, reports whether it still holds rows
+    /// older than the restored window.
+    mutating func setLocalOlderAvailable(_ value: Bool) {
+        data.localOlderAvailable = value
+    }
+
     mutating func applyLatest(_ page: V2SessionTimelinePage) {
         guard page.sessionId == data.session.id else { return }
         // A GET can finish after newer socket frames. Its high watermark bounds

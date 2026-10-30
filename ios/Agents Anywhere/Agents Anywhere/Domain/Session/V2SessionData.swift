@@ -40,7 +40,12 @@ nonisolated struct V2SessionData: Hashable {
     var session: V2SessionMeta
     var items: [V2TimelineItem]
     var hasOlderItems: Bool
+    /// Whether the local row store still holds rows older than the current
+    /// window. `hasOlderItems` is the server's flag; this one is the disk's.
+    /// The UI loads older rows when either is true.
+    var localOlderAvailable = false
     var hasNewerItems = false
+    var canLoadOlder: Bool { hasOlderItems || localOlderAvailable }
     var state: V2RuntimeState?
     var capabilities: V2RuntimeCapabilitySnapshot
     var notices: [V2RuntimeNotice]

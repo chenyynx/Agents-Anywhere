@@ -62,6 +62,19 @@ import Testing
         #expect(try reopened.rowCount(sessionID: "session") == 5)
     }
 
+    @Test func hasOlderRowsUsesTheOrderSeqBoundary() throws {
+        let path = temporaryPath()
+        let database = try TimelineDatabase(path: path.path)
+        defer { try? database.close() }
+        try database.replace(try snapshot(count: 10))
+        let hasOlder = try database.hasOlderRows(sessionID: "session", beforeOrderSeq: 6)
+        let noOlderAtStart = try database.hasOlderRows(sessionID: "session", beforeOrderSeq: 1)
+        let noOlderForMissing = try database.hasOlderRows(sessionID: "missing", beforeOrderSeq: 6)
+        #expect(hasOlder)
+        #expect(!noOlderAtStart)
+        #expect(!noOlderForMissing)
+    }
+
     @Test func removeSessionDeletesItsRowsAndMeta() throws {
         let path = temporaryPath()
         let database = try TimelineDatabase(path: path.path)

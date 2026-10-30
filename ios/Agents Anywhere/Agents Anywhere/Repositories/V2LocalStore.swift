@@ -27,14 +27,49 @@ actor V2LocalStore {
     /// is skipped instead of discarding the whole session. The SubAgent
     /// activity cache is decoded here too, so restoring a few hundred child
     /// rows never blocks the main actor.
-    func restoreSession(_ id: String) -> V2SessionRestore? {
+    func restoreSession(_ id: String, window: Int = 100) -> V2SessionRestore? {
+        // P2 read path: the row store is the source when it holds this
+        // session. A missing/malformed database row falls back to the JSON
+        // archive, which also lazily imports that archive into the store.
+        if let database = timelineStore(),
+           let stored = try? database.read(sessionID: id, limit: max(1, window)),
+           let state = stored.meta.stateBlob,
+           let archive = try? JSONDecoder().decode(V2SessionArchive.self, from: state) {
+            let items = stored.rows.compactMap { row -> V2TimelineItem? in
+                guard let raw = try? JSONDecoder().decode(JSONValue.self, from: row.payload) else {
+                    return nil
+                }
+                return try? V2TimelineItem(json: raw)
+            }
+            let activity = (archive.subAgentActivity ?? [:]).mapValues { values in
+                values.compactMap { try? V2TimelineItem(json: $0) }
+            }
+            let localOlder: Bool
+            if let first = items.first?.orderSeq {
+                localOlder = (try? database.hasOlderRows(sessionID: id,
+                                                         beforeOrderSeq: first)) ?? false
+            } else {
+                localOlder = false
+            }
+            return V2SessionRestore(archive: archive, items: items,
+                subAgentActivity: activity, localHasOlderRows: localOlder)
+        }
+
         guard let archive = session(id) else { return nil }
         let activity = (archive.subAgentActivity ?? [:]).mapValues { values in
             values.compactMap { try? V2TimelineItem(json: $0) }
         }
+        // Lazy, idempotent migration: an archive written before the row store
+        // existed is imported on its first open, then the next open reads the
+        // database. No startup scan and no extra blocking on the launch path.
+        if let database = timelineStore() {
+            do { try database.replace(archive.timelineSnapshot()) }
+            catch { Self.log.error("timeline lazy import failed: \(String(describing: error), privacy: .public)") }
+        }
         return V2SessionRestore(archive: archive,
             items: archive.items.compactMap { try? V2TimelineItem(json: $0) },
-            subAgentActivity: activity)
+            subAgentActivity: activity,
+            localHasOlderRows: archive.items.count > max(1, window))
     }
     func saveDashboard(_ value: V2DashboardArchive) { write(value, key: "dashboard") }
     func saveSession(_ value: V2SessionArchive) {

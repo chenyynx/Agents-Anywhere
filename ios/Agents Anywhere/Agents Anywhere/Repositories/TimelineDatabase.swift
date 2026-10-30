@@ -163,6 +163,20 @@ nonisolated final class TimelineDatabase {
         }
     }
 
+    /// True when the store holds at least one row older than `beforeOrderSeq`.
+    /// The window read only returns the newest rows; this is the cheap
+    /// `EXISTS` query the paging path uses to know whether to read disk next.
+    func hasOlderRows(sessionID: String, beforeOrderSeq: Int) throws -> Bool {
+        try pool.read { db in
+            try Bool.fetchOne(db, sql: """
+                SELECT EXISTS(
+                    SELECT 1 FROM timeline_items
+                    WHERE session_id = ? AND order_seq < ?
+                )
+                """, arguments: [sessionID, beforeOrderSeq]) ?? false
+        }
+    }
+
     func rowCount(sessionID: String) throws -> Int {
         try pool.read { db in
             try Int.fetchOne(db, sql: """

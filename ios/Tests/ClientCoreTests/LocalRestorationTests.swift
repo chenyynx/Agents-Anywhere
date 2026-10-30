@@ -4,6 +4,9 @@ import Testing
 
 @Suite @MainActor struct LocalRestorationTests {
     private func location() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent("aa-local-tests-" + UUID().uuidString) }
+    private func databasePath(_ directory: URL) -> String {
+        directory.appendingPathComponent("timeline.sqlite").path
+    }
     private func repo(_ http: TestHTTPTransport, local: V2LocalStore) -> V2SessionRepository {
         let runtime = V2RuntimeAPI(transport: http)
         return .init(scope: .init(serverURL: URL(string: "https://example.test")!, accountID: "account"),
@@ -67,6 +70,58 @@ import Testing
         #expect(restored.session(id: "session").draft == "Keep my draft")
         restored.reset(); first.reset(); await store.close(removing: true)
     }
+    @Test func dbRestoreReadsTheOpeningWindowAndReportsLocalOlder() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        let store = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
+        let http = TestHTTPTransport()
+        let first = repo(http, local: store)
+        let data = V2SessionData(snapshot: try snapshot(items: (1...300).map {
+            try itemObject(id: "item-\($0)", order: $0)
+        }))
+        let session = first.session(id: "session")
+        session.draft = "db draft"
+        await store.saveSession(V2SessionArchive(data: data, model: session))
+        await store.close(removing: false)
+        first.reset()
+
+        let reopenedStore = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
+        let restored = repo(http, local: reopenedStore)
+        restored.updateConnectivity(.init(availability: .offline))
+        let opening = try await restored.open(sessionId: "session")
+        #expect(opening.items.map(\.orderSeq) == Array(201...300))
+        #expect(opening.localOlderAvailable && opening.canLoadOlder)
+        #expect(restored.session(id: "session").draft == "db draft")
+        #expect(http.calls.isEmpty)
+        restored.reset(); await reopenedStore.close(removing: true)
+    }
+
+    @Test func dbRestoreFallsBackToJSONAndImportsIt() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        let store = V2LocalStore(directory: url, timelineDatabaseEnabled: false)
+        let first = repo(TestHTTPTransport(), local: store)
+        let data = V2SessionData(snapshot: try snapshot(items: (1...120).map {
+            try itemObject(id: "item-\($0)", order: $0)
+        }))
+        await store.saveSession(V2SessionArchive(data: data, model: first.session(id: "session")))
+        await store.close(removing: false)
+        first.reset()
+        #expect(!FileManager.default.fileExists(atPath: databasePath(url)))
+
+        let reopened = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
+        let http = TestHTTPTransport()
+        let restored = repo(http, local: reopened)
+        restored.updateConnectivity(.init(availability: .offline))
+        let opening = try await restored.open(sessionId: "session")
+        #expect(opening.items.map(\.orderSeq) == Array(21...120))
+        #expect(opening.localOlderAvailable)
+        #expect(http.calls.isEmpty)
+        restored.reset(); await reopened.close(removing: false)
+
+        let database = try TimelineDatabase(path: databasePath(url))
+        defer { try? database.close() }
+        #expect(try database.rowCount(sessionID: "session") == 120)
+    }
+
     @Test func corruptionEvictionAndSignedOutWritesDoNotTrapTheReader() async throws {
         let url = location(); defer { try? FileManager.default.removeItem(at: url) }
         let store = V2LocalStore(directory: url, maximumSessions: 1)

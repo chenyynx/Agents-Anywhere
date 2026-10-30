@@ -177,6 +177,8 @@ nonisolated struct V2SessionRestore {
     let archive: V2SessionArchive
     let items: [V2TimelineItem]
     let subAgentActivity: [String: [V2TimelineItem]]
+    /// Whether the disk still holds rows older than `items`.
+    let localHasOlderRows: Bool
 }
 
 extension ChatAttachment {

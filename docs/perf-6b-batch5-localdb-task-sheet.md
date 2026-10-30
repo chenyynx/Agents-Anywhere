@@ -158,6 +158,12 @@ P4.1 的 `suffix(1500/2000)` 只是把窗口加大，仍是一端锚定；pp 决
 
 **验证**：run `41074350543`（b741）与 `41077927151`（b742）test/build/timeline-autorun/code-profile 全绿；包 **b742** `694898b` 探针版。**仍待修**：巨型行（46k）的 cell 布局/复用与 1.1s apply；connector `event loop stalled drift_ms=3–4.5s`（独立性能项）。
 
+**b743（`248cd9b5`）**：历史加载开始要求「新底部访问」才允许自动 latest；状态栏回顶跳过一屏 pre-place，改成 full-distance 动画。b743 报告确认 auto-latest 不再自动触发，但显示历史页仍会裁掉新侧。
+
+**b744（`137cc887`，窗口根因）**：该会话 **3962 行（3522 主行）**，1000 行硬窗口在加载历史时裁掉约 3000 行新侧，列表缩到 4 个 visible group / 202pt。`V2SessionProjection.applyWindow` 在有 `windowAnchor` 时改用 **10,000 行浏览预算**，保留两侧；只有 `followLatest`/latest 页才裁回 1000。projection/benchmark 测试已更新。**待真机验**：列表不再缩、latest 提示减少；剩余 1.5s apply/stale cell/巨型行与 connector stalls 另列。
+
+**交接**：`docs/handoff-code-timeline-20261031.md`（含恢复提示词、日志入口、验包清单）。
+
 ---
 
 ## 1. 目标 / 非目标

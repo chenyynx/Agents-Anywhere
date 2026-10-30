@@ -1323,6 +1323,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         rowToItem[rowID]
     }
 
+    /// The durable order of the row under the viewport top. History paging
+    /// hands this to the projection so the in-memory window stays around the
+    /// reader instead of one end.
+    func orderSeq(forRowID rowID: String) -> Int? {
+        model.timeline.rows.first { $0.id == rowID }?.value.orderSeq
+    }
+
     func interactionState() -> TimelineLayoutInteractionState {
         var state = TimelineLayoutInteractionState()
         state.streamingItemIDs = streamingItemIDs()

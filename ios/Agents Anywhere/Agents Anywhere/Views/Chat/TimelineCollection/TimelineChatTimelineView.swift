@@ -114,6 +114,7 @@ struct TimelineChatTimelineView: View {
             onPhaseChanged: { transition in
                 if transition.gestureBegan { bridge.readerDidTakeOver() }
             },
+            onViewportChanged: { viewport in bridge.viewportChanged(viewport) },
             onControllerReady: { controller in bridge.attach(controller) })
             // Match the SwiftUI timeline's soft navigation-bar edge. The
             // collection view also sets its own top edge style; this covers
@@ -260,6 +261,9 @@ final class TimelineChatBridge: ObservableObject {
     private var historyGeneration = 0
     private var isLoadingOlder = false
     private var isLoadingLatest = false
+    /// Whether the last published viewport was at the newest edge. The edge
+    /// transition is the signal that the projection may stop history-anchoring.
+    private var wasAtBottom = false
 
     init(model: SessionChatModel,
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void,
@@ -299,6 +303,16 @@ final class TimelineChatBridge: ObservableObject {
         controller.onBottomArrived = { [weak self] in self?.openingArrived() }
         controller.onLoadOlder = { [weak self] in self?.loadOlder() }
         controller.onLoadLatest = { [weak self] in self?.loadLatest() }
+        controller.onNeedsLatest = { [weak self] in
+            // The opening path owns its own latest fetch; a viewport trigger
+            // must wait until the page is ready or the two reads race.
+            guard let self else { return }
+            guard self.model.isOpeningReady else {
+                self.controller?.rearmLatestAutoLoad()
+                return
+            }
+            self.loadLatest(auto: true)
+        }
         adapter.onLoadOlder = { [weak self] in self?.loadOlder() }
         adapter.onLoadLatest = { [weak self] in self?.loadLatest() }
         controller.setNavigationSuspended(navigationSuspended)
@@ -315,6 +329,19 @@ final class TimelineChatBridge: ObservableObject {
             && !model.session.isLoadingHistory && !isLoadingOlder
         controller?.canLoadLatest = model.session.isValid && model.session.hasNewerItems
             && !model.session.isLoadingHistory && !isLoadingLatest
+        // A window flag can arrive while the viewport is already resting at
+        // the bottom; no scroll will fire to re-run the auto-latest check.
+        controller?.requestLatestIfAtBottom()
+    }
+
+    /// The reader is at the newest edge of the held window. This is the only
+    /// place the projection stops anchoring on a history row; live creates
+    /// then append without waiting for the latest page.
+    func viewportChanged(_ viewport: TimelineViewport) {
+        let atBottom = viewport.measuredAtBottom
+        guard atBottom != wasAtBottom else { return }
+        wasAtBottom = atBottom
+        if atBottom { model.session.followLatest() }
     }
 
     private func loadOlder() {
@@ -328,8 +355,15 @@ final class TimelineChatBridge: ObservableObject {
         // A history load is a browsing action; a bottom follow target left
         // from an earlier state must not fight the prepend's anchor.
         controller.disarmBottom()
+        // A prepend that trims the far-newest edge bumps `windowRevision`;
+        // the opening re-assert must not pull a reader who is browsing history
+        // back to the bottom.
+        readerDidTakeOver()
         guard let anchor = controller.visibleAnchorRowID(),
               let before = adapter.firstRowID else { return }
+        // The visible row, not the oldest row: the projection must keep the
+        // reader's place while it trims the far-old and far-new edges.
+        let anchorOrderSeq = adapter.orderSeq(forRowID: anchor)
         isLoadingOlder = true
         historyGeneration &+= 1
         adapter.pendingHistoryRequest = .init(generation: historyGeneration,
@@ -338,13 +372,13 @@ final class TimelineChatBridge: ObservableObject {
         updateHistoryAvailability()
         Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.model.session.loadOlder()
+            await self.model.session.loadOlder(anchorOrderSeq: anchorOrderSeq)
             self.isLoadingOlder = false
             self.updateHistoryAvailability()
         }
     }
 
-    private func loadLatest() {
+    private func loadLatest(auto: Bool = false) {
         guard !navigationSuspended, model.session.isValid,
               model.session.hasNewerItems, !model.session.isLoadingHistory,
               !isLoadingLatest else { return }
@@ -359,9 +393,12 @@ final class TimelineChatBridge: ObservableObject {
             await self.model.session.loadLatest()
             self.isLoadingLatest = false
             self.updateHistoryAvailability()
-            // The latest page lands at the bottom; an explicit request owns
-            // the return even if the reader had scrolled into history.
-            self.controller?.requestBottom(animated: true, forced: true)
+            // A viewport-triggered load must not yank a reader who scrolled
+            // into history while it was in flight. A manual latest request
+            // owns the return as before.
+            if !auto || self.controller?.viewport.measuredAtBottom == true {
+                self.controller?.requestBottom(animated: true, forced: true)
+            }
         }
     }
 
@@ -386,6 +423,7 @@ final class TimelineChatBridge: ObservableObject {
         openingSettled = true
         openingPending = false
         model.openingPositionDidSettle()
+        controller.requestLatestIfAtBottom()
     }
 
     /// The measured viewport reached the bottom after the apply completion
@@ -396,6 +434,7 @@ final class TimelineChatBridge: ObservableObject {
         openingPending = false
         openingSettled = true
         model.openingPositionDidSettle()
+        controller.requestLatestIfAtBottom()
     }
 
     /// The old timeline's 400 ms bounded fallback: release the cold-load mask

@@ -327,7 +327,8 @@ final class V2SessionRepository {
         return try await hydrate(entry)
     }
 
-    func loadOlder(sessionId: V2SessionID, limit: Int? = nil) async throws -> V2SessionData {
+    func loadOlder(sessionId: V2SessionID, limit: Int? = nil,
+                   anchorOrderSeq: Int? = nil) async throws -> V2SessionData {
         let pageLimit = limit ?? policy.networkPageSize
         _ = try await load(sessionId: sessionId)
         let entry = entry(for: sessionId)
@@ -353,7 +354,7 @@ final class V2SessionRepository {
                     hasMore: data.hasOlderItems,
                     serverTime: nil,
                     excludesAgentChildren: data.windowExcludesAgentChildren)
-                entry.projection?.applyHistory(page)
+                entry.projection?.applyHistory(page, anchorOrderSeq: anchorOrderSeq)
                 entry.projection?.setLocalOlderAvailable(local.hasMore)
                 emit(entry)
                 return entry.projection!.data
@@ -367,7 +368,7 @@ final class V2SessionRepository {
             let page = try await detail.loadOlderItems(sessionId: sessionId, beforeOrderSeq: before,
                 limit: pageLimit, excludeAgentChildren: true)
             try requireCurrent(entry, version: version)
-            entry.projection?.applyHistory(page)
+            entry.projection?.applyHistory(page, anchorOrderSeq: anchorOrderSeq)
             if let localStore,
                let first = entry.projection?.data.items.first?.orderSeq {
                 let hasMoreLocal = await localStore.hasOlderRows(sessionID: sessionId,
@@ -379,6 +380,13 @@ final class V2SessionRepository {
         }
         entry.historyTask = task
         return try await task.value
+    }
+
+    /// The reader is back at the newest edge of the held window. History
+    /// paging stops anchoring there, so live creates append normally instead
+    /// of being deferred until an explicit latest page.
+    func followLatest(sessionId: V2SessionID) {
+        entries[sessionId]?.projection?.followLatest()
     }
 
     func loadLatest(sessionId: V2SessionID, limit: Int? = nil) async throws -> V2SessionData {

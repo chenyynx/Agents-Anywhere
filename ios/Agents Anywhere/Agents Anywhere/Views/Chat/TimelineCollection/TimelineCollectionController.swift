@@ -160,6 +160,12 @@ final class TimelineCollectionController: UIViewController {
     var canLoadLatest = false
     var onLoadOlder: (() -> Void)?
     var onLoadLatest: (() -> Void)?
+    /// A viewport-driven latest load. The reader reached the newest edge of a
+    /// history window and there are newer rows on the other side; the bridge
+    /// starts the latest page without requiring a second tap.
+    var onNeedsLatest: (() -> Void)? {
+        didSet { if onNeedsLatest != nil { latestAutoLoadArmed = true } }
+    }
 
     var onPhaseChanged: ((TimelinePhaseMapping.Transition) -> Void)?
     var onViewportChanged: ((TimelineViewport) -> Void)?
@@ -181,6 +187,9 @@ final class TimelineCollectionController: UIViewController {
     /// installed there (TimelineCollectionView.updateUIViewController).
     var onScrollDownIndicatorChanged: ((Bool) -> Void)?
     private var lastScrollDownIndicator: Bool?
+    /// One auto-latest request per bottom episode. Scrolling away re-arms it;
+    /// a failed load does not retry on every viewport tick.
+    private var latestAutoLoadArmed = true
     /// The page's SwiftUI safe area: composer bar + home indicator + keyboard.
     /// The list is a full-bleed representable, so this is its only inset
     /// source. The probe (run 40353074977) measured the proxy inside the
@@ -1641,6 +1650,35 @@ final class TimelineCollectionController: UIViewController {
         lastPublishedViewport = next
         onViewportChanged?(next)
         publishScrollDownIndicator()
+        maybeAutoLoadLatest(next)
+    }
+
+    /// Called by the bridge after a history/window flag changes. A viewport
+    /// that is already parked at the bottom would otherwise never re-publish
+    /// and miss the new `hasNewerItems` edge.
+    func requestLatestIfAtBottom() {
+        guard isViewLoaded else { return }
+        maybeAutoLoadLatest(viewport)
+    }
+
+    /// Re-arms the one-shot bottom trigger when the bridge could not start the
+    /// read yet (the opening path was still in flight).
+    func rearmLatestAutoLoad() {
+        latestAutoLoadArmed = true
+    }
+
+    private func maybeAutoLoadLatest(_ viewport: TimelineViewport) {
+        guard viewport.isMeasured else { return }
+        guard viewport.measuredAtBottom else {
+            latestAutoLoadArmed = true
+            return
+        }
+        guard !navigationSuspended, canLoadLatest, latestAutoLoadArmed else { return }
+        // Reaching the bottom of a history window is the reader's request for
+        // the newest side. One trigger per bottom episode: a failed load waits
+        // for a fresh leave-and-return (or the visible latest prompt).
+        latestAutoLoadArmed = false
+        onNeedsLatest?()
     }
 
     private func publishScrollDownIndicator() {

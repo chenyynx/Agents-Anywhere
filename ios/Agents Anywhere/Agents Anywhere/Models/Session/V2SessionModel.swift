@@ -471,12 +471,18 @@ final class V2SessionModel: Identifiable {
         catch { if isValid { failure = V2ClientFailure(error) } }
     }
 
-    func loadOlder() async {
+    func loadOlder(anchorOrderSeq: Int? = nil) async {
         guard let repository, isValid, !isLoadingHistory else { return }
         isLoadingHistory = true
         defer { isLoadingHistory = false }
-        do { _ = try await repository.loadOlder(sessionId: id) }
+        do { _ = try await repository.loadOlder(sessionId: id, anchorOrderSeq: anchorOrderSeq) }
         catch { if isValid { failure = V2ClientFailure(error) } }
+    }
+
+    /// The reader returned to the newest edge of the held window; live creates
+    /// follow again without waiting for an explicit latest page.
+    func followLatest() {
+        repository?.followLatest(sessionId: id)
     }
 
     func loadLatest() async {

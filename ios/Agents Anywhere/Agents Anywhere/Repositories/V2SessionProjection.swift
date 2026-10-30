@@ -9,11 +9,33 @@ struct V2TimelineMergeOutcome {
     let wasInserted: Bool
 }
 
+/// The row the reader is looking at when a history page starts. History paging
+/// keeps the in-memory window around this position, so a prepend cannot evict
+/// the newest rows (the old `prefix` rule) and the return-to-bottom path still
+/// finds the tail it left behind.
+nonisolated struct V2TimelineWindowAnchor: Equatable, Sendable {
+    let orderSeq: Int
+    let itemID: V2TimelineItemID?
+}
+
+/// Which side of the merged window a trim actually removed. `hasOlderItems` and
+/// `hasNewerItems` are page flags, not guesses: a history merge that drops the
+/// far-old end must still keep `hasOlderItems` true, while a merge that drops
+/// the newest tail is the only history case that sets `hasNewerItems`.
+private struct V2TimelineWindowTrim {
+    var droppedOlder = false
+    var droppedNewer = false
+}
+
 /// Reduces server projections without network I/O or UI state. Live projections may
 /// change A -> B -> A at the same durable sequence and must not use event-ID dedup.
 struct V2SessionProjection {
     private(set) var data: V2SessionData
     private let maximumItems: Int
+    /// Non-nil while the reader is browsing history. Live creates outside this
+    /// window are deferred to the latest page and flagged as newer instead of
+    /// being allowed to push the anchor out.
+    private var windowAnchor: V2TimelineWindowAnchor?
     private var eventIDs: Set<String> = []
     /// Fixed-size ring of recent durable event IDs; replacing the oldest slot
     /// avoids shifting the whole window for every event once it is full.
@@ -151,11 +173,35 @@ struct V2SessionProjection {
         return outcome
     }
 
-    mutating func applyHistory(_ page: V2SessionTimelinePage) {
+    /// Applies one older page around the row the reader is looking at. The
+    /// anchor is optional for callers without a viewport (tests and the legacy
+    /// SwiftUI list); without one the first held row stands in for the reading
+    /// position, which still preserves the newest tail instead of the old
+    /// `prefix` rule.
+    mutating func applyHistory(_ page: V2SessionTimelinePage, anchorOrderSeq: Int? = nil) {
         guard page.sessionId == data.session.id else { return }
-        merge(page.items, history: true)
-        data.hasOlderItems = page.hasMore
+        if let anchorOrderSeq {
+            windowAnchor = V2TimelineWindowAnchor(
+                orderSeq: anchorOrderSeq,
+                itemID: data.items.first(where: { $0.orderSeq == anchorOrderSeq })?.id)
+        } else if let first = data.items.first {
+            windowAnchor = V2TimelineWindowAnchor(orderSeq: first.orderSeq, itemID: first.id)
+        } else if let last = page.items.last {
+            windowAnchor = V2TimelineWindowAnchor(orderSeq: last.orderSeq, itemID: last.id)
+        } else {
+            windowAnchor = nil
+        }
+        let trim = merge(page.items, history: true)
+        data.hasOlderItems = page.hasMore || trim.droppedOlder
+        data.hasNewerItems = data.hasNewerItems || trim.droppedNewer
         // nextSeq is the server high watermark, not proof that intervening events were read.
+    }
+
+    /// Returns the viewport to the live tail. The anchor is only a reading
+    /// position; once the reader is back at the newest edge, live creates must
+    /// append instead of being deferred behind `hasNewerItems`.
+    mutating func followLatest() {
+        windowAnchor = nil
     }
 
     /// Opening starts from one page even if a previous visit loaded more. Keep
@@ -163,6 +209,7 @@ struct V2SessionProjection {
     @discardableResult mutating func limitToLatest(_ count: Int) -> Bool {
         let count = max(1, min(count, maximumItems))
         guard data.items.count > count else { return false }
+        windowAnchor = nil
         data.items = Array(data.items.suffix(count))
         data.hasOlderItems = true
         return true
@@ -179,18 +226,21 @@ struct V2SessionProjection {
         // A GET can finish after newer socket frames. Its high watermark bounds
         // the window it may replace, but never acknowledges the event cursor.
         let newer = data.items.filter { $0.updatedSeq > page.nextSeq }
+        windowAnchor = nil
         replaceTimeline(page.items, hasMore: page.hasMore)
         // This page now builds the window, so it also owns the window's read
         // mode (the panel's loaded gate reads it).
         data.windowExcludesAgentChildren = page.excludesAgentChildren
-        merge(newer, history: false)
+        _ = merge(newer, history: false)
     }
 
     private mutating func replaceTimeline(_ items: [V2TimelineItem], hasMore: Bool) {
+        windowAnchor = nil
         data.items = []
         data.hasNewerItems = false
         data.hasOlderItems = hasMore
-        merge(items, history: false)
+        let trim = merge(items, history: false)
+        data.hasOlderItems = hasMore || trim.droppedOlder
     }
 
     /// Single-row fast path for the live socket.
@@ -219,14 +269,25 @@ struct V2SessionProjection {
         }
         let start = data.items.first?.orderSeq ?? 0
         let end = data.items.last?.orderSeq ?? 0
-        if data.hasOlderItems, item.orderSeq < start { return nil }
-        if data.hasNewerItems, item.orderSeq > end { return nil }
+        if !data.items.isEmpty, windowAnchor != nil {
+            // While browsing history, a create outside the held window belongs
+            // to the tail the latest page restores; it must not push the
+            // reading anchor out. The newer flag keeps that page honest.
+            if item.orderSeq < start || item.orderSeq > end {
+                if item.orderSeq > end { data.hasNewerItems = true }
+                return nil
+            }
+        } else {
+            if data.hasOlderItems, item.orderSeq < start { return nil }
+            if data.hasNewerItems, item.orderSeq > end { return nil }
+        }
         insertSorted(item)
         return V2TimelineMergeOutcome(item: item, wasInserted: true)
     }
 
-    /// Keeps `data.items` ordered by `(orderSeq, id)` and applies the same
-    /// newest-`maximumItems` window rule as `merge(history: false)`.
+    /// Keeps `data.items` ordered by `(orderSeq, id)` and applies the viewport
+    /// window rule: anchored windows keep both sides of the reader, while a
+    /// latest window keeps the newest `maximumItems`.
     private mutating func insertSorted(_ item: V2TimelineItem) {
         var low = 0
         var high = data.items.count
@@ -240,25 +301,20 @@ struct V2SessionProjection {
             }
         }
         data.items.insert(item, at: low)
-        if data.items.count > maximumItems {
-            data.items.removeFirst(data.items.count - maximumItems)
-            data.hasOlderItems = true
-        }
+        applyWindowTrim()
     }
 
-    /// Applies incoming rows and reports, per item, whether it was inserted or
-    /// supersede-replaced. The report is purely informational — the window
-    /// guards, the supersede rule, ordering and the history semantics below are
-    /// untouched.
-    @discardableResult
-    private mutating func merge(_ incoming: [V2TimelineItem], history: Bool) -> [V2TimelineMergeOutcome] {
+    /// Applies incoming rows. Batch paging and live recovery share the window
+    /// rules; history inserts are not subject to the newest-edge guards because
+    /// their page has already been selected by the server.
+    private mutating func merge(_ incoming: [V2TimelineItem], history: Bool) -> V2TimelineWindowTrim {
         let signpost = PerfSignpost.begin("timeline.merge")
         defer { PerfSignpost.end("timeline.merge", signpost) }
         var byID = Dictionary(uniqueKeysWithValues: data.items.map { ($0.id, $0) })
         let start = data.items.first?.orderSeq ?? 0
         let end = data.items.last?.orderSeq ?? 0
+        let anchored = !data.items.isEmpty && windowAnchor != nil
         let confirmedAt = now()
-        var outcomes: [V2TimelineMergeOutcome] = []
         for item in incoming where item.sessionId == data.session.id {
             // The active-card sidecar is fed before the window guards, and so
             // before the version check below: a SubAgent card that later traffic
@@ -269,25 +325,68 @@ struct V2SessionProjection {
                 item, into: data.activeAgentCards, now: confirmedAt)
             if let old = byID[item.id] {
                 guard item.supersedes(old) else { continue }
-                outcomes.append(V2TimelineMergeOutcome(item: item, wasInserted: false))
+            } else if !history, anchored {
+                if item.orderSeq < start || item.orderSeq > end {
+                    if item.orderSeq > end { data.hasNewerItems = true }
+                    continue
+                }
             } else if !history, data.hasOlderItems, item.orderSeq < start {
                 continue // Recovery must not reinsert older rows outside the selected window.
             } else if !history, data.hasNewerItems, item.orderSeq > end {
                 continue // Preserve the history window until the caller explicitly loads latest.
-            } else {
-                outcomes.append(V2TimelineMergeOutcome(item: item, wasInserted: true))
             }
             byID[item.id] = item
         }
         let sorted = byID.values.sorted { ($0.orderSeq, $0.id) < ($1.orderSeq, $1.id) }
-        if history {
-            data.items = Array(sorted.prefix(maximumItems))
-            data.hasNewerItems = data.hasNewerItems || sorted.count > maximumItems
-        } else {
-            data.items = Array(sorted.suffix(maximumItems))
-            data.hasOlderItems = data.hasOlderItems || sorted.count > maximumItems
+        let trim = applyWindow(to: sorted)
+        if !history {
+            data.hasOlderItems = data.hasOlderItems || trim.droppedOlder
+            data.hasNewerItems = data.hasNewerItems || trim.droppedNewer
         }
-        return outcomes
+        return trim
+    }
+
+    /// Replaces `data.items` with the bounded window and reports which side it
+    /// removed. With an anchor, the window is centred on the reader; without
+    /// one, the newest edge wins (the opening/latest rule).
+    private mutating func applyWindow(to sorted: [V2TimelineItem]) -> V2TimelineWindowTrim {
+        guard !sorted.isEmpty else {
+            data.items = []
+            return V2TimelineWindowTrim()
+        }
+        guard sorted.count > maximumItems else {
+            data.items = sorted
+            return V2TimelineWindowTrim()
+        }
+        if let anchor = windowAnchor {
+            let anchorIndex = windowAnchorIndex(in: sorted, anchor: anchor)
+            let half = maximumItems / 2
+            var lower = max(0, anchorIndex - half)
+            var upper = min(sorted.count, lower + maximumItems)
+            if upper - lower < maximumItems { lower = max(0, upper - maximumItems) }
+            data.items = Array(sorted[lower..<upper])
+            return V2TimelineWindowTrim(droppedOlder: lower > 0,
+                                        droppedNewer: upper < sorted.count)
+        }
+        data.items = Array(sorted.suffix(maximumItems))
+        return V2TimelineWindowTrim(droppedOlder: true)
+    }
+
+    private mutating func applyWindowTrim() {
+        let trim = applyWindow(to: data.items)
+        data.hasOlderItems = data.hasOlderItems || trim.droppedOlder
+        data.hasNewerItems = data.hasNewerItems || trim.droppedNewer
+    }
+
+    private func windowAnchorIndex(in items: [V2TimelineItem],
+                                   anchor: V2TimelineWindowAnchor) -> Int {
+        if let itemID = anchor.itemID, let index = items.firstIndex(where: { $0.id == itemID }) {
+            return index
+        }
+        if let index = items.firstIndex(where: { $0.orderSeq >= anchor.orderSeq }) {
+            return index
+        }
+        return max(0, items.count - 1)
     }
 
 

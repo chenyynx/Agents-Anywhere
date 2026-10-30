@@ -139,7 +139,9 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
     /// one older page pushes the newest rows out of the projection, so `open()`
     /// must still fetch the latest page for an in-memory projection.
     private func overflowed(_ http: TestHTTPTransport) async throws -> V2SessionRepository {
-        let repo = repository(transport: http, policy: V2SessionCachePolicy(maximumTimelineItems: 1))
+        // Three rows with a two-row window: opening keeps 2,3; one older page
+        // makes the reader's row 2 the anchor, so row 3 is deferred as newer.
+        let repo = repository(transport: http, policy: V2SessionCachePolicy(maximumTimelineItems: 2))
         _ = try await repo.load(sessionId: "session")
         _ = try await repo.loadOlder(sessionId: "session")
         return repo
@@ -154,14 +156,14 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         let gate = TestGate()
         var latestStarted = false
         http.respond = { call in
-            if call.path.hasSuffix("snapshot") { return try openingSnapshotPage(rows: 2, hasMore: true) }
+            if call.path.hasSuffix("snapshot") { return try openingSnapshotPage(rows: 3, hasMore: true) }
             if call.path.hasSuffix("timeline") {
                 if call.query.contains(where: { $0.name == "mode" && $0.value == "history" }) {
                     return try openingTimelinePage(rows: [1])
                 }
                 latestStarted = true
                 await gate.wait()
-                return try openingTimelinePage(rows: [1, 2])
+                return try openingTimelinePage(rows: [2, 3])
             }
             return try http.defaultResponse(call)
         }
@@ -179,14 +181,14 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         // The refresh is still blocked in the network, but the cached window is
         // already presented and the page is ready (D3). Presentation preceded
         // the refresh.
-        #expect(model.timeline.rows.map(\.id) == ["reply-1"])
+        #expect(model.timeline.rows.map(\.id) == ["reply-1", "reply-2"])
         #expect(model.isOpeningReady && model.openingError == nil)
         #expect(!model.openingPositionSettled)
         gate.release()
         await opening.value
         // The late refresh merges through the same stage/flush path without
         // rebuilding or duplicating rows.
-        #expect(model.timeline.rows.map(\.id) == ["reply-2"])
+        #expect(model.timeline.rows.map(\.id) == ["reply-2", "reply-3"])
         #expect(model.isOpeningReady && model.openingError == nil)
     }
 
@@ -234,7 +236,7 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
     @Test func cachedOpeningStaysReadyWhenTheRefreshFails() async throws {
         let http = TestHTTPTransport()
         http.respond = { call in
-            if call.path.hasSuffix("snapshot") { return try openingSnapshotPage(rows: 2, hasMore: true) }
+            if call.path.hasSuffix("snapshot") { return try openingSnapshotPage(rows: 3, hasMore: true) }
             if call.path.hasSuffix("timeline"), call.query.contains(where: { $0.name == "mode" && $0.value == "history" }) {
                 return try openingTimelinePage(rows: [1])
             }
@@ -248,7 +250,7 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         // The catch path is unchanged: the cached window still opens, and the
         // failure surfaces as an actionable error instead of a blocked mask.
         #expect(model.isOpeningReady && model.openingError != nil)
-        #expect(model.timeline.rows.map(\.id) == ["reply-1"])
+        #expect(model.timeline.rows.map(\.id) == ["reply-1", "reply-2"])
     }
 
     @Test func coldOpeningPresentsOnlyAfterTheSnapshotArrives() async throws {

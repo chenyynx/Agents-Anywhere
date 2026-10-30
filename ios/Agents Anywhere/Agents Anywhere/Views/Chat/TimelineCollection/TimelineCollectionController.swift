@@ -516,6 +516,7 @@ final class TimelineCollectionController: UIViewController {
             + "firstRow=\(currentFirstRowID ?? "-") "
             + "oldFirstRow=\(oldItems.first.flatMap { content.rowIDs(in: $0).first } ?? "-") "
             + "oldN=\(oldItems.count) newN=\(items.count) applying=\(applyingHistoryPage ? 1 : 0) "
+            + "pending=\(layout.pendingMeasurements.count) "
             + "off=\(probeOffsetBefore) contentH=\(layout.contentHeight) "
             + "anchor=\(probeAnchorID ?? "-") anchorY=\(probeAnchorYBefore)")
 #endif

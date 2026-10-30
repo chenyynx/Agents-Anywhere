@@ -262,9 +262,10 @@ final class TimelineAnchorDriver {
         guard case .reading = state.placement else { return }
         guard let target = state.placement.target(in: geometry()) else { return }
 #if AA_TIMELINE_PROBE
-        // Only an actual write is interesting; a no-op resolution would
-        // otherwise flood the ring during a page's estimate settlement.
-        if abs(target - view.contentOffset.y) > 0.5 {
+        // Only a write during the paging path is worth a line: a no-op
+        // resolution, or the post-apply reducer's own corrections, would
+        // otherwise flood the ring and push out the request/apply sequence.
+        if isHistoryPaging, abs(target - view.contentOffset.y) > 0.5 {
             TimelineProbeStore.shared.noteHistory(
                 "driver enforce target=\(target) pos=\(view.contentOffset.y) "
                 + "delta=\(target - view.contentOffset.y)")

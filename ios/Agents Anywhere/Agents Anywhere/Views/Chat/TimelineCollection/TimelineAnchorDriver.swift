@@ -111,7 +111,12 @@ final class TimelineAnchorDriver {
                                   displayScale: view.traitCollection.displayScale)
     }
 
-    private func writeOffset(_ y: CGFloat) {
+    /// `allowSlack` keeps the one-viewport emergency margin for direct
+    /// placements of a possibly stale anchor. A Mover step is a live,
+    /// in-range value: the slack let a spring overshoot be written past the
+    /// content bottom, where UIKit's clamp/rubber-band and the next tick's
+    /// reseed produced a second oscillation (device report 2026-10-31 07:10).
+    private func writeOffset(_ y: CGFloat, allowSlack: Bool = true) {
         guard let view = scrollView, y.isFinite else { return }
         // Every other writer trusts its target. A stale placement or an
         // out-of-content anchor can resolve to a value tens of thousands of
@@ -122,7 +127,7 @@ final class TimelineAnchorDriver {
         let topLimit = -geometry.topInset
         let bottomLimit = max(topLimit,
             geometry.contentHeight - geometry.containerHeight + geometry.bottomInset)
-        let slack = max(geometry.containerHeight, 1)
+        let slack = allowSlack ? max(geometry.containerHeight, 1) : 0
         let clamped = min(max(y, topLimit - slack), bottomLimit + slack)
         if abs(clamped - y) > 1 {
 #if AA_TIMELINE_PROBE
@@ -643,7 +648,9 @@ final class TimelineAnchorDriver {
         let target = state.placement.target(in: geometry()) ?? view.contentOffset.y
         let step = mover.step(target: target, dt: dt,
                               displayScale: view.traitCollection.displayScale)
-        writeOffset(step.position)
+        // A Mover step is in-range by construction; do not let it write into
+        // the emergency slack (see `writeOffset`).
+        writeOffset(step.position, allowSlack: false)
         if step.arrived {
             stopMover()
             state.motion = .resting

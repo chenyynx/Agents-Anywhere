@@ -531,6 +531,15 @@ final class SessionChatModel {
         guard canQueueSend,
               !session.composer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return }
+        // The queue is another way a long paste leaves the composer; convert
+        // it here too, before the editor's committed text reaches the bubble.
+        if let attachment = LongMessageAttachmentPolicy.makeAttachment(
+            from: session.composer.text,
+            existingAttachmentCount: session.composer.attachments.count,
+            canAttach: canAttach) {
+            session.composer.text = ""
+            session.composer.attachments.append(attachment)
+        }
         guard let item = session.enqueueDraft() else {
             surfaceBlockedSendIfNeeded()
             return
@@ -608,7 +617,17 @@ final class SessionChatModel {
         }
         guard !isWorking, session.canSend, !session.composer.isComposing else { return }
         let draft = session.composer
-        draft.text = text
+        // A pasted log is cheaper as a file than as a chat bubble; the normal
+        // attachment upload carries it to the agent.
+        if let attachment = LongMessageAttachmentPolicy.makeAttachment(
+            from: text,
+            existingAttachmentCount: draft.attachments.count,
+            canAttach: canAttach) {
+            draft.text = ""
+            draft.attachments.append(attachment)
+        } else {
+            draft.text = text
+        }
         let selected = draft.attachments
         guard selected.isEmpty || canAttach else { return }
         isWorking = true

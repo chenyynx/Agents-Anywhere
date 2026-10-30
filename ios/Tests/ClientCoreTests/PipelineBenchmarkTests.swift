@@ -82,7 +82,7 @@ import Testing
             let save = clock.now - start
 
             start = clock.now
-            let restored = await store.restoreSession("session")
+            let restored = await store.restoreSession("session", window: itemCount)
             let restore = clock.now - start
 
             start = clock.now
@@ -106,7 +106,7 @@ import Testing
             print("BENCH coldOpen items=\(itemCount) save=\(milliseconds(save)) restore=\(milliseconds(restore)) projection=\(milliseconds(project)) present=\(milliseconds(present)) open=\(milliseconds(open)) rows=\(presentation.rows.count)")
             #expect(restored?.items.count == itemCount)
             #expect(restoredProjection.data.items.count == itemCount)
-            #expect(opened.items.count == 100)
+            #expect(opened.items.count == min(300, itemCount))
             #expect(!presentation.rows.isEmpty)
         }
     }

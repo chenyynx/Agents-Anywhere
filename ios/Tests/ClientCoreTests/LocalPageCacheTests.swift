@@ -60,7 +60,7 @@ import Testing
         #expect(older.hasNewerItems)
 
         let latest = try await repo.loadLatest(sessionId: "session")
-        #expect(latest.items.map(\.orderSeq) == Array(401...600))
+        #expect(latest.items.map(\.orderSeq) == Array(451...600))
         #expect(!latest.hasNewerItems)
         #expect(latest.localOlderAvailable)
         #expect(http.calls.isEmpty)

@@ -20,64 +20,67 @@ struct SubAgentListRow: View {
     private var phaseColor: Color { SubAgentPalette.phase(card.phase) }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 14) {
-            Button(action: onTap) {
-                HStack(alignment: .center, spacing: 14) {
-                    ZStack {
-                        Circle().fill(phaseColor.opacity(0.14))
-                        AnthropiconView(name: "anthropicon.agent", size: .large)
-                            .foregroundStyle(phaseColor)
-                    }
-                    .frame(width: 40, height: 40)
+        Button(action: onTap) {
+            HStack(alignment: .center, spacing: 14) {
+                ZStack {
+                    Circle().fill(phaseColor.opacity(0.14))
+                    AnthropiconView(name: "anthropicon.agent", size: .large)
+                        .foregroundStyle(phaseColor)
+                }
+                .frame(width: 40, height: 40)
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(card.taskName)
-                            .font(.custom(CodePageTheme.sansFontName, size: 17,
-                                          relativeTo: .body).weight(.semibold))
-                            .foregroundStyle(CodePageTheme.userBubbleText.resolved(for: colorScheme))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                        Text(subtitle)
-                            .font(.custom(CodePageTheme.sansFontName, size: 15,
-                                          relativeTo: .subheadline))
-                            .foregroundStyle(CodePageTheme.text400Color.resolved(for: colorScheme))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                        if !metrics.isEmpty {
-                            HStack(spacing: 10) {
-                                ForEach(Array(metrics.enumerated()), id: \.offset) { _, metric in
-                                    HStack(spacing: 3) {
-                                        AppSymbol(metric.symbol, size: 11)
-                                            .foregroundStyle(.tertiary)
-                                        Text(metric.value)
-                                            .font(.custom(CodePageTheme.sansFontName, size: 13,
-                                                          relativeTo: .footnote))
-                                            .foregroundStyle(.secondary)
-                                            .monospacedDigit()
-                                            .lineLimit(1)
-                                    }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(card.taskName)
+                        .font(.custom(CodePageTheme.sansFontName, size: 17,
+                                      relativeTo: .body).weight(.semibold))
+                        .foregroundStyle(CodePageTheme.userBubbleText.resolved(for: colorScheme))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Text(subtitle)
+                        .font(.custom(CodePageTheme.sansFontName, size: 15,
+                                      relativeTo: .subheadline))
+                        .foregroundStyle(CodePageTheme.text400Color.resolved(for: colorScheme))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if !metrics.isEmpty {
+                        HStack(spacing: 10) {
+                            ForEach(Array(metrics.enumerated()), id: \.offset) { _, metric in
+                                HStack(spacing: 3) {
+                                    AppSymbol(metric.symbol, size: 11)
+                                        .foregroundStyle(.tertiary)
+                                    Text(metric.value)
+                                        .font(.custom(CodePageTheme.sansFontName, size: 13,
+                                                      relativeTo: .footnote))
+                                        .foregroundStyle(.secondary)
+                                        .monospacedDigit()
+                                        .lineLimit(1)
                                 }
                             }
                         }
                     }
-                    Spacer(minLength: 0)
                 }
-                .contentShape(Rectangle())
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(String(localized: "\(card.taskName)，\(card.phase.word)"))
-            .accessibilityHint(String(localized: "查看详情"))
-
+            .padding(16)
+            // Keep the title clear of the trailing stop control; the whole
+            // padded card stays tappable because the padding is in the label.
+            .padding(.trailing, stopTasks.isEmpty ? 0 : 40)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(String(localized: "\(card.taskName)，\(card.phase.word)"))
+        .accessibilityHint(String(localized: "查看详情"))
+        .background(CodePageTheme.userBubbleFill.resolved(for: colorScheme),
+                    in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay(alignment: .trailing) {
             if stopTasks.count == 1, let task = stopTasks.first {
                 SubAgentStopControl(task: task, showsName: false,
                                     isStopping: stoppingTaskIDs.contains(task.taskID)) {
                     onStop(task.taskID)
                 }
+                .padding(.trailing, 12)
             }
         }
-        .padding(16)
-        .background(CodePageTheme.userBubbleFill.resolved(for: colorScheme),
-                    in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
     /// The phase word plus the live entry's last tool. The entry's data is the

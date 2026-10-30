@@ -20,6 +20,7 @@ import Testing
         #expect(usage.bytes == 0)
         let restored = await store.restoreSession("session")
         #expect(restored?.items.isEmpty == true)
+        #expect(restored?.archive.hasOlderItems == true)
         #expect(restored?.archive.draft == "keep my draft")
 
         probe.reset()
@@ -42,9 +43,10 @@ import Testing
         let evicted = await store.trimCache(to: 0)
         #expect(Set(evicted) == Set(["a", "b"]))
         let files = try FileManager.default.contentsOfDirectory(atPath: url.path)
-        let sessionFiles = files.filter { $0.hasPrefix("session-") }
-        #expect(sessionFiles.count == 2)
-        for file in sessionFiles {
+        #expect(!files.contains { $0.hasPrefix("session-") })
+        let stateFiles = files.filter { $0.hasPrefix("state-") }
+        #expect(stateFiles.count == 2)
+        for file in stateFiles {
             let data = try Data(contentsOf: url.appendingPathComponent(file))
             let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
             let value = try #require(object["value"] as? [String: Any])

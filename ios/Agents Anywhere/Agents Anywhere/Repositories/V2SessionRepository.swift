@@ -75,6 +75,9 @@ final class V2SessionRepository {
     private let connectionReadinessWindow: Duration
     private let healBackoff: V2SessionHealBackoff
     private var entries: [V2SessionID: Entry] = [:]
+    /// Last dashboard pin value per session, so a remote pin change is mirrored
+    /// into the row store even when the session is not open.
+    private var lastKnownPins: [V2SessionID: Bool] = [:]
     private var accessCounter = 0
     private var suspended = false
     private(set) var network = V2NetworkStatus()
@@ -658,6 +661,16 @@ final class V2SessionRepository {
     }
 
     func applyMetadata(_ sessions: [V2SessionMeta]) {
+        var pinUpdates: [V2SessionID: Bool] = [:]
+        for session in sessions {
+            if let known = lastKnownPins[session.id], known != session.pinned {
+                pinUpdates[session.id] = session.pinned
+            }
+            lastKnownPins[session.id] = session.pinned
+        }
+        if !pinUpdates.isEmpty, let localStore {
+            Task { await localStore.updatePinned(pinUpdates) }
+        }
         for session in sessions {
             guard let entry = entries[session.id] else { continue }
             let previous = entry.projection?.data.session

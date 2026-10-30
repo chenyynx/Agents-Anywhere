@@ -241,7 +241,18 @@ nonisolated final class TimelineDatabase {
                   let archive = try? JSONDecoder().decode(V2SessionArchive.self, from: state) else {
                 return nil
             }
+            // The rows are gone; an online open must fetch the latest page
+            // rather than present an empty window.
+            archive.hasOlderItems = true
             return archive
+        }
+    }
+
+    func setPinned(sessionID: String, pinned: Bool) throws {
+        try pool.write { db in
+            try db.execute(sql: """
+                UPDATE session_meta SET pinned = ? WHERE session_id = ?
+                """, arguments: [pinned, sessionID])
         }
     }
 

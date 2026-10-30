@@ -23,7 +23,10 @@ actor V2LocalStore {
         self.timelineDatabaseEnabled = timelineDatabaseEnabled
     }
     func dashboard() -> V2DashboardArchive? { read("dashboard", as: V2DashboardArchive.self) }
-    func session(_ id: String) -> V2SessionArchive? { read(sessionKey(id), as: V2SessionArchive.self) }
+    func session(_ id: String) -> V2SessionArchive? {
+        read(sessionKey(id), as: V2SessionArchive.self)
+            ?? read(stateKey(id), as: V2SessionArchive.self)
+    }
     /// Decodes the archived timeline here, off the main actor; a malformed item
     /// is skipped instead of discarding the whole session. The SubAgent
     /// activity cache is decoded here too, so restoring a few hundred child
@@ -37,7 +40,7 @@ actor V2LocalStore {
         if let database = timelineStore(),
            let stored = try? database.read(sessionID: id, limit: max(1, window)),
            let state = stored.meta.stateBlob,
-           let archive = try? JSONDecoder().decode(V2SessionArchive.self, from: state) {
+           let decodedArchive = try? JSONDecoder().decode(V2SessionArchive.self, from: state) {
             // A failed database write must not beat a newer JSON archive:
             // compare the archive's mtime with the last successful DB save.
             let jsonModified = try? url(sessionKey(id))
@@ -47,6 +50,8 @@ actor V2LocalStore {
                 $0.timeIntervalSince1970 <= stored.meta.lastAccess + 2
             } ?? true
             if databaseIsCurrent {
+                var archive = decodedArchive
+                archive.hasOlderItems = archive.hasOlderItems || stored.meta.hasOlderItems
                 let items = decodeRows(stored.rows)
                 let activity = (archive.subAgentActivity ?? [:]).mapValues { values in
                     values.compactMap { try? V2TimelineItem(json: $0) }
@@ -131,13 +136,23 @@ actor V2LocalStore {
             at: directory, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
         return files.reduce(0) { total, file in
             guard file.lastPathComponent.hasPrefix("session-"),
-                  let bytes = try? Data(contentsOf: file),
-                  let envelope = try? JSONDecoder().decode(
-                    Envelope<V2SessionArchive>.self, from: bytes),
-                  !envelope.value.items.isEmpty else {
+                  let size = try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize else {
                 return total
             }
-            return total + Int64(bytes.count)
+            return total + Int64(size)
+        }
+    }
+
+    /// Evicted/cleared sessions keep a state-only JSON file for the rollback
+    /// path; the content file must be gone so it cannot resurrect rows.
+    private func persistEvictedState(_ database: TimelineDatabase, _ ids: [String]) {
+        for id in ids {
+            try? FileManager.default.removeItem(at: url(sessionKey(id)))
+            if let archive = try? database.stateArchive(sessionID: id) {
+                write(archive, key: stateKey(id))
+            } else {
+                try? FileManager.default.removeItem(at: url(stateKey(id)))
+            }
         }
     }
 
@@ -147,31 +162,26 @@ actor V2LocalStore {
     func trimCache(to limitBytes: Int64) -> [String] {
         guard let database = timelineStore(),
               let evicted = try? database.trim(to: limitBytes) else { return [] }
-        for id in evicted {
-            // Keep the user work for the JSON rollback path; only content rows
-            // and previews were evicted.
-            if let archive = try? database.stateArchive(sessionID: id) {
-                write(archive, key: sessionKey(id))
-            } else {
-                try? FileManager.default.removeItem(at: url(sessionKey(id)))
-            }
-        }
+        persistEvictedState(database, evicted)
         return evicted
     }
 
     @discardableResult
     func clearCache(keepingPinned: Bool = true) -> LocalCacheUsage {
         guard let database = timelineStore() else {
-            return LocalCacheUsage(bytes: 0, sessions: 0)
+            // The row store is off: the legacy JSON cache is still the only
+            // cache, so clearing it must work from Settings too.
+            if let files = try? FileManager.default.contentsOfDirectory(at: directory,
+                                                                        includingPropertiesForKeys: nil) {
+                for file in files where file.lastPathComponent.hasPrefix("session-")
+                    || file.lastPathComponent.hasPrefix("state-") {
+                    try? FileManager.default.removeItem(at: file)
+                }
+            }
+            return cacheUsage()
         }
         let cleared = (try? database.clearCache(keepingPinned: keepingPinned)) ?? []
-        for id in cleared {
-            if let archive = try? database.stateArchive(sessionID: id) {
-                write(archive, key: sessionKey(id))
-            } else {
-                try? FileManager.default.removeItem(at: url(sessionKey(id)))
-            }
-        }
+        persistEvictedState(database, cleared)
         return cacheUsage()
     }
 
@@ -192,15 +202,20 @@ actor V2LocalStore {
         lastTrimCheck = now
         let limit = LocalCachePolicy.effectiveLimit(freeBytes: Self.freeDiskBytes())
         let evicted = (try? database.trim(to: max(0, limit - legacyJSONBytes()))) ?? []
-        for id in evicted {
-            try? FileManager.default.removeItem(at: url(sessionKey(id)))
-        }
+        persistEvictedState(database, evicted)
     }
 
     private static func freeDiskBytes() -> Int64? {
         try? URL(fileURLWithPath: NSHomeDirectory())
             .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
             .volumeAvailableCapacityForImportantUsage
+    }
+
+    func updatePinned(_ values: [String: Bool]) {
+        guard let database = timelineStore() else { return }
+        for (id, pinned) in values {
+            try? database.setPinned(sessionID: id, pinned: pinned)
+        }
     }
 
     func hasOlderRows(sessionID: String, beforeOrderSeq: Int) -> Bool {
@@ -239,6 +254,8 @@ actor V2LocalStore {
         // new file or a byte-limit check needs the directory scan.
         let isNew = !FileManager.default.fileExists(atPath: url(key).path)
         write(value, key: key)
+        // A stale state-only file must not shadow the regenerated content.
+        try? FileManager.default.removeItem(at: url(stateKey(value.session.id)))
         // The row store is the read source when enabled; the JSON archive stays
         // the rollback. A database failure must never block the JSON path
         // (offline cache, drafts and the send path all depend on it).
@@ -253,6 +270,7 @@ actor V2LocalStore {
     func removeSession(_ id: String) {
         removedSessions.insert(id)
         try? FileManager.default.removeItem(at: url(sessionKey(id)))
+        try? FileManager.default.removeItem(at: url(stateKey(id)))
         if let database = timelineStore() {
             do { try database.removeSession(id) }
             catch { Self.log.error("timeline shadow delete failed: \(String(describing: error), privacy: .public)") }
@@ -318,5 +336,7 @@ actor V2LocalStore {
         }
     }
     private func sessionKey(_ id: String) -> String { "session-" + V2RestorationStore.digest(id) }
+    /// A state-only archive kept after eviction/clear for the rollback path.
+    private func stateKey(_ id: String) -> String { "state-" + V2RestorationStore.digest(id) }
     private func url(_ key: String) -> URL { directory.appendingPathComponent(key + ".json") }
 }

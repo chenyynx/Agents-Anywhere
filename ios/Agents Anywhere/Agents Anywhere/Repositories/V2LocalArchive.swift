@@ -41,7 +41,7 @@ nonisolated struct V2SessionArchive: Codable {
     let session: V2SessionMeta
     var items: [JSONValue]
     let cursor: String
-    let hasOlderItems: Bool
+    var hasOlderItems: Bool
     let hasNewerItems: Bool
     let draft: String
     let draftAttachments: [ChatAttachment]

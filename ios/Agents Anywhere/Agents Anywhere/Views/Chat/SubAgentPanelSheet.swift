@@ -72,8 +72,8 @@ struct SubAgentPanelSheet: View {
     private var sessionCards: [SubAgentCard] {
         SubAgentProgress.sessionCards(inWindow: window, activeCards: sidecar)
     }
-    /// The chip strip's set — the active subset in dispatch order. Empty for
-    /// entry B, which shows one card's detail with no strip.
+    /// The list page's set — the active subset in dispatch order. Empty for
+    /// entry B, which shows one card's detail with no list.
     private var activeCards: [SubAgentCard] {
         opensFromCapsule ? sessionCards.filter { $0.phase.isActive } : []
     }
@@ -99,14 +99,14 @@ struct SubAgentPanelSheet: View {
                 } else if let card = selectedCard {
                     detailPage(card)
                 } else {
-                    SubAgentPanelEmptyState()
+                    SubAgentPanelEmptyState(text: String(localized: "该子代理内容未加载"))
                 }
             }
             .navigationDestination(for: String.self) { id in
                 if let card = sessionCards.first(where: { $0.id == id }) {
                     detailPage(card)
                 } else {
-                    SubAgentPanelEmptyState()
+                    SubAgentPanelEmptyState(text: String(localized: "该子代理内容未加载"))
                 }
             }
             .toolbar {
@@ -236,7 +236,8 @@ struct SubAgentPanelSheet: View {
                                           relativeTo: .body).weight(.semibold))
                             .foregroundStyle(CodePageTheme.userBubbleText.resolved(for: colorScheme))
                             .frame(maxWidth: .infinity)
-                            .frame(height: 44)
+                            .padding(.vertical, 12)
+                            .frame(minHeight: 44)
                             .background(CodePageTheme.userBubbleFill.resolved(for: colorScheme),
                                         in: .capsule)
                             .opacity(isStopping ? 0.42 : 1)
@@ -544,6 +545,10 @@ struct SubAgentPanelSheet: View {
                     // builder into the child rows the main timeline hides.
                     let groupRows = rowIDs.compactMap { rowsByID[$0] }
                     if !groupRows.isEmpty {
+                        // Sub-agent child rows carry no attachments today
+                        // (connector `messages.py` mints them without an
+                        // `attachments=` payload); wire the session resolver
+                        // here if that changes.
                         CodeMessageRowView(
                             group: ChatTimelineGroup(kind: .single, rows: groupRows,
                                                      explicitID: key),
@@ -657,10 +662,12 @@ struct SubAgentPanelSheet: View {
 /// the session holds no top-level SubAgent card at all — no active work and
 /// nothing to browse. A single quiet line, no chip and no turn wording.
 private struct SubAgentPanelEmptyState: View {
+    var text = String(localized: "当前没有运行中的子代理")
+
     var body: some View {
         VStack {
             Spacer(minLength: 0)
-            Text(String(localized: "当前没有运行中的子代理"))
+            Text(text)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             Spacer(minLength: 0)

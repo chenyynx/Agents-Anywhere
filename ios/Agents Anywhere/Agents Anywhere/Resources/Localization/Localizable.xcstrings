@@ -15426,6 +15426,23 @@
         }
       }
     },
+    "该子代理内容未加载": {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This sub-agent's content is not loaded."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "该子代理内容未加载"
+          }
+        }
+      }
+    },
     "请先从侧栏添加并连接设备。": {
       "extractionState": "manual",
       "localizations": {

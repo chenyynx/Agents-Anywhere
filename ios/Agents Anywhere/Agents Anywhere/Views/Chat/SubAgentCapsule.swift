@@ -10,8 +10,8 @@ import SwiftUI
 struct SubAgentRoundButton: View {
     let state: SubAgentCapsuleState
     let onOpen: () -> Void
-    @ScaledMetric(relativeTo: .body) private var diameter: CGFloat = 40
-    @ScaledMetric(relativeTo: .caption2) private var badgeSize: CGFloat = 16
+    private let diameter: CGFloat = 40
+    private let badgeSize: CGFloat = 16
 
     var body: some View {
         Button(action: onOpen) {
@@ -37,7 +37,7 @@ struct SubAgentRoundButton: View {
                             .offset(x: 3, y: -3)
                     }
                 }
-                .frame(width: 44, height: 44)
+                .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -106,8 +106,8 @@ struct SubAgentStopControl: View {
                     .foregroundStyle(AppTheme.accentForeground(accent, colorScheme))
                     .frame(width: diameter, height: diameter)
                     .background(AppTheme.accentBackground(accent, colorScheme).opacity(isStopping ? 0.42 : 1), in: Circle())
-                    .frame(minHeight: 32)
-                    .contentShape(Circle())
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(isStopping)
@@ -128,9 +128,9 @@ struct SubAgentStopControl: View {
 
 /// The SubAgent concept colors, single point: running is blue, the semantic
 /// colors (green done / red failure) carry over from the rest of the app. The
-/// running capsule is plain glass with the phase-coloured glyph carrying the
-/// state; a failure tints that glass red (low opacity, so it still reads as
-/// glass beside the neutral “到底部” and takeover pills — pp 2026-10-05).
+/// round entry is plain glass with the official agent icon; a failure tints
+/// that glass red (low opacity, so it still reads as glass beside the neutral
+/// “到底部” and takeover pills — pp 2026-10-05).
 enum SubAgentPalette {
     static let running = Color.blue
     static let failure = Color.red

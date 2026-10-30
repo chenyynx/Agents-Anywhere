@@ -169,5 +169,13 @@ struct CodeMessageChildRowTests {
                                            includeSubAgentChildren: true)
         #expect(rows.count == 1)
         #expect(rows.first?.blocks.map(descriptor) == ["text:c1"])
+
+        // The Claude profile takes the cross-message merge path; the panel's
+        // main runtime must keep the same opt-in behaviour there.
+        #expect(CodeMessageBuilder.rows(for: [child], profile: .claudeCode).isEmpty)
+        let claudeRows = CodeMessageBuilder.rows(for: [child], profile: .claudeCode,
+                                                 includeSubAgentChildren: true)
+        #expect(claudeRows.count == 1)
+        #expect(claudeRows.first?.blocks.map(descriptor) == ["text:c1"])
     }
 }

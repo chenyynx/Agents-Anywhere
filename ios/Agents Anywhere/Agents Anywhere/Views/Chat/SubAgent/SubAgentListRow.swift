@@ -16,6 +16,9 @@ struct SubAgentListRow: View {
     let onStop: (String) -> Void
 
     @Environment(\.colorScheme) private var colorScheme
+    /// Room for the trailing stop control, scaled with the type size so an
+    /// accessibility-size control never overlaps the title.
+    @ScaledMetric(relativeTo: .footnote) private var stopReserve: CGFloat = 44
 
     private var phaseColor: Color { SubAgentPalette.phase(card.phase) }
 
@@ -39,7 +42,7 @@ struct SubAgentListRow: View {
                     Text(subtitle)
                         .font(.custom(CodePageTheme.sansFontName, size: 15,
                                       relativeTo: .subheadline))
-                        .foregroundStyle(CodePageTheme.text400Color.resolved(for: colorScheme))
+                        .foregroundStyle(CodePageTheme.text300Color.resolved(for: colorScheme))
                         .lineLimit(1)
                         .truncationMode(.tail)
                     if !metrics.isEmpty {
@@ -64,11 +67,12 @@ struct SubAgentListRow: View {
             .padding(16)
             // Keep the title clear of the trailing stop control; the whole
             // padded card stays tappable because the padding is in the label.
-            .padding(.trailing, stopTasks.isEmpty ? 0 : 40)
+            .padding(.trailing, stopTasks.isEmpty ? 0 : stopReserve)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(String(localized: "\(card.taskName)，\(card.phase.word)"))
+        .accessibilityLabel(card.taskName)
+        .accessibilityValue(card.phase.word)
         .accessibilityHint(String(localized: "查看详情"))
         .background(CodePageTheme.userBubbleFill.resolved(for: colorScheme),
                     in: RoundedRectangle(cornerRadius: 24, style: .continuous))

@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		000000000000000130000001 /* Textual in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000300000001 /* Textual */; };
 		000000000000000130000002 /* CDMarkdownKit in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000300000002 /* CDMarkdownKit */; };
+		000000000000000130000003 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000300000003 /* GRDB */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -30,6 +31,7 @@
 			files = (
 				000000000000000130000001 /* Textual in Frameworks */,
 				000000000000000130000002 /* CDMarkdownKit in Frameworks */,
+				000000000000000130000003 /* GRDB in Frameworks */,
 			);
 		};
 /* End PBXFrameworksBuildPhase section */
@@ -72,6 +74,7 @@
 			packageProductDependencies = (
 				000000000000000300000001 /* Textual */,
 				000000000000000300000002 /* CDMarkdownKit */,
+				000000000000000300000003 /* GRDB */,
 			);
 			productName = MyApp;
 			productReference = 000000000000000000000120 /* Agents Anywhere.app */;
@@ -108,6 +111,7 @@
 			packageReferences = (
 				000000000000000300000000 /* XCLocalSwiftPackageReference "../Packages/Textual" */,
 				000000000000000300000010 /* XCRemoteSwiftPackageReference "CDMarkdownKit" */,
+				000000000000000300000011 /* XCRemoteSwiftPackageReference "GRDB.swift" */,
 			);
 			preferredProjectObjectVersion = 90;
 			productRefGroup = 000000000000000000000020 /* Products */;
@@ -419,6 +423,14 @@
 				version = 5.1.0;
 			};
 		};
+		000000000000000300000011 /* XCRemoteSwiftPackageReference "GRDB.swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/groue/GRDB.swift.git";
+			requirement = {
+				kind = exactVersion;
+				version = 7.11.1;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -431,6 +443,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 000000000000000300000010 /* XCRemoteSwiftPackageReference "CDMarkdownKit" */;
 			productName = CDMarkdownKit;
+		};
+		000000000000000300000003 /* GRDB */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 000000000000000300000011 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
+			productName = GRDB;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

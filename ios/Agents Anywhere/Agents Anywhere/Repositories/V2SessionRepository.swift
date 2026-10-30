@@ -392,7 +392,7 @@ final class V2SessionRepository {
             try requireCurrent(entry, version: version)
             let page = V2SessionTimelinePage(
                 sessionId: sessionId, items: local.items,
-                nextSeq: entry.projection?.sequence ?? 0,
+                nextSeq: local.items.map(\.updatedSeq).max() ?? 0,
                 hasMore: entry.projection?.data.hasOlderItems ?? false,
                 serverTime: nil)
             entry.projection?.applyLatest(page)

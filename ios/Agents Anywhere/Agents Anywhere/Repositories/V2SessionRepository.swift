@@ -201,6 +201,8 @@ final class V2SessionRepository {
         entry.readVersion += 1
         entry.historyTask?.cancel()
         entry.historyTask = nil
+        entry.latestRefreshTask?.cancel()
+        entry.latestRefreshTask = nil
         // Opening keeps the restored window: the row store and the in-memory
         // cap already bound it, and a trim here was what re-loaded history.
         let window = entry.projection?.data
@@ -942,6 +944,8 @@ final class V2SessionRepository {
             entry.readVersion += 1
             entry.historyTask?.cancel()
             entry.historyTask = nil
+            entry.latestRefreshTask?.cancel()
+            entry.latestRefreshTask = nil
         }
         let mergedOutcome = try entry.projection?.apply(event)
         confirmEchoes(event, entry: entry)

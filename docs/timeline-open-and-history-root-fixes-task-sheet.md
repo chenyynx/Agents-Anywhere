@@ -174,3 +174,10 @@
 **验证**
 - 单测红先绿后（Mover）+ CI test/build；真机复测发送→流式回复：内容高度稳定后 offset 不得再上下摆动，跟随只向一个方向。
 - 未覆盖：C 的逐字平滑与 E 的发送瞬间，待 1+2 后按新报告决定。
+
+### R10 实施结果（2026-10-31 07:5x）
+- 红测 run 774（head `66a6bb89`，test-only）：`theContentSpringDoesNotOvershootOnADroppedFrame` 失败——`overshoot → 5.1e51`、`backtracks → 100`、`arrived` 为假，证实旧单步积分在 dt=1/30 发散，而非估计误差。
+- 修复（head `9a3db391`）：`TimelineAnchorMover.step` 按 `h ≤ min(1/120, 0.25/ω)` 子步积分（内容弹簧每帧约 4–5 步）；`TimelineAnchorDriver.writeOffset` 增加 `allowSlack`，Mover tick 写入 clamp 到真实 `bottomLimit`，一屏 slack 仅留给直接放置/陈旧锚点。0.2s/bounce 0 参数、Pace、到达判定均未改。
+- 单测：30fps 与 60fps 两个新用例要求“不过目标 0.5pt、不回退、必须到达”；既有 ease/fly/Pace 用例全绿。
+- CI run 775（head `9a3db391`）test + build 绿；包 `b775-9a3db39-probe`。
+- 待真机复测：发送→回复流式期间内容高度稳定后 offset 不再上下摆；正常跟随仍为单向 0.2s 缓动。未覆盖：C（行内文本分块）与 E（发送瞬间）仍需新探针判断。

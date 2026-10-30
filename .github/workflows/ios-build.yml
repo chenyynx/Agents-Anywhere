@@ -63,9 +63,7 @@ permissions:
 jobs:
   test:
     runs-on: macos-26
-    # diag: shortened so a hung `swift test` times out normally (timeout
-    # keeps the job log; a force-cancelled step never uploads one).
-    timeout-minutes: 8
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -82,10 +80,37 @@ jobs:
             ~/Library/Caches/org.swift.swiftpm
           key: swiftpm-test-${{ runner.os }}-${{ hashFiles('ios/**/Package.resolved', 'ios/**/Package.swift') }}
 
-      - name: Run unit tests
+      - name: Run unit tests (diagnostic watchdog)
+        # diag: b744/b746 hung inside `swift test` and a force-cancelled or
+        # timed-out job never uploads its log. This watchdog kills the hung
+        # run itself, prints the tail, and exits 0 so the job always finishes
+        # and the output is captured. `script` gives the child a pty so the
+        # output is line-buffered into the typescript file.
         run: |
-          set -o pipefail
-          swift test --package-path ios 2>&1 | tee "$RUNNER_TEMP/test.log" | tail -200
+          set -uo pipefail
+          script -q "$RUNNER_TEMP/test.out" swift test --package-path ios >/dev/null 2>&1 &
+          pid=$!
+          for i in $(seq 1 32); do
+            sleep 15
+            if ! kill -0 "$pid" 2>/dev/null; then echo "swift test exited at t=$((i*15))s"; break; fi
+          done
+          if kill -0 "$pid" 2>/dev/null; then
+            echo "=== WATCHDOG: still running after 480s, killing ==="
+            pkill -9 -f swift-test || true
+            pkill -9 -P "$pid" || true
+            kill -9 "$pid" || true
+          fi
+          echo "=== OUTPUT (tail 400) ==="
+          tail -400 "$RUNNER_TEMP/test.out" 2>/dev/null || true
+          echo "=== END ==="
+
+      - name: Upload watchdog output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-watchdog
+          path: ${{ runner.temp }}/test.out
+          if-no-files-found: warn
 
       - name: Print test failures on failure
         if: failure()

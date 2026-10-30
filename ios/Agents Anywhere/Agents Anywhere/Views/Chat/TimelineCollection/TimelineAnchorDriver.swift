@@ -48,6 +48,10 @@ final class TimelineAnchorDriver {
     private var isSuspended = false
     private var isInteractionPresented = false
     private var didReportOpeningArrival = false
+    /// While a history page is being inserted, the reading placement is the
+    /// single offset source. Content-height events re-resolve it directly
+    /// instead of starting the normal growth Mover.
+    private var isHistoryPaging = false
 #if DEBUG
     /// Gate counter: how many Mover motions actually started.
     private(set) var debugMoveStarts = 0
@@ -232,6 +236,34 @@ final class TimelineAnchorDriver {
         state.placement = .reading(id: anchor.id, offsetIntoRow: anchor.offsetIntoRow)
     }
 
+    /// A history page is about to be inserted. Pin the reader's row/offset as
+    /// the single placement and stop any remaining motion; the page's height
+    /// changes then re-resolve that placement directly (official
+    /// `Placement.reading(RowID, offsetIntoRow)`).
+    func beginHistoryPaging() {
+        isHistoryPaging = true
+        adoptReadingPlacement()
+    }
+
+    /// Recompute the reading anchor from the current layout and write it
+    /// without a spring. Called from history apply/height changes; nil means
+    /// the anchor row left the window, so this tick leaves the offset alone
+    /// (official nil placement target).
+    func enforceReadingPlacement() {
+        guard let view = scrollView else { return }
+        guard case .reading = state.placement else { return }
+        guard let target = state.placement.target(in: geometry()) else { return }
+        stopMover()
+        if state.motion != .resting { state.motion = .resting }
+        writeOffset(target)
+    }
+
+    func endHistoryPaging() {
+        guard isHistoryPaging else { return }
+        enforceReadingPlacement()
+        isHistoryPaging = false
+    }
+
     func contentChanged() {
 #if AA_TIMELINE_PROBE
         AnchorDeviceProbe.shared.recordMover(
@@ -240,6 +272,10 @@ final class TimelineAnchorDriver {
             position: scrollView?.contentOffset.y ?? -1,
             motion: String(describing: state.motion))
 #endif
+        if isHistoryPaging {
+            enforceReadingPlacement()
+            return
+        }
         // Content growth follows with the short content spring (official
         // collection-view insert feel); only an explicit scroll request uses
         // the 0.4 s ease/fly.
@@ -248,6 +284,9 @@ final class TimelineAnchorDriver {
     }
 
     func readerBeganDragging() {
+        // The reader owns the viewport from this point; a slow history page
+        // must not keep the initial anchor.
+        isHistoryPaging = false
         guard let anchor = currentAnchor() else { return }
         perform(.readerBeganDragging(id: anchor.id, offsetIntoRow: anchor.offsetIntoRow))
     }
@@ -297,6 +336,7 @@ final class TimelineAnchorDriver {
     }
 
     func requestEnd(animated: Bool) {
+        isHistoryPaging = false
         perform(.askedForEnd(animated: animated))
     }
 

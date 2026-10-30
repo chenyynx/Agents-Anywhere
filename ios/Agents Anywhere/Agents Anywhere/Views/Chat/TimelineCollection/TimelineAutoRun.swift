@@ -2469,6 +2469,35 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         let settled = position.isReadyToFinish
         if !settled { failures.append("prepend: history request did not settle") }
 
+        // Official-style v2 path: no projected firstRowID target. The
+        // controller's reading anchor must keep the same row on screen when
+        // the next page is inserted with estimated heights.
+        UserDefaults.standard.set(true, forKey: TimelineHistoryAnchorMode.defaultsKey)
+        let readingBefore = controller.screenY(for: anchorItem) ?? 0
+        controller.beginHistoryPaging()
+        if controller.historyPaging {
+            let pageItems = prependPlain(100)
+            let pageFirstRow = pageItems.first.flatMap {
+                controller.content?.rowIDs(in: $0).first
+            }
+            controller.noteHistoryPageArriving(firstRowID: pageFirstRow)
+            controller.reloadFromContent()
+            await wait(450)
+            let readingAfter = controller.screenY(for: anchorItem) ?? 0
+            let readingDelta = abs(readingAfter - readingBefore)
+            if readingDelta > 0.5 {
+                failures.append("prepend reading anchor: anchor moved \(readingDelta)pt")
+            }
+            if controller.historyPaging {
+                failures.append("prepend reading anchor: paging mode did not finish")
+            }
+            report["prependReadingAnchor"] = [
+                "before": readingBefore, "after": readingAfter,
+                "delta": readingDelta,
+                "historyPaging": controller.historyPaging,
+            ] as [String: Any]
+        }
+
         // Absolute target idempotence and generation cancellation, through the
         // real layout entry point.
         var doubleQuerySame = false

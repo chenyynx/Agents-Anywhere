@@ -1768,7 +1768,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             } else if contentChanged, let first = identity.items.first,
                       rowIDs(in: first).first != request.beforeFirstRowID {
                 pendingHistoryRequest = nil
-                if let origin = pendingHistoryOrigin {
+                if controller?.historyPaging == true {
+                    // v2: the driver owns the reading anchor; the apply only
+                    // needs to know that this snapshot carries the page.
+                    controller?.noteHistoryPageArriving(
+                        firstRowID: rowIDs(in: first).first)
+                } else if let origin = pendingHistoryOrigin {
                     _ = controller?.beginHistoryRequest(generation: request.generation,
                         anchorRowID: request.anchorRowID, edge: request.edge,
                         newItems: identity.items, origin: origin)

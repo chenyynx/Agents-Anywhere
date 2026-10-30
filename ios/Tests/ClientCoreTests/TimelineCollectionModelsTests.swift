@@ -94,6 +94,12 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
             physicalRows: ["first-row"]) == [])
         #expect(TimelineHistoryAnchorRows.rows(for: .group("g"),
             physicalRows: ["first-row", "second-row"]) == ["first-row", "second-row"])
+        #expect(!TimelineHistoryAnchorRows.isAnchorable(.olderPrompt))
+        #expect(!TimelineHistoryAnchorRows.isAnchorable(.latestPrompt))
+        #expect(!TimelineHistoryAnchorRows.isAnchorable(.tail))
+        #expect(TimelineHistoryAnchorRows.isAnchorable(.group("g")))
+        #expect(TimelineHistoryAnchorRows.isAnchorable(.notice("n")))
+        #expect(TimelineHistoryAnchorRows.isAnchorable(.pending("p")))
     }
 }
 

@@ -58,6 +58,17 @@ nonisolated enum TimelineHistoryAnchorRows {
         default: return physicalRows
         }
     }
+
+    /// Static chrome can sit under the viewport top while the reader is
+    /// looking at content below it. It must never become the reading anchor:
+    /// a prepend inserts content below the prompt, so anchoring on the prompt
+    /// would leave the reader at the new page's top.
+    static func isAnchorable(_ item: TimelineListItem) -> Bool {
+        switch item {
+        case .olderPrompt, .latestPrompt, .tail: return false
+        default: return true
+        }
+    }
 }
 
 /// Builds the collection's top-level order. It mirrors the SwiftUI body's

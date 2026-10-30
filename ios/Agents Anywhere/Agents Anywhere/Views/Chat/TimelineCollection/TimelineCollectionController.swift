@@ -2,6 +2,19 @@ import SwiftUI
 import UIKit
 import OSLog
 
+/// Rollback switch for the official-style history anchor. The old
+/// `TimelineInsertionOwed` path stays available when this is false; the
+/// product path uses the anchor driver's persistent reading placement.
+nonisolated enum TimelineHistoryAnchorMode {
+    static let defaultsKey = "TimelineHistoryAnchorV2.enabled"
+    static var enabled: Bool {
+        if let value = UserDefaults.standard.object(forKey: defaultsKey) as? Bool {
+            return value
+        }
+        return true
+    }
+}
+
 /// File-scope so the diffable data source's `Sendable` section identifier is
 /// not inferred as main-actor isolated from the controller class.
 nonisolated enum TimelineCollectionSection: Hashable, Sendable {
@@ -30,6 +43,15 @@ final class TimelineCollectionController: UIViewController {
     /// the budgeted pass at request time can leave rows on estimates.
     private var insertionProjection: (anchorRowID: String,
                                       edge: TimelineHistoryLayout.Edge)?
+    /// Official-style history paging: the anchor driver owns the offset while
+    /// this is true. `historyPageArriving` marks the apply that actually
+    /// carries the prepended page, so an unrelated streaming apply cannot end
+    /// the mode early.
+    private(set) var historyPaging = false
+    private var historyPageArriving = false
+    private var historyInitialFirstRowID: String?
+    private var historyPageFirstRowID: String?
+    private var historyPagingTimeout: Task<Void, Never>?
     /// At most one snapshot may be in flight. The diffable data source
     /// performs its batch updates asynchronously, while SwiftUI can hand us a
     /// newer item list on a later runloop turn. The layout reads its items
@@ -459,6 +481,16 @@ final class TimelineCollectionController: UIViewController {
         // / `.latestPrompt` / `.tail` have static identities and both windows
         // can start with `.olderPrompt` (device report 2026-10-23).
         let oldFirstDynamic = oldItems.first(where: Self.isDynamicItem)
+        let currentFirstRowID = items.first.flatMap { content.rowIDs(in: $0).first }
+        let isHistoryPage: Bool
+        if historyPageArriving {
+            isHistoryPage = historyPageFirstRowID.map { currentFirstRowID == $0 }
+                ?? (currentFirstRowID != nil)
+        } else {
+            isHistoryPage = currentFirstRowID != nil
+                && currentFirstRowID != historyInitialFirstRowID
+        }
+        let applyingHistoryPage = historyPaging && isHistoryPage
         let windowReplaced = !items.isEmpty
             && (oldFirstDynamic.map { !items.contains($0) } ?? true)
         // Parked heights belong to the window that is leaving; their rows and
@@ -523,7 +555,13 @@ final class TimelineCollectionController: UIViewController {
                 toMeasure.append(item)
             }
         }
-        measureSynchronously(toMeasure, width: columnWidth)
+        if !applyingHistoryPage {
+            // The history page's new rows are offscreen above the reading
+            // anchor; let the layout's estimates place them and let cells
+            // measure when they become visible (official arriving/guessed).
+            // Other applies while the request is in flight still measure.
+            measureSynchronously(toMeasure, width: columnWidth)
+        }
 #if AA_TIMELINE_PROBE
         TimelineProbeStore.shared.noteMeasureDuration(CACurrentMediaTime() - probeApplyStart)
 #endif
@@ -587,6 +625,12 @@ final class TimelineCollectionController: UIViewController {
             }
             self.scheduleVisibleCellSettle()
             self.scheduleVisibleCellFrameSync()
+            if applyingHistoryPage {
+                // Official-style: resolve the reader's row against the new
+                // prefix sums once the page's snapshot is committed.
+                self.anchorDriver?.enforceReadingPlacement()
+                self.endHistoryPaging()
+            }
             self.publishViewport()
             if self.layout.insertionOwedIsSettled {
                 self.insertionProjection = nil
@@ -1695,7 +1739,49 @@ final class TimelineCollectionController: UIViewController {
     /// True while a history prepend still owes a scroll correction. Auto-paging
     /// must not start from a transient viewport produced by that apply.
     var isHistoryPrependActive: Bool {
-        insertionProjection != nil || !layout.insertionOwedIsSettled
+        historyPaging || insertionProjection != nil || !layout.insertionOwedIsSettled
+    }
+
+    /// Start the official-style history paging mode. The bridge calls this
+    /// before the page request; the adapter calls `beginHistoryRequest` when
+    /// the page arrives, which marks `historyPageArriving`.
+    func beginHistoryPaging() {
+        guard TimelineHistoryAnchorMode.enabled else { return }
+        historyPagingTimeout?.cancel()
+        historyPaging = true
+        historyPageArriving = false
+        historyInitialFirstRowID = currentItems.first.flatMap {
+            content?.rowIDs(in: $0).first
+        }
+        historyPageFirstRowID = nil
+        anchorDriver?.beginHistoryPaging()
+        // A page that never changes content would otherwise pin this mode.
+        historyPagingTimeout = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(15))
+            guard !Task.isCancelled, let self, self.historyPaging else { return }
+            self.endHistoryPaging()
+        }
+    }
+
+    func endHistoryPaging() {
+        historyPagingTimeout?.cancel()
+        historyPagingTimeout = nil
+        historyPageArriving = false
+        historyInitialFirstRowID = nil
+        historyPageFirstRowID = nil
+        guard historyPaging else { return }
+        anchorDriver?.endHistoryPaging()
+        historyPaging = false
+    }
+
+    /// The adapter's prepend snapshot is the one that carries the page. The
+    /// v2 path does not install a one-shot absolute target; the first-row
+    /// marker lets an earlier in-flight apply finish without consuming the
+    /// page's correction.
+    func noteHistoryPageArriving(firstRowID: String?) {
+        guard historyPaging else { return }
+        historyPageArriving = true
+        historyPageFirstRowID = firstRowID
     }
 
     private func maybeAutoLoadOlder(_ viewport: TimelineViewport) {
@@ -1947,17 +2033,29 @@ final class TimelineCollectionController: UIViewController {
 
     /// The reading anchor in itemID space: the row under the viewport top and
     /// the distance into it (official `readerBeganDragging` derivation).
+    /// Static chrome (the older/latest prompts and the tail) is not content:
+    /// anchoring on the older prompt makes a prepend insert rows *below* the
+    /// anchor, so the prompt stays put and the reader is left looking at the
+    /// new page's top. Skip it exactly as the official row list would.
     func anchor(at offset: CGFloat) -> (id: String, offsetIntoRow: CGFloat)? {
         let top = offset + viewport.topInset
-        for item in currentItems {
+        for item in currentItems where TimelineHistoryAnchorRows.isAnchorable(item) {
             guard let attributes = layout.attributes(for: item.itemID) else { continue }
             if attributes.frame.maxY > top {
                 return (item.itemID, top - attributes.frame.minY)
             }
         }
-        guard let first = currentItems.first else { return nil }
-        let start = layout.attributes(for: first.itemID)?.frame.minY ?? top
-        return (first.itemID, max(0, top - start))
+        let anchorable = currentItems.filter(TimelineHistoryAnchorRows.isAnchorable)
+        guard let first = anchorable.first else { return nil }
+        let firstStart = layout.attributes(for: first.itemID)?.frame.minY ?? top
+        if top <= firstStart {
+            return (first.itemID, max(0, top - firstStart))
+        }
+        guard let last = anchorable.last,
+              let lastAttributes = layout.attributes(for: last.itemID) else {
+            return (first.itemID, max(0, top - firstStart))
+        }
+        return (last.itemID, top - lastAttributes.frame.minY)
     }
 
     var firstVisibleRowID: String? {
@@ -2049,6 +2147,15 @@ final class TimelineCollectionController: UIViewController {
                              edge: TimelineHistoryLayout.Edge,
                              newItems: [TimelineListItem],
                              origin: TimelineHistoryLayout) -> TimelineHistoryPosition? {
+        if historyPaging {
+            // Official-style path: the anchor driver already holds the
+            // reading placement and resolves the new offset from the updated
+            // layout. No projected one-shot target is installed.
+            noteHistoryPageArriving(firstRowID: newItems.first.flatMap {
+                content?.rowIDs(in: $0).first
+            })
+            return nil
+        }
         // Loading older is a browsing action. Stop any programmatic motion;
         // the reading placement then absorbs the prepend by construction.
         stopBottomAnimation()
@@ -2074,6 +2181,7 @@ final class TimelineCollectionController: UIViewController {
     func cancelHistoryRequest() {
         insertionProjection = nil
         layout.cancelInsertionOwed()
+        endHistoryPaging()
     }
 
     var items: [TimelineListItem] { currentItems }

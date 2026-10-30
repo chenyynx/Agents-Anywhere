@@ -85,15 +85,15 @@ import Testing
         var projection = V2SessionProjection(snapshot: try snapshot(items: recent, hasMore: true), maximumItems: 3)
         let older = try [itemObject(id: "1", order: 1), itemObject(id: "2", order: 2)].map { try decode($0, as: V2TimelineItem.self) }
         projection.applyHistory(V2SessionTimelinePage(sessionId: "session", items: older, nextSeq: 50, hasMore: false, serverTime: nil))
-        // The reader is on row 3 (the first held row); the window keeps the
-        // reading row and the newest tail instead of the old `prefix` result.
-        #expect(projection.data.items.map(\.id) == ["2", "3", "4"])
-        #expect(projection.data.hasOlderItems)
+        // Browsing history keeps both sides even past the idle window; the
+        // reader's newer rows are never dropped to make the list shorter.
+        #expect(projection.data.items.map(\.id) == ["1", "2", "3", "4"])
+        #expect(!projection.data.hasOlderItems)
         #expect(!projection.data.hasNewerItems)
         // A live create outside the anchored window is deferred as newer; it
         // must not push the reading row out.
         try projection.apply(event("timeline.item_created", seq: 11, payload: ["item": itemObject(id: "5", order: 5, seq: 11)]))
-        #expect(projection.data.items.map(\.id) == ["2", "3", "4"])
+        #expect(projection.data.items.map(\.id) == ["1", "2", "3", "4"])
         #expect(projection.data.hasNewerItems)
         projection.applyLatest(V2SessionTimelinePage(sessionId: "session", items: try recent.map { try decode($0) }, nextSeq: 11, hasMore: true, serverTime: nil))
         #expect(projection.data.items.map(\.id) == ["3", "4"])
@@ -108,24 +108,24 @@ import Testing
         let older = try (461...480).map { try decode(itemObject(id: "item-\($0)", order: $0), as: V2TimelineItem.self) }
         projection.applyHistory(V2SessionTimelinePage(sessionId: "session", items: older,
             nextSeq: 500, hasMore: false, serverTime: nil), anchorOrderSeq: 495)
-        #expect(projection.data.items.map(\.orderSeq) == Array(481...500))
+        #expect(projection.data.items.map(\.orderSeq) == Array(461...500))
         #expect(projection.data.items.contains { $0.orderSeq == 495 })
-        #expect(projection.data.hasOlderItems)
+        #expect(!projection.data.hasOlderItems)
         #expect(!projection.data.hasNewerItems)
     }
 
-    @Test func historyWindowDropsTheFarNewestEndAndFlagsIt() throws {
-        // The same window, but the reader is near the old end. The centre rule
-        // must drop the far newest rows and say so, because the return path
-        // still has to fetch the true latest page.
+    @Test func historyBrowsingKeepsTheFarNewestEnd() throws {
+        // The reader is near the old end. Browsing must still keep the newer
+        // rows the reader already has; only returning to the newest edge may
+        // trim the idle window.
         let recent = try (481...500).map { try itemObject(id: "item-\($0)", order: $0) }
         var projection = V2SessionProjection(snapshot: try snapshot(items: recent), maximumItems: 12)
         let older = try (461...480).map { try decode(itemObject(id: "item-\($0)", order: $0), as: V2TimelineItem.self) }
         projection.applyHistory(V2SessionTimelinePage(sessionId: "session", items: older,
             nextSeq: 500, hasMore: false, serverTime: nil), anchorOrderSeq: 465)
-        #expect(projection.data.items.map(\.orderSeq) == Array(461...472))
+        #expect(projection.data.items.map(\.orderSeq) == Array(461...500))
         #expect(!projection.data.hasOlderItems)
-        #expect(projection.data.hasNewerItems)
+        #expect(!projection.data.hasNewerItems)
     }
 
     @Test func returningToTheNewestEdgeStopsAnchoringLiveRows() throws {

@@ -88,7 +88,9 @@ import Testing
                 anchorOrderSeq: anchorOrder)
             let elapsed = clock.now - start
             print("BENCH historyWindow recent=\(recentCount) older=\(olderCount) merge=\(milliseconds(elapsed))ms rows=\(projection.data.items.count)")
-            #expect(projection.data.items.count <= 1000)
+            // Browsing keeps both sides past the idle window; the merge is
+            // bounded by the browse budget, not the latest-page ceiling.
+            #expect(projection.data.items.count <= V2SessionProjection.browseMaximumItems)
             #expect(projection.data.items.contains { $0.orderSeq == anchorOrder })
         }
     }

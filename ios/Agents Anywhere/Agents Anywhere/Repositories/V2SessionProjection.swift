@@ -351,6 +351,13 @@ struct V2SessionProjection {
         return trim
     }
 
+    /// A reader browsing history must never lose the newer side. Mature
+    /// transcript UIs keep the whole loaded conversation and virtualize the
+    /// view; the idle/latest ceiling is not a reason to collapse the list
+    /// under the reader. Keep up to `browseMaximumItems` while an anchor
+    /// exists, and trim back only when the reader returns to the newest edge.
+    static let browseMaximumItems = 10_000
+
     /// Replaces `data.items` with the bounded window and reports which side it
     /// removed. With an anchor, the window is centred on the reader; without
     /// one, the newest edge wins (the opening/latest rule).
@@ -359,19 +366,24 @@ struct V2SessionProjection {
             data.items = []
             return V2TimelineWindowTrim()
         }
-        guard sorted.count > maximumItems else {
-            data.items = sorted
-            return V2TimelineWindowTrim()
-        }
         if let anchor = windowAnchor {
+            let browseLimit = max(maximumItems, Self.browseMaximumItems)
+            guard sorted.count > browseLimit else {
+                data.items = sorted
+                return V2TimelineWindowTrim()
+            }
             let anchorIndex = windowAnchorIndex(in: sorted, anchor: anchor)
-            let half = maximumItems / 2
+            let half = browseLimit / 2
             var lower = max(0, anchorIndex - half)
-            var upper = min(sorted.count, lower + maximumItems)
-            if upper - lower < maximumItems { lower = max(0, upper - maximumItems) }
+            var upper = min(sorted.count, lower + browseLimit)
+            if upper - lower < browseLimit { lower = max(0, upper - browseLimit) }
             data.items = Array(sorted[lower..<upper])
             return V2TimelineWindowTrim(droppedOlder: lower > 0,
                                         droppedNewer: upper < sorted.count)
+        }
+        guard sorted.count > maximumItems else {
+            data.items = sorted
+            return V2TimelineWindowTrim()
         }
         data.items = Array(sorted.suffix(maximumItems))
         return V2TimelineWindowTrim(droppedOlder: true)

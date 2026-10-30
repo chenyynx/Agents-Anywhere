@@ -1,21 +1,15 @@
 import SwiftUI
 import UIKit
 
-/// L2 (§3.3): the SubAgent detail panel. Opened either from the capsule
-/// (entry A) or from a timeline Agent card / SubAgent group (entry B).
+/// L2 (§3.3): the SubAgent panel. Opened either from the circular glass entry
+/// above the composer (entry A) or from a timeline Agent card / SubAgent group
+/// (entry B).
 ///
-/// pp 2026-10-08 flattened the panel: there are no per-turn pages any more —
-/// a SubAgent shows while it runs and leaves once it ends (运行中显示，结束
-/// 退场), with no duplicate names. The layout therefore has two shapes:
-///
-/// - Entry A (opened from the capsule): the chip strip lists **every active
-///   card** in the session (the same window ∪ sidecar union the capsule
-///   counts), and each chip drops out on the next redraw once its card
-///   reaches a terminal phase. The selected card's detail stays put while the
-///   user reads it — even after it completes, so the final output is readable
-///   — and disappears only when the user switches or closes.
-/// - Entry B (opened from a timeline card): the card's own detail alone, with
-///   no chip strip, so an ended dispatch stays browsable from history.
+/// pp 2026-10-30 replaced the old chip strip with a list-first page: the
+/// circular entry always lands on one capsule row per active SubAgent, even
+/// when only one is running, and tapping a row pushes that card's detail.
+/// A finished card leaves the list (the entry itself is active-only) and stays
+/// reachable from its timeline tool row, which opens entry B directly.
 ///
 /// Everything renders from the presented rows, so the panel restores after a
 /// relaunch and follows live updates exactly like the timeline does. A
@@ -221,7 +215,7 @@ struct SubAgentPanelSheet: View {
                         Task { await chat.stopSubagent(taskID: task.taskID) }
                     } label: {
                         Text(tasks.count > 1
-                             ? String(localized: "停止 \(task.label ?? String(localized: "智能体"))")
+                             ? "\(String(localized: "停止")) \(task.label ?? String(localized: "智能体"))"
                              : String(localized: "停止智能体"))
                             .font(.system(size: 17, weight: .semibold))
                             .foregroundStyle(CodePageTheme.userBubbleText.resolved(for: colorScheme))
@@ -510,7 +504,8 @@ struct SubAgentPanelSheet: View {
         let profile = chat.session.metadata.map { CodeRuntimeProfile(meta: $0) } ?? .generic
         let units = TimelineChatGrouping.units(items: rows.map(\.value),
                                                profile: profile,
-                                               interactionTargets: [])
+                                               interactionTargets: [],
+                                               excludesSubAgentChildren: false)
         let rowsByID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
         let lastStepGroupID: String? = {
             guard card.phase.isActive, let last = units.last else { return nil }
@@ -527,15 +522,16 @@ struct SubAgentPanelSheet: View {
                         stepGroupDetail = CodeStepGroupDetailRequest(
                             group: group, startsAtBottom: group.id == lastStepGroupID)
                     }
-                case let .message(key, rowIDs):
-                    let groupRows = rowIDs.compactMap { rowsByID[$0] }
-                    if !groupRows.isEmpty {
-                        CodeMessageRowView(
-                            group: ChatTimelineGroup(kind: .single, rows: groupRows,
-                                                     explicitID: key),
-                            profile: profile,
-                            cwd: chat.session.metadata?.cwd,
-                            onAttachment: onAttachment)
+                case let .message(_, rowIDs):
+                    // The chat page's body rows read through the same Chat row
+                    // view the panel always used; only the grouping (and the
+                    // step-group row) comes from the chat profile.
+                    ForEach(rowIDs.compactMap { rowsByID[$0] }) { row in
+                        SessionTimelineRow(row: row, chat: chat,
+                                           onAttachment: onAttachment,
+                                           cwd: chat.session.metadata?.cwd,
+                                           disclosures: chat.disclosures,
+                                           onFile: onFile, onSubAgent: nil)
                     }
                 case let .standalone(rowID):
                     if let row = rowsByID[rowID] {

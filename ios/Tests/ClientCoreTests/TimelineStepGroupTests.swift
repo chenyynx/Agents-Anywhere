@@ -35,13 +35,15 @@ private func toolItem(_ id: String, order: Int, name: String,
                       input: [String: Any] = [:],
                       message: String = "msg-1",
                       turn: String? = "turn-1",
-                      status: String = "done") throws -> V2TimelineItem {
+                      status: String = "done",
+                      parent: String? = nil) throws -> V2TimelineItem {
     var source: [String: Any] = ["itemId": id, "nativeMessageId": message,
                                  "blockIndex": order]
     if let turn { source["turnId"] = turn }
+    var content: [String: Any] = ["kind": "tool", "toolName": name, "input": input]
+    if let parent { content["parentItemId"] = parent }
     return try stepItem(id: id, order: order, type: "tool", status: status,
-                        content: ["kind": "tool", "toolName": name, "input": input],
-                        source: source)
+                        content: content, source: source)
 }
 
 private func bodyItem(_ id: String, order: Int, text: String,
@@ -154,6 +156,28 @@ struct TimelineStepGroupingTests {
         }
         #expect(group.isRunning)
         #expect(group.liveStep?.id == "t1")
+    }
+
+    /// The SubAgent panel renders exactly the rows the main timeline hides
+    /// (L2.1). Its grouping call must opt out of the child-row filter; the
+    /// default stays the timeline's rule.
+    @Test func subAgentChildRowsGroupOnlyWhenThePanelAsks() throws {
+        let child = try toolItem("t1", order: 1, name: "Read",
+                                 input: ["file_path": "/repo/a.swift"],
+                                 parent: "card-1")
+        let timeline = TimelineChatGrouping.units(items: [child], profile: .generic,
+                                                  interactionTargets: [])
+        #expect(timeline.isEmpty)
+        let panel = TimelineChatGrouping.units(items: [child], profile: .generic,
+                                               interactionTargets: [],
+                                               excludesSubAgentChildren: false)
+        #expect(panel.count == 1)
+        guard case let .stepGroup(group, rowIDs) = panel.first else {
+            Issue.record("panel grouping did not produce a step group")
+            return
+        }
+        #expect(rowIDs == ["t1"])
+        #expect(group.steps.count == 1)
     }
 }
 

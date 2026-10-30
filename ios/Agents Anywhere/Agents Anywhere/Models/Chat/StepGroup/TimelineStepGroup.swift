@@ -201,9 +201,13 @@ nonisolated enum TimelineChatUnit: Identifiable {
 /// - an interaction target keeps its own standalone row;
 /// - sub-agent child rows stay out of the main timeline (L2.1).
 nonisolated enum TimelineChatGrouping {
+    /// `excludesSubAgentChildren` is the main timeline's L2.1 rule. The
+    /// SubAgent panel renders exactly those child rows, so it groups with the
+    /// flag off; every other caller keeps the default.
     static func units(items: [V2TimelineItem],
                       profile: CodeRuntimeProfile,
-                      interactionTargets: Set<String>) -> [TimelineChatUnit] {
+                      interactionTargets: Set<String>,
+                      excludesSubAgentChildren: Bool = true) -> [TimelineChatUnit] {
         var units: [TimelineChatUnit] = []
         var stepItems: [V2TimelineItem] = []
         var messageKey: String?
@@ -238,7 +242,7 @@ nonisolated enum TimelineChatGrouping {
 
         for item in items.sorted(by: wireOrder) {
             guard consumed.insert(item.id).inserted else { continue }
-            if isSubAgentChild(item) { continue }
+            if excludesSubAgentChildren, isSubAgentChild(item) { continue }
             if interactionTargets.contains(item.id) {
                 flushAll()
                 units.append(.standalone(rowID: item.id))

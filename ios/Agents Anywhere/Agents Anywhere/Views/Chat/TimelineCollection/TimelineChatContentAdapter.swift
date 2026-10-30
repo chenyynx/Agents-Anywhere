@@ -1098,7 +1098,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 let isLiveTail = id == chatLiveTailGroupID
                 return AnyView(CodeStepGroupRowView(group: stepGroup, cwd: cwd,
                                                     isLiveTail: isLiveTail) { [weak self] in
-                    self?.onCodeStepGroupDetail?(CodeStepGroupDetailRequest(group: stepGroup))
+                    self?.onCodeStepGroupDetail?(CodeStepGroupDetailRequest(
+                        group: stepGroup, startsAtBottom: isLiveTail))
                 })
             }
             // A message group (declared message id) renders through the Code

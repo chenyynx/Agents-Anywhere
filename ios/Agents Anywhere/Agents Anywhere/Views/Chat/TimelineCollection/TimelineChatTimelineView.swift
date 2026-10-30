@@ -308,6 +308,7 @@ final class TimelineChatBridge: ObservableObject {
         controller.onBottomArrived = { [weak self] in self?.openingArrived() }
         controller.onLoadOlder = { [weak self] in self?.loadOlder() }
         controller.onLoadLatest = { [weak self] in self?.loadLatest() }
+        controller.onNeedsOlder = { [weak self] in self?.loadOlder() }
         controller.onNeedsLatest = { [weak self] in
             // The opening path owns its own latest fetch; a viewport trigger
             // must wait until the page is ready or the two reads race.
@@ -335,8 +336,9 @@ final class TimelineChatBridge: ObservableObject {
         controller?.canLoadLatest = model.session.isValid && model.session.hasNewerItems
             && !model.session.isLoadingHistory && !isLoadingLatest
         if !model.session.hasNewerItems { controller?.rearmLatestAutoLoad() }
-        // A window flag can arrive while the viewport is already resting at
-        // the bottom; no scroll will fire to re-run the auto-latest check.
+        // A window flag can arrive while the viewport is already parked at an
+        // edge; no scroll will fire to re-run the auto-page check.
+        controller?.requestOlderIfNearTop()
         controller?.requestLatestIfAtBottom()
     }
 
@@ -469,7 +471,8 @@ final class TimelineChatBridge: ObservableObject {
     /// or the drawer is moving. The controller's forced target does the same
     /// instant landing the opening used.
     func reassertOpening() {
-        guard !readerTookOver, !navigationSuspended, model.isOpeningReady else { return }
+        guard !readerTookOver, !navigationSuspended, model.isOpeningReady,
+              controller?.isHistoryPrependActive != true else { return }
         controller?.beginOpeningBottom()
     }
 

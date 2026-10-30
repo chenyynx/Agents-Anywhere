@@ -160,9 +160,12 @@ final class TimelineCollectionController: UIViewController {
     var canLoadLatest = false
     var onLoadOlder: (() -> Void)?
     var onLoadLatest: (() -> Void)?
-    /// A viewport-driven latest load. The reader reached the newest edge of a
-    /// history window and there are newer rows on the other side; the bridge
-    /// starts the latest page without requiring a second tap.
+    /// Viewport-driven paging. Reaching the top edge starts one older page;
+    /// reaching the bottom of a history window starts one latest page. Both
+    /// are one-shot per edge so a failed page cannot spin on every frame.
+    var onNeedsOlder: (() -> Void)? {
+        didSet { if onNeedsOlder != nil { olderAutoLoadArmed = true } }
+    }
     var onNeedsLatest: (() -> Void)? {
         didSet { if onNeedsLatest != nil { latestAutoLoadArmed = true } }
     }
@@ -187,9 +190,14 @@ final class TimelineCollectionController: UIViewController {
     /// installed there (TimelineCollectionView.updateUIViewController).
     var onScrollDownIndicatorChanged: ((Bool) -> Void)?
     private var lastScrollDownIndicator: Bool?
-    /// One auto-latest request per bottom episode. Scrolling away re-arms it;
-    /// a failed load does not retry on every viewport tick.
+    /// One auto-page request per edge episode. Scrolling away re-arms it; a
+    /// failed load does not retry on every viewport tick.
     private var latestAutoLoadArmed = true
+    private var olderAutoLoadArmed = true
+    /// How close to the top edge starts an automatic older page. This is a
+    /// reading threshold, not a pull threshold: a full screen of history is
+    /// still reachable before the next page starts.
+    private static let olderAutoLoadThreshold: CGFloat = 320
     /// The page's SwiftUI safe area: composer bar + home indicator + keyboard.
     /// The list is a full-bleed representable, so this is its only inset
     /// source. The probe (run 40353074977) measured the proxy inside the
@@ -1654,12 +1662,18 @@ final class TimelineCollectionController: UIViewController {
         lastPublishedViewport = next
         onViewportChanged?(next)
         publishScrollDownIndicator()
+        maybeAutoLoadOlder(next)
         maybeAutoLoadLatest(next)
     }
 
     /// Called by the bridge after a history/window flag changes. A viewport
-    /// that is already parked at the bottom would otherwise never re-publish
-    /// and miss the new `hasNewerItems` edge.
+    /// that is already parked at an edge would otherwise never re-publish and
+    /// miss the new loadable edge.
+    func requestOlderIfNearTop() {
+        guard isViewLoaded else { return }
+        maybeAutoLoadOlder(viewport)
+    }
+
     func requestLatestIfAtBottom() {
         guard isViewLoaded else { return }
         maybeAutoLoadLatest(viewport)
@@ -1678,13 +1692,36 @@ final class TimelineCollectionController: UIViewController {
         latestAutoLoadArmed = false
     }
 
+    /// True while a history prepend still owes a scroll correction. Auto-paging
+    /// must not start from a transient viewport produced by that apply.
+    var isHistoryPrependActive: Bool {
+        insertionProjection != nil || !layout.insertionOwedIsSettled
+    }
+
+    private func maybeAutoLoadOlder(_ viewport: TimelineViewport) {
+        guard viewport.isMeasured else { return }
+        let nearTop = viewport.offsetY + viewport.topInset <= Self.olderAutoLoadThreshold
+        guard nearTop else {
+            olderAutoLoadArmed = true
+            return
+        }
+        // A list shorter than the viewport is already showing both edges; let
+        // the prompt/pull own that case instead of auto-loading every page.
+        guard viewport.contentHeight > viewport.visibleHeight + 1 else { return }
+        guard !navigationSuspended, canLoadOlder, !isHistoryPrependActive,
+              olderAutoLoadArmed else { return }
+        olderAutoLoadArmed = false
+        onNeedsOlder?()
+    }
+
     private func maybeAutoLoadLatest(_ viewport: TimelineViewport) {
         guard viewport.isMeasured else { return }
         guard viewport.measuredAtBottom else {
             latestAutoLoadArmed = true
             return
         }
-        guard !navigationSuspended, canLoadLatest, latestAutoLoadArmed else { return }
+        guard !navigationSuspended, canLoadLatest, !isHistoryPrependActive,
+              latestAutoLoadArmed else { return }
         // Reaching the bottom of a history window is the reader's request for
         // the newest side. One trigger per bottom episode: a failed load waits
         // for a fresh leave-and-return (or the visible latest prompt).
@@ -1968,7 +2005,7 @@ final class TimelineCollectionController: UIViewController {
             let height = layout.heights.resolvedHeight(for: key, itemID: item.itemID,
                 fallback: content.estimateKind(for: item))
             if index == 0 { firstRowID = content.rowIDs(in: item).first ?? item.itemID }
-            if content.rowIDs(in: item).contains(anchorRowID) {
+            if content.anchorRowIDs(in: item).contains(anchorRowID) {
                 return TimelineHistoryLayout(firstRowID: firstRowID ?? item.itemID,
                     anchorRowID: anchorRowID, edge: edge,
                     y: edge == .top ? y : y + height)

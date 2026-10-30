@@ -141,14 +141,25 @@ import Testing
         #expect(resting.state.motion == .resting)
     }
 
-    @Test func contentGrowthFollowsOnlyTheEnd() {
+    @Test func contentGrowthFollowsTheEndAndReResolvesAReadingAnchor() {
         let following = reduce(landed(.end), .contentChanged)
         #expect(following.action == .move)
         #expect(following.state.isFollowingCatchUp)
 
+        // Official rowsApplied / rowMeasured: a settled reading anchor is
+        // re-resolved after height changes above it (history estimates).
         let reading = reduce(landed(.reading(id: "u1", offsetIntoRow: 40)), .contentChanged)
-        #expect(reading.action == .none)
+        #expect(reading.action == .placeDirect)
         #expect(!reading.state.isFollowingCatchUp)
+
+        // The finger or an in-flight explicit motion owns the offset; a
+        // content change must not write under it.
+        let dragging = reduce(landed(.reading(id: "u1", offsetIntoRow: 40), motion: .dragging),
+                              .contentChanged)
+        #expect(dragging.action == .none)
+        let coasting = reduce(landed(.reading(id: "u1", offsetIntoRow: 40), motion: .coasting),
+                              .contentChanged)
+        #expect(coasting.action == .none)
     }
 
     @Test func aSafeAreaChangePlacesDirectlyAndStopsTheMover() {

@@ -88,13 +88,13 @@
 1. **stats 行**：13pt `textSecondary`，一行：「N 次工具 · X tokens · Ys」+ phase 词（运行中/已停止/已完成）；保留现有功能，不再使用旧 statsRow 的徽章样式。
 2. **对话内容**（`ScrollView`，水平内边距 20）：
    - 提示词气泡：官方 user bubble 底色、圆角 24、内边距 16、正文 17/27.2 `textPrimary`；长提示词超过 300 字可折叠（沿用现有阈值）。
-   - 助手内容：把子代理活动行交给 **Code 页的官方渲染组件**：
-     - 正文：`CodeMarkdownTextLeaf` / `CodeMessageRowView` 的 text block；
-     - 思考：`CodeThinkingRow`（「思考结果 >」/「思考了 X」）；
-     - 工具：`CodeCollapsedToolRow`（官方图标 + 文案 + 状态 glyph），点击进入 `CodeToolDetailView`；
-     - 文件变更/diff：沿用 Code 页 file change/diff 行。
-   - 渲染方式：把 `activityRows` 组成一个 `ChatTimelineGroup`（`kind: .single`）交给 `CodeMessageRowView`，由 `CodeMessageBuilder` 统一分组，避免自写第二套行模型。
-   - 实时更新：activity store 的 live rows 继续驱动；流式中正文/思考跟随（沿用现有 activity 更新）。
+   - 助手内容：**按现 Chat 页（渲染方式=聊天）的样式**渲染，不切 Code 页组件：
+     - 用 `TimelineChatGrouping.units` 把子代理活动行分成聊天 profile 的 units；
+     - 连续思考/工具 → `CodeStepGroupRowView`（行首三点 + 运行中实时文案 / 结束汇总）；
+     - 正文 → `CodeMessageRowView`（chat profile 的消息行）；
+     - 其他单行 → 现有 `SessionTimelineRow` 兜底；
+     - 点步骤组 → 复用 `CodeStepGroupDetailView`（按顺序列出步骤；现有 chat 页同款）。
+   - 实时更新：activity store 的 live rows 继续驱动；流式中正文/步骤组实时跟随；最后一个单位是步骤组且卡仍在运行时，`isLiveTail` 与主 Chat 页同规则。
    - 最终输出：沿用 `finalOutputSummary` 规则，避免与活动流重复。
 3. **底部停止**：
    - 固定在 sheet 底部安全区上方，居中；不随滚动。
@@ -139,13 +139,14 @@
   - 列表页 `SubAgentListPage`（新）；
   - 详情页 `SubAgentDetailPage`（新）替换现有 body；
   - stats/stop 逻辑复用 `SubAgentProgress.metrics`、`SubAgentProgress.stopTasks`、`chat.stopSubagent`、`chat.stoppingSubagentTaskIDs`；
-  - 活动行渲染改为 `ChatTimelineGroup` + `CodeMessageRowView`。
+  - 活动行按现 Chat 页渲染：`TimelineChatGrouping` + `CodeStepGroupRowView` / chat 消息行，不做第二套模型。
 - 新增：
   - `Views/Chat/SubAgent/SubAgentRoundButton.swift`
   - `Views/Chat/SubAgent/SubAgentListPage.swift`
   - `Views/Chat/SubAgent/SubAgentDetailPage.swift`
   - `Views/Chat/SubAgent/SubAgentListRow.swift`
   - `Views/Chat/SubAgent/SubAgentPromptBubble.swift`
+  - `Views/Chat/SubAgent/SubAgentChatTranscriptView.swift`（聊天 profile 的步骤组/消息行）
 - 主题：`CodePageTheme` 增加 `textPrimary/textSecondary/textDisabled/userBubble` 的 Accessor（已有 `text100/text300` 等，按需映射，避免重复）。
 
 ### 4.3 数据
@@ -181,7 +182,7 @@
 - 单测：
   - `SubAgentRoundButtonStateTests`：可见性/计数/失败 tint（提取自现有 capsuleState）。
   - `SubAgentListModelTests`：活跃卡排序、行内停止仅单任务、stats 文案。
-  - `SubAgentDetailModelTests`：activity → ChatTimelineGroup 的顺序/过滤；prompt 折叠阈值；最终输出去重。
+  - `SubAgentDetailModelTests`：activity → 聊天 units 的顺序/过滤/步骤组；prompt 折叠阈值；最终输出去重。
   - 现有 `SubAgentProgressTests` / `CapsuleActivityWindowTests` 保持绿。
 - 门禁：
   - `code-profile`：新增列表页/详情页截图（light/dark、运行中/失败/完成）。
@@ -197,6 +198,6 @@
 
 - `textDisabled` 官方 token 未逐字解出（前一轮 R-SA4 U6）；先用 0.6 alpha 近似，真机再校。
 - `anthropicon.agent` 的 SVG 可能只能取到 PNG rendition；优先官方像素，不冒充自绘。
-- 详情页把 `SessionTimelineRow` 换成 Code 组件后，旧 Chat 行的 `onFile`/附件预览路径需要接到 Code 组件的 `onAttachment`/`onFile`；逐项对照。
+- 详情页改用聊天 profile 的步骤组/消息行后，`onFile`/附件预览/步骤组详情 sheet 的接线要与主 Chat 页逐项对照；步骤组详情是嵌套 sheet，注意关闭返回。
 - 列表行“当前活动”副标题依赖 `SubAgentTask.lastToolName`；无该字段时只显示 phase 词。
 - 旧 Chat 容器清理仍按步骤组任务单 §10 另开单，本单不动。

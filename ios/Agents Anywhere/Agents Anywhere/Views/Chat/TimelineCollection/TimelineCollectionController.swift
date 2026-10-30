@@ -57,6 +57,12 @@ final class TimelineCollectionController: UIViewController {
     /// present; the row id is what survives that regrouping.
     private var historyAnchorRowID: String?
     private var historyAnchorOffsetIntoRow: CGFloat = 0
+    /// The page's layout can keep correcting heights after the snapshot
+    /// commits. During that short quiet window the reading anchor is still
+    /// re-resolved on every content-height change; without it a correction
+    /// above the anchor moves the visible row (device: 115.7 pt).
+    private var historyAnchorSettling = false
+    private var historySettleTask: Task<Void, Never>?
     private var historyPageArriving = false
     private var historyInitialFirstRowID: String?
     private var historyPageFirstRowID: String?
@@ -233,6 +239,11 @@ final class TimelineCollectionController: UIViewController {
     /// One auto-page request per edge episode. Scrolling away re-arms it; a
     /// failed load does not retry on every viewport tick.
     private var latestAutoLoadArmed = true
+    /// Set after a local-first latest page keeps `hasNewerItems` for its
+    /// background reconcile. Without a latch, a content-height change makes
+    /// the viewport dip out of bottom and re-arms the trigger, so the same
+    /// read (and its spinner) starts again before the reconcile lands.
+    private var latestAutoLoadSuppressed = false
     private var olderAutoLoadArmed = true
     /// How close to the top edge starts an automatic older page. This is a
     /// reading threshold, not a pull threshold: a full screen of history is
@@ -695,7 +706,12 @@ final class TimelineCollectionController: UIViewController {
                 self.collectionView.layoutIfNeeded()
                 self.reanchorHistoryPageIfNeeded()
                 self.anchorDriver?.enforceReadingPlacement()
+                // The first pass can still park a correction; resolve once
+                // more against the settled frames.
+                self.collectionView.layoutIfNeeded()
+                self.anchorDriver?.enforceReadingPlacement()
                 self.endHistoryPaging()
+                self.beginHistoryAnchorSettling()
             }
             self.publishViewport()
             if self.layout.insertionOwedIsSettled {
@@ -1851,6 +1867,7 @@ final class TimelineCollectionController: UIViewController {
     /// Re-arms the one-shot bottom trigger when the bridge could not start the
     /// read yet (the opening path was still in flight).
     func rearmLatestAutoLoad() {
+        latestAutoLoadSuppressed = false
         latestAutoLoadArmed = true
     }
 
@@ -1858,13 +1875,15 @@ final class TimelineCollectionController: UIViewController {
     /// stale local-first page). Do not immediately start the same read again
     /// from the bottom trigger; the background reconcile owns it now.
     func suppressLatestAutoLoad() {
+        latestAutoLoadSuppressed = true
         latestAutoLoadArmed = false
     }
 
     /// True while a history prepend still owes a scroll correction. Auto-paging
     /// must not start from a transient viewport produced by that apply.
     var isHistoryPrependActive: Bool {
-        historyPaging || insertionProjection != nil || !layout.insertionOwedIsSettled
+        historyPaging || historyAnchorSettling
+            || insertionProjection != nil || !layout.insertionOwedIsSettled
     }
 
     /// Start the official-style history paging mode. The bridge calls this
@@ -1872,6 +1891,7 @@ final class TimelineCollectionController: UIViewController {
     /// the page arrives, which marks `historyPageArriving`.
     func beginHistoryPaging(anchorRowID: String? = nil) {
         guard TimelineHistoryAnchorMode.enabled else { return }
+        endHistoryAnchorSettling()
         historyPagingTimeout?.cancel()
         historyPaging = true
         historyPageArriving = false
@@ -1906,6 +1926,7 @@ final class TimelineCollectionController: UIViewController {
             try? await Task.sleep(for: .seconds(15))
             guard !Task.isCancelled, let self, self.historyPaging else { return }
             self.endHistoryPaging()
+            self.endHistoryAnchorSettling()
         }
     }
 
@@ -1915,7 +1936,8 @@ final class TimelineCollectionController: UIViewController {
     /// target; keeping the same `offsetIntoRow` preserves the old item top's
     /// screen position.
     private func reanchorHistoryPageIfNeeded() {
-        guard historyPaging, let rowID = historyAnchorRowID, let content else { return }
+        guard historyPaging || historyAnchorSettling,
+              let rowID = historyAnchorRowID, let content else { return }
         guard let item = content.item(containingRow: rowID) else {
             probeHistory("reanchor row=\(rowID) not-in-window")
             return
@@ -1946,6 +1968,35 @@ final class TimelineCollectionController: UIViewController {
         }
         anchorDriver?.endHistoryPaging()
         historyPaging = false
+        // Keep the row/offset for the settle window; `endHistoryAnchorSettling`
+        // clears them. A page's last height corrections land after this call.
+    }
+
+    /// Keep the reading anchor enforced for a short quiet window after the
+    /// page commits. `historyPaging` is already false here (the gate asserts
+    /// it), so the driver's own content-change branch no longer runs.
+    private func beginHistoryAnchorSettling() {
+        guard historyAnchorRowID != nil else { return }
+        historyAnchorSettling = true
+        probeHistory("settle begin row=\(historyAnchorRowID ?? "-") "
+            + "into=\(historyAnchorOffsetIntoRow) contentH=\(layout.contentHeight)")
+        historySettleTask?.cancel()
+        historySettleTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled, let self, self.historyAnchorSettling else { return }
+            self.anchorDriver?.enforceReadingPlacement()
+            self.endHistoryAnchorSettling()
+        }
+    }
+
+    private func endHistoryAnchorSettling() {
+        if historyAnchorSettling {
+            probeHistory("settle end off=\(collectionView.contentOffset.y) "
+                + "contentH=\(layout.contentHeight)")
+        }
+        historySettleTask?.cancel()
+        historySettleTask = nil
+        historyAnchorSettling = false
         historyAnchorItemID = nil
         historyAnchorRowID = nil
         historyAnchorOffsetIntoRow = 0
@@ -1986,7 +2037,16 @@ final class TimelineCollectionController: UIViewController {
     private func maybeAutoLoadLatest(_ viewport: TimelineViewport) {
         guard viewport.isMeasured else { return }
         guard viewport.measuredAtBottom else {
-            latestAutoLoadArmed = true
+            // A content-height change can dip the viewport out of bottom
+            // without the reader moving. Only a real gesture clears the
+            // local-first suppression; otherwise the same read restarts and
+            // its spinner never settles.
+            if isUserScrolling {
+                latestAutoLoadSuppressed = false
+                latestAutoLoadArmed = true
+            } else if !latestAutoLoadSuppressed {
+                latestAutoLoadArmed = true
+            }
             return
         }
         guard !navigationSuspended, canLoadLatest, !isHistoryPrependActive,
@@ -2369,6 +2429,7 @@ final class TimelineCollectionController: UIViewController {
         insertionProjection = nil
         layout.cancelInsertionOwed()
         endHistoryPaging()
+        endHistoryAnchorSettling()
     }
 
     var items: [TimelineListItem] { currentItems }
@@ -2542,8 +2603,13 @@ extension TimelineCollectionController: TimelineListLayoutHost {
         if !didStartAnchorDriver {
             startAnchorDriverIfNeeded()
         } else {
-            if historyPaging { reanchorHistoryPageIfNeeded() }
+            if historyPaging || historyAnchorSettling {
+                reanchorHistoryPageIfNeeded()
+            }
             anchorDriver?.contentChanged()
+            if historyAnchorSettling, !historyPaging {
+                anchorDriver?.enforceReadingPlacement()
+            }
         }
         onContentHeightChanged?(height)
     }
@@ -2626,6 +2692,10 @@ extension TimelineCollectionController: UICollectionViewDelegate {
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         guard !navigationSuspended else { return }
+        if historyAnchorSettling { endHistoryAnchorSettling() }
+        // A real gesture is the reader's intent; it may retry a latest read
+        // that a local-first page suppressed.
+        latestAutoLoadSuppressed = false
         anchorDriver?.readerBeganDragging()
         // The reader's finger always wins over a window replacement whose
         // return has not resolved yet.

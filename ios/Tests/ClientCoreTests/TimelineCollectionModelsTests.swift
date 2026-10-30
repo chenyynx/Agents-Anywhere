@@ -84,6 +84,17 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         #expect(TimelineListItem.latestPrompt.itemID == "prompt:latest")
         #expect(TimelineListItem.tail.itemID == "tail")
     }
+
+    @Test func historyPromptsNeverOwnAHistoryAnchor() {
+        // `rowIDs(in:)` aliases the first timeline row for the prepend's
+        // first-row check; that alias must not match the anchor at y=0.
+        #expect(TimelineHistoryAnchorRows.rows(for: .olderPrompt,
+            physicalRows: ["first-row"]) == [])
+        #expect(TimelineHistoryAnchorRows.rows(for: .latestPrompt,
+            physicalRows: ["first-row"]) == [])
+        #expect(TimelineHistoryAnchorRows.rows(for: .group("g"),
+            physicalRows: ["first-row", "second-row"]) == ["first-row", "second-row"])
+    }
 }
 
 @Suite struct TimelineVisibilityProbeTests {

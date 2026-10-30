@@ -46,6 +46,20 @@ nonisolated struct TimelineItemIdentityList: Equatable {
     }
 }
 
+/// Which row ids may be used as a history anchor inside one top-level item.
+/// The history prompts alias the first timeline row for the prepend's
+/// first-row check; that alias must not participate in anchor matching, or
+/// the projected anchor lands on the prompt at y=0 and the page scrolls to
+/// the newly loaded top.
+nonisolated enum TimelineHistoryAnchorRows {
+    static func rows(for item: TimelineListItem, physicalRows: [String]) -> [String] {
+        switch item {
+        case .olderPrompt, .latestPrompt: return []
+        default: return physicalRows
+        }
+    }
+}
+
 /// Builds the collection's top-level order. It mirrors the SwiftUI body's
 /// order exactly: older prompt, groups, tail notices, pending messages,
 /// working status, latest prompt, tail. Each category is deduplicated

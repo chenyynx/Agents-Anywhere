@@ -1319,6 +1319,15 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         }
     }
 
+    /// The rows that actually belong to this item's own content. Unlike
+    /// `rowIDs(in:)`, the older prompt does not alias the first timeline row:
+    /// that alias is useful for the prepend's first-row check, but it would
+    /// make the projected anchor match the prompt at y=0 and scroll the page
+    /// to the newly loaded top.
+    func anchorRowIDs(in item: TimelineListItem) -> [String] {
+        TimelineHistoryAnchorRows.rows(for: item, physicalRows: rowIDs(in: item))
+    }
+
     func item(containingRow rowID: String) -> TimelineListItem? {
         rowToItem[rowID]
     }

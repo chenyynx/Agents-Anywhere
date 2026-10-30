@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 渲染方式: the two transcript presentations (pp 2026-10-29). Both run on the
+/// 步骤展示: the two transcript presentations (pp 2026-10-29). Both run on the
 /// collection engine; the choice only changes how rows are drawn.
 struct TimelineRenderModeSettingsView: View {
     @AppStorage(TimelineRenderModeSwitch.key)
@@ -30,7 +30,7 @@ struct TimelineRenderModeSettingsView: View {
                 .buttonStyle(.plain)
             }
         }
-        .navigationTitle(String(localized: "渲染方式"))
+        .navigationTitle(String(localized: "步骤展示"))
         .navigationBarTitleDisplayMode(.inline)
     }
 }

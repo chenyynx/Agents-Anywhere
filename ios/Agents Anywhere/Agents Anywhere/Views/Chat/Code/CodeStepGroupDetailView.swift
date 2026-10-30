@@ -49,8 +49,8 @@ struct CodeStepGroupDetailView: View {
                     // when a step was appended, and List could hold the old
                     // height until a later layout pass (pp: the last rows'
                     // spacing looked wrong, then healed by itself).
-                    ForEach(detailRows) { row in
-                        switch row {
+                    ForEach(detailRows) { detailRow in
+                        switch detailRow {
                         case let .step(step):
                             row(for: step)
                                 .listRowInsets(CodePageTheme.groupListRowInsets)

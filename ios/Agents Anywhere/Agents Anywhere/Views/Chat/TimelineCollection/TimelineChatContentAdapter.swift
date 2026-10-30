@@ -1677,8 +1677,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             groupIDs: groups.map(\.id),
             hasWorkingStatus: showsWorkingStatus,
             noticeIDs: tailNotices.map(\.id),
-            pendingIDs: pending.map(\.id),
-            hasLatestPrompt: model.session.hasNewerItems)
+            pendingIDs: pending.map(\.id))
 
         var groupsByID: [String: ChatTimelineGroup] = [:]
         for group in groups where groupsByID[group.id] == nil { groupsByID[group.id] = group }

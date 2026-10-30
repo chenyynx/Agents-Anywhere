@@ -81,7 +81,6 @@ nonisolated enum TimelineItemIdentity {
                       hasWorkingStatus: Bool = false,
                       noticeIDs: [String],
                       pendingIDs: [String],
-                      hasLatestPrompt: Bool,
                       hasTail: Bool = true) -> TimelineItemIdentityList {
         var items: [TimelineListItem] = []
         items.reserveCapacity(groupIDs.count + noticeIDs.count + pendingIDs.count + 4)
@@ -95,10 +94,12 @@ nonisolated enum TimelineItemIdentity {
         items.append(contentsOf: pending.values.map { .pending($0) })
         // The working status row is the turn's last item: it follows the
         // messages and a just-sent pending bubble (the reader must see it
-        // below their own message), and sits before the latest/tail rows.
+        // below their own message), and sits before the tail row.
         if hasWorkingStatus { items.append(.workingStatus) }
 
-        if hasLatestPrompt { items.append(.latestPrompt) }
+        // No `.latestPrompt` row by product decision (pp, 2026-10-31): the
+        // "继续上拉加载更新的记录" line stays out of the transcript. Returning
+        // to the newest rows is owned by scrolling/gestures, not a row.
         if hasTail { items.append(.tail) }
         return TimelineItemIdentityList(items: items,
             duplicateGroupIDs: groups.duplicates,

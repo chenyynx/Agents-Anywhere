@@ -50,24 +50,25 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
     @Test func orderMatchesTheSwiftUIList() {
         let identity = TimelineItemIdentity.build(hasOlderPrompt: true,
             groupIDs: ["g1", "g2"], noticeIDs: ["n1"], pendingIDs: ["p1"],
-            hasLatestPrompt: true, hasTail: true)
+            hasTail: true)
+        // No `.latestPrompt` row even when newer rows exist: the product
+        // keeps the "load newer records" line out of the transcript.
         #expect(identity.items == [.olderPrompt, .group("g1"), .group("g2"),
-            .notice("n1"), .pending("p1"), .latestPrompt, .tail])
+            .notice("n1"), .pending("p1"), .tail])
         #expect(!identity.hasDuplicates)
     }
 
     @Test func workingStatusFollowsTheTurnsLastPendingMessage() {
         let identity = TimelineItemIdentity.build(hasOlderPrompt: false,
             groupIDs: ["g1", "g2"], hasWorkingStatus: true,
-            noticeIDs: ["n1"], pendingIDs: ["p1"], hasLatestPrompt: false)
+            noticeIDs: ["n1"], pendingIDs: ["p1"])
         #expect(identity.items == [.group("g1"), .group("g2"), .notice("n1"),
             .pending("p1"), .workingStatus, .tail])
     }
 
     @Test func duplicateIDsKeepTheFirstOccurrenceAndAreReported() {
         let identity = TimelineItemIdentity.build(hasOlderPrompt: false,
-            groupIDs: ["a", "b", "a"], noticeIDs: ["n", "n"], pendingIDs: ["p", "p"],
-            hasLatestPrompt: false)
+            groupIDs: ["a", "b", "a"], noticeIDs: ["n", "n"], pendingIDs: ["p", "p"])
         #expect(identity.items == [.group("a"), .group("b"), .notice("n"), .pending("p"), .tail])
         #expect(identity.duplicateGroupIDs == ["a"])
         #expect(identity.duplicateNoticeIDs == ["n"])

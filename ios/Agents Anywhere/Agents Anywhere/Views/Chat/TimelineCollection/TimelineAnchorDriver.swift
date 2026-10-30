@@ -104,10 +104,28 @@ final class TimelineAnchorDriver {
     }
 
     private func writeOffset(_ y: CGFloat) {
-        guard let view = scrollView else { return }
-        guard abs(view.contentOffset.y - y) >= 0.5 else { return }
+        guard let view = scrollView, y.isFinite else { return }
+        // Every other writer trusts its target. A stale placement or an
+        // out-of-content anchor can resolve to a value tens of thousands of
+        // points outside the scrollable range; UIKit then accepts it during
+        // a layout update and the viewport goes blank. Keep one viewport of
+        // overscroll slack, never more.
+        let geometry = geometry()
+        let topLimit = -geometry.topInset
+        let bottomLimit = max(topLimit,
+            geometry.contentHeight - geometry.containerHeight + geometry.bottomInset)
+        let slack = max(geometry.containerHeight, 1)
+        let clamped = min(max(y, topLimit - slack), bottomLimit + slack)
+        if abs(clamped - y) > 1 {
+#if AA_TIMELINE_PROBE
+            TimelineProbeStore.shared.noteHistory(
+                "driver clamp target=\(y) clamped=\(clamped) "
+                + "contentH=\(geometry.contentHeight) containerH=\(geometry.containerHeight)")
+#endif
+        }
+        guard abs(view.contentOffset.y - clamped) >= 0.5 else { return }
         isApplying = true
-        view.setContentOffset(CGPoint(x: view.contentOffset.x, y: y), animated: false)
+        view.setContentOffset(CGPoint(x: view.contentOffset.x, y: clamped), animated: false)
         isApplying = false
     }
 

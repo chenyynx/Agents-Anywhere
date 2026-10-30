@@ -1902,24 +1902,49 @@ final class TimelineCollectionController: UIViewController {
             content?.rowIDs(in: $0).first
         }
         historyPageFirstRowID = nil
-        let top = collectionView.contentOffset.y + collectionView.adjustedContentInset.top
-        if let anchorRowID,
-           let item = content?.item(containingRow: anchorRowID),
-           let attributes = layout.attributes(for: item.itemID) {
+        let inset = collectionView.adjustedContentInset
+        let rawTop = collectionView.contentOffset.y + inset.top
+        let contentHeight = max(0, layout.contentHeight)
+        // A transient offset can sit outside the content (a height collapse
+        // before UIKit clamps). Anchoring from it produces a massive negative
+        // offsetIntoRow and later a blank viewport (device report 23:02:
+        // off=-57129, into=-57096, contentH=49598). Never derive an anchor
+        // from a viewport that is not inside the content.
+        let top = min(max(rawTop, 0), contentHeight)
+        let requestedAnchor = anchorRowID.flatMap { rowID -> (TimelineListItem, TimelineListLayoutAttributes)? in
+            guard let item = content?.item(containingRow: rowID),
+                  let attributes = layout.attributes(for: item.itemID) else { return nil }
+            return (item, attributes)
+        }
+        let requestedInto = requestedAnchor.map { top - $0.1.frame.minY }
+        func applyAnchor(item: TimelineListItem, rowID: String?,
+                         into: CGFloat) {
             historyAnchorItemID = item.itemID
-            historyAnchorOffsetIntoRow = top - attributes.frame.minY
-            anchorDriver?.beginHistoryPaging(
-                anchorID: item.itemID,
-                offsetIntoRow: historyAnchorOffsetIntoRow)
-            probeHistory("begin reqRow=\(anchorRowID) item=\(item.itemID) "
-                + "rowY=\(attributes.frame.minY) into=\(historyAnchorOffsetIntoRow) "
-                + "off=\(collectionView.contentOffset.y) inset=\(collectionView.adjustedContentInset.top) "
-                + "contentH=\(layout.contentHeight) items=\(currentItems.count)")
+            historyAnchorRowID = rowID ?? content?.rowIDs(in: item).first
+            historyAnchorOffsetIntoRow = into
+            anchorDriver?.beginHistoryPaging(anchorID: item.itemID, offsetIntoRow: into)
+            let attributes = layout.attributes(for: item.itemID)
+            probeHistory("begin reqRow=\(rowID ?? "-") item=\(item.itemID) "
+                + "rowY=\(attributes?.frame.minY ?? -1) into=\(into) "
+                + "off=\(collectionView.contentOffset.y) inset=\(inset.top) "
+                + "contentH=\(layout.contentHeight) items=\(currentItems.count) "
+                + "sanitized=\(abs(rawTop - top) > 1 ? 1 : 0)")
+        }
+        if let requestedAnchor, let requestedInto,
+           abs(rawTop - top) <= 1,
+           let attributes = layout.attributes(for: requestedAnchor.0.itemID),
+           requestedInto >= -viewport.visibleHeight,
+           requestedInto <= attributes.frame.height + viewport.visibleHeight {
+            applyAnchor(item: requestedAnchor.0, rowID: anchorRowID, into: requestedInto)
+        } else if let fallback = anchor(at: top - inset.top),
+                  let item = currentItems.first(where: { $0.itemID == fallback.id }) {
+            applyAnchor(item: item, rowID: content?.rowIDs(in: item).first,
+                        into: fallback.offsetIntoRow)
         } else {
             anchorDriver?.beginHistoryPaging()
             probeHistory("begin unresolved reqRow=\(anchorRowID ?? "-") "
                 + "off=\(collectionView.contentOffset.y) contentH=\(layout.contentHeight) "
-                + "items=\(currentItems.count)")
+                + "items=\(currentItems.count) sanitized=\(abs(rawTop - top) > 1 ? 1 : 0)")
         }
         // A page that never changes content would otherwise pin this mode.
         historyPagingTimeout = Task { @MainActor [weak self] in
@@ -1941,6 +1966,35 @@ final class TimelineCollectionController: UIViewController {
         guard let item = content.item(containingRow: rowID) else {
             probeHistory("reanchor row=\(rowID) not-in-window")
             return
+        }
+        // The stored offset can itself be garbage when the request started
+        // from an out-of-content viewport. Rebinding the row would then
+        // enforce a huge negative target and leave no visible cells (device
+        // report 23:02: off=-4612, contentH=102992, visible=0). Fall back to
+        // the row under the current viewport instead of the lost anchor.
+        if let attributes = layout.attributes(for: item.itemID) {
+            let bound = max(viewport.visibleHeight, 2_000)
+            let into = historyAnchorOffsetIntoRow
+            if !into.isFinite || into < -bound || into > attributes.frame.height + bound {
+                let rawTop = collectionView.contentOffset.y
+                    + collectionView.adjustedContentInset.top
+                let top = min(max(rawTop, 0), max(0, layout.contentHeight))
+                guard let fallback = anchor(at: top - collectionView.adjustedContentInset.top),
+                      let fallbackItem = currentItems.first(where: { $0.itemID == fallback.id }) else {
+                    probeHistory("reanchor reset row=\(rowID) no-fallback into=\(into)")
+                    return
+                }
+                let old = historyAnchorItemID ?? "-"
+                historyAnchorItemID = fallbackItem.itemID
+                historyAnchorRowID = content.rowIDs(in: fallbackItem).first
+                historyAnchorOffsetIntoRow = fallback.offsetIntoRow
+                anchorDriver?.beginHistoryPaging(anchorID: fallbackItem.itemID,
+                                                 offsetIntoRow: fallback.offsetIntoRow)
+                probeHistory("reanchor reset row=\(rowID) old=\(old) "
+                    + "new=\(fallbackItem.itemID) badInto=\(into) "
+                    + "into=\(fallback.offsetIntoRow) contentH=\(layout.contentHeight)")
+                return
+            }
         }
         guard item.itemID != historyAnchorItemID else { return }
         let old = historyAnchorItemID ?? "-"

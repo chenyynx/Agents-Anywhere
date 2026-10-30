@@ -278,12 +278,12 @@ final class SessionChatModel {
             guard !Task.isCancelled else { return }
             openingError = error.localizedDescription
         }
-        openingRefreshCompleted = true
         guard session.isValid, !Task.isCancelled else { return }
         if let data = repository.cached(sessionId: session.id) {
             timeline.presentOpening(data.items, pendingMessages: session.pendingMessages)
         }
         isOpeningPrepared = true
+        openingRefreshCompleted = true
     }
 
     /// The timeline reports its first opening return (or the bounded mask

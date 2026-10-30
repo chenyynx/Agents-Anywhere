@@ -743,7 +743,15 @@ final class TimelineCollectionController: UIViewController {
             // them in this update, before the next frame: the deferred
             // 50 ms pass skips hosted rows and cannot repair a cell that
             // renders the previous item's content in the wrong frame.
-            if windowReplaced || items.count != oldItems.count {
+            //
+            // Never do it while the page follows `.end`: the keyboard and
+            // composer inset animations own the offset there, and a
+            // reconfigure/layout inside that transaction drops the follow
+            // (pp device report 2026-10-31 06:26: the page stayed mid-air
+            // after the keyboard collapsed). A reading page has no such
+            // inset-driven offset to preserve.
+            if (windowReplaced || items.count != oldItems.count),
+               self.anchorDriver?.state.placement != .end {
                 self.collectionView.layoutIfNeeded()
                 self.syncVisibleCellFrames(forceHosted: true, layoutNow: true)
             }
@@ -1803,6 +1811,12 @@ final class TimelineCollectionController: UIViewController {
     /// fit=53, visible=1). Hosted rows normally own their frames through
     /// height reports, so only this forced pass checks them; a cell whose
     /// configured item does not match its index path is reconfigured.
+    ///
+    /// The plain pass must not create collection-view updates: an apply lands
+    /// several times a second, and a reconfigure inside the keyboard/composer
+    /// inset animation made the bottom follow lose its `.end` placement (pp
+    /// device report 2026-10-31 06:26: the page stayed mid-air after the
+    /// keyboard collapsed). Only the forced structural pass rebinds.
     private func syncVisibleCellFrames(forceHosted: Bool = false,
                                        layoutNow: Bool = false) {
         guard isViewLoaded, !navigationSuspended, !isPerformingSnapshot,
@@ -1815,20 +1829,16 @@ final class TimelineCollectionController: UIViewController {
             let item = currentItems[indexPath.item]
             guard let cell = collectionView.cellForItem(at: indexPath),
                   let attributes = layout.layoutAttributesForItem(at: indexPath) else { continue }
-            let contentMismatch: Bool
-            if let hosting = cell as? TimelineHostingCell,
+            var contentMismatch = false
+            if forceHosted, let hosting = cell as? TimelineHostingCell,
                hosting.itemID != item.itemID {
                 // A nil id is a visible cell whose configuration never ran;
                 // it draws nothing, which is exactly the blank this repairs.
                 wrongContent.append(indexPath)
                 contentMismatch = true
-            } else {
-                contentMismatch = false
             }
             // Hosted-contract rows invalidate their own row and the rows below
-            // when a height lands; a frame-sync pass here would race it. A
-            // content mismatch is not a height report, so it is checked even
-            // without the forced pass.
+            // when a height lands; a frame-sync pass here would race it.
             if !forceHosted, !contentMismatch, let content,
                content.usesCellReportedHeight(for: item) { continue }
             if abs(cell.frame.minY - attributes.frame.minY) > 0.5

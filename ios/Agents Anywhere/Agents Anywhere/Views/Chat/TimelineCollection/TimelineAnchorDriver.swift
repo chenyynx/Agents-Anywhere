@@ -311,6 +311,22 @@ final class TimelineAnchorDriver {
         isHistoryPaging = false
     }
 
+    /// The history settle window's late correction: keep the rebound reading
+    /// placement and ease to it with the content spring instead of placing it
+    /// in one frame. A late measurement above the anchor can move the page by
+    /// hundreds of points; the instant `enforceReadingPlacement` write read as
+    /// a jump (device report 2026-10-31 02:54: a page landed, then settle moved
+    /// the offset +497 in a single frame). The official model answers every
+    /// `rowMeasured` through the Mover.
+    func easeSettledHistoryPlacement() {
+        isHistoryPaging = false
+        guard case .reading = state.placement else { return }
+        guard state.motion != .dragging, state.motion != .coasting else { return }
+        guard state.placement.target(in: geometry()) != nil else { return }
+        pendingContentMove = true
+        startMover()
+    }
+
     func contentChanged() {
 #if AA_TIMELINE_PROBE
         AnchorDeviceProbe.shared.recordMover(

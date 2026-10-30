@@ -134,6 +134,11 @@ struct TimelineChatTimelineView: View {
                     // The indicator is the reader's explicit return: a
                     // follow-only request would refuse a page in `.reading`
                     // (TimelineCollectionController.requestBottom).
+                    // The prompt row is gone (R5), so this tap is also the
+                    // explicit latest request: clear the post-history guard
+                    // that requires a fresh bottom visit before auto-loading
+                    // newer rows.
+                    bridge.controller?.allowLatestAfterHistoryGesture()
                     bridge.controller?.requestBottom(animated: true, forced: true)
                 }
                 .padding(.bottom, safeAreaInsets.bottom + 8)

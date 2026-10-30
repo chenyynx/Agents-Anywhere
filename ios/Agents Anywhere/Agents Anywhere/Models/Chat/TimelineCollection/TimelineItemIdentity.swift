@@ -73,8 +73,8 @@ nonisolated enum TimelineHistoryAnchorRows {
 
 /// Builds the collection's top-level order. It mirrors the SwiftUI body's
 /// order exactly: older prompt, groups, tail notices, pending messages,
-/// working status, latest prompt, tail. Each category is deduplicated
-/// independently, first wins.
+/// working status, tail. Each category is deduplicated independently, first
+/// wins.
 nonisolated enum TimelineItemIdentity {
     static func build(hasOlderPrompt: Bool,
                       groupIDs: [String],

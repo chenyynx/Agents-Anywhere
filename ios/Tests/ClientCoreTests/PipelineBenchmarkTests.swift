@@ -56,4 +56,63 @@ import Testing
         #expect(presentation.rows.last?.text.hasPrefix(base) == true)
         #expect(decode + apply + model + present < .seconds(30))
     }
+
+    /// P0 baseline for the local-store task sheet: whole-file JSON save/restore,
+    /// archive projection, opening presentation, and a repository cold open.
+    /// Prints timings for 500/1000/2000/5000 rows; assertions are content-only.
+    @Test func coldOpenBaseline() async throws {
+        for itemCount in [500, 1000, 2000, 5000] {
+            let items = try (1...itemCount).map {
+                try itemObject(id: "item-\($0)", order: $0, seq: $0,
+                               text: "Row \($0) " + String(repeating: "x", count: 40))
+            }
+            let projection = V2SessionProjection(
+                snapshot: try snapshot(items: items), maximumItems: itemCount)
+            let http = TestHTTPTransport()
+            let probe = repository(transport: http)
+            let model = probe.session(id: "session")
+            let archive = V2SessionArchive(data: projection.data, model: model)
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("aa-cold-open-\(UUID().uuidString)", isDirectory: true)
+            let store = V2LocalStore(directory: directory, maximumSessions: 20)
+            let clock = ContinuousClock()
+
+            var start = clock.now
+            await store.saveSession(archive)
+            let save = clock.now - start
+
+            start = clock.now
+            let restored = await store.restoreSession("session")
+            let restore = clock.now - start
+
+            start = clock.now
+            let restoredProjection = try archive.projection(
+                items: restored?.items ?? [], maximumItems: itemCount)
+            let project = clock.now - start
+
+            let presentation = SessionTimelinePresentation()
+            start = clock.now
+            presentation.presentOpening(restoredProjection.data.items, pendingMessages: [])
+            presentation.flush(now: 0)
+            let present = clock.now - start
+
+            let repo = repository(transport: http, localStore: store)
+            start = clock.now
+            let opened = try await repo.open(sessionId: "session")
+            let open = clock.now - start
+            repo.reset()
+            await store.close(removing: true)
+
+            print("BENCH coldOpen items=\(itemCount) save=\(milliseconds(save)) restore=\(milliseconds(restore)) projection=\(milliseconds(project)) present=\(milliseconds(present)) open=\(milliseconds(open)) rows=\(presentation.rows.count)")
+            #expect(restored?.items.count == itemCount)
+            #expect(restoredProjection.data.items.count == itemCount)
+            #expect(opened.items.count == 100)
+            #expect(!presentation.rows.isEmpty)
+        }
+    }
+
+    private func milliseconds(_ value: Duration) -> String {
+        String(format: "%.1f", Double(value.components.seconds) * 1000
+            + Double(value.components.attoseconds) / 1e15)
+    }
 }

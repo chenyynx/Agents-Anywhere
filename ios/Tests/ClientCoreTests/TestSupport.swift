@@ -122,12 +122,12 @@ func event(_ type: String, seq: Int = 10, id: String? = nil, sessionID: String =
     func yield(_ event: V2SessionEvent) { streams.last?.yield(event) }
 }
 
-@MainActor func repository(transport: TestHTTPTransport, realtime: TestRealtimeAPI? = nil, policy: V2SessionCachePolicy = V2SessionCachePolicy(), now: @escaping () -> Date = Date.init) -> V2SessionRepository {
+@MainActor func repository(transport: TestHTTPTransport, realtime: TestRealtimeAPI? = nil, policy: V2SessionCachePolicy = V2SessionCachePolicy(), localStore: V2LocalStore? = nil, now: @escaping () -> Date = Date.init) -> V2SessionRepository {
     let runtime = V2RuntimeAPI(transport: transport)
     return V2SessionRepository(
         scope: V2ClientScope(serverURL: URL(string: "https://example.test/api/v2")!, accountID: "account"),
         detail: V2SessionDetailService(sessionAPI: V2SessionAPI(transport: transport), runtimeAPI: runtime, realtimeAPI: realtime ?? TestRealtimeAPI()),
-        interactions: V2RuntimeInteractionService(runtimeAPI: runtime), policy: policy, now: now,
+        interactions: V2RuntimeInteractionService(runtimeAPI: runtime), policy: policy, localStore: localStore, now: now,
         sleep: { _ in try await Task.sleep(for: .milliseconds(1)) }
     )
 }

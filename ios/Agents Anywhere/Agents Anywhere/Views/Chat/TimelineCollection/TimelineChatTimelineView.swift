@@ -112,7 +112,12 @@ struct TimelineChatTimelineView: View {
             typography: typography,
             safeAreaInsets: safeAreaInsets,
             onPhaseChanged: { transition in
-                if transition.gestureBegan { bridge.readerDidTakeOver() }
+                if transition.gestureBegan {
+                    bridge.readerDidTakeOver()
+                    // A new gesture owns the continuation counter: a quiet
+                    // reader never chains zero-progress pages.
+                    bridge.zeroProgressContinuations = 0
+                }
             },
             onViewportChanged: { viewport in bridge.viewportChanged(viewport) },
             onControllerReady: { controller in bridge.attach(controller) })
@@ -260,6 +265,10 @@ final class TimelineChatBridge: ObservableObject {
     /// Probe-only attach trigger: a weak `controller` cannot publish, and the
     /// floating overlay must learn when the representable hands one over.
     @Published private(set) var controllerAttached = false
+    /// Gesture-triggered zero-progress pages continue loading until rows
+    /// appear; a new gesture resets the counter so a parked reader never
+    /// chains pages.
+    var zeroProgressContinuations = 0
     /// The Code page's tool detail sheet. Held at the page level, not in the
     /// row: a streaming reconfigure rebuilds the hosted cell's view, and a
     /// cell-local `@State` sheet could be dismissed mid-read.
@@ -417,6 +426,10 @@ final class TimelineChatBridge: ObservableObject {
             anchorRowID: anchor, beforeFirstRowID: before, edge: .top,
             createdAt: .now)
         updateHistoryAvailability()
+        // Capture the window before the page arrives so a zero-progress page
+        // (rows that merge into an already-visible group, so the group count
+        // and the window size both stay put) can continue automatically.
+        let itemsBefore = controller.items.count
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.model.session.loadOlder(anchorOrderSeq: anchorOrderSeq)
@@ -431,7 +444,41 @@ final class TimelineChatBridge: ObservableObject {
                 + "local=\(self.model.session.localOlderAvailable ? 1 : 0)")
 #endif
             self.updateHistoryAvailability()
+            self.continueOlderIfZeroProgress(itemsBefore: itemsBefore)
         }
+    }
+
+    /// A gesture-triggered page that produced no visible rows keeps loading
+    /// until something shows or the store runs out, bounded per gesture.
+    ///
+    /// The reader's gesture already armed the trigger; without this, one
+    /// gesture can only ever load one page, and a page whose rows all merge
+    /// into an already-visible group is invisible (b754 report: six fires,
+    /// items stuck at 156, `older=0 local=1`). The counter resets on the next
+    /// gesture, so a parked reader is never chain-loaded.
+    private static let zeroProgressContinuationLimit = 4
+
+    private func continueOlderIfZeroProgress(itemsBefore: Int) {
+        guard !navigationSuspended, let controller else { return }
+        guard controller.items.count == itemsBefore,
+              model.session.localOlderAvailable,
+              model.session.canLoadOlder,
+              !model.session.isLoadingHistory, !isLoadingOlder else {
+            zeroProgressContinuations = 0
+            return
+        }
+        guard zeroProgressContinuations < Self.zeroProgressContinuationsLimit else {
+            zeroProgressContinuations = 0
+            return
+        }
+        zeroProgressContinuations += 1
+        controller.rearmOlderAutoLoad()
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteHistory(
+            "auto-older continue page=\(zeroProgressContinuations) "
+            + "items=\(controller.items.count)")
+#endif
+        loadOlder()
     }
 
     private func loadLatest(auto: Bool = false) {

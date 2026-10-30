@@ -24,6 +24,7 @@
 | P3a 磁盘翻页 | ✅ 绿 | run `41011391791`（test + build） |
 | P3b 缓存上限 + 设置 | ✅ 绿 | run `41015260898`（test + build，应用默认开启）；包 **b705** `cf0f82f` |
 | P4 不裁窗 + 300 + 200 | ✅ 绿 | 审查修复后 run `41021372619`（test + build）；包 **b711** `a105e82`（语义变更 + 审查修复） |
+| P5 视口窗口 | ✅ test + build + sim gates | 核心 `daa75511` + 开屏门禁 `df9d630b` + 顺序修复 `0112f7d5`；run `41027837892` 绿，gates run `41027710507` 绿（timeline-autorun + code-profile）；包 **b716** `0112f7d` |
 
 ### 0.2 独立审查（2026-10-30）
 
@@ -42,6 +43,36 @@
 **最终验证**：run `41021372619`（b711）`test` + `build` 全绿；包见 §5.5。
 
 **残留（不阻塞 P3/P4 真机验收）**：`timeline-autorun` 的 localdb/pinned/clear 场景尚未加；旧库 `auto_vacuum` 需一次性 VACUUM；「不限制」的 4GB 安全线可能低于显式 5GB 选项；1000 行 presentation window 未做 benchmark；`TimelineSnapshot.cacheBytes` 已成为写入路径的死字段；`limitToLatest` 仅测试使用。
+
+### 0.3 P5 视口窗口（2026-10-30，pp 直接指定）
+
+**根因**：历史页合并用 `prefix(1000)`，保留最旧、挤掉最新；读者回到底部必须重新取 latest。
+P4.1 的 `suffix(1500/2000)` 只是把窗口加大，仍是一端锚定；pp 决定直接做视口窗口，不做 1500/2000。
+
+**实现**（提交 `daa75511`，开屏门禁 `df9d630b`，顺序修复 `0112f7d5`）：
+
+- `V2SessionProjection.applyHistory(_:anchorOrderSeq:)`：历史页合并后按「可见行」居中裁剪，保留锚点两侧；只有真正丢掉最新侧才置 `hasNewerItems`，丢掉最旧侧仍保持 `hasOlderItems`。
+- 锚定期间 socket 新行若落在窗口外，不挤掉阅读锚点，只置 `hasNewerItems`；`followLatest()` 在读者回到底部时解除锚定，实时新行恢复追加。
+- `V2SessionRepository.loadOlder` 接受 `anchorOrderSeq`，磁盘页与网络页走同一路径；`TimelineChatBridge` 从 `visibleAnchorRowID()` 映射到 orderSeq 后传入。
+- `TimelineCollectionController` 在视口到达历史窗口底部时触发一次自动 latest；失败不按滚动 tick 重试，离开底部再回来才重新武装。
+- `TimelineChatBridge.viewportChanged` 在底部边沿调用 `followLatest()`，避免「已回底部但锚点还在，实时新行被当成 hasNewer」。
+- 历史加载先 `readerDidTakeOver()`，防止裁掉远端新行导致的 `windowRevision` 把读者拉回底部。
+
+**新增/修改测试**：
+
+- `SessionProjectionTests`：锚点保留、远端新端裁剪、实时新行延迟、回到底部解除锚定、窗口未满不丢最新。
+- `LocalPageCacheTests`：磁盘页按 anchor 居中（150 条窗口）、latest 磁盘回退。
+- `OpeningFastPathTests`：溢出语义改为「保留 2 条、1 条历史页把最新行标为 newer」。
+- `PipelineBenchmarkTests.historyWindowBenchmark`：1000/2000 行窗口 + 500 行历史页的合并耗时与锚点存在性；只断言内容，不设紧时延。
+
+**验证**：run `41027837892` test + build 绿（包 b716 `0112f7d`）；run `41027710507` `timeline-autorun` + `code-profile` 两个模拟器 gate 均绿。
+
+**未覆盖 / 待验证**：
+
+- 自动 latest 的 UI 触发没有 ClientCore 单测（controller 在 app target）；需真机验证「历史窗口底部自动补最新」。
+- 深度历史期间掉到窗口外的新 live 行目前只在 latest 页恢复；离线时若 latest 页尚未落盘，可能缺少这几行，列为后续 P5.1（live tail sidecar）。
+- adapter 仍为整个 1000 行窗口建 groups/codeRows；P5 不改变这一 O(n) 成本，benchmark 只量投影合并。
+- P5 包产出后需真机验收：翻 3 页不跳、回底部不重载、流式中翻历史、离线翻已见页。
 
 ---
 
@@ -519,9 +550,11 @@ CREATE TABLE IF NOT EXISTS schema_state (
 9. pinned 会话在缓存超限时不被清；「不限制」超安全线时只裁未 pinned。
 
 **测试包（unsigned，需自行签名）**
-- **最终包（P3+P4 + 审查修复）：b711 `a105e82`**
+- **P5 视口窗口：b716 `0112f7d`**
+  `https://github.com/chenyynx/Agents-Anywhere/releases/download/ipa-feat-local-timeline-store/AgentsAnywhere-feat-local-timeline-store-b716-0112f7d.ipa`
+- **P3+P4 基线（审查修复）：b711 `a105e82`**
   `https://github.com/chenyynx/Agents-Anywhere/releases/download/ipa-feat-local-timeline-store/AgentsAnywhere-feat-local-timeline-store-b711-a105e82.ipa`
-- 早期 b705（P3）/ b707（P4）早于审查修复，**不要用**；b710 因 PRAGMA 只读连接错误没有产出包。
+- b712/b713 是 P5 中间包（缺开屏 latest 门禁/顺序修复），**不要用**；b705（P3）/ b707（P4）早于审查修复；b710 因 PRAGMA 只读连接错误没有产出包。
 
 ---
 
@@ -573,4 +606,4 @@ CREATE TABLE IF NOT EXISTS schema_state (
 - `presentOpening` 当前先用 `suffix(100)` 上屏（`SessionChatModel.swift:262`），P4 会与 W=300 对齐；需要真机确认首帧不倒退。
 - 磁盘 64MB 单文件上限与 128MB 总裁剪是旧 JSON 路径的预算，行级库换成行数+总字节后要同步更新文档与 gate。
 - 路线 B 的「P1 启动解耦」（AppState 不 await 选中会话恢复、cached ID 索引、磁盘缓存不显示全屏 mask）不在本单；P0 基线若显示启动阻塞明显，单独排。
-- 「全量回填/有界预热」（官方 Chat `OfflinePrefetcher` 模式，后台把整个会话拉完）不在本单；本单只做用户可配缓存 + pinned 永久保留。需要“从没取过的旧页也能离线看”时再开 P5。
+- 「全量回填/有界预热」（官方 Chat `OfflinePrefetcher` 模式，后台把整个会话拉完）不在本单；本单只做用户可配缓存 + pinned 永久保留。需要“从没取过的旧页也能离线看”时再开 P6（P5 已用于视口窗口）。

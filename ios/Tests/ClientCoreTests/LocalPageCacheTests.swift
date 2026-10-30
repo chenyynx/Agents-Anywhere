@@ -66,10 +66,11 @@ import Testing
         _ = try await repo.open(sessionId: "session")
 
         let older = try await repo.loadOlder(sessionId: "session")
-        // The opening window is 451...600 and the anchor is its first row;
-        // the 150-row window keeps 75 rows on each side of 451.
-        #expect(older.items.map(\.orderSeq) == Array(376...525))
-        #expect(older.hasNewerItems)
+        // The opening window is 451...600, the disk page is the 200 rows
+        // before it, and browsing keeps the whole merged window: the newer
+        // half survives instead of being trimmed away.
+        #expect(older.items.map(\.orderSeq) == Array(251...600))
+        #expect(!older.hasNewerItems)
 
         let latest = try await repo.loadLatest(sessionId: "session")
         #expect(latest.items.map(\.orderSeq) == Array(451...600))
@@ -149,10 +150,11 @@ import Testing
         _ = try await repo.open(sessionId: "session")
 
         let older = try await repo.loadOlder(sessionId: "session", anchorOrderSeq: 500)
-        #expect(older.items.count == 150)
-        #expect(older.items.map(\.orderSeq) == Array(425...574))
+        // Browsing history keeps both sides of the reader: the idle ceiling no
+        // longer drops the newer half around an anchor (b744).
+        #expect(older.items.map(\.orderSeq) == Array(251...600))
         #expect(older.items.contains { $0.orderSeq == 500 })
-        #expect(older.hasNewerItems)
+        #expect(!older.hasNewerItems)
         #expect(http.calls.isEmpty)
 
         repo.reset(); await store.close(removing: true)

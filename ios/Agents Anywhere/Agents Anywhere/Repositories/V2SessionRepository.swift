@@ -410,11 +410,17 @@ final class V2SessionRepository {
         // local page is applied immediately; if its saved cursor is behind the
         // live projection (or it says its tail is incomplete), a background
         // network read reconciles it without blocking the return.
+        //
+        // `>=`, not `>`: browsing history keeps both sides of the reader
+        // (V2SessionProjection.browseMaximumItems), so the projection's last
+        // row can already be the store's newest row. Requiring a strictly
+        // newer local row sent that equal-end case to the network and made
+        // the return-to-bottom block on it (and hang when the read was held).
         if let localStore,
            let local = await localStore.latestRows(sessionID: sessionId, limit: pageLimit),
            let newest = local.items.last?.orderSeq,
            let end = entry.projection?.data.items.last?.orderSeq,
-           newest > end {
+           newest >= end {
             try requireCurrent(entry, version: version)
             let localIsCurrent = !local.hasNewerRows
                 && V2SessionProjection.sequence(local.cursor) >= (entry.projection?.sequence ?? 0)

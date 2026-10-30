@@ -119,7 +119,9 @@ import Testing
         // rows the reader already has; only returning to the newest edge may
         // trim the idle window.
         let recent = try (481...500).map { try itemObject(id: "item-\($0)", order: $0) }
-        var projection = V2SessionProjection(snapshot: try snapshot(items: recent), maximumItems: 12)
+        // The opening window holds all 20 rows, so the history page below is
+        // the only thing that could drop the far-newest end.
+        var projection = V2SessionProjection(snapshot: try snapshot(items: recent), maximumItems: 20)
         let older = try (461...480).map { try decode(itemObject(id: "item-\($0)", order: $0), as: V2TimelineItem.self) }
         projection.applyHistory(V2SessionTimelinePage(sessionId: "session", items: older,
             nextSeq: 500, hasMore: false, serverTime: nil), anchorOrderSeq: 465)

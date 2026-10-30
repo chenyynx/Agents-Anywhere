@@ -32,9 +32,19 @@ struct TimelineTurnAction: Equatable {
 }
 
 enum TimelineTurnActions {
-    /// Match Web: one footer after the final group between user messages. Tool
-    /// results and reasoning can end a turn but never enter its copied reply.
-    static func build(groups: [ChatTimelineGroup], suppressLatest: Bool, hasPendingUserMessage: Bool = false) -> [String: TimelineTurnAction] {
+    /// Match Web's one-footer-per-turn rule. Tool results and reasoning can
+    /// end a turn but never enter its copied reply.
+    ///
+    /// The footer host is the last group of the turn that actually draws one:
+    /// divider groups (marker/system rows, e.g. a compaction boundary) and a
+    /// caller-excluded renderer (the Code page's one-line step groups) never
+    /// host it. Hosting it on a divider read as a 91 pt jump on device
+    /// (2026-10-31 05:40: the compact boundary carried the review + copy
+    /// footer, then lost it when the next step group arrived).
+    static func build(groups: [ChatTimelineGroup], suppressLatest: Bool,
+                      hasPendingUserMessage: Bool = false,
+                      footerHostEligible: (ChatTimelineGroup) -> Bool = { _ in true })
+        -> [String: TimelineTurnAction] {
         var actions: [String: TimelineTurnAction] = [:]
         var replies: [ChatTimelineRowModel] = []
         var changes: [ChatTimelineRowModel] = []
@@ -42,6 +52,23 @@ enum TimelineTurnActions {
         var endGroupID: String?
         var turnOpen = false
         var hasActiveItems = false
+
+        func hostsFooter(_ group: ChatTimelineGroup) -> Bool {
+            guard footerHostEligible(group) else { return false }
+            // A group with an assistant reply always hosts. Otherwise the
+            // group must be real turn content: a turn-opening user bubble and
+            // a divider group have no reply a footer can belong to.
+            let hasReply = group.rows.contains { row in
+                row.structure.type == .message && row.structure.role == .assistant
+                    && SubAgentProgress.parentItemID(row.value) == nil
+            }
+            if hasReply { return true }
+            return group.rows.contains { row in
+                !row.structure.startsTurn
+                    && row.structure.type != .marker
+                    && row.structure.type != .system
+            }
+        }
 
         func commit() {
             if let endGroupID, (!replies.isEmpty || !changes.isEmpty), !hasActiveItems {
@@ -66,7 +93,7 @@ enum TimelineTurnActions {
             let fileChanges = group.rows.filter { $0.structure.isFileChange }
             if !messages.isEmpty || !fileChanges.isEmpty { turnOpen = true }
             guard turnOpen else { continue }
-            endGroupID = group.id
+            if hostsFooter(group) { endGroupID = group.id }
             replies.append(contentsOf: messages)
             changes.append(contentsOf: fileChanges)
             hasActiveItems = hasActiveItems || group.rows.contains { $0.structure.status.isActive }

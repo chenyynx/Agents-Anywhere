@@ -48,6 +48,21 @@ import Testing
         #expect(actions["compact"] == nil)
     }
 
+    /// The Code page's step groups draw no footer. Excluding them from
+    /// hosting keeps the action on the last reply group, so a new step group
+    /// cannot remove the footer from a visible row.
+    @Test func aRendererExcludedGroupNeverHostsTheFooter() throws {
+        let rows = try [row("user", role: "user", text: "Question"),
+                        row("reply", text: "Answer"),
+                        row("steps", type: "tool", text: "")]
+        let groups = TimelineGrouping.groups(rows, interactionTargets: [])
+        let actions = TimelineTurnActions.build(
+            groups: groups, suppressLatest: false,
+            footerHostEligible: { $0.id != "steps" })
+        #expect(actions["reply"]?.copyText == "Answer")
+        #expect(actions["steps"] == nil)
+    }
+
     @Test func pendingUserMessageKeepsThePreviousReplyActionsThroughItsEcho() throws {
         let rows = try [row("user", role: "user"), row("reply", text: "Completed answer")]
         let before = TimelineGrouping.groups(rows, interactionTargets: [])

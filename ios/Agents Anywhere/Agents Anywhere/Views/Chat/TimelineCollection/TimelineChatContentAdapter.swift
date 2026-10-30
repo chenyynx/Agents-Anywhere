@@ -1705,7 +1705,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             groups: groups,
             suppressLatest: model.isRunning || model.session.hasNewerItems,
             hasPendingUserMessage: !model.session.hasNewerItems
-                && (!model.timeline.pendingMessages.isEmpty || !model.session.pendingMessages.isEmpty))
+                && (!model.timeline.pendingMessages.isEmpty || !model.session.pendingMessages.isEmpty),
+            // A step group renders as one line (CodeStepGroupRowView) and draws
+            // no footer; keying a turn action to it made the footer vanish and
+            // hop to the next group (device 2026-10-31 05:40: the compact
+            // divider lost its footer by 91 pt when the next step arrived).
+            footerHostEligible: { stepGroupsByID[$0.id] == nil })
 
         self.groupsByID = groupsByID
         self.codeProfile = profile

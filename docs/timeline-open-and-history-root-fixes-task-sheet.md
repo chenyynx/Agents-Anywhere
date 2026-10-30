@@ -52,3 +52,28 @@
 - 红先绿后：timeline-autorun 门禁加场景（顶部武装回底→窗口替换→offset 不变；停在顶部→不链式 fire；上滑一次→fire 一次）；撤销实验在临时 worktree 做。
 - 真机清单：后台切回直接落底；顶部连续上滑一页一次；停在顶部不自动连翻；翻页无离散跳；无"加载新消息"行；启动无中间态。
 - CI：test + build + probe；L 级完成后派独立 reviewer（链路/时序、测试有效性）。
+
+## R6 开屏后页脚从分隔行跳走（2026-10-31 05:40 报告，"打开页面怎么乱跳一下"）
+
+**证据（b764 探针，`long-message-20261031-054051.txt`）**
+- `g:claude_compact_2391…`（压缩分隔行）在 t=4.14 由 121pt 收到 30pt，contentH 32928→32837、offset 32131→32079，0.18s 动画；t=4.12 同时新增 `g:steps:msg_23963b14`。
+- 121.5 = 30（分隔行）+ 4 + 44（review 卡）+ 4 + 39.5（copy/时间行）→ ceil 121（`AssistantFooterMetrics` / `SessionTurnActionsRow.rowHeight`）。
+- 结论：121 不是错误测量；是 `TimelineTurnActions.build` 把该回合的页脚挂在了"压缩分隔行"这个 Chat 渲染的 group 上。新 step group 到达后 host 迁走（或页脚被抑制），分隔行掉了 91pt，被 `animateRowHeight` 动画成可见跳动。
+
+**根因**
+- `TimelineTurnActions.build` 对回合内每个 group 都推进 `endGroupID`；分隔行（marker/system）和 Code 的 step group（`CodeStepGroupRowView` 不画页脚）都可能成为 host。host 不渲染页脚时会消失/迁移，每次迁移都让可见行改变 39.5–91pt。
+
+**修法（一处根因，一处修复）**
+- `build` 增加 host 资格：全为 marker/system 行的 group 不作 host（Chat/Code 通用）；新增 `footerHostEligible` 谓词参数，Code adapter 传入 `stepGroupsByID[group.id] == nil`。
+- 非 host 的 group 仍累计 replies/changes/active（抑制规则不变）；页脚固定落在回合内最后一个可渲染的回复 group 上。
+- 不改高度模型、布局或动画：分隔行不会再拿到 121pt。
+
+**测试（红先绿后，ClientCore）**
+- 回合 = user → assistant → compact 分隔行：页脚 key 必须落在 assistant group（当前实现落在分隔行）。
+- 注入谓词排除 step group：页脚落在最后一个有资格的 group；无资格 group 则不产出。
+- 既有用例（tool 结尾、file-change 结尾、steering）保持绿。
+
+**验证与未覆盖**
+- CI test + build（Views 不在 test target，必须看 build job）。
+- 真机：打开"最后事件是压缩分隔行 + 稍后 step group"的会话，分隔行高度不得变化，页脚应位于最后一条回复下。
+- 未覆盖：开屏 179 行 apply 的 258ms 主线程尖峰（步骤 7）；窗口替换瞬间的屏外 staleCell（步骤 5 证据包）。

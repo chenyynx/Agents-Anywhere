@@ -44,7 +44,9 @@ final class V2ClientServices {
         let policy = V2SessionCachePolicy()
         let cacheDirectory = URL.applicationSupportDirectory.appendingPathComponent("AgentsAnywhere/Offline/v1")
             .appendingPathComponent(V2RestorationStore.scopeKey(scope))
-        localStore = V2LocalStore(directory: cacheDirectory, maximumSessions: policy.maximumSessions)
+        localStore = V2LocalStore(directory: cacheDirectory,
+                                  maximumSessions: policy.maximumSessions,
+                                  timelineDatabaseEnabled: LocalTimelineStore.appEnabled)
         localCache = LocalCacheService(store: localStore)
         sessionPreparation = V2SessionPreparationService(connectorAPI: api.connectors)
         account = V2AccountService(accountAPI: api.account)

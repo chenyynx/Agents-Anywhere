@@ -9,9 +9,24 @@ import Foundation
 nonisolated enum LocalTimelineStore {
     static let defaultsKey = "LocalTimelineStore.enabled"
 
-    /// `-aa.localdb` is the launch argument used by simulator gates.
+    /// `-aa.localdb` is the launch argument used by simulator gates. Direct
+    /// store constructions (tests) default off.
     static var enabled: Bool {
         if ProcessInfo.processInfo.arguments.contains("-aa.localdb") { return true }
         return UserDefaults.standard.bool(forKey: defaultsKey)
+    }
+
+    /// The app launch default: the beta line enables the row store unless the
+    /// device explicitly opts out (the rollback switch).
+    static var appEnabled: Bool {
+        get {
+            if let value = UserDefaults.standard.object(forKey: defaultsKey) as? Bool {
+                return value
+            }
+            return true
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: defaultsKey)
+        }
     }
 }

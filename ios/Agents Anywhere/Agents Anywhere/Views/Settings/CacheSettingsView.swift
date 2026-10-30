@@ -41,7 +41,7 @@ struct CacheSettingsView: View {
                 Text(String(localized: "Cached message rows, SubAgent activity and attachment previews."))
             }
 
-            Section("Cache limit") {
+            Section {
                 ForEach(LocalCacheLimit.allCases) { option in
                     Button {
                         choose(option)
@@ -57,8 +57,21 @@ struct CacheSettingsView: View {
                     }
                     .accessibilityAddTraits(option == limit ? .isSelected : [])
                 }
+            } header: {
+                Text(String(localized: "Cache limit"))
             } footer: {
                 Text(String(localized: "Fixed sessions are never cleared. Unlimited still respects the device's free space."))
+            }
+
+            Section {
+                Toggle(isOn: Binding(
+                    get: { LocalTimelineStore.appEnabled },
+                    set: { LocalTimelineStore.appEnabled = $0 }
+                )) {
+                    Label(String(localized: "Local transcript cache (Beta)"), systemImage: "cylinder.split.1x2")
+                }
+            } footer: {
+                Text(String(localized: "Takes effect on the next app launch. Turn off to fall back to the JSON archive."))
             }
 
             Section {

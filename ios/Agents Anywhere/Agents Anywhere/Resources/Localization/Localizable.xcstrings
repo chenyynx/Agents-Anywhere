@@ -19203,6 +19203,40 @@
           }
         }
       }
+    },
+    "Local transcript cache (Beta)": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local transcript cache (Beta)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本地正文缓存（Beta）"
+          }
+        }
+      }
+    },
+    "Takes effect on the next app launch. Turn off to fall back to the JSON archive.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Takes effect on the next app launch. Turn off to fall back to the JSON archive."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下次启动生效。关闭后回到 JSON 归档路径。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

@@ -13,7 +13,7 @@ struct SessionChatView: View, Equatable {
     @State private var sheet: SessionSheet?
     @State private var expandedNoticeID: String?
 #if AA_TIMELINE_PROBE
-    @State private var diagnosticsPresented = false
+    @State private var diagnosticsHUDVisible = false
 #endif
     /// Shared app-level loader for the instant image viewer: one disk cache and
     /// one in-flight table per signed-in session (owned by V2ClientServices),
@@ -58,6 +58,22 @@ struct SessionChatView: View, Equatable {
         model.isOpeningReady && model.timeline.rows.isEmpty && !model.session.canLoadOlder
             && model.timeline.pendingMessages.isEmpty && model.session.sendQueue.isEmpty
     }
+
+#if AA_TIMELINE_PROBE
+    /// Live values the probe store cannot read on its own. Reading the
+    /// session here also makes the HUD refresh when pending/window state
+    /// changes.
+    private var diagnosticsContext: DiagnosticsContext {
+        DiagnosticsContext(
+            sessionID: session.id,
+            sessionTitle: session.metadata?.title,
+            runtimeStatus: session.runtime.state?.status.rawValue,
+            pendingCount: session.pendingMessages.count,
+            hasOlder: session.hasOlderItems || session.localOlderAvailable,
+            hasNewer: session.hasNewerItems,
+            historyPaging: session.isLoadingHistory)
+    }
+#endif
 
     /// The timeline branch lives in its own method for the same reason the
     /// dock does: adding the second initializer inline pushes the enclosing
@@ -301,8 +317,8 @@ struct SessionChatView: View, Equatable {
                     Button(String(localized: "复制会话 ID"), systemImage: "number") { UIPasteboard.general.string = session.id }
 #if AA_TIMELINE_PROBE
                     Divider()
-                    Button(String(localized: "诊断与日志"), systemImage: "stethoscope") {
-                        diagnosticsPresented = true
+                    Button(String(localized: "诊断浮窗"), systemImage: "waveform.path.ecg") {
+                        diagnosticsHUDVisible.toggle()
                     }
 #endif
                 } label: { AppSymbol("ellipsis") }
@@ -357,15 +373,9 @@ struct SessionChatView: View, Equatable {
             sheetContent(for: destination)
         }
 #if AA_TIMELINE_PROBE
-        .sheet(isPresented: $diagnosticsPresented) {
-            DiagnosticsPanel(context: DiagnosticsContext(
-                sessionID: session.id,
-                sessionTitle: session.metadata?.title,
-                runtimeStatus: session.runtime.state?.status.rawValue,
-                pendingCount: session.pendingMessages.count,
-                hasOlder: session.hasOlderItems || session.localOlderAvailable,
-                hasNewer: session.hasNewerItems,
-                historyPaging: session.isLoadingHistory))
+        .overlay {
+            DiagnosticsHUD(context: diagnosticsContext,
+                           isVisible: $diagnosticsHUDVisible)
         }
 #endif
         .environment(\.openURL, OpenURLAction { url in

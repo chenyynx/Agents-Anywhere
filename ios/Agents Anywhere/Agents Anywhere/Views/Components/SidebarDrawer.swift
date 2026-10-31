@@ -6,16 +6,17 @@ import UIKit
 import AppKit
 #endif
 
-#if AA_TIMELINE_PROBE
-/// Probe-only test of the official drawer's frame-rate request. The official
-/// keyframe animation sets `preferredFrameRateRange` to the screen maximum
-/// (120Hz on ProMotion); AA's SwiftUI spring measures 16.7ms (60Hz) on every
-/// transition. A display link asking for the maximum keeps the display at
-/// that rate for the transition; the probe's `period` field then shows
-/// whether the mechanism works. Not product code yet.
+#if canImport(UIKit)
+/// Requests the screen's maximum refresh rate while the drawer moves.
+/// The official drawer animates its card with a keyframe animation whose
+/// `preferredFrameRateRange` is the screen maximum (120Hz on ProMotion);
+/// AA's SwiftUI spring otherwise settles at 60Hz (device probe: every
+/// transition measured 16.7ms). Keeping a display link alive for the
+/// transition raises the display to the maximum, and the probe build's
+/// `period` field measures it (8.3ms on ProMotion, pp 2026-10-31).
 @MainActor
-final class SidebarDrawerRefreshProbe {
-    static let shared = SidebarDrawerRefreshProbe()
+final class SidebarDrawerRefresh {
+    static let shared = SidebarDrawerRefresh()
     private var link: CADisplayLink?
 
     func start() {
@@ -33,6 +34,7 @@ final class SidebarDrawerRefreshProbe {
         link = nil
     }
 
+    /// The link only requests the rate; its callback has nothing to do.
     @objc private func tick(_ link: CADisplayLink) {}
 }
 #endif
@@ -344,8 +346,8 @@ private struct SidebarDrawerInteractive<
         // weight/intensity are unpublished (CANONICAL/11-motion-haptics.md
         // §2.5), so passing light+1 is a different feedback.
         .sensoryFeedback(.impact, trigger: feedbackTrigger)
-        #if AA_TIMELINE_PROBE
-        .onDisappear { SidebarDrawerRefreshProbe.shared.stop() }
+        #if canImport(UIKit)
+        .onDisappear { SidebarDrawerRefresh.shared.stop() }
         #endif
     }
 
@@ -358,7 +360,9 @@ private struct SidebarDrawerInteractive<
         dragStartProgress = motion.progress
         #if AA_TIMELINE_PROBE
         TimelineProbeStore.shared.noteDrawerIntent("drag")
-        SidebarDrawerRefreshProbe.shared.start()
+        #endif
+        #if canImport(UIKit)
+        SidebarDrawerRefresh.shared.start()
         #endif
     }
 
@@ -535,8 +539,8 @@ private struct SidebarDrawerInteractive<
         animationGeneration &+= 1
         let generation = animationGeneration
         isAnimating = true
-        #if AA_TIMELINE_PROBE
-        SidebarDrawerRefreshProbe.shared.start()
+        #if canImport(UIKit)
+        SidebarDrawerRefresh.shared.start()
         #endif
 
         if shouldProvideFeedback {
@@ -545,8 +549,8 @@ private struct SidebarDrawerInteractive<
 
         let completion = {
             guard generation == animationGeneration else { return }
-            #if AA_TIMELINE_PROBE
-            SidebarDrawerRefreshProbe.shared.stop()
+            #if canImport(UIKit)
+            SidebarDrawerRefresh.shared.stop()
             #endif
 
             isAnimating = false

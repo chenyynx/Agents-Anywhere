@@ -112,6 +112,11 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         /// re-key source that does not come from the row's own content.
         let changedKeyCount: Int
         let changedKeySample: [String]
+        /// Which signature component moved for the keys above (`rows`,
+        /// `reveal`, `turnAction`, …). The revision is only a hash; without
+        /// this the report can name the row that re-keyed but not the input
+        /// that forced the reconfigure and re-measure.
+        let keyDiffSample: [String]
         /// Top-level items this apply inserted/removed. A status/step row
         /// appearing and disappearing around a reply start shows up here by
         /// id, which the item count alone cannot name.
@@ -223,6 +228,9 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     /// `contentRevision` per item at the previous apply, for the apply-line
     /// re-key accounting.
     private var lastApplyRevisions: [String: Int] = [:]
+    /// Full signature per item at the previous apply. The revision says a row
+    /// re-keyed; this says which input (rows, reveal, turn action, …) moved.
+    private var lastApplySignatures: [String: TimelineContentSignature] = [:]
     /// Recent viewport samples for the offset findings (10 Hz, capped).
     private var viewSamples: [ViewSample] = []
     /// Per-operation durations; the counters keep only totals, the findings
@@ -303,6 +311,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         lastRecorded.removeAll()
         lastWriter.removeAll()
         lastApplyRevisions.removeAll()
+        lastApplySignatures.removeAll()
         lastApplyItemIDs.removeAll()
         lastOffset = nil
         lastContentSamples.removeAll()
@@ -330,6 +339,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         lastRecorded.removeAll()
         lastWriter.removeAll()
         lastApplyRevisions.removeAll()
+        lastApplySignatures.removeAll()
         lastOffset = nil
         lastContentSamples.removeAll()
         recentTouches.removeAll()
@@ -453,18 +463,29 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         // the result; a static row re-keying here is a defect the C3 gate
         // cannot see and the device report needs named.
         var changedKeys: [String] = []
+        var keyDiffs: [String] = []
         if let content = controller.content {
             var revisions: [String: Int] = [:]
+            var signatures: [String: TimelineContentSignature] = [:]
             revisions.reserveCapacity(items.count)
+            signatures.reserveCapacity(items.count)
             for item in items {
-                revisions[item.itemID] = content.contentSignature(for: item).contentRevision
+                let signature = content.contentSignature(for: item)
+                revisions[item.itemID] = signature.contentRevision
+                signatures[item.itemID] = signature
             }
             changedKeys = revisions.compactMap { itemID, revision in
                 guard let previous = lastApplyRevisions[itemID], previous != revision
                 else { return nil }
                 return itemID
             }.sorted()
+            keyDiffs = changedKeys.compactMap { itemID in
+                guard let previous = lastApplySignatures[itemID],
+                      let current = signatures[itemID] else { return nil }
+                return contentChangeLabel(itemID: itemID, from: previous, to: current)
+            }
             lastApplyRevisions = revisions
+            lastApplySignatures = signatures
         }
         counters["keyChanges", default: 0] += changedKeys.count
         let currentIDs = Set(items.map(\.itemID))
@@ -479,11 +500,53 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                                  estimateRows: pendingMeasurements,
                                  changedKeyCount: changedKeys.count,
                                  changedKeySample: Array(changedKeys.prefix(8)),
+                                 keyDiffSample: Array(keyDiffs.prefix(6)),
                                  addedItemIDs: Array(addedIDs.prefix(4)),
                                  removedItemIDs: Array(removedIDs.prefix(4)))
         applies.append(record)
         if applies.count > Self.maxApplies { applies.removeFirst(applies.count - Self.maxApplies) }
         revision &+= 1
+    }
+
+    /// Name the signature components that differ between two applies. The
+    /// revision is only a hash: a row re-keying because its wire revision
+    /// changed looks identical to one re-keying because a reveal clock
+    /// settled, and the fix is different for each.
+    private func contentChangeLabel(itemID: String,
+                                    from previous: TimelineContentSignature,
+                                    to current: TimelineContentSignature) -> String {
+        var parts: [String] = []
+        switch (previous, current) {
+        case (.group(let old), .group(let new)):
+            if old.rows != new.rows { parts.append("rows") }
+            if old.disclosureExpanded != new.disclosureExpanded { parts.append("disclose") }
+            if old.expandedRowIDs != new.expandedRowIDs { parts.append("rowFold") }
+            if old.revealingRowIDs != new.revealingRowIDs { parts.append("reveal") }
+            if old.inlineNotices != new.inlineNotices { parts.append("notice") }
+            if old.attachments != new.attachments { parts.append("attach") }
+            if old.turnAction != new.turnAction { parts.append("turnAction") }
+            if old.turnSuppression != new.turnSuppression { parts.append("suppress") }
+            if old.contextRevision != new.contextRevision { parts.append("context") }
+            if old.hasActionBar != new.hasActionBar { parts.append("actionBar") }
+        default:
+            let oldKind = signatureKind(previous)
+            let newKind = signatureKind(current)
+            parts.append(oldKind == newKind ? "\(newKind)*" : "\(oldKind)->\(newKind)")
+        }
+        if parts.isEmpty { parts.append("hashOnly") }
+        return "\(itemID):\(parts.joined(separator: "+"))"
+    }
+
+    private func signatureKind(_ signature: TimelineContentSignature) -> String {
+        switch signature {
+        case .group: return "group"
+        case .olderPrompt: return "older"
+        case .latestPrompt: return "latest"
+        case .workingStatus: return "working"
+        case .notice: return "notice"
+        case .pending: return "pending"
+        case .tail: return "tail"
+        }
     }
 
     func noteMeasureDuration(_ seconds: TimeInterval) {
@@ -1481,13 +1544,15 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         for apply in applies.suffix(14).reversed() {
             let keys = apply.changedKeySample.isEmpty
                 ? "-" : apply.changedKeySample.joined(separator: ",")
+            let diffs = apply.keyDiffSample.isEmpty
+                ? "" : " diffs=[\(apply.keyDiffSample.joined(separator: ";"))]"
             let itemDelta = apply.addedItemIDs.isEmpty && apply.removedItemIDs.isEmpty
                 ? "" : " added=[\(apply.addedItemIDs.joined(separator: ","))]"
                     + " removed=[\(apply.removedItemIDs.joined(separator: ","))]"
             lines.append("A t=\(elapsed(apply.at)) items=\(apply.itemCount) changed=\(apply.changedCount) "
                 + "anim=\(apply.animating ? 1 : 0) contentH=\(f(apply.contentHeight)) "
                 + "off=\(f(apply.offset)) visible=\(apply.visibleCount) estimates=\(apply.estimateRows) "
-                + "keys=\(apply.changedKeyCount)[\(keys)]\(itemDelta)")
+                + "keys=\(apply.changedKeyCount)[\(keys)]\(diffs)\(itemDelta)")
         }
 
         lines.append("--- HISTORY (oldest first) ---")

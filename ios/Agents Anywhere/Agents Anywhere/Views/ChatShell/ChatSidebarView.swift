@@ -133,9 +133,9 @@ struct ChatSidebarView: View {
                     account: account,
                     onNewSession: onNewSession
                 )
-                    .padding(.leading, safeAreaInsets.leading + 18)
-                    .padding(.trailing, safeAreaInsets.trailing + 18)
-                    .padding(.bottom, max(safeAreaInsets.bottom, 12))
+                    .padding(.leading, safeAreaInsets.leading + 28)
+                    .padding(.trailing, safeAreaInsets.trailing + 28)
+                    .padding(.bottom, 28)
             }
         }
         .sheet(isPresented: $showsArchives) {
@@ -201,7 +201,7 @@ struct ChatSidebarHeaderView: View {
     var body: some View {
         AAWordmark(fontSize: 24)
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-            .padding(.horizontal, 18)
+            .padding(.horizontal, 20)
             .containerCornerOffset(.horizontal, sizeToFit: true)
     }
 }
@@ -501,30 +501,55 @@ private struct ChatSidebarBottomControls: View {
     @State private var isShowingSettings = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            AppGlassButton(
-                String(localized: "New session"),
-                systemImage: "square.and.pencil",
-                style: .prominent,
-                maxWidth: nil,
-                action: onNewSession
-            )
-
-            Spacer(minLength: 12)
-
+        // Official bottom bar: avatar leading, New Chat pill trailing, both
+        // 28pt from the sidebar edges and 28pt above the screen bottom
+        // (screenshot: avatar 48pt at x=28, pill 110×47 ending at x=291 on a
+        // 320pt sidebar).
+        HStack(spacing: 12) {
             Button {
                 isShowingSettings = true
             } label: {
                 ChatSidebarAvatar(account: account)
             }
-            .buttonStyle(.glass)
+            .buttonStyle(.plain)
             .buttonBorderShape(.circle)
             .accessibilityLabel(String(localized: "Account"))
+
+            Spacer(minLength: 12)
+
+            Button(action: onNewSession) {
+                HStack(spacing: 8) {
+                    AppSymbol("plus", size: 16)
+                    Text(String(localized: "New session"))
+                        .font(.body.weight(.semibold))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(pillForeground)
+                .padding(.horizontal, 18)
+                .frame(height: 47)
+                .background(pillBackground, in: .capsule)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(String(localized: "New session"))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .sheet(isPresented: $isShowingSettings) {
             AccountSettingsSheet(appState: appState)
         }
+    }
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// Official pill fill is #2B2B28 on light; the dark value is not closed
+    /// yet, so the inverse (near-white pill, dark label) is used there.
+    private var pillBackground: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.92)
+            : Color(red: 43.0 / 255.0, green: 43.0 / 255.0, blue: 40.0 / 255.0)
+    }
+
+    private var pillForeground: Color {
+        colorScheme == .dark ? Color.black : Color.white
     }
 }
 
@@ -535,7 +560,7 @@ private struct ChatSidebarAvatar: View {
         AccountAvatarView(
             displayName: account.displayName,
             source: account.avatarSource,
-            size: 38
+            size: 48
         )
     }
 }

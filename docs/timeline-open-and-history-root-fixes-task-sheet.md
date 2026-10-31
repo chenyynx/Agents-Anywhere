@@ -401,8 +401,8 @@
 - `TimelineTurnActions.build` 的 settled 分支只在 `contentAfterSettled` 时发布；「最后一段已完成、回合仍在收尾」被压住，必须等 turn_end 才 commit。
 
 **修改**
-- `TimelineTurnActions.build`：已完成段的页脚不再要求 `contentAfterSettled`；回合运行中只要最后 host 已 done 就发布。工具/后续文本仍沿用 R17 的「留在已完成 host」，turn 结束再 commit 最终 host。
-- 测试：`TimelineTurnActionsTests.aFinishedReplyGetsItsFooterBeforeTheTurnReportsIdle`（done 回复在 running 时就有页脚；streaming 状态仍无）。
+- `TimelineTurnActions.build`：回合运行中，最后 host 已完成时提前发布页脚，但只限 **host 自身含助手正文**（`settledHostHasReply`）或其后已有新内容（`contentAfterSettled`，R17 的工具场景）。纯工具/变更回合仍等 turn_end（CI 790 test 抓到并修正）。
+- 测试：`TimelineTurnActionsTests.aFinishedReplyGetsItsFooterBeforeTheTurnReportsIdle`（done 回复在 running 时就有页脚；streaming 状态仍无）；`SessionEnrichmentTests.toolOnlyTurnsGetACompletedReviewFooterAndStreamingDoesNot` 保持红绿守护。
 
 **状态**
 - 代码与测试已提交；本地 Swift 6.0.3 低于包要求的 6.2.0，单测由 CI 跑。待真机：回复完成后页脚随消息完成立即出现，不再等 1-2 秒；工具调用期间不回退（R17）。

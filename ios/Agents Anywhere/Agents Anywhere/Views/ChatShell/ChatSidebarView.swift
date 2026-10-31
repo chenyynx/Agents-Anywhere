@@ -211,9 +211,8 @@ private struct ChatSidebarPairDeviceButton: View {
 
     var body: some View {
         Button(action: action) {
-            Label(String(localized: "Pair device"), appSymbol: "link")
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.secondary)
+            Label(String(localized: "Pair device"), appSymbol: "plus")
+                .font(.body.weight(.semibold))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 10)
                 .frame(minHeight: 46)

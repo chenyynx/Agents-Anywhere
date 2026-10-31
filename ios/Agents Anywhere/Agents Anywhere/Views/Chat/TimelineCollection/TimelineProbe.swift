@@ -239,13 +239,42 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         }
         self.controller = controller
         self.adapter = adapter
+        // A new controller (or a fresh attach after detach) starts a new
+        // measured window. Records from the previous window carry timestamps
+        // relative to a different run start and used to surface as `t=0.00`
+        // noise (and false findings) in the report.
+        beginRunWindow()
         if link == nil {
-            runStartedAt = CACurrentMediaTime()
-            lastHeights.removeAll()
             let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
             link.add(to: .main, forMode: .common)
             self.link = link
         }
+    }
+
+    /// Start a new measured window: counters and every sampled record are
+    /// scoped to the current attach. Marks stay (explicit user actions).
+    private func beginRunWindow() {
+        counters.removeAll()
+        changes.removeAll()
+        issues.removeAll()
+        applies.removeAll()
+        historyEvents.removeAll()
+        viewSamples.removeAll()
+        applyDurations.removeAll()
+        measureDurations.removeAll()
+        frameHitches.removeAll()
+        lastHeights.removeAll()
+        lastRecorded.removeAll()
+        lastWriter.removeAll()
+        lastApplyRevisions.removeAll()
+        lastApplyItemIDs.removeAll()
+        lastOffset = nil
+        lastContentSamples.removeAll()
+        recentTouches.removeAll()
+        frameTimestamps.removeAll()
+        lastFrameRateIndex = 0
+        lastSlowFrameStack.removeAll()
+        runStartedAt = CACurrentMediaTime()
     }
 
     func detach() {
@@ -266,29 +295,10 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     }
 
     func reset() {
-        counters.removeAll()
-        changes.removeAll()
-        issues.removeAll()
-        applies.removeAll()
-        historyEvents.removeAll()
-        lastHeights.removeAll()
-        lastRecorded.removeAll()
-        lastWriter.removeAll()
-        lastApplyRevisions.removeAll()
-        lastOffset = nil
-        lastContentSamples.removeAll()
-        recentTouches.removeAll()
-        frameTimestamps.removeAll()
-        lastFrameRateIndex = 0
-        lastSlowFrameStack.removeAll()
-        viewSamples.removeAll()
-        applyDurations.removeAll()
-        measureDurations.removeAll()
-        frameHitches.removeAll()
+        beginRunWindow()
         // Marks are explicit user actions; clearing samples must not drop
         // them, otherwise "打点 then clear" loses the capture.
         lastClearedAt = Date()
-        runStartedAt = CACurrentMediaTime()
         revision &+= 1
     }
 

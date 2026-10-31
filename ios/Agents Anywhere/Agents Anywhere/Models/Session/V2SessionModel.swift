@@ -574,9 +574,10 @@ final class V2SessionModel: Identifiable {
     /// If the echo still never lands, fall back to the existing uncertain
     /// path instead of an endless spinner.
     private func watchEcho(for pending: V2PendingMessage) {
-        guard echoWatchdogs[pending.id] == nil else { return }
-        echoWatchdogs[pending.id] = Task { @MainActor [weak self, weak pending] in
-            defer { self?.echoWatchdogs[pending.id] = nil }
+        let pendingID = pending.id
+        guard echoWatchdogs[pendingID] == nil else { return }
+        echoWatchdogs[pendingID] = Task { @MainActor [weak self, weak pending] in
+            defer { self?.echoWatchdogs[pendingID] = nil }
             try? await Task.sleep(for: .seconds(30))
             guard !Task.isCancelled, let self, let pending, self.isValid,
                   self.pendingMessages.contains(where: { $0.id == pending.id }),

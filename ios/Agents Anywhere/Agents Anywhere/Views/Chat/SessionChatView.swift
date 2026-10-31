@@ -329,14 +329,13 @@ struct SessionChatView: View, Equatable {
             model.error = nil
             if !(await model.setTakeover(enabled)), let error = model.takeoverError { model.error = error }
         })
-        // The cue is driven by authoritative turn endings, not by the running
-        // flag's edge: an optimistic turn end (an accepted interrupt before
-        // its facts land) and any status no live read confirmed can no longer
-        // announce a completion the user never saw.
-        .completionFeedback(trigger: session.runtime.authoritativeTurnEnds) { previous, current in
-            current > previous && model.isOpeningReady && session.runtime.isFresh
-                && session.runtime.state?.status == .idle
-        }
+        // The reply's completion cue is the official TurnStatusView haptic in
+        // TimelineChatTimelineView (`writing -> idle` light impact). The
+        // shared completionFeedback pulse also fired here when the runtime
+        // reported idle, which is 1–2 s after the message boundary; that
+        // arrived as a second, late, stronger vibration (pp 2026-10-31). The
+        // New Session welcome keeps its own reveal cue.
+
         .sidebarDrawerSettledTask(id: hasStartedLoading) { settled in
             guard !hasStartedLoading, settled else { return }
             // Show feedback immediately, but let the drawer's completed

@@ -32,7 +32,9 @@ struct ChatSidebarView: View {
     /// Flat list only: one line per session, without the project · device line.
     @AppStorage(ProjectSidebarPreferences.compactSessionListKey) private var compactSessionList = false
 
-    private static let contentInset: CGFloat = 14
+    /// Official sidebar content inset: 12pt (screenshot: selection block
+    /// starts 12pt from the sidebar edge).
+    private static let contentInset: CGFloat = 12
 
     var body: some View {
         ScrollView {
@@ -263,7 +265,7 @@ private struct ChatSidebarSessionSection: View {
     let onCopyId: (V2SessionID) -> Void
 
     var body: some View {
-        LazyVStack(alignment: .leading, spacing: 4) {
+        LazyVStack(alignment: .leading, spacing: 2) {
             if let title { ChatSidebarSectionLabel(title: title) }
 
             if isLoading {
@@ -365,7 +367,7 @@ struct ChatSidebarSessionRow: View {
     var body: some View {
         Button(action: onOpen) {
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 8) {
+                HStack(spacing: 16) {
                     SessionAgentIcon(runtime: session.runtime, runtimeType: session.runtimeType)
                         .foregroundStyle(.primary)
                     Text(session.title ?? String(localized: "Untitled session"))
@@ -379,17 +381,19 @@ struct ChatSidebarSessionRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             // Nested rows shift by at most half of the project's folder icon.
-            .padding(.leading, inset ? 19 : 10)
-            .padding(.trailing, 10)
+            .padding(.leading, inset ? 24 : 15)
+            .padding(.trailing, 12)
             .padding(.vertical, context == nil ? 0 : 8)
-            .frame(minHeight: 42)
+            // Official session row: 48pt tall, 50pt pitch with the 2pt stack
+            // spacing above; icon leading 27pt = content inset 12 + 15.
+            .frame(minHeight: 48)
             // Selection is an inset rounded block: the row already sits inside
             // the sidebar's content inset, so filling the row frame keeps the
             // highlight clear of both edges without any bleed.
             .background {
                 if isSelected {
                     RoundedRectangle(cornerRadius: Self.selectionCornerRadius, style: .continuous)
-                        .fill(AppTheme.sidebarSelectionFill(colorScheme))
+                        .fill(AppTheme.sidebarRowSelectionFill(colorScheme))
                 }
             }
             .overlay(alignment: .bottom) {

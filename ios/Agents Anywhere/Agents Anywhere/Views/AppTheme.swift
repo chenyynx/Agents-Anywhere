@@ -53,4 +53,13 @@ enum AppTheme {
     static func sidebarSelectionFill(_ scheme: ColorScheme) -> Color {
         scheme == .dark ? Color.white.opacity(0.20) : Color.black.opacity(0.10)
     }
+
+    /// Official sidebar row selection (screenshot: #E7E6E1 on the sidebar
+    /// surface). Kept separate from the generic chip selection so device
+    /// filters keep their existing tint.
+    static func sidebarRowSelectionFill(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color.white.opacity(0.20)
+            : Color(red: 231.0 / 255.0, green: 230.0 / 255.0, blue: 225.0 / 255.0)
+    }
 }

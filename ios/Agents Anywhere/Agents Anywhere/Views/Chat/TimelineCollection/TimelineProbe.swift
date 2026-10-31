@@ -157,6 +157,18 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         let screenshot: UIImage?
     }
 
+    /// One drawer open/close/drag. The collection view is not scrolling
+    /// during the transition, so the frame sampler needs its own window or
+    /// the sidebar's jank never lands in the report (pp 2026-10-31).
+    struct DrawerTransition {
+        let startedAt: TimeInterval
+        let endedAt: TimeInterval
+        let frames: Int
+        let hitches: Int
+        let maxGapMs: Int
+        var durationMs: Int { Int(((endedAt - startedAt) * 1000).rounded()) }
+    }
+
     @Published private(set) var revision = 0
     private(set) var counters: [String: Int] = [:]
     private(set) var changes: [HeightChange] = []
@@ -209,13 +221,22 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     private var measureDurations: [(at: TimeInterval, ms: Int)] = []
     /// Display-link gaps that counted as hitches while the reader was
     /// scrolling, so a finding can name when the worst frame happened.
-    private var frameHitches: [(at: TimeInterval, ms: Int)] = []
+    private var frameHitches: [(at: TimeInterval, ms: Int, drawer: Bool)] = []
     /// User-pressed markers, newest last. Screenshots are memory-only; the
     /// export writes the newest three next to the report.
     private(set) var markers: [Mark] = []
     /// The last explicit clear, shown in the report so old counters are not
     /// mistaken for current ones.
     private(set) var lastClearedAt: Date?
+    /// Drawer motion window. The drawer tells the store when a drag or
+    /// open/close animation starts and ends; frame sampling counts gaps while
+    /// it is on.
+    private(set) var drawerTransitioning = false
+    private(set) var drawerTransitions: [DrawerTransition] = []
+    private var drawerStartedAt: TimeInterval?
+    private var drawerFrames = 0
+    private var drawerHitches = 0
+    private var drawerMaxGapMs = 0
 
     private static let maxChanges = 160
     private static let maxIssues = 100
@@ -274,6 +295,12 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         frameTimestamps.removeAll()
         lastFrameRateIndex = 0
         lastSlowFrameStack.removeAll()
+        drawerTransitioning = false
+        drawerTransitions.removeAll()
+        drawerStartedAt = nil
+        drawerFrames = 0
+        drawerHitches = 0
+        drawerMaxGapMs = 0
         runStartedAt = CACurrentMediaTime()
     }
 
@@ -331,9 +358,10 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         // display-link intervals. A height correction can also look like
         // jitter; these counters separate the two.
         if lastTickAt > 0, let view = controller?.collectionView,
-           view.isTracking || view.isDecelerating {
+           view.isTracking || view.isDecelerating || drawerTransitioning {
             let ms = (now - lastTickAt) * 1000
             counters["frameSamples", default: 0] += 1
+            if drawerTransitioning { drawerFrames += 1 }
             counters["maxFrameMs", default: 0] =
                 max(counters["maxFrameMs"] ?? 0, Int(ms.rounded()))
             if ms > 20 {
@@ -837,6 +865,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         // count while the list is under the reader's hand or coasting.
         let view = controller?.collectionView
         let browsing = view?.isTracking == true || view?.isDecelerating == true
+            || drawerTransitioning
         let first = max(1, min(lastFrameRateIndex, frameTimestamps.count - 1))
         var maxGap: TimeInterval = 0
         var hitchCount = 0
@@ -845,8 +874,13 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             maxGap = max(maxGap, gap)
             if browsing, gap > 0.033 {
                 hitchCount += 1
-                frameHitches.append((at: frameTimestamps[index],
-                                     ms: Int((gap * 1000).rounded())))
+                let ms = Int((gap * 1000).rounded())
+                if drawerTransitioning {
+                    drawerHitches += 1
+                    drawerMaxGapMs = max(drawerMaxGapMs, ms)
+                }
+                frameHitches.append((at: frameTimestamps[index], ms: ms,
+                                     drawer: drawerTransitioning))
                 if frameHitches.count > Self.maxHitches {
                     frameHitches.removeFirst(frameHitches.count - Self.maxHitches)
                 }
@@ -1057,12 +1091,24 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                                   detail: "measure \(slowest.ms)ms @t=\(elapsed(slowest.at))"))
         }
 
-        // 5. Scroll hitches: >33 ms while the reader is dragging/coasting.
+        // 5. Hitches while the reader is dragging/coasting or the drawer is
+        //    moving. The drawer is not a scroll phase, so it has its own
+        //    window in the sampler.
         if let worst = frameHitches.max(by: { $0.ms < $1.ms }) {
+            let drawerCount = frameHitches.filter { $0.drawer }.count
+            let scrollCount = frameHitches.count - drawerCount
             result.append(Finding(at: worst.at,
                                   severity: frameHitches.count >= 5 ? 2 : 1,
                                   kind: "frame_hitch",
-                                  detail: ">33ms \(frameHitches.count) 次，最大 \(worst.ms)ms @t=\(elapsed(worst.at))"))
+                                  detail: ">33ms \(frameHitches.count) 次（滚动 \(scrollCount) / 抽屉 \(drawerCount)），"
+                                      + "最大 \(worst.ms)ms @t=\(elapsed(worst.at))"))
+        }
+        if let transition = drawerTransitions.last, transition.hitches > 0 {
+            result.append(Finding(at: transition.endedAt,
+                                  severity: transition.maxGapMs >= 50 ? 2 : 1,
+                                  kind: "drawer_hitch",
+                                  detail: "抽屉滑动 \(transition.durationMs)ms，"
+                                      + ">33ms \(transition.hitches) 次，最大 \(transition.maxGapMs)ms"))
         }
 
         // 6. A viewport sample with content but no visible cell is a blank
@@ -1134,6 +1180,65 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         }
         revision &+= 1
         return mark
+    }
+
+    /// Remove a mistaken capture. Export only writes the markers that remain.
+    func removeMark(at index: Int) {
+        guard markers.indices.contains(index) else { return }
+        markers.remove(at: index)
+        revision &+= 1
+    }
+
+    func clearMarks() {
+        guard !markers.isEmpty else { return }
+        markers.removeAll()
+        revision &+= 1
+    }
+
+    // MARK: - Drawer motion
+
+    /// The drawer publishes its motion window. The collection view is not
+    /// scrolling during a drag, so without this signal the sidebar's dropped
+    /// frames never reach the report (pp 2026-10-31).
+    func noteDrawerTransition(_ active: Bool) {
+        guard active != drawerTransitioning else { return }
+        let now = CACurrentMediaTime()
+        drawerTransitioning = active
+        if active {
+            drawerStartedAt = now
+            drawerFrames = 0
+            drawerHitches = 0
+            drawerMaxGapMs = 0
+            noteHistory("drawer-start")
+        } else {
+            let startedAt = drawerStartedAt ?? now
+            let transition = DrawerTransition(startedAt: startedAt, endedAt: now,
+                                              frames: drawerFrames, hitches: drawerHitches,
+                                              maxGapMs: drawerMaxGapMs)
+            drawerTransitions.append(transition)
+            if drawerTransitions.count > 6 {
+                drawerTransitions.removeFirst(drawerTransitions.count - 6)
+            }
+            drawerStartedAt = nil
+            noteHistory("drawer-end ms=\(transition.durationMs) frames=\(transition.frames) "
+                + "hitches=\(transition.hitches) maxGap=\(transition.maxGapMs)")
+            revision &+= 1
+        }
+    }
+
+    struct DrawerSummary {
+        let count: Int
+        let durationMs: Int
+        let hitches: Int
+        let maxGapMs: Int
+    }
+
+    func drawerSummary() -> DrawerSummary? {
+        guard let last = drawerTransitions.last else { return nil }
+        return DrawerSummary(count: drawerTransitions.count,
+                             durationMs: last.durationMs,
+                             hitches: last.hitches,
+                             maxGapMs: last.maxGapMs)
     }
 
     /// The panel is a sheet above the list; the list keeps its last rendered
@@ -1250,6 +1355,15 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             for mark in markers {
                 let note = mark.note.isEmpty ? "" : " \(mark.note)"
                 lines.append("M \(Self.absolute(mark.at)) CST\(note)")
+            }
+        }
+
+        if !drawerTransitions.isEmpty {
+            lines.append("--- DRAWER (oldest first) ---")
+            for transition in drawerTransitions {
+                lines.append("D t=\(elapsed(transition.startedAt)) dur=\(transition.durationMs)ms "
+                    + "frames=\(transition.frames) hitches=\(transition.hitches) "
+                    + "maxGap=\(transition.maxGapMs)ms")
             }
         }
 

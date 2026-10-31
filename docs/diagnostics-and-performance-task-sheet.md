@@ -50,7 +50,7 @@
 
 ### 1.4 打点 + 截图
 - 点「打点」：往时间轴插一行 `MARK <绝对时间>`，并对当前时间线页截图（`drawHierarchy(afterScreenUpdates:)`）。
-- 截图与报告一起导出；面板里显示最近 3 张缩略图。
+- 截图与报告一起导出；面板里显示最近 3 张缩略图，每张右上角可删除，更多菜单有「清空打点」。
 - 目的：解决「pp 说刚刚，我不知道是哪个 t」和「视觉类 bug 日志看不出来」。
 
 ### 1.5 导出
@@ -58,7 +58,7 @@
 - 进阶（后续）：一键把报告 + 截图作为附件发到当前会话（复用现有附件上传），省掉复制粘贴。
 
 ### 1.6 性能仪表
-- 帧采样改为 probe 构建常开（不再只在拖动时），240 帧环，按上下文打标签：idle / browsing / streaming / drawer。
+- 帧采样覆盖拖动/减速/抽屉过渡；抽屉由 `SidebarDrawer` 发布过渡窗口（它不是 collection view 的滚动相位），单独统计时长/帧数/hitch/最大帧，并出 `drawer_hitch` finding。
 - hitch 阈值 33ms（超过记一次，含主线程栈）；同时保留 20ms 慢帧统计。
 - 场景记录：开始/结束，输出 p50/p95/p99/max、hitch 数、apply/measure 分布、Mark 时间点。
 - 关键路径加 `os_signpost`：apply、layout prepare、height measure、markdown 解析、抽屉 motion。

@@ -309,6 +309,15 @@ private struct SidebarDrawerInteractive<
         .environment(\.sidebarDrawerObscuresDetail, isOpen || motion.restingProgress > 0)
         .environment(\.sidebarDrawerIsTransitioning, isAnimating || dragStartProgress != nil
             || motion.restingProgress != (isOpen ? 1 : 0))
+#if AA_TIMELINE_PROBE
+        // The drawer's motion is not a collection-view scroll phase; tell the
+        // probe explicitly or the sidebar's dropped frames never reach the
+        // report (pp 2026-10-31: drawer jank was not recorded).
+        .onChange(of: isAnimating || dragStartProgress != nil
+                  || motion.restingProgress != (isOpen ? 1 : 0), initial: true) { _, active in
+            TimelineProbeStore.shared.noteDrawerTransition(active)
+        }
+#endif
         // [E] The official drawer uses the parameterless `.impact`; its
         // weight/intensity are unpublished (CANONICAL/11-motion-haptics.md
         // §2.5), so passing light+1 is a different feedback.

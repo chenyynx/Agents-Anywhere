@@ -386,21 +386,7 @@ private struct DiagnosticsDeck: View {
                     HStack(spacing: 10) {
                         ForEach(Array(store.markers.enumerated()), id: \.offset) { index, mark in
                             VStack(alignment: .leading, spacing: 5) {
-                                if let image = mark.screenshot {
-                                    Image(uiImage: image)
-                                        .resizable()
-                                        .scaledToFill()
-                                        .frame(width: 62, height: 112)
-                                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                                        .overlay {
-                                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                                .strokeBorder(ClaudeUI.hairline, lineWidth: 0.5)
-                                        }
-                                } else {
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .fill(ClaudeUI.ivory)
-                                        .frame(width: 62, height: 112)
-                                }
+                                markThumbnail(mark, index: index)
                                 Text("打点 \(index + 1)")
                                     .font(ClaudeUI.sans(10, .medium))
                                     .foregroundStyle(ClaudeUI.muted)
@@ -412,6 +398,39 @@ private struct DiagnosticsDeck: View {
                     }
                 }
             }
+        }
+    }
+
+    /// A mistaken capture must be removable; export only writes what remains.
+    private func markThumbnail(_ mark: TimelineProbeStore.Mark, index: Int) -> some View {
+        ZStack(alignment: .topTrailing) {
+            if let image = mark.screenshot {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 62, height: 112)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(ClaudeUI.hairline, lineWidth: 0.5)
+                    }
+            } else {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(ClaudeUI.ivory)
+                    .frame(width: 62, height: 112)
+            }
+            Button {
+                store.removeMark(at: index)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 20, height: 20)
+                    .background(Circle().fill(Color.black.opacity(0.55)))
+            }
+            .buttonStyle(.plain)
+            .padding(4)
+            .accessibilityLabel("删除这张打点")
         }
     }
 
@@ -514,6 +533,10 @@ private struct DiagnosticsDeck: View {
                     Button("复制报告", systemImage: "doc.on.doc") { store.copyReport() }
                     Button("清空采样", systemImage: "eraser") {
                         store.reset()
+                        markMessage = nil
+                    }
+                    Button("清空打点", systemImage: "trash") {
+                        store.clearMarks()
                         markMessage = nil
                     }
                     if let onHide {
@@ -621,6 +644,19 @@ private struct LiveMetricsView: View {
                     tile("行高测量", "\(metrics.measureMax)", unit: "ms",
                          detail: "\(metrics.measureCount) 次",
                          color: metrics.measureMax > 16 ? ClaudeUI.warning : ClaudeUI.success)
+                }
+                if let drawer = store.drawerSummary() {
+                    HStack(spacing: 10) {
+                        tile("抽屉时长", "\(drawer.durationMs)", unit: "ms",
+                             detail: "最近一次", color: ClaudeUI.muted)
+                        tile("抽屉卡顿", "\(drawer.hitches)", unit: "次",
+                             detail: "最大 \(drawer.maxGapMs)ms",
+                             color: drawer.hitches > 0 ? ClaudeUI.warning : ClaudeUI.success)
+                    }
+                } else {
+                    Text("抽屉滑动：还没有记录，开合侧栏会自动记一次")
+                        .font(ClaudeUI.sans(10))
+                        .foregroundStyle(ClaudeUI.muted)
                 }
                 ClaudeSparkline(values: metrics.gaps)
                     .frame(height: 52)

@@ -61,10 +61,6 @@ enum TimelineTurnActions {
         var settledEndGroupID: String?
         var settledReplies: [ChatTimelineRowModel] = []
         var settledChanges: [ChatTimelineRowModel] = []
-        /// The settled host is only sticky while the turn continues past it.
-        /// A turn whose last segment is already finished keeps the existing
-        /// rule: no footer until the turn itself ends.
-        var contentAfterSettled = false
 
         func hostsFooter(_ group: ChatTimelineGroup) -> Bool {
             guard footerHostEligible(group) else { return false }
@@ -89,7 +85,6 @@ enum TimelineTurnActions {
             }
             replies = []; changes = []; endGroupID = nil; turnOpen = false; hasActiveItems = false
             settledEndGroupID = nil; settledReplies = []; settledChanges = []
-            contentAfterSettled = false
         }
 
         for group in groups {
@@ -108,7 +103,6 @@ enum TimelineTurnActions {
             let fileChanges = group.rows.filter { $0.structure.isFileChange }
             if !messages.isEmpty || !fileChanges.isEmpty { turnOpen = true }
             guard turnOpen else { continue }
-            if settledEndGroupID != nil { contentAfterSettled = true }
             let hosts = hostsFooter(group)
             if hosts { endGroupID = group.id }
             replies.append(contentsOf: messages)
@@ -119,21 +113,23 @@ enum TimelineTurnActions {
                 settledEndGroupID = group.id
                 settledReplies = replies
                 settledChanges = changes
-                contentAfterSettled = false
             }
         }
         // The pending user bubble already starts the next turn, even before its
         // echo enters groups. A runtime "waiting" event belongs to that new turn.
         if (!suppressLatest || hasPendingUserMessage), !hasActiveItems {
             commit()
-        } else if let settledEndGroupID, contentAfterSettled,
-                  (!settledReplies.isEmpty || !settledChanges.isEmpty) {
-            // The turn is still running (or a tool is active), but an earlier
-            // segment already finished. Keep its footer where it is: the
-            // runtime status flaps between running and idle across tool steps,
-            // and the old commit path refused while a tool was active, so the
-            // footer flickered 146↔176 with every flap (device 2026-10-31
-            // 14:55). The footer moves to the final segment when the turn ends.
+        } else if let settledEndGroupID, (!settledReplies.isEmpty || !settledChanges.isEmpty) {
+            // The footer returns as soon as the last hosting segment is done,
+            // even while the runtime still reports the turn as running. The
+            // connector closes a message row on the message boundary, which
+            // lands before the CLI's turn result: waiting for idle made the
+            // footer appear one beat after the reply (device 2026-10-31
+            // 16:14: text final at t=390.74, footer at t=392.30). A tool or a
+            // new text segment that follows keeps the footer where it is; the
+            // turn end still commits the final host. Keeping it on the
+            // settled host also absorbs the runtime's running/idle flaps
+            // across tool steps (device 2026-10-31 14:55: 146↔176).
             actions[settledEndGroupID] = TimelineTurnAction(
                 replies: settledReplies, changes: settledChanges, startsMidTurn: startsMidTurn)
         }

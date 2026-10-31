@@ -19,13 +19,29 @@ import Testing
         #expect(actions["first"] == nil && actions["second"] == nil)
     }
 
-    @Test func activeLatestTurnHasNoFooterButPreviousCompletedTurnRetainsOne() throws {
-        let rows = try [row("user-1", role: "user"), row("reply-1", text: "Done"),
-            row("user-2", role: "user"), row("reply-2", text: "Working")]
-        let groups = TimelineGrouping.groups(rows, interactionTargets: [])
-        let active = TimelineTurnActions.build(groups: groups, suppressLatest: true)
-        #expect(active.count == 1 && active["reply-1"]?.copyText == "Done")
-        #expect(TimelineTurnActions.build(groups: groups, suppressLatest: false).count == 2)
+    /// A finished reply gets its footer before the runtime reports idle. The
+    /// connector closes the message row on the message boundary; the CLI turn
+    /// result lands later, and waiting for it made the footer appear one beat
+    /// after the reply (device 2026-10-31 16:14: text final at t=390.74,
+    /// footer at t=392.30). A still-streaming reply must not gain one.
+    @Test func aFinishedReplyGetsItsFooterBeforeTheTurnReportsIdle() throws {
+        let finishedRows = try [row("user-1", role: "user"), row("reply-1", text: "Done"),
+            row("user-2", role: "user"), row("reply-2", text: "Also done")]
+        let finished = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(finishedRows, interactionTargets: []),
+            suppressLatest: true)
+        #expect(finished.count == 2)
+        #expect(finished["reply-1"]?.copyText == "Done")
+        #expect(finished["reply-2"]?.copyText == "Also done")
+        #expect(TimelineTurnActions.build(groups: TimelineGrouping.groups(finishedRows,
+            interactionTargets: []), suppressLatest: false).count == 2)
+
+        let streamingRows = try [row("user-3", role: "user"),
+            row("reply-3", text: "Streaming", status: "running")]
+        let streaming = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(streamingRows, interactionTargets: []),
+            suppressLatest: true)
+        #expect(streaming.isEmpty)
     }
 
     @Test func visibleActiveItemsAndNonAssistantTextDoNotGainActions() throws {

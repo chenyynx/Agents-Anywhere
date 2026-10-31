@@ -171,11 +171,17 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         let frames: Int
         /// False when the drawer was open at the first sample (a close).
         let opening: Bool
-        /// Probe-only motion variant this transition ran with: 0 = all
-        /// effects, 1 = sidebar scale/overlay off, 2 = card shadow/tint/
-        /// stroke off. One sliding session then attributes the first-frame
-        /// cost without a build per hypothesis (pp 2026-10-31).
-        let variant: Int
+        /// What started the transition: drag, tap (button/programmatic) or
+        /// scrim. b800 showed drag starts hitch and tap starts do not, so the
+        /// split has to be recorded to compare like with like.
+        let intent: String
+        /// Time from the gesture/action callback to the environment flip
+        /// (our probe hook). This half is UIKit event handling + SwiftUI
+        /// state propagation.
+        let intentToEnvMs: Int
+        /// Time from the environment flip to the next display tick: the
+        /// SwiftUI update/render this probe hook itself observes.
+        let envToTickMs: Int
         /// Nominal display period while the drawer moved (8.3ms = 120Hz,
         /// 16.7ms = 60Hz). The official drawer requests the screen maximum;
         /// this tells us whether AA's SwiftUI spring gets it.
@@ -275,7 +281,12 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     private var drawerFrames = 0
     private var drawerGaps: [Int] = []
     private var drawerOpening = true
-    private var drawerVariant = 0
+    private var drawerIntent = "none"
+    private var drawerIntentAt: TimeInterval?
+    private var drawerEnvFlipAt: TimeInterval = 0
+    private var drawerIntentToEnvMs = 0
+    private var drawerEnvToTickMs = 0
+    private var drawerFirstTickSeen = false
     /// Sum of `CADisplayLink.duration` over the window's frames. Its average
     /// is the nominal refresh the system gave the display while the drawer
     /// moved (8.3ms on a 120Hz ProMotion screen, 16.7ms at 60Hz).
@@ -353,7 +364,12 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         drawerFrames = 0
         drawerGaps.removeAll()
         drawerOpening = true
-        drawerVariant = 0
+        drawerIntent = "none"
+        drawerIntentAt = nil
+        drawerEnvFlipAt = 0
+        drawerIntentToEnvMs = 0
+        drawerEnvToTickMs = 0
+        drawerFirstTickSeen = false
         drawerPeriodTotal = 0
         postDrawerTicksRemaining = 0
         lastStackCaptureAt = 0
@@ -452,6 +468,11 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                 drawerGaps.append(Int(ms.rounded()))
                 if drawerGaps.count > 120 { drawerGaps.removeFirst() }
                 drawerPeriodTotal += link.duration
+                if !drawerFirstTickSeen {
+                    drawerFirstTickSeen = true
+                    drawerEnvToTickMs =
+                        Int(((now - drawerEnvFlipAt) * 1000).rounded())
+                }
             }
             if ms > 33 {
                 counters["frameRateHitches", default: 0] += 1
@@ -1342,6 +1363,14 @@ final class TimelineProbeStore: NSObject, ObservableObject {
 
     // MARK: - Drawer motion
 
+    /// The drawer records what started the transition, before its state
+    /// propagates. The gap between this call and the environment flip is the
+    /// UIKit/SwiftUI half of the first-frame cost.
+    func noteDrawerIntent(_ kind: String) {
+        drawerIntent = kind
+        drawerIntentAt = CACurrentMediaTime()
+    }
+
     /// The drawer publishes its motion window. The collection view is not
     /// scrolling during a drag, so without this signal the sidebar's dropped
     /// frames never reach the report (pp 2026-10-31).
@@ -1355,9 +1384,11 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             drawerGaps.removeAll()
             drawerPeriodTotal = 0
             drawerOpening = opening
-            drawerVariant = SidebarDrawerExperiment.variant
+            drawerEnvFlipAt = now
+            drawerIntentToEnvMs = Int(((now - (drawerIntentAt ?? now)) * 1000).rounded())
+            drawerFirstTickSeen = false
             postDrawerTicksRemaining = 0
-            noteHistory("drawer-start dir=\(opening ? "open" : "close") v=\(drawerVariant)")
+            noteHistory("drawer-start dir=\(opening ? "open" : "close") intent=\(drawerIntent)")
         } else {
             let startedAt = drawerStartedAt ?? now
             let gaps = drawerGaps
@@ -1371,7 +1402,9 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             let transition = DrawerTransition(startedAt: startedAt, endedAt: now,
                                               frames: drawerFrames,
                                               opening: drawerOpening,
-                                              variant: drawerVariant,
+                                              intent: drawerIntent,
+                                              intentToEnvMs: drawerIntentToEnvMs,
+                                              envToTickMs: drawerEnvToTickMs,
                                               periodMs: periodMs,
                                               hitches: gaps.filter { $0 > 33 }.count,
                                               maxGapMs: gaps.max() ?? 0,
@@ -1379,9 +1412,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                                               p50GapMs: sorted.isEmpty ? 0 : sorted[sorted.count / 2],
                                               firstGapMs: gaps.first ?? 0,
                                               gaps: gaps)
-            // Restore the real motion look for the resting UI; the next
-            // transition picks a new variant in `beginTransition`.
-            SidebarDrawerExperiment.variant = 0
+            drawerIntentAt = nil
             postDrawerTicksRemaining = 3
             drawerTransitions.append(transition)
             if drawerTransitions.count > 40 {
@@ -1530,7 +1561,9 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             lines.append("--- DRAWER (oldest first) ---")
             for transition in drawerTransitions {
                 lines.append("D t=\(elapsed(transition.startedAt)) dir=\(transition.opening ? "open" : "close") "
-                    + "v=\(transition.variant) period=\(String(format: "%.1f", transition.periodMs))ms "
+                    + "intent=\(transition.intent) i2e=\(transition.intentToEnvMs)ms "
+                    + "e2t=\(transition.envToTickMs)ms "
+                    + "period=\(String(format: "%.1f", transition.periodMs))ms "
                     + "dur=\(transition.durationMs)ms "
                     + "frames=\(transition.frames) hitches=\(transition.hitches) "
                     + "maxGap=\(transition.maxGapMs)ms avg=\(transition.avgGapMs)ms "
@@ -1539,18 +1572,20 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                     + "post=[\(transition.postGaps.map { String($0) }.joined(separator: ","))] "
                     + "gaps=[\(transition.gaps.map { String($0) }.joined(separator: ","))]")
             }
-            // A/B summary: the first frame is where the felt hitch lives, so
-            // average it per motion variant and per direction.
-            for variant in Set(drawerTransitions.map(\.variant)).sorted() {
-                let items = drawerTransitions.filter { $0.variant == variant }
+            // The first frame is where the felt hitch lives. Split it by
+            // what started the transition and by which half of the frame
+            // (intent -> env flip -> render) spent the time.
+            for intent in Set(drawerTransitions.map(\.intent)).sorted() {
+                let items = drawerTransitions.filter { $0.intent == intent }
                 guard !items.isEmpty else { continue }
                 let firsts = items.map(\.firstGapMs)
                 let avgFirst = firsts.reduce(0, +) / firsts.count
-                let avgGap = items.map(\.avgGapMs).reduce(0, +) / items.count
+                let avgI2E = items.map(\.intentToEnvMs).reduce(0, +) / items.count
+                let avgE2T = items.map(\.envToTickMs).reduce(0, +) / items.count
                 let hitches = items.map(\.hitches).reduce(0, +)
                 let maxGap = items.map(\.maxGapMs).max() ?? 0
-                lines.append("DV v=\(variant) n=\(items.count) avgFirst=\(avgFirst)ms "
-                    + "avgGap=\(avgGap)ms hitches=\(hitches) maxGap=\(maxGap)ms")
+                lines.append("DI intent=\(intent) n=\(items.count) avgFirst=\(avgFirst)ms "
+                    + "avgI2E=\(avgI2E)ms avgE2T=\(avgE2T)ms hitches=\(hitches) maxGap=\(maxGap)ms")
             }
             for direction in [true, false] {
                 let items = drawerTransitions.filter { $0.opening == direction }

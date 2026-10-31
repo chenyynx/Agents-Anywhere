@@ -7,24 +7,36 @@ import AppKit
 #endif
 
 #if AA_TIMELINE_PROBE
-/// Probe-only A/B for the drawer's first-frame cost. Each transition cycles
-/// through one of three motion variants so a single sliding session can
-/// attribute the 36–54 ms start hitch (probe 2026-10-31):
-/// 0 = all effects, 1 = sidebar scale/overlay off, 2 = card shadow/tint/
-/// stroke off. The variant is restored to 0 when the transition ends so the
-/// resting UI keeps its real appearance; a pop at the very end is expected
-/// in this build and only the `first` gap is compared.
+/// Probe-only test of the official drawer's frame-rate request. The official
+/// keyframe animation sets `preferredFrameRateRange` to the screen maximum
+/// (120Hz on ProMotion); AA's SwiftUI spring measures 16.7ms (60Hz) on every
+/// transition. A display link asking for the maximum keeps the display at
+/// that rate for the transition; the probe's `period` field then shows
+/// whether the mechanism works. Not product code yet.
 @MainActor
-enum SidebarDrawerExperiment {
-    static var variant = 0
-    private static var transitions = 0
+final class SidebarDrawerRefreshProbe {
+    static let shared = SidebarDrawerRefreshProbe()
+    private var link: CADisplayLink?
 
-    static func beginTransition() {
-        transitions &+= 1
-        variant = transitions % 3
+    func start() {
+        guard link == nil else { return }
+        let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
+        let maxFPS = Float(UIScreen.main.maximumFramesPerSecond)
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: maxFPS,
+                                                        preferred: maxFPS)
+        link.add(to: .main, forMode: .common)
+        self.link = link
     }
+
+    func stop() {
+        link?.invalidate()
+        link = nil
+    }
+
+    @objc private func tick(_ link: CADisplayLink) {}
 }
 #endif
+
 
 struct SidebarDrawerConfiguration: Sendable {
     let revealFraction: CGFloat
@@ -343,6 +355,9 @@ private struct SidebarDrawerInteractive<
         // weight/intensity are unpublished (CANONICAL/11-motion-haptics.md
         // §2.5), so passing light+1 is a different feedback.
         .sensoryFeedback(.impact, trigger: feedbackTrigger)
+        #if AA_TIMELINE_PROBE
+        .onDisappear { SidebarDrawerRefreshProbe.shared.stop() }
+        #endif
     }
 
     private var usesOpeningEdgeGestureRegion: Bool {
@@ -353,7 +368,8 @@ private struct SidebarDrawerInteractive<
         animationGeneration &+= 1
         dragStartProgress = motion.progress
         #if AA_TIMELINE_PROBE
-        SidebarDrawerExperiment.beginTransition()
+        TimelineProbeStore.shared.noteDrawerIntent("drag")
+        SidebarDrawerRefreshProbe.shared.start()
         #endif
     }
 
@@ -498,7 +514,7 @@ private struct SidebarDrawerInteractive<
     private func closeFromOverlay() {
         guard motion.progress > 0.001 else { return }
         #if AA_TIMELINE_PROBE
-        SidebarDrawerExperiment.beginTransition()
+        TimelineProbeStore.shared.noteDrawerIntent("scrim")
         #endif
         settle(to: 0, feedback: true)
     }
@@ -507,7 +523,7 @@ private struct SidebarDrawerInteractive<
         let target: CGFloat = open ? 1 : 0
         guard abs(motion.progress - target) > 0.001 else { return }
         #if AA_TIMELINE_PROBE
-        SidebarDrawerExperiment.beginTransition()
+        TimelineProbeStore.shared.noteDrawerIntent("tap")
         #endif
         // Official haptic trigger is the `isOpen` value itself: a button or
         // programmatic toggle fires once, exactly like a drag that commits.
@@ -530,6 +546,9 @@ private struct SidebarDrawerInteractive<
         animationGeneration &+= 1
         let generation = animationGeneration
         isAnimating = true
+        #if AA_TIMELINE_PROBE
+        SidebarDrawerRefreshProbe.shared.start()
+        #endif
 
         if shouldProvideFeedback {
             feedbackTrigger &+= 1
@@ -537,6 +556,9 @@ private struct SidebarDrawerInteractive<
 
         let completion = {
             guard generation == animationGeneration else { return }
+            #if AA_TIMELINE_PROBE
+            SidebarDrawerRefreshProbe.shared.stop()
+            #endif
 
             isAnimating = false
             motion.move(to: target)
@@ -802,20 +824,13 @@ private struct SidebarDrawerSidebarMotion: ViewModifier {
 
     func body(content: Content) -> some View {
         let progress = motion.progress
-        #if AA_TIMELINE_PROBE
-        // Variant 1: measure the sidebar's per-frame scale/overlay cost.
-        let suppress = SidebarDrawerExperiment.variant == 1
-        #else
-        let suppress = false
-        #endif
         content
             .overlay {
                 drawerSystemBackground
-                    .opacity(suppress ? 0 : overlayOpacity * (1 - progress))
+                    .opacity(overlayOpacity * (1 - progress))
                     .allowsHitTesting(false)
             }
-            .scaleEffect(suppress ? 1 : closedScale + ((1 - closedScale) * progress),
-                         anchor: .leading)
+            .scaleEffect(closedScale + ((1 - closedScale) * progress), anchor: .leading)
     }
 }
 
@@ -828,12 +843,6 @@ private struct SidebarDrawerCardMotion: ViewModifier {
     func body(content: Content) -> some View {
         let progress = motion.progress
         let screenShape = SidebarDrawerCardShape.shape(isFullyClosed: isFullyClosed)
-        #if AA_TIMELINE_PROBE
-        // Variant 2: measure the card shadow/tint/stroke cost.
-        let suppressDecorations = SidebarDrawerExperiment.variant == 2
-        #else
-        let suppressDecorations = false
-        #endif
 
         content
             .background {
@@ -842,8 +851,7 @@ private struct SidebarDrawerCardMotion: ViewModifier {
                 // Keep the drawn shadow constant and fade its layer: a changing
                 // radius re-blurs a full-screen shape on every frame.
                 screenShape.fill(drawerSystemBackground)
-                    .shadow(color: suppressDecorations ? .clear : .black.opacity(0.28),
-                            radius: 18, x: -3, y: 0)
+                    .shadow(color: .black.opacity(0.28), radius: 18, x: -3, y: 0)
                     .opacity(progress)
                     .allowsHitTesting(false)
             }
@@ -851,13 +859,13 @@ private struct SidebarDrawerCardMotion: ViewModifier {
             .overlay {
                 screenShape
                     .fill(.white)
-                    .opacity(suppressDecorations ? 0 : overlayOpacity * progress)
+                    .opacity(overlayOpacity * progress)
                     .allowsHitTesting(false)
             }
             .overlay {
                 screenShape
                     .stroke(Color.primary.opacity(0.2), lineWidth: 1)
-                    .opacity(suppressDecorations ? 0 : progress)
+                    .opacity(progress)
                     .allowsHitTesting(false)
             }
             // Ordinary offset still participates in descendant coordinates:

@@ -63,6 +63,29 @@ import Testing
         #expect(actions["steps"] == nil)
     }
 
+    /// A tool call continues the same turn. The finished reply's footer must
+    /// stay while the tool segment runs, or that row loses ~30 pt mid-turn and
+    /// the bottom-follow page jumps down (device 2026-10-31 14:25: the reply
+    /// measured 164→134 and the offset moved -30 in the same apply).
+    @Test func aToolSegmentKeepsTheFinishedReplysFooter() throws {
+        let runningRows = try [row("user", role: "user", text: "Question"),
+                               row("reply", text: "Answer"),
+                               row("tool", type: "tool", status: "running")]
+        let running = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(runningRows, interactionTargets: []),
+            suppressLatest: true, footerHostEligible: { $0.id != "tool" })
+        #expect(running["reply"]?.copyText == "Answer")
+        #expect(running["tool"] == nil)
+        // When the turn ends the footer stays on the final reply host.
+        let finishedRows = try [row("user", role: "user", text: "Question"),
+                                row("reply", text: "Answer"),
+                                row("tool", type: "tool", status: "done")]
+        let finished = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(finishedRows, interactionTargets: []),
+            suppressLatest: false, footerHostEligible: { $0.id != "tool" })
+        #expect(finished["reply"]?.copyText == "Answer")
+    }
+
     @Test func pendingUserMessageKeepsThePreviousReplyActionsThroughItsEcho() throws {
         let rows = try [row("user", role: "user"), row("reply", text: "Completed answer")]
         let before = TimelineGrouping.groups(rows, interactionTargets: [])

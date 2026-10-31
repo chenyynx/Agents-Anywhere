@@ -317,3 +317,28 @@
 **测试**
 - Views 层，无 ClientCore 单测；build job + 真机验证。
 - 待真机：历史窗口里发文字/附件，跳变应在“按发送”那一刻完成；随后 pending、状态行、回复都在最新页内平滑出现。
+
+## R17 回合中途工具调用把上一段回复的页脚撤掉 → 页面下跳 30pt（2026-10-31 14:25 报告，b781）
+
+**证据（b781，14:25:04 报告；pp 现场：最新页时后台脚本工具调用，“往下跳一点”）**
+- `t=148.75` 上一条回复 `g:msg_fbe3af45` 测到 164（含回合页脚）。
+- `t=167.45` 新一段（工具调用后的回复）开始时，该行 key 重新移动；`t=167.46` 高度 **164→134（-30）**，`src=rowMeasured`，同一 revision 回退。
+- 同一拍 `contentH 28412→28382`、`offset 27654→27624`，都是 -30：底部跟住了，但 30pt 是瞬间落的。
+- `t=167.73` 新回合步骤组 `g:steps:msg_eeb05ec2` 才插入，`t=168.49` 正文才到。
+
+**根因**
+- `TimelineTurnActions.build` 在 `suppressLatest` 下整回合不 commit。工具调用继续的是**同一个回合**（中间没有用户消息），回合重新打开后，前面已完成段的页脚被收回；页脚约 30pt，行高瞬间减少，底部跟随同拍写 offset → 视觉下跳。
+- 既有单测只覆盖“上一个已结束回合保留页脚”（用户消息分隔）；同一回合内 text→tool→text 的连续段未覆盖。
+
+**修改**
+- `/home/ubuntu/aa-wt-attachments/ios/Agents Anywhere/Agents Anywhere/Models/Chat/TimelineTurnActions.swift`：
+  - 记录最后一个“已完成的 footer host”（settled host + 当时的 replies/changes）。
+  - 回合仍在运行、但已越过该 host 继续产生内容时，把页脚留在 settled host；当前流式段依旧不挂页脚。
+  - 回合结束（`suppressLatest=false`）仍按原规则 commit 到最终 host；若最新段自己就是最后内容（没有后续），保持“运行中不显示页脚”的既有契约。
+
+**测试**
+- `/home/ubuntu/aa-wt-attachments/ios/Tests/ClientCoreTests/TimelineTurnActionsTests.swift` 新增 `aToolSegmentKeepsTheFinishedReplysFooter`：`[user, reply(done), tool(running)]` + `suppressLatest=true` + step 组不可托管 → 必须在 reply 上保留 action（旧实现返回空，第一处断言即红）；工具完成后（done + suppressLatest=false）仍在 reply。
+- 既有 6 个用例（含 `activeLatestTurnHasNoFooterButPreviousCompletedTurnRetainsOne`）保持通过。
+
+**状态**
+- 代码与测试已提交；CI 待跑。待真机：最新页时后台工具调用/工具结果到达，上一条回复不再掉 30pt，页面只有正常的底部生长。

@@ -52,6 +52,19 @@ enum TimelineTurnActions {
         var endGroupID: String?
         var turnOpen = false
         var hasActiveItems = false
+        // A running turn may still keep the footer of its last *finished*
+        // segment. A tool call continues the same turn; without this the
+        // completed reply lost its footer when the tool segment started and
+        // the row shrank 30 pt mid-turn (device 2026-10-31 14:25:
+        // g:msg_fbe3af45 164→134 at the step group's arrival, offset -30 in
+        // the same apply).
+        var settledEndGroupID: String?
+        var settledReplies: [ChatTimelineRowModel] = []
+        var settledChanges: [ChatTimelineRowModel] = []
+        /// The settled host is only sticky while the turn continues past it.
+        /// A turn whose last segment is already finished keeps the existing
+        /// rule: no footer until the turn itself ends.
+        var contentAfterSettled = false
 
         func hostsFooter(_ group: ChatTimelineGroup) -> Bool {
             guard footerHostEligible(group) else { return false }
@@ -75,6 +88,8 @@ enum TimelineTurnActions {
                 actions[endGroupID] = TimelineTurnAction(replies: replies, changes: changes, startsMidTurn: startsMidTurn)
             }
             replies = []; changes = []; endGroupID = nil; turnOpen = false; hasActiveItems = false
+            settledEndGroupID = nil; settledReplies = []; settledChanges = []
+            contentAfterSettled = false
         }
 
         for group in groups {
@@ -93,14 +108,33 @@ enum TimelineTurnActions {
             let fileChanges = group.rows.filter { $0.structure.isFileChange }
             if !messages.isEmpty || !fileChanges.isEmpty { turnOpen = true }
             guard turnOpen else { continue }
-            if hostsFooter(group) { endGroupID = group.id }
+            if settledEndGroupID != nil { contentAfterSettled = true }
+            let hosts = hostsFooter(group)
+            if hosts { endGroupID = group.id }
             replies.append(contentsOf: messages)
             changes.append(contentsOf: fileChanges)
-            hasActiveItems = hasActiveItems || group.rows.contains { $0.structure.status.isActive }
+            let active = group.rows.contains { $0.structure.status.isActive }
+            hasActiveItems = hasActiveItems || active
+            if hosts, !active {
+                settledEndGroupID = group.id
+                settledReplies = replies
+                settledChanges = changes
+                contentAfterSettled = false
+            }
         }
         // The pending user bubble already starts the next turn, even before its
         // echo enters groups. A runtime "waiting" event belongs to that new turn.
-        if !suppressLatest || hasPendingUserMessage { commit() }
+        if !suppressLatest || hasPendingUserMessage {
+            commit()
+        } else if let settledEndGroupID, contentAfterSettled,
+                  (!settledReplies.isEmpty || !settledChanges.isEmpty) {
+            // The turn is still running, but an earlier segment already
+            // finished. Keep its footer where it is: removing it here made a
+            // 30 pt jump when a tool call continued the same turn. The footer
+            // moves to the final segment when the turn ends.
+            actions[settledEndGroupID] = TimelineTurnAction(
+                replies: settledReplies, changes: settledChanges, startsMidTurn: startsMidTurn)
+        }
         return actions
     }
 }

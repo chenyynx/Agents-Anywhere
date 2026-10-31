@@ -112,6 +112,11 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         /// re-key source that does not come from the row's own content.
         let changedKeyCount: Int
         let changedKeySample: [String]
+        /// Top-level items this apply inserted/removed. A status/step row
+        /// appearing and disappearing around a reply start shows up here by
+        /// id, which the item count alone cannot name.
+        let addedItemIDs: [String]
+        let removedItemIDs: [String]
     }
 
     /// A named step in the history-paging path. These are the only records
@@ -128,6 +133,8 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     private(set) var issues: [Issue] = []
     private(set) var applies: [ApplyRecord] = []
     private(set) var historyEvents: [HistoryEvent] = []
+    /// The previous apply's top-level item ids, for the added/removed diff.
+    private var lastApplyItemIDs: Set<String> = []
     /// The last content sample per item, for the content-mismatch check.
     /// A row whose text changed but whose height did not is a content bug the
     /// height probes cannot see.
@@ -308,6 +315,10 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             lastApplyRevisions = revisions
         }
         counters["keyChanges", default: 0] += changedKeys.count
+        let currentIDs = Set(items.map(\.itemID))
+        let addedIDs = currentIDs.subtracting(lastApplyItemIDs).sorted()
+        let removedIDs = lastApplyItemIDs.subtracting(currentIDs).sorted()
+        lastApplyItemIDs = currentIDs
         let record = ApplyRecord(at: CACurrentMediaTime(), itemCount: items.count,
                                  changedCount: changedCount, animating: animating,
                                  contentHeight: contentHeight,
@@ -315,7 +326,9 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                                  visibleCount: view.indexPathsForVisibleItems.count,
                                  estimateRows: pendingMeasurements,
                                  changedKeyCount: changedKeys.count,
-                                 changedKeySample: Array(changedKeys.prefix(8)))
+                                 changedKeySample: Array(changedKeys.prefix(8)),
+                                 addedItemIDs: Array(addedIDs.prefix(4)),
+                                 removedItemIDs: Array(removedIDs.prefix(4)))
         applies.append(record)
         if applies.count > Self.maxApplies { applies.removeFirst(applies.count - Self.maxApplies) }
         revision &+= 1
@@ -942,10 +955,13 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         for apply in applies.suffix(14).reversed() {
             let keys = apply.changedKeySample.isEmpty
                 ? "-" : apply.changedKeySample.joined(separator: ",")
+            let itemDelta = apply.addedItemIDs.isEmpty && apply.removedItemIDs.isEmpty
+                ? "" : " added=[\(apply.addedItemIDs.joined(separator: ","))]"
+                    + " removed=[\(apply.removedItemIDs.joined(separator: ","))]"
             lines.append("A t=\(elapsed(apply.at)) items=\(apply.itemCount) changed=\(apply.changedCount) "
                 + "anim=\(apply.animating ? 1 : 0) contentH=\(f(apply.contentHeight)) "
                 + "off=\(f(apply.offset)) visible=\(apply.visibleCount) estimates=\(apply.estimateRows) "
-                + "keys=\(apply.changedKeyCount)[\(keys)]")
+                + "keys=\(apply.changedKeyCount)[\(keys)]\(itemDelta)")
         }
 
         lines.append("--- HISTORY (oldest first) ---")

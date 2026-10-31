@@ -49,8 +49,9 @@
 
 ## 5. 开放事项
 
-- **sbx 逆向任务 `R-AA-COMPOSER-STOP-SEND`**：查官方 Code 页输入条「停止↔发送」按钮由 `TurnStatus.Phase` 还是 `EngineTurnStatus` 决定。启动 2026-10-31 17:02，45 分钟上限；报告路径 `sbx:~/re-agents/out/R-AA-COMPOSER-STOP-SEND.md`，回收：`scp -P 2222 ubuntu@100.79.4.30:~/re-agents/out/R-AA-COMPOSER-STOP-SEND.md /home/ubuntu/aa-test/sbx-re-harvest/reports/`
-  - 结论若证明官方等回合结束 → 回滚 `e61c3491` 的发送键改动（当前属 INFERENCE）
+- **官方 Code 页发送/停止按钮（逆向已闭合，2026-10-31 18:02）**：由 `ClaudeCode.ProjectConversationStore.TurnState`（idle/working/stopping）+ 活动标志决定，经 `SendButtonState` → `SendChatButtonMode` 落到按钮；**不是 `TurnStatus.Phase`，也不是 `EngineTurnStatus`**。回切 send 在回合结束/活动清空——与当前行为（`39ef2268` 回滚后）一致，**不要**再按「消息写完」提前切。
+  - 证据：`/home/ubuntu/aa-test/claude-ios-re/EVIDENCE/round22/composer-send-stop.md`（`SendChatButton.body 0x100d472ec`，mode producer `0x103e1fcbc`，mode 落位 `0x103e32184`，`SessionInputBar.init 0x103550254`）
+  - U：属性名/图标名/部分谓词语义未解（报告 U1–U4），不影响上述判定
 - b793/b794 待 pp 真机反馈：发送键时机、震动、诊断浮窗、抽屉卡顿、打点删除
 - 输入栏占位偶发不居中（自愈，未修，台账在 timeline 任务单末尾）
 

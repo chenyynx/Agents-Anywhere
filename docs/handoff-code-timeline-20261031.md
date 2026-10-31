@@ -8,12 +8,11 @@
 - 分支/worktree：`feat/local-timeline-store`，`/home/ubuntu/aa-wt-attachments`
 - 代码 head：`ed3ee514`（看门狗编译修正；含 b786 全部修复）；文档 head 以 `git log` 为准
 - CI：
-  - run **787**（head `ed3ee514`，test+build+probe）**是给 pp 的包**
-  - run 785 绿（`08b2d2d9`，页脚防抖 + snapshot 锚点，不含幽灵气泡看门狗）
-  - run 786 红（`dbbfba97`，看门狗编译错：weak optional 取 .id；已由 `ed3ee514` 修复）
-  - 绿后资产：`AgentsAnywhere-feat-local-timeline-store-b787-ed3ee51-probe.ipa`
+  - run **787 绿**（head `cb8786c9` = 代码 `ed3ee514` + 本交接文档；test+build+probe）**是给 pp 的包**
+  - 资产：`AgentsAnywhere-feat-local-timeline-store-b787-cb8786c-probe.ipa`
+  - 直链：`https://github.com/chenyynx/Agents-Anywhere/releases/download/ipa-feat-local-timeline-store/AgentsAnywhere-feat-local-timeline-store-b787-cb8786c-probe.ipa`
   - 下载页：`https://github.com/chenyynx/Agents-Anywhere/releases/tag/ipa-feat-local-timeline-store`
-  - 787 若红：用 API 拉 test/build job 日志（test job 不编译 Views，Views 编译错只在 build job）
+  - 786 红是看门狗编译错（weak optional 取 .id），已由 `ed3ee514` 修复
 - 探针报告目录（当前会话）：`/home/ubuntu/.agents-anywhere-moonveil/attachments/sess_qosxGz-dnnK4jw/`
   最新 `long-message-*.txt` 直接读，不让 pp 贴长文；截图也会落这里。
 

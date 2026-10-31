@@ -169,6 +169,17 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         let startedAt: TimeInterval
         let endedAt: TimeInterval
         let frames: Int
+        /// False when the drawer was open at the first sample (a close).
+        let opening: Bool
+        /// Probe-only motion variant this transition ran with: 0 = all
+        /// effects, 1 = sidebar scale/overlay off, 2 = card shadow/tint/
+        /// stroke off. One sliding session then attributes the first-frame
+        /// cost without a build per hypothesis (pp 2026-10-31).
+        let variant: Int
+        /// Nominal display period while the drawer moved (8.3ms = 120Hz,
+        /// 16.7ms = 60Hz). The official drawer requests the screen maximum;
+        /// this tells us whether AA's SwiftUI spring gets it.
+        let periodMs: Double
         /// Dropped frames felt during the transition, including the end and
         /// post-end boundary frames recorded after the window closed.
         var hitches: Int
@@ -263,6 +274,12 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     private var drawerStartedAt: TimeInterval?
     private var drawerFrames = 0
     private var drawerGaps: [Int] = []
+    private var drawerOpening = true
+    private var drawerVariant = 0
+    /// Sum of `CADisplayLink.duration` over the window's frames. Its average
+    /// is the nominal refresh the system gave the display while the drawer
+    /// moved (8.3ms on a 120Hz ProMotion screen, 16.7ms at 60Hz).
+    private var drawerPeriodTotal: Double = 0
     /// Display-link ticks still to be recorded against the transition that
     /// just ended: the end boundary plus the two frames after it. The
     /// drawer commits `isOpen` one main-queue turn after the animation, so
@@ -335,6 +352,9 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         drawerStartedAt = nil
         drawerFrames = 0
         drawerGaps.removeAll()
+        drawerOpening = true
+        drawerVariant = 0
+        drawerPeriodTotal = 0
         postDrawerTicksRemaining = 0
         lastStackCaptureAt = 0
         runStartedAt = CACurrentMediaTime()
@@ -431,6 +451,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                 drawerFrames += 1
                 drawerGaps.append(Int(ms.rounded()))
                 if drawerGaps.count > 120 { drawerGaps.removeFirst() }
+                drawerPeriodTotal += link.duration
             }
             if ms > 33 {
                 counters["frameRateHitches", default: 0] += 1
@@ -1324,7 +1345,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     /// The drawer publishes its motion window. The collection view is not
     /// scrolling during a drag, so without this signal the sidebar's dropped
     /// frames never reach the report (pp 2026-10-31).
-    func noteDrawerTransition(_ active: Bool) {
+    func noteDrawerTransition(_ active: Bool, opening: Bool) {
         guard active != drawerTransitioning else { return }
         let now = CACurrentMediaTime()
         drawerTransitioning = active
@@ -1332,29 +1353,39 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             drawerStartedAt = now
             drawerFrames = 0
             drawerGaps.removeAll()
+            drawerPeriodTotal = 0
+            drawerOpening = opening
+            drawerVariant = SidebarDrawerExperiment.variant
             postDrawerTicksRemaining = 0
-            noteHistory("drawer-start")
+            noteHistory("drawer-start dir=\(opening ? "open" : "close") v=\(drawerVariant)")
         } else {
             let startedAt = drawerStartedAt ?? now
             let gaps = drawerGaps
             let sorted = gaps.sorted()
             let avgGap = gaps.isEmpty ? 0
                 : Int((Double(gaps.reduce(0, +)) / Double(gaps.count)).rounded())
+            let periodMs = drawerFrames > 0 ? drawerPeriodTotal / Double(drawerFrames) * 1000 : 0
             // Derived from this window's own gaps, not from the 10 Hz scan:
             // the scan can observe a gap after the drawer flag already
             // flipped and hand a scroll hitch to the wrong transition.
             let transition = DrawerTransition(startedAt: startedAt, endedAt: now,
                                               frames: drawerFrames,
+                                              opening: drawerOpening,
+                                              variant: drawerVariant,
+                                              periodMs: periodMs,
                                               hitches: gaps.filter { $0 > 33 }.count,
                                               maxGapMs: gaps.max() ?? 0,
                                               avgGapMs: avgGap,
                                               p50GapMs: sorted.isEmpty ? 0 : sorted[sorted.count / 2],
                                               firstGapMs: gaps.first ?? 0,
                                               gaps: gaps)
+            // Restore the real motion look for the resting UI; the next
+            // transition picks a new variant in `beginTransition`.
+            SidebarDrawerExperiment.variant = 0
             postDrawerTicksRemaining = 3
             drawerTransitions.append(transition)
             if drawerTransitions.count > 6 {
-                drawerTransitions.removeFirst(drawerTransitions.count - 6)
+                drawerTransitions.removeFirst(drawerTransitions.count - 40)
             }
             drawerStartedAt = nil
             noteHistory("drawer-end ms=\(transition.durationMs) frames=\(transition.frames) "
@@ -1498,13 +1529,37 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         if !drawerTransitions.isEmpty {
             lines.append("--- DRAWER (oldest first) ---")
             for transition in drawerTransitions {
-                lines.append("D t=\(elapsed(transition.startedAt)) dur=\(transition.durationMs)ms "
+                lines.append("D t=\(elapsed(transition.startedAt)) dir=\(transition.opening ? "open" : "close") "
+                    + "v=\(transition.variant) period=\(String(format: "%.1f", transition.periodMs))ms "
+                    + "dur=\(transition.durationMs)ms "
                     + "frames=\(transition.frames) hitches=\(transition.hitches) "
                     + "maxGap=\(transition.maxGapMs)ms avg=\(transition.avgGapMs)ms "
                     + "p50=\(transition.p50GapMs)ms first=\(transition.firstGapMs)ms "
                     + "end=\(transition.endGapMs)ms "
                     + "post=[\(transition.postGaps.map { String($0) }.joined(separator: ","))] "
                     + "gaps=[\(transition.gaps.map { String($0) }.joined(separator: ","))]")
+            }
+            // A/B summary: the first frame is where the felt hitch lives, so
+            // average it per motion variant and per direction.
+            for variant in Set(drawerTransitions.map(\.variant)).sorted() {
+                let items = drawerTransitions.filter { $0.variant == variant }
+                guard !items.isEmpty else { continue }
+                let firsts = items.map(\.firstGapMs)
+                let avgFirst = firsts.reduce(0, +) / firsts.count
+                let avgGap = items.map(\.avgGapMs).reduce(0, +) / items.count
+                let hitches = items.map(\.hitches).reduce(0, +)
+                let maxGap = items.map(\.maxGapMs).max() ?? 0
+                lines.append("DV v=\(variant) n=\(items.count) avgFirst=\(avgFirst)ms "
+                    + "avgGap=\(avgGap)ms hitches=\(hitches) maxGap=\(maxGap)ms")
+            }
+            for direction in [true, false] {
+                let items = drawerTransitions.filter { $0.opening == direction }
+                guard !items.isEmpty else { continue }
+                let firsts = items.map(\.firstGapMs)
+                let avgFirst = firsts.reduce(0, +) / firsts.count
+                lines.append("DD dir=\(direction ? "open" : "close") n=\(items.count) "
+                    + "avgFirst=\(avgFirst)ms "
+                    + "hitches=\(items.map(\.hitches).reduce(0, +))")
             }
         }
 

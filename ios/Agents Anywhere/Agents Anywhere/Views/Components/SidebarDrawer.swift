@@ -6,6 +6,26 @@ import UIKit
 import AppKit
 #endif
 
+#if AA_TIMELINE_PROBE
+/// Probe-only A/B for the drawer's first-frame cost. Each transition cycles
+/// through one of three motion variants so a single sliding session can
+/// attribute the 36–54 ms start hitch (probe 2026-10-31):
+/// 0 = all effects, 1 = sidebar scale/overlay off, 2 = card shadow/tint/
+/// stroke off. The variant is restored to 0 when the transition ends so the
+/// resting UI keeps its real appearance; a pop at the very end is expected
+/// in this build and only the `first` gap is compared.
+@MainActor
+enum SidebarDrawerExperiment {
+    static var variant = 0
+    private static var transitions = 0
+
+    static func beginTransition() {
+        transitions &+= 1
+        variant = transitions % 3
+    }
+}
+#endif
+
 struct SidebarDrawerConfiguration: Sendable {
     let revealFraction: CGFloat
     let edgeActivationWidth: CGFloat
@@ -315,7 +335,8 @@ private struct SidebarDrawerInteractive<
         // report (pp 2026-10-31: drawer jank was not recorded).
         .onChange(of: isAnimating || dragStartProgress != nil
                   || motion.restingProgress != (isOpen ? 1 : 0), initial: true) { _, active in
-            TimelineProbeStore.shared.noteDrawerTransition(active)
+            TimelineProbeStore.shared.noteDrawerTransition(active,
+                                                           opening: motion.progress < 0.5)
         }
 #endif
         // [E] The official drawer uses the parameterless `.impact`; its
@@ -331,6 +352,9 @@ private struct SidebarDrawerInteractive<
     private func beginDirectionalPan() {
         animationGeneration &+= 1
         dragStartProgress = motion.progress
+        #if AA_TIMELINE_PROBE
+        SidebarDrawerExperiment.beginTransition()
+        #endif
     }
 
     private func updateDirectionalPan(translationX: CGFloat, revealWidth: CGFloat) {
@@ -473,12 +497,18 @@ private struct SidebarDrawerInteractive<
 
     private func closeFromOverlay() {
         guard motion.progress > 0.001 else { return }
+        #if AA_TIMELINE_PROBE
+        SidebarDrawerExperiment.beginTransition()
+        #endif
         settle(to: 0, feedback: true)
     }
 
     private func synchronizeProgress(with open: Bool) {
         let target: CGFloat = open ? 1 : 0
         guard abs(motion.progress - target) > 0.001 else { return }
+        #if AA_TIMELINE_PROBE
+        SidebarDrawerExperiment.beginTransition()
+        #endif
         // Official haptic trigger is the `isOpen` value itself: a button or
         // programmatic toggle fires once, exactly like a drag that commits.
         settle(to: target, feedback: true)
@@ -772,13 +802,20 @@ private struct SidebarDrawerSidebarMotion: ViewModifier {
 
     func body(content: Content) -> some View {
         let progress = motion.progress
+        #if AA_TIMELINE_PROBE
+        // Variant 1: measure the sidebar's per-frame scale/overlay cost.
+        let suppress = SidebarDrawerExperiment.variant == 1
+        #else
+        let suppress = false
+        #endif
         content
             .overlay {
                 drawerSystemBackground
-                    .opacity(overlayOpacity * (1 - progress))
+                    .opacity(suppress ? 0 : overlayOpacity * (1 - progress))
                     .allowsHitTesting(false)
             }
-            .scaleEffect(closedScale + ((1 - closedScale) * progress), anchor: .leading)
+            .scaleEffect(suppress ? 1 : closedScale + ((1 - closedScale) * progress),
+                         anchor: .leading)
     }
 }
 
@@ -791,6 +828,12 @@ private struct SidebarDrawerCardMotion: ViewModifier {
     func body(content: Content) -> some View {
         let progress = motion.progress
         let screenShape = SidebarDrawerCardShape.shape(isFullyClosed: isFullyClosed)
+        #if AA_TIMELINE_PROBE
+        // Variant 2: measure the card shadow/tint/stroke cost.
+        let suppressDecorations = SidebarDrawerExperiment.variant == 2
+        #else
+        let suppressDecorations = false
+        #endif
 
         content
             .background {
@@ -799,7 +842,8 @@ private struct SidebarDrawerCardMotion: ViewModifier {
                 // Keep the drawn shadow constant and fade its layer: a changing
                 // radius re-blurs a full-screen shape on every frame.
                 screenShape.fill(drawerSystemBackground)
-                    .shadow(color: .black.opacity(0.28), radius: 18, x: -3, y: 0)
+                    .shadow(color: suppressDecorations ? .clear : .black.opacity(0.28),
+                            radius: 18, x: -3, y: 0)
                     .opacity(progress)
                     .allowsHitTesting(false)
             }
@@ -807,13 +851,13 @@ private struct SidebarDrawerCardMotion: ViewModifier {
             .overlay {
                 screenShape
                     .fill(.white)
-                    .opacity(overlayOpacity * progress)
+                    .opacity(suppressDecorations ? 0 : overlayOpacity * progress)
                     .allowsHitTesting(false)
             }
             .overlay {
                 screenShape
                     .stroke(Color.primary.opacity(0.2), lineWidth: 1)
-                    .opacity(progress)
+                    .opacity(suppressDecorations ? 0 : progress)
                     .allowsHitTesting(false)
             }
             // Ordinary offset still participates in descendant coordinates:

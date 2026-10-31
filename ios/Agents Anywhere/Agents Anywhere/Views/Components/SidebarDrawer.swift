@@ -253,7 +253,7 @@ private struct SidebarDrawerInteractive<
                 isAnimating: isAnimating, isDragging: dragStartProgress != nil)
 
             ZStack(alignment: .leading) {
-                drawerSystemBackground
+                drawerSidebarBackground
 
                 SidebarDrawerSidebar(
                     width: revealWidth,
@@ -749,7 +749,7 @@ private struct SidebarDrawerSidebar<Header: View, Content: View>: View {
             }
             .frame(width: width)
             .frame(maxHeight: .infinity, alignment: .leading)
-            .background(drawerSystemBackground)
+            .background(drawerSidebarBackground)
     }
 }
 
@@ -772,7 +772,7 @@ private struct SidebarDrawerMainCard<Content: View>: View {
             // area here forced the page to re-add it with padding, which is
             // what painted opaque status-bar/home-indicator strips.
             .frame(width: size.width, height: size.height)
-            .background(drawerSystemBackground, in: screenShape)
+            .background(drawerCardBackground, in: screenShape)
             .clipShape(screenShape)
             .contentShape(screenShape)
     }
@@ -845,7 +845,7 @@ private struct SidebarDrawerCardMotion: ViewModifier {
                 // The official content pane carries a constant black shadow —
                 // radius 6, opacity 0.1, no offset (probe 2026-10-31) — so the
                 // layer is drawn once and only its opacity follows progress.
-                screenShape.fill(drawerSystemBackground)
+                screenShape.fill(drawerCardBackground)
                     .shadow(color: .black.opacity(0.1), radius: 6, x: 0, y: 0)
                     .opacity(progress)
                     .allowsHitTesting(false)
@@ -899,9 +899,31 @@ private extension CGFloat {
     }
 }
 
-private var drawerSystemBackground: Color {
+/// Official sidebar surface: #F3F3F0 on light (screenshot average); the
+/// dark value is not closed yet, so the system background stays there.
+private var drawerSidebarBackground: Color {
 #if canImport(UIKit)
-    Color(uiColor: .systemBackground)
+    Color(uiColor: UIColor { traits in
+        guard traits.userInterfaceStyle != .dark else { return .systemBackground }
+        return UIColor(red: 243.0 / 255.0, green: 243.0 / 255.0,
+                       blue: 240.0 / 255.0, alpha: 1)
+    })
+#elseif canImport(AppKit)
+    Color(nsColor: .windowBackgroundColor)
+#else
+    Color.clear
+#endif
+}
+
+/// Official content card surface: #F9F9F7 on light; dark keeps the system
+/// background until the dark token is closed.
+private var drawerCardBackground: Color {
+#if canImport(UIKit)
+    Color(uiColor: UIColor { traits in
+        guard traits.userInterfaceStyle != .dark else { return .systemBackground }
+        return UIColor(red: 249.0 / 255.0, green: 249.0 / 255.0,
+                       blue: 247.0 / 255.0, alpha: 1)
+    })
 #elseif canImport(AppKit)
     Color(nsColor: .windowBackgroundColor)
 #else

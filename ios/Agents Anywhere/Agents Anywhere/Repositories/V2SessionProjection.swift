@@ -279,38 +279,23 @@ struct V2SessionProjection {
         if hasNewerAfterApply { data.hasNewerItems = true }
     }
 
-    /// A server snapshot carries the latest page on the wire, not the reader's
-    /// whole history. Replacing a locally loaded window with it collapsed the
-    /// list and jumped the viewport when a snapshot landed right after a send
-    /// (device 2026-10-31 14:43: 498 → 199 items, offset 88831 → 40145). Merge
-    /// when the snapshot overlaps the held window so the reader's older rows
-    /// survive; an empty snapshot or a disjoint segment still replaces (the
-    /// initial load, an explicit reset, and a window with a real gap).
+    /// A `timeline.snapshot` is the server's **complete** timeline: rows absent
+    /// from it are deletions, so only its rows survive. It must not, however,
+    /// drop the reader's browse window: replacing the timeline cleared the
+    /// window anchor and trimmed to the idle `maximumItems`, so a snapshot
+    /// landing right after a send collapsed a 498-item history view to 199 and
+    /// jumped the viewport (device 2026-10-31 14:43: offset 88831 → 40145).
+    /// Keep the anchor across the replacement so the snapshot's own rows are
+    /// trimmed with the browse budget around the reader instead.
     private mutating func applySnapshot(_ items: [V2TimelineItem]) {
-        guard !items.isEmpty else {
-            replaceTimeline(items, hasMore: false)
-            return
-        }
-        let windowFirst = data.items.first?.orderSeq
-        let windowLast = data.items.last?.orderSeq
-        let pageFirst = items.first?.orderSeq
-        let pageLast = items.last?.orderSeq
-        let overlaps: Bool
-        if let windowFirst, let windowLast, let pageFirst, let pageLast {
-            overlaps = pageFirst <= windowLast && pageLast >= windowFirst
-        } else {
-            overlaps = false
-        }
-        guard overlaps else {
-            replaceTimeline(items, hasMore: false)
-            return
-        }
+        let heldAnchor = windowAnchor
+        data.items = []
+        data.hasNewerItems = false
+        data.hasOlderItems = false
+        windowAnchor = items.isEmpty ? nil : heldAnchor
         let trim = merge(items, history: true)
-        if let windowLast, let pageLast, pageLast >= windowLast {
-            // The snapshot reaches the newest edge the wire has reported.
-            data.hasNewerItems = false
-        }
-        data.hasOlderItems = data.hasOlderItems || trim.droppedOlder
+        data.hasOlderItems = trim.droppedOlder
+        data.hasNewerItems = trim.droppedNewer
     }
 
     private mutating func replaceTimeline(_ items: [V2TimelineItem], hasMore: Bool) {

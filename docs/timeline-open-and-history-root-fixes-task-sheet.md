@@ -350,17 +350,18 @@
 - `t=108.14` apply `oldN=498 newN=199`，contentH 89654→40903；`t=108.23` apply-end offset `88831→40145`（**-48,686**）。
 - 整个 H 段没有 `bridge loadLatest` 行——不是 R16 的发送切最新，而是 `V2SessionProjection.apply` 的 `timeline.snapshot` 分支直接 `replaceTimeline(items)`，把本地已加载的 498 条历史窗口换成服务端最新页 199 条。
 
-**根因**
-- `timeline.snapshot` 被当成“整个时间线”的重置；实际它是服务端的最新一页。读者已加载的历史行不在这一页里，整窗替换既丢历史也造成视口大跳。
+**根因（首版修错一次，CI 783 拦下）**
+- 服务端契约：`timeline.snapshot` = **完整时间线**（`replace_timeline_snapshot`，缺的行就是删除；空快照必须清空视图；>100 行走 refetch），不是“最新一页”。首版把它当最新页做 overlap merge，破坏了 reset 契约（`aSnapshotFrameDropsOnlyTheMalformedRow` 红）。
+- 真正丢历史的是替换实现：`replaceTimeline` 清掉 `windowAnchor` 并按 idle `maximumItems`（1000 行）取最新尾巴；快照本身携带全部 3962 行，读者浏览中的旧行却被裁掉 → 498 items→199、视口大跳。
 
 **修改**
 - `/home/ubuntu/aa-wt-attachments/ios/Agents Anywhere/Agents Anywhere/Repositories/V2SessionProjection.swift`：
-  - `timeline.snapshot` 改走 `applySnapshot`：空快照 → 替换（初始加载/显式重置）；与当前窗口重叠 → `merge(history: true)` 保留读者已加载的旧行，快照到达最新边时清 `hasNewerItems`；不重叠（中间有真实缺口）→ 仍替换。
-  - 窗口 anchor 不受影响，历史阅读位置保持。
+  - `timeline.snapshot` 改走 `applySnapshot`：内容只取快照行（`data.items=[]` 后 `merge(history: true)`，删除语义保留）；**保留替换前的 `windowAnchor`**，让截断按浏览预算（10k）围绕读者进行，而不是 idle 最新 1000 行；空快照清空并清 anchor。
+  - 裁剪后的 `droppedOlder/droppedNewer` 回写 `hasOlderItems/hasNewerItems`。
 
 **测试**
-- `/home/ubuntu/aa-wt-attachments/ios/Tests/ClientCoreTests/SessionProjectionTests.swift` 新增 `aSnapshotMergesWithTheLoadedHistoryWindow`：锚定窗口 1...40，`timeline.snapshot` 31...41 到达后必须是 1...41（旧实现 31...41，第一处断言即红）。
-- 既有 `resetReplacesTimelineAndUnknownEventsRemainAccessible`（空快照清空）保持通过。
+- `/home/ubuntu/aa-wt-attachments/ios/Tests/ClientCoreTests/SessionProjectionTests.swift` 新增 `aSnapshotReplacementKeepsTheAnchoredBrowseWindow`：锚定窗口 1...40，完整快照 1...41 到达后必须是 1...41（旧实现清 anchor 后裁成最新 20 行 22...41，第一处断言即红）。
+- 既有 `aSnapshotFrameDropsOnlyTheMalformedRow`（缺行删除、坏行丢）与 `resetReplacesTimelineAndUnknownEventsRemainAccessible`（空快照清空）保持通过。
 
 **状态**
-- 代码与测试已提交；CI 待跑。待真机：历史窗口里发送（含附件），服务端 snapshot 到达后不再整窗缩小/跳页，已加载历史仍在。
+- 首版 `ab8ad0b1` CI 783 test 红（reset 契约），已改为 anchor 保留 + 完整替换；新提交 CI 待跑。待真机：历史窗口里发送（含附件），服务端 snapshot 到达后不再整窗缩小/跳页，已加载历史仍在。

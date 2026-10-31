@@ -125,6 +125,29 @@ import Testing
         #expect(projection.data.items.map(\.orderSeq) == Array(1...12))
     }
 
+    /// A stale local-first page's background reconcile must land while the
+    /// reader is paged into history: it fills the newest gap (the arriving
+    /// reply) and keeps the anchored window. Clearing the anchor turned the
+    /// merge into a newest-`maximumItems` trim and dropped the reader's pages
+    /// (device report 2026-10-31 08:31).
+    @Test func aLatestReconcileKeepsTheAnchoredHistoryWindow() throws {
+        let recent = try (21...40).map { try itemObject(id: "item-\($0)", order: $0) }
+        var projection = V2SessionProjection(snapshot: try snapshot(items: recent), maximumItems: 20)
+        let older = try (1...20).map {
+            try decode(itemObject(id: "item-\($0)", order: $0), as: V2TimelineItem.self)
+        }
+        projection.applyHistory(V2SessionTimelinePage(sessionId: "session", items: older,
+            nextSeq: 40, hasMore: true, serverTime: nil), anchorOrderSeq: 25)
+        #expect(projection.data.items.map(\.orderSeq) == Array(1...40))
+        let latest = try (31...41).map {
+            try decode(itemObject(id: "item-\($0)", order: $0), as: V2TimelineItem.self)
+        }
+        projection.applyLatest(V2SessionTimelinePage(sessionId: "session", items: latest,
+            nextSeq: 41, hasMore: true, serverTime: nil))
+        #expect(projection.data.items.map(\.orderSeq) == Array(1...41))
+        #expect(!projection.data.hasNewerItems)
+    }
+
     @Test func historyWindowKeepsTheVisibleAnchorAndTheNewestTail() throws {
         // Latest page 481...500; the reader is at 495 near the tail. One older
         // page arrives with the visible anchor at 495.

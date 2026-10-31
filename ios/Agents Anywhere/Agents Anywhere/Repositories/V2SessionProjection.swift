@@ -230,6 +230,14 @@ struct V2SessionProjection {
         // A GET can finish after newer socket frames. Its high watermark bounds
         // the window it may replace, but never acknowledges the event cursor.
         let newer = data.items.filter { $0.updatedSeq > page.nextSeq }
+        // A reader anchored in history keeps that anchor across the page: the
+        // latest page arrives to fill the newest gap (a local-first page can be
+        // stale), not to trim the pages the reader already loaded. Clearing it
+        // here turned the merge into a newest-`maximumItems` window and dropped
+        // the reader's older side (2026-10-31 08:31: the arriving reply was the
+        // only row the reconcile needed to add, but the window rule flipped
+        // under a history reader).
+        let heldAnchor = windowAnchor
         windowAnchor = nil
         // A latest page updates the newest side. It must not drop older rows
         // the reader already loaded: the local-first page can be tiny (the
@@ -251,15 +259,22 @@ struct V2SessionProjection {
             // A latest page is server-selected, like a history page: the
             // newest-edge guards must not reject its newer rows.
             data.hasNewerItems = false
+            windowAnchor = heldAnchor
             let trim = merge(page.items, history: true)
             data.hasOlderItems = data.hasOlderItems || page.hasMore || trim.droppedOlder
+            // A browse window at its 10k ceiling can still drop the newest
+            // tail; the prompt must stay honest about the missing side.
+            data.hasNewerItems = data.hasNewerItems || trim.droppedNewer
         } else {
             replaceTimeline(page.items, hasMore: page.hasMore)
         }
         // This page now defines the window's read mode (the panel's loaded
         // gate reads it).
         data.windowExcludesAgentChildren = page.excludesAgentChildren
-        _ = merge(newer, history: false)
+        // The window's own rows beyond the page are known to belong (they are
+        // already in `items`); an anchored window's merge guard would reject
+        // them as "newer than the page", so admit them as page rows too.
+        _ = merge(newer, history: heldAnchor != nil)
         if hasNewerAfterApply { data.hasNewerItems = true }
     }
 

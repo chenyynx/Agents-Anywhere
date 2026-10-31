@@ -134,6 +134,13 @@ final class TimelineCollectionController: UIViewController {
     private var lastPublishedViewport = TimelineViewport()
 
     private(set) var phase = TimelinePhaseMapping()
+    /// True only while a physical reader gesture owns the scroll (drag or
+    /// deceleration). A bottom→off-bottom flip caused by a window replacement
+    /// or a layout transition is not reader intent; callers that abandon
+    /// background work on "the reader left the bottom" must use this flag, not
+    /// the raw edge (device report 2026-10-31 08:31: the replacement's own
+    /// flip cancelled the latest reconcile and the new reply never landed).
+    var isReaderScrolling: Bool { phase.userIsScrolling }
     /// C4: the single content-offset writer (placement state + Mover + inset).
     private var anchorDriver: TimelineAnchorDriver?
     private var didStartAnchorDriver = false
@@ -666,6 +673,26 @@ final class TimelineCollectionController: UIViewController {
         hostedFallbackFitWidths = hostedFallbackFitWidths.filter { liveIDs.contains($0.key) }
         hostedFallbackFirstSeenAt = hostedFallbackFirstSeenAt.filter { liveIDs.contains($0.key) }
         pendingHostedReports = pendingHostedReports.filter { liveIDs.contains($0.key) }
+
+        // A window replacement can shrink the content (a history window
+        // replaced by the latest page). The old offset then points past the
+        // new content while the diffable apply commits, every visible row is
+        // gone, and UIKit only clamps on the next layout — the blank page of
+        // the 2026-10-31 08:31 report (`off=74077` while the new
+        // `contentH=46157`, visible rows 0). The armed bottom return makes the
+        // target known before the swap, so place the offset inside the
+        // replacement's range now; the completion resolves the exact bottom.
+        if resolveWindowBottom {
+            let newBottom = TimelineOffsetTarget.bottomOffset(
+                contentHeight: projectedContentHeight(items: items),
+                containerHeight: collectionView.bounds.height,
+                topInset: collectionView.adjustedContentInset.top,
+                bottomInset: collectionView.adjustedContentInset.bottom)
+            if collectionView.contentOffset.y > newBottom {
+                collectionView.setContentOffset(
+                    CGPoint(x: collectionView.contentOffset.x, y: newBottom), animated: false)
+            }
+        }
 
         var snapshot = NSDiffableDataSourceSnapshot<TimelineCollectionSection, TimelineListItem>()
         snapshot.appendSections([.main])
@@ -2648,6 +2675,25 @@ final class TimelineCollectionController: UIViewController {
                   content.anchorRowIDs(in: $0).contains(anchorRowID)
               }) else { return items }
         return Array(items.prefix(index + 1))
+    }
+
+    /// The content height `prepare()` will produce for `items`, computed with
+    /// the same resolver and spacing the layout uses. A window replacement
+    /// consults it before the snapshot applies so the old offset can be moved
+    /// inside the replacement's range while every row is still on screen.
+    private func projectedContentHeight(items: [TimelineListItem]) -> CGFloat {
+        guard let content, columnWidth > 0 else { return layout.contentHeight }
+        var y = TimelineListMetrics.topInset
+        for (index, item) in items.enumerated() {
+            let key = content.heightKey(for: item, width: columnWidth)
+            y += layout.heights.resolvedHeight(
+                for: key, itemID: item.itemID,
+                fallback: content.estimateKind(for: item))
+            if index < items.count - 1 {
+                y += content.itemSpacing(after: item)
+            }
+        }
+        return y
     }
 
     /// Where the anchor will sit after `items` is laid out, using the cache's

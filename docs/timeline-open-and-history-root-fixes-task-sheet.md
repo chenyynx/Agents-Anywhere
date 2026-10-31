@@ -205,3 +205,76 @@
 
 **未覆盖**
 - 思考行与正文的官方分组语义（是否允许临时独立步骤组）需按 `EVIDENCE/round29` 再核对，避免为了稳定身份改变官方展示。
+
+## R12 发送后 pending→echo 分两次刷新，页面先沉后弹（2026-10-31 08:26 报告，b776）
+
+**证据（b776 探针，08:26:54 报告）**
+- t=23.70 `A added=[p:4F746187-1D0B-4AEB-8073-A083EB5D4AEF]`：发送后乐观气泡入列。
+- t=24.95 `A removed=[p:4F746187…]`；t=24.97 `A added=[g:f38a3d63-1ef5-4aeb-8c72-f43020ca419f, working:status]`——入列和出列相隔 20ms、两次独立 apply。
+- t=24.99 `I [offsetJump] delta=-70.7 24224.0→24153.3`，随后 +31.3/+29.3/+19.7/+8.7/+7.3/+5.3/+3.0/+2.3 弹回 24260.3。
+- pp 现场更正：**气泡没有可见消失**，看到的是页面先沉后弹。中间态只存在于布局高度表约 20ms（约一帧），快照替换落在同一帧内，视觉上气泡连续。
+
+**根因（代码位置）**
+- `V2SessionModel.confirmEcho`（`/home/ubuntu/aa-wt-attachments/ios/Agents Anywhere/Agents Anywhere/Models/Session/V2SessionModel.swift:694`）在 echo 进入投影后立刻把 pending 从 `session.pendingMessages` 删除；`delivery` 先置 `.confirmed`。
+- `SessionTimelinePresentation.synchronizePending`（`/home/ubuntu/aa-wt-attachments/ios/Agents Anywhere/Agents Anywhere/Models/Chat/SessionTimelinePresentation.swift:249`）只在 flush 循环里用 `session.pendingMessages` 刷新 pending 列表；循环的 60Hz idle tick 可能落在“模型已删 pending、presentation 还没收到 echo observation”之间，于是先发布了空 pending 列表——布局高度表少掉用户行（约 70.7pt），echo 20ms 后到达再补回，底部跟随先沉后弹。
+- 原 `synchronizePending` 只按“入参是否包含”过滤，已删除的 pending 无法保留；这正是 08:26 的中间态。
+
+**修改（方案 1，原子替换）**
+- `synchronizePending` 保留已 `.confirmed` 但 `rows` 里还没有对应 `clientMessageId` 行（role=user）的 pending；等 flush 把 echo 行发布进 `rows` 后，在同一次同步里移除 pending。pending 的 `.confirmed` 状态让 `PendingMessageRow` 的 `isPending` 为 false，转圈立即停止，气泡保持原样直到被 echo 行替换。
+- 非确认移除（用户 dismiss、队列 supersede）不保留，避免把用户主动删掉的气泡钉在列表里。
+- 发送队列行在 tail 视图内（`TimelineCollectionTailRow`），不走 item 替换，不存在同一空洞，未改。
+
+**测试**
+- `/home/ubuntu/aa-wt-attachments/ios/Tests/ClientCoreTests/NativeChatTests.swift`：
+  - `aConfirmedPendingStaysUntilItsEchoRowIsPresented`：confirmed 后先 `synchronizePending([])` 必须仍保留（旧实现第一处断言即红），echo 入 rows 后同一次同步移除。
+  - `aDismissedPendingThatNeverEchoedLeavesImmediately`：未确认的移除必须立即消失。
+  - 既有 `echoAndOptimisticMembershipChangeInOneTick` 保持通过。
+
+**状态**
+- 代码与测试已落工作区；按 pp 要求与其他 bug 合并后再统一提交、跑 CI，本项尚未有 CI 结果。
+- 待真机验证：发送后转圈结束到状态行出现的过渡不再先沉后弹；正常情况页面只随状态行/正文高度平滑上移。
+
+## R13 新回复在历史窗口里不出现，切会话回来才有（2026-10-31 08:31 报告，b776）
+
+**证据（b776，08:31:58 报告）**
+- 读者在历史窗口顶部，新回复到达（pp 收到震动）；窗口带 anchor，live 事件按 `mergeSingle` 的 `orderSeq > end` 规则被挡在窗口外，`hasNewerItems=true`。
+- 点回到底部后 `auto-latest fire off=74077` → `bridge loadLatest auto=1`；本地旧页先替换窗口（408→189）。
+- 替换落地时 `bridge viewport bottom=1->0 off=74077 contentH=74548 visH=294` —— 这是替换自身造成的内容/偏移过渡翻转。
+- `TimelineChatTimelineView.viewportChanged` 在该翻转上无条件调用 `cancelLatestReconcile()`，把刚启动的后台网络 reconcile 取消；之后去顶部又触发 auto-older 加载历史页。
+- 整个 pre-switch 窗口里没有 `msg_573d505f` 这条回复；切换会话重开后（t=1.67）网络最新页才把它带回。与 pp 现场描述一致。
+
+**根因**
+- 用“视口离开底部”这个被动边沿代表“读者主动进入历史”。窗口替换/布局过渡也会翻这个边沿，但读者并没有离开阅读位置；reconcile 被误杀后，陈旧本地页缺的最新行（就是新回复）永远补不回来。
+
+**修改**
+- `V2SessionProjection.applyLatest`（`/home/ubuntu/aa-wt-attachments/ios/Agents Anywhere/Agents Anywhere/Repositories/V2SessionProjection.swift`）：重叠合并时保留读者已有的 history anchor，最新页只补窗口缺的行；`newer` 回填也按 history 合并，避免 anchor guard 把窗口自己的行挡掉。这样后台 reconcile 在历史阅读位置落地是安全的，不再需要为了“别在读者下面换窗口”而取消。
+- `TimelineChatTimelineView.viewportChanged`（`/home/ubuntu/aa-wt-attachments/ios/Agents Anywhere/Agents Anywhere/Views/Chat/TimelineCollection/TimelineChatTimelineView.swift`）：只有真正的读者滚动（`isReaderScrolling`，drag/decelerating）才取消 reconcile；被动翻转与状态栏回顶（`.animating`）不再取消。
+- `TimelineCollectionController` 新增只读 `isReaderScrolling`（仅 `phase.userIsScrolling`）。
+- 历史分页不再取消 reconcile（锚定合并已安全）；保留的取消只保护“读者在很小的本地最新页里主动滚动、网络页会在上方补行”的边缘场景。
+
+**测试**
+- `/home/ubuntu/aa-wt-attachments/ios/Tests/ClientCoreTests/SessionProjectionTests.swift` 新增 `aLatestReconcileKeepsTheAnchoredHistoryWindow`：`maximumItems=20`、锚定窗口 1...40，最新页 31...41 到来后窗口必须是 1...41（旧实现清 anchor 后退化成最新 20 行，第一处断言即红）。
+- Views 层分支无 ClientCore 单测，由 build job 编译 + 真机探针验证。
+- 待真机：在历史顶部收到新回复 → 回到底部 → 回复应由 reconcile 补上；即使随后去顶部触发 auto-older，reconcile 也应继续落地且不裁掉历史页。
+
+## R14 窗口替换缩小时 offset 越界 → 空白页（2026-10-31 08:31 报告，b776）
+
+**证据**
+- `H apply-begin oldN=408 newN=189 off=74077 contentH=74548` → 替换过程中 `bridge viewport bottom=0->1 off=74077 contentH=46157 visH=294`：新内容高度已经是 46157，offset 仍是旧的 74077，视口在新内容之外，可见行 0。
+- apply 完成后才落到 45750（`apply-end off=74077->45750 d=-28327`）。之间就是空白页。
+
+**根因**
+- diffable 替换把 contentSize 换成新高度，但 offset 要等 apply 完成/下一次布局才被 clamp；缩小替换时这段窗口所有可见行都不在内容范围内。R7 修的是 cell/attribute 错配，不覆盖 offset 越界。
+
+**修改**
+- `/home/ubuntu/aa-wt-attachments/ios/Agents Anywhere/Agents Anywhere/Views/Chat/TimelineCollection/TimelineCollectionController.swift`：
+  - 新增 `projectedContentHeight(items:)`：用 layout 同一套 `heights.resolvedHeight`/spacing 预算替换后的高度。
+  - `apply` 在 `dataSource.apply` 之前，若 `resolveWindowBottom`（窗口替换 + 已武装的底部返回 + 非历史 prepend），用 `TimelineOffsetTarget.bottomOffset` 预先把越界的 offset 放到新范围内。完成回调仍按实际布局解析精确底部。
+- 只在缩小替换且需要回底时生效；普通 apply、阅读态替换不动 offset。
+
+**测试**
+- 同样在 Views 层，无 ClientCore 红绿单测；build job + 真机探针验证。
+- 待真机：历史窗口 → 回到底部/加载最新发生窗口替换时不再出现空白帧；页面直接落在最新页底部。
+
+**顺带观察（未修，单独线索）**
+- 切会话回来时有一次冷开：adapter 先只有 tail（`oldN=0 newN=1`）、随后 189 行 apply 时 `contentH=0.0 visible=0`，同步测量 105ms 后才显示（t=0.09→0.25）。这是“空 adapter 冷开”路径，与本次 R14 的缩小替换不是同一根因；本次报告未直接把它归为 pp 指的空白，先记录，等复现证据再定修法。

@@ -373,9 +373,13 @@ final class TimelineChatBridge: ObservableObject {
         wasAtBottom = atBottom
         if atBottom {
             model.session.followLatest()
-        } else {
-            // A local-first latest page may still be reconciling; a reader
-            // moving into history must not have the window replaced.
+        } else if controller?.isReaderScrolling == true {
+            // Only a reader-owned scroll may abandon a local-first latest
+            // page's background reconcile. A window replacement flips this
+            // edge while it swaps the content and offset; cancelling there
+            // dropped the new reply until the page was reopened (device report
+            // 2026-10-31 08:31). Explicit history paging cancels its own
+            // reconcile in `loadOlder`.
             model.session.cancelLatestReconcile()
         }
     }

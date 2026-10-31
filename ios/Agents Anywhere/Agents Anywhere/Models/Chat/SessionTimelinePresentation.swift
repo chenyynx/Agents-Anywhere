@@ -249,8 +249,34 @@ final class SessionTimelinePresentation {
     func synchronizePending(_ messages: [V2PendingMessage]) {
         // Change optimistic membership in the same tick that publishes echoes,
         // avoiding a blank first user row between HTTP/realtime and UI clocks.
-        let visible = messages.filter { message in
-            !rows.contains { $0.value.role == .user && $0.value.source["clientMessageId"]?.stringValue == message.id }
+        //
+        // A confirmed record outlives its session-model entry until the echo row
+        // is actually presented. The model drops it as soon as the echo reaches
+        // the projection, while this presentation only learns the row on the
+        // next flush; a sync tick inside that gap used to publish an empty
+        // pending list first. The layout then saw the user row's height vanish
+        // for one refresh — the bottom anchor dipped ~70 pt and sprang back when
+        // the echo landed (device 2026-10-31 08:26: p:… removed at 24.95, g:…
+        // added at 24.97). Holding the confirmed record until `rows` carries the
+        // echo makes the removal and the row one published state, so the height
+        // table never loses the row.
+        func isEchoed(_ message: V2PendingMessage) -> Bool {
+            rows.contains {
+                $0.value.role == .user && $0.value.source["clientMessageId"]?.stringValue == message.id
+            }
+        }
+        var visible: [V2PendingMessage] = []
+        visible.reserveCapacity(messages.count)
+        for previous in pendingMessages {
+            if let current = messages.first(where: { $0.id == previous.id }) {
+                if !isEchoed(current) { visible.append(current) }
+            } else if previous.delivery == .confirmed, !isEchoed(previous) {
+                visible.append(previous)
+            }
+        }
+        let kept = Set(visible.map(\.id))
+        for message in messages where !kept.contains(message.id) && !isEchoed(message) {
+            visible.append(message)
         }
         if pendingMessages.map(\.id) != visible.map(\.id) { pendingMessages = visible }
     }

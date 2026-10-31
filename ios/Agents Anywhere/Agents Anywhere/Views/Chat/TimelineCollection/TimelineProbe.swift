@@ -1384,7 +1384,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             SidebarDrawerExperiment.variant = 0
             postDrawerTicksRemaining = 3
             drawerTransitions.append(transition)
-            if drawerTransitions.count > 6 {
+            if drawerTransitions.count > 40 {
                 drawerTransitions.removeFirst(drawerTransitions.count - 40)
             }
             drawerStartedAt = nil

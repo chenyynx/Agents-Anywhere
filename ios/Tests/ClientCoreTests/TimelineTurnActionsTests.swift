@@ -86,6 +86,22 @@ import Testing
         #expect(finished["reply"]?.copyText == "Answer")
     }
 
+    /// The runtime status flaps between running and idle across tool steps.
+    /// When the flap looks idle but the tool row is still active, the footer
+    /// must stay on the finished reply instead of flickering away and back
+    /// (device 2026-10-31 14:55: the same row measured 146↔176 every few
+    /// seconds).
+    @Test func aRunningToolKeepsTheFooterWhenTheTurnLooksIdle() throws {
+        let rows = try [row("user", role: "user", text: "Question"),
+                        row("reply", text: "Answer"),
+                        row("tool", type: "tool", status: "running")]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: false, footerHostEligible: { $0.id != "tool" })
+        #expect(actions["reply"]?.copyText == "Answer")
+        #expect(actions["tool"] == nil)
+    }
+
     @Test func pendingUserMessageKeepsThePreviousReplyActionsThroughItsEcho() throws {
         let rows = try [row("user", role: "user"), row("reply", text: "Completed answer")]
         let before = TimelineGrouping.groups(rows, interactionTargets: [])

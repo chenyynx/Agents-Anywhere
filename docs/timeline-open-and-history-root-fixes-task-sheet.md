@@ -365,3 +365,5 @@
 
 **状态**
 - 首版 `ab8ad0b1` CI 783 test 红（reset 契约），已改为 anchor 保留 + 完整替换；新提交 CI 待跑。待真机：历史窗口里发送（含附件），服务端 snapshot 到达后不再整窗缩小/跳页，已加载历史仍在。
+
+**追加（2026-10-31 14:55 报告，b782）**：页脚在 `146↔176` 之间反复切换。根因是 `suppressLatest` 随 runtime 状态在 running/idle 间抖动：抖到 false 时走 `commit()`，但工具活跃（`hasActiveItems`）使 commit 拒绝 → 页脚消失；抖到 true 时 settled 分支又挂回。修：`commit()` 因活跃项拒绝时回退 settled host 页脚。新用例 `aRunningToolKeepsTheFooterWhenTheTurnLooksIdle`（旧实现返回空，红）。

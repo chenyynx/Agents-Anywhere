@@ -124,14 +124,16 @@ enum TimelineTurnActions {
         }
         // The pending user bubble already starts the next turn, even before its
         // echo enters groups. A runtime "waiting" event belongs to that new turn.
-        if !suppressLatest || hasPendingUserMessage {
+        if (!suppressLatest || hasPendingUserMessage), !hasActiveItems {
             commit()
         } else if let settledEndGroupID, contentAfterSettled,
                   (!settledReplies.isEmpty || !settledChanges.isEmpty) {
-            // The turn is still running, but an earlier segment already
-            // finished. Keep its footer where it is: removing it here made a
-            // 30 pt jump when a tool call continued the same turn. The footer
-            // moves to the final segment when the turn ends.
+            // The turn is still running (or a tool is active), but an earlier
+            // segment already finished. Keep its footer where it is: the
+            // runtime status flaps between running and idle across tool steps,
+            // and the old commit path refused while a tool was active, so the
+            // footer flickered 146↔176 with every flap (device 2026-10-31
+            // 14:55). The footer moves to the final segment when the turn ends.
             actions[settledEndGroupID] = TimelineTurnAction(
                 replies: settledReplies, changes: settledChanges, startsMidTurn: startsMidTurn)
         }

@@ -580,7 +580,7 @@ final class TimelineCollectionController: UIViewController {
            let liveItem = currentItems.first(where: { $0.itemID == live.id }) {
             historyAnchorItemID = live.id
             historyAnchorOffsetIntoRow = live.offsetIntoRow
-            if let rowID = content?.rowIDs(in: liveItem).first {
+            if let rowID = content.rowIDs(in: liveItem).first {
                 historyAnchorRowID = rowID
             }
             anchorDriver?.beginHistoryPaging(anchorID: live.id,

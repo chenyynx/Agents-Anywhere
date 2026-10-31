@@ -41,23 +41,17 @@ final class SidebarDrawerRefreshProbe {
 struct SidebarDrawerConfiguration: Sendable {
     let revealFraction: CGFloat
     let edgeActivationWidth: CGFloat
-    let sidebarClosedScale: CGFloat
-    let sidebarOverlayOpacity: CGFloat
     let contentOverlayOpacity: CGFloat
     let sidebarHeaderEdgeEffectStyle: ScrollEdgeEffectStyle
 
     init(
         revealFraction: CGFloat = 0.75,
         edgeActivationWidth: CGFloat = 44,
-        sidebarClosedScale: CGFloat = 0.95,
-        sidebarOverlayOpacity: CGFloat = 0.5,
         contentOverlayOpacity: CGFloat = 0.14,
         sidebarHeaderEdgeEffectStyle: ScrollEdgeEffectStyle = .soft
     ) {
         self.revealFraction = revealFraction
         self.edgeActivationWidth = edgeActivationWidth
-        self.sidebarClosedScale = sidebarClosedScale
-        self.sidebarOverlayOpacity = sidebarOverlayOpacity
         self.contentOverlayOpacity = contentOverlayOpacity
         self.sidebarHeaderEdgeEffectStyle = sidebarHeaderEdgeEffectStyle
     }
@@ -260,11 +254,6 @@ private struct SidebarDrawerInteractive<
                     header: sidebarHeader,
                     content: sidebarContent
                 )
-                .modifier(SidebarDrawerSidebarMotion(
-                    motion: motion,
-                    closedScale: configuration.sidebarClosedScale.clamped(to: 0 ... 1),
-                    overlayOpacity: configuration.sidebarOverlayOpacity.clamped(to: 0 ... 1)
-                ))
                 .allowsHitTesting(interaction.acceptsSidebarTouches)
                 .accessibilityHidden(!interaction.acceptsSidebarTouches)
 
@@ -814,23 +803,6 @@ private enum SidebarDrawerCardShape {
 
     private static func resting(_ progress: CGFloat) -> CGFloat {
         progress <= 0.001 ? 0 : progress >= 0.999 ? 1 : 0.5
-    }
-}
-
-private struct SidebarDrawerSidebarMotion: ViewModifier {
-    let motion: SidebarDrawerMotion
-    let closedScale: CGFloat
-    let overlayOpacity: CGFloat
-
-    func body(content: Content) -> some View {
-        let progress = motion.progress
-        content
-            .overlay {
-                drawerSystemBackground
-                    .opacity(overlayOpacity * (1 - progress))
-                    .allowsHitTesting(false)
-            }
-            .scaleEffect(closedScale + ((1 - closedScale) * progress), anchor: .leading)
     }
 }
 

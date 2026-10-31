@@ -176,6 +176,20 @@ struct TimelineChatTimelineView: View {
                     bridge.controller?.requestBottom(animated: true, forced: false)
                 }
             }
+            // A send made while the window does not reach the newest edge
+            // switches to the latest page at send time. Waiting for the
+            // upload/echo let the replacement land seconds later and the whole
+            // page changed mid-send (pp 2026-10-31: an attachment sent from a
+            // history window jumped when the latest page finally arrived).
+            .onChange(of: model.session.pendingMessages.map(\.id)) { oldIDs, newIDs in
+                let added = Set(newIDs).subtracting(oldIDs)
+                guard !added.isEmpty,
+                      model.session.pendingMessages.contains(where: { pending in
+                          added.contains(pending.id)
+                              && (pending.delivery == .sending || pending.delivery == .accepted)
+                      }) else { return }
+                bridge.noteComposerSend()
+            }
             .onChange(of: model.timeline.windowRevision) { _, _ in
                 bridge.reassertOpening()
             }
@@ -483,6 +497,15 @@ final class TimelineChatBridge: ObservableObject {
             + "items=\(controller.items.count)")
 #endif
         loadOlder()
+    }
+
+    /// A composer send made while the window does not reach the newest edge
+    /// switches to the latest page now. The pending bubble then lands in the
+    /// newest window with the reply, instead of the whole window changing
+    /// seconds later when the upload/echo finally lands.
+    func noteComposerSend() {
+        guard model.session.hasNewerItems else { return }
+        loadLatest()
     }
 
     private func loadLatest(auto: Bool = false) {

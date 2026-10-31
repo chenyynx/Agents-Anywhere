@@ -224,20 +224,21 @@ struct V2SessionProjection {
     /// `hasNewerAfterApply` is for a local-first page that is known to be
     /// behind the live cursor. Replacing the window must not claim the newest
     /// side is complete until the authoritative page lands.
+    /// `keepingAnchor` is for the background reconcile of a stale local-first
+    /// page: it fills the newest gap while the reader may be paged into
+    /// history, so the anchored window must survive (2026-10-31 08:31: the
+    /// arriving reply was the only row it had to add, but the newest-edge
+    /// trim would have dropped the reader's pages). A user-requested return to
+    /// the latest edge keeps the default: clear the anchor and let the idle
+    /// ceiling bound the window.
     mutating func applyLatest(_ page: V2SessionTimelinePage,
-                              hasNewerAfterApply: Bool = false) {
+                              hasNewerAfterApply: Bool = false,
+                              keepingAnchor: Bool = false) {
         guard page.sessionId == data.session.id else { return }
         // A GET can finish after newer socket frames. Its high watermark bounds
         // the window it may replace, but never acknowledges the event cursor.
         let newer = data.items.filter { $0.updatedSeq > page.nextSeq }
-        // A reader anchored in history keeps that anchor across the page: the
-        // latest page arrives to fill the newest gap (a local-first page can be
-        // stale), not to trim the pages the reader already loaded. Clearing it
-        // here turned the merge into a newest-`maximumItems` window and dropped
-        // the reader's older side (2026-10-31 08:31: the arriving reply was the
-        // only row the reconcile needed to add, but the window rule flipped
-        // under a history reader).
-        let heldAnchor = windowAnchor
+        let heldAnchor = keepingAnchor ? windowAnchor : nil
         windowAnchor = nil
         // A latest page updates the newest side. It must not drop older rows
         // the reader already loaded: the local-first page can be tiny (the

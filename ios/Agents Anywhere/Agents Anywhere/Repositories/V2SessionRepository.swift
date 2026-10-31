@@ -460,7 +460,10 @@ final class V2SessionRepository {
                 let page = try await self.detail.latestItems(
                     sessionId: entry.id, limit: limit, excludeAgentChildren: true)
                 try self.requireCurrent(entry, version: version)
-                entry.projection?.applyLatest(page)
+                // A background fill, not a reader return: if the reader is
+                // paged into history, keep their anchor and only add the
+                // newest rows the stale local page was missing.
+                entry.projection?.applyLatest(page, keepingAnchor: true)
                 self.emit(entry)
             } catch {
                 // The local page is already displayed. Keep `hasNewerItems`

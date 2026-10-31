@@ -143,7 +143,7 @@ import Testing
             try decode(itemObject(id: "item-\($0)", order: $0), as: V2TimelineItem.self)
         }
         projection.applyLatest(V2SessionTimelinePage(sessionId: "session", items: latest,
-            nextSeq: 41, hasMore: true, serverTime: nil))
+            nextSeq: 41, hasMore: true, serverTime: nil), keepingAnchor: true)
         #expect(projection.data.items.map(\.orderSeq) == Array(1...41))
         #expect(!projection.data.hasNewerItems)
     }

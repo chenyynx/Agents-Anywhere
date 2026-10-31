@@ -247,13 +247,15 @@
 - 用“视口离开底部”这个被动边沿代表“读者主动进入历史”。窗口替换/布局过渡也会翻这个边沿，但读者并没有离开阅读位置；reconcile 被误杀后，陈旧本地页缺的最新行（就是新回复）永远补不回来。
 
 **修改**
-- `V2SessionProjection.applyLatest`（`/home/ubuntu/aa-wt-attachments/ios/Agents Anywhere/Agents Anywhere/Repositories/V2SessionProjection.swift`）：重叠合并时保留读者已有的 history anchor，最新页只补窗口缺的行；`newer` 回填也按 history 合并，避免 anchor guard 把窗口自己的行挡掉。这样后台 reconcile 在历史阅读位置落地是安全的，不再需要为了“别在读者下面换窗口”而取消。
+- `V2SessionProjection.applyLatest`（`/home/ubuntu/aa-wt-attachments/ios/Agents Anywhere/Agents Anywhere/Repositories/V2SessionProjection.swift`）新增显式 `keepingAnchor`，只由后台 reconcile 传入：重叠合并时保留读者的 history anchor，最新页只补窗口缺的行；`newer` 回填也按 history 合并，避免 anchor guard 把窗口自己的行挡掉。**用户主动回最新仍走默认路径**（清 anchor + idle ceiling 截断），不改变 `boundedHistoryWindowAndReturningToLatest` 与 `LocalPageCacheTests` 已定义的契约（run 777 首版改动太宽，被这 4 个用例拦下后改为显式参数）。
+- `V2SessionRepository.startLatestReconcile` 调用 `applyLatest(page, keepingAnchor: true)`。
 - `TimelineChatTimelineView.viewportChanged`（`/home/ubuntu/aa-wt-attachments/ios/Agents Anywhere/Agents Anywhere/Views/Chat/TimelineCollection/TimelineChatTimelineView.swift`）：只有真正的读者滚动（`isReaderScrolling`，drag/decelerating）才取消 reconcile；被动翻转与状态栏回顶（`.animating`）不再取消。
 - `TimelineCollectionController` 新增只读 `isReaderScrolling`（仅 `phase.userIsScrolling`）。
 - 历史分页不再取消 reconcile（锚定合并已安全）；保留的取消只保护“读者在很小的本地最新页里主动滚动、网络页会在上方补行”的边缘场景。
 
 **测试**
-- `/home/ubuntu/aa-wt-attachments/ios/Tests/ClientCoreTests/SessionProjectionTests.swift` 新增 `aLatestReconcileKeepsTheAnchoredHistoryWindow`：`maximumItems=20`、锚定窗口 1...40，最新页 31...41 到来后窗口必须是 1...41（旧实现清 anchor 后退化成最新 20 行，第一处断言即红）。
+- `/home/ubuntu/aa-wt-attachments/ios/Tests/ClientCoreTests/SessionProjectionTests.swift` 新增 `aLatestReconcileKeepsTheAnchoredHistoryWindow`：`maximumItems=20`、锚定窗口 1...40，`keepingAnchor: true` 的最新页 31...41 到来后窗口必须是 1...41（旧实现清 anchor 后退化成最新 20 行，第一处断言即红）。
+- 默认路径（用户主动回最新）的 idle ceiling 行为由既有 3 个 LocalPageCache 用例 + `boundedHistoryWindowAndReturningToLatest` 继续守护。
 - Views 层分支无 ClientCore 单测，由 build job 编译 + 真机探针验证。
 - 待真机：在历史顶部收到新回复 → 回到底部 → 回复应由 reconcile 补上；即使随后去顶部触发 auto-older，reconcile 也应继续落地且不裁掉历史页。
 

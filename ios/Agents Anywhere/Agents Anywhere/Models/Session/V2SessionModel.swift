@@ -226,6 +226,11 @@ final class V2SessionModel: Identifiable {
     /// relaunch.
     let sendQueue = V2SendQueue()
     @ObservationIgnored private var queueDrainTask: Task<Void, Never>?
+    /// Accepted direct sends waiting for their echo. A stalled socket can drop
+    /// the echo event entirely; without a nudge the optimistic bubble spins
+    /// forever even though the server persisted the row (device 2026-10-31
+    /// 14:50: the `行` pending survived minutes and every later read).
+    @ObservationIgnored private var echoWatchdogs: [String: Task<Void, Never>] = [:]
     /// When the current head entered `.awaitingEcho`. A drained message waits
     /// this long for its authoritative echo before the queue stops trusting the
     /// HTTP accept alone; see `awaitingEchoTimeout`.
@@ -542,6 +547,7 @@ final class V2SessionModel: Identifiable {
             guard isValid else { return pending }
             pending.update(.accepted)
             clearDraft(ifMatching: pending)
+            watchEcho(for: pending)
         } catch {
             guard isValid else { return pending }
             if awaitingReplyID == pending.id { awaitingReplyID = nil }
@@ -559,6 +565,33 @@ final class V2SessionModel: Identifiable {
         }
         repository.localWorkDidChange(sessionID: id)
         return pending
+    }
+
+    /// A live echo can be lost to a stalled socket; nothing re-reads the row,
+    /// so the accepted bubble spins forever. After the write has had time to
+    /// echo, read the latest page once (the server has the row; a page read
+    /// brings it into the projection and `confirmEcho` retires the bubble).
+    /// If the echo still never lands, fall back to the existing uncertain
+    /// path instead of an endless spinner.
+    private func watchEcho(for pending: V2PendingMessage) {
+        guard echoWatchdogs[pending.id] == nil else { return }
+        echoWatchdogs[pending.id] = Task { @MainActor [weak self, weak pending] in
+            defer { self?.echoWatchdogs[pending.id] = nil }
+            try? await Task.sleep(for: .seconds(30))
+            guard !Task.isCancelled, let self, let pending, self.isValid,
+                  self.pendingMessages.contains(where: { $0.id == pending.id }),
+                  pending.delivery == .accepted else { return }
+            _ = try? await self.repository?.loadLatest(sessionId: self.id)
+            // The local-first page can be stale; the network reconcile runs
+            // in the background. Give it one more window before demoting
+            // (the queue's own echo timeout is 60 s).
+            try? await Task.sleep(for: .seconds(30))
+            guard !Task.isCancelled, self.isValid,
+                  self.pendingMessages.contains(where: { $0.id == pending.id }),
+                  pending.delivery == .accepted else { return }
+            pending.update(.uncertain(V2ClientFailure(kind: .unavailable,
+                message: String(localized: "上次发送的结果尚未确认，正在同步记录。请确认后再重试。"))))
+        }
     }
 
     /// An explicit UI action may dismiss a reviewed outcome; it never resends it.

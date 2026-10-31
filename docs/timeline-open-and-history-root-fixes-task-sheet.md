@@ -367,3 +367,25 @@
 - 首版 `ab8ad0b1` CI 783 test 红（reset 契约），已改为 anchor 保留 + 完整替换；新提交 CI 待跑。待真机：历史窗口里发送（含附件），服务端 snapshot 到达后不再整窗缩小/跳页，已加载历史仍在。
 
 **追加（2026-10-31 14:55 报告，b782）**：页脚在 `146↔176` 之间反复切换。根因是 `suppressLatest` 随 runtime 状态在 running/idle 间抖动：抖到 false 时走 `commit()`，但工具活跃（`hasActiveItems`）使 commit 拒绝 → 页脚消失；抖到 true 时 settled 分支又挂回。修：`commit()` 因活跃项拒绝时回退 settled host 页脚。新用例 `aRunningToolKeepsTheFooterWhenTheTurnLooksIdle`（旧实现返回空，红）。
+
+## R19 已 accepted 的 pending 丢 echo 后永远转圈（幽灵气泡，2026-10-31 14:50/14:55 报告，b782）
+
+**证据**
+- 报告里 `p:8F16360D-464E-4055-9210-6833896C3F9A`（“行”）从发送（t=8.86）一直挂到报告末尾（t=155），期间我的多条回复已到达、多次 apply/恢复都发生了。
+- 服务端 `timeline_items` 实查：`claude_msg_5d132e56f2f70fab4f761c2e`，`role=user`，`order_seq=4939`，`source.clientMessageId=8F16360D-464E-4055-9210-6833896C3F9A`，item_time `06:49:25Z` —— 行已落库。
+- 结论：直播流在客户端漏掉了这条 echo event（同时段服务端持续收到 connector 的 itemUpsert，见 server 日志），之后没有读把它带回来，`confirmEcho` 从未看到该行。
+
+**根因**
+- 直发的 pending 只有 `.accepted` 终态等待 echo，没有超时/看门狗；队列头有 60s `awaitingEchoTimeout`，直发没有。一次丢帧 = 永久转圈。
+
+**修改**
+- `/home/ubuntu/aa-wt-attachments/ios/Agents Anywhere/Agents Anywhere/Models/Session/V2SessionModel.swift`：
+  - 直发写成功后 `watchEcho(for:)`：30s 仍为 `.accepted` → `repository.loadLatest`（页读把服务端已有的 echo 行带回投影，`confirmEcho` 退掉气泡）；再过 30s 仍未确认 → 走既有 `.uncertain` 兜底，不再无限转圈。
+  - 看门狗按 pending id 去重；echo 正常到达时 pending 已被移除，看门狗自然退出。
+
+**测试**
+- 模型层含 30/60s 定时，无快速单测；`confirmEcho` 的匹配路径由既有用例覆盖。由 build job 编译 + 真机验证。
+- 待真机：断流场景发送后，气泡应在 ~30s 内被读回确认或进入“发送结果尚未确认”，不再永久转圈。
+
+**独立遗留**
+- 直播断流本身（服务端有数据、客户端漏 event）是另一条线；需要“中断发生时”的探针报告（不切会话/不清探针）定位 socket 接收侧。

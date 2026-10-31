@@ -569,6 +569,23 @@ final class TimelineCollectionController: UIViewController {
             + "off=\(probeOffsetBefore) contentH=\(layout.contentHeight) "
             + "anchor=\(probeAnchorID ?? "-") anchorY=\(probeAnchorYBefore)")
 #endif
+        // The reader owns their current position even if they scrolled while
+        // the page was in flight: re-pin the reading anchor to the item under
+        // the viewport now. The request-time anchor only covers the wait; the
+        // apply must preserve the content the reader is actually looking at
+        // across the prepend (device 2026-10-31 13:46: a 37→57 page inserted
+        // 49,859 pt above the request anchor and the viewport stayed at the
+        // new page's top).
+        if applyingHistoryPage, let live = anchor(at: collectionView.contentOffset.y),
+           let liveItem = currentItems.first(where: { $0.itemID == live.id }) {
+            historyAnchorItemID = live.id
+            historyAnchorOffsetIntoRow = live.offsetIntoRow
+            if let rowID = content?.rowIDs(in: liveItem).first {
+                historyAnchorRowID = rowID
+            }
+            anchorDriver?.beginHistoryPaging(anchorID: live.id,
+                                             offsetIntoRow: live.offsetIntoRow)
+        }
         let windowReplaced = !items.isEmpty
             && (oldFirstDynamic.map { !items.contains($0) } ?? true)
         // Parked heights belong to the window that is leaving; their rows and

@@ -1791,7 +1791,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // Only a changed snapshot will produce the update that consumes the
         // owed target; firing on an unchanged refresh would leave it behind.
         if let request = pendingHistoryRequest {
-            if Date.now.timeIntervalSince(request.createdAt) >= 5 {
+            // The controller's history-paging mode gives up after 15 s; while
+            // it owns the request the marker must outlive that bound, or a
+            // slow page (device report 2026-10-31 13:46: a local page took
+            // 7.0 s) loses its reading anchor before it arrives and is applied
+            // as an ordinary prepend with no offset correction. The legacy
+            // path without a paging controller keeps the short marker.
+            let markerTimeout: TimeInterval = controller?.historyPaging == true ? 20 : 5
+            if Date.now.timeIntervalSince(request.createdAt) >= markerTimeout {
                 pendingHistoryRequest = nil
                 // The owed target belongs to a page that never arrived; drop
                 // it so a later unrelated update cannot consume it.

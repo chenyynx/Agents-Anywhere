@@ -280,3 +280,22 @@
 
 **顺带观察（未修，单独线索）**
 - 切会话回来时有一次冷开：adapter 先只有 tail（`oldN=0 newN=1`）、随后 189 行 apply 时 `contentH=0.0 visible=0`，同步测量 105ms 后才显示（t=0.09→0.25）。这是“空 adapter 冷开”路径，与本次 R14 的缩小替换不是同一根因；本次报告未直接把它归为 pp 指的空白，先记录，等复现证据再定修法。
+
+## R15 加载历史页后视口停在新页顶部，原内容被顶走（2026-10-31 13:46 报告，b778）
+
+**证据（b778，13:46:44 报告）**
+- 页 2（37→57 行）：请求 t=5.17 发出（reader 在 off=139），页面 t=6.68 到达并 prepend 约 47k；`apply-begin ... applying=1 anchor=g:steps:msg_35118234 anchorY=327` → `apply-end off=-97->-97 d=0.0 anchorY=327->49859`，**没有 `driver enforce` 行**；锚点行被顶到视口下方 49,859pt，offset 一点没补。此后 settle 因 drift>2000 主动跳过（设计上交给 apply-time 修正），最终 view offset=-97（顶部）。
+- 页 3（57→73 行）：请求 t=10.14 发出，页面 t=17.11 才到（7.0s）。adapter 的 `pendingHistoryRequest` 5 秒超时先执行 `cancelHistoryRequest()` → `endHistoryPaging()`；到达时 `hist=0`、`anchor=-`，按普通 prepend 处理，同样无修正。
+
+**根因**
+1. 请求期间 reader 滚动/布局回调会改写 driver 的 reading placement；页面 apply 时 `enforceReadingPlacement` 已不是请求锚点，target 与当前 offset 相近（≤0.5）时静默 no-op。请求锚点只保证等待期间的位置，没有保证“页面到达时按读者当前看到的内容补插入高度”。
+2. adapter 的 pending 标记 5s 超时短于 controller 的 15s history-paging 上限；慢页面（本机 7s）在到达前丢掉 history 模式，apply 失去锚点修正。
+
+**修改**
+- `TimelineAnchorDriver.scrolledWithoutAHand`：`isHistoryPaging` 期间不重新绑定 placement（mover 运行中仍 reseed），防止等待期被动滚动改写页面锚点。
+- `TimelineCollectionController.apply`：`applyingHistoryPage` 时用 `anchor(at: 当前 offset)` 把 reading anchor 重新钉到**读者当前看到的内容**（跳过 prompt/tail），再交给 apply 后的 reanchor/enforce；读者请求后滚到别处也不会被拉回请求时刻，页面插入只改变上方内容。
+- `TimelineChatContentAdapter`：当 controller 仍处于 historyPaging 时，pending 标记超时放宽到 20s（比 controller 的 15s 上限长，放弃权归 controller）；无 paging controller 的 legacy 路径维持 5s。
+
+**测试**
+- 三处都在 Views/controller 层，无 ClientCore 红绿单测；`TimelineHistoryAnchorRows.isAnchorable` 已有单测保证 prompt/tail 不作锚点。
+- 待真机：滚动到历史顶部触发加载，页面到达后视口应保持原内容不动（新消息在上方，由读者自己上滑）；慢页面（>5s）也应保持锚定。若仍复现，下一步在 enforce 无条件打印 placement/target/motion 再定位。

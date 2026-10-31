@@ -413,6 +413,16 @@ final class TimelineAnchorDriver {
             mover.reseed(at: scrollView?.contentOffset.y ?? mover.position)
             return
         }
+        if isHistoryPaging {
+            // The in-flight page owns the reading placement until its apply
+            // resolves it. A layout correction during that wait moves the
+            // offset without a hand; re-binding the placement to whatever row
+            // is under the top edge loses the page's anchor and makes the
+            // apply's correction a no-op (device 2026-10-31 13:46: a 37→57
+            // page prepended 49,859 pt above the anchor and the viewport
+            // stayed at the new page's top).
+            return
+        }
         guard let anchor = currentAnchor() else { return }
         perform(.scrolledWithoutAHand(atEnd: isAtEnd(),
                                       id: anchor.id, offsetIntoRow: anchor.offsetIntoRow))

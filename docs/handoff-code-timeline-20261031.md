@@ -69,7 +69,8 @@
 
 ## 6. 日志/取证入口
 
-- 探针：左边缘「锚点日志」→复制；报告含 VISIBLE/HEIGHT/APPLIES/HISTORY/ISSUES。
+- 探针（b788 起）：会话「···」→「诊断与日志」，或 设置 → 开发者 → 诊断。面板顶部是 FINDINGS 智能摘要，点「打点 + 截图」记录现场，导出分享 txt+png；原始报告含 VISIBLE/HEIGHT/APPLIES/HISTORY/ISSUES。
+- 左边缘悬浮胶囊已撤（b788）；旧包仍可用左边缘「锚点日志」。
 - 服务端：`sudo docker logs moonveil-cloud-server-1 --since ...Z --until ...Z`（UTC；CST-8）
 - 服务端 DB：`sudo docker exec moonveil-cloud-postgres-1 psql -U moonveil -d moonveil -c "select id,role,order_seq,payload_json from timeline_items where session_id='sess_qosxGz-dnnK4jw' and payload_json ilike '%<clientMessageId>%';"`
 - connector：进程 `anywhere-cli start --config /home/ubuntu/.agents-anywhere-moonveil/connector.json`

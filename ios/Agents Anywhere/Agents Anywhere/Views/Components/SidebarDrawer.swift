@@ -41,18 +41,23 @@ final class SidebarDrawerRefresh {
 
 
 struct SidebarDrawerConfiguration: Sendable {
+    /// The official drawer is `min(320pt, 85% of the container)` wide
+    /// (EVIDENCE: 320 @0x105a62f78, 0.85 @0x1059bd000+0xfe0).
     let revealFraction: CGFloat
+    let maximumWidth: CGFloat
     let edgeActivationWidth: CGFloat
     let contentOverlayOpacity: CGFloat
     let sidebarHeaderEdgeEffectStyle: ScrollEdgeEffectStyle
 
     init(
-        revealFraction: CGFloat = 0.75,
+        revealFraction: CGFloat = 0.85,
+        maximumWidth: CGFloat = 320,
         edgeActivationWidth: CGFloat = 44,
         contentOverlayOpacity: CGFloat = 0.14,
         sidebarHeaderEdgeEffectStyle: ScrollEdgeEffectStyle = .soft
     ) {
         self.revealFraction = revealFraction
+        self.maximumWidth = maximumWidth
         self.edgeActivationWidth = edgeActivationWidth
         self.contentOverlayOpacity = contentOverlayOpacity
         self.sidebarHeaderEdgeEffectStyle = sidebarHeaderEdgeEffectStyle
@@ -240,7 +245,8 @@ private struct SidebarDrawerInteractive<
         GeometryReader { fullScreenGeometry in
             let screenSize = fullScreenGeometry.size
             let revealWidth = max(
-                screenSize.width * configuration.revealFraction.clamped(to: 0.01 ... 1),
+                min(configuration.maximumWidth,
+                    screenSize.width * configuration.revealFraction.clamped(to: 0.01 ... 1)),
                 1
             )
             let interaction = DrawerInteractionState(isOpen: isOpen, progress: motion.restingProgress,
@@ -816,6 +822,18 @@ private struct SidebarDrawerCardMotion: ViewModifier {
     let revealWidth: CGFloat
     let overlayOpacity: CGFloat
 
+    @Environment(\.displayScale) private var displayScale
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// The official card edge: 1px hairline in rgb(205,205,202) on light.
+    /// The dark value is not closed yet, so the previous primary hairline
+    /// stays there.
+    private var edgeLineColor: Color {
+        colorScheme == .dark
+            ? Color.primary.opacity(0.2)
+            : Color(red: 205.0 / 255.0, green: 205.0 / 255.0, blue: 202.0 / 255.0)
+    }
+
     func body(content: Content) -> some View {
         let progress = motion.progress
         let screenShape = SidebarDrawerCardShape.shape(isFullyClosed: isFullyClosed)
@@ -824,10 +842,11 @@ private struct SidebarDrawerCardMotion: ViewModifier {
             .background {
                 // Shadow only the card shape. Compositing the entire conversation
                 // into an animated shadow layer repaints its text during a pan.
-                // Keep the drawn shadow constant and fade its layer: a changing
-                // radius re-blurs a full-screen shape on every frame.
+                // The official content pane carries a constant black shadow —
+                // radius 6, opacity 0.1, no offset (probe 2026-10-31) — so the
+                // layer is drawn once and only its opacity follows progress.
                 screenShape.fill(drawerSystemBackground)
-                    .shadow(color: .black.opacity(0.28), radius: 18, x: -3, y: 0)
+                    .shadow(color: .black.opacity(0.1), radius: 6, x: 0, y: 0)
                     .opacity(progress)
                     .allowsHitTesting(false)
             }
@@ -840,7 +859,7 @@ private struct SidebarDrawerCardMotion: ViewModifier {
             }
             .overlay {
                 screenShape
-                    .stroke(Color.primary.opacity(0.2), lineWidth: 1)
+                    .stroke(edgeLineColor, lineWidth: 1 / max(displayScale, 1))
                     .opacity(progress)
                     .allowsHitTesting(false)
             }

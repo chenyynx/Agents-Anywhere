@@ -43,6 +43,10 @@ struct ChatComposerDock: View {
     @State private var isSending = false
     @State private var importCount = 0
     @State private var showsCommandMenu = false
+    /// Whether the current turn has shown any visible activity. This is what
+    /// separates "reply finished while the runtime finalizes" (switch to send)
+    /// from "the model has not started yet" (keep the stop key).
+    @State private var sawResponseActivity = false
     @Environment(\.displayScale) private var displayScale
 
     private enum AttachmentPicker { case photos, files }
@@ -51,9 +55,26 @@ struct ChatComposerDock: View {
     /// by the shared pure function (`ComposerQueueAffordance`) so the branch —
     /// queueing implies streaming, which the earlier inline order got wrong —
     /// is owned by one tested source instead of a view-local re-derivation.
+    /// Visible work still running (writing, a tool, reasoning, compaction, a
+    /// running SubAgent, or an approval waiting on the user).
+    private var responseActive: Bool {
+        guard let signals = sessionChat?.orbActivitySignals else { return false }
+        return signals.isStreamingAssistantText || signals.hasActiveToolItem
+            || signals.hasActiveReasoningItem || signals.hasActiveCompactItem
+            || signals.runningSubagentCount > 0 || signals.hasRespondableNotice
+    }
+
+    /// The reply is done while the runtime is still finalizing. The turn has
+    /// already produced activity, so this is not the "waiting for the model to
+    /// start" window (which keeps the stop key).
+    private var responseFinished: Bool {
+        isStreaming && sawResponseActivity && !responseActive
+    }
+
     private var affordance: ComposerQueueAffordance {
         ComposerQueueAffordance.resolve(
             isStreaming: isStreaming,
+            responseFinished: responseFinished,
             hasText: !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             canQueue: canQueueSend,
             canStop: canStop,
@@ -85,6 +106,17 @@ struct ChatComposerDock: View {
                 .composerKeyboardGesture(draft: draft, editor: editor)
         }
         .onChange(of: sessionChat?.optionsRequest) { _, _ in showsOptions = true }
+        .onChange(of: isStreaming) { _, streaming in
+            // A new turn clears the finished-response memory; the next idle
+            // after activity means "reply done", not "not started yet".
+            if streaming { sawResponseActivity = false }
+        }
+        .onChange(of: responseActive) { _, active in
+            if active { sawResponseActivity = true }
+        }
+        .onAppear {
+            if responseActive { sawResponseActivity = true }
+        }
         .frame(maxWidth: ChatControlMetrics.maximumContentWidth)
         .frame(maxWidth: .infinity)
         .background {

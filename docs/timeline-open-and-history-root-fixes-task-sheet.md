@@ -342,3 +342,25 @@
 
 **状态**
 - 代码与测试已提交；CI 待跑。待真机：最新页时后台工具调用/工具结果到达，上一条回复不再掉 30pt，页面只有正常的底部生长。
+
+## R18 服务端 timeline.snapshot 整窗替换本地历史 → 发送后跳页（2026-10-31 14:43 报告，b782）
+
+**证据（b782，14:43:31 报告；pp 现场：发送后跳页）**
+- `t=106.57` pending `p:EBCB144F…` 入列（496→497），窗口 498 条，offset 88779（底部）。
+- `t=108.14` apply `oldN=498 newN=199`，contentH 89654→40903；`t=108.23` apply-end offset `88831→40145`（**-48,686**）。
+- 整个 H 段没有 `bridge loadLatest` 行——不是 R16 的发送切最新，而是 `V2SessionProjection.apply` 的 `timeline.snapshot` 分支直接 `replaceTimeline(items)`，把本地已加载的 498 条历史窗口换成服务端最新页 199 条。
+
+**根因**
+- `timeline.snapshot` 被当成“整个时间线”的重置；实际它是服务端的最新一页。读者已加载的历史行不在这一页里，整窗替换既丢历史也造成视口大跳。
+
+**修改**
+- `/home/ubuntu/aa-wt-attachments/ios/Agents Anywhere/Agents Anywhere/Repositories/V2SessionProjection.swift`：
+  - `timeline.snapshot` 改走 `applySnapshot`：空快照 → 替换（初始加载/显式重置）；与当前窗口重叠 → `merge(history: true)` 保留读者已加载的旧行，快照到达最新边时清 `hasNewerItems`；不重叠（中间有真实缺口）→ 仍替换。
+  - 窗口 anchor 不受影响，历史阅读位置保持。
+
+**测试**
+- `/home/ubuntu/aa-wt-attachments/ios/Tests/ClientCoreTests/SessionProjectionTests.swift` 新增 `aSnapshotMergesWithTheLoadedHistoryWindow`：锚定窗口 1...40，`timeline.snapshot` 31...41 到达后必须是 1...41（旧实现 31...41，第一处断言即红）。
+- 既有 `resetReplacesTimelineAndUnknownEventsRemainAccessible`（空快照清空）保持通过。
+
+**状态**
+- 代码与测试已提交；CI 待跑。待真机：历史窗口里发送（含附件），服务端 snapshot 到达后不再整窗缩小/跳页，已加载历史仍在。

@@ -148,6 +148,25 @@ import Testing
         #expect(!projection.data.hasNewerItems)
     }
 
+    /// A live `timeline.snapshot` is the server's latest page, not the reader's
+    /// whole history. Replacing the loaded window with it collapsed the list
+    /// right after a send (device 2026-10-31 14:43: 498 → 199 items and the
+    /// offset fell 48,686). The overlapping snapshot must merge.
+    @Test func aSnapshotMergesWithTheLoadedHistoryWindow() throws {
+        let recent = try (21...40).map { try itemObject(id: "item-\($0)", order: $0) }
+        var projection = V2SessionProjection(snapshot: try snapshot(items: recent), maximumItems: 20)
+        let older = try (1...20).map {
+            try decode(itemObject(id: "item-\($0)", order: $0), as: V2TimelineItem.self)
+        }
+        projection.applyHistory(V2SessionTimelinePage(sessionId: "session", items: older,
+            nextSeq: 40, hasMore: true, serverTime: nil), anchorOrderSeq: 25)
+        #expect(projection.data.items.map(\.orderSeq) == Array(1...40))
+        let snapshotItems = try (31...41).map { try itemObject(id: "item-\($0)", order: $0) }
+        try projection.apply(event("timeline.snapshot", seq: 41, payload: ["items": snapshotItems]))
+        #expect(projection.data.items.map(\.orderSeq) == Array(1...41))
+        #expect(!projection.data.hasNewerItems)
+    }
+
     @Test func historyWindowKeepsTheVisibleAnchorAndTheNewestTail() throws {
         // Latest page 481...500; the reader is at 495 near the tail. One older
         // page arrives with the visible anchor at 495.

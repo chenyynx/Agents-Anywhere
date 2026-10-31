@@ -299,3 +299,21 @@
 **测试**
 - 三处都在 Views/controller 层，无 ClientCore 红绿单测；`TimelineHistoryAnchorRows.isAnchorable` 已有单测保证 prompt/tail 不作锚点。
 - 待真机：滚动到历史顶部触发加载，页面到达后视口应保持原内容不动（新消息在上方，由读者自己上滑）；慢页面（>5s）也应保持锚定。若仍复现，下一步在 enforce 无条件打印 placement/target/motion 再定位。
+
+## R16 历史窗口里发送时整页延后替换（pp 2026-10-31 14:00 报告，b778；产品决策=方案 1）
+
+**证据**
+- b778 13:49:35 报告：用户在 450 条窗口底部（offset 79917）发送带附件消息；`t=136.61` pending 入列，附件预览在 `t=140.31` 把气泡抬高 150pt；`t=140.41` 整窗变成 152 条（contentH 80889→32372），offset 80067→31614。跳变发生在发送/上传过程中。
+- 窗口不是真正最新（最新页未落地）；文字测试那几条都在 152 条最新页落地之后发送，所以不跳。pp 澄清“我当时是在底部的吧”——是已加载页的底，不是会话最新。
+
+**产品决策**
+- pp 选择方案 1：**发送时若当前窗口不是真正最新，就先切到最新页**，再做转圈/上传；不要在几秒后由最新页落地被动替换。
+
+**修改**
+- `TimelineChatTimelineView` 监听 `model.session.pendingMessages` 的新增项（delivery 为 `.sending`/`.accepted`，排除队列降级产生的 `.uncertain`），调用 bridge 的 `noteComposerSend()`。
+- `TimelineChatBridge.noteComposerSend()`：`hasNewerItems` 时走与回底按钮相同的 `loadLatest()`（武装窗口替换返回 + 本地优先最新页）；已在最新窗口时不动。
+- 队列自动 drain 不产生 `pendingMessages` 项，不会因此拉读者回最新。
+
+**测试**
+- Views 层，无 ClientCore 单测；build job + 真机验证。
+- 待真机：历史窗口里发文字/附件，跳变应在“按发送”那一刻完成；随后 pending、状态行、回复都在最新页内平滑出现。

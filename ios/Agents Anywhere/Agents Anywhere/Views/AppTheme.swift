@@ -62,4 +62,13 @@ enum AppTheme {
             ? Color.white.opacity(0.20)
             : Color(red: 231.0 / 255.0, green: 230.0 / 255.0, blue: 225.0 / 255.0)
     }
+
+    /// Official DrawerRow text token (binary: slot 0x108151c58, dynamic
+    /// color; light #52514E, dark #C3C2B7). Session titles on the drawer
+    /// list use this instead of `primary`.
+    static func sidebarRowText(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(red: 195.0 / 255.0, green: 194.0 / 255.0, blue: 183.0 / 255.0)
+            : Color(red: 82.0 / 255.0, green: 81.0 / 255.0, blue: 78.0 / 255.0)
+    }
 }

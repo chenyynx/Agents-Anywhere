@@ -373,9 +373,10 @@ struct ChatSidebarSessionRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 16) {
                     SessionAgentIcon(runtime: session.runtime, runtimeType: session.runtimeType)
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
                     Text(session.title ?? String(localized: "Untitled session"))
-                        .font(.body).foregroundStyle(.primary)
+                        .font(.body)
+                        .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
                         .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                     ChatSidebarSessionIndicator(indicator: session.presentation.indicator)
                 }

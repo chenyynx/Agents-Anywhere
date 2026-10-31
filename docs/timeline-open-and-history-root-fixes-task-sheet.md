@@ -389,3 +389,20 @@
 
 **独立遗留**
 - 直播断流本身（服务端有数据、客户端漏 event）是另一条线；需要“中断发生时”的探针报告（不切会话/不清探针）定位 socket 接收侧。
+
+## R20 页脚在回复完成后慢一拍出现（2026-10-31 16:14 报告，b788）
+
+**证据（b788，16:14:30 报告）**
+- `g:msg_fa01eeb1` 正文在 t=390.74 定稿（29→110），页脚到 t=392.30 才 +30（110→140），间隔 1.56s。
+- connector 在消息边界（`content_block_stop`/`message_stop`）就把 message 行标 `done`（`connector/runtimes/claude/timeline/stream.py:543-565`）；`session_turn_ended` 要等 CLI 的 `result`，约晚 1-2 秒到达。
+- 客户端拿到 turn_end 后立刻挂页脚（392.30 与最后一次 itemUpsert 同拍）——不是客户端定时器，是规则在等 idle。
+
+**根因**
+- `TimelineTurnActions.build` 的 settled 分支只在 `contentAfterSettled` 时发布；「最后一段已完成、回合仍在收尾」被压住，必须等 turn_end 才 commit。
+
+**修改**
+- `TimelineTurnActions.build`：已完成段的页脚不再要求 `contentAfterSettled`；回合运行中只要最后 host 已 done 就发布。工具/后续文本仍沿用 R17 的「留在已完成 host」，turn 结束再 commit 最终 host。
+- 测试：`TimelineTurnActionsTests.aFinishedReplyGetsItsFooterBeforeTheTurnReportsIdle`（done 回复在 running 时就有页脚；streaming 状态仍无）。
+
+**状态**
+- 代码与测试已提交；本地 Swift 6.0.3 低于包要求的 6.2.0，单测由 CI 跑。待真机：回复完成后页脚随消息完成立即出现，不再等 1-2 秒；工具调用期间不回退（R17）。

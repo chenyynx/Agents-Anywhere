@@ -169,8 +169,10 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         let startedAt: TimeInterval
         let endedAt: TimeInterval
         let frames: Int
-        let hitches: Int
-        let maxGapMs: Int
+        /// Dropped frames felt during the transition, including the end and
+        /// post-end boundary frames recorded after the window closed.
+        var hitches: Int
+        var maxGapMs: Int
         /// Frame-gap distribution for this transition. The average tells a
         /// continuous render cost apart from one-off boundary spikes, which
         /// the old per-transition summary (hitches + max) could not.
@@ -181,6 +183,15 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         /// place that cost shows up as a frame gap.
         let firstGapMs: Int
         let gaps: [Int]
+        /// Gap between the last frame inside the window and the next one.
+        /// The completion lands there, after `drawerTransitioning` is
+        /// already false; without it the end-of-transition hitch is
+        /// invisible and gets attributed to scrolling.
+        var endGapMs: Int = 0
+        /// The two frames after `endGapMs`. The drawer defers its `isOpen`
+        /// write by one main-queue turn, so the page rebuild it triggers can
+        /// land one or two frames after the animation is gone.
+        var postGaps: [Int] = []
         var durationMs: Int { Int(((endedAt - startedAt) * 1000).rounded()) }
     }
 
@@ -203,8 +214,6 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     /// The display-link timestamps of the last few frames, for the frame-rate
     /// and animation-smoothness checks.
     private var frameTimestamps: [TimeInterval] = []
-    /// How many timestamps the frame-rate check has already judged.
-    private var lastFrameRateIndex = 0
     /// The last slow-frame stack, for the main-thread blocker check.
     private var lastSlowFrameStack: [String] = []
 
@@ -253,9 +262,12 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     private(set) var drawerTransitions: [DrawerTransition] = []
     private var drawerStartedAt: TimeInterval?
     private var drawerFrames = 0
-    private var drawerHitches = 0
-    private var drawerMaxGapMs = 0
     private var drawerGaps: [Int] = []
+    /// Display-link ticks still to be recorded against the transition that
+    /// just ended: the end boundary plus the two frames after it. The
+    /// drawer commits `isOpen` one main-queue turn after the animation, so
+    /// the page rebuild it triggers can land one or two frames later.
+    private var postDrawerTicksRemaining = 0
     /// Last time a slow-frame stack was captured. `callStackSymbols` walks
     /// and symbolizes on the calling thread, so capturing on every slow
     /// frame adds work to the very gaps being measured.
@@ -317,15 +329,13 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         lastContentSamples.removeAll()
         recentTouches.removeAll()
         frameTimestamps.removeAll()
-        lastFrameRateIndex = 0
         lastSlowFrameStack.removeAll()
         drawerTransitioning = false
         drawerTransitions.removeAll()
         drawerStartedAt = nil
         drawerFrames = 0
-        drawerHitches = 0
-        drawerMaxGapMs = 0
         drawerGaps.removeAll()
+        postDrawerTicksRemaining = 0
         lastStackCaptureAt = 0
         runStartedAt = CACurrentMediaTime()
     }
@@ -344,7 +354,6 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         lastContentSamples.removeAll()
         recentTouches.removeAll()
         frameTimestamps.removeAll()
-        lastFrameRateIndex = 0
         lastSlowFrameStack.removeAll()
     }
 
@@ -380,29 +389,57 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     @objc private func tick(_ link: CADisplayLink) {
         let now = CACurrentMediaTime()
         frameTimestamps.append(now)
-        if frameTimestamps.count > 120 {
-            let removed = frameTimestamps.count - 120
-            frameTimestamps.removeFirst(removed)
-            // `checkFrameRate` scans from this index. Trimming the ring
-            // shifted every entry left by `removed`; without the same shift
-            // the next scan restarts at the wrong entry and silently skips
-            // gaps whenever the ring is full.
-            lastFrameRateIndex = max(0, lastFrameRateIndex - removed)
+        if frameTimestamps.count > 120 { frameTimestamps.removeFirst() }
+
+        // The gaps that end the drawer window are the frames the reader feels
+        // when the transition lands: the completion flips the environment and
+        // the deferred `isOpen` write rebuilds the page, both after
+        // `drawerTransitioning` is already false. Record the end boundary and
+        // the two frames after it against the transition that just ended.
+        if lastTickAt > 0, postDrawerTicksRemaining > 0, !drawerTransitioning {
+            postDrawerTicksRemaining -= 1
+            if let index = drawerTransitions.indices.last {
+                let ms = Int(((now - lastTickAt) * 1000).rounded())
+                if drawerTransitions[index].endGapMs == 0 {
+                    drawerTransitions[index].endGapMs = ms
+                } else if drawerTransitions[index].postGaps.count < 2 {
+                    drawerTransitions[index].postGaps.append(ms)
+                }
+                // The reader feels these frames as part of the slide; count
+                // them in the transition even though its window is closed.
+                if ms > 33 { drawerTransitions[index].hitches += 1 }
+                drawerTransitions[index].maxGapMs =
+                    max(drawerTransitions[index].maxGapMs, ms)
+            }
         }
         // Main-thread hitches while the reader is dragging show up as long
         // display-link intervals. A height correction can also look like
-        // jitter; these counters separate the two.
+        // jitter; these counters separate the two. Count each gap once, when
+        // it ends, and tag it with the phase it happened in. A 10 Hz scan
+        // cannot do that: it sees a gap up to 100 ms after it happened, when
+        // the drawer flag may already have flipped, which is how scroll
+        // hitches ended up in drawer transitions (probe 17:54).
         if lastTickAt > 0, let view = controller?.collectionView,
            view.isTracking || view.isDecelerating || drawerTransitioning {
             let ms = (now - lastTickAt) * 1000
             counters["frameSamples", default: 0] += 1
+            counters["maxFrameMs", default: 0] =
+                max(counters["maxFrameMs"] ?? 0, Int(ms.rounded()))
+            counters["frameRateMaxGapMs", default: 0] =
+                max(counters["frameRateMaxGapMs"] ?? 0, Int(ms.rounded()))
             if drawerTransitioning {
                 drawerFrames += 1
                 drawerGaps.append(Int(ms.rounded()))
                 if drawerGaps.count > 120 { drawerGaps.removeFirst() }
             }
-            counters["maxFrameMs", default: 0] =
-                max(counters["maxFrameMs"] ?? 0, Int(ms.rounded()))
+            if ms > 33 {
+                counters["frameRateHitches", default: 0] += 1
+                frameHitches.append((at: now, ms: Int(ms.rounded()),
+                                     drawer: drawerTransitioning))
+                if frameHitches.count > Self.maxHitches {
+                    frameHitches.removeFirst(frameHitches.count - Self.maxHitches)
+                }
+            }
             if ms > 20 {
                 counters["slowFrames", default: 0] += 1
                 captureSlowFrameStack(now: now)
@@ -547,6 +584,19 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         case .pending: return "pending"
         case .tail: return "tail"
         }
+    }
+
+    /// Time spent rebuilding the shell's session list on each host body
+    /// evaluation. The drawer commits `isOpen` one main-queue turn after its
+    /// animation, which invalidates the host view right after the transition;
+    /// this is the piece of that body whose cost scales with the session
+    /// count (probe 2026-10-31, drawer hand-feel report).
+    func noteShellSessions(seconds: TimeInterval) {
+        let ms = Int((max(0, seconds) * 1000).rounded())
+        counters["shellSessionsCount", default: 0] += 1
+        counters["shellSessionsMsTotal", default: 0] += ms
+        counters["shellSessionsMsMax", default: 0] =
+            max(counters["shellSessionsMsMax"] ?? 0, ms)
     }
 
     func noteMeasureDuration(_ seconds: TimeInterval) {
@@ -817,10 +867,6 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         // a swallowed gesture.
         checkTouches(controller: controller, view: view)
 
-        // Frame rate: gaps > 33 ms are dropped frames; runs of them are
-        // hitches the reader feels as stutter.
-        checkFrameRate()
-
         // A fitting pass is a SwiftUI layout pass. Run it only when the reader
         // is not scrolling: measuring during a scroll would change the very
         // behaviour this probe is observing.
@@ -970,47 +1016,6 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                             detail: "at=(\(f(touch.location.x)),\(f(touch.location.y))) "
                                 + "no row off=\(f(view.contentOffset.y))")
             }
-        }
-    }
-
-    /// The frame timestamps the display link recorded, checked for frame-rate
-    /// drops and animation hitches. A gap > 33 ms is a dropped frame; a run
-    /// of gaps > 50 ms is a hitch.
-    private func checkFrameRate() {
-        guard frameTimestamps.count >= 2 else { return }
-        // Only gaps the probe has not counted yet: re-scanning the same
-        // 120-frame window on every sample counted each hitch ~ten times.
-        // Idle and launch gaps are not the reader's scroll, so they only
-        // count while the list is under the reader's hand or coasting.
-        let view = controller?.collectionView
-        let browsing = view?.isTracking == true || view?.isDecelerating == true
-            || drawerTransitioning
-        let first = max(1, min(lastFrameRateIndex, frameTimestamps.count - 1))
-        var maxGap: TimeInterval = 0
-        var hitchCount = 0
-        for index in first..<frameTimestamps.count {
-            let gap = frameTimestamps[index] - frameTimestamps[index - 1]
-            maxGap = max(maxGap, gap)
-            if browsing, gap > 0.033 {
-                hitchCount += 1
-                let ms = Int((gap * 1000).rounded())
-                if drawerTransitioning {
-                    drawerHitches += 1
-                    drawerMaxGapMs = max(drawerMaxGapMs, ms)
-                }
-                frameHitches.append((at: frameTimestamps[index], ms: ms,
-                                     drawer: drawerTransitioning))
-                if frameHitches.count > Self.maxHitches {
-                    frameHitches.removeFirst(frameHitches.count - Self.maxHitches)
-                }
-            }
-        }
-        lastFrameRateIndex = frameTimestamps.count
-        guard browsing else { return }
-        counters["frameRateMaxGapMs", default: 0] =
-            max(counters["frameRateMaxGapMs"] ?? 0, Int((maxGap * 1000).rounded()))
-        if hitchCount > 0 {
-            counters["frameRateHitches", default: 0] += hitchCount
         }
     }
 
@@ -1326,9 +1331,8 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         if active {
             drawerStartedAt = now
             drawerFrames = 0
-            drawerHitches = 0
-            drawerMaxGapMs = 0
             drawerGaps.removeAll()
+            postDrawerTicksRemaining = 0
             noteHistory("drawer-start")
         } else {
             let startedAt = drawerStartedAt ?? now
@@ -1336,13 +1340,18 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             let sorted = gaps.sorted()
             let avgGap = gaps.isEmpty ? 0
                 : Int((Double(gaps.reduce(0, +)) / Double(gaps.count)).rounded())
+            // Derived from this window's own gaps, not from the 10 Hz scan:
+            // the scan can observe a gap after the drawer flag already
+            // flipped and hand a scroll hitch to the wrong transition.
             let transition = DrawerTransition(startedAt: startedAt, endedAt: now,
-                                              frames: drawerFrames, hitches: drawerHitches,
-                                              maxGapMs: drawerMaxGapMs,
+                                              frames: drawerFrames,
+                                              hitches: gaps.filter { $0 > 33 }.count,
+                                              maxGapMs: gaps.max() ?? 0,
                                               avgGapMs: avgGap,
                                               p50GapMs: sorted.isEmpty ? 0 : sorted[sorted.count / 2],
                                               firstGapMs: gaps.first ?? 0,
                                               gaps: gaps)
+            postDrawerTicksRemaining = 3
             drawerTransitions.append(transition)
             if drawerTransitions.count > 6 {
                 drawerTransitions.removeFirst(drawerTransitions.count - 6)
@@ -1493,6 +1502,8 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                     + "frames=\(transition.frames) hitches=\(transition.hitches) "
                     + "maxGap=\(transition.maxGapMs)ms avg=\(transition.avgGapMs)ms "
                     + "p50=\(transition.p50GapMs)ms first=\(transition.firstGapMs)ms "
+                    + "end=\(transition.endGapMs)ms "
+                    + "post=[\(transition.postGaps.map { String($0) }.joined(separator: ","))] "
                     + "gaps=[\(transition.gaps.map { String($0) }.joined(separator: ","))]")
             }
         }

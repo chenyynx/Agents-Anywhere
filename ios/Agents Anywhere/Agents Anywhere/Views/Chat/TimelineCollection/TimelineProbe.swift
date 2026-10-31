@@ -166,6 +166,16 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         let frames: Int
         let hitches: Int
         let maxGapMs: Int
+        /// Frame-gap distribution for this transition. The average tells a
+        /// continuous render cost apart from one-off boundary spikes, which
+        /// the old per-transition summary (hitches + max) could not.
+        let avgGapMs: Int
+        let p50GapMs: Int
+        /// Gap before the first sampled frame. The transition start flips the
+        /// drawer environment and rebuilds page readers, so this is the only
+        /// place that cost shows up as a frame gap.
+        let firstGapMs: Int
+        let gaps: [Int]
         var durationMs: Int { Int(((endedAt - startedAt) * 1000).rounded()) }
     }
 
@@ -237,6 +247,11 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     private var drawerFrames = 0
     private var drawerHitches = 0
     private var drawerMaxGapMs = 0
+    private var drawerGaps: [Int] = []
+    /// Last time a slow-frame stack was captured. `callStackSymbols` walks
+    /// and symbolizes on the calling thread, so capturing on every slow
+    /// frame adds work to the very gaps being measured.
+    private var lastStackCaptureAt: TimeInterval = 0
 
     private static let maxChanges = 160
     private static let maxIssues = 100
@@ -301,6 +316,8 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         drawerFrames = 0
         drawerHitches = 0
         drawerMaxGapMs = 0
+        drawerGaps.removeAll()
+        lastStackCaptureAt = 0
         runStartedAt = CACurrentMediaTime()
     }
 
@@ -353,7 +370,15 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     @objc private func tick(_ link: CADisplayLink) {
         let now = CACurrentMediaTime()
         frameTimestamps.append(now)
-        if frameTimestamps.count > 120 { frameTimestamps.removeFirst() }
+        if frameTimestamps.count > 120 {
+            let removed = frameTimestamps.count - 120
+            frameTimestamps.removeFirst(removed)
+            // `checkFrameRate` scans from this index. Trimming the ring
+            // shifted every entry left by `removed`; without the same shift
+            // the next scan restarts at the wrong entry and silently skips
+            // gaps whenever the ring is full.
+            lastFrameRateIndex = max(0, lastFrameRateIndex - removed)
+        }
         // Main-thread hitches while the reader is dragging show up as long
         // display-link intervals. A height correction can also look like
         // jitter; these counters separate the two.
@@ -361,20 +386,51 @@ final class TimelineProbeStore: NSObject, ObservableObject {
            view.isTracking || view.isDecelerating || drawerTransitioning {
             let ms = (now - lastTickAt) * 1000
             counters["frameSamples", default: 0] += 1
-            if drawerTransitioning { drawerFrames += 1 }
+            if drawerTransitioning {
+                drawerFrames += 1
+                drawerGaps.append(Int(ms.rounded()))
+                if drawerGaps.count > 120 { drawerGaps.removeFirst() }
+            }
             counters["maxFrameMs", default: 0] =
                 max(counters["maxFrameMs"] ?? 0, Int(ms.rounded()))
             if ms > 20 {
                 counters["slowFrames", default: 0] += 1
-                // The stack of a slow frame names the main-thread blocker.
-                // Kept to the last one; the report prints it verbatim.
-                lastSlowFrameStack = Array(Thread.callStackSymbols.prefix(20))
+                captureSlowFrameStack(now: now)
             }
         }
         lastTickAt = now
         guard now - lastSampleAt >= 0.1 else { return }
         lastSampleAt = now
+        timedSample(now: now)
+    }
+
+    /// Keep the last slow-frame stack, but capture at most twice a second.
+    /// `Thread.callStackSymbols` walks and symbolizes on the calling thread;
+    /// on every frame over 20 ms it became a large share of the gaps it was
+    /// measuring (a 450 ms drawer window could capture a dozen stacks).
+    /// The cost is recorded so the report can separate probe overhead from
+    /// app work.
+    private func captureSlowFrameStack(now: TimeInterval) {
+        guard now - lastStackCaptureAt >= 0.5 else { return }
+        lastStackCaptureAt = now
+        let started = CACurrentMediaTime()
+        lastSlowFrameStack = Array(Thread.callStackSymbols.prefix(20))
+        let costMs = Int(((CACurrentMediaTime() - started) * 1000).rounded())
+        counters["probeStackCaptures", default: 0] += 1
+        counters["probeStackMsTotal", default: 0] += costMs
+        counters["probeStackMsMax", default: 0] =
+            max(counters["probeStackMsMax"] ?? 0, costMs)
+    }
+
+    /// The 10 Hz sampler reads layout, visible cells and cell frames. Time it
+    /// so its share of a slow window is visible in the counters.
+    private func timedSample(now: TimeInterval) {
+        let started = CACurrentMediaTime()
         sample(now: now)
+        let ms = Int(((CACurrentMediaTime() - started) * 1000).rounded())
+        counters["probeSampleMsTotal", default: 0] += ms
+        counters["probeSampleMsMax", default: 0] =
+            max(counters["probeSampleMsMax"] ?? 0, ms)
     }
 
     /// A scroll callback is the finest-grained moment the layout can be read;
@@ -384,7 +440,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         let now = CACurrentMediaTime()
         guard now - lastSampleAt >= 0.04 else { return }
         lastSampleAt = now
-        sample(now: now)
+        timedSample(now: now)
     }
 
     // MARK: - Recording
@@ -1209,12 +1265,21 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             drawerFrames = 0
             drawerHitches = 0
             drawerMaxGapMs = 0
+            drawerGaps.removeAll()
             noteHistory("drawer-start")
         } else {
             let startedAt = drawerStartedAt ?? now
+            let gaps = drawerGaps
+            let sorted = gaps.sorted()
+            let avgGap = gaps.isEmpty ? 0
+                : Int((Double(gaps.reduce(0, +)) / Double(gaps.count)).rounded())
             let transition = DrawerTransition(startedAt: startedAt, endedAt: now,
                                               frames: drawerFrames, hitches: drawerHitches,
-                                              maxGapMs: drawerMaxGapMs)
+                                              maxGapMs: drawerMaxGapMs,
+                                              avgGapMs: avgGap,
+                                              p50GapMs: sorted.isEmpty ? 0 : sorted[sorted.count / 2],
+                                              firstGapMs: gaps.first ?? 0,
+                                              gaps: gaps)
             drawerTransitions.append(transition)
             if drawerTransitions.count > 6 {
                 drawerTransitions.removeFirst(drawerTransitions.count - 6)
@@ -1363,7 +1428,9 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             for transition in drawerTransitions {
                 lines.append("D t=\(elapsed(transition.startedAt)) dur=\(transition.durationMs)ms "
                     + "frames=\(transition.frames) hitches=\(transition.hitches) "
-                    + "maxGap=\(transition.maxGapMs)ms")
+                    + "maxGap=\(transition.maxGapMs)ms avg=\(transition.avgGapMs)ms "
+                    + "p50=\(transition.p50GapMs)ms first=\(transition.firstGapMs)ms "
+                    + "gaps=[\(transition.gaps.map { String($0) }.joined(separator: ","))]")
             }
         }
 

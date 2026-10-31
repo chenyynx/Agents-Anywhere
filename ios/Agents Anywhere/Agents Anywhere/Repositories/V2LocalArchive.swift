@@ -39,9 +39,9 @@ nonisolated struct V2SessionArchive: Codable {
         var superseded: [String]? = nil
     }
     let session: V2SessionMeta
-    let items: [JSONValue]
+    var items: [JSONValue]
     let cursor: String
-    let hasOlderItems: Bool
+    var hasOlderItems: Bool
     let hasNewerItems: Bool
     let draft: String
     let draftAttachments: [ChatAttachment]
@@ -137,12 +137,74 @@ nonisolated struct V2SessionArchive: Codable {
     }
 }
 
+extension V2SessionArchive {
+    /// The archive without its timeline rows. This is the value the row store
+    /// keeps beside `timeline_items`; user work (draft/pending/queue) must
+    /// survive even when cached rows are evicted.
+    nonisolated func withoutItems() -> V2SessionArchive {
+        var copy = self
+        copy.items = []
+        return copy
+    }
+
+    /// A P1 shadow snapshot: every row is decoded lossily so one malformed row
+    /// cannot fail the whole session. `cacheBytes` counts timeline payload only;
+    /// previews/activity accounting arrives with the cache limit in P3.
+    nonisolated func timelineSnapshot(now: Date = Date()) -> TimelineSnapshot {
+        var rows: [TimelineRow] = []
+        rows.reserveCapacity(items.count)
+        var cacheBytes: Int64 = 0
+        for raw in items {
+            guard let item = try? V2TimelineItem(json: raw),
+                  let payload = try? JSONEncoder().encode(raw) else { continue }
+            rows.append(TimelineRow(id: item.id, orderSeq: item.orderSeq,
+                                    updatedSeq: item.updatedSeq, payload: payload))
+            cacheBytes += Int64(payload.count)
+        }
+        let stateBlob = (try? JSONEncoder().encode(withoutItems())) ?? Data()
+        if let activity = subAgentActivity,
+           let bytes = try? JSONEncoder().encode(activity) {
+            cacheBytes += Int64(bytes.count)
+        }
+        if let previews,
+           let bytes = try? JSONEncoder().encode(previews) {
+            cacheBytes += Int64(bytes.count)
+        }
+        return TimelineSnapshot(sessionID: session.id, cursor: cursor,
+                                hasOlderItems: hasOlderItems, hasNewerItems: hasNewerItems,
+                                excludesAgentChildren: excludesAgentChildren ?? false,
+                                pinned: session.pinned,
+                                lastAccess: now.timeIntervalSince1970,
+                                cacheBytes: cacheBytes, stateBlob: stateBlob, rows: rows)
+    }
+}
+
 /// An archive plus its timeline and SubAgent activity already decoded by the
 /// store actor.
 nonisolated struct V2SessionRestore {
     let archive: V2SessionArchive
     let items: [V2TimelineItem]
     let subAgentActivity: [String: [V2TimelineItem]]
+    /// Whether the disk still holds rows older than `items`.
+    let localHasOlderRows: Bool
+}
+
+/// A page read from the local row store. `hasMore` means the store holds
+/// another row on the same side of this page. `cursor` is the session cursor
+/// captured by the last save; `hasNewerRows` is the saved window's own
+/// `hasNewerItems` flag (rows known to be missing from the newest side).
+nonisolated struct V2LocalTimelinePage {
+    let items: [V2TimelineItem]
+    let hasMore: Bool
+    var cursor: String = ""
+    var hasNewerRows = false
+
+    init(items: [V2TimelineItem], hasMore: Bool, cursor: String = "", hasNewerRows: Bool = false) {
+        self.items = items
+        self.hasMore = hasMore
+        self.cursor = cursor
+        self.hasNewerRows = hasNewerRows
+    }
 }
 
 extension ChatAttachment {

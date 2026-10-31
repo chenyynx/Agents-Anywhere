@@ -71,7 +71,9 @@ struct ChatTimelineView: View {
             }
             .scrollPosition($position)
             .scrollDismissesKeyboard(.interactively)
-            .scrollIndicators(.hidden)
+            // Keep the system scroll-position affordance on the timeline
+            // surface; hiding it left long sessions without a scrollbar.
+            .scrollIndicators(.visible)
             .scrollBounceBehavior(.always, axes: .vertical)
             .scrollEdgeEffectStyle(.soft, for: .top)
             // [E] R21 chrome-verify.md — the official composer bar fades the

@@ -50,24 +50,25 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
     @Test func orderMatchesTheSwiftUIList() {
         let identity = TimelineItemIdentity.build(hasOlderPrompt: true,
             groupIDs: ["g1", "g2"], noticeIDs: ["n1"], pendingIDs: ["p1"],
-            hasLatestPrompt: true, hasTail: true)
+            hasTail: true)
+        // No `.latestPrompt` row even when newer rows exist: the product
+        // keeps the "load newer records" line out of the transcript.
         #expect(identity.items == [.olderPrompt, .group("g1"), .group("g2"),
-            .notice("n1"), .pending("p1"), .latestPrompt, .tail])
+            .notice("n1"), .pending("p1"), .tail])
         #expect(!identity.hasDuplicates)
     }
 
     @Test func workingStatusFollowsTheTurnsLastPendingMessage() {
         let identity = TimelineItemIdentity.build(hasOlderPrompt: false,
             groupIDs: ["g1", "g2"], hasWorkingStatus: true,
-            noticeIDs: ["n1"], pendingIDs: ["p1"], hasLatestPrompt: false)
+            noticeIDs: ["n1"], pendingIDs: ["p1"])
         #expect(identity.items == [.group("g1"), .group("g2"), .notice("n1"),
             .pending("p1"), .workingStatus, .tail])
     }
 
     @Test func duplicateIDsKeepTheFirstOccurrenceAndAreReported() {
         let identity = TimelineItemIdentity.build(hasOlderPrompt: false,
-            groupIDs: ["a", "b", "a"], noticeIDs: ["n", "n"], pendingIDs: ["p", "p"],
-            hasLatestPrompt: false)
+            groupIDs: ["a", "b", "a"], noticeIDs: ["n", "n"], pendingIDs: ["p", "p"])
         #expect(identity.items == [.group("a"), .group("b"), .notice("n"), .pending("p"), .tail])
         #expect(identity.duplicateGroupIDs == ["a"])
         #expect(identity.duplicateNoticeIDs == ["n"])
@@ -83,6 +84,23 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         #expect(TimelineListItem.olderPrompt.itemID == "prompt:older")
         #expect(TimelineListItem.latestPrompt.itemID == "prompt:latest")
         #expect(TimelineListItem.tail.itemID == "tail")
+    }
+
+    @Test func historyPromptsNeverOwnAHistoryAnchor() {
+        // `rowIDs(in:)` aliases the first timeline row for the prepend's
+        // first-row check; that alias must not match the anchor at y=0.
+        #expect(TimelineHistoryAnchorRows.rows(for: .olderPrompt,
+            physicalRows: ["first-row"]) == [])
+        #expect(TimelineHistoryAnchorRows.rows(for: .latestPrompt,
+            physicalRows: ["first-row"]) == [])
+        #expect(TimelineHistoryAnchorRows.rows(for: .group("g"),
+            physicalRows: ["first-row", "second-row"]) == ["first-row", "second-row"])
+        #expect(!TimelineHistoryAnchorRows.isAnchorable(.olderPrompt))
+        #expect(!TimelineHistoryAnchorRows.isAnchorable(.latestPrompt))
+        #expect(!TimelineHistoryAnchorRows.isAnchorable(.tail))
+        #expect(TimelineHistoryAnchorRows.isAnchorable(.group("g")))
+        #expect(TimelineHistoryAnchorRows.isAnchorable(.notice("n")))
+        #expect(TimelineHistoryAnchorRows.isAnchorable(.pending("p")))
     }
 }
 

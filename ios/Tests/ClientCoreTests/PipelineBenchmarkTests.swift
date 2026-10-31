@@ -56,4 +56,101 @@ import Testing
         #expect(presentation.rows.last?.text.hasPrefix(base) == true)
         #expect(decode + apply + model + present < .seconds(30))
     }
+
+    /// P5 viewport window: one history page merged into a full 1000-row window.
+    /// Prints the merge cost and proves the visible anchor survives both sides
+    /// of the trim; timing assertions stay loose.
+    @Test func historyWindowBenchmark() throws {
+        for recentCount in [1000, 2000] {
+            let recent = try (1...recentCount).map {
+                try itemObject(id: "item-\($0)", order: $0, seq: $0, text: "Row \($0) " + String(repeating: "x", count: 40))
+            }
+            let olderCount = 500
+            let older = try (1...olderCount).map {
+                try decode(itemObject(id: "older-\($0)", order: $0, seq: $0), as: V2TimelineItem.self)
+            }
+            // Shift the recent window so the older page is genuinely before it.
+            let shifted = recent.enumerated().map { index, object -> [String: Any] in
+                var object = object
+                object["id"] = "recent-\(index + olderCount + 1)"
+                object["orderSeq"] = index + olderCount + 1
+                return object
+            }
+            var projection = V2SessionProjection(
+                snapshot: try snapshot(items: shifted),
+                maximumItems: 1000)
+            // The initial 1000-row window is the newest side; anchor inside it.
+            let anchorOrder = max(0, recentCount - 1000) + olderCount + 20
+            let clock = ContinuousClock()
+            let start = clock.now
+            projection.applyHistory(V2SessionTimelinePage(sessionId: "session", items: older,
+                nextSeq: recentCount + olderCount, hasMore: false, serverTime: nil),
+                anchorOrderSeq: anchorOrder)
+            let elapsed = clock.now - start
+            print("BENCH historyWindow recent=\(recentCount) older=\(olderCount) merge=\(milliseconds(elapsed))ms rows=\(projection.data.items.count)")
+            // Browsing keeps both sides past the idle window; the merge is
+            // bounded by the browse budget, not the latest-page ceiling.
+            #expect(projection.data.items.count <= V2SessionProjection.browseMaximumItems)
+            #expect(projection.data.items.contains { $0.orderSeq == anchorOrder })
+        }
+    }
+
+    /// P0 baseline for the local-store task sheet: whole-file JSON save/restore,
+    /// archive projection, opening presentation, and a repository cold open.
+    /// Prints timings for 500/1000/2000/5000 rows; assertions are content-only.
+    @Test func coldOpenBaseline() async throws {
+        for itemCount in [500, 1000, 2000, 5000] {
+            let items = try (1...itemCount).map {
+                try itemObject(id: "item-\($0)", order: $0, seq: $0,
+                               text: "Row \($0) " + String(repeating: "x", count: 40))
+            }
+            let projection = V2SessionProjection(
+                snapshot: try snapshot(items: items), maximumItems: itemCount)
+            let http = TestHTTPTransport()
+            let probe = repository(transport: http)
+            let model = probe.session(id: "session")
+            let archive = V2SessionArchive(data: projection.data, model: model)
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("aa-cold-open-\(UUID().uuidString)", isDirectory: true)
+            let store = V2LocalStore(directory: directory, maximumSessions: 20)
+            let clock = ContinuousClock()
+
+            var start = clock.now
+            await store.saveSession(archive)
+            let save = clock.now - start
+
+            start = clock.now
+            let restored = await store.restoreSession("session", window: itemCount)
+            let restore = clock.now - start
+
+            start = clock.now
+            let restoredProjection = try archive.projection(
+                items: restored?.items ?? [], maximumItems: itemCount)
+            let project = clock.now - start
+
+            let presentation = SessionTimelinePresentation()
+            start = clock.now
+            presentation.presentOpening(restoredProjection.data.items, pendingMessages: [])
+            presentation.flush(now: 0)
+            let present = clock.now - start
+
+            let repo = repository(transport: http, localStore: store)
+            start = clock.now
+            let opened = try await repo.open(sessionId: "session")
+            let open = clock.now - start
+            repo.reset()
+            await store.close(removing: true)
+
+            print("BENCH coldOpen items=\(itemCount) save=\(milliseconds(save)) restore=\(milliseconds(restore)) projection=\(milliseconds(project)) present=\(milliseconds(present)) open=\(milliseconds(open)) rows=\(presentation.rows.count)")
+            #expect(restored?.items.count == itemCount)
+            #expect(restoredProjection.data.items.count == itemCount)
+            #expect(opened.items.count == min(300, itemCount))
+            #expect(!presentation.rows.isEmpty)
+        }
+    }
+
+    private func milliseconds(_ value: Duration) -> String {
+        String(format: "%.1f", Double(value.components.seconds) * 1000
+            + Double(value.components.attoseconds) / 1e15)
+    }
 }

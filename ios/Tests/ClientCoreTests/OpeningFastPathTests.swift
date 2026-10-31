@@ -2,16 +2,6 @@ import Foundation
 import Testing
 @testable import ClientCore
 
-/// Snapshot fixture with `rows` recent records and a controllable history flag.
-private func openingSnapshotPage(rows: Int, hasMore: Bool) throws -> Data {
-    var snapshot = try fixtureObject("snapshot")
-    var timeline = snapshot["timeline"] as! [String: Any]
-    timeline["items"] = try (1...rows).map { try itemObject(id: "reply-\($0)", order: $0) }
-    timeline["hasMore"] = hasMore
-    snapshot["timeline"] = timeline
-    return try JSONSerialization.data(withJSONObject: snapshot)
-}
-
 /// Timeline page fixture holding the given record orders.
 private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> Data {
     var page = try fixtureObject("timeline")
@@ -135,14 +125,26 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
 /// arrives, and the cold-load mask waits for the first positioning or its
 /// bounded fallback.
 @Suite @MainActor struct OpeningFastPathPresentationTests {
-    /// A tiny window (one record) makes the history-overflow flag reachable:
-    /// one older page pushes the newest rows out of the projection, so `open()`
-    /// must still fetch the latest page for an in-memory projection.
-    private func overflowed(_ http: TestHTTPTransport) async throws -> V2SessionRepository {
-        let repo = repository(transport: http, policy: V2SessionCachePolicy(maximumTimelineItems: 1))
-        _ = try await repo.load(sessionId: "session")
-        _ = try await repo.loadOlder(sessionId: "session")
-        return repo
+    private func location() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("aa-opening-\(UUID().uuidString)", isDirectory: true)
+    }
+
+    /// A cached visit whose saved archive still flags rows newer than its
+    /// window. Restoring that flag is the opening reconcile's trigger; since
+    /// b744 history paging keeps both sides of the reader and can no longer
+    /// overflow the newest rows out of the projection.
+    private func seededStore(_ url: URL, rows: [Int], hasNewerItems: Bool,
+                             hasMore: Bool = true) async throws -> V2LocalStore {
+        let store = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
+        let probe = repository(transport: TestHTTPTransport(), localStore: store)
+        var data = V2SessionData(snapshot: try snapshot(items: rows.map {
+            try itemObject(id: "reply-\($0)", order: $0)
+        }, hasMore: hasMore))
+        data.hasNewerItems = hasNewerItems
+        await store.saveSession(V2SessionArchive(data: data, model: probe.session(id: "session")))
+        probe.reset()
+        return store
     }
     private func chat(_ repo: V2SessionRepository, _ http: TestHTTPTransport) -> SessionChatModel {
         SessionChatModel(session: repo.session(id: "session"), repository: repo,
@@ -154,19 +156,20 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         let gate = TestGate()
         var latestStarted = false
         http.respond = { call in
-            if call.path.hasSuffix("snapshot") { return try openingSnapshotPage(rows: 2, hasMore: true) }
             if call.path.hasSuffix("timeline") {
-                if call.query.contains(where: { $0.name == "mode" && $0.value == "history" }) {
-                    return try openingTimelinePage(rows: [1])
-                }
                 latestStarted = true
                 await gate.wait()
-                return try openingTimelinePage(rows: [1, 2])
+                return try openingTimelinePage(rows: [2, 3])
             }
             return try http.defaultResponse(call)
         }
-        let repo = try await overflowed(http)
+        // A saved window [1, 2] whose archive still flags newer rows: opening
+        // presents the local page first and reconciles it in the background.
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        let store = try await seededStore(url, rows: [1, 2], hasNewerItems: true)
+        let repo = repository(transport: http, localStore: store)
         defer { repo.reset() }
+        _ = try await repo.load(sessionId: "session")
         #expect(repo.cached(sessionId: "session")?.hasNewerItems == true)
         let model = chat(repo, http)
         // The memory snapshot suppresses the full-screen cold mask from the
@@ -176,47 +179,42 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         let opening = Task { await model.prepareOpening() }
         defer { gate.release(); opening.cancel() }
         try await eventually { latestStarted }
-        // The refresh is still blocked in the network, but the cached window is
-        // already presented and the page is ready (D3). Presentation preceded
-        // the refresh.
-        #expect(model.timeline.rows.map(\.id) == ["reply-1"])
-        #expect(model.isOpeningReady && model.openingError == nil)
-        #expect(!model.openingPositionSettled)
-        gate.release()
         await opening.value
-        // The late refresh merges through the same stage/flush path without
-        // rebuilding or duplicating rows.
-        #expect(model.timeline.rows.map(\.id) == ["reply-2"])
+        // The refresh is still blocked in the network, yet the cached window is
+        // presented and the page is ready (D3): opening never waits for the
+        // reconcile.
+        #expect(model.timeline.rows.map(\.id) == ["reply-1", "reply-2"])
         #expect(model.isOpeningReady && model.openingError == nil)
+        #expect(model.openingRefreshCompleted)
+        gate.release()
+        // The late refresh updates the newest side without a second
+        // presentation path and clears the newer prompt. It keeps the rows the
+        // opening already presented (row 1), so the refresh cannot remove a
+        // row the reader already saw.
+        try await eventually { repo.cached(sessionId: "session")?.hasNewerItems == false }
+        #expect(repo.cached(sessionId: "session")?.items.map(\.id) == ["reply-1", "reply-2", "reply-3"])
     }
 
-    /// R-a guard — the early window is trimmed exactly like `open()` trims the
-    /// projection: when the cached visit holds more than one page, the reader
-    /// sees the newest 100 rows, so a later refresh can never remove a row
-    /// that was already presented. Dropping `.suffix(100)` in
-    /// `prepareOpening` presents the untrimmed cache and turns this red.
-    @Test func cachedOpeningPresentsTheTrimmedWindowWhileTheRefreshIsBlocked() async throws {
+    /// R-a guard — the early presentation uses the same opening window as the
+    /// store. With no opening trim, the cached visit keeps its whole window,
+    /// so a later refresh cannot remove a row the reader already saw.
+    @Test func cachedOpeningPresentsTheCachedWindowWhileTheRefreshIsBlocked() async throws {
         let http = TestHTTPTransport()
         let gate = TestGate()
         var latestStarted = false
         http.respond = { call in
-            if call.path.hasSuffix("snapshot") { return try openingSnapshotPage(rows: 130, hasMore: true) }
             if call.path.hasSuffix("timeline") {
-                if call.query.contains(where: { $0.name == "mode" && $0.value == "history" }) {
-                    return try openingTimelinePage(rows: Array(1...10))
-                }
                 latestStarted = true
                 await gate.wait()
                 return try openingTimelinePage(rows: Array(121...130))
             }
             return try http.defaultResponse(call)
         }
-        // A window wider than one opening page, so the cached visit really
-        // holds more rows than the early presentation is allowed to show.
-        let repo = repository(transport: http, policy: V2SessionCachePolicy(maximumTimelineItems: 120))
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        let store = try await seededStore(url, rows: Array(1...120), hasNewerItems: true)
+        let repo = repository(transport: http, localStore: store)
         defer { repo.reset() }
         _ = try await repo.load(sessionId: "session")
-        _ = try await repo.loadOlder(sessionId: "session")
         let cached = try #require(repo.cached(sessionId: "session"))
         #expect(cached.items.count == 120)
         #expect(cached.hasNewerItems)
@@ -225,32 +223,36 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         let opening = Task { await model.prepareOpening() }
         defer { gate.release(); opening.cancel() }
         try await eventually { latestStarted }
-        // The refresh is still blocked in the network. The cached window was
-        // presented before it, trimmed to the newest 100 rows.
-        #expect(model.timeline.rows.map(\.id) == (21...120).map { "reply-\($0)" })
-        gate.release()
         await opening.value
+        // The refresh is still blocked in the network. The cached window was
+        // presented before it, whole (R-a guard).
+        #expect(model.timeline.rows.map(\.id) == (1...120).map { "reply-\($0)" })
         #expect(model.isOpeningReady && model.openingError == nil)
+        gate.release()
+        try await eventually { repo.cached(sessionId: "session")?.hasNewerItems == false }
     }
 
     @Test func cachedOpeningStaysReadyWhenTheRefreshFails() async throws {
         let http = TestHTTPTransport()
         http.respond = { call in
-            if call.path.hasSuffix("snapshot") { return try openingSnapshotPage(rows: 2, hasMore: true) }
-            if call.path.hasSuffix("timeline"), call.query.contains(where: { $0.name == "mode" && $0.value == "history" }) {
-                return try openingTimelinePage(rows: [1])
-            }
+            if call.path.hasSuffix("timeline") { throw URLError(.notConnectedToInternet) }
             return try http.defaultResponse(call)
         }
-        let repo = try await overflowed(http)
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        let store = try await seededStore(url, rows: [1, 2], hasNewerItems: true)
+        let repo = repository(transport: http, localStore: store)
         defer { repo.reset() }
+        _ = try await repo.load(sessionId: "session")
         let model = chat(repo, http)
-        repo.updateConnectivity(.init(availability: .offline))
         await model.prepareOpening()
-        // The catch path is unchanged: the cached window still opens, and the
-        // failure surfaces as an actionable error instead of a blocked mask.
-        #expect(model.isOpeningReady && model.openingError != nil)
-        #expect(model.timeline.rows.map(\.id) == ["reply-1"])
+        // The local-first page opens without touching the network; the failed
+        // background reconcile keeps the local window and the newer prompt
+        // instead of surfacing an error or a blocked mask.
+        try await eventually { http.count("timeline") == 1 }
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(model.isOpeningReady && model.openingError == nil)
+        #expect(model.timeline.rows.map(\.id) == ["reply-1", "reply-2"])
+        #expect(repo.cached(sessionId: "session")?.hasNewerItems == true)
     }
 
     @Test func coldOpeningPresentsOnlyAfterTheSnapshotArrives() async throws {

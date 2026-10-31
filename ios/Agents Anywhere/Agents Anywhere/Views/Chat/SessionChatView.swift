@@ -12,6 +12,9 @@ struct SessionChatView: View, Equatable {
     let onMenu: () -> Void
     @State private var sheet: SessionSheet?
     @State private var expandedNoticeID: String?
+#if AA_TIMELINE_PROBE
+    @State private var diagnosticsHUDVisible = false
+#endif
     /// Shared app-level loader for the instant image viewer: one disk cache and
     /// one in-flight table per signed-in session (owned by V2ClientServices),
     /// reused by every session view.
@@ -52,9 +55,25 @@ struct SessionChatView: View, Equatable {
     /// the multi-way conjunction inside a builder pushes the type checker past
     /// its budget (it timed out once).
     private var showsEmptyState: Bool {
-        model.isOpeningReady && model.timeline.rows.isEmpty && !model.session.hasOlderItems
+        model.isOpeningReady && model.timeline.rows.isEmpty && !model.session.canLoadOlder
             && model.timeline.pendingMessages.isEmpty && model.session.sendQueue.isEmpty
     }
+
+#if AA_TIMELINE_PROBE
+    /// Live values the probe store cannot read on its own. Reading the
+    /// session here also makes the HUD refresh when pending/window state
+    /// changes.
+    private var diagnosticsContext: DiagnosticsContext {
+        DiagnosticsContext(
+            sessionID: session.id,
+            sessionTitle: session.metadata?.title,
+            runtimeStatus: session.runtime.state?.status.rawValue,
+            pendingCount: session.pendingMessages.count,
+            hasOlder: session.hasOlderItems || session.localOlderAvailable,
+            hasNewer: session.hasNewerItems,
+            historyPaging: session.isLoadingHistory)
+    }
+#endif
 
     /// The timeline branch lives in its own method for the same reason the
     /// dock does: adding the second initializer inline pushes the enclosing
@@ -296,6 +315,12 @@ struct SessionChatView: View, Equatable {
                 Menu {
                     Button(String(localized: "会话详情与导出"), systemImage: "info.circle") { sheet = .details }
                     Button(String(localized: "复制会话 ID"), systemImage: "number") { UIPasteboard.general.string = session.id }
+#if AA_TIMELINE_PROBE
+                    Divider()
+                    Button(String(localized: "诊断浮窗"), systemImage: "waveform.path.ecg") {
+                        diagnosticsHUDVisible.toggle()
+                    }
+#endif
                 } label: { AppSymbol("ellipsis") }
                 .accessibilityLabel(String(localized: "会话菜单"))
             }
@@ -304,14 +329,13 @@ struct SessionChatView: View, Equatable {
             model.error = nil
             if !(await model.setTakeover(enabled)), let error = model.takeoverError { model.error = error }
         })
-        // The cue is driven by authoritative turn endings, not by the running
-        // flag's edge: an optimistic turn end (an accepted interrupt before
-        // its facts land) and any status no live read confirmed can no longer
-        // announce a completion the user never saw.
-        .completionFeedback(trigger: session.runtime.authoritativeTurnEnds) { previous, current in
-            current > previous && model.isOpeningReady && session.runtime.isFresh
-                && session.runtime.state?.status == .idle
-        }
+        // The reply's completion cue is the official TurnStatusView haptic in
+        // TimelineChatTimelineView (`writing -> idle` light impact). The
+        // shared completionFeedback pulse also fired here when the runtime
+        // reported idle, which is 1–2 s after the message boundary; that
+        // arrived as a second, late, stronger vibration (pp 2026-10-31). The
+        // New Session welcome keeps its own reveal cue.
+
         .sidebarDrawerSettledTask(id: hasStartedLoading) { settled in
             guard !hasStartedLoading, settled else { return }
             // Show feedback immediately, but let the drawer's completed
@@ -347,6 +371,12 @@ struct SessionChatView: View, Equatable {
         .sheet(item: $sheet) { destination in
             sheetContent(for: destination)
         }
+#if AA_TIMELINE_PROBE
+        .overlay {
+            DiagnosticsHUD(context: diagnosticsContext,
+                           isVisible: $diagnosticsHUDVisible)
+        }
+#endif
         .environment(\.openURL, OpenURLAction { url in
             if let reference = SessionFileReference.reference(from: url) {
                 if session.isValid { sheet = .preview(reference) }

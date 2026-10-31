@@ -84,6 +84,11 @@ protocol TimelineCollectionContentProviding: AnyObject {
     /// Row ids contained in a top-level item. A group contains several; the
     /// history anchor maps a row id back to its group item.
     func rowIDs(in item: TimelineListItem) -> [String]
+    /// Rows that physically belong to this item. The history prompt aliases
+    /// the first timeline row in `rowIDs` for the prepend's first-row check,
+    /// but it must not alias it for anchor matching: that would resolve the
+    /// anchor to the prompt at y=0 and scroll the loaded page to its top.
+    func anchorRowIDs(in item: TimelineListItem) -> [String]
     func item(containingRow rowID: String) -> TimelineListItem?
 
     func interactionState() -> TimelineLayoutInteractionState
@@ -97,6 +102,10 @@ protocol TimelineCollectionContentProviding: AnyObject {
 }
 
 extension TimelineCollectionContentProviding {
+    /// Synthetic providers have no prompt alias; their row ids are their
+    /// physical rows.
+    func anchorRowIDs(in item: TimelineListItem) -> [String] { rowIDs(in: item) }
+
     /// Marks the provider's item list stale before the representable reads
     /// `contentGeneration`. The C3 gate's synthetic model wants no work here.
     func prepareForUpdate() {}

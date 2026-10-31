@@ -70,7 +70,16 @@ struct ChatShellView: View {
     }
 
     private var sidebarSessions: [ChatSidebarSession] {
-        appState.sessions
+        #if AA_TIMELINE_PROBE
+        // Timed because the drawer's deferred `isOpen` write invalidates this
+        // body right after its animation; this map/sort is the part of the
+        // rebuild that grows with the session count.
+        let started = CACurrentMediaTime()
+        defer {
+            TimelineProbeStore.shared.noteShellSessions(seconds: CACurrentMediaTime() - started)
+        }
+        #endif
+        return appState.sessions
             .filter { !$0.archived }
             .map { session in
                 ChatSidebarSession(session: session)

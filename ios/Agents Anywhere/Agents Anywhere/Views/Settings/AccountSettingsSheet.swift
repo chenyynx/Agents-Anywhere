@@ -9,6 +9,8 @@ struct AccountSettingsSheet: View {
     @AppStorage(ProjectSidebarPreferences.compactSessionListKey) private var compactSessionList = false
     @AppStorage(TimelineRenderModeSwitch.key)
     private var renderModeRaw = TimelineRenderMode.code.rawValue
+    @AppStorage(LocalCachePolicy.key)
+    private var cacheLimitRaw = LocalCacheLimit.defaultValue.rawValue
     @State private var timelineLastActive: Date?
 
     private var renderMode: TimelineRenderMode {
@@ -19,6 +21,9 @@ struct AccountSettingsSheet: View {
     @State private var toasts = ChatToastStore()
     @State private var drafts = AccountSettingsDrafts()
     @State private var confirmsDiscard = false
+#if AA_TIMELINE_PROBE
+    @State private var diagnosticsPresented = false
+#endif
 
     var body: some View {
         NavigationStack {
@@ -65,6 +70,10 @@ struct AccountSettingsSheet: View {
                     NavigationLink { SettingsLanguageView() } label: {
                         SettingsRow(title: String(localized: "Language"), symbol: "globe", value: SettingsLanguageView.currentLanguage)
                     }
+                    NavigationLink { CacheSettingsView() } label: {
+                        SettingsRow(title: String(localized: "Cache"), symbol: "internaldrive",
+                                    value: (LocalCacheLimit(rawValue: cacheLimitRaw) ?? .defaultValue).title)
+                    }
                     Toggle(isOn: Binding(
                         get: { !showsSessionList },
                         set: { showsSessionList = !$0 }
@@ -104,6 +113,17 @@ struct AccountSettingsSheet: View {
                         SettingsRow(title: String(localized: "Server"), symbol: "server.rack", value: appState.serverURL?.host)
                     }
                 }
+#if AA_TIMELINE_PROBE
+                Section(String(localized: "开发者")) {
+                    Button {
+                        diagnosticsPresented = true
+                    } label: {
+                        SettingsRow(title: String(localized: "诊断与日志"), symbol: "stethoscope",
+                                    value: "b\(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?")")
+                    }
+                    .foregroundStyle(.primary)
+                }
+#endif
                 Section {
                     NavigationLink {
                         PrivacyPolicyContent().settingsPage(String(localized: "privacyPolicy.title"))
@@ -158,6 +178,9 @@ struct AccountSettingsSheet: View {
         .appSheetPresentation(.expanded)
         .interactiveDismissDisabled(drafts.hasChanges || isWorking)
         .confirmDiscardChanges($confirmsDiscard) { dismiss() }
+#if AA_TIMELINE_PROBE
+        .sheet(isPresented: $diagnosticsPresented) { DiagnosticsPanel() }
+#endif
     }
 
     private var isWorking: Bool { appState.isAccountWorking || drafts.isWorking }

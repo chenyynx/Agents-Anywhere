@@ -2,6 +2,19 @@ import SwiftUI
 import UIKit
 import OSLog
 
+/// Rollback switch for the official-style history anchor. The old
+/// `TimelineInsertionOwed` path stays available when this is false; the
+/// product path uses the anchor driver's persistent reading placement.
+nonisolated enum TimelineHistoryAnchorMode {
+    static let defaultsKey = "TimelineHistoryAnchorV2.enabled"
+    static var enabled: Bool {
+        if let value = UserDefaults.standard.object(forKey: defaultsKey) as? Bool {
+            return value
+        }
+        return true
+    }
+}
+
 /// File-scope so the diffable data source's `Sendable` section identifier is
 /// not inferred as main-actor isolated from the controller class.
 nonisolated enum TimelineCollectionSection: Hashable, Sendable {
@@ -30,6 +43,36 @@ final class TimelineCollectionController: UIViewController {
     /// the budgeted pass at request time can leave rows on estimates.
     private var insertionProjection: (anchorRowID: String,
                                       edge: TimelineHistoryLayout.Edge)?
+    /// Official-style history paging: the anchor driver owns the offset while
+    /// this is true. `historyPageArriving` marks the apply that actually
+    /// carries the prepended page, so an unrelated streaming apply cannot end
+    /// the mode early.
+    private(set) var historyPaging = false
+    /// The item the driver pinned for the in-flight history page. The probe
+    /// re-reads its screen position before/after each apply so a jump is
+    /// attributed to the row the reader was actually looking at.
+    private var historyAnchorItemID: String?
+    /// The stable reading key. A history page can regroup the whole window,
+    /// which changes the anchor item's id even though its rows are still
+    /// present; the row id is what survives that regrouping.
+    private var historyAnchorRowID: String?
+    private var historyAnchorOffsetIntoRow: CGFloat = 0
+    /// The page's layout can keep correcting heights after the snapshot
+    /// commits. During that short quiet window the reading anchor is still
+    /// re-resolved on every content-height change; without it a correction
+    /// above the anchor moves the visible row (device: 115.7 pt).
+    private var historyAnchorSettling = false
+    private var historySettleTask: Task<Void, Never>?
+    /// The reader-intent generation and the anchor's content-space origin when
+    /// the settle window opened. The settle only corrects a late measurement,
+    /// so it needs both: a newer generation means the reader moved on their
+    /// own; an unchanged anchor frame means no measurement moved it.
+    private var historySettleGeneration = 0
+    private var historySettleAnchorStartY: CGFloat = .nan
+    private var historyPageArriving = false
+    private var historyInitialFirstRowID: String?
+    private var historyPageFirstRowID: String?
+    private var historyPagingTimeout: Task<Void, Never>?
     /// At most one snapshot may be in flight. The diffable data source
     /// performs its batch updates asynchronously, while SwiftUI can hand us a
     /// newer item list on a later runloop turn. The layout reads its items
@@ -91,6 +134,13 @@ final class TimelineCollectionController: UIViewController {
     private var lastPublishedViewport = TimelineViewport()
 
     private(set) var phase = TimelinePhaseMapping()
+    /// True only while a physical reader gesture owns the scroll (drag or
+    /// deceleration). A bottom→off-bottom flip caused by a window replacement
+    /// or a layout transition is not reader intent; callers that abandon
+    /// background work on "the reader left the bottom" must use this flag, not
+    /// the raw edge (device report 2026-10-31 08:31: the replacement's own
+    /// flip cancelled the latest reconcile and the new reply never landed).
+    var isReaderScrolling: Bool { phase.userIsScrolling }
     /// C4: the single content-offset writer (placement state + Mover + inset).
     private var anchorDriver: TimelineAnchorDriver?
     private var didStartAnchorDriver = false
@@ -143,7 +193,7 @@ final class TimelineCollectionController: UIViewController {
     /// Official `askedForEnd` is ignored while dragging (part-ag §1.7);
     /// replay it when the gesture ends instead of starting a spring that
     /// would fight the finger.
-    private var pendingGestureBottomRequest: (animated: Bool, forced: Bool)?
+    private var pendingGestureBottomRequest: (animated: Bool, forced: Bool, generation: Int)?
     private var suspendedOpeningRequest = false
     private var lastContainerHeight: CGFloat = 0
     /// The old path passed `nil` to `withAnimation` under Reduce Motion, so a
@@ -151,6 +201,15 @@ final class TimelineCollectionController: UIViewController {
     private var reduceMotion = false
     private var didMarkActivation = false
     private static let log = Logger(subsystem: "agents.anywhere", category: "timeline")
+
+    /// Probe-only timeline history trace. The parameter is an autoclosure so
+    /// shipping builds do not pay for string interpolation, and the probe
+    /// store is never referenced outside `AA_TIMELINE_PROBE`.
+    private func probeHistory(_ text: @autoclosure () -> String) {
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteHistory(text())
+#endif
+    }
 
     /// Pull inputs. C5 sets these from the real prompt visibility and session
     /// flags; the C3 gate drives them directly.
@@ -160,6 +219,18 @@ final class TimelineCollectionController: UIViewController {
     var canLoadLatest = false
     var onLoadOlder: (() -> Void)?
     var onLoadLatest: (() -> Void)?
+    /// The status-bar tap asked for the top. The bridge ends the opening claim
+    /// (a reader who chose a position is never moved by a window change).
+    var onReaderScrollToTop: (() -> Void)?
+    /// Viewport-driven paging. Reaching the top edge starts one older page;
+    /// reaching the bottom of a history window starts one latest page. Both
+    /// are one-shot per edge so a failed page cannot spin on every frame.
+    var onNeedsOlder: (() -> Void)? {
+        didSet { if onNeedsOlder != nil { pagingPolicy.noteViewportLeftTop() } }
+    }
+    var onNeedsLatest: (() -> Void)? {
+        didSet { if onNeedsLatest != nil { latestAutoLoadArmed = true } }
+    }
 
     var onPhaseChanged: ((TimelinePhaseMapping.Transition) -> Void)?
     var onViewportChanged: ((TimelineViewport) -> Void)?
@@ -181,6 +252,30 @@ final class TimelineCollectionController: UIViewController {
     /// installed there (TimelineCollectionView.updateUIViewController).
     var onScrollDownIndicatorChanged: ((Bool) -> Void)?
     private var lastScrollDownIndicator: Bool?
+    /// One auto-page request per edge episode. Scrolling away re-arms it; a
+    /// failed load does not retry on every viewport tick.
+    private var latestAutoLoadArmed = true
+    /// Set after a local-first latest page keeps `hasNewerItems` for its
+    /// background reconcile. Without a latch, a content-height change makes
+    /// the viewport dip out of bottom and re-arms the trigger, so the same
+    /// read (and its spinner) starts again before the reconcile lands.
+    private var latestAutoLoadSuppressed = false
+    /// A history page can leave the window shorter than the viewport, which
+    /// reads as "at bottom" immediately after the prepend. Do not turn that
+    /// into an automatic latest read; require the reader to leave bottom and
+    /// come back (or tap the latest prompt) first.
+    private var latestAutoLoadNeedsNewBottomVisit = false
+    /// The paging/return guards as pure state (testable in `swift test`).
+    /// `TimelinePagingPolicy` owns the near-top latch, the opening gate, the
+    /// reader-intent generation and the armed bottom return; the controller
+    /// only feeds it viewport facts and gestures.
+    private var pagingPolicy = TimelinePagingPolicy()
+    private var openingBottomDeadline: Task<Void, Never>?
+    private var readerIntentGeneration: Int { pagingPolicy.readerIntentGeneration }
+    /// How close to the top edge starts an automatic older page. This is a
+    /// reading threshold, not a pull threshold: a full screen of history is
+    /// still reachable before the next page starts.
+    private static let olderAutoLoadThreshold: CGFloat = 320
     /// The page's SwiftUI safe area: composer bar + home indicator + keyboard.
     /// The list is a full-bleed representable, so this is its only inset
     /// source. The probe (run 40353074977) measured the proxy inside the
@@ -218,7 +313,11 @@ final class TimelineCollectionController: UIViewController {
         // ask for the same soft edge the top uses.
         collectionView.bottomEdgeEffect.style = .soft
         collectionView.alwaysBounceVertical = true
-        collectionView.showsVerticalScrollIndicator = false
+        // Keep the system's vertical indicator. The page is full-bleed and the
+        // collection owns the whole right edge; hiding it left long timelines
+        // with no scroll-position affordance (pp 2026-10-30).
+        collectionView.showsVerticalScrollIndicator = true
+        collectionView.indicatorStyle = .default
         // [E] CANONICAL/05-layout-scroll.md §5 — the official surface uses
         // `keyboardDismissMode = .interactiveWithAccessory` (raw 4,
         // `0x101a3b344`), not the plain interactive mode.
@@ -355,6 +454,7 @@ final class TimelineCollectionController: UIViewController {
                     cell.onContentHeightReport = nil
                 }
                 cell.configure(content.rowView(for: item),
+                               itemID: item.itemID,
                                policy: content.heightPolicy(for: item),
                                isMeasured: isMeasured,
                                reportsContentHeight: reportsContentHeight,
@@ -384,7 +484,12 @@ final class TimelineCollectionController: UIViewController {
         // before the view joins the window and becomes the home indicator
         // afterwards, so the inset must be re-derived here or the page keeps
         // an extra 34 pt below the composer. `applyInsets` is idempotent.
-        anchorDriver?.updateSafeAreaInsets(safeAreaInsets)
+        // The last published viewport is the pre-change one: it tells the
+        // driver whether the page was resting on the bottom before a
+        // keyboard/composer transition.
+        anchorDriver?.updateSafeAreaInsets(
+            safeAreaInsets,
+            wasAtBottom: lastPublishedViewport.measuredAtBottom)
         handleContainerHeightChange()
     }
 
@@ -438,6 +543,49 @@ final class TimelineCollectionController: UIViewController {
         // / `.latestPrompt` / `.tail` have static identities and both windows
         // can start with `.olderPrompt` (device report 2026-10-23).
         let oldFirstDynamic = oldItems.first(where: Self.isDynamicItem)
+        let currentFirstRowID = items.first.flatMap { content.rowIDs(in: $0).first }
+        let isHistoryPage: Bool
+        if historyPageArriving {
+            isHistoryPage = historyPageFirstRowID.map { currentFirstRowID == $0 }
+                ?? (currentFirstRowID != nil)
+        } else {
+            isHistoryPage = currentFirstRowID != nil
+                && currentFirstRowID != historyInitialFirstRowID
+        }
+        let applyingHistoryPage = historyPaging && isHistoryPage
+#if AA_TIMELINE_PROBE
+        let probeAnchorID = historyAnchorItemID
+        let probeOffsetBefore = collectionView.contentOffset.y
+        let probeAnchorYBefore = probeAnchorID
+            .flatMap { layout.attributes(for: $0) }
+            .map { $0.frame.minY - probeOffsetBefore } ?? -1
+        TimelineProbeStore.shared.noteHistory(
+            "apply-begin hist=\(historyPaging ? 1 : 0) arriving=\(historyPageArriving ? 1 : 0) "
+            + "pageFirst=\(historyPageFirstRowID ?? "-") initialFirst=\(historyInitialFirstRowID ?? "-") "
+            + "firstRow=\(currentFirstRowID ?? "-") "
+            + "oldFirstRow=\(oldItems.first.flatMap { content.rowIDs(in: $0).first } ?? "-") "
+            + "oldN=\(oldItems.count) newN=\(items.count) applying=\(applyingHistoryPage ? 1 : 0) "
+            + "pending=\(layout.pendingMeasurements.count) "
+            + "off=\(probeOffsetBefore) contentH=\(layout.contentHeight) "
+            + "anchor=\(probeAnchorID ?? "-") anchorY=\(probeAnchorYBefore)")
+#endif
+        // The reader owns their current position even if they scrolled while
+        // the page was in flight: re-pin the reading anchor to the item under
+        // the viewport now. The request-time anchor only covers the wait; the
+        // apply must preserve the content the reader is actually looking at
+        // across the prepend (device 2026-10-31 13:46: a 37→57 page inserted
+        // 49,859 pt above the request anchor and the viewport stayed at the
+        // new page's top).
+        if applyingHistoryPage, let live = anchor(at: collectionView.contentOffset.y),
+           let liveItem = currentItems.first(where: { $0.itemID == live.id }) {
+            historyAnchorItemID = live.id
+            historyAnchorOffsetIntoRow = live.offsetIntoRow
+            if let rowID = content.rowIDs(in: liveItem).first {
+                historyAnchorRowID = rowID
+            }
+            anchorDriver?.beginHistoryPaging(anchorID: live.id,
+                                             offsetIntoRow: live.offsetIntoRow)
+        }
         let windowReplaced = !items.isEmpty
             && (oldFirstDynamic.map { !items.contains($0) } ?? true)
         // Parked heights belong to the window that is leaving; their rows and
@@ -485,6 +633,13 @@ final class TimelineCollectionController: UIViewController {
         // new frame with the old font.
         var toMeasure: [TimelineListItem] = []
         var reconfigure = changed
+        // Same offscreen rule as the async settle pass: a row far above the
+        // reader keeps its estimate until it can be seen. Without this, the
+        // next ordinary apply (a stream tick) synchronously measures every
+        // unmeasured row of the history page it just prepended.
+        let measurementTop = viewport.offsetY + viewport.topInset
+        let measurementSkipAbove = measurementTop
+            - max(Self.pendingMeasurementPrefetchMargin, viewport.visibleHeight * 1.5)
         for item in items {
             let key = content.heightKey(for: item, width: columnWidth)
             if layout.heights.currentKey(for: item.itemID) != key {
@@ -499,12 +654,28 @@ final class TimelineCollectionController: UIViewController {
                 reconfigure.insert(item)
             }
             if changed.contains(item) || !layout.heights.hasMeasuredOrPrecalcHeight(for: key) {
+                if let attributes = layout.attributes(for: item.itemID),
+                   attributes.frame.maxY < measurementSkipAbove {
+                    continue
+                }
                 toMeasure.append(item)
             }
         }
-        measureSynchronously(toMeasure, width: columnWidth)
+#if AA_TIMELINE_PROBE
+        let probeMeasureStart = CACurrentMediaTime()
+#endif
+        if !applyingHistoryPage {
+            // The history page's new rows are offscreen above the reading
+            // anchor; let the layout's estimates place them and let cells
+            // measure when they become visible (official arriving/guessed).
+            // Other applies while the request is in flight still measure.
+            measureSynchronously(toMeasure, width: columnWidth)
+        }
 #if AA_TIMELINE_PROBE
         TimelineProbeStore.shared.noteMeasureDuration(CACurrentMediaTime() - probeApplyStart)
+        TimelineProbeStore.shared.noteHistory(
+            "apply-measure skipped=\(applyingHistoryPage ? 1 : 0) n=\(toMeasure.count) "
+            + "ms=\(Int(((CACurrentMediaTime() - probeMeasureStart) * 1000).rounded()))")
 #endif
         // Recompute the prepend target from the heights this apply will use.
         if let projection = insertionProjection,
@@ -519,6 +690,26 @@ final class TimelineCollectionController: UIViewController {
         hostedFallbackFitWidths = hostedFallbackFitWidths.filter { liveIDs.contains($0.key) }
         hostedFallbackFirstSeenAt = hostedFallbackFirstSeenAt.filter { liveIDs.contains($0.key) }
         pendingHostedReports = pendingHostedReports.filter { liveIDs.contains($0.key) }
+
+        // A window replacement can shrink the content (a history window
+        // replaced by the latest page). The old offset then points past the
+        // new content while the diffable apply commits, every visible row is
+        // gone, and UIKit only clamps on the next layout — the blank page of
+        // the 2026-10-31 08:31 report (`off=74077` while the new
+        // `contentH=46157`, visible rows 0). The armed bottom return makes the
+        // target known before the swap, so place the offset inside the
+        // replacement's range now; the completion resolves the exact bottom.
+        if resolveWindowBottom {
+            let newBottom = TimelineOffsetTarget.bottomOffset(
+                contentHeight: projectedContentHeight(items: items),
+                containerHeight: collectionView.bounds.height,
+                topInset: collectionView.adjustedContentInset.top,
+                bottomInset: collectionView.adjustedContentInset.bottom)
+            if collectionView.contentOffset.y > newBottom {
+                collectionView.setContentOffset(
+                    CGPoint(x: collectionView.contentOffset.x, y: newBottom), animated: false)
+            }
+        }
 
         var snapshot = NSDiffableDataSourceSnapshot<TimelineCollectionSection, TimelineListItem>()
         snapshot.appendSections([.main])
@@ -539,6 +730,18 @@ final class TimelineCollectionController: UIViewController {
             TimelineProbeStore.shared.noteApplyDuration(CACurrentMediaTime() - probeApplyStart)
 #endif
             self.isPerformingSnapshot = false
+#if AA_TIMELINE_PROBE
+            let probeOffsetAfter = self.collectionView.contentOffset.y
+            let probeAnchorYAfter = probeAnchorID
+                .flatMap { self.layout.attributes(for: $0) }
+                .map { $0.frame.minY - probeOffsetAfter } ?? -1
+            TimelineProbeStore.shared.noteHistory(
+                "apply-end applying=\(applyingHistoryPage ? 1 : 0) "
+                + "off=\(probeOffsetBefore)->\(probeOffsetAfter) "
+                + "d=\(probeOffsetAfter - probeOffsetBefore) "
+                + "anchor=\(probeAnchorID ?? "-") anchorY=\(probeAnchorYBefore)->\(probeAnchorYAfter) "
+                + "contentH=\(self.layout.contentHeight)")
+#endif
             if resolveWindowBottom { self.resolveWindowReplacementBottom() }
             self.onApplyCompleted?()
             self.schedulePendingMeasurements()
@@ -566,9 +769,40 @@ final class TimelineCollectionController: UIViewController {
             }
             self.scheduleVisibleCellSettle()
             self.scheduleVisibleCellFrameSync()
+            if applyingHistoryPage {
+                // Commit the page's layout before resolving the row: the old
+                // anchor item has already left the window, and the new item's
+                // frame only exists after this pass.
+                self.collectionView.layoutIfNeeded()
+                self.reanchorHistoryPageIfNeeded()
+                self.anchorDriver?.enforceReadingPlacement()
+                // The first pass can still park a correction; resolve once
+                // more against the settled frames.
+                self.collectionView.layoutIfNeeded()
+                self.anchorDriver?.enforceReadingPlacement()
+                self.endHistoryPaging()
+                self.beginHistoryAnchorSettling()
+            }
             self.publishViewport()
             if self.layout.insertionOwedIsSettled {
                 self.insertionProjection = nil
+            }
+            // A structural snapshot (window replacement, prompt/trim count
+            // change) can move visible cells across index paths. Reconcile
+            // them in this update, before the next frame: the deferred
+            // 50 ms pass skips hosted rows and cannot repair a cell that
+            // renders the previous item's content in the wrong frame.
+            //
+            // Never do it while the page follows `.end`: the keyboard and
+            // composer inset animations own the offset there, and a
+            // reconfigure/layout inside that transaction drops the follow
+            // (pp device report 2026-10-31 06:26: the page stayed mid-air
+            // after the keyboard collapsed). A reading page has no such
+            // inset-driven offset to preserve.
+            if (windowReplaced || items.count != oldItems.count),
+               self.anchorDriver?.state.placement != .end {
+                self.collectionView.layoutIfNeeded()
+                self.syncVisibleCellFrames(forceHosted: true, layoutNow: true)
             }
             self.performPendingSnapshotUpdate()
         }
@@ -678,11 +912,19 @@ final class TimelineCollectionController: UIViewController {
 
     private func resolveWindowReplacementBottom() {
         guard collectionView != nil, !navigationSuspended else { return }
-        // A gesture that began after the request always wins.
+        // A gesture that began after the request always wins, and so does any
+        // reader-driven move — including the status-bar scroll-to-top, which
+        // is neither tracking nor decelerating. The policy voids the armed
+        // return when the reader moved since it was armed.
         guard windowReplacementReturn,
               !phase.userIsScrolling,
               collectionView?.isTracking != true,
               collectionView?.isDecelerating != true else {
+            windowReplacementReturn = false
+            pagingPolicy.disarmBottomReturn()
+            return
+        }
+        guard pagingPolicy.resolveBottomReturn() else {
             windowReplacementReturn = false
             return
         }
@@ -696,6 +938,9 @@ final class TimelineCollectionController: UIViewController {
               !collectionView.isTracking,
               !collectionView.isDecelerating else { return }
         pendingGestureBottomRequest = nil
+        // The deferred request must not fire after the reader moved on their
+        // own (e.g. dragged up to the top while the request was queued).
+        guard request.generation == pagingPolicy.readerIntentGeneration else { return }
         requestBottom(animated: request.animated, forced: request.forced)
     }
 
@@ -924,6 +1169,14 @@ final class TimelineCollectionController: UIViewController {
     private static let minimumPlausibleHeight: CGFloat = 8
     private static let pendingMeasurementAttempts = 6
     private static let pendingMeasurementInterval = Duration.milliseconds(150)
+    /// Rows farther than this above the viewport are left on their estimates.
+    /// A history page inserts hundreds of unmeasured rows above the reading
+    /// anchor; measuring each one offscreen rewrites the page's total height
+    /// (one full layout pass per row) although none of them can be seen. The
+    /// official transcript keeps such rows guessed until they enter the
+    /// window. When the reader scrolls up, the drag-end pass measures the
+    /// rows that came within this margin.
+    private static let pendingMeasurementPrefetchMargin: CGFloat = 600
     /// Visible-cell settle passes. Textual parses Markdown off the main actor,
     /// so the cell's real height can arrive well after the first layout. The
     /// later passes cover a long reply on a busy main thread; a later scroll
@@ -1117,20 +1370,60 @@ final class TimelineCollectionController: UIViewController {
         let pending = layout.pendingMeasurements
         guard !pending.isEmpty, columnWidth > 0 else { return }
         let width = columnWidth
+        let viewportTop = viewport.offsetY + viewport.topInset
+        // A history page's whole new prefix sits above the reading anchor.
+        // Skip every row that is entirely above the viewport for that pass;
+        // the prefetch margin applies to ordinary settles, where measuring a
+        // row just above the top keeps the next scroll smooth.
+        let prefetchMargin = historyPaging
+            ? 0
+            : max(Self.pendingMeasurementPrefetchMargin, viewport.visibleHeight * 1.5)
+        let skipAbove = viewportTop - prefetchMargin
         pendingMeasurementTask = Task { @MainActor [weak self] in
+#if AA_TIMELINE_PROBE
+            let probeStart = CACurrentMediaTime()
+            var probeMeasured = 0
+            var probeSkipped = 0
+            var probeScrolled = 0
+            TimelineProbeStore.shared.noteHistory("pending-measure start n=\(pending.count)")
+            defer {
+                TimelineProbeStore.shared.noteHistory(
+                    "pending-measure end n=\(pending.count) measured=\(probeMeasured) "
+                    + "skipped=\(probeSkipped) scrolled=\(probeScrolled) "
+                    + "ms=\(Int(((CACurrentMediaTime() - probeStart) * 1000).rounded()))")
+            }
+#endif
             if let self, let hosted = self.measurer as? TimelineHostingHeightMeasurer {
                 hosted.updateTraitOverrides(from: self.traitCollection)
             }
             for item in pending {
                 guard let self, !Task.isCancelled, self.currentItems.contains(item) else { return }
                 guard let content = self.content else { return }
+                // A page inserted above the reader leaves hundreds of rows
+                // unmeasured. Measuring them offscreen is invisible work and
+                // moves the page's estimated height one row at a time.
+                if let attributes = self.layout.attributes(for: item.itemID),
+                   attributes.frame.maxY < skipAbove {
+#if AA_TIMELINE_PROBE
+                    probeSkipped += 1
+#endif
+                    continue
+                }
                 // Hosted-contract rows are measured by their cell the first
                 // time it materializes; there is nothing to do offscreen.
-                if content.usesCellReportedHeight(for: item) { continue }
+                if content.usesCellReportedHeight(for: item) {
+#if AA_TIMELINE_PROBE
+                    probeSkipped += 1
+#endif
+                    continue
+                }
                 // Parsing Markdown is main-thread work. A pending Code group
                 // measured under a drag is the scroll jank the device reported
                 // on 2026-10-23; the scroll-end callbacks start a fresh pass.
                 if self.collectionView.isTracking || self.collectionView.isDecelerating {
+#if AA_TIMELINE_PROBE
+                    probeScrolled += 1
+#endif
                     return
                 }
                 // A Code group's height comes from its own structural
@@ -1143,6 +1436,9 @@ final class TimelineCollectionController: UIViewController {
                     self.layout.applyMeasuredHeight(
                         exact, for: item.itemID,
                         key: content.heightKey(for: item, width: width))
+#if AA_TIMELINE_PROBE
+                    probeMeasured += 1
+#endif
                     // One row per runloop turn; the next parse must not stack
                     // behind this one inside a single frame.
                     await Task.yield()
@@ -1151,7 +1447,12 @@ final class TimelineCollectionController: UIViewController {
                 // Async Markdown is settled by the visible cell, not by this
                 // hostless loop; retrying an offscreen pass would only burn
                 // main-thread layout for the same 2pt answer.
-                guard content.measurementContent(for: item) == .plainText else { continue }
+                guard content.measurementContent(for: item) == .plainText else {
+#if AA_TIMELINE_PROBE
+                    probeSkipped += 1
+#endif
+                    continue
+                }
                 let key = content.heightKey(for: item, width: width)
                 // Retry briefly; a visible cell's async Markdown is settled by
                 // the visible-cell passes instead of this offscreen loop.
@@ -1159,6 +1460,9 @@ final class TimelineCollectionController: UIViewController {
                     if let height = self.measuredHeight(for: item, width: width) {
                         self.measurementPipeline.complete(item.itemID)
                         self.layout.applyMeasuredHeight(height, for: item.itemID, key: key)
+#if AA_TIMELINE_PROBE
+                        probeMeasured += 1
+#endif
                         break
                     }
                     if attempt < Self.pendingMeasurementAttempts - 1 {
@@ -1548,28 +1852,69 @@ final class TimelineCollectionController: UIViewController {
         }
     }
 
-    private func syncVisibleCellFrames() {
+    /// `forceHosted` runs right after a structural window change. UIKit can
+    /// move a hosted cell to another index path without rebinding it there;
+    /// the cell keeps the previous item's content and frame, and its 53 pt of
+    /// content sits in a 1821 pt frame — most of the viewport blank (device
+    /// probe 2026-10-31 05:56: a window trim at 18.23 left frameH=1821,
+    /// fit=53, visible=1). Hosted rows normally own their frames through
+    /// height reports, so only this forced pass checks them; a cell whose
+    /// configured item does not match its index path is reconfigured.
+    ///
+    /// The plain pass must not create collection-view updates: an apply lands
+    /// several times a second, and a reconfigure inside the keyboard/composer
+    /// inset animation made the bottom follow lose its `.end` placement (pp
+    /// device report 2026-10-31 06:26: the page stayed mid-air after the
+    /// keyboard collapsed). Only the forced structural pass rebinds.
+    private func syncVisibleCellFrames(forceHosted: Bool = false,
+                                       layoutNow: Bool = false) {
         guard isViewLoaded, !navigationSuspended, !isPerformingSnapshot,
               phase.phase != .animating, !collectionView.isTracking,
               !collectionView.isDecelerating else { return }
         var stale: [IndexPath] = []
+        var wrongContent: [IndexPath] = []
         for indexPath in collectionView.indexPathsForVisibleItems {
-            // Hosted-contract rows invalidate their own row and the rows below
-            // when a height lands; a frame-sync pass here would race it.
             guard currentItems.indices.contains(indexPath.item) else { continue }
-            if let content,
-               content.usesCellReportedHeight(for: currentItems[indexPath.item]) { continue }
+            let item = currentItems[indexPath.item]
             guard let cell = collectionView.cellForItem(at: indexPath),
                   let attributes = layout.layoutAttributesForItem(at: indexPath) else { continue }
+            var contentMismatch = false
+            if forceHosted, let hosting = cell as? TimelineHostingCell,
+               hosting.itemID != item.itemID {
+                // A nil id is a visible cell whose configuration never ran;
+                // it draws nothing, which is exactly the blank this repairs.
+                wrongContent.append(indexPath)
+                contentMismatch = true
+            }
+            // Hosted-contract rows invalidate their own row and the rows below
+            // when a height lands; a frame-sync pass here would race it.
+            if !forceHosted, !contentMismatch, let content,
+               content.usesCellReportedHeight(for: item) { continue }
             if abs(cell.frame.minY - attributes.frame.minY) > 0.5
                 || abs(cell.frame.height - attributes.frame.height) > 0.5 {
                 stale.append(indexPath)
             }
         }
-        guard !stale.isEmpty else { return }
+#if AA_TIMELINE_PROBE
+        if !wrongContent.isEmpty || (forceHosted && !stale.isEmpty) {
+            TimelineProbeStore.shared.noteHistory(
+                "cell reconcile rebind=\(wrongContent.count) frame=\(stale.count) "
+                + "force=\(forceHosted ? 1 : 0)")
+        }
+#endif
+        if !wrongContent.isEmpty {
+            UIView.performWithoutAnimation {
+                collectionView.reconfigureItems(at: wrongContent)
+            }
+        }
+        guard !stale.isEmpty else {
+            if layoutNow { collectionView.layoutIfNeeded() }
+            return
+        }
         let context = UICollectionViewLayoutInvalidationContext()
         context.invalidateItems(at: stale)
         collectionView.collectionViewLayout.invalidateLayout(with: context)
+        if layoutNow { collectionView.layoutIfNeeded() }
     }
 
     // MARK: - Viewport and bottom
@@ -1641,6 +1986,396 @@ final class TimelineCollectionController: UIViewController {
         lastPublishedViewport = next
         onViewportChanged?(next)
         publishScrollDownIndicator()
+        noteOpeningBottomSettled(next)
+        maybeAutoLoadOlder(next)
+        maybeAutoLoadLatest(next)
+    }
+
+    /// Called by the bridge after a history/window flag changes. A viewport
+    /// that is already parked at an edge would otherwise never re-publish and
+    /// miss the new loadable edge.
+    func requestOlderIfNearTop() {
+        guard isViewLoaded else { return }
+        maybeAutoLoadOlder(viewport)
+    }
+
+    func requestLatestIfAtBottom() {
+        guard isViewLoaded else { return }
+        maybeAutoLoadLatest(viewport)
+    }
+
+    /// The top trigger is one-shot: it disarms when it fires and only re-arms
+    /// once a viewport sits more than the near-top margin below the top. If
+    /// the bridge rejects the request before a read starts, nothing moves the
+    /// viewport, so the latch would stay disarmed and the reader would have to
+    /// tap the prompt. The bridge calls this on its early-exit guards.
+    func rearmOlderAutoLoad() {
+        // Re-arm only the shot: no intent bump (nothing was requested and
+        // refused), no opening-gate release (the opening still owns the
+        // position).
+        pagingPolicy.noteViewportLeftTop()
+    }
+
+    /// Re-arms the one-shot bottom trigger when the bridge could not start the
+    /// read yet (the opening path was still in flight).
+    func rearmLatestAutoLoad() {
+        latestAutoLoadSuppressed = false
+        latestAutoLoadNeedsNewBottomVisit = false
+        latestAutoLoadArmed = true
+    }
+
+    /// A history page is about to change the window. The reader asked for
+    /// older rows, not for a latest replacement; a short page will make the
+    /// viewport look "at bottom" but must not auto-load latest.
+    func requireNewBottomVisitForLatest() {
+        latestAutoLoadNeedsNewBottomVisit = true
+        latestAutoLoadSuppressed = true
+        latestAutoLoadArmed = false
+    }
+
+    /// The reader explicitly tapped the latest prompt; that is a real request
+    /// and overrides the post-history guard.
+    func allowLatestAfterHistoryGesture() {
+        latestAutoLoadNeedsNewBottomVisit = false
+        latestAutoLoadSuppressed = false
+        latestAutoLoadArmed = false
+    }
+
+    /// A latest read just finished with the newer edge still incomplete (a
+    /// stale local-first page). Do not immediately start the same read again
+    /// from the bottom trigger; the background reconcile owns it now.
+    func suppressLatestAutoLoad() {
+        latestAutoLoadSuppressed = true
+        latestAutoLoadArmed = false
+    }
+
+    /// True while a history prepend still owes a scroll correction. Auto-paging
+    /// must not start from a transient viewport produced by that apply.
+    var isHistoryPrependActive: Bool {
+        historyPaging || historyAnchorSettling
+            || insertionProjection != nil || !layout.insertionOwedIsSettled
+    }
+
+    /// Start the official-style history paging mode. The bridge calls this
+    /// before the page request; the adapter calls `beginHistoryRequest` when
+    /// the page arrives, which marks `historyPageArriving`.
+    func beginHistoryPaging(anchorRowID: String? = nil) {
+        guard TimelineHistoryAnchorMode.enabled else { return }
+        // Asking for older rows is reader intent: an armed bottom return from
+        // an earlier load-latest must not fire while the reader is in history.
+        // Only the generation moves; the near-top latch stays gesture-owned
+        // so a quiet settle cannot restart auto-paging.
+        pagingPolicy.noteHistoryPaging()
+        // A page can arrive inside the previous page's 600 ms settle window.
+        // Ending the settle below cancels its task, so the owed placement
+        // correction would never run and the reading row would drift up by
+        // the page's height on every page (b750 report: viewport pinned at
+        // the top through four consecutive pages, offset never moved).
+        if historyAnchorSettling {
+            enforceSettledHistoryPlacement()
+        }
+        endHistoryAnchorSettling()
+        requireNewBottomVisitForLatest()
+        historyPagingTimeout?.cancel()
+        historyPaging = true
+        historyPageArriving = false
+        historyAnchorItemID = nil
+        historyAnchorRowID = anchorRowID
+        historyAnchorOffsetIntoRow = 0
+        historyInitialFirstRowID = currentItems.first.flatMap {
+            content?.rowIDs(in: $0).first
+        }
+        historyPageFirstRowID = nil
+        let inset = collectionView.adjustedContentInset
+        let rawTop = collectionView.contentOffset.y + inset.top
+        let contentHeight = max(0, layout.contentHeight)
+        // A transient offset can sit outside the content (a height collapse
+        // before UIKit clamps). Anchoring from it produces a massive negative
+        // offsetIntoRow and later a blank viewport (device report 23:02:
+        // off=-57129, into=-57096, contentH=49598). Never derive an anchor
+        // from a viewport that is not inside the content.
+        let top = min(max(rawTop, 0), contentHeight)
+        let requestedAnchor = anchorRowID.flatMap { rowID -> (TimelineListItem, TimelineListLayoutAttributes)? in
+            guard let item = content?.item(containingRow: rowID),
+                  let attributes = layout.attributes(for: item.itemID) else { return nil }
+            return (item, attributes)
+        }
+        let requestedInto = requestedAnchor.map { top - $0.1.frame.minY }
+        func applyAnchor(item: TimelineListItem, rowID: String?,
+                         into: CGFloat) {
+            historyAnchorItemID = item.itemID
+            historyAnchorRowID = rowID ?? content?.rowIDs(in: item).first
+            historyAnchorOffsetIntoRow = into
+            anchorDriver?.beginHistoryPaging(anchorID: item.itemID, offsetIntoRow: into)
+            let attributes = layout.attributes(for: item.itemID)
+            probeHistory("begin reqRow=\(rowID ?? "-") item=\(item.itemID) "
+                + "rowY=\(attributes?.frame.minY ?? -1) into=\(into) "
+                + "off=\(collectionView.contentOffset.y) inset=\(inset.top) "
+                + "contentH=\(layout.contentHeight) items=\(currentItems.count) "
+                + "sanitized=\(abs(rawTop - top) > 1 ? 1 : 0)")
+        }
+        if let requestedAnchor, let requestedInto,
+           abs(rawTop - top) <= 1,
+           let attributes = layout.attributes(for: requestedAnchor.0.itemID),
+           requestedInto >= -viewport.visibleHeight,
+           requestedInto <= attributes.frame.height + viewport.visibleHeight {
+            applyAnchor(item: requestedAnchor.0, rowID: anchorRowID, into: requestedInto)
+        } else if let fallback = anchor(at: top - inset.top),
+                  let item = currentItems.first(where: { $0.itemID == fallback.id }) {
+            applyAnchor(item: item, rowID: content?.rowIDs(in: item).first,
+                        into: fallback.offsetIntoRow)
+        } else {
+            anchorDriver?.beginHistoryPaging()
+            probeHistory("begin unresolved reqRow=\(anchorRowID ?? "-") "
+                + "off=\(collectionView.contentOffset.y) contentH=\(layout.contentHeight) "
+                + "items=\(currentItems.count) sanitized=\(abs(rawTop - top) > 1 ? 1 : 0)")
+        }
+        // A page that never changes content would otherwise pin this mode.
+        historyPagingTimeout = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(15))
+            guard !Task.isCancelled, let self, self.historyPaging else { return }
+            self.endHistoryPaging()
+            self.endHistoryAnchorSettling()
+        }
+    }
+
+    /// A history page regroups the whole window, so the anchor item's id can
+    /// change even though its rows are still present. Rebind the driver to
+    /// the item that now contains the reader's row before resolving the
+    /// target; keeping the same `offsetIntoRow` preserves the old item top's
+    /// screen position.
+    private func reanchorHistoryPageIfNeeded() {
+        guard historyPaging || historyAnchorSettling,
+              let rowID = historyAnchorRowID, let content else { return }
+        guard let item = content.item(containingRow: rowID) else {
+            probeHistory("reanchor row=\(rowID) not-in-window")
+            return
+        }
+        // The stored offset can itself be garbage when the request started
+        // from an out-of-content viewport. Rebinding the row would then
+        // enforce a huge negative target and leave no visible cells (device
+        // report 23:02: off=-4612, contentH=102992, visible=0). Fall back to
+        // the row under the current viewport instead of the lost anchor.
+        if let attributes = layout.attributes(for: item.itemID) {
+            let bound = max(viewport.visibleHeight, 2_000)
+            let into = historyAnchorOffsetIntoRow
+            if !into.isFinite || into < -bound || into > attributes.frame.height + bound {
+                let rawTop = collectionView.contentOffset.y
+                    + collectionView.adjustedContentInset.top
+                let top = min(max(rawTop, 0), max(0, layout.contentHeight))
+                guard let fallback = anchor(at: top - collectionView.adjustedContentInset.top),
+                      let fallbackItem = currentItems.first(where: { $0.itemID == fallback.id }) else {
+                    probeHistory("reanchor reset row=\(rowID) no-fallback into=\(into)")
+                    return
+                }
+                let old = historyAnchorItemID ?? "-"
+                historyAnchorItemID = fallbackItem.itemID
+                historyAnchorRowID = content.rowIDs(in: fallbackItem).first
+                historyAnchorOffsetIntoRow = fallback.offsetIntoRow
+                anchorDriver?.beginHistoryPaging(anchorID: fallbackItem.itemID,
+                                                 offsetIntoRow: fallback.offsetIntoRow)
+                probeHistory("reanchor reset row=\(rowID) old=\(old) "
+                    + "new=\(fallbackItem.itemID) badInto=\(into) "
+                    + "into=\(fallback.offsetIntoRow) contentH=\(layout.contentHeight)")
+                return
+            }
+        }
+        guard item.itemID != historyAnchorItemID else { return }
+        let old = historyAnchorItemID ?? "-"
+        historyAnchorItemID = item.itemID
+        anchorDriver?.beginHistoryPaging(anchorID: item.itemID,
+                                         offsetIntoRow: historyAnchorOffsetIntoRow)
+        probeHistory("reanchor row=\(rowID) old=\(old) new=\(item.itemID) "
+            + "into=\(historyAnchorOffsetIntoRow) contentH=\(layout.contentHeight)")
+    }
+
+    func endHistoryPaging() {
+        historyPagingTimeout?.cancel()
+        historyPagingTimeout = nil
+        historyPageArriving = false
+        historyInitialFirstRowID = nil
+        historyPageFirstRowID = nil
+        guard historyPaging else { return }
+        if let anchorID = historyAnchorItemID,
+           let attributes = layout.attributes(for: anchorID) {
+            probeHistory("end item=\(anchorID) screenY=\(attributes.frame.minY - collectionView.contentOffset.y) "
+                + "off=\(collectionView.contentOffset.y) contentH=\(layout.contentHeight)")
+        } else {
+            probeHistory("end item=\(historyAnchorItemID ?? "-") gone off=\(collectionView.contentOffset.y) "
+                + "contentH=\(layout.contentHeight)")
+        }
+        anchorDriver?.endHistoryPaging()
+        historyPaging = false
+        // Keep the row/offset for the settle window; `endHistoryAnchorSettling`
+        // clears them. A page's last height corrections land after this call.
+    }
+
+    /// Keep the reading anchor enforced for a short quiet window after the
+    /// page commits. `historyPaging` is already false here (the gate asserts
+    /// it), so the driver's own content-change branch no longer runs.
+    private func beginHistoryAnchorSettling() {
+        guard historyAnchorRowID != nil else { return }
+        historyAnchorSettling = true
+        historySettleGeneration = readerIntentGeneration
+        historySettleAnchorStartY = historyAnchorItemID
+            .flatMap { layout.attributes(for: $0)?.frame.minY } ?? .nan
+        probeHistory("settle begin row=\(historyAnchorRowID ?? "-") "
+            + "into=\(historyAnchorOffsetIntoRow) contentH=\(layout.contentHeight)")
+        historySettleTask?.cancel()
+        historySettleTask = Task { @MainActor [weak self] in
+            // A gesture at the moment of correction owns the viewport; wait
+            // for it to finish (bounded) instead of fighting the finger.
+            for _ in 0..<15 {
+                try? await Task.sleep(for: .milliseconds(200))
+                guard !Task.isCancelled, let self, self.historyAnchorSettling else { return }
+                if self.isUserScrolling { continue }
+                // The settle window compensates late height changes above the
+                // anchor. The reader moving on their own invalidates it, and
+                // with no change to the anchor's own frame there is nothing to
+                // compensate: re-resolving a stale anchor then pulled the
+                // reader from the top back down ~290 pt on every auto page
+                // (device report 2026-10-31 03:46, contentH unchanged).
+                guard self.readerIntentGeneration == self.historySettleGeneration else {
+                    self.endHistoryAnchorSettling()
+                    return
+                }
+                if let startY = self.historyAnchorItemID.flatMap({
+                       self.layout.attributes(for: $0)?.frame.minY
+                   }),
+                   startY.isFinite, self.historySettleAnchorStartY.isFinite,
+                   abs(startY - self.historySettleAnchorStartY) <= 0.5 {
+                    self.endHistoryAnchorSettling()
+                    return
+                }
+                self.enforceSettledHistoryPlacement()
+                self.endHistoryAnchorSettling()
+                return
+            }
+            self?.endHistoryAnchorSettling()
+        }
+    }
+
+    /// Enforce the page's reading anchor, not the driver's live placement.
+    ///
+    /// The apply path rebinds through `reanchorHistoryPageIfNeeded()` before
+    /// every enforcement; the settle task used to trust the driver state.
+    /// Gestures and UIKit scroll events during the request rewrite that state
+    /// from the viewport, and at the top edge `anchor(at:)` names the window's
+    /// *first* item — after the prepend that item's row is the top of the
+    /// newly loaded page. The settle then wrote the apply's own correction
+    /// (4160/7048/7125) back to -97, which also re-armed the near-top
+    /// auto-load latch and looped (b750 report 2026-10-31 02:24).
+    private func enforceSettledHistoryPlacement() {
+        guard let itemID = historyAnchorItemID else {
+            anchorDriver?.enforceReadingPlacement()
+            return
+        }
+        // The settle correction repairs late height changes at the page's
+        // anchor. A reader who has already moved more than a viewport away
+        // owns their position; the apply-time correction is the one that
+        // lands large drift, never this quiet-window pass.
+        if let attributes = layout.attributes(for: itemID) {
+            let target = attributes.frame.minY + historyAnchorOffsetIntoRow
+                - collectionView.adjustedContentInset.top
+            let drift = abs(collectionView.contentOffset.y - target)
+            if drift > max(viewport.visibleHeight, 2_000) { return }
+        }
+        anchorDriver?.beginHistoryPaging(anchorID: itemID,
+                                         offsetIntoRow: historyAnchorOffsetIntoRow)
+        // Ease, don't place: a late measurement correction can be hundreds of
+        // points and must not land as a one-frame jump.
+        anchorDriver?.easeSettledHistoryPlacement()
+    }
+
+    private func endHistoryAnchorSettling() {
+        if historyAnchorSettling {
+            probeHistory("settle end off=\(collectionView.contentOffset.y) "
+                + "contentH=\(layout.contentHeight)")
+        }
+        historySettleTask?.cancel()
+        historySettleTask = nil
+        historyAnchorSettling = false
+        historyAnchorItemID = nil
+        historyAnchorRowID = nil
+        historyAnchorOffsetIntoRow = 0
+    }
+
+    /// The adapter's prepend snapshot is the one that carries the page. The
+    /// v2 path does not install a one-shot absolute target; the first-row
+    /// marker lets an earlier in-flight apply finish without consuming the
+    /// page's correction.
+    func noteHistoryPageArriving(firstRowID: String?) {
+        guard historyPaging else { return }
+        historyPageArriving = true
+        historyPageFirstRowID = firstRowID
+        probeHistory("arriving pageFirst=\(firstRowID ?? "-") "
+            + "initialFirst=\(historyInitialFirstRowID ?? "-") "
+            + "currentFirst=\(currentItems.first.flatMap { content?.rowIDs(in: $0).first } ?? "-") "
+            + "items=\(currentItems.count) contentH=\(layout.contentHeight)")
+    }
+
+    private func maybeAutoLoadOlder(_ viewport: TimelineViewport) {
+        guard viewport.isMeasured else { return }
+        // The opening owns the position until it lands at the bottom. A cold
+        // open presents an empty/partial window at the top for a few frames;
+        // without this gate the near-top trigger fires there, starts a history
+        // read and replaces the opening's bottom landing (device report
+        // 2026-10-31 03:10: the app opened at the top, paged history, and only
+        // reached the newest rows 3.7 s later — "回来在页面中间").
+        guard !pagingPolicy.openingBottomPending else { return }
+        let nearTop = viewport.offsetY + viewport.topInset <= Self.olderAutoLoadThreshold
+        guard nearTop else {
+            // The viewport moved off the top: the latch re-arms on its own
+            // (no intent bump, so a layout change cannot void a bottom
+            // return).
+            pagingPolicy.noteViewportLeftTop()
+            return
+        }
+        // A list shorter than the viewport is already showing both edges; let
+        // the prompt/pull own that case instead of auto-loading every page.
+        let contentIsTaller = viewport.contentHeight > viewport.visibleHeight + 1
+        guard contentIsTaller else { return }
+        guard !navigationSuspended, canLoadOlder, !isHistoryPrependActive else { return }
+        guard pagingPolicy.mayAutoLoadOlder(contentIsTallerThanViewport: true) else { return }
+        pagingPolicy.didAutoLoadOlder()
+        probeHistory("auto-older fire top=\(viewport.offsetY + viewport.topInset) "
+            + "contentH=\(viewport.contentHeight) visH=\(viewport.visibleHeight)")
+        onNeedsOlder?()
+    }
+
+    private func maybeAutoLoadLatest(_ viewport: TimelineViewport) {
+        guard viewport.isMeasured else { return }
+        if latestAutoLoadNeedsNewBottomVisit {
+            // Only a real gesture that leaves the bottom counts as a new
+            // visit. A short history page or a content-height change may
+            // report "at bottom" without the reader asking for newer rows.
+            guard !viewport.measuredAtBottom, isUserScrolling else { return }
+            latestAutoLoadNeedsNewBottomVisit = false
+            latestAutoLoadSuppressed = false
+            latestAutoLoadArmed = true
+        }
+        guard viewport.measuredAtBottom else {
+            // A content-height change can dip the viewport out of bottom
+            // without the reader moving. Only a real gesture clears the
+            // local-first suppression; otherwise the same read restarts and
+            // its spinner never settles.
+            if isUserScrolling {
+                latestAutoLoadSuppressed = false
+                latestAutoLoadArmed = true
+            } else if !latestAutoLoadSuppressed {
+                latestAutoLoadArmed = true
+            }
+            return
+        }
+        guard !navigationSuspended, canLoadLatest, !isHistoryPrependActive,
+              latestAutoLoadArmed else { return }
+        // Reaching the bottom of a history window is the reader's request for
+        // the newest side. One trigger per bottom episode: a failed load waits
+        // for a fresh leave-and-return (or the visible latest prompt).
+        latestAutoLoadArmed = false
+        probeHistory("auto-latest fire off=\(viewport.offsetY) "
+            + "contentH=\(viewport.contentHeight) visH=\(viewport.visibleHeight)")
+        onNeedsLatest?()
     }
 
     private func publishScrollDownIndicator() {
@@ -1658,11 +2393,13 @@ final class TimelineCollectionController: UIViewController {
         // window apply can land at any time during a slow `loadLatest` await.
         // The post-await `requestBottom` re-arms with the bounded lifetime.
         windowReplacementReturn = true
+        pagingPolicy.armBottomReturn()
         windowReturnToken &+= 1
     }
 
     private func armWindowReplacementReturn() {
         windowReplacementReturn = true
+        pagingPolicy.armBottomReturn()
         windowReturnToken &+= 1
         let token = windowReturnToken
         Task { @MainActor [weak self] in
@@ -1691,7 +2428,8 @@ final class TimelineCollectionController: UIViewController {
         if collectionView.isTracking {
             pendingGestureBottomRequest = (
                 animated,
-                forced || (pendingGestureBottomRequest?.forced ?? false))
+                forced || (pendingGestureBottomRequest?.forced ?? false),
+                pagingPolicy.readerIntentGeneration)
             return
         }
         if forced { armWindowReplacementReturn() }
@@ -1725,7 +2463,38 @@ final class TimelineCollectionController: UIViewController {
             return
         }
         guard collectionView != nil else { return }
+        // Hold the near-top trigger until this landing is observed (or the
+        // bounded fallback expires): the first frames show an empty window at
+        // the top, and paging history there would replace the landing.
+        pagingPolicy.beginOpening()
+        openingBottomDeadline?.cancel()
+        openingBottomDeadline = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            self?.pagingPolicy.openingFallbackExpired()
+        }
         anchorDriver?.requestEnd(animated: false)
+    }
+
+    /// The opening's bottom landing was observed; the near-top trigger may
+    /// page history again.
+    ///
+    /// "At the bottom" of an empty or sub-viewport window proves nothing: the
+    /// first frames of a cold open sit at the bottom of zero content, and
+    /// releasing the gate there re-opened the near-top trigger before the real
+    /// landing (device report 2026-10-31 03:55: the empty bottom cleared the
+    /// gate at t=0.01, the restored window then sat at the top and paged
+    /// history at t=0.14, whose prepend jumped the offset +6,530).
+    private func noteOpeningBottomSettled(_ viewport: TimelineViewport) {
+        guard pagingPolicy.openingBottomPending,
+              !historyPaging, !historyAnchorSettling else { return }
+        let wasPending = pagingPolicy.openingBottomPending
+        pagingPolicy.noteLanding(
+            contentIsTallerThanViewport: viewport.contentHeight > viewport.visibleHeight + 1,
+            atBottom: viewport.measuredAtBottom)
+        guard wasPending, !pagingPolicy.openingBottomPending else { return }
+        openingBottomDeadline?.cancel()
+        openingBottomDeadline = nil
     }
 
     /// The opening's arrival check. `onApplyCompleted` can run before the
@@ -1861,17 +2630,29 @@ final class TimelineCollectionController: UIViewController {
 
     /// The reading anchor in itemID space: the row under the viewport top and
     /// the distance into it (official `readerBeganDragging` derivation).
+    /// Static chrome (the older/latest prompts and the tail) is not content:
+    /// anchoring on the older prompt makes a prepend insert rows *below* the
+    /// anchor, so the prompt stays put and the reader is left looking at the
+    /// new page's top. Skip it exactly as the official row list would.
     func anchor(at offset: CGFloat) -> (id: String, offsetIntoRow: CGFloat)? {
         let top = offset + viewport.topInset
-        for item in currentItems {
+        for item in currentItems where TimelineHistoryAnchorRows.isAnchorable(item) {
             guard let attributes = layout.attributes(for: item.itemID) else { continue }
             if attributes.frame.maxY > top {
                 return (item.itemID, top - attributes.frame.minY)
             }
         }
-        guard let first = currentItems.first else { return nil }
-        let start = layout.attributes(for: first.itemID)?.frame.minY ?? top
-        return (first.itemID, max(0, top - start))
+        let anchorable = currentItems.filter(TimelineHistoryAnchorRows.isAnchorable)
+        guard let first = anchorable.first else { return nil }
+        let firstStart = layout.attributes(for: first.itemID)?.frame.minY ?? top
+        if top <= firstStart {
+            return (first.itemID, max(0, top - firstStart))
+        }
+        guard let last = anchorable.last,
+              let lastAttributes = layout.attributes(for: last.itemID) else {
+            return (first.itemID, max(0, top - firstStart))
+        }
+        return (last.itemID, top - lastAttributes.frame.minY)
     }
 
     var firstVisibleRowID: String? {
@@ -1901,6 +2682,37 @@ final class TimelineCollectionController: UIViewController {
             edge: edge, y: edge == .top ? attributes.frame.minY : attributes.frame.maxY)
     }
 
+    /// The part of a prepended list the anchor projection actually reads:
+    /// everything from the new top through the anchor item. Everything below
+    /// keeps the height it had in the old window.
+    private func measurePrefix(upTo anchorRowID: String,
+                               in items: [TimelineListItem]) -> [TimelineListItem] {
+        guard let content,
+              let index = items.firstIndex(where: {
+                  content.anchorRowIDs(in: $0).contains(anchorRowID)
+              }) else { return items }
+        return Array(items.prefix(index + 1))
+    }
+
+    /// The content height `prepare()` will produce for `items`, computed with
+    /// the same resolver and spacing the layout uses. A window replacement
+    /// consults it before the snapshot applies so the old offset can be moved
+    /// inside the replacement's range while every row is still on screen.
+    private func projectedContentHeight(items: [TimelineListItem]) -> CGFloat {
+        guard let content, columnWidth > 0 else { return layout.contentHeight }
+        var y = TimelineListMetrics.topInset
+        for (index, item) in items.enumerated() {
+            let key = content.heightKey(for: item, width: columnWidth)
+            y += layout.heights.resolvedHeight(
+                for: key, itemID: item.itemID,
+                fallback: content.estimateKind(for: item))
+            if index < items.count - 1 {
+                y += content.itemSpacing(after: item)
+            }
+        }
+        return y
+    }
+
     /// Where the anchor will sit after `items` is laid out, using the cache's
     /// current heights. The new page was measured synchronously just before
     /// this call, so the value is the same one the post-apply layout produces.
@@ -1919,7 +2731,7 @@ final class TimelineCollectionController: UIViewController {
             let height = layout.heights.resolvedHeight(for: key, itemID: item.itemID,
                 fallback: content.estimateKind(for: item))
             if index == 0 { firstRowID = content.rowIDs(in: item).first ?? item.itemID }
-            if content.rowIDs(in: item).contains(anchorRowID) {
+            if content.anchorRowIDs(in: item).contains(anchorRowID) {
                 return TimelineHistoryLayout(firstRowID: firstRowID ?? item.itemID,
                     anchorRowID: anchorRowID, edge: edge,
                     y: edge == .top ? y : y + height)
@@ -1951,10 +2763,28 @@ final class TimelineCollectionController: UIViewController {
                              edge: TimelineHistoryLayout.Edge,
                              newItems: [TimelineListItem],
                              origin: TimelineHistoryLayout) -> TimelineHistoryPosition? {
+        if historyPaging {
+            // Official-style path: the anchor driver already holds the
+            // reading placement and resolves the new offset from the updated
+            // layout. No projected one-shot target is installed.
+            probeHistory("request v2 anchor=\(anchorRowID) n=\(newItems.count) "
+                + "first=\(newItems.first.flatMap { content?.rowIDs(in: $0).first } ?? "-")")
+            noteHistoryPageArriving(firstRowID: newItems.first.flatMap {
+                content?.rowIDs(in: $0).first
+            })
+            return nil
+        }
         // Loading older is a browsing action. Stop any programmatic motion;
         // the reading placement then absorbs the prepend by construction.
         stopBottomAnimation()
-        measureSynchronously(newItems, width: columnWidth)
+        // The projected anchor only needs the heights from the new top down
+        // to the anchor. Measuring the entire window here made a 300-row
+        // history page a synchronous offscreen-hosting pass over every row
+        // below it as well (device report 2026-10-30: loading history dropped
+        // frames). Rows below the anchor already have heights from the
+        // previous window; the post-apply measurement still covers any gap.
+        measureSynchronously(measurePrefix(upTo: anchorRowID, in: newItems),
+                             width: columnWidth)
         guard let projected = projectedHistoryLayout(items: newItems,
                                                      anchorRowID: anchorRowID, edge: edge) else { return nil }
         let position = TimelineHistoryPosition(id: generation, layout: origin,
@@ -1969,6 +2799,8 @@ final class TimelineCollectionController: UIViewController {
     func cancelHistoryRequest() {
         insertionProjection = nil
         layout.cancelInsertionOwed()
+        endHistoryPaging()
+        endHistoryAnchorSettling()
     }
 
     var items: [TimelineListItem] { currentItems }
@@ -2142,7 +2974,13 @@ extension TimelineCollectionController: TimelineListLayoutHost {
         if !didStartAnchorDriver {
             startAnchorDriverIfNeeded()
         } else {
+            if historyPaging || historyAnchorSettling {
+                reanchorHistoryPageIfNeeded()
+            }
             anchorDriver?.contentChanged()
+            if historyAnchorSettling, !historyPaging {
+                anchorDriver?.enforceReadingPlacement()
+            }
         }
         onContentHeightChanged?(height)
     }
@@ -2225,6 +3063,17 @@ extension TimelineCollectionController: UICollectionViewDelegate {
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         guard !navigationSuspended else { return }
+        // The reader's finger owns the position, even mid-opening. Each new
+        // gesture restores one shot of the near-top trigger and counts as a
+        // reader-intent change; the policy owns both so deleting either guard
+        // turns a `TimelinePagingPolicyTests` case red.
+        pagingPolicy.readerMoved()
+        openingBottomDeadline?.cancel()
+        openingBottomDeadline = nil
+        if historyAnchorSettling { endHistoryAnchorSettling() }
+        // A real gesture is the reader's intent; it may retry a latest read
+        // that a local-first page suppressed.
+        latestAutoLoadSuppressed = false
         anchorDriver?.readerBeganDragging()
         // The reader's finger always wins over a window replacement whose
         // return has not resolved yet.
@@ -2313,6 +3162,11 @@ extension TimelineCollectionController: UICollectionViewDelegate {
             let transition = phase.apply(.didEndDecelerating)
             onPhaseChanged?(transition)
         }
+        // The status-bar tap is reader intent: it invalidates any armed bottom
+        // return, re-arms one near-top shot and ends the opening claim in the
+        // bridge.
+        pagingPolicy.readerMoved()
+        onReaderScrollToTop?()
         // Official interception (`0x101a3cb14 → 0x101a3d838`): UIKit's own
         // scroll-to-top is refused; the anchor model owns the motion.
         anchorDriver?.requestStart()

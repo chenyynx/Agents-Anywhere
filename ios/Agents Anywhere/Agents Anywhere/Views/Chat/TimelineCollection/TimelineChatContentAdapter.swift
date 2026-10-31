@@ -3,6 +3,14 @@ import UIKit
 import QuartzCore
 import Observation
 
+/// Which edge the single `isLoadingHistory` flag belongs to. The two prompt
+/// rows must not both show a spinner: an older-page read while the reader is
+/// at the bottom would otherwise claim "loading newer records".
+enum TimelineHistoryLoadDirection {
+    case older
+    case latest
+}
+
 /// Adapts one `SessionChatModel` projection to the collection timeline.
 ///
 /// The SwiftUI timeline's body built groups, notices, pending bubbles and the
@@ -140,6 +148,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private var latestPullReady = false
     private var isLoadingOlder = false
     private var isLoadingLatest = false
+    /// Set by the bridge for the in-flight history read. `refresh` uses it to
+    /// decide which prompt owns the shared model flag.
+    var historyLoadDirection: TimelineHistoryLoadDirection?
     private var keepsOlderPrompt = false
     var onLoadOlder: (() -> Void)?
     var onLoadLatest: (() -> Void)?
@@ -1070,7 +1081,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         switch item {
         case .olderPrompt:
             return AnyView(TimelineCollectionOlderPromptRow(
-                hasOlderItems: model.session.hasOlderItems,
+                hasOlderItems: model.session.canLoadOlder,
                 isLoading: isLoadingOlder || isLoadingLatest,
                 pullReady: olderPullReady,
                 onLoad: { [weak self] in self?.onLoadOlder?() }))
@@ -1319,8 +1330,24 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         }
     }
 
+    /// The rows that actually belong to this item's own content. Unlike
+    /// `rowIDs(in:)`, the older prompt does not alias the first timeline row:
+    /// that alias is useful for the prepend's first-row check, but it would
+    /// make the projected anchor match the prompt at y=0 and scroll the page
+    /// to the newly loaded top.
+    func anchorRowIDs(in item: TimelineListItem) -> [String] {
+        TimelineHistoryAnchorRows.rows(for: item, physicalRows: rowIDs(in: item))
+    }
+
     func item(containingRow rowID: String) -> TimelineListItem? {
         rowToItem[rowID]
+    }
+
+    /// The durable order of the row under the viewport top. History paging
+    /// hands this to the projection so the in-memory window stays around the
+    /// reader instead of one end.
+    func orderSeq(forRowID rowID: String) -> Int? {
+        model.timeline.rows.first { $0.id == rowID }?.value.orderSeq
     }
 
     func interactionState() -> TimelineLayoutInteractionState {
@@ -1450,6 +1477,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         guard !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
+#if AA_TIMELINE_PROBE
+        let probeRefreshStart = CACurrentMediaTime()
+        let probeHadHistoryRequest = pendingHistoryRequest != nil
+#endif
 
         // Capture the prepend origin before any map is replaced. A history
         // page can merge the anchor's group; after the merge, the old row no
@@ -1457,8 +1488,20 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let pendingHistoryOrigin = pendingHistoryRequest.flatMap { request in
             controller?.historyLayout(anchorRowID: request.anchorRowID, edge: request.edge)
         }
-        isLoadingOlder = model.session.isLoadingHistory
-        isLoadingLatest = model.session.isLoadingHistory
+        let loadingHistory = model.session.isLoadingHistory
+        switch historyLoadDirection {
+        case .some(.older):
+            isLoadingOlder = loadingHistory
+            isLoadingLatest = false
+        case .some(.latest):
+            isLoadingOlder = false
+            isLoadingLatest = loadingHistory
+        case .none:
+            // Fallback for paths that did not declare a direction: keep the
+            // old both-edges behaviour rather than hiding a real spinner.
+            isLoadingOlder = loadingHistory
+            isLoadingLatest = loadingHistory
+        }
         let notices = model.session.notices.notices
         let visibleNotices = notices.filter { $0.isVisible && !$0.blocks(model.session.id) }
         let interactionTargets = Set(notices.filter(\.isVisible).compactMap(\.timelineTargetID))
@@ -1630,12 +1673,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                                                           timelineRowIDs: timelineRowIDs)
         let pending = model.timeline.pendingMessages
         let identity = TimelineItemIdentity.build(
-            hasOlderPrompt: model.session.hasOlderItems || keepsOlderPrompt,
+            hasOlderPrompt: model.session.canLoadOlder || keepsOlderPrompt,
             groupIDs: groups.map(\.id),
             hasWorkingStatus: showsWorkingStatus,
             noticeIDs: tailNotices.map(\.id),
-            pendingIDs: pending.map(\.id),
-            hasLatestPrompt: model.session.hasNewerItems)
+            pendingIDs: pending.map(\.id))
 
         var groupsByID: [String: ChatTimelineGroup] = [:]
         for group in groups where groupsByID[group.id] == nil { groupsByID[group.id] = group }
@@ -1663,7 +1705,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             groups: groups,
             suppressLatest: model.isRunning || model.session.hasNewerItems,
             hasPendingUserMessage: !model.session.hasNewerItems
-                && (!model.timeline.pendingMessages.isEmpty || !model.session.pendingMessages.isEmpty))
+                && (!model.timeline.pendingMessages.isEmpty || !model.session.pendingMessages.isEmpty),
+            // A step group renders as one line (CodeStepGroupRowView) and draws
+            // no footer; keying a turn action to it made the footer vanish and
+            // hop to the next group (device 2026-10-31 05:40: the compact
+            // divider lost its footer by 91 pt when the next step arrived).
+            footerHostEligible: { stepGroupsByID[$0.id] == nil })
 
         self.groupsByID = groupsByID
         self.codeProfile = profile
@@ -1744,7 +1791,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // Only a changed snapshot will produce the update that consumes the
         // owed target; firing on an unchanged refresh would leave it behind.
         if let request = pendingHistoryRequest {
-            if Date.now.timeIntervalSince(request.createdAt) >= 5 {
+            // The controller's history-paging mode gives up after 15 s; while
+            // it owns the request the marker must outlive that bound, or a
+            // slow page (device report 2026-10-31 13:46: a local page took
+            // 7.0 s) loses its reading anchor before it arrives and is applied
+            // as an ordinary prepend with no offset correction. The legacy
+            // path without a paging controller keeps the short marker.
+            let markerTimeout: TimeInterval = controller?.historyPaging == true ? 20 : 5
+            if Date.now.timeIntervalSince(request.createdAt) >= markerTimeout {
                 pendingHistoryRequest = nil
                 // The owed target belongs to a page that never arrived; drop
                 // it so a later unrelated update cannot consume it.
@@ -1752,7 +1806,18 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             } else if contentChanged, let first = identity.items.first,
                       rowIDs(in: first).first != request.beforeFirstRowID {
                 pendingHistoryRequest = nil
-                if let origin = pendingHistoryOrigin {
+#if AA_TIMELINE_PROBE
+                TimelineProbeStore.shared.noteHistory(
+                    "adapter page detected ms=\(Int(((CACurrentMediaTime() - probeRefreshStart) * 1000).rounded())) "
+                    + "n=\(identity.items.count) first=\(rowIDs(in: first).first ?? "-") "
+                    + "oldFirst=\(request.beforeFirstRowID) hist=\(controller?.historyPaging == true ? 1 : 0)")
+#endif
+                if controller?.historyPaging == true {
+                    // v2: the driver owns the reading anchor; the apply only
+                    // needs to know that this snapshot carries the page.
+                    controller?.noteHistoryPageArriving(
+                        firstRowID: rowIDs(in: first).first)
+                } else if let origin = pendingHistoryOrigin {
                     _ = controller?.beginHistoryRequest(generation: request.generation,
                         anchorRowID: request.anchorRowID, edge: request.edge,
                         newItems: identity.items, origin: origin)
@@ -1763,6 +1828,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             lastEntries = entries
             generation &+= 1
         }
+#if AA_TIMELINE_PROBE
+        if probeHadHistoryRequest || controller?.historyPaging == true {
+            TimelineProbeStore.shared.noteHistory(
+                "adapter refresh ms=\(Int(((CACurrentMediaTime() - probeRefreshStart) * 1000).rounded())) "
+                + "changed=\(contentChanged ? 1 : 0) n=\(identity.items.count) "
+                + "first=\(identity.items.first.flatMap { rowIDs(in: $0).first } ?? "-") "
+                + "hist=\(controller?.historyPaging == true ? 1 : 0) "
+                + "pending=\(pendingHistoryRequest != nil ? 1 : 0)")
+        }
+#endif
 #if DEBUG
         if identity.hasDuplicates {
             // Data defect: the first occurrence renders. One line, ids only.
@@ -1854,7 +1929,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         switch item {
         case .olderPrompt:
             return .olderPrompt(pullReady: olderPullReady, isLoading: isLoadingOlder,
-                                keepsPrompt: keepsOlderPrompt, hasOlderItems: model.session.hasOlderItems)
+                                keepsPrompt: keepsOlderPrompt, hasOlderItems: model.session.canLoadOlder)
         case .latestPrompt:
             return .latestPrompt(pullReady: latestPullReady, isLoading: isLoadingLatest,
                                  hasNewerItems: model.session.hasNewerItems)

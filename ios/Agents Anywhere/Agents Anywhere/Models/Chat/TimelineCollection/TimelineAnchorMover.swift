@@ -87,12 +87,22 @@ nonisolated struct TimelineAnchorMover: Equatable {
     /// One display frame. `dt` is clamped to a 30 fps step so a stalled link
     /// cannot overshoot; the target is whatever the placement resolves to at
     /// this instant.
+    ///
+    /// The spring is integrated in substeps of at most `min(1/120, 0.25/ω)`.
+    /// A single semi-implicit Euler step is only stable while `ω·h` is small:
+    /// at the 1/30 clamp the 0.2 s content spring (`ω ≈ 31.4`) has
+    /// `ω·h ≈ 1.05`, whose discrete eigenvalues are 0.63 and −1.82 — the
+    /// critically damped continuous response becomes a growing every-other-
+    /// frame oscillation (device report 2026-10-31 07:10: the offset swung
+    /// ±56 pt around a stable bottom whenever a streaming layout pass dropped
+    /// frames). Substepping converges to the same continuous response, so the
+    /// chosen 0.2 s feel is unchanged; only the unstable integration is gone.
     mutating func step(target: CGFloat, dt: Double, displayScale: CGFloat) -> Step {
         guard isRunning else {
             return Step(position: position, arrived: false, moved: false)
         }
-        let step = min(max(dt, 0), 1.0 / 30.0)
-        guard step > 0 else {
+        let frame = min(max(dt, 0), 1.0 / 30.0)
+        guard frame > 0 else {
             return Step(position: position, arrived: false, moved: false)
         }
         let pixel = 1 / max(1, displayScale)
@@ -108,16 +118,24 @@ nonisolated struct TimelineAnchorMover: Equatable {
         paceTarget = target
         let omega = spring.omega
         let zeta = spring.zeta
-        let acceleration = omega * omega * Double(target - position)
-            - 2 * zeta * omega * Double(velocity)
-        velocity += CGFloat(acceleration * step)
-        position += CGFloat(Double(velocity) * step)
+        let substepLimit = omega > 0
+            ? min(1.0 / 120.0, 0.25 / omega)
+            : 1.0 / 120.0
+        var remaining = frame
+        while remaining > 0 {
+            let h = min(substepLimit, remaining)
+            let acceleration = omega * omega * Double(target - position)
+                - 2 * zeta * omega * Double(velocity)
+            velocity += CGFloat(acceleration * h)
+            position += CGFloat(Double(velocity) * h)
+            remaining -= h
+        }
 
         // A target that moved this frame is a live stream: the motion must
         // stay running (the official catch-up) even though the Pace shift
         // leaves a zero gap. Arrival is only judged against a still target.
         if !targetMoved, abs(target - position) < pixel,
-           abs(velocity * CGFloat(step)) < pixel {
+           abs(velocity * CGFloat(frame)) < pixel {
             position = target
             velocity = 0
             isRunning = false

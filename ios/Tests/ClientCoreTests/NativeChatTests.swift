@@ -134,6 +134,35 @@ import Testing
         #expect(timeline.rows.count == 1)
     }
 
+    @Test func aConfirmedPendingStaysUntilItsEchoRowIsPresented() throws {
+        let timeline = SessionTimelinePresentation()
+        let pending = V2PendingMessage(id: "local", content: "Hi", attachmentIDs: [])
+        timeline.synchronizePending([pending])
+        pending.update(.confirmed)
+        // The session model drops the record the moment the echo reaches the
+        // projection; the presentation has not received that observation yet.
+        // Publishing the empty list here would remove the bubble one refresh
+        // before its echo row and dip the bottom anchor by the row's height.
+        timeline.synchronizePending([])
+        #expect(timeline.pendingMessages.map(\.id) == ["local"])
+        let echo: V2TimelineItem = try decode(itemObject(text: "Hi", clientID: "local"))
+        timeline.stage([echo], animate: true)
+        timeline.flush(now: 1)
+        timeline.synchronizePending([])
+        #expect(timeline.pendingMessages.isEmpty)
+        #expect(timeline.rows.count == 1)
+    }
+
+    @Test func aDismissedPendingThatNeverEchoedLeavesImmediately() {
+        let timeline = SessionTimelinePresentation()
+        let pending = V2PendingMessage(id: "local", content: "Hi", attachmentIDs: [])
+        timeline.synchronizePending([pending])
+        // Dismissal is not a confirmation: nothing will ever replace this row,
+        // so holding it would strand a bubble the user explicitly removed.
+        timeline.synchronizePending([])
+        #expect(timeline.pendingMessages.isEmpty)
+    }
+
     @Test func nextBatchWaitsForThePreviousRevealToEnd() throws {
         let timeline = SessionTimelinePresentation()
         timeline.stage([try item("Hello")], animate: false); timeline.flush(now: 0)

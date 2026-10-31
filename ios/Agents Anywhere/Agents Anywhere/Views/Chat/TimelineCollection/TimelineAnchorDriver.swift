@@ -38,6 +38,10 @@ final class TimelineAnchorDriver {
     /// The next `.move` was requested by content growth, so a fresh motion
     /// uses the short content spring instead of the 0.4 s catch-up ease.
     private var pendingContentMove = false
+    /// A user-requested scroll-to-top must show the whole distance. The
+    /// official long-jump path pre-places one viewport short, which reads as
+    /// an instant jump when the list is tens of thousands of points tall.
+    private var fullDistanceMotion = false
     /// The running motion was started by content growth (not by an explicit
     /// scroll request), so continuous growth keeps the plain ease follow.
     private var moverIsContent = false
@@ -48,6 +52,14 @@ final class TimelineAnchorDriver {
     private var isSuspended = false
     private var isInteractionPresented = false
     private var didReportOpeningArrival = false
+    /// While a history page is being inserted, the reading placement is the
+    /// single offset source. Content-height events re-resolve it directly
+    /// instead of starting the normal growth Mover.
+    private var isHistoryPaging = false
+    /// The viewport was at the bottom before the inset change now being
+    /// applied. Consumed by `applyInsets` so a keyboard/composer transition
+    /// keeps the bottom follow even if another update lost the placement.
+    private var adoptEndOnNextInsetChange = false
 #if DEBUG
     /// Gate counter: how many Mover motions actually started.
     private(set) var debugMoveStarts = 0
@@ -99,11 +111,34 @@ final class TimelineAnchorDriver {
                                   displayScale: view.traitCollection.displayScale)
     }
 
-    private func writeOffset(_ y: CGFloat) {
-        guard let view = scrollView else { return }
-        guard abs(view.contentOffset.y - y) >= 0.5 else { return }
+    /// `allowSlack` keeps the one-viewport emergency margin for direct
+    /// placements of a possibly stale anchor. A Mover step is a live,
+    /// in-range value: the slack let a spring overshoot be written past the
+    /// content bottom, where UIKit's clamp/rubber-band and the next tick's
+    /// reseed produced a second oscillation (device report 2026-10-31 07:10).
+    private func writeOffset(_ y: CGFloat, allowSlack: Bool = true) {
+        guard let view = scrollView, y.isFinite else { return }
+        // Every other writer trusts its target. A stale placement or an
+        // out-of-content anchor can resolve to a value tens of thousands of
+        // points outside the scrollable range; UIKit then accepts it during
+        // a layout update and the viewport goes blank. Keep one viewport of
+        // overscroll slack, never more.
+        let geometry = geometry()
+        let topLimit = -geometry.topInset
+        let bottomLimit = max(topLimit,
+            geometry.contentHeight - geometry.containerHeight + geometry.bottomInset)
+        let slack = allowSlack ? max(geometry.containerHeight, 1) : 0
+        let clamped = min(max(y, topLimit - slack), bottomLimit + slack)
+        if abs(clamped - y) > 1 {
+#if AA_TIMELINE_PROBE
+            TimelineProbeStore.shared.noteHistory(
+                "driver clamp target=\(y) clamped=\(clamped) "
+                + "contentH=\(geometry.contentHeight) containerH=\(geometry.containerHeight)")
+#endif
+        }
+        guard abs(view.contentOffset.y - clamped) >= 0.5 else { return }
         isApplying = true
-        view.setContentOffset(CGPoint(x: view.contentOffset.x, y: y), animated: false)
+        view.setContentOffset(CGPoint(x: view.contentOffset.x, y: clamped), animated: false)
         isApplying = false
     }
 
@@ -118,8 +153,14 @@ final class TimelineAnchorDriver {
     /// `.smooth(duration: 0.24)` (fix `499b3e3f`, device-verified on b559).
     /// A shrink moves the offset before the inset so UIKit cannot clamp it
     /// against the old maximum.
-    func updateSafeAreaInsets(_ insets: UIEdgeInsets) {
+    /// `wasAtBottom` is the viewport's geometric verdict *before* this inset
+    /// change. A reader resting on the bottom keeps following the new bottom
+    /// even if a layout update flipped the placement to `.reading` during the
+    /// transition (keyboard show/hide; device reports 2026-10-31 06:26 and
+    /// 06:44).
+    func updateSafeAreaInsets(_ insets: UIEdgeInsets, wasAtBottom: Bool = false) {
         pageInsets = insets
+        adoptEndOnNextInsetChange = wasAtBottom
         applyInsets()
     }
 
@@ -134,6 +175,8 @@ final class TimelineAnchorDriver {
 
     private func applyInsets() {
         guard let view = scrollView else { return }
+        let adoptEnd = adoptEndOnNextInsetChange
+        adoptEndOnNextInsetChange = false
         let viewInsets = view.safeAreaInsets
         let target = UIEdgeInsets(top: max(pageInsets.top - viewInsets.top, 0),
                                   left: max(pageInsets.left - viewInsets.left, 0),
@@ -156,8 +199,19 @@ final class TimelineAnchorDriver {
                 offsetBefore: offsetBefore, offsetAfter: view.contentOffset)
         }
 #endif
-        let following = state.placement == .end
+        var following = state.placement == .end
             && state.motion != .dragging && state.motion != .coasting
+        // A bottom inset change (keyboard show/hide, composer growth) moves
+        // the bottom target. When the viewport was resting on the bottom
+        // before the change (`adoptEnd`, taken from the pre-change viewport),
+        // keep following it even if another update flipped the placement to
+        // `.reading` during the transition (device reports 2026-10-31 06:26
+        // and 06:44: the page stayed mid-air after the keyboard collapsed,
+        // and the keyboard rise moved the page 302 pt late in two steps).
+        if !following, adoptEnd, abs(target.bottom - current.bottom) > 0.5 {
+            state.placement = .end
+            following = true
+        }
         if !following {
             let offset = view.contentOffset
             isApplying = true
@@ -232,6 +286,75 @@ final class TimelineAnchorDriver {
         state.placement = .reading(id: anchor.id, offsetIntoRow: anchor.offsetIntoRow)
     }
 
+    /// A history page is about to be inserted. Pin the reader's row/offset as
+    /// the single placement and stop any remaining motion; the page's height
+    /// changes then re-resolve that placement directly (official
+    /// `Placement.reading(RowID, offsetIntoRow)`).
+    func beginHistoryPaging(anchorID: String? = nil, offsetIntoRow: CGFloat = 0) {
+        isHistoryPaging = true
+        if let anchorID {
+            stopMover()
+            if state.motion == .easing || state.motion == .flying {
+                state.motion = .resting
+            }
+            state.placement = .reading(id: anchorID, offsetIntoRow: offsetIntoRow)
+        } else {
+            adoptReadingPlacement()
+        }
+    }
+
+    /// Recompute the reading anchor from the current layout and write it
+    /// without a spring. Called from history apply/height changes; nil means
+    /// the anchor row left the window, so this tick leaves the offset alone
+    /// (official nil placement target).
+    func enforceReadingPlacement() {
+        guard let view = scrollView else { return }
+        guard case .reading = state.placement else { return }
+        guard let target = state.placement.target(in: geometry()) else {
+#if AA_TIMELINE_PROBE
+            TimelineProbeStore.shared.noteHistory(
+                "driver enforce target=nil pos=\(view.contentOffset.y) "
+                + "placement=\(state.placement)")
+#endif
+            return
+        }
+#if AA_TIMELINE_PROBE
+        // Only a write during the paging path is worth a line: a no-op
+        // resolution, or the post-apply reducer's own corrections, would
+        // otherwise flood the ring and push out the request/apply sequence.
+        if isHistoryPaging, abs(target - view.contentOffset.y) > 0.5 {
+            TimelineProbeStore.shared.noteHistory(
+                "driver enforce target=\(target) pos=\(view.contentOffset.y) "
+                + "delta=\(target - view.contentOffset.y)")
+        }
+#endif
+        stopMover()
+        if state.motion != .resting { state.motion = .resting }
+        writeOffset(target)
+    }
+
+    func endHistoryPaging() {
+        guard isHistoryPaging else { return }
+        enforceReadingPlacement()
+        isHistoryPaging = false
+    }
+
+    /// The history settle window's late correction: keep the rebound reading
+    /// placement and ease to it with the content spring instead of placing it
+    /// in one frame. A late measurement above the anchor can move the page by
+    /// hundreds of points; the instant `enforceReadingPlacement` write read as
+    /// a jump (device report 2026-10-31 02:54: a page landed, then settle moved
+    /// the offset +497 in a single frame). The official model answers every
+    /// `rowMeasured` through the Mover.
+    func easeSettledHistoryPlacement() {
+        isHistoryPaging = false
+        guard case .reading = state.placement else { return }
+        guard state.motion != .dragging, state.motion != .coasting else { return }
+        guard state.placement.target(in: geometry()) != nil else { return }
+        pendingContentMove = true
+        startMover()
+    }
+
     func contentChanged() {
 #if AA_TIMELINE_PROBE
         AnchorDeviceProbe.shared.recordMover(
@@ -240,6 +363,10 @@ final class TimelineAnchorDriver {
             position: scrollView?.contentOffset.y ?? -1,
             motion: String(describing: state.motion))
 #endif
+        if isHistoryPaging {
+            enforceReadingPlacement()
+            return
+        }
         // Content growth follows with the short content spring (official
         // collection-view insert feel); only an explicit scroll request uses
         // the 0.4 s ease/fly.
@@ -248,6 +375,9 @@ final class TimelineAnchorDriver {
     }
 
     func readerBeganDragging() {
+        // The reader owns the viewport from this point; a slow history page
+        // must not keep the initial anchor.
+        isHistoryPaging = false
         guard let anchor = currentAnchor() else { return }
         perform(.readerBeganDragging(id: anchor.id, offsetIntoRow: anchor.offsetIntoRow))
     }
@@ -283,6 +413,16 @@ final class TimelineAnchorDriver {
             mover.reseed(at: scrollView?.contentOffset.y ?? mover.position)
             return
         }
+        if isHistoryPaging {
+            // The in-flight page owns the reading placement until its apply
+            // resolves it. A layout correction during that wait moves the
+            // offset without a hand; re-binding the placement to whatever row
+            // is under the top edge loses the page's anchor and makes the
+            // apply's correction a no-op (device 2026-10-31 13:46: a 37→57
+            // page prepended 49,859 pt above the anchor and the viewport
+            // stayed at the new page's top).
+            return
+        }
         guard let anchor = currentAnchor() else { return }
         perform(.scrolledWithoutAHand(atEnd: isAtEnd(),
                                       id: anchor.id, offsetIntoRow: anchor.offsetIntoRow))
@@ -297,11 +437,13 @@ final class TimelineAnchorDriver {
     }
 
     func requestEnd(animated: Bool) {
+        isHistoryPaging = false
         perform(.askedForEnd(animated: animated))
     }
 
     func requestStart() {
-        guard let first = inputs.firstRowID() else { return }
+        guard let first = inputs.firstRowID(), state.motion != .dragging else { return }
+        fullDistanceMotion = true
         perform(.askedForStart(id: first))
     }
 
@@ -377,6 +519,8 @@ final class TimelineAnchorDriver {
         // later explicit request must not inherit it.
         let contentMove = pendingContentMove
         pendingContentMove = false
+        let fullDistance = fullDistanceMotion
+        fullDistanceMotion = false
         guard let view = scrollView else { return }
         guard let target = state.placement.target(in: geometry()) else {
             repairPlacement()
@@ -437,8 +581,13 @@ final class TimelineAnchorDriver {
             // mistake the placement jump for content growth.
             stopMover()
         }
-        let preplaced = TimelineSpringFollow.preplacedOffset(
-            target: target, current: current, visibleHeight: visible)
+        // A scroll-to-top keeps the full distance so the reader can see the
+        // whole list travel. Every other long jump keeps the official
+        // one-viewport pre-placement.
+        let preplaced = fullDistance
+            ? current
+            : TimelineSpringFollow.preplacedOffset(
+                target: target, current: current, visibleHeight: visible)
         if abs(preplaced - current) >= pixel {
             writeOffset(preplaced)
         }
@@ -509,7 +658,9 @@ final class TimelineAnchorDriver {
         let target = state.placement.target(in: geometry()) ?? view.contentOffset.y
         let step = mover.step(target: target, dt: dt,
                               displayScale: view.traitCollection.displayScale)
-        writeOffset(step.position)
+        // A Mover step is in-range by construction; do not let it write into
+        // the emergency slack (see `writeOffset`).
+        writeOffset(step.position, allowSlack: false)
         if step.arrived {
             stopMover()
             state.motion = .resting

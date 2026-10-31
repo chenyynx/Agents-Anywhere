@@ -416,6 +416,7 @@ final class AppState {
             let updated = try await services.dashboard.setSessionPinned(sessionId: sessionId, pinned: pinned)
             guard cachedServices === services else { return false }
             updateSession(updated)
+            await services.localStore.updatePinned([sessionId: pinned])
             return true
         } catch {
             sessionActionError = error.localizedDescription

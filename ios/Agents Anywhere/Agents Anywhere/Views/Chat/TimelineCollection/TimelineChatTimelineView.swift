@@ -102,6 +102,7 @@ struct TimelineChatTimelineView: View {
         let phase = self.turnPhase
         let _ = model.session.hasNewerItems
         let _ = model.session.hasOlderItems
+        let _ = model.session.localOlderAvailable
         let _ = model.session.isLoadingHistory
         let _ = model.session.metadata?.cwd
 
@@ -111,8 +112,14 @@ struct TimelineChatTimelineView: View {
             typography: typography,
             safeAreaInsets: safeAreaInsets,
             onPhaseChanged: { transition in
-                if transition.gestureBegan { bridge.readerDidTakeOver() }
+                if transition.gestureBegan {
+                    bridge.readerDidTakeOver()
+                    // A new gesture owns the continuation counter: a quiet
+                    // reader never chains zero-progress pages.
+                    bridge.zeroProgressContinuations = 0
+                }
             },
+            onViewportChanged: { viewport in bridge.viewportChanged(viewport) },
             onControllerReady: { controller in bridge.attach(controller) })
             // Match the SwiftUI timeline's soft navigation-bar edge. The
             // collection view also sets its own top edge style; this covers
@@ -132,6 +139,11 @@ struct TimelineChatTimelineView: View {
                     // The indicator is the reader's explicit return: a
                     // follow-only request would refuse a page in `.reading`
                     // (TimelineCollectionController.requestBottom).
+                    // The prompt row is gone (R5), so this tap is also the
+                    // explicit latest request: clear the post-history guard
+                    // that requires a fresh bottom visit before auto-loading
+                    // newer rows.
+                    bridge.controller?.allowLatestAfterHistoryGesture()
                     bridge.controller?.requestBottom(animated: true, forced: true)
                 }
                 .padding(.bottom, safeAreaInsets.bottom + 8)
@@ -141,6 +153,11 @@ struct TimelineChatTimelineView: View {
             .accessibilityHidden(!model.isOpeningReady)
             .onChange(of: model.isOpeningReady, initial: true) { _, ready in
                 if ready { bridge.beginOpening() }
+            }
+            .onChange(of: model.openingRefreshCompleted) { _, _ in
+                // A cached window can be on screen before `open()` returns;
+                // re-check the latest edge once the opening read is done.
+                bridge.updateHistoryAvailability()
             }
             .onChange(of: navigationIsSuspended, initial: true) { _, suspended in
                 bridge.setNavigationSuspended(suspended)
@@ -159,6 +176,20 @@ struct TimelineChatTimelineView: View {
                     bridge.controller?.requestBottom(animated: true, forced: false)
                 }
             }
+            // A send made while the window does not reach the newest edge
+            // switches to the latest page at send time. Waiting for the
+            // upload/echo let the replacement land seconds later and the whole
+            // page changed mid-send (pp 2026-10-31: an attachment sent from a
+            // history window jumped when the latest page finally arrived).
+            .onChange(of: model.session.pendingMessages.map(\.id)) { oldIDs, newIDs in
+                let added = Set(newIDs).subtracting(oldIDs)
+                guard !added.isEmpty,
+                      model.session.pendingMessages.contains(where: { pending in
+                          added.contains(pending.id)
+                              && (pending.delivery == .sending || pending.delivery == .accepted)
+                      }) else { return }
+                bridge.noteComposerSend()
+            }
             .onChange(of: model.timeline.windowRevision) { _, _ in
                 bridge.reassertOpening()
             }
@@ -166,6 +197,9 @@ struct TimelineChatTimelineView: View {
                 bridge.controller?.setInteractionPresented(presented)
             }
             .onChange(of: model.session.hasOlderItems, initial: true) { _, _ in
+                bridge.updateHistoryAvailability()
+            }
+            .onChange(of: model.session.localOlderAvailable, initial: true) { _, _ in
                 bridge.updateHistoryAvailability()
             }
             .onChange(of: model.session.hasNewerItems, initial: true) { _, _ in
@@ -212,19 +246,12 @@ struct TimelineChatTimelineView: View {
                                             startsAtBottom: stepGroup.startsAtBottom)
                 }
             }
-            // Probe builds add a floating diagnostics button; other builds
-            // compile the call site to `self` (TimelineProbe.swift).
-            .timelineProbeOverlay(controller: bridge.controller,
-                                  adapter: bridge.adapter,
-                                  ready: bridge.controllerAttached)
 #if AA_TIMELINE_PROBE
-            // Copies the C3 inset log (proxy value, inherited animation
-            // duration, offset before/after) without a screen recording. The
-            // list ignores the safe area, so the pill sits on the leading
-            // edge at mid-height — inside the reachable area on every device.
-            .overlay(alignment: .leading) {
-                AnchorProbeLogOverlay().padding(.leading, 8)
-            }
+            // The store rides the page lifecycle; the UI entry points moved
+            // to the session menu and Settings (2026-10-31).
+            .modifier(TimelineProbeAttachment(controller: bridge.controller,
+                                              adapter: bridge.adapter,
+                                              ready: bridge.controllerAttached))
 #endif
     }
 
@@ -244,6 +271,10 @@ final class TimelineChatBridge: ObservableObject {
     /// Probe-only attach trigger: a weak `controller` cannot publish, and the
     /// floating overlay must learn when the representable hands one over.
     @Published private(set) var controllerAttached = false
+    /// Gesture-triggered zero-progress pages continue loading until rows
+    /// appear; a new gesture resets the counter so a parked reader never
+    /// chains pages.
+    var zeroProgressContinuations = 0
     /// The Code page's tool detail sheet. Held at the page level, not in the
     /// row: a streaming reconfigure rebuilds the hosted cell's view, and a
     /// cell-local `@State` sheet could be dismissed mid-read.
@@ -256,6 +287,9 @@ final class TimelineChatBridge: ObservableObject {
     private var historyGeneration = 0
     private var isLoadingOlder = false
     private var isLoadingLatest = false
+    /// Whether the last published viewport was at the newest edge. The edge
+    /// transition is the signal that the projection may stop history-anchoring.
+    private var wasAtBottom = false
 
     init(model: SessionChatModel,
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void,
@@ -295,6 +329,18 @@ final class TimelineChatBridge: ObservableObject {
         controller.onBottomArrived = { [weak self] in self?.openingArrived() }
         controller.onLoadOlder = { [weak self] in self?.loadOlder() }
         controller.onLoadLatest = { [weak self] in self?.loadLatest() }
+        controller.onReaderScrollToTop = { [weak self] in self?.readerDidTakeOver() }
+        controller.onNeedsOlder = { [weak self] in self?.loadOlder() }
+        controller.onNeedsLatest = { [weak self] in
+            // The opening path owns its own latest fetch; a viewport trigger
+            // must wait until the page is ready or the two reads race.
+            guard let self else { return }
+            guard self.model.openingRefreshCompleted else {
+                self.controller?.rearmLatestAutoLoad()
+                return
+            }
+            self.loadLatest(auto: true)
+        }
         adapter.onLoadOlder = { [weak self] in self?.loadOlder() }
         adapter.onLoadLatest = { [weak self] in self?.loadLatest() }
         controller.setNavigationSuspended(navigationSuspended)
@@ -307,16 +353,53 @@ final class TimelineChatBridge: ObservableObject {
     /// The prompt/pull gates read the session's page flags, not a copy that
     /// goes stale after a request.
     func updateHistoryAvailability() {
-        controller?.canLoadOlder = model.session.isValid && model.session.hasOlderItems
+        controller?.canLoadOlder = model.session.isValid && model.session.canLoadOlder
             && !model.session.isLoadingHistory && !isLoadingOlder
         controller?.canLoadLatest = model.session.isValid && model.session.hasNewerItems
             && !model.session.isLoadingHistory && !isLoadingLatest
+        if !model.session.hasNewerItems { controller?.rearmLatestAutoLoad() }
+        // A window flag can arrive while the viewport is already parked at an
+        // edge; no scroll will fire to re-run the auto-page check.
+        controller?.requestOlderIfNearTop()
+        controller?.requestLatestIfAtBottom()
+    }
+
+    /// The reader is at the newest edge of the held window. This is the only
+    /// place the projection stops anchoring on a history row; live creates
+    /// then append without waiting for the latest page.
+    func viewportChanged(_ viewport: TimelineViewport) {
+        let atBottom = viewport.measuredAtBottom
+        guard atBottom != wasAtBottom else { return }
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteHistory(
+            "bridge viewport bottom=\(wasAtBottom ? 1 : 0)->\(atBottom ? 1 : 0) "
+            + "off=\(viewport.offsetY) contentH=\(viewport.contentHeight) "
+            + "visH=\(viewport.visibleHeight) inset=\(viewport.topInset)")
+#endif
+        wasAtBottom = atBottom
+        if atBottom {
+            model.session.followLatest()
+        } else if controller?.isReaderScrolling == true {
+            // Only a reader-owned scroll may abandon a local-first latest
+            // page's background reconcile. A window replacement flips this
+            // edge while it swaps the content and offset; cancelling there
+            // dropped the new reply until the page was reopened (device report
+            // 2026-10-31 08:31). Explicit history paging cancels its own
+            // reconcile in `loadOlder`.
+            model.session.cancelLatestReconcile()
+        }
     }
 
     private func loadOlder() {
         guard !navigationSuspended, model.session.isValid,
-              model.session.hasOlderItems, !model.session.isLoadingHistory,
-              !isLoadingOlder, let controller else { return }
+              model.session.canLoadOlder, !model.session.isLoadingHistory,
+              !isLoadingOlder, let controller else {
+            // The one-shot near-top trigger already disarmed when it fired;
+            // no read started, so nothing will move the viewport off the top
+            // to re-arm it. Restore it or the reader must tap the prompt.
+            self.controller?.rearmOlderAutoLoad()
+            return
+        }
         // Capture the row under the viewport top and the current first row
         // before the request. The adapter installs the absolute prepend
         // target on the refresh that brings the new page, before the
@@ -324,27 +407,111 @@ final class TimelineChatBridge: ObservableObject {
         // A history load is a browsing action; a bottom follow target left
         // from an earlier state must not fight the prepend's anchor.
         controller.disarmBottom()
+        // A prepend that trims the far-newest edge bumps `windowRevision`;
+        // the opening re-assert must not pull a reader who is browsing history
+        // back to the bottom.
+        readerDidTakeOver()
         guard let anchor = controller.visibleAnchorRowID(),
-              let before = adapter.firstRowID else { return }
+              let before = adapter.firstRowID else {
+            controller.rearmOlderAutoLoad()
+            return
+        }
+        // The visible row, not the oldest row: the projection must keep the
+        // reader's place while it trims the far-old and far-new edges.
+        let anchorOrderSeq = adapter.orderSeq(forRowID: anchor)
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteHistory(
+            "bridge loadOlder anchor=\(anchor) order=\(anchorOrderSeq.map { String($0) } ?? "-") "
+            + "beforeFirst=\(before) items=\(controller.items.count) "
+            + "older=\(model.session.hasOlderItems ? 1 : 0) "
+            + "local=\(model.session.localOlderAvailable ? 1 : 0)")
+#endif
+        // Official-style history paging: the anchor driver keeps the reading
+        // placement; the adapter does not install a one-shot firstRowID target.
+        controller.beginHistoryPaging(anchorRowID: anchor)
         isLoadingOlder = true
+        adapter.historyLoadDirection = .older
         historyGeneration &+= 1
         adapter.pendingHistoryRequest = .init(generation: historyGeneration,
             anchorRowID: anchor, beforeFirstRowID: before, edge: .top,
             createdAt: .now)
         updateHistoryAvailability()
+        // Capture the window before the page arrives so a zero-progress page
+        // (rows that merge into an already-visible group, so the group count
+        // and the window size both stay put) can continue automatically.
+        let itemsBefore = controller.items.count
         Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.model.session.loadOlder()
+            await self.model.session.loadOlder(anchorOrderSeq: anchorOrderSeq)
+            self.adapter.historyLoadDirection = nil
             self.isLoadingOlder = false
+#if AA_TIMELINE_PROBE
+            TimelineProbeStore.shared.noteHistory(
+                "bridge loadOlder done off=\(self.controller?.collectionView.contentOffset.y ?? -1) "
+                + "items=\(self.controller?.items.count ?? 0) "
+                + "newer=\(self.model.session.hasNewerItems ? 1 : 0) "
+                + "older=\(self.model.session.hasOlderItems ? 1 : 0) "
+                + "local=\(self.model.session.localOlderAvailable ? 1 : 0)")
+#endif
             self.updateHistoryAvailability()
+            self.continueOlderIfZeroProgress(itemsBefore: itemsBefore)
         }
     }
 
-    private func loadLatest() {
+    /// A gesture-triggered page that produced no visible rows keeps loading
+    /// until something shows or the store runs out, bounded per gesture.
+    ///
+    /// The reader's gesture already armed the trigger; without this, one
+    /// gesture can only ever load one page, and a page whose rows all merge
+    /// into an already-visible group is invisible (b754 report: six fires,
+    /// items stuck at 156, `older=0 local=1`). The counter resets on the next
+    /// gesture, so a parked reader is never chain-loaded.
+    private static let zeroProgressContinuationLimit = 4
+
+    private func continueOlderIfZeroProgress(itemsBefore: Int) {
+        guard !navigationSuspended, let controller else { return }
+        guard controller.items.count == itemsBefore,
+              model.session.localOlderAvailable,
+              model.session.canLoadOlder,
+              !model.session.isLoadingHistory, !isLoadingOlder else {
+            zeroProgressContinuations = 0
+            return
+        }
+        guard zeroProgressContinuations < Self.zeroProgressContinuationLimit else {
+            zeroProgressContinuations = 0
+            return
+        }
+        zeroProgressContinuations += 1
+        controller.rearmOlderAutoLoad()
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteHistory(
+            "auto-older continue page=\(zeroProgressContinuations) "
+            + "items=\(controller.items.count)")
+#endif
+        loadOlder()
+    }
+
+    /// A composer send made while the window does not reach the newest edge
+    /// switches to the latest page now. The pending bubble then lands in the
+    /// newest window with the reply, instead of the whole window changing
+    /// seconds later when the upload/echo finally lands.
+    func noteComposerSend() {
+        guard model.session.hasNewerItems else { return }
+        loadLatest()
+    }
+
+    private func loadLatest(auto: Bool = false) {
         guard !navigationSuspended, model.session.isValid,
               model.session.hasNewerItems, !model.session.isLoadingHistory,
               !isLoadingLatest else { return }
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteHistory(
+            "bridge loadLatest auto=\(auto ? 1 : 0) off=\(controller?.collectionView.contentOffset.y ?? -1) "
+            + "items=\(controller?.items.count ?? 0)")
+#endif
+        if !auto { controller?.allowLatestAfterHistoryGesture() }
         isLoadingLatest = true
+        adapter.historyLoadDirection = .latest
         updateHistoryAvailability()
         // The newer window can replace every row before the post-await return
         // runs; record the return intent first so the apply can re-resolve the
@@ -353,11 +520,28 @@ final class TimelineChatBridge: ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.model.session.loadLatest()
+            self.adapter.historyLoadDirection = nil
             self.isLoadingLatest = false
+#if AA_TIMELINE_PROBE
+            TimelineProbeStore.shared.noteHistory(
+                "bridge loadLatest done auto=\(auto ? 1 : 0) "
+                + "off=\(self.controller?.collectionView.contentOffset.y ?? -1) "
+                + "items=\(self.controller?.items.count ?? 0) "
+                + "newer=\(self.model.session.hasNewerItems ? 1 : 0)")
+#endif
+            // A stale local-first page intentionally keeps `hasNewerItems`
+            // until its background reconcile lands. Do not let the bottom
+            // trigger immediately start the same read again.
+            if self.model.session.hasNewerItems {
+                self.controller?.suppressLatestAutoLoad()
+            }
             self.updateHistoryAvailability()
-            // The latest page lands at the bottom; an explicit request owns
-            // the return even if the reader had scrolled into history.
-            self.controller?.requestBottom(animated: true, forced: true)
+            // A viewport-triggered load must not yank a reader who scrolled
+            // into history while it was in flight. A manual latest request
+            // owns the return as before.
+            if !auto || self.controller?.viewport.measuredAtBottom == true {
+                self.controller?.requestBottom(animated: true, forced: true)
+            }
         }
     }
 
@@ -382,6 +566,7 @@ final class TimelineChatBridge: ObservableObject {
         openingSettled = true
         openingPending = false
         model.openingPositionDidSettle()
+        controller.requestLatestIfAtBottom()
     }
 
     /// The measured viewport reached the bottom after the apply completion
@@ -392,6 +577,7 @@ final class TimelineChatBridge: ObservableObject {
         openingPending = false
         openingSettled = true
         model.openingPositionDidSettle()
+        controller.requestLatestIfAtBottom()
     }
 
     /// The old timeline's 400 ms bounded fallback: release the cold-load mask
@@ -408,7 +594,8 @@ final class TimelineChatBridge: ObservableObject {
     /// or the drawer is moving. The controller's forced target does the same
     /// instant landing the opening used.
     func reassertOpening() {
-        guard !readerTookOver, !navigationSuspended, model.isOpeningReady else { return }
+        guard !readerTookOver, !navigationSuspended, model.isOpeningReady,
+              controller?.isHistoryPrependActive != true else { return }
         controller?.beginOpeningBottom()
     }
 

@@ -178,6 +178,59 @@ import Testing
         #expect(mover.isRunning)
     }
 
+    /// The 0.2 s content spring is the feel pp chose for growth under a
+    /// resting page. At a dropped-frame dt the old single Euler step had
+    /// ω·h ≈ 1.05 and discrete eigenvalues 0.63 / −1.82: it overshot the
+    /// target and grew every other frame (device 2026-10-31 07:10: the
+    /// offset swung ±56 pt around a bottom whose content had stopped
+    /// growing). Substepping must keep the continuous critically damped
+    /// response: never past the target, never backwards.
+    @Test func theContentSpringDoesNotOvershootOnADroppedFrame() {
+        var mover = TimelineAnchorMover(position: 0)
+        mover.start(at: 0, spring: .content, usesPace: false)
+        let target: CGFloat = 30
+        var last: CGFloat = 0
+        var overshoot: CGFloat = 0
+        var backtracks = 0
+        var arrived = false
+        var frames = 0
+        while frames < 200 {
+            let step = mover.step(target: target, dt: 1.0 / 30, displayScale: scale)
+            frames += 1
+            overshoot = max(overshoot, step.position - target)
+            if step.position < last - 0.001 { backtracks += 1 }
+            last = step.position
+            if step.arrived { arrived = true; break }
+        }
+        #expect(arrived)
+        #expect(overshoot <= 0.5)
+        #expect(backtracks == 0)
+    }
+
+    /// The same response at a normal frame rate: the 0.2 s feel still
+    /// arrives and never overshoots.
+    @Test func theContentSpringStaysMonotoneAtSixtyFrames() {
+        var mover = TimelineAnchorMover(position: 0)
+        mover.start(at: 0, spring: .content, usesPace: false)
+        let target: CGFloat = 30
+        var last: CGFloat = 0
+        var overshoot: CGFloat = 0
+        var backtracks = 0
+        var arrived = false
+        var frames = 0
+        while frames < 300 {
+            let step = mover.step(target: target, dt: 1.0 / 60, displayScale: scale)
+            frames += 1
+            overshoot = max(overshoot, step.position - target)
+            if step.position < last - 0.001 { backtracks += 1 }
+            last = step.position
+            if step.arrived { arrived = true; break }
+        }
+        #expect(arrived)
+        #expect(overshoot <= 0.5)
+        #expect(backtracks == 0)
+    }
+
     /// A fly is a deliberate long jump and never carries the target's motion.
     @Test func aFlyIsNotRedirectedByThePaceShift() {
         var mover = TimelineAnchorMover(position: 0)

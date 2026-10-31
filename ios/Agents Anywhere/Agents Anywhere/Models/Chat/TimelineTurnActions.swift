@@ -32,9 +32,19 @@ struct TimelineTurnAction: Equatable {
 }
 
 enum TimelineTurnActions {
-    /// Match Web: one footer after the final group between user messages. Tool
-    /// results and reasoning can end a turn but never enter its copied reply.
-    static func build(groups: [ChatTimelineGroup], suppressLatest: Bool, hasPendingUserMessage: Bool = false) -> [String: TimelineTurnAction] {
+    /// Match Web's one-footer-per-turn rule. Tool results and reasoning can
+    /// end a turn but never enter its copied reply.
+    ///
+    /// The footer host is the last group of the turn that actually draws one:
+    /// divider groups (marker/system rows, e.g. a compaction boundary) and a
+    /// caller-excluded renderer (the Code page's one-line step groups) never
+    /// host it. Hosting it on a divider read as a 91 pt jump on device
+    /// (2026-10-31 05:40: the compact boundary carried the review + copy
+    /// footer, then lost it when the next step group arrived).
+    static func build(groups: [ChatTimelineGroup], suppressLatest: Bool,
+                      hasPendingUserMessage: Bool = false,
+                      footerHostEligible: (ChatTimelineGroup) -> Bool = { _ in true })
+        -> [String: TimelineTurnAction] {
         var actions: [String: TimelineTurnAction] = [:]
         var replies: [ChatTimelineRowModel] = []
         var changes: [ChatTimelineRowModel] = []
@@ -42,12 +52,48 @@ enum TimelineTurnActions {
         var endGroupID: String?
         var turnOpen = false
         var hasActiveItems = false
+        // A running turn may still keep the footer of its last *finished*
+        // segment. A tool call continues the same turn; without this the
+        // completed reply lost its footer when the tool segment started and
+        // the row shrank 30 pt mid-turn (device 2026-10-31 14:25:
+        // g:msg_fbe3af45 164→134 at the step group's arrival, offset -30 in
+        // the same apply).
+        var settledEndGroupID: String?
+        var settledReplies: [ChatTimelineRowModel] = []
+        var settledChanges: [ChatTimelineRowModel] = []
+        /// The settled host itself draws assistant reply text. Only such a
+        /// host may show its footer before the turn reports idle; a tool-only
+        /// turn still waits for the turn end (its review footer belongs to
+        /// the finished turn, not to a tool that is still running).
+        var settledHostHasReply = false
+        /// A settled host is sticky once the turn continues past it: a tool
+        /// or a new text segment after the reply keeps the footer where it is.
+        var contentAfterSettled = false
+
+        func hostsFooter(_ group: ChatTimelineGroup) -> Bool {
+            guard footerHostEligible(group) else { return false }
+            // A group with an assistant reply always hosts. Otherwise the
+            // group must be real turn content: a turn-opening user bubble and
+            // a divider group have no reply a footer can belong to.
+            let hasReply = group.rows.contains { row in
+                row.structure.type == .message && row.structure.role == .assistant
+                    && SubAgentProgress.parentItemID(row.value) == nil
+            }
+            if hasReply { return true }
+            return group.rows.contains { row in
+                !row.structure.startsTurn
+                    && row.structure.type != .marker
+                    && row.structure.type != .system
+            }
+        }
 
         func commit() {
             if let endGroupID, (!replies.isEmpty || !changes.isEmpty), !hasActiveItems {
                 actions[endGroupID] = TimelineTurnAction(replies: replies, changes: changes, startsMidTurn: startsMidTurn)
             }
             replies = []; changes = []; endGroupID = nil; turnOpen = false; hasActiveItems = false
+            settledEndGroupID = nil; settledReplies = []; settledChanges = []
+            settledHostHasReply = false; contentAfterSettled = false
         }
 
         for group in groups {
@@ -66,14 +112,42 @@ enum TimelineTurnActions {
             let fileChanges = group.rows.filter { $0.structure.isFileChange }
             if !messages.isEmpty || !fileChanges.isEmpty { turnOpen = true }
             guard turnOpen else { continue }
-            endGroupID = group.id
+            if settledEndGroupID != nil { contentAfterSettled = true }
+            let hosts = hostsFooter(group)
+            if hosts { endGroupID = group.id }
             replies.append(contentsOf: messages)
             changes.append(contentsOf: fileChanges)
-            hasActiveItems = hasActiveItems || group.rows.contains { $0.structure.status.isActive }
+            let active = group.rows.contains { $0.structure.status.isActive }
+            hasActiveItems = hasActiveItems || active
+            if hosts, !active {
+                settledEndGroupID = group.id
+                settledReplies = replies
+                settledChanges = changes
+                settledHostHasReply = !messages.isEmpty
+                contentAfterSettled = false
+            }
         }
         // The pending user bubble already starts the next turn, even before its
         // echo enters groups. A runtime "waiting" event belongs to that new turn.
-        if !suppressLatest || hasPendingUserMessage { commit() }
+        if (!suppressLatest || hasPendingUserMessage), !hasActiveItems {
+            commit()
+        } else if let settledEndGroupID, (!settledReplies.isEmpty || !settledChanges.isEmpty),
+                  contentAfterSettled || settledHostHasReply {
+            // The footer returns as soon as a reply segment is done, even while
+            // the runtime still reports the turn as running. The connector
+            // closes a message row on the message boundary, which lands before
+            // the CLI's turn result: waiting for idle made the footer appear one
+            // beat after the reply (device 2026-10-31 16:14: text final at
+            // t=390.74, footer at t=392.30). A tool or a new text segment that
+            // follows keeps the footer where it is; the turn end still commits
+            // the final host. `contentAfterSettled` covers the tool case and
+            // `settledHostHasReply` the last-reply case; a tool-only turn has
+            // neither and keeps waiting for the turn end. Keeping the settled
+            // host also absorbs the runtime's running/idle flaps across tool
+            // steps (device 2026-10-31 14:55: 146↔176).
+            actions[settledEndGroupID] = TimelineTurnAction(
+                replies: settledReplies, changes: settledChanges, startsMidTurn: startsMidTurn)
+        }
         return actions
     }
 }

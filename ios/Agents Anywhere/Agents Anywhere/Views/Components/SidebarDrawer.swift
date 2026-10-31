@@ -6,26 +6,54 @@ import UIKit
 import AppKit
 #endif
 
+#if canImport(UIKit)
+/// Requests the screen's maximum refresh rate while the drawer moves.
+/// The official drawer animates its card with a keyframe animation whose
+/// `preferredFrameRateRange` is the screen maximum (120Hz on ProMotion);
+/// AA's SwiftUI spring otherwise settles at 60Hz (device probe: every
+/// transition measured 16.7ms). Keeping a display link alive for the
+/// transition raises the display to the maximum, and the probe build's
+/// `period` field measures it (8.3ms on ProMotion, pp 2026-10-31).
+@MainActor
+final class SidebarDrawerRefresh {
+    static let shared = SidebarDrawerRefresh()
+    private var link: CADisplayLink?
+
+    func start() {
+        guard link == nil else { return }
+        let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
+        let maxFPS = Float(UIScreen.main.maximumFramesPerSecond)
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: maxFPS,
+                                                        preferred: maxFPS)
+        link.add(to: .main, forMode: .common)
+        self.link = link
+    }
+
+    func stop() {
+        link?.invalidate()
+        link = nil
+    }
+
+    /// The link only requests the rate; its callback has nothing to do.
+    @objc private func tick(_ link: CADisplayLink) {}
+}
+#endif
+
+
 struct SidebarDrawerConfiguration: Sendable {
     let revealFraction: CGFloat
     let edgeActivationWidth: CGFloat
-    let sidebarClosedScale: CGFloat
-    let sidebarOverlayOpacity: CGFloat
     let contentOverlayOpacity: CGFloat
     let sidebarHeaderEdgeEffectStyle: ScrollEdgeEffectStyle
 
     init(
         revealFraction: CGFloat = 0.75,
         edgeActivationWidth: CGFloat = 44,
-        sidebarClosedScale: CGFloat = 0.95,
-        sidebarOverlayOpacity: CGFloat = 0.5,
         contentOverlayOpacity: CGFloat = 0.14,
         sidebarHeaderEdgeEffectStyle: ScrollEdgeEffectStyle = .soft
     ) {
         self.revealFraction = revealFraction
         self.edgeActivationWidth = edgeActivationWidth
-        self.sidebarClosedScale = sidebarClosedScale
-        self.sidebarOverlayOpacity = sidebarOverlayOpacity
         self.contentOverlayOpacity = contentOverlayOpacity
         self.sidebarHeaderEdgeEffectStyle = sidebarHeaderEdgeEffectStyle
     }
@@ -228,11 +256,6 @@ private struct SidebarDrawerInteractive<
                     header: sidebarHeader,
                     content: sidebarContent
                 )
-                .modifier(SidebarDrawerSidebarMotion(
-                    motion: motion,
-                    closedScale: configuration.sidebarClosedScale.clamped(to: 0 ... 1),
-                    overlayOpacity: configuration.sidebarOverlayOpacity.clamped(to: 0 ... 1)
-                ))
                 .allowsHitTesting(interaction.acceptsSidebarTouches)
                 .accessibilityHidden(!interaction.acceptsSidebarTouches)
 
@@ -309,10 +332,23 @@ private struct SidebarDrawerInteractive<
         .environment(\.sidebarDrawerObscuresDetail, isOpen || motion.restingProgress > 0)
         .environment(\.sidebarDrawerIsTransitioning, isAnimating || dragStartProgress != nil
             || motion.restingProgress != (isOpen ? 1 : 0))
+#if AA_TIMELINE_PROBE
+        // The drawer's motion is not a collection-view scroll phase; tell the
+        // probe explicitly or the sidebar's dropped frames never reach the
+        // report (pp 2026-10-31: drawer jank was not recorded).
+        .onChange(of: isAnimating || dragStartProgress != nil
+                  || motion.restingProgress != (isOpen ? 1 : 0), initial: true) { _, active in
+            TimelineProbeStore.shared.noteDrawerTransition(active,
+                                                           opening: motion.progress < 0.5)
+        }
+#endif
         // [E] The official drawer uses the parameterless `.impact`; its
         // weight/intensity are unpublished (CANONICAL/11-motion-haptics.md
         // §2.5), so passing light+1 is a different feedback.
         .sensoryFeedback(.impact, trigger: feedbackTrigger)
+        #if canImport(UIKit)
+        .onDisappear { SidebarDrawerRefresh.shared.stop() }
+        #endif
     }
 
     private var usesOpeningEdgeGestureRegion: Bool {
@@ -322,6 +358,12 @@ private struct SidebarDrawerInteractive<
     private func beginDirectionalPan() {
         animationGeneration &+= 1
         dragStartProgress = motion.progress
+        #if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteDrawerIntent("drag")
+        #endif
+        #if canImport(UIKit)
+        SidebarDrawerRefresh.shared.start()
+        #endif
     }
 
     private func updateDirectionalPan(translationX: CGFloat, revealWidth: CGFloat) {
@@ -464,12 +506,18 @@ private struct SidebarDrawerInteractive<
 
     private func closeFromOverlay() {
         guard motion.progress > 0.001 else { return }
+        #if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteDrawerIntent("scrim")
+        #endif
         settle(to: 0, feedback: true)
     }
 
     private func synchronizeProgress(with open: Bool) {
         let target: CGFloat = open ? 1 : 0
         guard abs(motion.progress - target) > 0.001 else { return }
+        #if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteDrawerIntent("tap")
+        #endif
         // Official haptic trigger is the `isOpen` value itself: a button or
         // programmatic toggle fires once, exactly like a drag that commits.
         settle(to: target, feedback: true)
@@ -491,6 +539,9 @@ private struct SidebarDrawerInteractive<
         animationGeneration &+= 1
         let generation = animationGeneration
         isAnimating = true
+        #if canImport(UIKit)
+        SidebarDrawerRefresh.shared.start()
+        #endif
 
         if shouldProvideFeedback {
             feedbackTrigger &+= 1
@@ -498,6 +549,9 @@ private struct SidebarDrawerInteractive<
 
         let completion = {
             guard generation == animationGeneration else { return }
+            #if canImport(UIKit)
+            SidebarDrawerRefresh.shared.stop()
+            #endif
 
             isAnimating = false
             motion.move(to: target)
@@ -753,23 +807,6 @@ private enum SidebarDrawerCardShape {
 
     private static func resting(_ progress: CGFloat) -> CGFloat {
         progress <= 0.001 ? 0 : progress >= 0.999 ? 1 : 0.5
-    }
-}
-
-private struct SidebarDrawerSidebarMotion: ViewModifier {
-    let motion: SidebarDrawerMotion
-    let closedScale: CGFloat
-    let overlayOpacity: CGFloat
-
-    func body(content: Content) -> some View {
-        let progress = motion.progress
-        content
-            .overlay {
-                drawerSystemBackground
-                    .opacity(overlayOpacity * (1 - progress))
-                    .allowsHitTesting(false)
-            }
-            .scaleEffect(closedScale + ((1 - closedScale) * progress), anchor: .leading)
     }
 }
 

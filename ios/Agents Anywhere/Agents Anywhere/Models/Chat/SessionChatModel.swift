@@ -5,6 +5,8 @@ import Observation
 final class SessionChatModel {
     let session: V2SessionModel
     let timeline = SessionTimelinePresentation()
+    /// The same opening window `V2SessionCachePolicy` reads from disk.
+    private static let openingWindow = V2SessionCachePolicy.defaultOpeningWindow
     let settings = ConversationSettings()
     let disclosures = TimelineDisclosureState()
     var takeoverError: String?
@@ -32,6 +34,10 @@ final class SessionChatModel {
     private(set) var blockedSendTick = 0
     var settingsError: String?
     private(set) var isOpeningPrepared = false
+    /// The opening refresh (`repository.open`) finished, successfully or not.
+    /// A cached window can be ready for display before that read returns; the
+    /// viewport's automatic latest load must wait for it or the two reads race.
+    private(set) var openingRefreshCompleted = false
     var isOpeningReady: Bool { isOpeningPrepared && timeline.hasPresentedSnapshot }
     /// The first opening return landed (or its bounded fallback expired). The
     /// cold-load mask waits for it so the reader never sees the top of the
@@ -254,12 +260,14 @@ final class SessionChatModel {
             isOpeningPrepared = false
             openingPositionSettled = false
         }
+        openingRefreshCompleted = false
         openingError = nil
         // A memory-cached visit presents before any network read so the page is
-        // usable immediately (D3). The window is trimmed exactly like open()
-        // trims it, so the later refresh cannot remove rows the reader sees.
+        // usable immediately (D3). Present the same opening window the store
+        // reads, so the later refresh cannot remove rows the reader sees.
         if session.isValid, let cached = repository.cached(sessionId: session.id) {
-            timeline.presentOpening(Array(cached.items.suffix(100)), pendingMessages: session.pendingMessages)
+            timeline.presentOpening(Array(cached.items.suffix(Self.openingWindow)),
+                                    pendingMessages: session.pendingMessages)
             isOpeningPrepared = true
         }
         do {
@@ -275,6 +283,7 @@ final class SessionChatModel {
             timeline.presentOpening(data.items, pendingMessages: session.pendingMessages)
         }
         isOpeningPrepared = true
+        openingRefreshCompleted = true
     }
 
     /// The timeline reports its first opening return (or the bounded mask
@@ -522,6 +531,15 @@ final class SessionChatModel {
         guard canQueueSend,
               !session.composer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return }
+        // The queue is another way a long paste leaves the composer; convert
+        // it here too, before the editor's committed text reaches the bubble.
+        if let attachment = LongMessageAttachmentPolicy.makeAttachment(
+            from: session.composer.text,
+            existingAttachmentCount: session.composer.attachments.count,
+            canAttach: canAttach) {
+            session.composer.text = ""
+            session.composer.attachments.append(attachment)
+        }
         guard let item = session.enqueueDraft() else {
             surfaceBlockedSendIfNeeded()
             return
@@ -599,7 +617,17 @@ final class SessionChatModel {
         }
         guard !isWorking, session.canSend, !session.composer.isComposing else { return }
         let draft = session.composer
-        draft.text = text
+        // A pasted log is cheaper as a file than as a chat bubble; the normal
+        // attachment upload carries it to the agent.
+        if let attachment = LongMessageAttachmentPolicy.makeAttachment(
+            from: text,
+            existingAttachmentCount: draft.attachments.count,
+            canAttach: canAttach) {
+            draft.text = ""
+            draft.attachments.append(attachment)
+        } else {
+            draft.text = text
+        }
         let selected = draft.attachments
         guard selected.isEmpty || canAttach else { return }
         isWorking = true

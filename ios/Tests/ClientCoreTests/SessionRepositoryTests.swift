@@ -5,7 +5,7 @@ import Testing
 @testable import ClientCore
 
 @Suite @MainActor struct SessionRepositoryTests {
-    @Test func openingStartsWithOnePageAndExplicitHistoryAccumulatesAgain() async throws {
+    @Test func openingKeepsTheAccumulatedWindowAndExplicitHistoryStopsAtTheStart() async throws {
         let http = TestHTTPTransport()
         http.respond = { call in
             if call.path.hasSuffix("snapshot") {
@@ -20,7 +20,7 @@ import Testing
                 return try JSONSerialization.data(withJSONObject: response)
             }
             if call.path.hasSuffix("timeline") {
-                #expect(call.query.contains { $0.name == "limit" && $0.value == "100" })
+                #expect(call.query.contains { $0.name == "limit" && $0.value == "200" })
                 let before = try #require(call.query.first { $0.name == "beforeOrderSeq" }?.value.flatMap(Int.init))
                 let start = max(1, before - 100)
                 let items = try (start..<before).map { try itemObject(id: "item-\($0)", order: $0) }
@@ -38,12 +38,12 @@ import Testing
         #expect(all.items.count == 300 && !all.hasOlderItems)
         let requests = http.calls.count
         let reopened = try await repo.open(sessionId: "session")
-        #expect(reopened.items.map(\.orderSeq) == Array(201...300))
-        #expect(reopened.hasOlderItems && !reopened.hasNewerItems && reopened.cursor == initial.cursor)
+        #expect(reopened.items.map(\.orderSeq) == Array(1...300))
+        #expect(!reopened.hasOlderItems && !reopened.hasNewerItems && reopened.cursor == initial.cursor)
         #expect(http.calls.count == requests)
         let older = try await repo.loadOlder(sessionId: "session")
-        #expect(older.items.map(\.orderSeq) == Array(101...300))
-        #expect(http.calls.last?.query.contains { $0.name == "beforeOrderSeq" && $0.value == "201" } == true)
+        #expect(older.items.map(\.orderSeq) == Array(1...300))
+        #expect(http.calls.count == requests)
     }
 
     @Test func cachedModelLookupDoesNotSubscribeItsCallerToHistoricalRows() async throws {

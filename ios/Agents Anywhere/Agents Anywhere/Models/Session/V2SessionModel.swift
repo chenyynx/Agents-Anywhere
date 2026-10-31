@@ -188,6 +188,10 @@ final class V2SessionModel: Identifiable {
     /// than the view-scoped toast store.
     private(set) var acknowledgedNotifications = V2NotificationAcknowledgements()
     private(set) var hasOlderItems = false
+    /// Whether the local row store still holds rows older than the window.
+    /// `hasOlderItems` is the server's flag; the pager loads when either is true.
+    private(set) var localOlderAvailable = false
+    var canLoadOlder: Bool { hasOlderItems || localOlderAvailable }
     private(set) var hasNewerItems = false
     /// Whether the window was read from a server that excluded SubAgent child
     /// rows (`excludeAgentChildren`). The SubAgent panel reads it: a card's own
@@ -222,6 +226,11 @@ final class V2SessionModel: Identifiable {
     /// relaunch.
     let sendQueue = V2SendQueue()
     @ObservationIgnored private var queueDrainTask: Task<Void, Never>?
+    /// Accepted direct sends waiting for their echo. A stalled socket can drop
+    /// the echo event entirely; without a nudge the optimistic bubble spins
+    /// forever even though the server persisted the row (device 2026-10-31
+    /// 14:50: the `行` pending survived minutes and every later read).
+    @ObservationIgnored private var echoWatchdogs: [String: Task<Void, Never>] = [:]
     /// When the current head entered `.awaitingEcho`. A drained message waits
     /// this long for its authoritative echo before the queue stops trusting the
     /// HTTP accept alone; see `awaitingEchoTimeout`.
@@ -467,12 +476,24 @@ final class V2SessionModel: Identifiable {
         catch { if isValid { failure = V2ClientFailure(error) } }
     }
 
-    func loadOlder() async {
+    func loadOlder(anchorOrderSeq: Int? = nil) async {
         guard let repository, isValid, !isLoadingHistory else { return }
         isLoadingHistory = true
         defer { isLoadingHistory = false }
-        do { _ = try await repository.loadOlder(sessionId: id) }
+        do { _ = try await repository.loadOlder(sessionId: id, anchorOrderSeq: anchorOrderSeq) }
         catch { if isValid { failure = V2ClientFailure(error) } }
+    }
+
+    /// The reader returned to the newest edge of the held window; live creates
+    /// follow again without waiting for an explicit latest page.
+    func followLatest() {
+        repository?.followLatest(sessionId: id)
+    }
+
+    /// The reader left the bottom while a local-first latest page was still
+    /// reconciling; do not replace the window under a history reader.
+    func cancelLatestReconcile() {
+        repository?.cancelLatestReconcile(sessionId: id)
     }
 
     func loadLatest() async {
@@ -526,6 +547,7 @@ final class V2SessionModel: Identifiable {
             guard isValid else { return pending }
             pending.update(.accepted)
             clearDraft(ifMatching: pending)
+            watchEcho(for: pending)
         } catch {
             guard isValid else { return pending }
             if awaitingReplyID == pending.id { awaitingReplyID = nil }
@@ -543,6 +565,34 @@ final class V2SessionModel: Identifiable {
         }
         repository.localWorkDidChange(sessionID: id)
         return pending
+    }
+
+    /// A live echo can be lost to a stalled socket; nothing re-reads the row,
+    /// so the accepted bubble spins forever. After the write has had time to
+    /// echo, read the latest page once (the server has the row; a page read
+    /// brings it into the projection and `confirmEcho` retires the bubble).
+    /// If the echo still never lands, fall back to the existing uncertain
+    /// path instead of an endless spinner.
+    private func watchEcho(for pending: V2PendingMessage) {
+        let pendingID = pending.id
+        guard echoWatchdogs[pendingID] == nil else { return }
+        echoWatchdogs[pendingID] = Task { @MainActor [weak self, weak pending] in
+            defer { self?.echoWatchdogs[pendingID] = nil }
+            try? await Task.sleep(for: .seconds(30))
+            guard !Task.isCancelled, let self, let pending, self.isValid,
+                  self.pendingMessages.contains(where: { $0.id == pending.id }),
+                  pending.delivery == .accepted else { return }
+            _ = try? await self.repository?.loadLatest(sessionId: self.id)
+            // The local-first page can be stale; the network reconcile runs
+            // in the background. Give it one more window before demoting
+            // (the queue's own echo timeout is 60 s).
+            try? await Task.sleep(for: .seconds(30))
+            guard !Task.isCancelled, self.isValid,
+                  self.pendingMessages.contains(where: { $0.id == pending.id }),
+                  pending.delivery == .accepted else { return }
+            pending.update(.uncertain(V2ClientFailure(kind: .unavailable,
+                message: String(localized: "上次发送的结果尚未确认，正在同步记录。请确认后再重试。"))))
+        }
     }
 
     /// An explicit UI action may dismiss a reviewed outcome; it never resends it.
@@ -604,6 +654,9 @@ final class V2SessionModel: Identifiable {
         runtime.update(data, connection: connection)
         notices.update(runtime.notices, sessionID: id)
         if hasOlderItems != (data?.hasOlderItems ?? false) { hasOlderItems = data?.hasOlderItems ?? false }
+        if localOlderAvailable != (data?.localOlderAvailable ?? false) {
+            localOlderAvailable = data?.localOlderAvailable ?? false
+        }
         if hasNewerItems != (data?.hasNewerItems ?? false) { hasNewerItems = data?.hasNewerItems ?? false }
         if windowExcludesAgentChildren != (data?.windowExcludesAgentChildren ?? false) {
             windowExcludesAgentChildren = data?.windowExcludesAgentChildren ?? false

@@ -3,10 +3,15 @@ import Foundation
 nonisolated struct V2SessionCachePolicy {
     /// Sessions resident at once, sized to the recently active working set so
     /// returning to a session after a background or app switch is served from
-    /// cache instead of the network. The local store's per-file (64MB) and
-    /// total (128MB) budgets plus the LRU eviction below still bound disk use.
+    /// cache instead of the network. Disk use is bounded by the user's cache
+    /// limit (`LocalCachePolicy`) and the row store's per-session cap.
     var maximumSessions = 20
     var maximumTimelineItems = 1000
+    static let defaultOpeningWindow = 300
+    /// Rows read from the local store when a session opens.
+    var openingWindow = Self.defaultOpeningWindow
+    /// One history/latest page, aligned with the official Code events page.
+    var networkPageSize = 200
     var catalogLifetime: TimeInterval = 30
 }
 
@@ -70,6 +75,9 @@ final class V2SessionRepository {
     private let connectionReadinessWindow: Duration
     private let healBackoff: V2SessionHealBackoff
     private var entries: [V2SessionID: Entry] = [:]
+    /// Last dashboard pin value per session, so a remote pin change is mirrored
+    /// into the row store even when the session is not open.
+    private var lastKnownPins: [V2SessionID: Bool] = [:]
     private var accessCounter = 0
     private var suspended = false
     private(set) var network = V2NetworkStatus()
@@ -193,9 +201,10 @@ final class V2SessionRepository {
         entry.readVersion += 1
         entry.historyTask?.cancel()
         entry.historyTask = nil
-        // Trim before a possible latest-page request so an offline fallback
-        // also stays bounded and cannot remount the entire cached history.
-        if entry.projection?.limitToLatest(100) == true { emit(entry) }
+        entry.latestRefreshTask?.cancel()
+        entry.latestRefreshTask = nil
+        // Opening keeps the restored window: the row store and the in-memory
+        // cap already bound it, and a trim here was what re-loaded history.
         let window = entry.projection?.data
         // A cached window can hold only SubAgent child rows: the server used
         // to return them inside the latest page, and L2.1 drops all of them
@@ -205,7 +214,7 @@ final class V2SessionRepository {
         let windowHoldsNoMainRow = window?.items.contains { SubAgentProgress.parentItemID($0) == nil } == false
         if window?.hasNewerItems == true
             || (network.availability != .offline && window?.hasOlderItems == true && windowHoldsNoMainRow) {
-            return try await loadLatest(sessionId: sessionId, limit: 100)
+            return try await loadLatest(sessionId: sessionId, limit: policy.networkPageSize)
         }
         return entry.projection!.data
     }
@@ -237,7 +246,7 @@ final class V2SessionRepository {
         let entry = entry(for: id)
         guard entry.projection == nil, !entry.hasReadLocal else { return }
         if entry.localReadTask == nil {
-            entry.localReadTask = Task { await localStore.restoreSession(id) }
+            entry.localReadTask = Task { await localStore.restoreSession(id, window: policy.openingWindow) }
         }
         let signpost = PerfSignpost.begin("session.restore")
         defer { PerfSignpost.end("session.restore", signpost) }
@@ -249,6 +258,7 @@ final class V2SessionRepository {
         guard let projection = try? archive.projection(items: saved.items,
                                                        maximumItems: policy.maximumTimelineItems, now: now) else { return }
         entry.projection = projection
+        entry.projection?.setLocalOlderAvailable(saved.localHasOlderRows)
         // A failure that outlived the process is still on record: the ring is
         // restored beside the projection it belongs to.
         entry.recoveryDiagnostics = archive.recoveryDiagnostics ?? []
@@ -319,22 +329,58 @@ final class V2SessionRepository {
         return try await hydrate(entry)
     }
 
-    func loadOlder(sessionId: V2SessionID, limit: Int = 100) async throws -> V2SessionData {
-        try requireNetwork()
+    func loadOlder(sessionId: V2SessionID, limit: Int? = nil,
+                   anchorOrderSeq: Int? = nil) async throws -> V2SessionData {
+        let pageLimit = limit ?? policy.networkPageSize
         _ = try await load(sessionId: sessionId)
         let entry = entry(for: sessionId)
+        // Browsing history supersedes a background latest reconcile: the
+        // replacement must not land while the reader is moving away.
+        entry.latestRefreshTask?.cancel()
+        entry.latestRefreshTask = nil
         if let task = entry.historyTask { return try await task.value }
         guard let data = entry.projection?.data,
-              data.hasOlderItems, let before = data.items.first?.orderSeq else {
+              data.canLoadOlder, let before = data.items.first?.orderSeq else {
             return entry.projection!.data
         }
         let version = entry.readVersion
         let task = Task { [self] in
             defer { if entry.readVersion == version { entry.historyTask = nil } }
+            // Disk first: a seen page must not pay the network again. The
+            // server flag stays untouched; localOlderAvailable carries the
+            // disk's own boundary.
+            if let localStore,
+               let local = await localStore.olderRows(sessionID: sessionId,
+                                                      beforeOrderSeq: before, limit: pageLimit),
+               !local.items.isEmpty {
+                try requireCurrent(entry, version: version)
+                let page = V2SessionTimelinePage(
+                    sessionId: sessionId, items: local.items,
+                    nextSeq: entry.projection?.sequence ?? 0,
+                    hasMore: data.hasOlderItems,
+                    serverTime: nil,
+                    excludesAgentChildren: data.windowExcludesAgentChildren)
+                entry.projection?.applyHistory(page, anchorOrderSeq: anchorOrderSeq)
+                entry.projection?.setLocalOlderAvailable(local.hasMore)
+                emit(entry)
+                return entry.projection!.data
+            }
+            guard data.hasOlderItems else {
+                entry.projection?.setLocalOlderAvailable(false)
+                emit(entry)
+                return entry.projection!.data
+            }
+            try requireNetwork()
             let page = try await detail.loadOlderItems(sessionId: sessionId, beforeOrderSeq: before,
-                limit: limit, excludeAgentChildren: true)
+                limit: pageLimit, excludeAgentChildren: true)
             try requireCurrent(entry, version: version)
-            entry.projection?.applyHistory(page)
+            entry.projection?.applyHistory(page, anchorOrderSeq: anchorOrderSeq)
+            if let localStore,
+               let first = entry.projection?.data.items.first?.orderSeq {
+                let hasMoreLocal = await localStore.hasOlderRows(sessionID: sessionId,
+                                                                 beforeOrderSeq: first)
+                entry.projection?.setLocalOlderAvailable(hasMoreLocal)
+            }
             emit(entry)
             return entry.projection!.data
         }
@@ -342,19 +388,97 @@ final class V2SessionRepository {
         return try await task.value
     }
 
-    func loadLatest(sessionId: V2SessionID, limit: Int = 100) async throws -> V2SessionData {
-        try requireNetwork()
+    /// The reader is back at the newest edge of the held window. History
+    /// paging stops anchoring there, so live creates append normally instead
+    /// of being deferred until an explicit latest page.
+    func followLatest(sessionId: V2SessionID) {
+        entries[sessionId]?.projection?.followLatest()
+    }
+
+    func loadLatest(sessionId: V2SessionID, limit: Int? = nil) async throws -> V2SessionData {
+        let pageLimit = limit ?? policy.networkPageSize
         _ = try await load(sessionId: sessionId)
         let entry = entry(for: sessionId)
         entry.readVersion += 1
         entry.historyTask?.cancel()
         entry.historyTask = nil
+        entry.latestRefreshTask?.cancel()
+        entry.latestRefreshTask = nil
         let version = entry.readVersion
-        let page = try await detail.latestItems(sessionId: sessionId, limit: limit, excludeAgentChildren: true)
+        // Local first, online included: a return-to-bottom must not wait for
+        // the network when the row store already holds the newest page. The
+        // local page is applied immediately; if its saved cursor is behind the
+        // live projection (or it says its tail is incomplete), a background
+        // network read reconciles it without blocking the return.
+        //
+        // `>=`, not `>`: browsing history keeps both sides of the reader
+        // (V2SessionProjection.browseMaximumItems), so the projection's last
+        // row can already be the store's newest row. Requiring a strictly
+        // newer local row sent that equal-end case to the network and made
+        // the return-to-bottom block on it (and hang when the read was held).
+        if let localStore,
+           let local = await localStore.latestRows(sessionID: sessionId, limit: pageLimit),
+           let newest = local.items.last?.orderSeq,
+           let end = entry.projection?.data.items.last?.orderSeq,
+           newest >= end {
+            try requireCurrent(entry, version: version)
+            let localIsCurrent = !local.hasNewerRows
+                && V2SessionProjection.sequence(local.cursor) >= (entry.projection?.sequence ?? 0)
+            let page = V2SessionTimelinePage(
+                sessionId: sessionId, items: local.items,
+                nextSeq: local.items.map(\.updatedSeq).max() ?? 0,
+                hasMore: entry.projection?.data.hasOlderItems ?? false,
+                serverTime: nil,
+                excludesAgentChildren: entry.projection?.data.windowExcludesAgentChildren ?? false)
+            entry.projection?.applyLatest(page, hasNewerAfterApply: !localIsCurrent)
+            entry.projection?.setLocalOlderAvailable(local.hasMore)
+            emit(entry)
+            if !localIsCurrent {
+                startLatestReconcile(entry, limit: pageLimit, version: version)
+            }
+            return entry.projection!.data
+        }
+        try requireNetwork()
+        let page = try await detail.latestItems(sessionId: sessionId, limit: pageLimit, excludeAgentChildren: true)
         try requireCurrent(entry, version: version)
         entry.projection?.applyLatest(page)
         emit(entry)
         return entry.projection!.data
+    }
+
+    /// A local latest page is on screen; the network read updates it in the
+    /// background. A failure keeps the local content and the newer prompt.
+    private func startLatestReconcile(_ entry: Entry, limit: Int, version: Int) {
+        guard network.availability != .offline else { return }
+        entry.latestRefreshTask?.cancel()
+        entry.latestRefreshTask = Task { @MainActor [weak self, weak entry] in
+            guard let self, let entry else { return }
+            defer {
+                if entry.readVersion == version { entry.latestRefreshTask = nil }
+            }
+            do {
+                let page = try await self.detail.latestItems(
+                    sessionId: entry.id, limit: limit, excludeAgentChildren: true)
+                try self.requireCurrent(entry, version: version)
+                // A background fill, not a reader return: if the reader is
+                // paged into history, keep their anchor and only add the
+                // newest rows the stale local page was missing.
+                entry.projection?.applyLatest(page, keepingAnchor: true)
+                self.emit(entry)
+            } catch {
+                // The local page is already displayed. Keep `hasNewerItems`
+                // set so the prompt remains available; the next connection
+                // recovery will reconcile the same rows.
+            }
+        }
+    }
+
+    /// The reader left the bottom before a local-first latest page finished
+    /// reconciling; its replacement must not land under a history reader.
+    func cancelLatestReconcile(sessionId: V2SessionID) {
+        guard let entry = entries[sessionId] else { return }
+        entry.latestRefreshTask?.cancel()
+        entry.latestRefreshTask = nil
     }
 
     /// One SubAgent card's child rows (C3) for a main-only window. Kept out of
@@ -600,6 +724,16 @@ final class V2SessionRepository {
     }
 
     func applyMetadata(_ sessions: [V2SessionMeta]) {
+        var pinUpdates: [V2SessionID: Bool] = [:]
+        for session in sessions {
+            if let known = lastKnownPins[session.id], known != session.pinned {
+                pinUpdates[session.id] = session.pinned
+            }
+            lastKnownPins[session.id] = session.pinned
+        }
+        if !pinUpdates.isEmpty, let localStore {
+            Task { await localStore.updatePinned(pinUpdates) }
+        }
         for session in sessions {
             guard let entry = entries[session.id] else { continue }
             let previous = entry.projection?.data.session
@@ -675,6 +809,8 @@ final class V2SessionRepository {
         entry.readVersion += 1
         entry.historyTask?.cancel()
         entry.historyTask = nil
+        entry.latestRefreshTask?.cancel()
+        entry.latestRefreshTask = nil
         let version = entry.readVersion
         let task = Task { [self] in
             defer {
@@ -817,6 +953,8 @@ final class V2SessionRepository {
             entry.readVersion += 1
             entry.historyTask?.cancel()
             entry.historyTask = nil
+            entry.latestRefreshTask?.cancel()
+            entry.latestRefreshTask = nil
         }
         let mergedOutcome = try entry.projection?.apply(event)
         confirmEchoes(event, entry: entry)
@@ -1281,6 +1419,8 @@ final class V2SessionRepository {
         entry.recoveryEpoch = UUID()
         entry.recoveryTask?.cancel()
         entry.recoveryTask = nil
+        entry.latestRefreshTask?.cancel()
+        entry.latestRefreshTask = nil
         entry.connection = .inactive
         // A stopped or disconnected entry cannot carry a live prediction: the
         // optimistic turn end belongs to the connection lifecycle that proved
@@ -1296,6 +1436,7 @@ final class V2SessionRepository {
         stop(entry)
         entry.loadTask?.cancel()
         entry.historyTask?.cancel()
+        entry.latestRefreshTask?.cancel()
         for observer in entry.observers.values { observer.finish() }
         entry.observers.removeAll()
         entry.model.invalidate()
@@ -1304,8 +1445,8 @@ final class V2SessionRepository {
     private func evict(protecting protected: Entry? = nil) {
         let candidates = entries.values.filter {
             $0 !== protected && $0.observers.isEmpty && $0.loadTask == nil && $0.catalogTask == nil
-                && $0.historyTask == nil && $0.recoveryTask == nil && $0.followUpReconcileTask == nil
-                && !$0.model.hasLocalWork
+                && $0.historyTask == nil && $0.latestRefreshTask == nil && $0.recoveryTask == nil
+                && $0.followUpReconcileTask == nil && !$0.model.hasLocalWork
         }
             .sorted { $0.lastAccess < $1.lastAccess }
         for entry in candidates where entries.count > max(1, policy.maximumSessions) {
@@ -1338,6 +1479,10 @@ private final class Entry {
     var observers: [UUID: AsyncStream<V2SessionObservation>.Continuation] = [:]
     var loadTask: Task<V2SessionData, Error>?
     var historyTask: Task<V2SessionData, Error>?
+    /// A local-first latest page was applied and a network read is reconciling
+    /// it in the background. Kept separate from `historyTask` so the instant
+    /// local return does not make the caller wait on the network.
+    var latestRefreshTask: Task<Void, Never>?
     var catalogTask: Task<V2SessionCatalogs, Error>?
     /// Single-flight recovery round. It returns its outcome instead of
     /// throwing, so joining callers can choose to surface or ignore failure.

@@ -46,17 +46,41 @@ nonisolated struct TimelineItemIdentityList: Equatable {
     }
 }
 
+/// Which row ids may be used as a history anchor inside one top-level item.
+/// The history prompts alias the first timeline row for the prepend's
+/// first-row check; that alias must not participate in anchor matching, or
+/// the projected anchor lands on the prompt at y=0 and the page scrolls to
+/// the newly loaded top.
+nonisolated enum TimelineHistoryAnchorRows {
+    static func rows(for item: TimelineListItem, physicalRows: [String]) -> [String] {
+        switch item {
+        case .olderPrompt, .latestPrompt: return []
+        default: return physicalRows
+        }
+    }
+
+    /// Static chrome can sit under the viewport top while the reader is
+    /// looking at content below it. It must never become the reading anchor:
+    /// a prepend inserts content below the prompt, so anchoring on the prompt
+    /// would leave the reader at the new page's top.
+    static func isAnchorable(_ item: TimelineListItem) -> Bool {
+        switch item {
+        case .olderPrompt, .latestPrompt, .tail: return false
+        default: return true
+        }
+    }
+}
+
 /// Builds the collection's top-level order. It mirrors the SwiftUI body's
 /// order exactly: older prompt, groups, tail notices, pending messages,
-/// working status, latest prompt, tail. Each category is deduplicated
-/// independently, first wins.
+/// working status, tail. Each category is deduplicated independently, first
+/// wins.
 nonisolated enum TimelineItemIdentity {
     static func build(hasOlderPrompt: Bool,
                       groupIDs: [String],
                       hasWorkingStatus: Bool = false,
                       noticeIDs: [String],
                       pendingIDs: [String],
-                      hasLatestPrompt: Bool,
                       hasTail: Bool = true) -> TimelineItemIdentityList {
         var items: [TimelineListItem] = []
         items.reserveCapacity(groupIDs.count + noticeIDs.count + pendingIDs.count + 4)
@@ -70,10 +94,12 @@ nonisolated enum TimelineItemIdentity {
         items.append(contentsOf: pending.values.map { .pending($0) })
         // The working status row is the turn's last item: it follows the
         // messages and a just-sent pending bubble (the reader must see it
-        // below their own message), and sits before the latest/tail rows.
+        // below their own message), and sits before the tail row.
         if hasWorkingStatus { items.append(.workingStatus) }
 
-        if hasLatestPrompt { items.append(.latestPrompt) }
+        // No `.latestPrompt` row by product decision (pp, 2026-10-31): the
+        // "继续上拉加载更新的记录" line stays out of the transcript. Returning
+        // to the newest rows is owned by scrolling/gestures, not a row.
         if hasTail { items.append(.tail) }
         return TimelineItemIdentityList(items: items,
             duplicateGroupIDs: groups.duplicates,

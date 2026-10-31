@@ -87,45 +87,4 @@ final class AnchorDeviceProbe: NSObject {
     }
 }
 
-/// Probe-only pill: tap, read the anchor log, copy it.
-struct AnchorProbeLogOverlay: View {
-    @State private var showing = false
-    @State private var text = ""
-
-    var body: some View {
-        Button("锚点日志") {
-            text = AnchorDeviceProbe.shared.report
-            showing = true
-        }
-        .font(.caption2.weight(.semibold))
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(.thinMaterial, in: Capsule())
-        .sheet(isPresented: $showing) {
-            NavigationStack {
-                ScrollView {
-                    Text(text)
-                        .font(.caption2.monospaced())
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
-                        .textSelection(.enabled)
-                }
-                .navigationTitle("锚点日志")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("清空") {
-                            AnchorDeviceProbe.shared.clear()
-                            text = AnchorDeviceProbe.shared.report
-                        }
-                    }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("复制") { UIPasteboard.general.string = text }
-                    }
-                }
-            }
-            .presentationDetents([.medium, .large])
-        }
-    }
-}
 #endif

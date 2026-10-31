@@ -12,6 +12,9 @@ struct SessionChatView: View, Equatable {
     let onMenu: () -> Void
     @State private var sheet: SessionSheet?
     @State private var expandedNoticeID: String?
+#if AA_TIMELINE_PROBE
+    @State private var diagnosticsPresented = false
+#endif
     /// Shared app-level loader for the instant image viewer: one disk cache and
     /// one in-flight table per signed-in session (owned by V2ClientServices),
     /// reused by every session view.
@@ -296,6 +299,12 @@ struct SessionChatView: View, Equatable {
                 Menu {
                     Button(String(localized: "会话详情与导出"), systemImage: "info.circle") { sheet = .details }
                     Button(String(localized: "复制会话 ID"), systemImage: "number") { UIPasteboard.general.string = session.id }
+#if AA_TIMELINE_PROBE
+                    Divider()
+                    Button(String(localized: "诊断与日志"), systemImage: "stethoscope") {
+                        diagnosticsPresented = true
+                    }
+#endif
                 } label: { AppSymbol("ellipsis") }
                 .accessibilityLabel(String(localized: "会话菜单"))
             }
@@ -347,6 +356,18 @@ struct SessionChatView: View, Equatable {
         .sheet(item: $sheet) { destination in
             sheetContent(for: destination)
         }
+#if AA_TIMELINE_PROBE
+        .sheet(isPresented: $diagnosticsPresented) {
+            DiagnosticsPanel(context: DiagnosticsContext(
+                sessionID: session.id,
+                sessionTitle: session.metadata?.title,
+                runtimeStatus: session.runtime.state?.status.rawValue,
+                pendingCount: session.pendingMessages.count,
+                hasOlder: session.hasOlderItems || session.localOlderAvailable,
+                hasNewer: session.hasNewerItems,
+                historyPaging: session.isLoadingHistory))
+        }
+#endif
         .environment(\.openURL, OpenURLAction { url in
             if let reference = SessionFileReference.reference(from: url) {
                 if session.isValid { sheet = .preview(reference) }

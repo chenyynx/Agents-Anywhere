@@ -127,6 +127,36 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         let text: String
     }
 
+    /// A rule-based observation the panel shows before the raw log. A busy
+    /// report is tens of kilobytes; findings are the ten lines worth reading
+    /// first. The rules only cluster what the probe already recorded, so a
+    /// finding always carries a timestamp the raw sections can confirm.
+    struct Finding {
+        let at: TimeInterval
+        /// 2 = visible break, 1 = warning, 0 = informational.
+        let severity: Int
+        let kind: String
+        let detail: String
+    }
+
+    /// One 10 Hz viewport sample, kept only for offset findings.
+    struct ViewSample {
+        let at: TimeInterval
+        let offset: CGFloat
+        let contentHeight: CGFloat
+        let visibleCount: Int
+        let tracking: Bool
+        let decelerating: Bool
+    }
+
+    /// A user-pressed marker. The screenshot is the last rendered timeline
+    /// frame; export writes it next to the report.
+    struct Mark {
+        let at: Date
+        let note: String
+        let screenshot: UIImage?
+    }
+
     @Published private(set) var revision = 0
     private(set) var counters: [String: Int] = [:]
     private(set) var changes: [HeightChange] = []
@@ -171,11 +201,32 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     /// `contentRevision` per item at the previous apply, for the apply-line
     /// re-key accounting.
     private var lastApplyRevisions: [String: Int] = [:]
+    /// Recent viewport samples for the offset findings (10 Hz, capped).
+    private var viewSamples: [ViewSample] = []
+    /// Per-operation durations; the counters keep only totals, the findings
+    /// need the outliers and their timestamps.
+    private var applyDurations: [(at: TimeInterval, ms: Int)] = []
+    private var measureDurations: [(at: TimeInterval, ms: Int)] = []
+    /// Display-link gaps that counted as hitches while the reader was
+    /// scrolling, so a finding can name when the worst frame happened.
+    private var frameHitches: [(at: TimeInterval, ms: Int)] = []
+    /// User-pressed markers, newest last. Screenshots are memory-only; the
+    /// export writes the newest three next to the report.
+    private(set) var markers: [Mark] = []
+    /// The last explicit clear, shown in the report so old counters are not
+    /// mistaken for current ones.
+    private(set) var lastClearedAt: Date?
 
     private static let maxChanges = 160
     private static let maxIssues = 100
     private static let maxApplies = 24
     private static let maxHistoryEvents = 240
+    private static let maxViewSamples = 120
+    private static let maxDurations = 80
+    private static let maxHitches = 30
+    /// Three full-screen captures are enough for one incident and keep the
+    /// probe's memory bounded (~300 KB each at 1x).
+    private static let maxMarkers = 3
 
     // MARK: - Lifecycle
 
@@ -230,6 +281,13 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         frameTimestamps.removeAll()
         lastFrameRateIndex = 0
         lastSlowFrameStack.removeAll()
+        viewSamples.removeAll()
+        applyDurations.removeAll()
+        measureDurations.removeAll()
+        frameHitches.removeAll()
+        // Marks are explicit user actions; clearing samples must not drop
+        // them, otherwise "打点 then clear" loses the capture.
+        lastClearedAt = Date()
         runStartedAt = CACurrentMediaTime()
         revision &+= 1
     }
@@ -339,6 +397,10 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         counters["measureCount", default: 0] += 1
         counters["measureMsTotal", default: 0] += ms
         counters["measureMsMax", default: 0] = max(counters["measureMsMax"] ?? 0, ms)
+        measureDurations.append((at: CACurrentMediaTime(), ms: ms))
+        if measureDurations.count > Self.maxDurations {
+            measureDurations.removeFirst(measureDurations.count - Self.maxDurations)
+        }
     }
 
     func noteApplyDuration(_ seconds: TimeInterval) {
@@ -346,6 +408,10 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         counters["applyCount", default: 0] += 1
         counters["applyMsTotal", default: 0] += ms
         counters["applyMsMax", default: 0] = max(counters["applyMsMax"] ?? 0, ms)
+        applyDurations.append((at: CACurrentMediaTime(), ms: ms))
+        if applyDurations.count > Self.maxDurations {
+            applyDurations.removeFirst(applyDurations.count - Self.maxDurations)
+        }
     }
 
     /// Free-form history-paging step. The controller and adapter write one
@@ -496,6 +562,10 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             }
         }
         lastOffset = offset
+        recordViewSample(at: now, offset: offset,
+                         contentHeight: controller.layout.contentHeight,
+                         visibleCount: view.indexPathsForVisibleItems.count,
+                         tracking: view.isTracking, decelerating: view.isDecelerating)
 
         let visiblePaths = Set(view.indexPathsForVisibleItems)
         let attributes = controller.layout.orderedAttributes
@@ -763,7 +833,14 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         for index in first..<frameTimestamps.count {
             let gap = frameTimestamps[index] - frameTimestamps[index - 1]
             maxGap = max(maxGap, gap)
-            if browsing, gap > 0.033 { hitchCount += 1 }
+            if browsing, gap > 0.033 {
+                hitchCount += 1
+                frameHitches.append((at: frameTimestamps[index],
+                                     ms: Int((gap * 1000).rounded())))
+                if frameHitches.count > Self.maxHitches {
+                    frameHitches.removeFirst(frameHitches.count - Self.maxHitches)
+                }
+            }
         }
         lastFrameRateIndex = frameTimestamps.count
         guard browsing else { return }
@@ -872,6 +949,241 @@ final class TimelineProbeStore: NSObject, ObservableObject {
 
     // MARK: - Report
 
+    // MARK: - Diagnostics
+
+    private func recordViewSample(at: TimeInterval, offset: CGFloat,
+                                  contentHeight: CGFloat, visibleCount: Int,
+                                  tracking: Bool, decelerating: Bool) {
+        viewSamples.append(ViewSample(at: at, offset: offset,
+                                      contentHeight: contentHeight,
+                                      visibleCount: visibleCount,
+                                      tracking: tracking, decelerating: decelerating))
+        if viewSamples.count > Self.maxViewSamples {
+            viewSamples.removeFirst(viewSamples.count - Self.maxViewSamples)
+        }
+    }
+
+    /// Rule-based summary over the buffered window. Read-only and cheap
+    /// enough to call on every panel render.
+    func findings() -> [Finding] {
+        var result: [Finding] = []
+
+        // 1. A 30 pt flip is a footer/status row appearing or disappearing.
+        //    Opposite moves on the same row inside 3 s read as churn.
+        var thirtyPointChanges: [String: [HeightChange]] = [:]
+        for change in changes where abs(abs(change.new - change.old) - 30) <= 2 {
+            thirtyPointChanges[change.itemID, default: []].append(change)
+        }
+        for (itemID, list) in thirtyPointChanges where list.count >= 2 {
+            var flips = 0
+            for index in 1..<list.count {
+                let previous = list[index - 1].new - list[index - 1].old
+                let current = list[index].new - list[index].old
+                if previous * current < 0, list[index].at - list[index - 1].at <= 3 {
+                    flips += 1
+                }
+            }
+            if flips > 0, let last = list.last {
+                result.append(Finding(at: last.at, severity: flips >= 2 ? 2 : 1,
+                                      kind: "footer_churn",
+                                      detail: "\(itemID) 30pt 反复 \(flips + 1) 次，最近一次 t=\(elapsed(last.at))"))
+            }
+        }
+
+        // 2. A 30 pt drop on one row and a 30 pt rise on another inside 1.2 s
+        //    is the footer moving between segments; a slow hand-off shows at
+        //    the bottom as sink-then-bounce.
+        if changes.count >= 2 {
+            for index in 0..<(changes.count - 1) {
+                let first = changes[index]
+                let drop = first.new - first.old
+                guard drop <= -28, drop >= -32 else { continue }
+                for otherIndex in (index + 1)..<changes.count {
+                    let other = changes[otherIndex]
+                    guard other.at - first.at <= 1.2 else { break }
+                    let rise = other.new - other.old
+                    if other.itemID != first.itemID, rise >= 28, rise <= 32 {
+                        result.append(Finding(
+                            at: other.at, severity: 1, kind: "footer_transfer",
+                            detail: "页脚从 \(first.itemID) 迁到 \(other.itemID)，间隔 \(f(other.at - first.at))s"))
+                        break
+                    }
+                }
+            }
+        }
+
+        // 3. Offset moved more than 20 pt with the content height unchanged
+        //    and no height correction in between: a programmatic write, not
+        //    the reader.
+        if viewSamples.count >= 2 {
+            for index in 1..<viewSamples.count {
+                let previous = viewSamples[index - 1]
+                let current = viewSamples[index]
+                guard !current.tracking, !current.decelerating,
+                      abs(current.offset - previous.offset) > 20,
+                      abs(current.contentHeight - previous.contentHeight) < 1 else { continue }
+                let corrected = changes.contains { change in
+                    change.at >= previous.at && change.at <= current.at
+                        && abs(change.new - change.old) >= 1
+                }
+                if !corrected {
+                    result.append(Finding(
+                        at: current.at, severity: 1, kind: "offset_jump",
+                        detail: "offset \(f(previous.offset))->\(f(current.offset))，contentH 不变"))
+                }
+            }
+        }
+
+        // 4. Operation spikes: one slow apply is a frozen frame the reader
+        //    feels even when no other counter moves.
+        if let slowest = applyDurations.max(by: { $0.ms < $1.ms }), slowest.ms >= 100 {
+            result.append(Finding(at: slowest.at,
+                                  severity: slowest.ms >= 300 ? 2 : 1,
+                                  kind: "apply_spike",
+                                  detail: "apply \(slowest.ms)ms @t=\(elapsed(slowest.at))"))
+        }
+        if let slowest = measureDurations.max(by: { $0.ms < $1.ms }), slowest.ms >= 16 {
+            result.append(Finding(at: slowest.at, severity: 1, kind: "measure_spike",
+                                  detail: "measure \(slowest.ms)ms @t=\(elapsed(slowest.at))"))
+        }
+
+        // 5. Scroll hitches: >33 ms while the reader is dragging/coasting.
+        if let worst = frameHitches.max(by: { $0.ms < $1.ms }) {
+            result.append(Finding(at: worst.at,
+                                  severity: frameHitches.count >= 5 ? 2 : 1,
+                                  kind: "frame_hitch",
+                                  detail: ">33ms \(frameHitches.count) 次，最大 \(worst.ms)ms @t=\(elapsed(worst.at))"))
+        }
+
+        // 6. A viewport sample with content but no visible cell is a blank
+        //    frame the reader actually saw.
+        if let blank = viewSamples.last(where: { $0.visibleCount == 0 && $0.contentHeight > 1 }) {
+            result.append(Finding(at: blank.at, severity: 2, kind: "blank_frame",
+                                  detail: "contentH=\(f(blank.contentHeight)) 但 visible=0 @t=\(elapsed(blank.at))"))
+        }
+
+        result.sort { lhs, rhs in
+            if lhs.severity != rhs.severity { return lhs.severity > rhs.severity }
+            return lhs.at > rhs.at
+        }
+        return Array(result.prefix(10))
+    }
+
+    /// Display-link intervals (ms), oldest first. The ring holds ~2 s.
+    func frameGaps() -> [Double] {
+        guard frameTimestamps.count >= 2 else { return [] }
+        var gaps: [Double] = []
+        gaps.reserveCapacity(frameTimestamps.count - 1)
+        for index in 1..<frameTimestamps.count {
+            gaps.append((frameTimestamps[index] - frameTimestamps[index - 1]) * 1000)
+        }
+        return gaps
+    }
+
+    struct PerformanceStats {
+        let samples: Int
+        let hitches: Int
+        let maxGapMs: Int
+        let slowFrames: Int
+        let applyCount: Int
+        let applyMaxMs: Int
+        let applyP95Ms: Int
+        let measureCount: Int
+        let measureMaxMs: Int
+        let measureP95Ms: Int
+    }
+
+    func performanceStats() -> PerformanceStats {
+        PerformanceStats(
+            samples: counters["frameSamples"] ?? 0,
+            hitches: counters["frameRateHitches"] ?? 0,
+            maxGapMs: counters["frameRateMaxGapMs"] ?? 0,
+            slowFrames: counters["slowFrames"] ?? 0,
+            applyCount: counters["applyCount"] ?? 0,
+            applyMaxMs: counters["applyMsMax"] ?? 0,
+            applyP95Ms: percentile(applyDurations.map { $0.ms }, 0.95),
+            measureCount: counters["measureCount"] ?? 0,
+            measureMaxMs: counters["measureMsMax"] ?? 0,
+            measureP95Ms: percentile(measureDurations.map { $0.ms }, 0.95))
+    }
+
+    private func percentile(_ values: [Int], _ fraction: Double) -> Int {
+        guard !values.isEmpty else { return 0 }
+        let sorted = values.sorted()
+        let index = Int((Double(sorted.count - 1) * fraction).rounded())
+        return sorted[max(0, min(sorted.count - 1, index))]
+    }
+
+    /// Mark the current moment and keep the last rendered timeline frame.
+    @discardableResult
+    func mark(note: String = "") -> Mark {
+        let mark = Mark(at: Date(), note: note, screenshot: captureScreenshot())
+        markers.append(mark)
+        if markers.count > Self.maxMarkers {
+            markers.removeFirst(markers.count - Self.maxMarkers)
+        }
+        revision &+= 1
+        return mark
+    }
+
+    /// The panel is a sheet above the list; the list keeps its last rendered
+    /// frame, which is exactly what the reader saw before opening the panel.
+    func captureScreenshot() -> UIImage? {
+        guard let view = controller?.view,
+              view.bounds.width > 1, view.bounds.height > 1 else { return nil }
+        let format = UIGraphicsImageRendererFormat.default()
+        // 1x keeps a full-screen mark small enough to hold three in memory
+        // while still showing layout/visual regressions.
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(bounds: view.bounds, format: format)
+        return renderer.image { context in
+            let drawn = view.drawHierarchy(in: view.bounds, afterScreenUpdates: false)
+            if !drawn {
+                view.layer.render(in: context.cgContext)
+            }
+        }
+    }
+
+    /// Write the report and the newest mark screenshots to the temporary
+    /// directory; the panel shares the returned files.
+    func writeExportFiles() -> [URL] {
+        let stamp = Self.exportFormatter.string(from: Date())
+        let directory = FileManager.default.temporaryDirectory
+        let reportURL = directory.appendingPathComponent("diagnostics-\(stamp).txt")
+        try? report().write(to: reportURL, atomically: true, encoding: .utf8)
+        var urls = [reportURL]
+        for (index, mark) in markers.suffix(3).enumerated() {
+            guard let data = mark.screenshot?.pngData() else { continue }
+            let url = directory.appendingPathComponent("mark-\(stamp)-\(index + 1).png")
+            try? data.write(to: url)
+            urls.append(url)
+        }
+        return urls
+    }
+
+    /// Recent history-paging lines for the events tab.
+    func recentEventLines(limit: Int = 24) -> [String] {
+        historyEvents.suffix(limit).map { "H t=\(elapsed($0.at)) \($0.text)" }
+    }
+
+    private static let exportFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        return formatter
+    }()
+
+    private static let absoluteFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        return formatter
+    }()
+
+    private static func absolute(_ date: Date) -> String {
+        absoluteFormatter.string(from: date)
+    }
+
     func report() -> String {
         var lines: [String] = []
         let bundle = Bundle.main.infoDictionary
@@ -907,6 +1219,29 @@ final class TimelineProbeStore: NSObject, ObservableObject {
 
         let counterLine = counters.keys.sorted().map { "\($0)=\(counters[$0]!)" }.joined(separator: " ")
         lines.append("counters: \(counterLine.isEmpty ? "-" : counterLine)")
+
+        if let lastClearedAt {
+            lines.append("cleared \(Self.absolute(lastClearedAt)) CST")
+        }
+
+        lines.append("--- FINDINGS (severity first) ---")
+        let summary = findings()
+        if summary.isEmpty {
+            lines.append("F none")
+        } else {
+            for finding in summary {
+                lines.append("F t=\(elapsed(finding.at)) [\(finding.severity)] "
+                    + "\(finding.kind) \(finding.detail)")
+            }
+        }
+
+        if !markers.isEmpty {
+            lines.append("--- MARKS (oldest first) ---")
+            for mark in markers {
+                let note = mark.note.isEmpty ? "" : " \(mark.note)"
+                lines.append("M \(Self.absolute(mark.at)) CST\(note)")
+            }
+        }
 
         if let controller, let view = controller.collectionView {
             lines.append("--- VISIBLE (top to bottom) ---")
@@ -1001,121 +1336,30 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     }
 }
 
-// MARK: - Overlay
+// MARK: - Attachment
 
+/// Probe builds attach the store to the live controller without adding any
+/// UI. The diagnostics panel lives in the session menu and in Settings, so
+/// the page itself carries no floating pills.
 @MainActor
-struct TimelineProbeOverlay: View {
+struct TimelineProbeAttachment: ViewModifier {
     let controller: TimelineCollectionController?
     let adapter: TimelineChatContentAdapter?
-    let controllerReady: Bool
+    let ready: Bool
 
-    @ObservedObject private var store = TimelineProbeStore.shared
-    @State private var presenting = false
-
-    var body: some View {
-        Button {
-            presenting = true
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "waveform.path.ecg")
-                Text("探针")
-                if !store.issues.isEmpty {
-                    Text("\(store.issues.count)")
-                        .font(.system(size: 9, weight: .bold))
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(Capsule().fill(.orange))
-                        .foregroundStyle(.white)
-                }
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: ready, initial: true) { _, _ in
+                TimelineProbeStore.shared.attach(controller: controller, adapter: adapter)
             }
-            .font(.system(size: 11, weight: .semibold))
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
-            .background(.ultraThinMaterial, in: Capsule())
-            .overlay(Capsule().strokeBorder(.orange.opacity(0.55)))
-        }
-        .buttonStyle(.plain)
-        .padding(.top, 6)
-        .padding(.trailing, 10)
-        .onChange(of: controllerReady, initial: true) { _, _ in
-            store.attach(controller: controller, adapter: adapter)
-        }
-        .onChange(of: controller.map { ObjectIdentifier($0) }) { _, _ in
-            store.attach(controller: controller, adapter: adapter)
-        }
-        .onDisappear { store.detach() }
-        .sheet(isPresented: $presenting) { TimelineProbePanel() }
-    }
-}
-
-@MainActor
-private struct TimelineProbePanel: View {
-    @ObservedObject private var store = TimelineProbeStore.shared
-    @Environment(\.dismiss) private var dismiss
-    @State private var copied = false
-
-    var body: some View {
-        NavigationStack {
-            ScrollView([.vertical, .horizontal]) {
-                Text(store.report())
-                    .font(.system(size: 9.5, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(10)
+            .onChange(of: controller.map { ObjectIdentifier($0) }) { _, _ in
+                TimelineProbeStore.shared.attach(controller: controller, adapter: adapter)
             }
-            .safeAreaInset(edge: .bottom) {
-                Text("复现后点『复制报告』，把整段文本发回来。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
-                    .background(.bar)
-            }
-            .navigationTitle("时间线探针")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("清空") {
-                        store.reset()
-                        copied = false
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(copied ? "已复制" : "复制报告") {
-                        store.copyReport()
-                        copied = true
-                    }
-                }
-                ToolbarItem(placement: .bottomBar) {
-                    Button("完成") { dismiss() }
-                }
-            }
-        }
-    }
-}
-
-@MainActor
-extension View {
-    /// Probe builds mount the overlay from the page that owns the timeline.
-    @ViewBuilder
-    func timelineProbeOverlay(controller: TimelineCollectionController?,
-                              adapter: TimelineChatContentAdapter?,
-                              ready: Bool) -> some View {
-        overlay(alignment: .topTrailing) {
-            TimelineProbeOverlay(controller: controller, adapter: adapter,
-                                 controllerReady: ready)
-        }
+            .onDisappear { TimelineProbeStore.shared.detach() }
     }
 }
 #else
 import SwiftUI
 
-@MainActor
-extension View {
-    /// Shipping builds carry no probe; the call site stays identical.
-    @ViewBuilder
-    func timelineProbeOverlay(controller: TimelineCollectionController?,
-                              adapter: TimelineChatContentAdapter?,
-                              ready: Bool) -> some View { self }
-}
+// Shipping builds carry no probe; the call site is compile-gated.
 #endif

@@ -247,19 +247,11 @@ struct TimelineChatTimelineView: View {
                 }
             }
 #if AA_TIMELINE_PROBE
-            // Both probe entry points sit on the leading edge at mid-height:
-            // the top-trailing corner belongs to the status bar / navigation
-            // chrome on a real device and cannot be tapped. Stacking them
-            // keeps the timeline report and the C3 inset log reachable.
-            .overlay(alignment: .leading) {
-                VStack(alignment: .leading, spacing: 8) {
-                    TimelineProbeOverlay(controller: bridge.controller,
-                                         adapter: bridge.adapter,
-                                         controllerReady: bridge.controllerAttached)
-                    AnchorProbeLogOverlay()
-                }
-                .padding(.leading, 8)
-            }
+            // The store rides the page lifecycle; the UI entry points moved
+            // to the session menu and Settings (2026-10-31).
+            .modifier(TimelineProbeAttachment(controller: bridge.controller,
+                                              adapter: bridge.adapter,
+                                              ready: bridge.controllerAttached))
 #endif
     }
 

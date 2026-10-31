@@ -850,13 +850,6 @@ private struct SidebarDrawerCardMotion: ViewModifier {
                     .opacity(progress)
                     .allowsHitTesting(false)
             }
-            // Constant fills with layer opacity composite without redrawing.
-            .overlay {
-                screenShape
-                    .fill(.white)
-                    .opacity(overlayOpacity * progress)
-                    .allowsHitTesting(false)
-            }
             .overlay {
                 screenShape
                     .stroke(edgeLineColor, lineWidth: 1 / max(displayScale, 1))
@@ -899,14 +892,15 @@ private extension CGFloat {
     }
 }
 
-/// Official sidebar surface: #F3F3F0 on light (screenshot average); the
-/// dark value is not closed yet, so the system background stays there.
+/// Sidebar surface: #F3F3F0 light, #111111 dark (pixel samples from the
+/// reference screenshots).
 private var drawerSidebarBackground: Color {
 #if canImport(UIKit)
     Color(uiColor: UIColor { traits in
-        guard traits.userInterfaceStyle != .dark else { return .systemBackground }
-        return UIColor(red: 243.0 / 255.0, green: 243.0 / 255.0,
-                       blue: 240.0 / 255.0, alpha: 1)
+        traits.userInterfaceStyle == .dark
+            ? UIColor(white: 17.0 / 255.0, alpha: 1)
+            : UIColor(red: 243.0 / 255.0, green: 243.0 / 255.0,
+                      blue: 240.0 / 255.0, alpha: 1)
     })
 #elseif canImport(AppKit)
     Color(nsColor: .windowBackgroundColor)
@@ -915,14 +909,14 @@ private var drawerSidebarBackground: Color {
 #endif
 }
 
-/// Official content card surface: #F9F9F7 on light; dark keeps the system
-/// background until the dark token is closed.
+/// Content card surface: #F9F9F7 light, #151515 dark (pixel samples).
 private var drawerCardBackground: Color {
 #if canImport(UIKit)
     Color(uiColor: UIColor { traits in
-        guard traits.userInterfaceStyle != .dark else { return .systemBackground }
-        return UIColor(red: 249.0 / 255.0, green: 249.0 / 255.0,
-                       blue: 247.0 / 255.0, alpha: 1)
+        traits.userInterfaceStyle == .dark
+            ? UIColor(white: 21.0 / 255.0, alpha: 1)
+            : UIColor(red: 249.0 / 255.0, green: 249.0 / 255.0,
+                      blue: 247.0 / 255.0, alpha: 1)
     })
 #elseif canImport(AppKit)
     Color(nsColor: .windowBackgroundColor)

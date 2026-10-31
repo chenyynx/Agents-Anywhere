@@ -211,8 +211,9 @@ private struct ChatSidebarPairDeviceButton: View {
 
     var body: some View {
         Button(action: action) {
-            Label(String(localized: "Pair device"), appSymbol: "plus")
-                .font(.body.weight(.semibold))
+            Label(String(localized: "Pair device"), appSymbol: "link")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 10)
                 .frame(minHeight: 46)
@@ -320,7 +321,10 @@ private struct ChatSidebarDeviceRow: View {
                     .frame(width: 7, height: 7)
 
                 Text(device.name)
-                    .font(.system(.subheadline, design: .monospaced))
+                    // Brand mono (official JetBrains Mono) instead of the
+                    // system SF Mono; the device name reads as a host name.
+                    .font(.custom("JetBrainsMono-Regular", size: 15,
+                                  relativeTo: .subheadline))
                     .foregroundStyle(device.presence == .offline ? .secondary : .primary)
                     .lineLimit(1)
             }
@@ -501,55 +505,33 @@ private struct ChatSidebarBottomControls: View {
     @State private var isShowingSettings = false
 
     var body: some View {
-        // Official bottom bar: avatar leading, New Chat pill trailing, both
-        // 28pt from the sidebar edges and 28pt above the screen bottom
-        // (screenshot: avatar 48pt at x=28, pill 110×47 ending at x=291 on a
-        // 320pt sidebar).
+        // Official placement: avatar leading, New Chat trailing. Both keep
+        // their original materials (glass avatar, liquid-glass button); only
+        // the sides are swapped.
         HStack(spacing: 12) {
             Button {
                 isShowingSettings = true
             } label: {
                 ChatSidebarAvatar(account: account)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.glass)
             .buttonBorderShape(.circle)
             .accessibilityLabel(String(localized: "Account"))
 
             Spacer(minLength: 12)
 
-            Button(action: onNewSession) {
-                HStack(spacing: 8) {
-                    AppSymbol("plus", size: 16)
-                    Text(String(localized: "New session"))
-                        .font(.body.weight(.semibold))
-                        .lineLimit(1)
-                }
-                .foregroundStyle(pillForeground)
-                .padding(.horizontal, 18)
-                .frame(height: 47)
-                .background(pillBackground, in: .capsule)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(String(localized: "New session"))
+            AppGlassButton(
+                String(localized: "New session"),
+                systemImage: "square.and.pencil",
+                style: .prominent,
+                maxWidth: nil,
+                action: onNewSession
+            )
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .sheet(isPresented: $isShowingSettings) {
             AccountSettingsSheet(appState: appState)
         }
-    }
-
-    @Environment(\.colorScheme) private var colorScheme
-
-    /// Official pill fill is #2B2B28 on light; the dark value is not closed
-    /// yet, so the inverse (near-white pill, dark label) is used there.
-    private var pillBackground: Color {
-        colorScheme == .dark
-            ? Color.white.opacity(0.92)
-            : Color(red: 43.0 / 255.0, green: 43.0 / 255.0, blue: 40.0 / 255.0)
-    }
-
-    private var pillForeground: Color {
-        colorScheme == .dark ? Color.black : Color.white
     }
 }
 
@@ -560,7 +542,7 @@ private struct ChatSidebarAvatar: View {
         AccountAvatarView(
             displayName: account.displayName,
             source: account.avatarSource,
-            size: 48
+            size: 38
         )
     }
 }

@@ -1,22 +1,23 @@
-# Code 页时间线交接（2026-10-31 晚 · b786 待验）
+# Code 页时间线交接（2026-10-31 晚 · b787 待验）
 
 > 给新会话：先读本文件；逐条证据/红绿/包号在 `docs/timeline-open-and-history-root-fixes-task-sheet.md`（R6–R19）。
-> pp 已下载 b786，下个会话会反馈“这些修过的 bug 是否断根”。不要重做已修项，先按反馈定位残余。
+> pp 将下载 b787，下个会话反馈“这些修过的 bug 是否断根”。不要重做已修项，先按反馈定位残余。
 
 ## 1. 当前状态
 
 - 分支/worktree：`feat/local-timeline-store`，`/home/ubuntu/aa-wt-attachments`
-- 代码 head：`dbbfba97`（幽灵气泡看门狗）；文档 head 以 `git log` 为准
+- 代码 head：`ed3ee514`（看门狗编译修正；含 b786 全部修复）；文档 head 以 `git log` 为准
 - CI：
-  - run **786**（head `dbbfba97`，test+build+probe）交接时仍在跑；**这是给 pp 的包**
-  - run 785（head `08b2d2d9`，页脚防抖）、784（`a40ca030`，snapshot 锚点）同批
-  - 绿后资产：`AgentsAnywhere-feat-local-timeline-store-b786-dbbfba9-probe.ipa`
+  - run **787**（head `ed3ee514`，test+build+probe）**是给 pp 的包**
+  - run 785 绿（`08b2d2d9`，页脚防抖 + snapshot 锚点，不含幽灵气泡看门狗）
+  - run 786 红（`dbbfba97`，看门狗编译错：weak optional 取 .id；已由 `ed3ee514` 修复）
+  - 绿后资产：`AgentsAnywhere-feat-local-timeline-store-b787-ed3ee51-probe.ipa`
   - 下载页：`https://github.com/chenyynx/Agents-Anywhere/releases/tag/ipa-feat-local-timeline-store`
-  - 786 若红：用 API 拉 test/build job 日志（test job 不编译 Views，Views 编译错只在 build job）
+  - 787 若红：用 API 拉 test/build job 日志（test job 不编译 Views，Views 编译错只在 build job）
 - 探针报告目录（当前会话）：`/home/ubuntu/.agents-anywhere-moonveil/attachments/sess_qosxGz-dnnK4jw/`
   最新 `long-message-*.txt` 直接读，不让 pp 贴长文；截图也会落这里。
 
-## 2. b786 验收清单（下个会话按 pp 反馈逐条判）
+## 2. b787 验收清单（下个会话按 pp 反馈逐条判）
 
 1. **发送跟随（文字/附件）**
    - 发送后 pending 气泡连续；转圈结束→状态行不再先沉后弹。

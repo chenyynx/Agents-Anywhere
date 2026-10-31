@@ -6,12 +6,14 @@ import Foundation
 /// threshold the text becomes one ordinary `.txt` attachment, so the bubble is
 /// a file card and the file still reaches the agent.
 nonisolated enum LongMessageAttachmentPolicy {
-    /// A 12k-character message is already many screens of text; the exact
-    /// value is a rendering budget, not a product limit.
-    static let characterThreshold = 12_000
+    /// Two screens of text is already past what a chat bubble should measure
+    /// on the main thread. The 2026-10-31 b788 report rendered an 8 KB,
+    /// ~100-line paste as a 7,916 pt bubble (+7,061 pt offset jump) because
+    /// the old 12k/300 budget sat far above the rendering cost it guarded.
+    static let characterThreshold = 2_000
     /// Logs are line-heavy; this catches a long paste that is under the
-    /// character threshold but still hundreds of rows tall.
-    static let lineThreshold = 300
+    /// character threshold but still dozens of rows tall.
+    static let lineThreshold = 60
     static let maximumAttachments = 5
 
     static func shouldConvert(_ text: String) -> Bool {

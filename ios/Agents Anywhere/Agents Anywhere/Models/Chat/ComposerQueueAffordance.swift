@@ -28,28 +28,14 @@ struct ComposerQueueAffordance: Equatable {
     /// - `isStreaming`: a turn is in flight as the *composer* sees it
     ///   (`isComposerStreaming`: authoritative, minus the optimistic idle that
     ///   an accepted stop opens early). This is not `isRunning`.
-    /// - `responseFinished`: the visible response already ended (the last
-    ///   assistant row is done) while the runtime is still finalizing. The
-    ///   official composer switches to send at that message boundary; waiting
-    ///   for idle made the key lag 1–2 s after the reply (pp 2026-10-31).
-    ///   Typed text still takes the queue arrow — enqueueing is the legal
-    ///   action until idle.
     /// - `hasText`: the draft has non-blank text. Only text can become a queued
     ///   message — the queue key is deliberately not offered for an
     ///   attachment-only draft, which keeps the existing stop key instead.
     /// - `canQueue`: the session permits an enqueue (capability, freshness).
     /// - `canStop`: the interrupt gate, for the plain stop key's enablement.
     /// - `canSend`: the idle send key's full gate, including draft composability.
-    static func resolve(isStreaming: Bool, responseFinished: Bool = false,
-                        hasText: Bool, canQueue: Bool, canStop: Bool,
-                        canSend: Bool) -> ComposerQueueAffordance {
+    static func resolve(isStreaming: Bool, hasText: Bool, canQueue: Bool, canStop: Bool, canSend: Bool) -> ComposerQueueAffordance {
         guard isStreaming else {
-            return ComposerQueueAffordance(shape: .send, isActionEnabled: canSend)
-        }
-        if responseFinished {
-            if hasText {
-                return ComposerQueueAffordance(shape: .queueSend, isActionEnabled: canQueue)
-            }
             return ComposerQueueAffordance(shape: .send, isActionEnabled: canSend)
         }
         guard hasText else {

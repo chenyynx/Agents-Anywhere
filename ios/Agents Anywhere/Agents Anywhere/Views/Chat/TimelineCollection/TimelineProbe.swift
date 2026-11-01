@@ -1567,6 +1567,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             lines.append("W endSeq=\(window.endOrderSeq) cursor=\(window.cursorSequence) "
                 + "hasNewer=\(window.hasNewerItems ? 1 : 0) "
                 + "anchored=\(window.anchoredToHistory ? 1 : 0) "
+                + "deferred=\(window.deferredNewer) "
                 + "latest[start \(window.latestStarted) applied \(window.latestApplied) "
                 + "skipped \(window.latestSkipped) canceled \(window.latestCanceled) "
                 + "failed \(window.latestFailed)] last=\(window.lastLatest)")

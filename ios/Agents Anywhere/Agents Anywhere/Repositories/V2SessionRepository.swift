@@ -396,7 +396,13 @@ final class V2SessionRepository {
     /// paging stops anchoring there, so live creates append normally instead
     /// of being deferred until an explicit latest page.
     func followLatest(sessionId: V2SessionID) {
-        entries[sessionId]?.projection?.followLatest()
+        guard let entry = entries[sessionId] else { return }
+        entry.projection?.followLatest()
+        // Back at the newest edge with a window the server already got past:
+        // the deferred rows cannot be recovered by scrolling, only by a read.
+        if entry.projection?.data.hasNewerItems == true {
+            scheduleLatestFill(entry)
+        }
     }
 
     /// `authoritative` is for callers that must not show a stale window: an
@@ -523,6 +529,71 @@ final class V2SessionRepository {
 #endif
             }
         }
+    }
+
+    /// A live row was refused because it sits beyond a window the projection
+    /// already knows is incomplete. The row cannot be inserted without the
+    /// missing span, so read the newest page once the burst settles. Debounced
+    /// and single-flight per session, and only while the reader is at the
+    /// newest edge: a history reader's window is completed by the bottom path.
+    private func scheduleLatestFill(_ entry: Entry) {
+        guard TimelineStaleWindowHeal.enabled else { return }
+        guard isCurrent(entry), !suspended else { return }
+        guard entry.latestFillTask == nil else { return }
+#if AA_TIMELINE_PROBE
+        entry.deferredNewer += 1
+        entry.latestStarted += 1
+        entry.lastLatest = "fill-started"
+        emit(entry, persist: false)
+#endif
+        entry.latestFillTask = Task { @MainActor [weak self, weak entry] in
+            defer { entry?.latestFillTask = nil }
+            var attempt = 0
+            while let self, let entry, self.isCurrent(entry), !Task.isCancelled {
+                let delay: Duration = attempt == 0 ? .milliseconds(300)
+                    : .seconds(min(1 << min(attempt, 3), 8))
+                do { try await self.sleep(delay) } catch { return }
+                guard let projection = entry.projection,
+                      projection.data.hasNewerItems,
+                      projection.isFollowingLatest else { return }
+                if self.network.availability == .offline {
+                    attempt += 1
+                    continue
+                }
+                do {
+                    try await self.fillNewestWindow(entry)
+                } catch {
+                    attempt += 1
+#if AA_TIMELINE_PROBE
+                    entry.latestFailed += 1
+                    entry.lastLatest = "fill-failed"
+                    self.emit(entry, persist: false)
+#endif
+                    continue
+                }
+                if entry.projection?.data.hasNewerItems != true {
+#if AA_TIMELINE_PROBE
+                    entry.latestApplied += 1
+                    entry.lastLatest = "fill-applied"
+                    self.emit(entry, persist: false)
+#endif
+                    return
+                }
+                attempt += 1
+            }
+        }
+    }
+
+    /// Reads and merges the newest page without touching the reader's anchor:
+    /// the caller has already checked that the reader is at the newest edge.
+    private func fillNewestWindow(_ entry: Entry) async throws {
+        try requireNetwork()
+        let page = try await detail.latestItems(
+            sessionId: entry.id, limit: policy.networkPageSize, excludeAgentChildren: true)
+        try requireCurrent(entry)
+        guard let projection = entry.projection, projection.isFollowingLatest else { return }
+        entry.projection?.applyLatest(page)
+        emit(entry)
     }
 
     /// The reader left the bottom before a local-first latest page finished
@@ -1020,7 +1091,13 @@ final class V2SessionRepository {
         // event payload while the window guard dropped the row; the bubbles
         // then stayed visible forever waiting for an echo that never landed.
         if let merged = mergedOutcome {
-            entry.model.confirmEcho(merged.item)
+            if merged.deferredNewer {
+                // The window is behind the stream; opening the gap is a read,
+                // not an insert.
+                scheduleLatestFill(entry)
+            } else {
+                entry.model.confirmEcho(merged.item)
+            }
         }
         if event.type == "runtime.catalog.updated" || entry.projection?.data.session.connectorStatus != .online {
             invalidateCatalogs(entry)
@@ -1036,7 +1113,7 @@ final class V2SessionRepository {
         // The orb's receive pulse: only this live path consumes a merge
         // outcome — replay, snapshot, paging and cache restores never reach
         // this code, so nothing else can ring the orb (§6.3).
-        if let merged = mergedOutcome {
+        if let merged = mergedOutcome, !merged.deferredNewer {
             let decision = OrbPulsePolicy.decide(item: merged.item, wasInserted: merged.wasInserted,
                                                  now: event.receivedAt, lastStreamPulseAt: entry.lastStreamPulseAt)
             entry.lastStreamPulseAt = decision.streamPulseAt
@@ -1239,7 +1316,13 @@ final class V2SessionRepository {
                         let merged = try entry.projection?.apply(event)
                         // Same rule as the live path: an event only confirms
                         // the pending bubble when its row entered the window.
-                        if let merged { entry.model.confirmEcho(merged.item) }
+                        if let merged {
+                            if merged.deferredNewer {
+                                self.scheduleLatestFill(entry)
+                            } else {
+                                entry.model.confirmEcho(merged.item)
+                            }
+                        }
                     } catch {
                         // The batch is all-or-nothing, so this event's position
                         // is the whole story of the stall: carry it out of the
@@ -1464,6 +1547,7 @@ final class V2SessionRepository {
         snapshot.latestSkipped = entry.latestSkipped
         snapshot.latestCanceled = entry.latestCanceled
         snapshot.latestFailed = entry.latestFailed
+        snapshot.deferredNewer = entry.deferredNewer
         snapshot.lastLatest = entry.lastLatest
         return snapshot
     }
@@ -1563,6 +1647,9 @@ private final class Entry {
     /// it in the background. Kept separate from `historyTask` so the instant
     /// local return does not make the caller wait on the network.
     var latestRefreshTask: Task<Void, Never>?
+    /// Debounced, single-flight fill for a window that is behind the server
+    /// while the reader is at the newest edge (see `scheduleLatestFill`).
+    var latestFillTask: Task<Void, Never>?
 #if AA_TIMELINE_PROBE
     /// Probe-only latest-page counters (see `V2TimelineWindowSnapshot`).
     var latestStarted = 0
@@ -1570,6 +1657,7 @@ private final class Entry {
     var latestSkipped = 0
     var latestCanceled = 0
     var latestFailed = 0
+    var deferredNewer = 0
     var lastLatest = "-"
 #endif
     var catalogTask: Task<V2SessionCatalogs, Error>?

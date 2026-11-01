@@ -18,6 +18,8 @@ struct V2TimelineWindowSnapshot: Equatable, Sendable {
     var latestSkipped = 0
     var latestCanceled = 0
     var latestFailed = 0
+    /// Live rows refused by the newer-window guard (each one scheduled a fill).
+    var deferredNewer = 0
     var lastLatest = "-"
 }
 #endif

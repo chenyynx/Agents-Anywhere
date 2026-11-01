@@ -1,12 +1,17 @@
 import Foundation
 
 /// One row's merge result on the live path: inserted (a genuinely new arrival)
-/// versus supersede-replaced (a streamed update of an existing row). Dropped
-/// items — window guards, non-superseding revisions — produce no outcome.
-/// Purely informational: it is only consumed by the live receive path.
+/// versus supersede-replaced (a streamed update of an existing row).
+///
+/// `deferredNewer` marks the one drop the caller must act on: the row belongs
+/// beyond the held window while the projection already knows the newest side
+/// is incomplete. The row cannot be inserted without the missing span, so the
+/// caller has to fetch the newest page. Other drops (older-edge guards,
+/// non-superseding revisions) produce no outcome.
 struct V2TimelineMergeOutcome {
     let item: V2TimelineItem
     let wasInserted: Bool
+    var deferredNewer = false
 }
 
 /// The row the reader is looking at when a history page starts. History paging
@@ -344,12 +349,19 @@ struct V2SessionProjection {
             // to the tail the latest page restores; it must not push the
             // reading anchor out. The newer flag keeps that page honest.
             if item.orderSeq < start || item.orderSeq > end {
-                if item.orderSeq > end { data.hasNewerItems = true }
+                if item.orderSeq > end {
+                    data.hasNewerItems = true
+                    return V2TimelineMergeOutcome(item: item, wasInserted: false,
+                                                  deferredNewer: true)
+                }
                 return nil
             }
         } else {
             if data.hasOlderItems, item.orderSeq < start { return nil }
-            if data.hasNewerItems, item.orderSeq > end { return nil }
+            if data.hasNewerItems, item.orderSeq > end {
+                return V2TimelineMergeOutcome(item: item, wasInserted: false,
+                                              deferredNewer: true)
+            }
         }
         insertSorted(item)
         return V2TimelineMergeOutcome(item: item, wasInserted: true)

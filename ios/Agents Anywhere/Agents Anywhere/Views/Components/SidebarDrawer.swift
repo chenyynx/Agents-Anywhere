@@ -333,6 +333,12 @@ private struct SidebarDrawerInteractive<
             }
         }
         .ignoresSafeArea()
+        // Window rounding belongs to the container, not to the moving card:
+        // one screen-space clip keeps the display corners identical at rest,
+        // mid-drag and after settling, and leaves the card's seam straight
+        // (pp 2026-11-01).
+        .clipShape(RoundedRectangle(cornerRadius: SidebarDrawerScreenCorner.radius,
+                                    style: .circular))
         .environment(\.sidebarDrawerPresentation, .drawer)
         .environment(\.sidebarDrawerObscuresDetail, isOpen || motion.restingProgress > 0)
         .environment(\.sidebarDrawerIsTransitioning, isAnimating || dragStartProgress != nil
@@ -783,23 +789,17 @@ private struct SidebarDrawerMainCard<Content: View>: View {
     }
 }
 
-/// The card's visible left outline: the top-left corner arc, the straight
-/// left edge, then the bottom-left arc. Only this half is drawn so the line
-/// ends where the card leaves the screen and never paints the window corners.
+/// The card's visible left outline while the drawer moves: one straight seam
+/// from the top edge to the bottom edge. A rounded moving edge exposed the
+/// drawer surface beyond the card at the top and bottom, which read as a
+/// translucent vertical line through the status bar and home indicator
+/// (pp 2026-11-01). The window's own corners are rounded by the container
+/// clip, not by this moving edge.
 private struct CardSeamLine: Shape {
-    let radius: CGFloat
-
     func path(in rect: CGRect) -> Path {
-        let r = max(0, min(radius, min(rect.width, rect.height) / 2))
         var path = Path()
-        path.move(to: CGPoint(x: r, y: rect.minY))
-        path.addArc(tangent1End: CGPoint(x: rect.minX, y: rect.minY),
-                    tangent2End: CGPoint(x: rect.minX, y: rect.minY + r),
-                    radius: r)
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - r))
-        path.addArc(tangent1End: CGPoint(x: rect.minX, y: rect.maxY),
-                    tangent2End: CGPoint(x: rect.minX + r, y: rect.maxY),
-                    radius: r)
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
         return path
     }
 }
@@ -825,16 +825,15 @@ private enum SidebarDrawerScreenCorner {
 }
 
 private enum SidebarDrawerCardShape {
-    /// The card is the full-window rounded rectangle: reference drawerA
-    /// measures the top-left corner arc at radius 160px = 53.3pt with the
-    /// edge at 190.7pt (fit circle centre y = 53.6pt), i.e. the display's
-    /// own corner radius. The measured boundary fits a circle, so the corner
-    /// is a circular arc — not the continuous (squircle) style, which leaves
-    /// a gap between the card edge and the seam line's arc (pp 2026-11-01).
-    static func shape(isFullyClosed: Bool) -> RoundedRectangle {
+    /// The card is a plain rectangle at every offset. The drawer container
+    /// owns the window rounding (the display's own corner radius), and the
+    /// moving card's left edge stays a straight seam: a rounded moving edge
+    /// exposed the drawer surface beyond the card at the top and bottom and
+    /// read as a translucent vertical line through the system areas
+    /// (pp 2026-11-01).
+    static func shape(isFullyClosed: Bool) -> Rectangle {
         _ = isFullyClosed
-        return RoundedRectangle(cornerRadius: SidebarDrawerScreenCorner.radius,
-                                style: .circular)
+        return Rectangle()
     }
 }
 
@@ -908,10 +907,10 @@ private struct SidebarDrawerCardMotion: ViewModifier {
             // open, so the official scrim token is not applied here.
             .overlay {
                 // [E] contentBorder alpha is binary: (fraction > 0) ? 1 : 0
-                // (0x10105186c). The hairline follows the card's left half —
-                // top arc, straight edge, bottom arc — and stops there:
-                // stroking the whole shape also painted the screen corners.
-                CardSeamLine(radius: SidebarDrawerScreenCorner.radius)
+                // (0x10105186c). The seam is straight from the top edge to
+                // the bottom edge; the window's corners come from the
+                // container clip (pp 2026-11-01).
+                CardSeamLine()
                     .stroke(edgeLineColor, lineWidth: 1 / max(displayScale, 1))
                     .opacity(progress > 0.001 ? 1 : 0)
                     .allowsHitTesting(false)

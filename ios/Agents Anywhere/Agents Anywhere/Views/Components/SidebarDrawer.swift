@@ -300,6 +300,13 @@ private struct SidebarDrawerInteractive<
 #endif
             }
             .frame(width: screenSize.width, height: screenSize.height)
+            // Window rounding belongs to the drawer surface, not to the card:
+            // the card's left edge is a seam and must stay straight, while
+            // this full-screen clip supplies the display's own corners at
+            // every offset (pp 2026-11-01). The frame above is the full
+            // screen, so the clip cannot inset the drawer's content.
+            .clipShape(RoundedRectangle(cornerRadius: SidebarDrawerScreenCorner.radius,
+                                        style: .circular))
             .contentShape(Rectangle())
 #if canImport(UIKit)
             .gesture(
@@ -333,12 +340,6 @@ private struct SidebarDrawerInteractive<
             }
         }
         .ignoresSafeArea()
-        // Window rounding belongs to the container, not to the moving card:
-        // one screen-space clip keeps the display corners identical at rest,
-        // mid-drag and after settling, and leaves the card's seam straight
-        // (pp 2026-11-01).
-        .clipShape(RoundedRectangle(cornerRadius: SidebarDrawerScreenCorner.radius,
-                                    style: .circular))
         .environment(\.sidebarDrawerPresentation, .drawer)
         .environment(\.sidebarDrawerObscuresDetail, isOpen || motion.restingProgress > 0)
         .environment(\.sidebarDrawerIsTransitioning, isAnimating || dragStartProgress != nil
@@ -770,9 +771,10 @@ private struct SidebarDrawerMainCard<Content: View>: View {
     let content: Content
 
     var body: some View {
-        // The card is a plain rectangle at every offset; the drawer container
-        // clips the display's own corners. A rounded moving edge exposed the
-        // sidebar beneath the card at the seam (pp 2026-11-01).
+        // The card is a plain rectangle at every offset; the drawer surface's
+        // screen-space clip supplies the display corners, so the card's left
+        // seam stays straight and no sidebar surface peeks through it
+        // (pp 2026-11-01).
         let screenShape = SidebarDrawerCardShape.shape(isFullyClosed: isFullyClosed)
 
         content
@@ -825,12 +827,12 @@ private enum SidebarDrawerScreenCorner {
 }
 
 private enum SidebarDrawerCardShape {
-    /// The card is a plain rectangle at every offset. The drawer container
-    /// owns the window rounding (the display's own corner radius), and the
-    /// moving card's left edge stays a straight seam: a rounded moving edge
-    /// exposed the drawer surface beyond the card at the top and bottom and
-    /// read as a translucent vertical line through the system areas
-    /// (pp 2026-11-01).
+    /// The card is a plain rectangle at every offset. The drawer surface's
+    /// screen-space clip owns the display's corners; the moving card's left
+    /// edge is a seam in the middle of the screen and must stay straight. A
+    /// rounded moving edge exposed the drawer surface beyond the card at the
+    /// top and bottom, which read as a translucent vertical line through the
+    /// system areas (pp 2026-11-01).
     static func shape(isFullyClosed: Bool) -> Rectangle {
         _ = isFullyClosed
         return Rectangle()

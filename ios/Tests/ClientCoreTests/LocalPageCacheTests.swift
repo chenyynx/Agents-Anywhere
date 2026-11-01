@@ -186,14 +186,14 @@ import Testing
 
         // The echo is deferred: no confirmation, no row, and the window still
         // reports that it is behind.
-        #expect(model.pendingMessages.first?.delivery != .confirmed)
+        #expect(model.pendingMessages.first?.delivery != V2PendingMessage.Delivery.confirmed)
         #expect(!model.timeline.contains { $0.value.id == "item-601" })
-        #expect(model.session.hasNewerItems)
+        #expect(model.hasNewerItems)
 
         gate.release()
         try await eventually { model.pendingMessages.isEmpty }
         #expect(model.timeline.contains { $0.value.id == "item-601" })
-        #expect(!model.session.hasNewerItems)
+        #expect(!model.hasNewerItems)
 
         repo.reset(); await store.close(removing: true)
     }

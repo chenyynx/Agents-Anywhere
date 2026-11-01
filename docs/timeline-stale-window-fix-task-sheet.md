@@ -70,10 +70,11 @@ b823 探针（12:40:41 导出，窗口 t=0 ≈ 12:38:17）：
 ### P2 正确性入口走权威 latest
 
 - `loadLatest(sessionId:limit:authoritative:)`：`authoritative == true` 时跳过本地旧页，
-  直接网络 latest；网络失败才退回本地页并保留 newer 标记、排一次补页。
-- 使用入口：`open()` 的 `hasNewerItems` 分支、`noteComposerSend()`（发送）、
-  `watchEcho` 的 30s 兜底。
-- 滚动回到底部的路径保持本地优先，不改变现有手感。
+  直接网络 latest；网络失败才退回本地页并保留 newer 标记。
+- 使用入口：`noteComposerSend()`（发送）与 `watchEcho` 的 30s 兜底
+  （两者都在后台 Task 里，不阻塞界面）。
+- `open()` 与滚动回底保持本地优先（不让开页等网络）；本地页落后时
+  `applyUsableLocalLatest` 同时排一次 P3 的保证性补页，开页后自动收敛。
 
 ### P3 窗口外实时行主动补页（断根）
 

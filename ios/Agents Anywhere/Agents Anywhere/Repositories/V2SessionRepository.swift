@@ -214,11 +214,10 @@ final class V2SessionRepository {
         let windowHoldsNoMainRow = window?.items.contains { SubAgentProgress.parentItemID($0) == nil } == false
         if window?.hasNewerItems == true
             || (network.availability != .offline && window?.hasOlderItems == true && windowHoldsNoMainRow) {
-            // Opening must not present a window the cache itself reports as
-            // behind: the authoritative read fills the newest side now, and
-            // only falls back to the store when the network fails.
-            return try await loadLatest(sessionId: sessionId, limit: policy.networkPageSize,
-                                        authoritative: true)
+            // Keep the instant local return, but the stale branch of the local
+            // latest read now also schedules the guaranteed newest-page fill;
+            // the page catches up without waiting for a network round trip.
+            return try await loadLatest(sessionId: sessionId, limit: policy.networkPageSize)
         }
         return entry.projection!.data
     }
@@ -479,6 +478,10 @@ final class V2SessionRepository {
         emit(entry)
         if !localIsCurrent {
             startLatestReconcile(entry, limit: limit, version: version)
+            // The background reconcile can be canceled or invalidated (the
+            // 2026-11-01 freeze). The debounced fill is the guaranteed retry;
+            // it no-ops as soon as the flag clears.
+            scheduleLatestFill(entry)
         }
         return entry.projection!.data
     }
@@ -539,6 +542,9 @@ final class V2SessionRepository {
     private func scheduleLatestFill(_ entry: Entry) {
         guard TimelineStaleWindowHeal.enabled else { return }
         guard isCurrent(entry), !suspended else { return }
+        // A history reader's window is completed by the bottom-return path;
+        // filling it here would move content under the reader.
+        guard entry.projection?.isFollowingLatest == true else { return }
         guard entry.latestFillTask == nil else { return }
 #if AA_TIMELINE_PROBE
         entry.deferredNewer += 1
@@ -550,7 +556,11 @@ final class V2SessionRepository {
             defer { entry?.latestFillTask = nil }
             var attempt = 0
             while let self, let entry, self.isCurrent(entry), !Task.isCancelled {
-                let delay: Duration = attempt == 0 ? .milliseconds(300)
+                // Give an in-flight local-first reconcile the first window; a
+                // second read is only issued when it is not running.
+                let first: Duration = entry.latestRefreshTask == nil
+                    ? .milliseconds(300) : .milliseconds(1500)
+                let delay: Duration = attempt == 0 ? first
                     : .seconds(min(1 << min(attempt, 3), 8))
                 do { try await self.sleep(delay) } catch { return }
                 guard let projection = entry.projection,

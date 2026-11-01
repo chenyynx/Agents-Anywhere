@@ -5,7 +5,7 @@ import Observation
 /// Probe-only view of the timeline window's coherence. Production UI never
 /// reads it; a frozen window shows up here as `hasNewerItems` staying true
 /// while the reader is already at the newest edge.
-struct V2TimelineWindowSnapshot: Equatable, Sendable {
+nonisolated struct V2TimelineWindowSnapshot: Equatable, Sendable {
     var endOrderSeq = 0
     var cursorSequence = 0
     var hasNewerItems = false

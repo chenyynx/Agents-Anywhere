@@ -298,6 +298,38 @@ private func imageThumbnailFixture(width: Int, height: Int) -> Data? {
         #expect(session.draft == "Same text")
     }
 
+    /// The HTTP accept is the delivery fact; a late echo is a display problem.
+    /// The watchdog may heal the window, never demote an accepted send to
+    /// "uncertain" — the official transcript only has Sending / Not delivered
+    /// (device 2026-11-01 17:06: an accepted send was demoted while a 10 MB
+    /// latest page was still in flight).
+    @Test func anAcceptedSendIsNotDemotedByTheEchoWatchdog() async throws {
+        let http = TestHTTPTransport(), realtime = TestRealtimeAPI()
+        let policy = V2SessionCachePolicy(echoWatchdogDelay: .milliseconds(1))
+        let repo = repository(transport: http, realtime: realtime, policy: policy)
+        defer { repo.reset() }
+        let session = repo.session(id: "session")
+        let connection = Task { await session.connect() }
+        defer { connection.cancel() }
+        try await eventually { session.canSend }
+
+        session.draft = "Late echo"
+        let send = Task { await session.sendDraft() }
+        let pending = try #require(await send.value)
+        #expect(pending.delivery == .accepted)
+
+        // The watchdog's only output is one authoritative latest read.
+        try await eventually {
+            http.calls.contains { call in
+                call.path.hasSuffix("/timeline")
+                    && call.query.contains { $0.name == "mode" && $0.value == "latest" }
+            }
+        }
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(pending.delivery == .accepted)
+        #expect(session.pendingMessages.contains { $0.id == pending.id })
+    }
+
     @Test func attachmentServerPixelSizeRequiresPositiveWholeNumbers() {
         let sized = V2AttachmentContent(rawContent: .object(["fileId": .string("file_uploaded"),
             "width": .number(1179), "height": .number(2556)]))

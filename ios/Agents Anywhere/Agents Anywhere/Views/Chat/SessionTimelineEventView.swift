@@ -42,9 +42,7 @@ struct SessionTimelineGroupView: View, Equatable {
                 symbol: group.kind == .reconnect ? "wifi.slash" : agentGroup ? "person.2" : "hammer",
                 status: group.status, disclosures: chat.disclosures,
                 detailsAction: groupDetailsAction) {
-                // The closure is evaluated only while the fold is expanded, so
-                // the prefetch starts with the reveal and dies with it.
-                rows.task { chat.deferredItems.prefetch(group.rows.map(\.value)) }
+                rows
             }
         }
     }
@@ -114,11 +112,10 @@ struct SessionTimelineEventView: View {
                 TimelineMarkerRow(title: value.title, symbol: value.symbol, status: row.value.status)
             } else {
                 // A budget-trim summary keeps a text head (never an empty
-                // shell) and completes itself from the single-item read.
+                // shell); the footer makes the truncation explicit and the
+                // full row is fetched only when the reader asks for it.
                 let deferred = row.value.isDeferred
-                TimelineFold(id: row.id,
-                    title: deferred ? String(localized: "思考预览") : value.title,
-                    symbol: value.symbol, status: row.value.status, disclosures: disclosures,
+                TimelineFold(id: row.id, title: value.title, symbol: value.symbol, status: row.value.status, disclosures: disclosures,
                     collapsesOnBodyDoubleTap: true) {
                     VStack(alignment: .leading, spacing: 0) {
                         ChatMarkdownView(text: row.text, isStreaming: row.isRevealing, resolvesFileReferences: true)
@@ -126,12 +123,8 @@ struct SessionTimelineEventView: View {
                             // Reasoning stays well below the reply text.
                             .environment(\.chatMarkdownFont, .caption2)
                         if deferred {
-                            TimelineDeferredFooter(chat: chat, id: row.id,
-                                missingText: String(localized: "完整思考未加载"))
+                            TimelineDeferredFooter(chat: chat, id: row.id, kind: .thinking)
                         }
-                    }
-                    .task(id: row.id) {
-                        if row.value.isDeferred { chat.deferredItems.load(row.id) }
                     }
                 }
             }
@@ -214,53 +207,87 @@ private struct TimelineToolDetails: View {
                 TimelineCodePanel(label: String(localized: "Input"), code: input.formattedJSON)
             }
             ForEach(changes) { change in TimelineFileChangeView(change: change, onFile: onFile) }
-            // The summary's preview is already on screen; the panel says so
-            // instead of pretending to be the complete output.
+            // The panel keeps its normal heading; the footer below is what
+            // says the text is a truncated preview (the official transcript's
+            // "truncated at the tool output limit" footnote).
             if let output = value.output {
-                TimelineCodePanel(label: deferred ? String(localized: "输出预览") : String(localized: "Output"), code: output)
+                TimelineCodePanel(label: String(localized: "Output"), code: output)
             }
             if deferred {
-                TimelineDeferredFooter(chat: chat, id: row.id,
-                    missingText: String(localized: "完整输出未加载"))
+                TimelineDeferredFooter(chat: chat, id: row.id, kind: .output)
             }
         }
         .clipShape(.rect(cornerRadius: 14))
-        // Only the full output is fetched, in the background, after the fold
-        // opens; collapsing destroys this view and cancels the task. There is
-        // deliberately no loading affordance — the preview above is the
-        // content, and a replacement silently takes its place.
-        .task(id: row.id) {
-            if row.value.isDeferred { chat.deferredItems.load(row.id) }
-        }
     }
 }
 
-/// The only affordance a deferred row gains on failure or offline: a static
-/// status line plus a plain retry button. No spinner and no "loading" copy.
+/// The official transcript's truncation footnote plus its explicit load
+/// control. The preview is already on screen; the full payload is fetched only
+/// when the reader asks for it, and only the row's own control reflects the
+/// in-flight state — the row never turns into a spinner.
 private struct TimelineDeferredFooter: View {
+    enum Kind: Equatable { case output, thinking }
+
     let chat: SessionChatModel
     let id: V2TimelineItemID
-    /// "完整输出未加载" for a tool row, "完整思考未加载" for reasoning.
-    let missingText: String
+    let kind: Kind
+
     var body: some View {
         let phase = chat.deferredItems.phase(id)
-        if phase == .failed || phase == .offline {
-            HStack(spacing: 8) {
-                Text(status(phase)).font(.caption).foregroundStyle(.secondary)
-                Spacer(minLength: 8)
-                Button(String(localized: "重试")) { chat.deferredItems.retry(id) }
-                    .buttonStyle(.plain).font(.caption.weight(.medium)).foregroundStyle(.tint)
-                    .padding(.horizontal, 8).frame(minHeight: 44)
-            }
-            .padding(.leading, 12)
-            .frame(minHeight: 44)
-            .background(.quaternary.opacity(0.3))
+        HStack(spacing: 8) {
+            Text(note(phase)).font(.caption).foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            Button(buttonTitle(phase)) { chat.deferredItems.load(id) }
+                .buttonStyle(.plain).font(.caption.weight(.medium)).foregroundStyle(.tint)
+                .disabled(phase == .loading)
+                .padding(.horizontal, 8).frame(minHeight: 44)
+        }
+        .padding(.leading, 12)
+        .frame(minHeight: 44)
+        .background(.quaternary.opacity(0.3))
+    }
+
+    /// The truncation note stays visible while loading; a failure replaces it
+    /// with the reason, so the reader never mistakes a preview for the whole
+    /// output. Uses the iOS-only capitalized `离线` entry: the shared Web
+    /// `Offline` key's English value is lowercase.
+    private func note(_ phase: DeferredItemStore.Phase) -> String {
+        switch phase {
+        case .failed:
+            return failedTitle
+        case .offline:
+            return "\(String(localized: "离线")) · \(failedTitle)"
+        case .idle, .loading:
+            return truncationNote
         }
     }
-    /// Uses the iOS-only capitalized `离线` entry: the shared Web `Offline`
-    /// key's English value is lowercase and would read as `offline · …`.
-    private func status(_ phase: DeferredItemStore.Phase) -> String {
-        phase == .offline ? "\(String(localized: "离线")) · \(missingText)" : missingText
+
+    private var truncationNote: String {
+        switch kind {
+        case .output: return String(localized: "已在工具输出上限处截断")
+        case .thinking: return String(localized: "已按上下文预算截断")
+        }
+    }
+
+    private var failedTitle: String {
+        switch kind {
+        case .output: return String(localized: "无法加载完整输出")
+        case .thinking: return String(localized: "无法加载完整思考")
+        }
+    }
+
+    private func buttonTitle(_ phase: DeferredItemStore.Phase) -> String {
+        switch phase {
+        case .idle:
+            switch kind {
+            case .output: return String(localized: "加载完整输出")
+            case .thinking: return String(localized: "加载完整思考")
+            }
+        case .loading:
+            return String(localized: "正在加载…")
+        case .failed, .offline:
+            return String(localized: "重试")
+        }
     }
 }
 

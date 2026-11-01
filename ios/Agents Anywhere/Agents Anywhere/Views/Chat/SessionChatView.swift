@@ -387,7 +387,13 @@ struct SessionChatView: View, Equatable {
         })
         .quickLookPreview($previewURL)
         .onChange(of: previewURL) { _, url in if url == nil { cleanPreview() } }
-        .onDisappear { if previewURL == nil { cleanPreview() } }
+        .onDisappear {
+            if previewURL == nil { cleanPreview() }
+            // A deferred-item read belongs to the page visit: leaving the page
+            // abandons an in-flight read instead of running it out behind the
+            // reader's back.
+            model.deferredItems.cancelAll()
+        }
         .onChange(of: session.failure, initial: true) { _, failure in
             toasts.update(source: "session", failure: failure, canRetry: failure?.kind != .authentication)
         }

@@ -7,16 +7,23 @@ import Observation
 /// carries `content.deferred == true` and its original byte size. The full row
 /// comes from the single-item read (`GET …/timeline/items/{item_id}`), which
 /// the repository projects into the window in place. This store owns only the
-/// outcome the UI renders per row — idle, failed or offline — plus the
-/// in-flight dedupe and the bounded prefetch queue. It deliberately exposes no
-/// loading state: the summary row is already on screen and a spinner on every
-/// row would read as a broken page.
+/// outcome the UI renders per row — idle, loading, failed or offline — plus the
+/// in-flight dedupe.
+///
+/// The read is explicit: the row shows its preview and a load control, and the
+/// user asks for the full payload (the official transcript's "Load full file").
+/// There is no automatic prefetch: a read the reader did not ask for competes
+/// with the page's own window requests, which is exactly the traffic that made
+/// a stale window impossible to heal.
 @MainActor @Observable
 final class DeferredItemStore {
     typealias Load = @MainActor (V2TimelineItemID) async throws -> Void
 
     enum Phase: Equatable {
         case idle
+        /// The explicit read is in flight. The row keeps its preview; only the
+        /// load control reflects this state.
+        case loading
         /// The read failed for a reason other than a down path (a 404, an
         /// HTTP error, an unreadable response). Retryable.
         case failed
@@ -24,16 +31,8 @@ final class DeferredItemStore {
         case offline
     }
 
-    /// Prefetch budgets. The values are deliberately small: these reads run
-    /// behind the reader's back and must never queue ahead of the requests
-    /// that build the page.
-    private static let prefetchMaximumRows = 12
-    private static let prefetchMaximumBytes = 512 * 1024
-    private static let prefetchRowByteCap = 65_536
-
-    /// Observable so `phase(_:)` re-evaluates when a read settles. A missing
-    /// entry is `.idle`; keeping only settled failures in the map means a
-    /// successful read leaves nothing behind.
+    /// Observable so `phase(_:)` re-evaluates when a read starts or settles.
+    /// A missing entry is `.idle`; a successful read leaves nothing behind.
     private var phases: [V2TimelineItemID: Phase] = [:]
     @ObservationIgnored private let loader: Load
     /// The one in-flight read per row. An id present here is deduped: a second
@@ -43,10 +42,6 @@ final class DeferredItemStore {
     /// superseded read cannot clear a newer registration or write a stale
     /// phase.
     @ObservationIgnored private var tokens: [V2TimelineItemID: UUID] = [:]
-    /// Rows waiting for their turn; drained serially by `prefetchTask`.
-    @ObservationIgnored private var prefetchQueue: [V2TimelineItemID] = []
-    @ObservationIgnored private var prefetchTask: Task<Void, Never>?
-    @ObservationIgnored private var prefetchToken: UUID?
 
     init(load: @escaping Load) { loader = load }
 
@@ -59,40 +54,13 @@ final class DeferredItemStore {
     /// to `load`.
     func retry(_ id: V2TimelineItemID) { _ = startLoad(id) }
 
-    /// Queues the visible summary rows worth reading ahead of the reader. Only
-    /// rows already summarized (`isDeferred`) with a known, small payload are
-    /// taken, and one call never queues more than the row/byte budget. Rows
-    /// with any non-idle phase are skipped — a failed row is retried by the
-    /// user, not by this path.
-    func prefetch(_ items: [V2TimelineItem]) {
-        var budget = Self.prefetchMaximumBytes
-        var accepted = 0
-        var queued = Set(prefetchQueue)
-        for item in items {
-            guard item.isDeferred, let bytes = item.deferredBytes,
-                  bytes >= 0, bytes <= Self.prefetchRowByteCap,
-                  accepted < Self.prefetchMaximumRows,
-                  bytes <= budget else { continue }
-            guard phase(item.id) == .idle, tasks[item.id] == nil,
-                  queued.insert(item.id).inserted else { continue }
-            prefetchQueue.append(item.id)
-            budget -= bytes
-            accepted += 1
-        }
-        startPrefetchIfNeeded()
-    }
-
-    /// Cancels every read and the prefetch queue (page teardown). A cancelled
-    /// read leaves no phase behind: cancellation is the page going away, not a
-    /// fact about the row.
+    /// Cancels every read (page teardown). A cancelled read leaves no phase
+    /// behind: cancellation is the page going away, not a fact about the row.
     func cancelAll() {
-        prefetchTask?.cancel()
-        prefetchTask = nil
-        prefetchToken = nil
-        prefetchQueue.removeAll()
         let running = Array(tasks.values)
         tasks.removeAll()
         tokens.removeAll()
+        phases.removeAll()
         for task in running { task.cancel() }
     }
 
@@ -102,6 +70,7 @@ final class DeferredItemStore {
         if let task = tasks[id] { return task }
         let token = UUID()
         tokens[id] = token
+        phases[id] = .loading
         let task = Task { [weak self] in
             // Explicit Void result: `await self?.fetch(...)` would infer
             // `Task<()?, Never>` and fail to assign to `Task<Void, Never>`.
@@ -125,26 +94,6 @@ final class DeferredItemStore {
         if tokens[id] == token {
             tasks[id] = nil
             tokens[id] = nil
-        }
-    }
-
-    private func startPrefetchIfNeeded() {
-        guard prefetchTask == nil, !prefetchQueue.isEmpty else { return }
-        let token = UUID()
-        prefetchToken = token
-        prefetchTask = Task { [weak self] in
-            guard let self else { return }
-            defer {
-                if self.prefetchToken == token {
-                    self.prefetchTask = nil
-                    self.prefetchToken = nil
-                }
-            }
-            while !Task.isCancelled, !self.prefetchQueue.isEmpty {
-                let id = self.prefetchQueue.removeFirst()
-                guard self.phase(id) == .idle, self.tasks[id] == nil else { continue }
-                if let task = self.startLoad(id) { await task.value }
-            }
         }
     }
 }

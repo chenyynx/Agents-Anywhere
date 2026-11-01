@@ -289,15 +289,6 @@ import Testing
 
 /// The per-row read store behind a deferred summary row.
 @Suite @MainActor struct DeferredItemStoreTests {
-    private func item(_ id: String, order: Int = 1, deferred: Bool = true, bytes: Int? = 1024) throws -> V2TimelineItem {
-        var value = try itemObject(id: id, order: order)
-        var content: [String: Any] = ["name": "bash"]
-        if deferred { content["deferred"] = true }
-        if let bytes { content["deferredBytes"] = bytes }
-        value["content"] = content
-        return try decode(value)
-    }
-
     @Test func aSuccessfulReadReturnsToIdle() async throws {
         var reads: [V2TimelineItemID] = []
         let store = DeferredItemStore { id in reads.append(id) }
@@ -352,26 +343,12 @@ import Testing
         #expect(store.phase("row") == .idle)
     }
 
-    @Test func prefetchTakesOnlyDeferredSmallRowsWithinBudget() async throws {
-        var reads: [V2TimelineItemID] = []
-        let store = DeferredItemStore { id in reads.append(id) }
-        var items = [try item("a"), try item("b", deferred: false),
-                     try item("c", bytes: 100_000), try item("d", bytes: nil)]
-        items += try (0..<20).map { try item("e\($0)") }
-        store.prefetch(items)
-        try await eventually { reads.count == 12 }
-        #expect(reads.first == "a")
-        #expect(!reads.contains("b") && !reads.contains("c") && !reads.contains("d"))
-        #expect(reads.filter { $0.hasPrefix("e") }.count == 11)
-    }
-
-    @Test func prefetchRespectsTheByteBudget() async throws {
-        var reads: [V2TimelineItemID] = []
-        let store = DeferredItemStore { id in reads.append(id) }
-        store.prefetch(try (0..<12).map { try item("big\($0)", bytes: 50_000) })
-        try await eventually { reads.count == 10 }
-        try await Task.sleep(for: .milliseconds(20))
-        // 512KB / 50KB: ten rows fit, the remaining budget cannot take an 11th.
-        #expect(reads.count == 10)
+    @Test func aReadReportsLoadingUntilItSettles() async throws {
+        let gate = TestGate()
+        let store = DeferredItemStore { _ in await gate.wait() }
+        store.load("row")
+        try await eventually { store.phase("row") == .loading }
+        gate.release()
+        try await eventually { store.phase("row") == .idle }
     }
 }

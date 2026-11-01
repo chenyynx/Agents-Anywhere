@@ -326,10 +326,6 @@ extension V2TimelineItem {
     /// it in place. Read from `raw` because the trimmed content does not map
     /// onto any carrier shape.
     var isDeferred: Bool { raw["content"]?["deferred"] == .bool(true) }
-
-    /// The original payload's byte size, carried by a summary row so the
-    /// client can budget which rows to prefetch.
-    var deferredBytes: Int? { raw["content"]?["deferredBytes"]?.intValue }
 }
 
 extension V2TimelineItem {

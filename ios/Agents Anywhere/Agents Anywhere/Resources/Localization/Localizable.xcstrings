@@ -19238,70 +19238,121 @@
         }
       }
     },
-    "输出预览": {
+    "已在工具输出上限处截断": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Output preview"
+            "value": "Truncated at the tool output limit"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "输出预览"
+            "value": "已在工具输出上限处截断"
           }
         }
       }
     },
-    "完整输出未加载": {
+    "已按上下文预算截断": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Full output not loaded"
+            "value": "Truncated by the context budget"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "完整输出未加载"
+            "value": "已按上下文预算截断"
           }
         }
       }
     },
-    "思考预览": {
+    "加载完整输出": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Thinking preview"
+            "value": "Load full output"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "思考预览"
+            "value": "加载完整输出"
           }
         }
       }
     },
-    "完整思考未加载": {
+    "加载完整思考": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Full thinking not loaded"
+            "value": "Load full thinking"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "完整思考未加载"
+            "value": "加载完整思考"
+          }
+        }
+      }
+    },
+    "正在加载…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在加载…"
+          }
+        }
+      }
+    },
+    "无法加载完整输出": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn’t load the full output"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法加载完整输出"
+          }
+        }
+      }
+    },
+    "无法加载完整思考": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn’t load the full thinking"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法加载完整思考"
           }
         }
       }

@@ -262,6 +262,9 @@ final class V2SessionModel: Identifiable {
     /// forever even though the server persisted the row (device 2026-10-31
     /// 14:50: the `行` pending survived minutes and every later read).
     @ObservationIgnored private var echoWatchdogs: [String: Task<Void, Never>] = [:]
+    /// Delay before one display heal read for an accepted send. Injected so a
+    /// test can drive the watchdog without waiting the production 30 s.
+    @ObservationIgnored private let echoWatchdogDelay: Duration
     /// When the current head entered `.awaitingEcho`. A drained message waits
     /// this long for its authoritative echo before the queue stops trusting the
     /// HTTP accept alone; see `awaitingEchoTimeout`.
@@ -280,8 +283,10 @@ final class V2SessionModel: Identifiable {
     @ObservationIgnored private weak var repository: V2SessionRepository?
     @ObservationIgnored private var rowsByID: [V2TimelineItemID: V2TimelineItemModel] = [:]
 
-    init(id: V2SessionID, scope: V2ClientScope, repository: V2SessionRepository) {
+    init(id: V2SessionID, scope: V2ClientScope, repository: V2SessionRepository,
+         echoWatchdogDelay: Duration = .seconds(30)) {
         self.id = id; self.scope = scope; self.repository = repository
+        self.echoWatchdogDelay = echoWatchdogDelay
         // The repository holds this model through its entries; the closures
         // capture it weakly so the store cannot close that cycle. A completed
         // read marks the session dirty so the local archive picks the rows up.
@@ -599,32 +604,28 @@ final class V2SessionModel: Identifiable {
     }
 
     /// A live echo can be lost to a stalled socket; nothing re-reads the row,
-    /// so the accepted bubble spins forever. After the write has had time to
-    /// echo, read the latest page once (the server has the row; a page read
-    /// brings it into the projection and `confirmEcho` retires the bubble).
-    /// If the echo still never lands, fall back to the existing uncertain
-    /// path instead of an endless spinner.
+    /// so the accepted bubble would spin without a nudge. The server already
+    /// acknowledged the write, so the bubble stays "sending"; after the
+    /// watchdog delay the page reads the newest window once and lets the echo
+    /// retire the bubble. This is a display heal, never a delivery verdict —
+    /// only a definite write failure becomes rejected/"not delivered". The
+    /// old 60 s fallback demoted an accepted send to "uncertain" while a 10 MB
+    /// latest page was still in flight (device 2026-11-01 17:06).
     private func watchEcho(for pending: V2PendingMessage) {
         let pendingID = pending.id
+        let delay = echoWatchdogDelay
         guard echoWatchdogs[pendingID] == nil else { return }
         echoWatchdogs[pendingID] = Task { @MainActor [weak self, weak pending] in
             defer { self?.echoWatchdogs[pendingID] = nil }
-            try? await Task.sleep(for: .seconds(30))
+            try? await Task.sleep(for: delay)
             guard !Task.isCancelled, let self, let pending, self.isValid,
                   self.pendingMessages.contains(where: { $0.id == pending.id }),
                   pending.delivery == .accepted else { return }
             // The echo never reached the window through the live path; read
-            // the server's newest page authoritatively instead of the store's
-            // possibly-stale page.
+            // the server's newest window authoritatively instead of the
+            // store's possibly-stale page. The deferred window keeps this
+            // read bounded, and a failed read leaves the bubble as it is.
             _ = try? await self.repository?.loadLatest(sessionId: self.id, authoritative: true)
-            // A failed read falls back to the store; give the retry one more
-            // window before demoting (the queue's own echo timeout is 60 s).
-            try? await Task.sleep(for: .seconds(30))
-            guard !Task.isCancelled, self.isValid,
-                  self.pendingMessages.contains(where: { $0.id == pending.id }),
-                  pending.delivery == .accepted else { return }
-            pending.update(.uncertain(V2ClientFailure(kind: .unavailable,
-                message: String(localized: "上次发送的结果尚未确认，正在同步记录。请确认后再重试。"))))
         }
     }
 

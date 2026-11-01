@@ -12,6 +12,11 @@ nonisolated struct V2SessionCachePolicy {
     var openingWindow = Self.defaultOpeningWindow
     /// One history/latest page, aligned with the official Code events page.
     var networkPageSize = 200
+    /// How long an accepted direct send waits before the page reads the newest
+    /// window once to bring a lost echo into the projection. The write is
+    /// already acknowledged by the server; this is a display heal, never a
+    /// delivery verdict.
+    var echoWatchdogDelay: Duration = .seconds(30)
     var catalogLifetime: TimeInterval = 30
 }
 
@@ -272,12 +277,22 @@ final class V2SessionRepository {
             && window?.hasOlderItems == true
             && !entry.deferredWindowUnsupported
         if window?.hasNewerItems == true
-            || (network.availability != .offline && window?.hasOlderItems == true && windowHoldsNoMainRow)
-            || needsDeferredWindow {
+            || (network.availability != .offline && window?.hasOlderItems == true && windowHoldsNoMainRow) {
             // Keep the instant local return, but the stale branch of the local
             // latest read now also schedules the guaranteed newest-page fill;
             // the page catches up without waiting for a network round trip.
             return try await loadLatest(sessionId: sessionId, limit: policy.networkPageSize)
+        }
+        if needsDeferredWindow {
+            // A one-time cache migration, not the scroll/return path: read the
+            // window authoritatively so the visit returns with the deferred
+            // mode already settled (and a server without the feature is
+            // remembered), instead of replacing the visible window mid-read.
+            // The opening screen is already presented from the cache, so this
+            // does not delay the first paint. A failed read falls back to the
+            // local page and leaves the repair armed for the next visit.
+            return try await loadLatest(
+                sessionId: sessionId, limit: policy.networkPageSize, authoritative: true)
         }
         return entry.projection!.data
     }
@@ -745,7 +760,7 @@ final class V2SessionRepository {
         // `false` (or absent, from an old server) retires the open-time
         // repair for the rest of the process instead of re-asking on every
         // visit.
-        if page.sessionId == sessionId { entry.deferredWindowUnsupported = !page.deferredActivity }
+        if page.sessionId == entry.id { entry.deferredWindowUnsupported = !page.deferredActivity }
         emit(entry)
     }
 
@@ -1661,7 +1676,9 @@ final class V2SessionRepository {
         // Re-projecting here walks every historical item and also registers all
         // of those observable values as dependencies of the caller's view body.
         if let entry = entries[id] { touch(entry); return entry }
-        let entry = Entry(id: id, model: V2SessionModel(id: id, scope: scope, repository: self))
+        let entry = Entry(id: id, model: V2SessionModel(
+            id: id, scope: scope, repository: self,
+            echoWatchdogDelay: policy.echoWatchdogDelay))
         entries[id] = entry
         touch(entry)
         if network.availability == .offline { entry.connection = .offline }

@@ -795,9 +795,10 @@ private enum SidebarDrawerScreenCorner {
     static var radius: CGFloat {
 #if canImport(UIKit)
         let screen = UIScreen.main
-        let selector = NSSelectorFromString("displayCornerRadius")
-        if screen.responds(to: selector),
-           let value = screen.perform(selector)?.takeUnretainedValue() as? NSNumber,
+        // KVC (not perform) — the property returns a CGFloat, which
+        // objc_msgSend hands back in a register, not as an object.
+        if screen.responds(to: NSSelectorFromString("displayCornerRadius")),
+           let value = screen.value(forKey: "displayCornerRadius") as? NSNumber,
            value.doubleValue > 0 {
             return CGFloat(value.doubleValue)
         }

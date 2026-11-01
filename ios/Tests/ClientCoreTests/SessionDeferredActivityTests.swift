@@ -270,6 +270,21 @@ import Testing
         #expect(projection.data.items.first?.isDeferred == false)
     }
 
+    /// A completed row may have moved since the summary was written (an
+    /// intra-message repack changes orderSeq); the graft must restore the
+    /// window's (orderSeq, id) order, or binary-search insertion breaks.
+    @Test func aSnapshotGraftKeepsMovedRowsSorted() throws {
+        let summary = try deferredObject(id: "tool", order: 2)
+        let other = try itemObject(id: "other", order: 5)
+        var projection = V2SessionProjection(
+            snapshot: try snapshot(items: [summary, other]), maximumItems: 100)
+        let moved: V2TimelineItem = try decode(itemObject(id: "tool", order: 4, revision: 1))
+        let grafted = projection.graftCompleteRows([moved])
+        #expect(grafted == 1)
+        #expect(projection.data.items.map(\.id) == ["tool", "other"])
+        #expect(projection.data.items.first?.isDeferred == false)
+    }
+
     /// A snapshot/refresh replaces the whole projection, so the merge guard
     /// cannot protect a completed row; the repository carries those rows over
     /// with `graftCompleteRows` instead of collapsing them back.
@@ -287,6 +302,33 @@ import Testing
         let grafted = refreshed.graftCompleteRows(complete)
         #expect(grafted == 1)
         #expect(refreshed.data.items.first?.isDeferred == false)
+    }
+
+    /// The hydrate wiring, not just the projection helper: a refresh's
+    /// deferred snapshot must not collapse a row the reader opened.
+    @Test func aRefreshKeepsARowTheReaderCompleted() async throws {
+        let http = TestHTTPTransport()
+        let summary = try deferredObject(id: "tool", order: 2)
+        let full = try itemObject(id: "tool", order: 2, revision: 1)
+        http.respond = { call in
+            if call.path.hasSuffix("snapshot") {
+                return try self.snapshotResponse(items: [summary], hasMore: true)
+            }
+            if call.path.hasSuffix("timeline/items/tool") {
+                return try JSONSerialization.data(withJSONObject: full)
+            }
+            return try http.defaultResponse(call)
+        }
+        let repo = makeRepository(http)
+        defer { repo.reset() }
+        _ = try await repo.load(sessionId: "session")
+        #expect(repo.cached(sessionId: "session")?.items.first?.isDeferred == true)
+
+        try await repo.loadDeferredItem(sessionId: "session", itemId: "tool")
+        #expect(repo.cached(sessionId: "session")?.items.first?.isDeferred == false)
+
+        _ = try await repo.refresh(sessionId: "session")
+        #expect(repo.cached(sessionId: "session")?.items.first?.isDeferred == false)
     }
 
     /// The guard is narrow: a summary that is genuinely a newer version must

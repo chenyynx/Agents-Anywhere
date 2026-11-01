@@ -422,14 +422,25 @@ struct V2SessionProjection {
     /// summary.
     @discardableResult
     mutating func graftCompleteRows(_ rows: [V2TimelineItem]) -> Int {
+        let complete = Dictionary(
+            rows.filter { !$0.isDeferred }.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first })
+        guard !complete.isEmpty else { return 0 }
         var grafted = 0
-        for row in rows where !row.isDeferred {
-            guard let index = data.items.firstIndex(where: { $0.id == row.id }) else { continue }
-            let held = data.items[index]
-            guard held.isDeferred, row.supersedes(held) else { continue }
-            data.items[index] = row
+        var result = data.items
+        for index in result.indices {
+            let held = result[index]
+            guard held.isDeferred, let row = complete[held.id],
+                  row.supersedes(held) else { continue }
+            result[index] = row
             grafted += 1
         }
+        guard grafted > 0 else { return 0 }
+        // A completed row may have moved (an intra-message repack changes
+        // orderSeq); replacing in place would break the (orderSeq, id) sort
+        // invariant the window's binary search relies on.
+        result.sort { ($0.orderSeq, $0.id) < ($1.orderSeq, $1.id) }
+        data.items = result
         return grafted
     }
 

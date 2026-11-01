@@ -439,8 +439,17 @@ import Testing
         _ = try await repo.load(sessionId: "session")
         #expect(repo.cached(sessionId: "session")?.hasNewerItems == true)
         repo.followLatest(sessionId: "session")
-        try await Task.sleep(for: .milliseconds(50))
+        // Generous window: the fill's own debounce is short, but a busy test
+        // process can delay its task past a tighter sleep.
+        try await Task.sleep(for: .milliseconds(500))
         #expect(http.count("timeline") == 0)
+
+        // Positive control in the same setup: the fill does run once the page
+        // observes the session, so the assertion above is not vacuous.
+        let observation = repo.observe(sessionId: "session")
+        let consumer = Task { for await _ in observation {} }
+        defer { consumer.cancel() }
+        try await eventually { http.count("timeline") >= 1 }
 
         repo.reset(); await reopened.close(removing: true)
     }

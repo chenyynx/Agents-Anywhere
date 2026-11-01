@@ -68,8 +68,12 @@ Semantic error and availability colors remain separate from the primary color.
   cache. Authoritative replacements reset the enclosing layout generation.
 - Opening a session shows one persistent loading indicator in the detail
   column only for a true cold load, that is, when no in-memory projection
-  exists as the page is created. A memory-cached visit presents its snapshot
-  during preparation and never shows the full-screen mask. History loading and
+  with presentable rows exists as the page is created; an empty restored
+  window (the row store kept the session metadata after evicting its rows)
+  counts as cold, because its rows still have to be read. A memory-cached
+  visit presents its snapshot during preparation and never shows the
+  full-screen mask, and a local creation keeps its instant placeholder
+  presentation. History loading and
   timeline mounting still wait for the sidebar animation's completion and
   another 120 ms; a new selection cancels the pending start. The model
   initializer still does not project cached rows, and a lazy `StateObject`

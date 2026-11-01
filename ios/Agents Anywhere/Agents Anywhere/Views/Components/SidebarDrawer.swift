@@ -333,12 +333,6 @@ private struct SidebarDrawerInteractive<
             }
         }
         .ignoresSafeArea()
-        // Window rounding belongs to the container, not to the moving card.
-        // The radius is the display's own corner radius; clipping the
-        // container once keeps the corners identical at rest, mid-drag and
-        // after settling.
-        .clipShape(RoundedRectangle(cornerRadius: SidebarDrawerScreenCorner.radius,
-                                    style: .continuous))
         .environment(\.sidebarDrawerPresentation, .drawer)
         .environment(\.sidebarDrawerObscuresDetail, isOpen || motion.restingProgress > 0)
         .environment(\.sidebarDrawerIsTransitioning, isAnimating || dragStartProgress != nil
@@ -810,13 +804,15 @@ private enum SidebarDrawerScreenCorner {
 }
 
 private enum SidebarDrawerCardShape {
-    /// The card is always a plain rectangle: it is translated by the drawer
-    /// offset, so a shape attached to it either goes offscreen or resolves
-    /// against the window and paints its arc over the card. The window
-    /// rounding is clipped once on the drawer container instead.
-    static func shape(isFullyClosed: Bool) -> ConcentricRectangle {
+    /// The card is the full-window rounded rectangle: reference drawerA
+    /// measures the top-left corner arc at radius 160px = 53.3pt with the
+    /// edge at 190.7pt (fit circle centre y = 53.6pt), i.e. the display's
+    /// own corner radius. A container-concentric shape resolved against the
+    /// window instead and drew its arc at the screen corner (pp 2026-11-01).
+    static func shape(isFullyClosed: Bool) -> RoundedRectangle {
         _ = isFullyClosed
-        return ConcentricRectangle(corners: .fixed(0))
+        return RoundedRectangle(cornerRadius: SidebarDrawerScreenCorner.radius,
+                                style: .continuous)
     }
 }
 
@@ -888,14 +884,12 @@ private struct SidebarDrawerCardMotion: ViewModifier {
             // No scrim on the card: both reference screenshots keep the
             // content surface at its undimmed value (249) at full and half
             // open, so the official scrim token is not applied here.
-            .overlay(alignment: .leading) {
+            .overlay {
                 // [E] contentBorder alpha is binary: (fraction > 0) ? 1 : 0
-                // (0x10105186c). Only the seam carries the hairline — stroking
-                // the whole card shape also traced the rounded screen corners,
-                // which showed as an arc inside them on light (pp 2026-11-01).
-                Rectangle()
-                    .fill(edgeLineColor)
-                    .frame(width: 1 / max(displayScale, 1))
+                // (0x10105186c). The card border follows the card's own
+                // rounded edge, exactly like the reference card edge line.
+                screenShape
+                    .stroke(edgeLineColor, lineWidth: 1 / max(displayScale, 1))
                     .opacity(progress > 0.001 ? 1 : 0)
                     .allowsHitTesting(false)
             }

@@ -884,12 +884,14 @@ private struct SidebarDrawerCardMotion: ViewModifier {
             // No scrim on the card: both reference screenshots keep the
             // content surface at its undimmed value (249) at full and half
             // open, so the official scrim token is not applied here.
-            .overlay {
+            .overlay(alignment: .leading) {
                 // [E] contentBorder alpha is binary: (fraction > 0) ? 1 : 0
-                // (0x10105186c). The card border follows the card's own
-                // rounded edge, exactly like the reference card edge line.
-                screenShape
-                    .stroke(edgeLineColor, lineWidth: 1 / max(displayScale, 1))
+                // (0x10105186c). Only the seam carries the hairline: stroking
+                // the whole shape also painted an arc inside the screen
+                // corner on light (pp 2026-11-01).
+                Rectangle()
+                    .fill(edgeLineColor)
+                    .frame(width: 1 / max(displayScale, 1))
                     .opacity(progress > 0.001 ? 1 : 0)
                     .allowsHitTesting(false)
             }

@@ -268,6 +268,9 @@ b841 真机（会话 `sess_DilUOLks4LdTwg`）：发送后气泡一直转，约 6
 6. `deferredActivity` 三态：缺字段=老服务端（退休该 entry 的开页补读），显式
    `false`=当前服务端本次未 deferred（下次访问重问）。归档保存 `windowDeferredActivity`；
    导出保持 undeferred。
+7. 详情的数据源统一读实时行：工具详情的 Input 也来自完整行（摘要的 input 有
+   白名单截断）；合并的思考块携带 `sourceIDs`，详情按窗口重建所有行并用一个
+   聚合 footer 完成全部摘要行。
 
 ### 后续（不在 P0）
 
@@ -288,7 +291,8 @@ b841 真机（会话 `sess_DilUOLks4LdTwg`）：发送后气泡一直转，约 6
 - 单测（`ChatSessionPolishTests`）：`anAcceptedSendIsNotDemotedByTheEchoWatchdog`
   ——accepted 后看门狗发满 3 次 latest，pending 仍为 accepted（计数断言）。
 - 单测（`SessionDeferredActivityTests`）：`aSummaryPageNeverDowngradesALoadedFullRow`、
-  `aStaleCompleteRowNeverReplacesANewerSummary`、`aCurrentServerThatSkippedDeferralIsAskedAgain`。
+  `aStaleCompleteRowNeverReplacesANewerSummary`、`aNewerSummaryStillReplacesAnOlderFullRow`、
+  `aTerminalSummaryStillCompletesAnActiveFullRow`、`aCurrentServerThatSkippedDeferralIsAskedAgain`。
 - 红绿：撤 `deferActivity` → 窗口治愈用例红；撤发送状态改动 → accepted 用例红
   （撤销实验在临时分支，不在工作区留痕）。
 - CI：iOS test + app build（build job 才是 Views 编译判据）+ timeline-autorun。

@@ -100,7 +100,7 @@ import Testing
         }
     }
 
-    @Test func aResponseWithoutTheEchoReadsAsNotDeferred() throws {
+    @Test func aResponseWithoutTheEchoReadsAsAbsent() throws {
         let page: V2SessionTimelinePage = try decode([
             "sessionId": "session", "items": [], "nextSeq": 10, "hasMore": false,
         ])
@@ -157,7 +157,7 @@ import Testing
         let first = try await repo.open(sessionId: "session")
         #expect(latestRequests(http) == 1)
         #expect(!first.windowDeferredActivity)
-        // The process-local mark retires the repair instead of re-asking.
+        // The per-entry mark retires the repair instead of re-asking.
         _ = try await repo.open(sessionId: "session")
         #expect(latestRequests(http) == 1)
         await store.close(removing: true)
@@ -268,6 +268,41 @@ import Testing
             excludesAgentChildren: true, deferredActivity: true)
         projection.applyLatest(page)
         #expect(projection.data.items.first?.isDeferred == false)
+    }
+
+    /// The guard is narrow: a summary that is genuinely a newer version must
+    /// still replace the older full row the window held.
+    @Test func aNewerSummaryStillReplacesAnOlderFullRow() throws {
+        let full = try itemObject(id: "tool", order: 2, revision: 1)
+        var projection = V2SessionProjection(
+            snapshot: try snapshot(items: [full]), maximumItems: 100)
+        let newerSummary = try deferredObject(id: "tool", order: 2, revision: 2)
+        let page = V2SessionTimelinePage(
+            sessionId: "session", items: try [decode(newerSummary)],
+            nextSeq: 1000, hasMore: true, serverTime: nil,
+            excludesAgentChildren: true, deferredActivity: true)
+        projection.applyLatest(page)
+        #expect(projection.data.items.first?.isDeferred == true)
+        #expect(projection.data.items.first?.revision == 2)
+    }
+
+    /// A terminal summary may carry an older sequence than the active full row
+    /// it completes (the R23 shape). It must still land, or the step row stays
+    /// running forever.
+    @Test func aTerminalSummaryStillCompletesAnActiveFullRow() throws {
+        var running = try itemObject(id: "tool", order: 2, revision: 1, seq: 30)
+        running["status"] = "running"
+        var projection = V2SessionProjection(
+            snapshot: try snapshot(items: [running]), maximumItems: 100)
+        var terminal = try deferredObject(id: "tool", order: 2, revision: 1)
+        terminal["status"] = "done"
+        terminal["updatedSeq"] = 20
+        let page = V2SessionTimelinePage(
+            sessionId: "session", items: try [decode(terminal)],
+            nextSeq: 1000, hasMore: true, serverTime: nil,
+            excludesAgentChildren: true, deferredActivity: true)
+        projection.applyLatest(page)
+        #expect(projection.data.items.first?.status == .done)
     }
 
     /// The same-revision shortcut must not let an older full fetch overwrite a

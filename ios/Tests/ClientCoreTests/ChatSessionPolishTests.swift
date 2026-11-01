@@ -305,8 +305,10 @@ private func imageThumbnailFixture(width: Int, height: Int) -> Data? {
     /// latest page was still in flight).
     @Test func anAcceptedSendIsNotDemotedByTheEchoWatchdog() async throws {
         let http = TestHTTPTransport(), realtime = TestRealtimeAPI()
+        // Non-default attempt count: the assertion also proves the policy
+        // reaches the model, not just the model's own default.
         let policy = V2SessionCachePolicy(
-            echoWatchdogDelay: .milliseconds(1), echoHealAttempts: 3)
+            echoWatchdogDelay: .milliseconds(1), echoHealAttempts: 2)
         let repo = repository(transport: http, realtime: realtime, policy: policy)
         defer { repo.reset() }
         let session = repo.session(id: "session")
@@ -325,13 +327,13 @@ private func imageThumbnailFixture(width: Int, height: Int) -> Data? {
             http.calls.filter { call in
                 call.path.hasSuffix("/timeline")
                     && call.query.contains { $0.name == "mode" && $0.value == "latest" }
-            }.count >= 3
+            }.count >= 2
         }
         try await Task.sleep(for: .milliseconds(30))
         #expect(http.calls.filter { call in
             call.path.hasSuffix("/timeline")
                 && call.query.contains { $0.name == "mode" && $0.value == "latest" }
-        }.count == 3)
+        }.count == 2)
         #expect(pending.delivery == .accepted)
         #expect(session.pendingMessages.contains { $0.id == pending.id })
     }

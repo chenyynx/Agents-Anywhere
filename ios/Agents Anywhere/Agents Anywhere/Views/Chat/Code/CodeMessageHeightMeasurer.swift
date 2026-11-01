@@ -82,7 +82,7 @@ enum CodeMessageHeightMeasurer {
                 var hasFileAttachment = false
                 for block in row.blocks {
                     switch block {
-                    case let .reasoning(_, text, status):
+                    case let .reasoning(_, text, status, _):
                         guard status == .done,
                               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         else { continue }
@@ -122,7 +122,7 @@ enum CodeMessageHeightMeasurer {
             } else {
                 for block in row.blocks {
                     switch block {
-                    case let .reasoning(_, text, status):
+                    case let .reasoning(_, text, status, _):
                         guard status == .done,
                               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         else { continue }

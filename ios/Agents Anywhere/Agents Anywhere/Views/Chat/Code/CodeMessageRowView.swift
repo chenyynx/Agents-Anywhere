@@ -225,10 +225,10 @@ struct CodeMessageRowView: View {
     @ViewBuilder
     private func blockView(_ block: CodeMessageRow.Block) -> some View {
         switch block {
-        case let .reasoning(id, text, status):
+        case let .reasoning(id, text, status, sourceIDs):
             if status == .done {
                 CodeThinkingRow {
-                    onThinkingDetail(CodeThinkingDetailRequest(id: id, text: text))
+                    onThinkingDetail(CodeThinkingDetailRequest(id: id, text: text, sourceIDs: sourceIDs))
                 }
             }
 
@@ -342,7 +342,7 @@ struct CodeMessageRowView: View {
             .compactMap { row in
                 let blocks = row.blocks.filter { block in
                     switch block {
-                    case let .reasoning(_, text, status):
+                    case let .reasoning(_, text, status, _):
                         return status == .done
                             && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     case let .text(_, text):
@@ -862,6 +862,11 @@ nonisolated enum CodeToolLabels {
 struct CodeThinkingDetailRequest: Identifiable {
     let id: String
     let text: String
+    /// Every settled reasoning row merged into this block. The first row's id
+    /// is `id`; the block's text joins them in order, so the detail must read
+    /// all of them — otherwise a completed row would replace the merged text
+    /// with its first line only.
+    var sourceIDs: [String] = []
 }
 
 /// The chat profile's step-group detail request: the whole group, in order.

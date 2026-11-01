@@ -25,7 +25,7 @@ nonisolated struct CodeMessageRow: Identifiable, Hashable {
         /// The official `Block.thinkingContent`, rendered as the collapsed
         /// `思考过程` row. `status` gates the row: a running thinking block is
         /// the turn-level working line's job, not a transcript row.
-        case reasoning(id: String, text: String, status: V2TimelineItemStatus)
+        case reasoning(id: String, text: String, status: V2TimelineItemStatus, sourceIDs: [String])
         /// `Block.text`.
         case text(id: String, text: String)
         /// The user message's attachments (wire `V2MessageContent.attachments`).
@@ -562,7 +562,8 @@ nonisolated enum CodeMessageBuilder {
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .joined(separator: "\n\n")
         guard !text.isEmpty, let first = settledRows.first else { return }
-        blocks.append(.reasoning(id: first.id, text: text, status: .done))
+        blocks.append(.reasoning(id: first.id, text: text, status: .done,
+                                sourceIDs: settledRows.map(\.id)))
     }
 
     /// The dedup key for one attachment: the server file id, or the payload

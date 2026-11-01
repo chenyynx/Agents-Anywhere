@@ -647,7 +647,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             hasher.combine(row.role.rawValue)
             for block in row.blocks {
                 switch block {
-                case let .reasoning(_, text, status):
+                case let .reasoning(_, text, status, _):
                     // The row's height is one fixed line; only "settled and
                     // non-empty" changes whether it exists at all.
                     hasher.combine(status == .done
@@ -1649,7 +1649,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 let hasVisibleBlock = rows.contains { row in
                     row.blocks.contains { block in
                         switch block {
-                        case let .reasoning(_, text, status):
+                        case let .reasoning(_, text, status, _):
                             return status == .done
                                 && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         case let .text(_, text):

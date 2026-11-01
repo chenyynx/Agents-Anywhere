@@ -12,19 +12,45 @@ struct DeferredLoadFooter: View {
     enum Kind: Equatable { case output, thinking }
 
     let chat: SessionChatModel
-    let id: V2TimelineItemID
+    /// One footer can complete several rows: a merged thinking block joins
+    /// multiple summaries into one body, and one control must finish them.
+    let ids: [V2TimelineItemID]
     let kind: Kind
 
+    init(chat: SessionChatModel, id: V2TimelineItemID, kind: Kind) {
+        self.chat = chat
+        self.ids = [id]
+        self.kind = kind
+    }
+
+    init(chat: SessionChatModel, ids: [V2TimelineItemID], kind: Kind) {
+        self.chat = chat
+        self.ids = ids
+        self.kind = kind
+    }
+
+    /// One aggregate state: a failure wins over loading wins over idle, so the
+    /// control never claims everything is fine while one row is still behind.
+    private var phase: DeferredItemStore.Phase {
+        let phases = ids.map { chat.deferredItems.phase($0) }
+        if phases.contains(.failed) { return .failed }
+        if phases.contains(.offline) { return .offline }
+        if phases.contains(.loading) { return .loading }
+        return .idle
+    }
+
     var body: some View {
-        let phase = chat.deferredItems.phase(id)
+        let phase = phase
         HStack(spacing: 8) {
             Text(note(phase)).font(.caption).foregroundStyle(.secondary)
             Spacer(minLength: 8)
             Button(buttonTitle(phase)) {
-                if phase == .failed || phase == .offline {
-                    chat.deferredItems.retry(id)
-                } else {
-                    chat.deferredItems.load(id)
+                for id in ids {
+                    if phase == .failed || phase == .offline {
+                        chat.deferredItems.retry(id)
+                    } else {
+                        chat.deferredItems.load(id)
+                    }
                 }
             }
             .buttonStyle(.plain).font(.caption.weight(.medium)).foregroundStyle(.tint)

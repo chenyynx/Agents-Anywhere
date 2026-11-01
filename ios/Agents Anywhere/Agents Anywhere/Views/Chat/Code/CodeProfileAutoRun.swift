@@ -333,7 +333,7 @@ final class CodeProfileAutoRunModel {
     private static func blockDescriptors(_ blocks: [CodeMessageRow.Block]) -> [String] {
         blocks.map { block in
             switch block {
-            case let .reasoning(id, _, _): return "reasoning:\(id)"
+            case let .reasoning(id, _, _, _): return "reasoning:\(id)"
             case let .text(id, _): return "text:\(id)"
             case let .attachments(id, files, _): return "attachments:\(id):\(files.count)"
             case .toolCalls: return "toolCalls"

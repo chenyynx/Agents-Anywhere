@@ -12,6 +12,10 @@ struct CodeThinkingDetailView: View {
     /// The row's item id, so the sheet can follow an in-place deferred
     /// completion. Nil in previews and the gate.
     var itemID: V2TimelineItemID? = nil
+    /// Every settled reasoning row merged into this thinking block. The
+    /// message path joins multiple rows; reading only `itemID` would drop the
+    /// later ones from the detail.
+    var sourceIDs: [V2TimelineItemID] = []
     /// The page's deferred-item reader. Present in the product presentation;
     /// nil in previews and the gate.
     var chat: SessionChatModel? = nil
@@ -19,16 +23,26 @@ struct CodeThinkingDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
 
-    /// The row's current item: the window replaces a deferred summary in
-    /// place, so an opened sheet reads the live thinking text when it can.
-    private var liveItem: V2TimelineItem? {
-        guard let chat, let itemID else { return nil }
-        return chat.session.timeline.first { $0.id == itemID }?.value
+    private func liveItem(_ id: V2TimelineItemID) -> V2TimelineItem? {
+        chat?.session.timeline.first { $0.id == id }?.value
+    }
+
+    /// The merged block's rows that are still summarized.
+    private var deferredIDs: [V2TimelineItemID] {
+        sourceIDs.filter { liveItem($0)?.isDeferred == true }
     }
 
     private var bodyText: String {
-        guard let liveItem, !liveItem.displayText.isEmpty else { return text }
-        return liveItem.displayText
+        // A merged thinking block is several rows joined in order. Rebuild the
+        // same shape from the window's current rows; fall back to the captured
+        // text when any row has left the window.
+        let ids = sourceIDs.isEmpty ? (itemID.map { [$0] } ?? []) : sourceIDs
+        let liveTexts = ids.compactMap { id -> String? in
+            guard let item = liveItem(id), !item.displayText.isEmpty else { return nil }
+            return item.displayText
+        }
+        guard liveTexts.count == ids.count, !liveTexts.isEmpty else { return text }
+        return liveTexts.joined(separator: "\n\n")
     }
 
     var body: some View {
@@ -37,8 +51,8 @@ struct CodeThinkingDetailView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     CodeThinkingMarkdownView(text: bodyText)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    if let chat, let liveItem, liveItem.isDeferred {
-                        DeferredLoadFooter(chat: chat, id: liveItem.id, kind: .thinking)
+                    if let chat, !deferredIDs.isEmpty {
+                        DeferredLoadFooter(chat: chat, ids: deferredIDs, kind: .thinking)
                     }
                 }
                 .padding(.horizontal, 16)

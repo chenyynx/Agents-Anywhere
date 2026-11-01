@@ -211,11 +211,15 @@ struct CodeToolCallDetailView: View {
     var chat: SessionChatModel? = nil
 
     private var output: CodeToolOutput { CodeToolOutput(item: liveItem, kind: call.kind) }
-    private let inputText: String?
+    /// The input is read from the live row too: the server's summary keeps a
+    /// bounded input whitelist, so a summary-only read can miss structured
+    /// keys that the completed row carries.
+    private var liveCall: CodeToolCall { CodeToolCall(item: liveItem, kind: call.kind) }
+    private var inputText: String? { Self.inputText(for: liveCall) }
     /// AA's mapping of the official `detectsJSON` bit (R-U §1): the call's
     /// input is a structured JSON object. The output card still needs the
     /// body to sniff as JSON before it offers Prettify (R-U §1/E3).
-    private let detectsJSON: Bool
+    private var detectsJSON: Bool { CodeToolInputFields.detectsJSON(for: liveCall) }
 
     @Environment(\.colorScheme) private var colorScheme
     /// The D9 placeholder line box (see `CodeDetailRowHooks`).
@@ -228,8 +232,6 @@ struct CodeToolCallDetailView: View {
         self.call = call
         self.footnote = footnote
         self.chat = chat
-        inputText = Self.inputText(for: call)
-        detectsJSON = CodeToolInputFields.detectsJSON(for: call)
     }
 
     /// The row's current item. The page's window replaces a deferred summary
@@ -275,7 +277,7 @@ struct CodeToolCallDetailView: View {
         VStack(alignment: .leading, spacing: CodePageTheme.blockSpacing) {
             summaryRow
             if inputText != nil {
-                CodeToolInputSection(call: call)
+                CodeToolInputSection(call: liveCall)
             }
         }
     }

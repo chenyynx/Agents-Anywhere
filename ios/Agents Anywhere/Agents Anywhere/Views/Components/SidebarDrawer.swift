@@ -525,21 +525,27 @@ private struct SidebarDrawerInteractive<
         #endif
         // Official haptic trigger is the `isOpen` value itself: a button or
         // programmatic toggle fires once, exactly like a drag that commits.
-        settle(to: target, feedback: true)
+        // `isOpen` already carries the new value here, so the flip check
+        // below would always be false — force the feedback for this path.
+        settle(to: target, feedback: true, forceFeedback: true)
     }
 
     // Confirms the snap immediately, then commits external semantic state on completion.
     private func settle(
         to rawTarget: CGFloat,
         initialVelocity: Double = 0,
-        feedback: Bool
+        feedback: Bool,
+        forceFeedback: Bool = false
     ) {
         let target = rawTarget.clamped(to: 0 ... 1)
         // Only a real open/closed flip haptics; a drag that springs back to
         // the same `isOpen` does not (CANONICAL/11-motion-haptics.md §2.1).
+        // A fast flick can already sit on the target when the finger lifts
+        // (progress 1 after dragging the card all the way). Requiring a
+        // progress delta suppressed the haptic exactly in that case; only a
+        // real open/closed flip should fire it.
         let shouldProvideFeedback = feedback
-            && abs(motion.progress - target) > 0.001
-            && ((target > 0.5) != isOpen)
+            && (forceFeedback || ((target > 0.5) != isOpen))
 
         animationGeneration &+= 1
         let generation = animationGeneration

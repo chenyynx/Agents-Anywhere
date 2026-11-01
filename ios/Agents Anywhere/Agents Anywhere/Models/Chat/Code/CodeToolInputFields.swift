@@ -3,15 +3,19 @@ import Foundation
 // The official tool-detail input is not one JSON blob: it is `InputFieldRows`,
 // a `VStack` of one `InputFieldRow` per top-level input key, each drawing
 // `LabeledContent(key, value)` unless that value's String exceeds 0x40000
-// characters, in which case the row falls back to `CodeBlockContent`
+// characters, in which case the row falls back to
+// `LabeledContent(key, CodeBlockContent)`
 // (R-T §3/§5, evidence E4: `0x1035fefcc` does `cmp count, #0x40000`).
 //
-// The `InputField.Value` tag (`text` / `json`) is read but never used by that
-// decision (R-T E4: `0x100a41cc4` ignores its x2 tag argument), so a
-// JSON-looking short value still renders as a field row. The label is the raw
-// JSON key; the official row does not run the key through the
-// `2c67.tool_detail_*` table (R-T §2 — the l10n getters belong to section
-// titles, not field labels).
+// The length gate is the only branch: R-Z2 §3/§6 decoded the complete
+// `InputFieldRow.body` and found no newline or JSON-structure check, so a
+// short multi-line value (Edit's `old_string`/`new_string`, Write's `content`)
+// stays a field row. The `InputField.Value` tag (`text` / `json`) is read but
+// never used by that decision (R-T E4: `0x100a41cc4` ignores its x2 tag
+// argument); inside the short branch it only selects between two Text variants
+// (R-Z2 §5). The label is the raw JSON key; the official row does not run the
+// key through the `2c67.tool_detail_*` table (R-T §2 — the l10n getters
+// belong to section titles, not field labels).
 
 nonisolated struct CodeToolInputField: Hashable, Identifiable {
     /// The input JSON's key verbatim (R-T §2/§5).
@@ -29,25 +33,25 @@ nonisolated struct CodeToolInputField: Hashable, Identifiable {
 
     /// The official comparison reads the String's `countAndFlags` low bits —
     /// the UTF-8 code-unit count — so the threshold is on `utf8.count`.
-    /// Strictly greater than 262144 falls to the code block (R-T §3, E).
+    /// Strictly greater than 262144 falls to the code card (R-T §3, E).
     ///
-    /// A multi-line value also renders as a code block: R-Q Q1 read that
-    /// branch as "multi-line / structured payload → `CodeBlockContent`",
-    /// and rendering code (Edit's `old_string`/`new_string`) in the row's
-    /// proportional font wraps into an unreadable ragged block on device
-    /// (2026-10-29). R-T's instruction-level reading of `InputFieldRow` only
-    /// saw the length gate, so this line is [I] until R-Z2 settles the Edit
-    /// path; it never affects single-line values.
+    /// This is the only gate. R-Z2 §3 decoded the whole
+    /// `InputFieldRow.body` function: there is no newline check and no
+    /// JSON-structure check, so a short multi-line value stays a field row.
+    /// An earlier AA revision treated multi-line as a code block on R-Q's
+    /// type-level guess; that was wrong.
     var rendersAsCodeBlock: Bool {
-        value.utf8.count > Self.codeBlockThreshold || value.contains("\n")
+        value.utf8.count > Self.codeBlockThreshold
     }
 }
 
 nonisolated enum CodeToolInputFields {
 
-    /// The input object's fields, sorted by key. JSON objects have no order on
-    /// the wire, so sorting keeps row order stable across reloads (the same
-    /// rule `CodeToolOutput.answerDictionary` uses). `nil` means the input is
+    /// The input object's fields, sorted by key. The official client iterates
+    /// `JSONObject.Storage.value`, a `Swift.Dictionary<String, Any>` (R-Z2
+    /// §2), so its row order is hash order and not a defined sequence; AA
+    /// sorts to keep the rows stable across reloads (the same rule
+    /// `CodeToolOutput.answerDictionary` uses). `nil` means the input is
     /// absent/empty or not an object; the detail page then hides the section
     /// (absent/empty) or keeps the raw code card (non-object input).
     static func fields(for call: CodeToolCall) -> [CodeToolInputField]? {

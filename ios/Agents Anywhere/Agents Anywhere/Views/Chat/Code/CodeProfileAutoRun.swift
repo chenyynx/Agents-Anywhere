@@ -720,9 +720,11 @@ final class CodeProfileAutoRunModel {
 
     /// V8 — the detail page's input field rows and output Prettify control.
     ///
-    /// R-T §3/§5: a Read input is one field row keyed by the raw JSON key; only
-    /// a value over 262144 UTF-8 code units falls to the code card (strictly
-    /// greater; the official `cmp #0x40000` keeps `<=` on the row path).
+    /// R-T §3/§5 + R-Z2 §3/§6: a Read input is one field row keyed by the raw
+    /// JSON key; only a value over 262144 UTF-8 code units falls to the code
+    /// card (strictly greater; the official `cmp #0x40000` keeps `<=` on the
+    /// row path). A short multi-line value stays a field row: R-Z2 decoded the
+    /// whole `InputFieldRow.body` and found no newline or structure branch.
     ///
     /// R-U §2/§3: the formatter is Foundation's JSONSerialization at options
     /// 11 (prettyPrinted | sortedKeys | withoutEscapingSlashes), the default
@@ -754,8 +756,8 @@ final class CodeProfileAutoRunModel {
               "inputFields: \(limit + 1) chars should fall to the code block")
         let multiLineFields = Self.inputFieldsFixture(value: "line one\nline two")
         check(multiLineFields.count == 1
-                && multiLineFields.first?.rendersAsCodeBlock == true,
-              "inputFields: a short multi-line value stayed a proportional row")
+                && multiLineFields.first?.rendersAsCodeBlock == false,
+              "inputFields: a short multi-line value fell to the code card")
         check(!Self.inputFieldsFixture(value: "short").isEmpty,
               "inputFields: the Edit fixture lost its fields")
 
@@ -814,6 +816,7 @@ final class CodeProfileAutoRunModel {
             "threshold": limit,
             "boundaryRow": boundaryFields.first?.rendersAsCodeBlock == false,
             "overRow": overFields.first?.rendersAsCodeBlock == true,
+            "multiLineRow": multiLineFields.first?.rendersAsCodeBlock == false,
         ] as [String: Any]
         report["prettify"] = [
             "formatted": formatted ?? "nil",

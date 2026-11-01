@@ -306,6 +306,10 @@ b841 真机（会话 `sess_DilUOLks4LdTwg`）：发送后气泡一直转，约 6
   带 `deferActivity` 参数、`deferredActivity` 字段与单条读端点；本 iOS 分支按
   AGENTS.md 的契约优先规则记录了依赖，但不修改 `contracts/`（本分支 server 源码
   仍是 v2_47，单独改 schema 会与 source 不一致）。两线合并时一起带上。
+- 顺带发现（未复现，待查）：服务端 `build_reasoning_stub_content` 只保留 kind/format/text/
+  deferred/deferredBytes，会丢掉 connector 盖在 reasoning 行上的 `usage`；若某轮最新
+  usage carrier 恰是被裁剪的思考行，上下文圆环可能回退到更旧一次测量（同轮消息体通常
+  也带同一 usage，未复现）。
 - accepted 直发在 3 次补读后仍无 echo 时保持「发送中」（官方 posting 语义），不降级；
   真正写结果不明的 POST（超时等）仍是既有 `uncertain`，因为那次写入本身没有被确认。
 - Code 详情只有在从页面活跃的 `SessionChatModel` 打开时才提供加载入口；

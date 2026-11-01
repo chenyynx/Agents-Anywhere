@@ -984,7 +984,13 @@ final class V2SessionRepository {
             entry.latestRefreshTask = nil
         }
         let mergedOutcome = try entry.projection?.apply(event)
-        confirmEchoes(event, entry: entry)
+        // Confirm a pending send only from the row the projection actually
+        // merged. Half-applied sends used to be confirmed straight from the
+        // event payload while the window guard dropped the row; the bubbles
+        // then stayed visible forever waiting for an echo that never landed.
+        if let merged = mergedOutcome {
+            entry.model.confirmEcho(merged.item)
+        }
         if event.type == "runtime.catalog.updated" || entry.projection?.data.session.connectorStatus != .online {
             invalidateCatalogs(entry)
         }
@@ -1199,7 +1205,10 @@ final class V2SessionRepository {
             } else {
                 for event in recovery.events.sorted(by: { $0.sequence < $1.sequence }) {
                     do {
-                        try entry.projection?.apply(event)
+                        let merged = try entry.projection?.apply(event)
+                        // Same rule as the live path: an event only confirms
+                        // the pending bubble when its row entered the window.
+                        if let merged { entry.model.confirmEcho(merged.item) }
                     } catch {
                         // The batch is all-or-nothing, so this event's position
                         // is the whole story of the stall: carry it out of the
@@ -1207,7 +1216,6 @@ final class V2SessionRepository {
                         throw V2SessionRecoveryApplyFailure(event: event, fromCursor: cursor,
                                                             nextCursor: recovery.nextCursor, underlying: error)
                     }
-                    confirmEchoes(event, entry: entry)
                 }
                 entry.projection?.advanceCursor(recovery.nextCursor)
             }
@@ -1429,14 +1437,6 @@ final class V2SessionRepository {
         return snapshot
     }
 #endif
-
-    private func confirmEchoes(_ event: V2SessionEvent, entry: Entry) {
-        if let raw = event.payload["item"],
-           let data = try? JSONEncoder().encode(raw),
-           let item = try? JSONDecoder().decode(V2TimelineItem.self, from: data) {
-            entry.model.confirmEcho(item)
-        }
-    }
 
     private func invalidateCatalogs(_ entry: Entry) {
         entry.catalogVersion += 1

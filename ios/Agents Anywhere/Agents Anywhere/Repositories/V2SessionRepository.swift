@@ -237,8 +237,12 @@ final class V2SessionRepository {
         // the opening read: the server caps its timeline at 2 MB, it carries
         // the runtime state, and it is one request instead of a fill loop.
         // `refresh` replaces the window and re-establishes live recovery, so
-        // a frame in flight cannot land on the old shell.
-        if window?.items.isEmpty == true, window?.hasOlderItems == true,
+        // a frame in flight cannot land on the old shell. The flag is only
+        // set by a restore, so a session that is genuinely empty is not
+        // snapshotted twice.
+        let restoredEmptyWindow = entry.restoredEmptyWindow
+        entry.restoredEmptyWindow = false
+        if window?.items.isEmpty == true, restoredEmptyWindow,
            !entry.model.isLocalCreation, network.availability != .offline {
             return try await refresh(sessionId: sessionId)
         }
@@ -293,7 +297,11 @@ final class V2SessionRepository {
         entry.projection = projection
         // The row store keeps the session metadata when its rows are evicted;
         // an empty restored window must not inherit the saved newer flag (see
-        // `settleEmptyWindow`).
+        // `settleEmptyWindow`). The flag tells `open` to take the bounded
+        // snapshot instead of the multi-megabyte latest page; an archive that
+        // was simply empty from birth does not qualify.
+        entry.restoredEmptyWindow = saved.items.isEmpty
+            && (archive.hasOlderItems || saved.localHasOlderRows)
         entry.projection?.settleEmptyWindow()
         entry.projection?.setLocalOlderAvailable(saved.localHasOlderRows)
         // A failure that outlived the process is still on record: the ring is
@@ -1767,6 +1775,9 @@ private final class Entry {
     /// Non-zero while a direct latest read (the opening path) is on the wire;
     /// the fill stays out of its way instead of downloading the same page too.
     var latestReadInFlight = 0
+    /// The local store restored this session's metadata but none of its rows
+    /// (cache eviction). `open` answers it with the bounded snapshot.
+    var restoredEmptyWindow = false
     /// Rotation key so a finishing fill only clears its own registration
     /// (a stop + observe can replace the task before its defer runs).
     var latestFillID = UUID()
